@@ -628,13 +628,25 @@ async def fresh(scope, previous):
     return state
 
 
+def chart_targets(payload):
+    targets = [{'target': {'kind': 'judgment'}, 'title': '整条研判的图表依据'}]
+    targets.extend({'target': {'kind': kind, 'id': rule.id}, 'title': ('阈值：' if kind == 'threshold' else '证伪：') + (getattr(rule, 'name', None) or rule.desc)}
+        for kind, rules in (('threshold', payload.thresholds), ('falsifier', payload.falsifiers)) for rule in rules)
+    targets.extend({'target': {'kind': 'evidence', 'side': side, 'index': index}, 'title': ('多方依据：' if side == 'bull' else '空方依据：') + item.desc}
+        for side in ('bull', 'bear') for index, item in enumerate(getattr(payload.contradiction, side).evidence))
+    return targets
+
+
 def serialize(row, session=None, scope=None):
     if row is None: return None
     payload = to_payload(row)
     from tin.web.judgment_lifecycle import delete_revision
     return {'id': row.id, 'version': row.version, 'status': row.status, 'author': row.author, 'variety': row.variety,
             'delete_revision': delete_revision(session, scope, row) if session is not None and scope is not None else 0,
-            'created_at': row.created_at.isoformat(), 'markdown': dump_markdown(payload),
+            'created_at': row.created_at.isoformat(), 'written_at': row.written_at.isoformat(),
+            'chart_references': [] if scope is not None and scope.restricted else payload.chart_references,
+            'chart_rules': [rule.model_dump(mode='json') for rule in [*payload.thresholds, *payload.falsifiers]],
+            'chart_targets': chart_targets(payload), 'markdown': dump_markdown(payload),
             'source_text': row.source_note or dump_markdown(payload)}
 
 

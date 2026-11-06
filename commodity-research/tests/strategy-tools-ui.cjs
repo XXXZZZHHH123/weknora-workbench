@@ -59,6 +59,7 @@ assert.match(rendered.stdout, /id="strategy-workspace-data"|strategy-workspace/)
       const endpoint = url.pathname.startsWith(api) ? url.pathname.slice(api.length) : '';
       calls.push(method + ' ' + endpoint);
       if (endpoint === '/research-strategies/sources') return route.fulfill({json: {items: [], has_more: false}});
+      if (/^\/research-strategies\/[^/]+\/revisions$/.test(endpoint)) return route.fulfill({json: {items: [], current_revision: 1, truncated: false}});
       if (endpoint === '/research-references') return route.fulfill({json: {items: [{id: '17', revision: 2, title: '合成研判'}], total: 1}});
       if (/\/monitor$/.test(endpoint)) return route.fulfill({json: {conditions: [], indicators: [], counts: {conditions: 0, triggered: 0, missing: 0, indicators: 0}, notice: ''}});
       if (endpoint === '/research-strategies/markdown') return route.fulfill({json: {markdown: exported, count: 1, total: 1, skipped: 0, truncated: false, can_import: true}});

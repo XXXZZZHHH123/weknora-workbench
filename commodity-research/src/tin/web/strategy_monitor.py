@@ -138,7 +138,7 @@ def monitor_cards(scope, cards, *, day=None, include_indicators=True):
             chart_error = exc.detail if isinstance(exc.detail, str) else '所引指标暂不可读'
     results = {}
     for card in cards:
-        body, conditions, series = card.get('card') or {}, [], []
+        body, conditions, series, library_charts = card.get('card') or {}, [], [], []
         for citation in body.get('citations') or []:
             snapshot = citation.get('snapshot') or {}
             field = FIELD_LABELS.get(citation.get('field'), '')
@@ -165,11 +165,26 @@ def monitor_cards(scope, cards, *, day=None, include_indicators=True):
                 series.append({'field': citation.get('field'), 'field_label': field, 'series_id': citation['series_id'],
                                'title': human_text(snapshot.get('title')) or (chart or {}).get('name') or '已引用指标',
                                'chart': chart, 'note': chart_error if chart is None else ''})
+            elif include_indicators and citation.get('kind') == 'chart' and not scope.restricted:
+                from tin.web.chart_references import render_chart_reference
+                reference = {key: value for key, value in citation.items() if key not in {'field', 'snapshot'}}
+                monitoring_reference = {**reference, 'as_of': cutoff.isoformat()}
+                try:
+                    rendered = render_chart_reference(scope, monitoring_reference)
+                except HTTPException as exc:
+                    rendered = {'reference': monitoring_reference, 'status': 'unavailable',
+                        'notice': exc.detail if isinstance(exc.detail, str) else '图表引用暂不可读', 'payload': None}
+                library_charts.append({**rendered, 'frozen_as_of': reference.get('as_of'),
+                    'monitor_as_of': cutoff.isoformat(), 'field': citation.get('field'), 'field_label': field})
         triggered = [row for row in conditions if row['state'] == '触发']
         results[card['id']] = {'card_id': card['id'], 'as_of': cutoff.isoformat(), 'conditions': conditions,
             'indicators': series, 'counts': {'conditions': len(conditions), 'triggered': len(triggered),
                 'missing': sum(row['state'] in {'数据缺失', '无法核对'} for row in conditions), 'indicators': len(series)},
             'notice': f'按截至 {cutoff.isoformat()} 的可读数据试算所引条件；不写入信号，也不执行或改变交易。'}
+        if library_charts:
+            results[card['id']]['charts'] = library_charts
+        if scope.restricted and any(row.get('kind') == 'chart' for row in body.get('citations') or []):
+            results[card['id']]['chart_notice'] = '图表引用暂不对受限视角开放'
     return results
 
 

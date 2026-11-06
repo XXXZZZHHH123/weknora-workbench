@@ -76,6 +76,37 @@
       .map(part => ({label: part.label, current: !!part.current, point: nearestPoint(part.points, x, tolerance)}))
       .sort((a, b) => (b.point?.value ?? -Infinity) - (a.point?.value ?? -Infinity));
   }
+  // Thresholds are explicit rule bindings, never labels or derived operands.
+  // SMA values arrive from the server with their full, verified rule window.
+  function ruleOverlays(series, values, transform = 'raw') {
+    const result = [], fixed = new Map();
+    for (const rule of Array.isArray(values) ? values : []) {
+      if (!rule || typeof rule.series_id !== 'string' || !rule.series_id || !['fixed', 'sma', 'dynamic'].includes(rule.kind)) continue;
+      for (const part of series) {
+        if (part.derived || part.series_id !== rule.series_id) continue;
+        const first = part.points.find(point => finite(point.value) && finite(point.raw));
+        const convert = value => {
+          if (!finite(value)) return null;
+          const converted = transform === 'raw' ? value : !first ? null : transform === 'change'
+            ? value - first.raw : first.raw > 0 ? value / first.raw * 100 : null;
+          return finite(converted) ? converted : null;
+        };
+        if (rule.kind === 'fixed') {
+          const value = convert(rule.value);
+          if (value === null) continue;
+          const key = JSON.stringify([rule.series_id, rule.rule_id, rule.name, rule.operator, part.axis, value]);
+          if (fixed.has(key)) { fixed.get(key).keys.push(part.key); continue; }
+          const overlay = {...rule, value, axis: part.axis, keys: [part.key], points: []};
+          fixed.set(key, overlay); result.push(overlay);
+        } else if (Array.isArray(rule.points)) {
+          const dated = new Map(rule.points.filter(point => point && typeof point.date === 'string').map(point => [point.date, point.value]));
+          const points = part.points.map(point => ({date: point.date, x: point.x, value: convert(dated.get(point.date))}));
+          if (points.some(point => finite(point.value))) result.push({...rule, axis: part.axis, keys: [part.key], points});
+        }
+      }
+    }
+    return result;
+  }
   function annualSegments(segments) {
     return !!segments?.length && segments.every(part => {
       const length = dayNumber(part.end) - dayNumber(part.start) + 1;
@@ -331,6 +362,7 @@
       const selection = curve.curve_cycles || definition.curves?.[curveIndex]?.curve_cycles || definition.time?.curve_cycles || 'current';
       return [current, ...(selection === 'current_and_previous' ? [previous] : [])].filter(part => part && hasPoints(part))
         .map(part => ({...part, current: part === current, label: `${curve.label} · ${part.label}`, kind: curve.kind || 'line', axis: curve.axis || 'left',
+          series_id: curve.series_id, derived: curve.derived,
           unit: curve.unit, style: curve.style || {}, curveIndex, previous: part === previous,
           freq_days: result.freq_days, tolerance_days: result.tolerance_days}));
     }) : cycle ? payload.segments.filter(hasPoints) : (payload.curves || []);
@@ -341,6 +373,8 @@
     const anchorDate = (multiCycle ? payload.common_current_start : null) || current?.start || parts[0]?.start || '2000-' + (payload.template?.start || '01-01');
     const band = multiCycle ? [] : monthly ? monthlyBand(payload.band, anchorDate) : payload.band;
     const series = parts.map((part, index) => ({...part, key: index, label: part.label || part.series_id || '未命名曲线',
+      series_id: cycle && !multiCycle ? base.series_id : part.series_id,
+      derived: cycle && !multiCycle ? base.derived : part.derived,
       kind: cycle && !multiCycle ? (base.kind || 'line') : part.kind || 'line', axis: cycle && !multiCycle ? (base.axis || 'left') : part.axis || 'left',
       style: cycle && !multiCycle ? (definition.time?.segment_styles || []).find(style => style.label === part.label) || {} : (part.style || {}),
       points: (part.points || []).map(p => {
@@ -348,6 +382,7 @@
         const centered = monthly && finite(x) ? monthMidpoint(dayNumber(p.date), dayNumber(part.start)) : NaN;
         return {...p, x: finite(centered) ? centered : x};
       })}));
+    const overlays = ruleOverlays(series, options.overlays || payload.overlays, transform);
     function appearance(s) {
       const isPrevious = multiCycle ? s.previous : cycle && parts[s.key] === previous;
       const colorIndex = multiCycle ? s.curveIndex : s.key;
@@ -409,6 +444,7 @@
       let right = width - margin.right;
       const bottom = height - margin.bottom;
       const visible = series.filter(s => !hidden.has(s.key));
+      const activeOverlays = overlays.filter(overlay => overlay.keys.some(key => !hidden.has(key)));
       const validBand = cycle ? filterBand(band) : [];
       const showBand = cycle && !multiCycle && validBand.length > 0;
       const allX = series.flatMap(s => s.points.filter(p => finite(p.x)).map(p => p.x));
@@ -424,6 +460,9 @@
       const axes = {};
       for (const axis of ['left', 'right']) {
         const members = visible.filter(s => s.axis === axis), values = members.flatMap(s => s.points.map(p => p.value)).filter(finite);
+        for (const overlay of activeOverlays.filter(item => item.axis === axis)) {
+          values.push(...(overlay.kind === 'fixed' ? [overlay.value] : overlay.points.map(point => point.value).filter(finite)));
+        }
         if (showBand && (base.axis || 'left') === axis) values.push(...validBand.flatMap(p => [p.min, p.max]));
         if (members.some(s => s.kind === 'bar' || s.kind === 'area')) values.push(0);
         let min = values.length ? Math.min(...values) : 0, max = values.length ? Math.max(...values) : 1;
@@ -520,6 +559,25 @@
           }
         }
       }
+      for (const overlay of activeOverlays) {
+        const y = axes[overlay.axis].scale, source = series.find(part => overlay.keys.includes(part.key));
+        const color = overlay.color || appearance(source).color;
+        const group = add('g', {'data-rule-overlay': overlay.kind, 'data-rule-id': overlay.rule_id,
+          'data-rule-series': overlay.series_id}, undefined, plot);
+        const label = `${overlay.name || '规则阈值'}${overlay.kind === 'sma' ? ` · MA${overlay.window}` : overlay.kind === 'fixed' ? ` · ${formatNumber(overlay.value)}` : ''}`;
+        add('title', {}, label, group);
+        const attributes = {fill: 'none', stroke: color, 'stroke-width': 1.5 * scale, 'stroke-dasharray': '5 4', 'data-rule-boundary': ''};
+        if (overlay.kind === 'fixed') {
+          add('line', {...attributes, x1: margin.left, x2: right, y1: y(overlay.value), y2: y(overlay.value)}, undefined, group);
+          if (!options.thumbnail) add('text', {x: margin.left + 5 * scale, y: Math.max(margin.top + axisFont, y(overlay.value) - 4 * scale),
+            fill: exportTheme?.text || color, 'font-size': axisFont, 'data-rule-label': ''}, label, group);
+        } else {
+          for (const run of splitObservations(overlay.points, cycle, source.freq_days ?? payload.freq_days)) {
+            add('path', {...attributes, d: path(run, y)}, undefined, group);
+            if (run.length === 1) add('circle', {cx: xScale(run[0].x), cy: y(run[0].value), r: 2 * scale, fill: color}, undefined, group);
+          }
+        }
+      }
       // Values stay in source units; only their text uses 万/亿. Keep annotations
       // inside the plot so both the page and exported SVG retain the full label.
       const latest = (cycle ? visible.filter(s => s.current) : visible).map(s => {
@@ -593,6 +651,13 @@
             row.textContent = `${s.label}${s.current ? '（当前）' : ''}：${point ? formatNumber(point.value, axes[s.axis].step) + unit + ' · ' + point.date : '此位置缺失'}`;
             tip.append(row);
           }
+          for (const boundary of activeOverlays) {
+            const point = boundary.kind === 'fixed' ? {value: boundary.value} : nearestPoint(boundary.points, hoverX, tolerance(series.find(s => boundary.keys.includes(s.key))));
+            if (!point) continue;
+            const row = document.createElement('div');
+            row.textContent = `${boundary.name || '规则阈值'}${boundary.kind === 'sma' ? ` MA${boundary.window}` : ''}：${formatNumber(point.value, axes[boundary.axis].step)}`;
+            row.setAttribute('data-rule-tooltip', boundary.rule_id || ''); tip.append(row);
+          }
           tip.hidden = false; tip.style.left = Math.min(Math.max(0, event.clientX - rect.left + 12), Math.max(0, rect.width - 280)) + 'px'; tip.style.top = Math.max(0, (event.clientY - rect.top) - 30) + 'px';
         });
         overlay.addEventListener('pointerleave', () => { tip.hidden = true; crosshair.setAttribute('visibility', 'hidden'); });
@@ -606,7 +671,7 @@
     return {destroy() { destroyed = true; observer?.disconnect(); wrapper.remove(); }, ...imageMethods(() => svg, document)};
   }
   render.sequence = 0;
-  const api = {render, renderTable, exportStyle, monthMidpoint, monthlyBand, medianInterval, shouldBreak, splitObservations, cycleTicks, dateTicks, niceAxis, formatNumber, annualSegments, visibleCycleKeys, alignAxes, filterBand, bandRuns, nearestPoint, tooltipValues};
+  const api = {render, renderTable, exportStyle, monthMidpoint, monthlyBand, medianInterval, shouldBreak, splitObservations, cycleTicks, dateTicks, niceAxis, formatNumber, annualSegments, visibleCycleKeys, alignAxes, filterBand, bandRuns, nearestPoint, tooltipValues, ruleOverlays};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.ChartKit = Object.freeze(api);
 })(typeof window !== 'undefined' ? window : globalThis);

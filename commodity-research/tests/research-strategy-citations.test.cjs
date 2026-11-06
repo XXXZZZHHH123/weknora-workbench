@@ -76,6 +76,18 @@ test('invalid citation type, field, version, shape and over-capacity JSON fail b
   assert.throws(() => view.parseImport(JSON.stringify({...card(), citations: Array.from({length: 33}, () => citation())}), 'plan.json'));
   assert.deepEqual(plain(view.readCardForm()), before);
 });
+test('chart citations retain frozen metadata through editing and import only their explicit identity', () => {
+  const {view} = fixture(), chart = {kind: 'chart', field: 'thesis', id: 'chart-fixture', revision: 3,
+    source_version: 'c'.repeat(64), source_versions: {'fixture-series': 'c'.repeat(64)},
+    as_of: '2026-01-02', title: '保存时图名', definition_summary: '周期图 · 1 条曲线',
+    definition: {format: 'chart.v1', curves: [{series_id: 'fixture-series'}]}, snapshot: {title: '保存时图名'}};
+  view.fillCard({card: {...card(), citations: [chart]}, source_ids: []});
+  assert.deepEqual(plain(view.readCardForm().card.citations), [chart]);
+  assert.deepEqual(plain(view.parseImport(JSON.stringify({...card(), citations: [chart]}), 'plan.json').body.card.citations),
+    [{kind: 'chart', field: 'thesis', id: chart.id, revision: 3}]);
+  assert.throws(() => view.citationIdentity({...chart, revision: true}));
+  assert.throws(() => view.citationIdentity({...chart, guessed_title_id: 'forbidden'}));
+});
 test('plain original imports preserve text literally and reject oversized content', () => {
   const {view} = fixture(); assert.equal(typeof view.parseImport, 'function');
   const text = '<script>window.unsafe=true</script>\n原始条件 ≥ 12.500';

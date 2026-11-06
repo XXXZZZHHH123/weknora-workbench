@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 
 from tin.integration.page_facts import page_read_scope
 from tin.integration.workbench_scope import artifact_session, current_workbench, require_shared_write
-from tin.models.workbench import WorkbenchArtifact
+from tin.models.workbench import WorkbenchArtifact, WorkbenchArtifactRevision
 from tin.web.workbench_artifacts import (
     ArtifactInput, ArtifactModule, artifact_query, create_artifact, serialize_artifact, update_artifact,
 )
@@ -190,7 +190,7 @@ def workspace_context(session, scope, *, selected_id=None, select_first=True):
     return {**data, "items": rows, "selected": selected, "metadata_only": True}
 
 
-def _read_card(session, scope, card_id):
+def _read_card(session, scope, card_id, revision=None):
     from tin.web.research_references import record_scope_status
     row = session.scalar(artifact_query(scope, ArtifactModule.strategies.value)
                          .where(WorkbenchArtifact.id == card_id))
@@ -199,9 +199,21 @@ def _read_card(session, scope, card_id):
     state = record_scope_status(session, scope, "artifact", card_id, record=row)
     if state == "foreign":
         raise HTTPException(404, "研究方案不存在或无权访问")
-    value = serialize_card(serialize_artifact(row))
-    value.update(scope_status=state, can_edit=scope.can_edit and state == "current",
+    snapshot = serialize_artifact(row)
+    historical = revision is not None and revision != row.revision
+    if historical:
+        previous = session.scalar(select(WorkbenchArtifactRevision).where(
+            WorkbenchArtifactRevision.artifact_id == row.id,
+            WorkbenchArtifactRevision.revision == revision))
+        if previous is None:
+            raise HTTPException(404, "策略历史版本不存在或无权访问")
+        snapshot = {**snapshot, **{key: getattr(previous, key) for key in
+            ("title", "body", "status", "source_ids", "source_snapshots", "revision")},
+            "updated_at": previous.recorded_at}
+    value = serialize_card(snapshot)
+    value.update(scope_status=state, can_edit=scope.can_edit and state == "current" and not historical,
                  can_apply=state == "current" and value["card"] is not None,
+                 historical=historical, current_revision=row.revision,
                  judgment_label=_judgment_label(session, scope, (value["card"] or {}).get("judgment_reference")))
     return value
 
@@ -294,23 +306,40 @@ router.include_router(text_router)
 
 
 @router.get("/{card_id}/monitor")
-def card_monitor_view(card_id: str, day: str | None = Query(None, alias="date", max_length=10)):
+def card_monitor_view(card_id: str, day: str | None = Query(None, alias="date", max_length=10),
+                      revision: int | None = Query(None, ge=1)):
     """Current status of explicitly cited conditions and indicators; read only."""
     scope = require_card_scope()
     with artifact_session(scope) as session:
-        card = _read_card(session, scope, card_id)
+        card = _read_card(session, scope, card_id, revision)
     from tin.web.strategy_monitor import card_monitor
     if card["card"] is None:
         return {"card_id": card_id, "conditions": [], "indicators": [], "counts": {
             "conditions": 0, "triggered": 0, "missing": 0, "indicators": 0}, "notice": "历史记录未整理，无引用可监测。"}
+    if day is None and card.get('historical'):
+        day = next((row['as_of'] for row in card['card'].get('citations') or []
+            if row.get('kind') == 'chart' and row.get('as_of')), card['updated_at'][:10])
     return card_monitor(scope, card, day=day)
 
 
-@router.get("/{card_id}")
-def card_detail(card_id: str):
+@router.get("/{card_id}/revisions")
+def card_revisions(card_id: str):
     scope = require_card_scope()
     with artifact_session(scope) as session:
-        return _read_card(session, scope, card_id)
+        current = _read_card(session, scope, card_id)
+        rows = session.scalars(select(WorkbenchArtifactRevision).where(
+            WorkbenchArtifactRevision.artifact_id == card_id).order_by(
+                WorkbenchArtifactRevision.revision.desc()).limit(101)).all()
+        return {"items": [{"revision": row.revision, "title": row.title,
+                "edited_at": row.recorded_at.isoformat()} for row in rows[:100]],
+                "current_revision": current["current_revision"], "truncated": len(rows) > 100}
+
+
+@router.get("/{card_id}")
+def card_detail(card_id: str, revision: int | None = Query(None, ge=1)):
+    scope = require_card_scope()
+    with artifact_session(scope) as session:
+        return _read_card(session, scope, card_id, revision)
 
 
 @router.post("", status_code=201)

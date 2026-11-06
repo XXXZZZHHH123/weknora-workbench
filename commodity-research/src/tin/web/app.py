@@ -228,6 +228,8 @@ from tin.web.workbench_artifacts import router as workbench_artifacts_router
 app.include_router(workbench_artifacts_router)
 from tin.web.charts import router as charts_router
 app.include_router(charts_router)
+from tin.web.chart_references import router as chart_references_router
+app.include_router(chart_references_router)
 from tin.web.favorites import router as favorites_router
 app.include_router(favorites_router)
 from tin.web.indicator_dedup import router as indicator_dedup_router

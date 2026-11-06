@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import select
+from pydantic import BaseModel, ConfigDict, Field
 
 from tin.config import SHANGHAI
 from tin.integration.workbench_scope import artifact_session, current_workbench
@@ -143,3 +144,88 @@ def chart(request: Request, judgment_id: int = Query(ge=1, le=2**63 - 1),
     from tin.web.judgment_research import metric_boundaries
     metric['boundaries'] = metric_boundaries(payload, series_id)
     return {'metric': metric}
+
+
+def related_library_charts(session, payload):
+    """Link only saved real IDs; titles and descriptors are display metadata."""
+    from tin.web.charts import artifact_query, decode_definition
+    from tin.web.chart_data import definition_series_ids
+    rules = [*payload.thresholds, *payload.falsifiers]
+    result = {rule.id: [] for rule in rules}
+    if not rules:
+        return result
+    for row in session.scalars(artifact_query()):
+        definition = decode_definition(row)
+        identifiers = set(definition_series_ids(definition))
+        for rule in rules:
+            if rule.series_id in identifiers:
+                result[rule.id].append({'id': row.id, 'revision': row.revision,
+                    'title': row.title, 'group': definition.group})
+    return result
+
+
+@router.get('/library-references')
+def library_references(judgment_id: int = Query(ge=1, le=2**63 - 1)):
+    from tin.web.judgment_generation import chart_targets
+    from tin.web.judgment_panels import panel_scope
+    scope = current_workbench.get()
+    if scope is not None and scope.restricted:
+        raise HTTPException(403, '图表引用暂不对受限视角开放')
+    scope = panel_scope()
+    from tin.web.charts import require_scope
+    require_scope()
+    with artifact_session(scope) as session:
+        row = selected_judgment(session, judgment_id, scope=scope)
+        payload = to_payload(row)
+        return {'references': payload.chart_references, 'as_of': row.written_at.isoformat(),
+            'rules': [rule.model_dump(mode='json') for rule in [*payload.thresholds, *payload.falsifiers]],
+            'targets': chart_targets(payload), 'related': related_library_charts(session, payload)}
+
+
+class LibraryReferencesInput(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    judgment_id: int = Field(ge=1, le=2**63 - 1)
+    base_version: int = Field(ge=1, le=2**31 - 1)
+    references: list[dict] = Field(max_length=32)
+
+
+@router.post('/library-references')
+async def save_library_references(request: Request):
+    from tin.web.judgment_generation import read_body, result_session, scope_for_analysis
+    from tin.web.judgment_panels import register_panel
+    from tin.judgments.service import save_version, JudgmentError
+    from tin.schemas.judgment import JudgmentIn
+    from tin.integration.workbench_scope import require_shared_write
+    from sqlalchemy.exc import IntegrityError, OperationalError
+    from pydantic import ValidationError
+    scope = current_workbench.get()
+    if scope is not None and scope.restricted:
+        raise HTTPException(403, '图表引用暂不对受限视角开放')
+    scope = scope_for_analysis(write=True)
+    require_shared_write(scope)
+    body = await read_body(request, LibraryReferencesInput)
+    with result_session(scope) as session:
+        row = selected_judgment(session, body.judgment_id, scope=scope)
+        source = to_payload(row).model_dump(mode='json', by_alias=True)
+        source['chart_references'] = body.references
+        source['author'] = scope.identity.user_id
+        try:
+            payload = JudgmentIn.model_validate(source)
+        except (ValidationError, ValueError, TypeError):
+            raise HTTPException(422, '图表引用或挂载位置无效，请重新选择') from None
+        if scope.scope_version == 2:
+            from tin.judgments.service import _refs
+            from tin.web.chart_data import catalog_fields
+            fields = catalog_fields(scope, [sid for _, _, sid in _refs(payload)])
+            session.info.update(knowledge_facts=True, knowledge_facts_catalog=fields)
+        declarations = {rule.id: rule.caliber_confirmation.model_dump() for rule in [*payload.thresholds, *payload.falsifiers]
+            if rule.caliber_confirmation is not None}
+        try:
+            saved = save_version(session, payload, actor=scope.identity.user_id,
+                expected_base_version=body.base_version, caliber_confirmations=declarations)
+            panel = register_panel(session, scope, saved)
+            session.commit()
+            return {'id': saved.id, 'version': saved.version, 'status': saved.status, 'panel': panel}
+        except (JudgmentError, IntegrityError, OperationalError):
+            session.rollback()
+            raise HTTPException(409, '研判或来源已变化，请刷新后保存图表引用') from None

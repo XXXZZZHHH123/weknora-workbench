@@ -15,12 +15,26 @@ const record = (id, title) => ({id, title, status: 'draft', revision: 1, source_
 const a = record('00000000-0000-4000-8000-000000000101', '合成方案甲');
 const b = record('00000000-0000-4000-8000-000000000102', '合成方案乙');
 const records = new Map([a, b].map(item => [item.id, item]));
+const chartReference = {kind: 'chart', id: 'fixture-chart', revision: 2, title: '合成周期图',
+  source_version: version, source_versions: {'fixture-chart-series': version}, as_of: '2029-09-15', definition_summary: '周期对比 · 合成图表指标'};
+const chartTemplate = {kind: 'repeat', name: '自然年', start: '01-01', period: 'year', align: 'days', transform: 'raw'};
+const chartDefinition = {format: 'chart.v1', title: chartReference.title, group: '合成分组', note: '',
+  curves: [{series_id: 'fixture-chart-series', label: '合成图表指标', axis: 'left', kind: 'line', style: {}}],
+  time: {mode: 'cycle', template: chartTemplate, cycles: 4, transform: 'raw'}, axes: {left: {}, right: {}}, origin: {kind: 'manual', ref: ''}};
+const chartPayload = {mode: 'cycle', unit: '吨', template: chartTemplate, as_of: chartReference.as_of,
+  freq_days: 7, tolerance_days: 3, warnings: [], band: [], forward: [],
+  segments: [2028, 2029].map(year => ({label: String(year), start: year + '-01-01', end: year + '-12-31', current: year === 2029, flags: [],
+    points: [0, 7, 14].map(x => ({x, date: year + '-01-' + String(1 + x).padStart(2, '0'), value: 10 + x, raw: 10 + x}))})),
+  position: {date: '2029-01-15', x: 14, value: 24, n: 3, rank: 1}};
 function identity(kind, extra = {}) {
   return {kind, field: 'thesis', ...(kind === 'indicator' ? {series_id: 'synthetic-series', source_version: version}
     : kind === 'judgment_condition' ? {id: '17', revision: 2, rule_kind: 'threshold', rule_id: 'synthetic-boundary'}
       : {source_binding_id: 'binding', knowledge_id: 'original-text', file_version: fileVersion}), ...extra};
 }
 function preview(citation) {
+  if (citation.kind === 'chart') return {citation: {...chartReference, definition: chartDefinition, field: citation.field,
+    snapshot: {title: chartReference.title, subtitle: chartReference.definition_summary}}, title: chartReference.title,
+    subtitle: chartReference.definition_summary, preview: {type: 'chart', reference: chartReference}};
   const type = citation.kind, name = citation.knowledge_id;
   const title = type === 'indicator' ? (citation.series_id === 'synthetic-price' ? '价格' : '库存量') : type === 'judgment_condition' ? '波动率高于19点' :
     ({'original-text': '研究原文.md', 'invalid-json': '不适用格式.json', pdf: '研究周报.pdf', 'parsed-pdf': '已有解析的周报.pdf', outdated: '已有更新的原文.md'}[name] || '知识库原件');
@@ -49,7 +63,7 @@ const report = {passed: false, requests: [], failures: [], cases: [], model_call
 let browser, failSave = false, failContent = false;
 (async () => {
   try {
-    browser = await chromium.launch({headless: true, ...(process.env.RESEARCH_CHROMIUM ? {executablePath: process.env.RESEARCH_CHROMIUM} : {}),
+    browser = await chromium.launch({headless: true, ...((process.env.SHEET_REVIEW_BROWSER || process.env.RESEARCH_CHROMIUM) ? {executablePath: process.env.SHEET_REVIEW_BROWSER || process.env.RESEARCH_CHROMIUM} : {}),
       args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--renderer-process-limit=1']});
     const page = await browser.newPage({viewport: {width: 1440, height: 1000}}); page.setDefaultTimeout(15000);
     page.on('pageerror', error => report.failures.push(error.message));
@@ -68,8 +82,20 @@ let browser, failSave = false, failContent = false;
       }
       const endpoint = url.pathname.startsWith(api) ? url.pathname.slice(api.length) : '';
       if (endpoint === '/research-strategies/sources') return route.fulfill({json: {items: [], has_more: false}});
+      if (/^\/research-strategies\/[^/]+\/revisions$/.test(endpoint)) return route.fulfill({json: {items: [], current_revision: 1, truncated: false}});
+      if (endpoint === '/chart-references/options') return route.fulfill({json: {items: [chartReference], groups: ['合成分组'], total: 1, next_offset: null}});
+      if (endpoint === '/chart-references/render') {
+        const body = request.postDataJSON(); assert.equal(body.reference.id, chartReference.id); assert.equal(body.reference.revision, 2);
+        return route.fulfill({json: {reference: chartReference, title: chartReference.title, status: 'updated', notice: '已有新修订',
+          as_of: body.current ? '2030-01-02' : chartReference.as_of, current: body.current,
+          definition: chartDefinition, payload: chartPayload, overlays: []}});
+      }
       // Card monitoring (cited conditions' current state) is read-only; this fixture cites nothing it evaluates.
-      if (/^\/research-strategies\/[^/]+\/monitor$/.test(endpoint) && method === 'GET') return route.fulfill({json: {conditions: [], indicators: [], counts: {conditions: 0, triggered: 0, missing: 0, indicators: 0}, notice: ''}});
+      if (/^\/research-strategies\/[^/]+\/monitor$/.test(endpoint) && method === 'GET') {
+        const id = endpoint.split('/')[2], item = records.get(id);
+        return route.fulfill({json: {conditions: [], indicators: [], charts: (item?.card?.citations || []).filter(row => row.kind === 'chart').map(row => ({reference: row})),
+          counts: {conditions: 0, triggered: 0, missing: 0, indicators: 0}, notice: ''}});
+      }
       if (endpoint === '/research-references') {
         const limit = Number(url.searchParams.get('limit') || 30), offset = Number(url.searchParams.get('offset') || 0);
         const all = Array.from({length: 137}, (_, index) => ({kind: 'judgment', id: String(index + 17), revision: 2,
@@ -218,6 +244,39 @@ let browser, failSave = false, failContent = false;
     await page.locator('[data-strategy-select="research:' + a.id + '"]').click(); await edit.waitFor();
     assert.match(await page.locator('#research-card-filename').innerText(), /已解析文本片段/);
     report.cases.push('existing parsed PDF fragments are labelled, explicitly confirmed and retained through draft switching');
+    await page.locator('[data-strategy-chart-field="thesis"]').click();
+    const picker = page.getByRole('dialog', {name: '插入图表', exact: true}); await picker.waitFor();
+    await picker.locator('[data-chart-picker-group]').selectOption('合成分组');
+    await picker.locator('[data-chart-picker-favorites]').check();
+    await picker.locator('[data-chart-picker-search]').fill('合成');
+    await page.waitForTimeout(250);
+    await picker.getByRole('button', {name: /合成周期图/}).click(); await picker.waitFor({state: 'hidden'});
+    assert.equal(await edit.locator('[data-citation-list="thesis"] [data-kind="chart"]').count(), 1);
+    await page.locator('#research-card-save').click(); await edit.waitFor({state: 'hidden'});
+    const chartCard = page.locator('.strategy-library-charts [data-chart-reference="fixture-chart"]');
+    await chartCard.locator('svg').waitFor();
+    await chartCard.locator('[data-chart-reference-position]').filter({hasText: '周期第 14 天'}).waitFor();
+    assert.match(await chartCard.innerText(), /同期排名 1\/4/);
+    await chartCard.locator('[data-chart-reference-mode]').selectOption('current');
+    await chartCard.locator('[data-chart-reference-status]').filter({hasText: '当前数据 · 截止 2030-01-02'}).waitFor();
+    await page.locator('.strategy-monitor-charts svg').waitFor();
+    for (const selector of ['.strategy-library-charts .chart-reference-card', '.strategy-monitor-charts .chart-reference-card'])
+      assert(await page.locator(selector).evaluate(node => node.querySelector('svg').getBoundingClientRect().right <= node.getBoundingClientRect().right + 1), 'Chart stays inside its card');
+    await page.screenshot({path: path.join(out, 'chart-reference-thumbnails-1440.png'), fullPage: true});
+    await page.setViewportSize({width: 390, height: 844});
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Chart thumbnails do not overflow a narrow strategy page');
+    await page.evaluate(() => {
+      window.fixtureBeforeThemeSvg = document.querySelector('.strategy-library-charts svg');
+      document.documentElement.classList.add('dark');
+    });
+    await page.waitForFunction(() => document.querySelector('.strategy-library-charts svg') !== window.fixtureBeforeThemeSvg);
+    for (const selector of ['.strategy-library-charts .chart-reference-card', '.strategy-monitor-charts .chart-reference-card'])
+      assert(await page.locator(selector).evaluate(node => node.querySelector('svg').getBoundingClientRect().right <= node.getBoundingClientRect().right + 1), 'Theme redraw keeps the chart inside its card');
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Theme redraw stays responsive on a narrow strategy page');
+    await page.evaluate(() => document.documentElement.classList.remove('dark'));
+    await page.setViewportSize({width: 1440, height: 1000});
+    assert(report.requests.some(row => row.path.endsWith('/chart-references/options') && new URLSearchParams(row.search).get('favorites') === 'true'));
+    report.cases.push('shared chart picker with group/search/favorites, saved thumbnail, cycle position, current data switch, strategy monitor thumbnail and responsive theme redraw');
     assert.deepEqual(report.failures, []); report.passed = true;
   } catch (error) { report.error = error.stack; process.exitCode = 1; }
   finally {

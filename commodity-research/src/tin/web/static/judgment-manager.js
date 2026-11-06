@@ -11,6 +11,7 @@
   let itemConfirmation = null;
   let uncertainSubmission = null;
   let historyEntries = [], historical = null, historyEpoch = 0, historyPending = false;
+  let chartReferences = [];
   const reviewEdits = new Map();
   const rememberedChoices = new Set();
   let reviewControls = [], searchSessions = [], selectedSection = '', reviewView = 'all';
@@ -183,13 +184,54 @@
   function text(id, value) { byId(id).textContent = display.text(value || ''); }
   function showVersion(row) {
     displayed = row;
+    chartReferences = JSON.parse(JSON.stringify(row?.chart_references || []));
+    renderChartEditor();
     text('current-md', row?.markdown || '尚无研究逻辑。可在“导入与分析”添加原文。');
     text('original-source', row?.source_text || '尚无原始输入');
     text('current-state', row ? `${display.reference(row)} · ${row.status}` : '尚无研究逻辑');
     syncManagement();
   }
+  function renderChartEditor() {
+    const editor = byId('chart-editor'), selected = byId('chart-selected'), target = byId('chart-target');
+    if (!editor || !selected || !target) return;
+    editor.hidden = !displayed || !window.ChartReferences;
+    selected.replaceChildren(); target.replaceChildren();
+    for (const item of displayed?.chart_targets || []) {
+      const option = document.createElement('option'); option.value = JSON.stringify(item.target); option.textContent = item.title; target.append(option);
+    }
+    chartReferences.forEach((reference, index) => {
+      const row = document.createElement('p'), title = document.createElement('span'), remove = document.createElement('button');
+      const label = (displayed?.chart_targets || []).find(item => JSON.stringify(item.target) === JSON.stringify(reference.target || {kind: 'judgment'}))?.title || '整条研判';
+      title.textContent = `${reference.title || '所选图表'} · ${label} `; remove.type = 'button'; remove.textContent = '移除';
+      remove.disabled = busy || managed?.can_write === false;
+      remove.addEventListener('click', () => { chartReferences.splice(index, 1); renderChartEditor(); }); row.append(title, remove); selected.append(row);
+    });
+    const charts = byId('current-charts');
+    if (charts && window.ChartReferences) window.ChartReferences.mount(charts, {references: chartReferences, rules: displayed?.chart_rules || [], asOf: displayed?.written_at});
+  }
+  byId('chart-insert')?.addEventListener('click', async () => {
+    if (busy || !displayed || !managed?.can_write || !window.ChartReferences) return;
+    const target = JSON.parse(byId('chart-target').value || '{"kind":"judgment"}');
+    try {
+      const reference = await window.ChartReferences.pick({asOf: displayed.written_at});
+      if (!reference) return;
+      if (chartReferences.length >= 32) return inform('图表引用最多32项。', true);
+      if (!chartReferences.some(item => item.id === reference.id && JSON.stringify(item.target || {kind: 'judgment'}) === JSON.stringify(target))) chartReferences.push({...reference, target});
+      renderChartEditor();
+    } catch (error) { inform(error.message, true); }
+  });
+  byId('chart-save')?.addEventListener('click', async () => {
+    if (busy || !displayed || !managed?.can_write) return;
+    setBusy(true);
+    try {
+      const result = await api('/library-references', {judgment_id: displayed.id, base_version: managed.latest?.version || displayed.version, references: chartReferences.map(({id, revision, target}) => ({kind: 'chart', id, revision, target: target || {kind: 'judgment'}}))});
+      navigateToJudgment(result.id);
+    } catch (error) { inform(error.message, true); }
+    finally { setBusy(false); }
+  });
   function syncManagement() {
     const writing = managed?.can_write === true;
+    for (const name of ['chart-insert', 'chart-save', 'chart-target']) if (byId(name)) byId(name).disabled = busy || !writing || !displayed;
     if (byId('current-delete')) byId('current-delete').disabled = busy || !writing || !displayed || !Number.isSafeInteger(displayed.delete_revision);
     for (const name of ['history-download', 'history-reuse', 'history-delete']) if (byId(name))
       byId(name).disabled = busy || historyPending || !historical || (name !== 'history-download' && !writing)
@@ -1028,6 +1070,7 @@
       if (entry.record_id && String(result.id) !== String(entry.record_id) || result.version !== entry.version)
         throw new Error('历史研判已变化，请重新选择');
       historical = result; text('history-md', result.markdown);
+      if (byId('history-charts') && window.ChartReferences) window.ChartReferences.mount(byId('history-charts'), {references: result.chart_references || [], rules: result.chart_rules || [], asOf: result.written_at});
       text('history-diff', sameVariety ? result.diff?.markdown || '与当前研判内容一致。' : '不同品种的研判不作版本差异比较。');
       text('history-state', `${entry.title || display.reference(result)} · ${result.status || '草稿'}`); inform('');
     } catch (error) { if (epoch === historyEpoch && error.name !== 'AbortError') { text('history-state', '读取未完成'); inform(error.message, true); } }

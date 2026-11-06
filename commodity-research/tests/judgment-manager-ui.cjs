@@ -22,12 +22,13 @@ class Element {
   close(){this.open=false;}
   click(){}
 }
-function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=false,savedId=false,reviewMode=false,reviewFailure=false,catalogDeferred=false,emptyExcerpt=false,ruleEntries=null,readyMode=false,reviewConflict=false,reviewDeferred=false,jobState='succeeded',jobStartDeferred=false,jobStatusDeferred=false,jobResultDeferred=false,jobNetworkFailure=false,baselineDeferred=false,visualMode=false,caliberMode='',lifecycleMode=false,deleteFailure=false,confirmDelete=true,bindingWarning=false,numberReview=false,analysisReused=false,analysisComplete=undefined,previewNotice='',boundIndicators=[],latestJob=null,latestDeferred=false,catalogFailure=false,reviewSections=null,catalogEntries=null,reviewFrequencyRequired=null}={}) {
+function setup({chartMode=false,viewer=false,failure=false,stale=false,empty=false,panelMode=false,savedId=false,reviewMode=false,reviewFailure=false,catalogDeferred=false,emptyExcerpt=false,ruleEntries=null,readyMode=false,reviewConflict=false,reviewDeferred=false,jobState='succeeded',jobStartDeferred=false,jobStatusDeferred=false,jobResultDeferred=false,jobNetworkFailure=false,baselineDeferred=false,visualMode=false,caliberMode='',lifecycleMode=false,deleteFailure=false,confirmDelete=true,bindingWarning=false,numberReview=false,analysisReused=false,analysisComplete=undefined,previewNotice='',boundIndicators=[],latestJob=null,latestDeferred=false,catalogFailure=false,reviewSections=null,catalogEntries=null,reviewFrequencyRequired=null}={}) {
   const ids=['judgment-manager',...['restore-result','original-source','reuse-original','input','status','preview','generate','apply','file','skeleton','structured','variety','reuse','model','current-md','current-state','version-label','version','version-range','file-name','download','version-number','load-version','history-md','history-diff','preview-md','generated-diff','coverage','bindings','unresolved','field-diff'].map(x=>'logic-'+x)];
   const nodes=Object.fromEntries(ids.map(id=>[id,new Element(id)]));
   for(const name of ['current-delete','history-download','history-reuse','history-delete','history-state','history-more'])nodes['logic-'+name]=new Element('logic-'+name);
   for(const name of ['import','review','review-nav','review-items','review-count','review-reuse','review-note','review-edit','review-save-note','review-ready','review-source','review-attention','review-all','review-empty'])nodes['logic-'+name]=new Element('logic-'+name);
   if(panelMode||lifecycleMode) for(const name of ['panel-switch','panel-open','panel-name','panel-save','panel-range','panel-more','new-panel-title'])nodes['logic-'+name]=new Element();
+  if(chartMode)for(const name of ['chart-editor','chart-selected','chart-target','chart-insert','chart-save','current-charts','history-charts'])nodes['logic-'+name]=new Element('logic-'+name);
   nodes['judgment-manager'].dataset.prefill='false';
   nodes['logic-restore-result'].hidden=true;
   if(panelMode)nodes['judgment-manager'].dataset.judgmentId='42';
@@ -54,6 +55,7 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
   function preview(){return {analysis_complete:analysisComplete,analysis_reused:analysisReused,notice:previewNotice,draft_id:review.draft_id,base_version:2,markdown:'# Proposed',diff:{markdown:'-old\n+new',fields:[{label:'Rule',before:null,after:'<img onerror=bad>'}]},bindings:boundIndicators,unresolved:[],candidate_count:1,catalog_total:5,review_available:true,review:JSON.parse(JSON.stringify(review))};}
   const deleted=new Set(),downloads=[],confirmations=[];
   const window={RESEARCH_CONTEXT:{workbench:'synthetic'},RESEARCH_PREFIX:'/research/workbenches/synthetic',crypto:webcrypto,confirm(message){confirmations.push(message);return confirmDelete;}};
+  const chartMounts=[];if(chartMode)window.ChartReferences={pick:async options=>({kind:'chart',id:'shared-chart',revision:3,title:'Actual chart',as_of:options.asOf}),mount:(container,options)=>chartMounts.push({container,options})};
   class DownloadURL extends URL {static createObjectURL(blob){downloads.push(blob);return 'blob:synthetic';}static revokeObjectURL(){}}
   const context={window,parent:window,location:{origin:'http://unit.test',href:'http://unit.test/research/workbenches/synthetic/sn/judgment?date=2024-03-01&judgment_id=42',reload(){reloads++;},assign(url){navigations.push(url);}},
     document:{getElementById:id=>nodes[id],createElement:()=>new Element(),createElementNS:()=>new Element(),querySelectorAll:()=>[]},
@@ -115,15 +117,16 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
       else if(url.endsWith('/review/reuse')){const enabled=JSON.parse(options.body).enabled,item=review.sections[0].items[0];review.reuse_enabled=enabled;item.binding=enabled?catalog[1]:null;item.remembered=enabled;item.status=enabled?'pending':readyMode?'ready':'pending';item.origin=enabled?'remembered':'model';review.pending_count=review.sections.flatMap(section=>section.items).filter(row=>row.status==='pending').length;if(Object.hasOwn(review,'needs_attention_count'))review.needs_attention_count=review.pending_count;review.revision=++revision;result=preview();}
       else if(url.endsWith('/review/confirm-ready')){for(const item of review.sections.flatMap(section=>section.items))if(item.can_confirm)item.status='confirmed';review.pending_count=1;review.confirmed_count=2;review.revision=++revision;result=preview();}
       else if(url.includes('/review?'))result=JSON.parse(JSON.stringify(review));
+      else if(chartMode&&url.endsWith('/library-references')&&options.method==='POST')result={id:44,version:3,status:'草稿'};
       else if(lifecycleMode&&options.method==='DELETE'){
         if(deleteFailure)return{ok:false,status:409,json:async()=>({detail:'已有报告引用，请先处理引用。'})};
         const identifier=Number(url.split('/').pop());deleted.add(identifier);result={deleted:true,id:identifier,version:identifier===42?1:2,revision:2};
       }
-      else if(lifecycleMode&&url.includes('/versions/')){const historical=url.includes('/versions/2');result={id:historical?43:42,version:historical?2:1,status:'草稿',variety:'SN',delete_revision:historical?0:1,markdown:historical?'# Historical complete MD':'# Current',source_text:'Complete original',diff:{markdown:'-Current\n+Historical'}};}
+      else if(lifecycleMode&&url.includes('/versions/')){const historical=url.includes('/versions/2');result={id:historical?43:42,version:historical?2:1,status:'草稿',variety:'SN',delete_revision:historical?0:1,markdown:historical?'# Historical complete MD':'# Current',source_text:'Complete original',...(chartMode?{written_at:'2024-02-01',chart_references:[{kind:'chart',id:'historical-chart',revision:1,as_of:'2024-02-01'}],chart_rules:[{id:'historic',series_id:'historic-series'}]}:{}),diff:{markdown:'-Current\n+Historical'}};}
       else if(url.includes('/panels')&&options.method==='PATCH')result={id:'named-panel',judgment_id:42,version:1,title:JSON.parse(options.body).title,revision:2,named:true};
       else if(url.endsWith('/panels')){const rows=[{id:'named-panel',judgment_id:42,version:1,variety:'SN',status:'生效',title:'<img onerror=unsafe>',revision:1,named:true},{id:null,judgment_id:43,version:2,variety:'SN',status:'草稿',title:'Other independent research',revision:null,named:false}].filter(row=>!deleted.has(row.judgment_id));result={items:rows,total:rows.length,offset:0,has_more:false};}
       else if(url.endsWith('/manage')&&empty) result={variety:'SN',current:null,latest:null,versions:[],version_total:0,can_write:!viewer};
-      else if(url.endsWith('/manage')||url.includes('/manage?judgment_id=')) result={variety:'SN',current:{id:42,version:1,status:'生效',author:'r',delete_revision:1,markdown:'# Current',source_text:'# Original input'},latest:{version:stale&&generations?3:2},versions:[{version:2,status:'草稿'},{version:1,status:'生效'}],version_total:2,can_write:!viewer};
+      else if(url.endsWith('/manage')||url.includes('/manage?judgment_id=')) result={variety:'SN',current:{id:42,version:1,status:'生效',author:'r',delete_revision:1,markdown:'# Current',source_text:'# Original input',...(chartMode?{written_at:'2024-03-01',chart_references:[],chart_rules:[{id:'risk',series_id:'real-series',operator:'>',value:2}],chart_targets:[{target:{kind:'judgment'},title:'整条研判的图表依据'},{target:{kind:'threshold',id:'risk'},title:'阈值：Risk'},{target:{kind:'evidence',side:'bull',index:0},title:'多方依据：Evidence'}]}:{})},latest:{version:stale&&generations?3:2},versions:[{version:2,status:'草稿'},{version:1,status:'生效'}],version_total:2,can_write:!viewer};
       else if(url.includes('/manage?variety='))result={variety:'XY',current:null,latest:null,versions:[],version_total:0,can_write:!viewer};
       else if(url.endsWith('/models')) result={models:[{id:'configured',name:'Configured chat'}]};
       else if(url.endsWith('/structured/preview'))result={kind:'structured',draft_id:'typed-bound-nonce',base_version:0,markdown:'# Typed research',diff:{markdown:'',fields:[]},bindings:[],unresolved:[],candidate_count:0,catalog_total:0,notice:'Typed preview'};
@@ -132,7 +135,7 @@ function setup({viewer=false,failure=false,stale=false,empty=false,panelMode=fal
       return {ok:true,json:async()=>result};
     }};
   vm.runInNewContext(source,context);
-  return {nodes,requests,context,navigations,downloads,confirmations,catalogReplies,reviewReplies,jobStartReplies,jobStatusReplies,jobResultReplies,baselineReplies,latestReplies,firstJob,jobStates,jobSources,jobsCreated:()=>jobKeys.size,reloads:()=>reloads};
+  return {nodes,requests,context,navigations,downloads,confirmations,chartMounts,catalogReplies,reviewReplies,jobStartReplies,jobStatusReplies,jobResultReplies,baselineReplies,latestReplies,firstJob,jobStates,jobSources,jobsCreated:()=>jobKeys.size,reloads:()=>reloads};
 }
 const isGeneration=request=>request.url.endsWith('/jobs')&&request.method==='POST';
 async function until(condition){for(let attempt=0;attempt<50&&!condition();attempt++)await new Promise(resolve=>setTimeout(resolve,0));assert.ok(condition(),'Expected asynchronous request was reached');}

@@ -473,3 +473,71 @@ test('走势变换明确标明指数或变化值，不把rebase数值误标为�
     handle.destroy();
   }
 });
+
+test('规则固定值和区间按真实ID叠加，曲线同名与派生操作数不会建立关联', () => {
+  const container = fixture(), payload = {curves: [
+    {series_id: 'kb-right', label: '相同名称', axis: 'right', points: [{date: '2030-01-01', value: 10}, {date: '2030-01-02', value: 20}]},
+    {series_id: 'kb-other', label: '相同名称', points: [{date: '2030-01-01', value: 1}]},
+    {derived: {op: 'sub', a: 'kb-only-operand', b: 'kb-other'}, label: '派生', points: [{date: '2030-01-01', value: 1}]}
+  ]}, overlays = [
+    {series_id: 'kb-right', rule_id: 'range', kind: 'fixed', value: 8, name: '<阈值下界>'},
+    {series_id: 'kb-right', rule_id: 'range', kind: 'fixed', value: 24, name: '<阈值上界>'},
+    {series_id: 'kb-only-operand', rule_id: 'operand', kind: 'fixed', value: 10000},
+    {series_id: '相同名称', rule_id: 'name', kind: 'fixed', value: 9999}
+  ];
+  const original = structuredClone({payload, overlays}), handle = K.render(container, payload, {overlays});
+  assert.equal(attr(container, 'data-rule-overlay').length, 2);
+  assert.ok(attr(container, 'data-rule-series').every(node => node.attrs['data-rule-series'] === 'kb-right'));
+  assert.equal(attr(container, 'data-rule-boundary').length, 2);
+  assert.match(attr(container, 'data-rule-label')[0].textContent, /<阈值下界>/);
+  const rightTicks = attr(container, 'data-axis-tick', 'right').map(node => Number(node.textContent));
+  assert.ok(Math.max(...rightTicks) >= 24 && Math.min(...rightTicks) <= 8);
+  assert.deepEqual({payload, overlays}, original); handle.destroy();
+});
+
+test('SMA动态阈值使用服务器真实日期映射周期位置，缺失值断开且周期显隐一同生效', () => {
+  const container = fixture(), payload = {template: {kind: 'repeat', start: '01-01', period: 'year'}, freq_days: 7,
+    segments: [{label: '任意标签', start: '2030-01-01', end: '2030-12-31', current: true,
+      points: [0, 7, 14, 21].map((x, i) => ({x, date: `2030-01-${String(x + 1).padStart(2, '0')}`, value: 10 + i, raw: 10 + i}))}],
+    overlays: [{series_id: 'kb-exact', rule_id: 'sma', kind: 'sma', window: 3, name: '动态阈值', points: [
+      {date: '2029-12-25', value: 8}, {date: '2030-01-01', value: 9}, {date: '2030-01-08', value: 10},
+      {date: '2030-01-15', value: null}, {date: '2030-01-22', value: 12}
+    ]}]};
+  const handle = K.render(container, payload, {definition: {curves: [{series_id: 'kb-exact'}]}});
+  const runs = attr(container, 'data-rule-boundary');
+  assert.equal(runs.length, 2);
+  assert.deepEqual(pathXs(runs[0]), [72, Number((72 + 816 * 7 / 364).toFixed(2))]);
+  assert.deepEqual(pathXs(runs[1]), [Number((72 + 816 * 21 / 364).toFixed(2))]);
+  attr(container, 'data-chart-hover')[0].events.pointermove({clientX: 72, clientY: 100});
+  assert.match(attr(container, 'data-rule-tooltip')[0].textContent, /动态阈值 MA3：9/);
+  attr(container, 'data-legend', '0')[0].events.click();
+  assert.equal(attr(container, 'data-rule-overlay').length, 0);
+  handle.destroy();
+});
+
+test('规则阈值按各周期原值起点变换，月度动态阈值与真实观测同位置', () => {
+  const container = fixture(), payload = {template: {kind: 'repeat', start: '09-01', period: 'quarter', transform: 'rebase'}, freq_days: 30,
+    segments: [{label: '研究期', start: '2030-09-01', end: '2030-11-30', current: true,
+      points: [{x: 29, date: '2030-09-30', value: 100, raw: 20}, {x: 60, date: '2030-10-31', value: 150, raw: 30}]}]},
+    overlays = [{series_id: 'kb-raw', rule_id: 'fixed', kind: 'fixed', value: 10},
+      {series_id: 'kb-raw', rule_id: 'sma', kind: 'sma', window: 2, points: [{date: '2030-09-30', value: 18}, {date: '2030-10-31', value: 24}]}];
+  const original = structuredClone(payload), handle = K.render(container, payload, {definition: {curves: [{series_id: 'kb-raw'}]}, overlays});
+  assert.equal(attr(container, 'data-rule-overlay').length, 2);
+  assert.match(attr(container, 'data-rule-label')[0].textContent, /50/);
+  assert.deepEqual(pathXs(attr(container, 'data-rule-boundary').find(node => node.name === 'path')), pathXs(attr(container, 'data-curve-run')[0]));
+  assert.deepEqual(payload, original); handle.destroy();
+});
+
+test('变化量证伪边界按真实日期显示为动态线，不标成均线', () => {
+  const container = fixture(), payload = {curves: [{series_id: 'kb-change', label: '变化规则指标',
+    points: [{date: '2030-01-01', value: 10}, {date: '2030-01-02', value: 12}, {date: '2030-01-03', value: 15}]}]},
+    overlays = [{series_id: 'kb-change', rule_id: 'change', kind: 'dynamic', name: '前次观测加变化阈值',
+      points: [{date: '2030-01-01', value: null}, {date: '2030-01-02', value: 13}, {date: '2030-01-03', value: 15}]}];
+  const handle = K.render(container, payload, {overlays});
+  assert.equal(attr(container, 'data-rule-overlay', 'dynamic').length, 1);
+  assert.equal(attr(container, 'data-rule-boundary').length, 1);
+  assert.doesNotMatch(attr(container, 'data-rule-overlay')[0].textContent, /MA/);
+  attr(container, 'data-chart-hover')[0].events.pointermove({clientX: 480, clientY: 100});
+  assert.match(attr(container, 'data-rule-tooltip')[0].textContent, /前次观测加变化阈值：13/);
+  handle.destroy();
+});

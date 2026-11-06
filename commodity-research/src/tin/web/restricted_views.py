@@ -7,6 +7,7 @@ The source grant is refreshed for every bounded fetch and no result is cached.
 from dataclasses import replace
 from copy import deepcopy
 from datetime import date, datetime, timezone
+import json
 import math
 import re
 from types import SimpleNamespace
@@ -471,7 +472,31 @@ def shared_artifacts(session, scope, module, *, with_truncation=False):
     rows = list(session.scalars(select(WorkbenchArtifact).where(
         WorkbenchArtifact.module == stored_module, WorkbenchArtifact.actor == owner)
         .order_by(WorkbenchArtifact.updated_at.desc()).limit(51)))
-    items = [{'title': row.title, 'text': row.body, 'status': row.status,
+    def visible_text(text):
+        if module != 'strategies' or not scope.restricted:
+            return text
+        try:
+            value = json.loads(text)
+        except (ValueError, TypeError, RecursionError):
+            return text
+        if not isinstance(value, dict):
+            return text
+        def redact(item):
+            # Follow explicit JSON structure only, including legacy snapshots.
+            if isinstance(item, dict):
+                if item.get('kind') == 'chart':
+                    return None
+                return {key: redact(child) for key, child in item.items()
+                    if key != 'chart_references' and not (isinstance(child, dict) and child.get('kind') == 'chart')}
+            if isinstance(item, list):
+                return [redact(child) for child in item
+                    if not isinstance(child, dict) or child.get('kind') != 'chart']
+            return item
+        try:
+            return json.dumps(redact(value), ensure_ascii=False)
+        except RecursionError:
+            return '图表引用暂不对受限视角开放'
+    items = [{'title': row.title, 'text': visible_text(row.body), 'status': row.status,
               'date': row.updated_at.date().isoformat()} for row in rows[:50]]
     return (items, len(rows) > 50) if with_truncation else items
 

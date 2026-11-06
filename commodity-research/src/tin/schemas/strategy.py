@@ -3,7 +3,7 @@ from datetime import datetime
 import re
 from typing import Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 
 class _Model(BaseModel):
@@ -80,7 +80,15 @@ class StrategyPlan(_Model):
     max_quote_age_hours: float = Field(default=72, gt=0, le=168)
     max_leg_skew_minutes: float = Field(default=60, ge=0, le=1440)
     source_context: dict = Field(default_factory=dict)
+    chart_references: list[dict] = Field(default_factory=list, max_length=32)
     llm_call_id: int | None = None
+
+    @model_serializer(mode='wrap')
+    def omit_empty_chart_references(self, handler):
+        value = handler(self)
+        if not value.get('chart_references'):
+            value.pop('chart_references', None)
+        return value
 
     @model_validator(mode="after")
     def coherent(self):

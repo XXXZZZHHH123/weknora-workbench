@@ -271,7 +271,38 @@
   const api = {movingAverage, shape, streakText, boundaryText};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (typeof document === 'undefined') return;
-  function boot() { document.querySelectorAll('[data-judgment-chart]').forEach(initialize); }
+  function targetKey(target = {kind: 'judgment'}) {
+    if (target.kind === 'evidence') return `evidence:${target.side}:${target.index}`;
+    return target.id ? `${target.kind}:${target.id}` : 'judgment';
+  }
+  async function bootLibrary() {
+    const root = document.querySelector('[data-judgment-library]');
+    if (!root || !window.ChartReferences) return;
+    const status = root.querySelector('[data-library-status]');
+    try {
+      const response = await researchFetch((window.RESEARCH_PREFIX || '') + '/api/sn/judgment/library-references?judgment_id=' + encodeURIComponent(root.dataset.judgmentLibrary));
+      const data = await response.json();
+      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '图表依据暂不可用');
+      document.querySelectorAll('[data-judgment-library-target]').forEach(container => {
+        const references = (data.references || []).filter(reference => targetKey(reference.target) === container.dataset.judgmentLibraryTarget);
+        if (references.length) {
+          const row = container.closest('[data-rule-chart-row]'); if (row) row.hidden = false;
+          window.ChartReferences.mount(container, {references, rules: data.rules || [], asOf: data.as_of});
+        }
+      });
+      document.querySelectorAll('[data-chart-related-rule]').forEach(container => {
+        const charts = data.related?.[container.dataset.chartRelatedRule] || [];
+        if (!charts.length) return;
+        const title = document.createElement('span'); title.textContent = '相关图表：'; container.append(title);
+        for (const chart of charts) {
+          const link = document.createElement('a'); link.textContent = chart.title;
+          link.href = (window.RESEARCH_PREFIX || '') + '/sn/charts/' + encodeURIComponent(chart.id); link.style.marginRight = '0.6em'; container.append(link);
+        }
+      });
+      if (!(data.references || []).length) status.textContent = '在“管理研究逻辑”中插入图表，可作为整条研判或某条规则、证据的依据。';
+    } catch (error) { if (status) status.textContent = error.message; }
+  }
+  function boot() { document.querySelectorAll('[data-judgment-chart]').forEach(initialize); bootLibrary(); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, {once: true});
   else boot();
 })();

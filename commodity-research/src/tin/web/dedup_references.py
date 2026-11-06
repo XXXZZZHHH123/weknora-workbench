@@ -3,6 +3,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import json
 from typing import Literal
+from types import SimpleNamespace
 from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import APIRouter, HTTPException
@@ -13,7 +14,7 @@ from tin.integration.identity import research_url
 from tin.integration.page_facts import SERIES
 from tin.integration.workbench_scope import artifact_session
 from tin.models import SourceMapping
-from tin.models.workbench import WorkbenchArtifact
+from tin.models.workbench import WorkbenchArtifact, WorkbenchArtifactRevision
 from tin.web import charts, favorites, ppt, restricted_views
 from tin.web.chart_data import catalog_fields, definition_series_ids
 from tin.web.workbench_artifacts import record_revision
@@ -90,6 +91,28 @@ def _load(session, scope, kind, identifier):
 
 
 def _related_charts(session, kind, value):
+    if kind in {'judgment', 'strategy'}:
+        # Personal research refers to a fixed chart revision, even if the
+        # library's current definition has since replaced every curve.
+        result, seen = [], set()
+        for pin in value.get('chart_references', []) + value.get('citations', []):
+            if not isinstance(pin, dict) or pin.get('kind') != 'chart':
+                continue
+            key = pin.get('id'), pin.get('revision')
+            if not isinstance(key[0], str) or type(key[1]) is not int or key in seen:
+                continue
+            seen.add(key)
+            try:
+                row = charts.load_artifact(session, key[0], deleted=True)
+            except HTTPException as exc:
+                if exc.status_code == 404:
+                    continue
+                raise
+            snapshot = session.get(WorkbenchArtifactRevision, key)
+            if snapshot is not None and snapshot.status != 'deleted':
+                result.append((SimpleNamespace(id=row.id, title=snapshot.title),
+                    definition_series_ids(charts.decode_definition(snapshot))))
+        return result
     ids = ([item['id'] for item in value['items'] if item['kind'] == 'chart'] if kind in {'favorites', 'core'} else
            [binding['chart_id'] for binding in value['bindings'].values()
             if isinstance(binding, dict) and binding.get('kind') == 'chart'] if kind == 'ppt' else [])
@@ -111,6 +134,7 @@ def reference_notices(kind: ReferenceKind, id: str = ''):
     with artifact_session(scope) as session:
         _, value, identifiers, revision = _load(session, scope, kind, id)
         related = _related_charts(session, kind, value)
+    identifiers = list(dict.fromkeys(identifiers + [sid for _, ids in related for sid in ids]))
     replacements = _replacements(scope, list(dict.fromkeys(identifiers + [sid for _, ids in related for sid in ids])))
     fields = catalog_fields(scope, list(dict.fromkeys([sid for sid in identifiers if sid in replacements]
                             + list(replacements.values())))) if replacements else {}

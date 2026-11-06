@@ -15,7 +15,7 @@ def fence_reference(session, scope, reference, seen=None):
     if not isinstance(reference, dict):
         raise HTTPException(422, '研究引用格式无效')
     kind, identifier, revision = (reference.get(key) for key in ('kind', 'id', 'revision'))
-    if (not isinstance(kind, str) or kind not in {'judgment', 'strategy', 'judgment_condition'}
+    if (not isinstance(kind, str) or kind not in {'judgment', 'strategy', 'judgment_condition', 'chart'}
             or type(revision) is not int or revision < 1):
         raise HTTPException(422, '请明确选择引用记录及其版本')
     actual = None
@@ -31,6 +31,10 @@ def fence_reference(session, scope, reference, seen=None):
     if len(seen) >= 32:
         raise HTTPException(413, '研究引用层级或数量过多，请精简引用')
     seen.add(key)
+    if kind == 'chart':
+        from tin.web.chart_references import fence_chart_reference
+        fence_chart_reference(session, scope, reference)
+        return
     actual = actual or resolve_reference(session, scope, kind, identifier, revision,
         include_declared=kind == 'strategy')
     if kind == 'judgment':

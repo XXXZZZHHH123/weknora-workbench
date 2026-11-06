@@ -55,6 +55,14 @@ def create_strategy(session: Session, plan: StrategyPlan, *, actor: str, reason:
         from tin.web.reference_writes import fence_reference
         fence_reference(session, scope, {'kind': 'judgment', 'id': str(research['id']),
             'revision': research.get('version')})
+    if plan.chart_references:
+        from fastapi import HTTPException
+        from tin.config import SHANGHAI
+        from tin.web.chart_references import freeze_chart_references
+        if scope is None:
+            raise HTTPException(409, '请在已授权研究台中选择共享图表')
+        plan = plan.model_copy(update={'chart_references': freeze_chart_references(
+            session, scope, plan.chart_references, plan.as_of.astimezone(SHANGHAI).date())})
     row = Strategy(title=plan.title, variety=plan.variety, kind=plan.kind, mode=plan.mode,
                    status="draft", plan=plan.model_dump(mode="json"), author=actor,
                    researcher_id=researcher_id(session),

@@ -4,6 +4,26 @@ const K = require('../src/tin/web/static/chart-kit.js');
 const point = (x, value = x) => ({x, value, date: `2030-01-${String(x + 1).padStart(2, '0')}`});
 const day = date => Date.parse(date + 'T00:00:00Z') / 86400000;
 
+test('规则叠加只识别真实绑定，固定水平线去重且变换使用每段原始起点', () => {
+  const series = [
+    {key: 0, series_id: 'kb-bound', axis: 'left', points: [{date: '2030-01-01', x: 0, value: 0, raw: 10}]},
+    {key: 1, series_id: 'kb-bound', axis: 'left', points: [{date: '2029-01-01', x: 0, value: 0, raw: 20}]},
+    {key: 2, derived: {a: 'kb-bound', b: 'kb-other', op: 'sub'}, axis: 'left', points: []},
+    {key: 3, series_id: 'kb-other', label: 'kb-bound', axis: 'right', points: []}
+  ], rules = [{kind: 'fixed', rule_id: 'r', series_id: 'kb-bound', value: 30}];
+  const original = structuredClone({series, rules});
+  const raw = K.ruleOverlays(series, rules);
+  assert.equal(raw.length, 1); assert.deepEqual(raw[0].keys, [0, 1]);
+  assert.deepEqual(K.ruleOverlays(series, rules, 'change').map(item => [item.value, item.keys]), [[20, [0]], [10, [1]]]);
+  assert.deepEqual(K.ruleOverlays(series, rules, 'rebase').map(item => item.value), [300, 150]);
+  series[0].points[0].raw = 0;
+  assert.equal(K.ruleOverlays(series, rules, 'rebase').length, 1);
+  series[0].points[0].raw = 10;
+  assert.deepEqual({series, rules}, original);
+  assert.deepEqual(K.ruleOverlays(series, [{kind: 'fixed', series_id: 'kb-bound', value: '30'}]), []);
+  assert.deepEqual(K.ruleOverlays(series, null), []);
+});
+
 test('导出字号以1倍图位像素计，小图不低于11/13px，大图按宽度增加且有上限', () => {
   const small = K.exportStyle(160), base = K.exportStyle(640), wide = K.exportStyle(960), maximum = K.exportStyle(1280);
   assert.deepEqual(small, base);
