@@ -45,9 +45,25 @@
     if (candidate?.kind === 'series') return {kind: 'series', series_id: candidate.series_id, rows: candidate.rows};
     return null;
   }
+  // Batch confirmation only takes a chart candidate that clearly leads; similarity
+  // is recall evidence, so a weak or tied first place stays for manual review.
+  // Series candidates are offered only after their table values were verified.
+  const BATCH_MIN_SCORE = 0.4, BATCH_MIN_MARGIN = 0.02;
+  function confidentCandidate(list) {
+    const [first, second] = list || [];
+    if (!first) return null;
+    if (first.kind === 'series') return first;
+    if (first.kind !== 'chart' || !(first.score >= BATCH_MIN_SCORE)) return null;
+    if (second?.kind === 'chart' && first.score - second.score < BATCH_MIN_MARGIN) return null;
+    return first;
+  }
+  const batchSlots = (slide, bindings, candidates) => slide.slots.filter(slot => slot.replaceable && !bindings[slot.slot_id] && candidates[slot.slot_id]?.length);
   function firstCandidates(slide, bindings, candidates) {
-    return slide.slots.filter(slot => slot.replaceable && !bindings[slot.slot_id] && candidates[slot.slot_id]?.length)
-      .map(slot => ({slot_id: slot.slot_id, binding: candidateBinding(candidates[slot.slot_id][0])})).filter(change => change.binding);
+    return batchSlots(slide, bindings, candidates)
+      .map(slot => ({slot_id: slot.slot_id, binding: candidateBinding(confidentCandidate(candidates[slot.slot_id]))})).filter(change => change.binding);
+  }
+  function unclearCandidates(slide, bindings, candidates) {
+    return batchSlots(slide, bindings, candidates).filter(slot => !confidentCandidate(candidates[slot.slot_id])).map(slot => slot.slot_id);
   }
   async function mapLimit(items, limit, worker) {
     if (!Number.isInteger(limit) || limit < 1) throw new Error('并发数无效');
@@ -112,7 +128,7 @@
   function today() {
     const date = new Date(); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   }
-  const helpers = {emuToPx, slotSize, slideLayout, slotRect, allSlots, slotState, counts, summary, candidateBinding, firstCandidates, mapLimit, pageURL, apiURL, api, uploadFile, responseError, notice, esc, reason, types, today};
+  const helpers = {emuToPx, slotSize, slideLayout, slotRect, allSlots, slotState, counts, summary, candidateBinding, confidentCandidate, firstCandidates, unclearCandidates, mapLimit, pageURL, apiURL, api, uploadFile, responseError, notice, esc, reason, types, today};
   if (typeof module !== 'undefined' && module.exports) module.exports = helpers;
   root.PptUI = Object.freeze(helpers);
   if (!root.document) return;
@@ -249,8 +265,10 @@
         section.querySelector('[data-ppt-edit]').addEventListener('click', () => {
           if (!editable()) return;
           const changes = firstCandidates(slide, bindings, record.candidates || {});
+          const unclear = unclearCandidates(slide, bindings, record.candidates || {});
           changes.forEach(item => change(slide.slots.find(slot => slot.slot_id === item.slot_id), item.binding));
-          notice(status, changes.length ? `已按首位候选选择本页 ${changes.length} 个图位，请保存绑定。` : '本页没有尚未绑定且有候选的可替换图位。');
+          const skipped = unclear.length ? `${unclear.length} 个图位候选不明确，未自动选择，请逐个核对。` : '';
+          notice(status, changes.length ? `已按首位候选选择本页 ${changes.length} 个图位，请保存绑定。${skipped}` : (skipped || '本页没有尚未绑定且有候选的可替换图位。'));
         });
         $('ppt-slides').append(section);
         const size = () => {

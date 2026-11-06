@@ -23,14 +23,23 @@ test('版面缩放保持幻灯片比例，宽高约束同时生效且不放大',
 test('状态统计与明确批量确认：只选择尚未绑定且可替换图位的第一候选', () => {
   const slide = {slots: [slot('unbound'), slot('bound'), slot('keep'), slot('native', {replaceable: false}), slot('table', {kind: 'table'}), slot('none')]};
   const bindings = {bound: {kind: 'chart', chart_id: 'saved'}, keep: {kind: 'keep'}};
-  const candidates = {unbound: [{kind: 'chart', chart_id: 'first'}, {kind: 'chart', chart_id: 'second'}],
-    bound: [{kind: 'chart', chart_id: 'other'}], keep: [{kind: 'chart', chart_id: 'other'}], native: [{kind: 'chart', chart_id: 'other'}],
+  const candidates = {unbound: [{kind: 'chart', chart_id: 'first', score: 0.6}, {kind: 'chart', chart_id: 'second', score: 0.55}],
+    bound: [{kind: 'chart', chart_id: 'other', score: 0.9}], keep: [{kind: 'chart', chart_id: 'other', score: 0.9}], native: [{kind: 'chart', chart_id: 'other', score: 0.9}],
     table: [{kind: 'series', series_id: 'series-a', rows: 3}]};
   const original = structuredClone(bindings);
   assert.deepEqual(P.counts({presentation: {slides: [slide]}, bindings}), {bound: 1, kept: 2, pending: 3});
   assert.deepEqual(P.firstCandidates(slide, bindings, candidates), [{slot_id: 'unbound', binding: {kind: 'chart', chart_id: 'first'}},
     {slot_id: 'table', binding: {kind: 'series', series_id: 'series-a', rows: 3}}]);
+  assert.deepEqual(P.unclearCandidates(slide, bindings, candidates), []);
   assert.deepEqual(bindings, original, '生成候选选择不修改现有绑定');
+});
+test('批量确认不选择分数过低或与第二名接近的图表候选', () => {
+  const slide = {slots: [slot('tied'), slot('weak'), slot('clear')]};
+  const candidates = {tied: [{kind: 'chart', chart_id: 'a', score: 0.242}, {kind: 'chart', chart_id: 'b', score: 0.241}],
+    weak: [{kind: 'chart', chart_id: 'c', score: 0.35}], clear: [{kind: 'chart', chart_id: 'd', score: 0.6}, {kind: 'chart', chart_id: 'e', score: 0.5}]};
+  assert.deepEqual(P.firstCandidates(slide, {}, candidates), [{slot_id: 'clear', binding: {kind: 'chart', chart_id: 'd'}}]);
+  assert.deepEqual(P.unclearCandidates(slide, {}, candidates), ['tied', 'weak']);
+  assert.equal(P.confidentCandidate([{kind: 'chart', chart_id: 'x', score: 0.45}, {kind: 'chart', chart_id: 'y', score: 0.44}]), null);
 });
 test('并发池上限为4；单项失败不阻断其他任务且按输入顺序返回', async () => {
   let active = 0, maximum = 0;
