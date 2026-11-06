@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}原表图表导入 · 商品研究{% endblock %}
+{% block main %}
+{% include "_chart_assets.html" %}
+<div class="charts-page" data-charts-page="import">
+  <header class="charts-header"><div><a class="charts-muted" href="{{ research_url('/sn/charts') }}">图表库</a><h1>从原表导入图表</h1><p class="charts-muted">按工作表核对周期、曲线和缺失原因，确认后保存为共享图表。</p></div></header>
+  {% if not chart_page.enabled %}<p class="charts-notice error" role="alert">{{ chart_page.reason }}</p>{% else %}
+  {% if not chart_page.can_write %}<p class="charts-notice" id="chart-write-reason">{{ chart_page.write_reason }}</p>{% endif %}
+  <div id="chart-import-status" role="status" hidden></div><p id="chart-import-progress" class="charts-muted"></p>
+  <div id="chart-import-sheets"></div>
+  <div class="charts-toolbar"><button type="button" id="chart-import-more" class="charts-button" hidden>加载更多预览</button><button type="button" id="chart-import-apply" class="charts-button primary" disabled>确认导入所选工作表</button></div>
+  <p id="chart-import-hint" class="charts-muted">请先加载全部预览，核对后按工作表勾选。</p>
+  <div id="chart-import-result" role="status" hidden></div>
+  {% endif %}
+</div>
+<script type="application/json" id="chart-page-config">{{ chart_page | tojson }}</script>
+<script src="{{ research_static_prefix() }}/static/chart-import.js?v={{ static_version() }}"></script>
+{% endblock %}

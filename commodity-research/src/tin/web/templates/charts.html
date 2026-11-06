@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}图表库 · 商品研究{% endblock %}
+{% block main %}
+{% include "_chart_assets.html" %}
+<div class="charts-page" data-charts-page="library">
+  <header class="charts-header"><div><p class="charts-muted">商品研究 / 共享图表</p><h1>图表库</h1><p class="charts-muted">保存图表定义，随当前来源数据更新。</p></div>
+    {% if chart_page.enabled %}<a class="charts-button" href="{{ research_url('/sn/charts/import') }}">从原表导入</a>{% endif %}
+  </header>
+  {% if not chart_page.enabled %}<p class="charts-notice error" role="alert">{{ chart_page.reason }}</p>{% else %}
+  <div class="charts-layout">
+    <aside class="charts-groups" id="chart-groups" aria-label="图表分组"><button type="button" class="charts-button" aria-pressed="true" data-group="">全部分组</button></aside>
+    <section aria-label="图表列表">
+      <form id="chart-search-form" class="charts-toolbar" role="search"><label class="charts-field">搜索图表<input type="search" id="chart-search" maxlength="200" placeholder="输入图表标题"></label><span id="chart-count" class="charts-muted" aria-live="polite"></span></form>
+      <div id="charts-status" role="status" hidden></div>
+      <div id="chart-cards" class="charts-grid"></div>
+      <button type="button" id="charts-more" class="charts-button" hidden>加载更多</button>
+    </section>
+  </div>
+  {% endif %}
+</div>
+<script type="application/json" id="chart-page-config">{{ chart_page | tojson }}</script>
+<script src="{{ research_static_prefix() }}/static/charts.js?v={{ static_version() }}"></script>
+{% endblock %}

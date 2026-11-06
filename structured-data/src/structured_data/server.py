@@ -485,6 +485,22 @@ def create_app(data_dir: str | Path | None = None):
             return _ResearchFactsJSONResponse(document)
         return await run_in_threadpool(read_current)
 
+    @app.post('/api/research/native-charts')
+    async def research_native_charts(request: Request):
+        from .research_native_charts import read_current
+        from .service_auth import verify_research_projection
+        sources = getattr(request.state, 'research_sources', None)
+        document = await run_in_threadpool(read_current, registry, await request.json(), sources)
+        try:
+            await verify_research_projection(request, current_identity.get())
+        except HTTPException as exc:
+            if exc.status_code in {401, 403, 404, 409}:
+                raise HTTPException(409, '研究台来源或权限在读取期间变化，请重新打开研究台') from None
+            raise
+        if getattr(request.state, 'research_sources', None) != sources:
+            raise HTTPException(409, '研究台来源或权限在读取期间变化，未返回旧范围数据')
+        return document
+
     @app.post('/api/research/export')
     async def research_export(request: Request):
         body = await request.json()
@@ -592,7 +608,7 @@ def create_app(data_dir: str | Path | None = None):
             finally:
                 current_identity.reset(marker)
         identity = None
-        signed = path in {'/api/tools/read', '/api/research/export', '/api/research/facts'} or path.startswith('/api/research/source/')
+        signed = path in {'/api/tools/read', '/api/research/export', '/api/research/facts', '/api/research/native-charts'} or path.startswith('/api/research/source/')
         if signed:
             from .service_auth import verify_service
             try:

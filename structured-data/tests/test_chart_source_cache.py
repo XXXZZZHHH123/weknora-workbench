@@ -52,6 +52,17 @@ def test_cache_isolated_by_canonical_source_path_even_when_hash_matches(tmp_path
     assert second_result["charts"][0]["chart_id"] == "second"
 
 
+def test_parser_version_change_rebuilds_process_metadata_cache(tmp_path, monkeypatch):
+    source = tmp_path / 'source.xlsx'
+    source.write_bytes(b'synthetic chart source')
+    source_sha = digest(source)
+    with patch.object(cache.native_charts, 'extract', side_effect=[sample_charts('old'), sample_charts('new')]) as extract:
+        assert cache.load_native_chart_snapshot(source, source_sha)['charts'][0]['chart_id'] == 'old'
+        monkeypatch.setattr(cache.native_charts, 'VERSION', 'synthetic-next-chart-index')
+        assert cache.load_native_chart_snapshot(source, source_sha)['charts'][0]['chart_id'] == 'new'
+        assert extract.call_count == 2
+
+
 def test_source_sha_change_uses_new_index_and_owner_mutation_is_not_cached(tmp_path):
     source = tmp_path / "source.xlsx"
     source.write_bytes(b"version one")

@@ -12,7 +12,7 @@
     <h1 class="text-2xl font-black tracking-tight break-all">{{ d.name }}</h1>
     <p class="text-xs text-[var(--text-muted)] mt-1 tabular">
       <span class="cursor-pointer hover:underline text-[var(--primary)] font-semibold"
-            onclick="copyText('{{ d.series_id }}')" title="点击复制">{{ d.series_id }}</span>
+            data-copy-series="{{ d.series_id }}" title="点击复制">{{ d.series_id }}</span>
       {% if d.vendor_code %}· 供应商编码 {{ d.vendor_code }}{% endif %}
       · {{ d.frequency }}频 · {{ d.unit }}
       · {{ '自动采集' if d.fetch_mode == 'auto' else '人工录入' }}
@@ -57,6 +57,7 @@
     </div>
     {% endif %}
 
+    <p id="indicator-chart-usage" class="mt-3 pt-3 border-t border-[var(--line)] text-[11px] text-[var(--text-muted)]" aria-live="polite">正在读取图表引用数…</p>
     {% if usage.crosscheck %}
     <div class="mt-3 pt-3 border-t border-[var(--line)]">
       <div class="text-[10px] font-semibold text-[var(--text-muted)] mb-1">参与跨来源校验</div>
@@ -121,6 +122,8 @@
   </div>
 </section>
 
+{% include "_indicator_cycle.html" %}
+
 {% if d.revisions %}
 <section class="mt-4 rounded-lg border border-[var(--amber)]/40 bg-[var(--amber-soft)] p-4">
   <h2 class="text-sm font-bold text-[var(--amber)]">{{ d.revisions | length }} 处修订 —— 数据商回溯改过数</h2>
@@ -164,6 +167,7 @@
 <script>
   (function () {
     const d = window.IND;
+    document.querySelector('[data-copy-series]')?.addEventListener('click', event => copyText(event.currentTarget.dataset.copySeries));
     if (!d || !d.history || !d.history.length) return;
     const box = document.getElementById("ind-chart");
     if (box && d.history.length > 1) {
@@ -178,7 +182,7 @@
       const pct = prev && prev.value ? ((p.value - prev.value) / Math.abs(prev.value)) * 100 : null;
       const cls = pct == null || pct === 0 ? "text-[var(--text-muted)]"
         : pct > 0 ? "text-[var(--up)]" : "text-[var(--down)]";
-      return `<tr class="border-t border-[var(--line)]"><td class="py-1">${p.as_of}</td>
+      return `<tr class="border-t border-[var(--line)]"><td class="py-1">${dgEsc(p.as_of)}</td>
         <td class="text-right font-semibold">${dgFmt(p.value)}</td>
         <td class="text-right ${cls}">${pct == null ? "—" : (pct > 0 ? "+" : "") + pct.toFixed(2) + "%"}</td></tr>`;
     }).join("");

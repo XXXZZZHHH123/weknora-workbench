@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}图表详情 · 商品研究{% endblock %}
+{% block main %}
+{% include "_chart_assets.html" %}
+<div class="charts-page" data-charts-page="detail">
+  <header class="charts-header"><div><a class="charts-muted" href="{{ research_url('/sn/charts') }}">图表库</a><h1 id="chart-title">图表详情</h1><p id="chart-meta" class="charts-muted"></p></div></header>
+  {% if not chart_page.enabled %}<p class="charts-notice error" role="alert">{{ chart_page.reason }}</p>{% else %}
+  <div id="chart-detail-status" role="status" hidden></div>
+  <div id="chart-conflict" class="charts-notice warning" role="alert" hidden><span>图表已有新版本，请重新加载后修改。</span> <button type="button" id="chart-reload" class="charts-button">重新加载最新版本</button></div>
+  <section class="charts-panel" aria-label="图表"><div id="chart-plot">正在读取图表…</div><p id="chart-notices" class="charts-footnote" role="status" hidden></p><div id="chart-exports"></div><p id="chart-note" class="charts-muted"></p></section>
+  <section class="charts-panel" id="chart-statistics" hidden></section>
+  <section class="charts-panel"><h2>编辑图表定义</h2>
+    {% if not chart_page.can_write %}<p class="charts-notice" id="chart-write-reason">{{ chart_page.write_reason }}</p>{% endif %}
+    <form id="chart-editor">
+      <fieldset id="chart-editor-fields" disabled>
+        <div class="charts-fields"><label>标题<input name="title" maxlength="120" required></label><label>分组<input name="group" maxlength="80"></label></div>
+        <label class="charts-field">备注<textarea name="note" maxlength="600" rows="3"></textarea></label>
+        <div class="charts-fields" style="margin-top:12px">
+          <label>时间模式<select name="mode"><option value="recent">最近若干观测</option><option value="since">从指定日期至今</option><option value="range">日期区间</option><option value="cycle">周期对比</option></select></label>
+          <label data-time-field="recent">最近观测数<input name="points" type="number" min="1" max="2000" value="120"></label>
+          <label data-time-field="since range">起始日期<input name="start" type="date"></label><label data-time-field="range">结束日期<input name="end" type="date"></label>
+        </div>
+        <div id="chart-cycle-fields" data-time-field="cycle" hidden>
+          <p class="charts-muted">周期模式一期支持一条指标曲线。自定义起点创建年度重复周期。</p>
+          <div class="charts-fields"><label>周期模板<select name="template" id="chart-template"></select></label><label id="chart-custom-start-field" hidden>自定义起点（MM-DD）<input name="cycle_start" placeholder="MM-DD" maxlength="5"></label>
+            <label>展示周期数<input name="cycles" type="number" min="1" step="1" value="8"></label><label>区间带往期数<input name="band_cycles" type="number" min="1" step="1" value="5"></label>
+            <label>数值变换<select name="transform"><option value="raw">原值</option><option value="change">相对起点变化</option><option value="rebase">起点=100</option></select></label></div>
+        </div>
+        <h3>曲线样式</h3><div id="chart-curve-fields"></div>
+        <button type="submit" class="charts-button primary">保存修改</button> <button type="button" id="chart-delete" class="charts-button danger">删除图表</button>
+      </fieldset>
+    </form>
+  </section>
+  <section class="charts-panel"><h2>修订历史</h2><div id="chart-revision-status" role="status" hidden></div><div id="chart-revisions" class="charts-history"></div><button type="button" id="chart-revisions-more" class="charts-button" hidden>加载更多修订</button></section>
+  {% endif %}
+</div>
+<script type="application/json" id="chart-page-config">{{ chart_page | tojson }}</script>
+<script src="{{ research_static_prefix() }}/static/charts.js?v={{ static_version() }}"></script>
+{% endblock %}

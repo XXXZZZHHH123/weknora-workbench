@@ -226,6 +226,14 @@ app.include_router(sources_router)
 app.include_router(workbench_router)
 from tin.web.workbench_artifacts import router as workbench_artifacts_router
 app.include_router(workbench_artifacts_router)
+from tin.web.charts import router as charts_router
+app.include_router(charts_router)
+from tin.web.chart_import import router as chart_import_router
+app.include_router(chart_import_router)
+from tin.web.chart_pages import build_router as build_chart_pages_router
+app.include_router(build_chart_pages_router(
+    lambda *args, **kwargs: _page_session(*args, **kwargs),
+    lambda *args, **kwargs: _shell(*args, **kwargs), templates))
 from tin.web.workbench_sources import router as workbench_sources_router
 app.include_router(workbench_sources_router)
 from tin.web.brief_export import router as brief_export_router

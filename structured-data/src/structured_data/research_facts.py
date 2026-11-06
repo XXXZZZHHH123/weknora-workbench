@@ -21,6 +21,11 @@ def _hash(value):
     return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
 
 
+def research_series_id(knowledge_base_id, knowledge_id, field_series_id):
+    """One stable field identity shared by research facts and native charts."""
+    return 'kb-'+_hash([knowledge_base_id,knowledge_id,field_series_id])[:48]
+
+
 def _parameters(body):
     if not isinstance(body,dict) or set(body)-{'sources','offset','limit','version','metadata_only','encoding',
                                               'series_ids','as_of','points_per_series','view_module','same_day_series_ids','catalog_only','include_invalid'}:
@@ -321,7 +326,7 @@ def read_facts(store,manager,body,*,_allow_partial=False,_prepare_only=False):
               'confirmed_sheets':sorted(confirmed_names),'review_fingerprint':_hash(confirmed)}
         mapping={}
         for field in catalog:
-            identifier='kb-'+_hash([identity.knowledge_base_id,source['knowledge_id'],field['series_id']])[:48]
+            identifier=research_series_id(identity.knowledge_base_id,source['knowledge_id'],field['series_id'])
             if bounded is not None and identifier not in bounded['series_ids']:
                 continue
             mapping[field['series_id']]=identifier
