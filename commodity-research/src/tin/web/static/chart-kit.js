@@ -143,6 +143,57 @@
     if (content !== undefined) el.textContent = content;
     return el;
   }
+  // Both chart and table exports use their SVG viewBox at exactly 2x pixels.
+  function imageMethods(getSVG, document) {
+    function toSVG() {
+      const svg = getSVG(), copy = svg.cloneNode(true), originals = [svg, ...svg.querySelectorAll('*')], clones = [copy, ...copy.querySelectorAll('*')];
+      originals.forEach((el, i) => {
+        const computed = root.getComputedStyle(el);
+        for (const name of ['fill', 'stroke', 'color', 'font-family', 'font-size', 'font-weight']) clones[i].style.setProperty(name, computed.getPropertyValue(name));
+        clones[i].removeAttribute('tabindex');
+      });
+      copy.setAttribute('xmlns', NS);
+      return new root.XMLSerializer().serializeToString(copy);
+    }
+    async function toPNGBlob() {
+      const blob = new Blob([toSVG()], {type: 'image/svg+xml;charset=utf-8'}), url = URL.createObjectURL(blob);
+      try {
+        const img = new root.Image();
+        await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = () => reject(new Error('图片转换失败，请下载 SVG')); img.src = url; });
+        const svg = getSVG(), canvas = document.createElement('canvas');
+        canvas.width = Math.round(svg.viewBox.baseVal.width * 2); canvas.height = Math.round(svg.viewBox.baseVal.height * 2);
+        const ctx = canvas.getContext('2d'); if (!ctx) throw new Error('浏览器不支持图片转换，请下载 SVG');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        return await new Promise((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('图片转换失败')), 'image/png'));
+      } finally { URL.revokeObjectURL(url); }
+    }
+    return {toSVG, toPNGBlob};
+  }
+  function renderTable(container, points, options = {}) {
+    const width = options.width ?? 360, height = options.height ?? (points.length + 1) * 24;
+    if (!finite(width) || !finite(height) || width <= 0 || height <= 0) throw new Error('表格尺寸无效');
+    const rows = points.filter(point => finite(point.value) && typeof point.date === 'string');
+    if (!rows.length) throw new Error('截止日前暂无有效观测');
+    const wrapper = container.ownerDocument.createElement('div'); wrapper.className = 'chart-kit chart-kit-table';
+    const svg = svgElement('svg', {viewBox: `0 0 ${width} ${height}`, width, height, role: 'img', 'aria-label': options.title || '日期与数值', xmlns: NS});
+    const add = (name, attrs, text) => { const node = svgElement(name, attrs, text); svg.append(node); return node; };
+    const rowHeight = height / (rows.length + 1), split = width * .56;
+    const dateLength = Math.max(4, ...rows.map(point => String(point.date).length)), valueLength = Math.max(4, ...rows.map(point => String(point.value).length));
+    const fontSize = Math.min(16, rowHeight * .53, width / 15, split * .9 / (dateLength * .62), (width - split) * .9 / (valueLength * .62));
+    add('rect', {width, height, fill: 'var(--surface)'});
+    add('rect', {width, height: rowHeight, fill: 'var(--surface-soft)'});
+    const text = (x, y, value, header = false) => add('text', {x, y, fill: 'var(--text)', 'font-size': fontSize,
+      'font-weight': header ? 600 : 400, 'text-anchor': 'middle', 'dominant-baseline': 'central'}, value);
+    text(split / 2, rowHeight / 2, '日期', true); text((split + width) / 2, rowHeight / 2, '数值', true);
+    rows.forEach((point, index) => {
+      const y = (index + 1.5) * rowHeight;
+      text(split / 2, y, point.date); text((split + width) / 2, y, String(point.value));
+    });
+    for (let index = 1; index <= rows.length; index++) add('line', {x1: 0, x2: width, y1: index * rowHeight, y2: index * rowHeight, stroke: 'var(--line)', 'stroke-width': .6});
+    add('line', {x1: split, x2: split, y1: 0, y2: height, stroke: 'var(--line)', 'stroke-width': .6});
+    wrapper.append(svg); container.replaceChildren(wrapper);
+    return {destroy() { wrapper.remove(); }, ...imageMethods(() => svg, container.ownerDocument)};
+  }
   function render(container, payload, options = {}) {
     const document = container.ownerDocument, cycle = Array.isArray(payload.segments), definition = options.definition || {};
     const base = definition.curves?.[0] || {};
@@ -176,10 +227,14 @@
     function draw() {
       if (destroyed) return;
       tip.hidden = true;
-      const width = options.width || 960;
+      const targetWidth = options.width || 960, targetHeight = options.height || 440;
+      // PPT slots must retain their exact dimensions, including small/short slots.
+      // Lay out in readable design coordinates, then scale the whole scene uniformly.
+      const designScale = options.exactSize ? Math.min(1, targetWidth / 960, targetHeight / (160 + Math.ceil(series.length / 4) * 24)) : 1;
+      const width = targetWidth / designScale;
       const legendRows = options.thumbnail ? 0 : Math.ceil(series.length / 4);
       const margin = {left: 72, right: 72, top: options.title ? 46 : 28, bottom: 54 + legendRows * 24};
-      const height = Math.max(options.height || (options.thumbnail ? 210 : 440), margin.top + margin.bottom + (options.thumbnail ? 80 : 200));
+      const height = options.exactSize ? targetHeight / designScale : Math.max(options.height || (options.thumbnail ? 210 : 440), margin.top + margin.bottom + (options.thumbnail ? 80 : 200));
       const right = width - margin.right, bottom = height - margin.bottom;
       const visible = series.filter(s => !hidden.has(s.key));
       const validBand = cycle ? filterBand(band) : [];
@@ -207,8 +262,10 @@
         const nice = niceAxis(min, max, {thumbnail: !!options.thumbnail, fixedMin: finite(fixed.min), fixedMax: finite(fixed.max)});
         axes[axis] = {...nice, members, scale: y => bottom - (y - nice.min) / (nice.max - nice.min) * (bottom - margin.top)};
       }
-      const next = svgElement('svg', {viewBox: `0 0 ${width} ${height}`, width, height, role: 'img', 'aria-label': options.title || (cycle ? '周期对比图' : '走势图'), xmlns: NS});
-      const add = (name, attrs, content, parent = next) => { const el = svgElement(name, attrs, content); parent.append(el); return el; };
+      const next = svgElement('svg', {viewBox: `0 0 ${width * designScale} ${height * designScale}`, width: width * designScale, height: height * designScale, role: 'img', 'aria-label': options.title || (cycle ? '周期对比图' : '走势图'), xmlns: NS});
+      const scene = options.exactSize ? svgElement('g', {transform: `scale(${designScale})`}) : next;
+      if (scene !== next) next.append(scene);
+      const add = (name, attrs, content, parent = scene) => { const el = svgElement(name, attrs, content); parent.append(el); return el; };
       add('rect', {width, height, fill: 'var(--surface)'});
       if (options.title) add('text', {x: margin.left, y: 24, fill: 'var(--text)', 'font-size': 16, 'font-weight': 600}, options.title);
       const clipId = 'chart-kit-clip-' + (++render.sequence), defs = add('defs');
@@ -302,34 +359,13 @@
       if (svg) svg.replaceWith(next); else wrapper.prepend(next);
       svg = next;
     }
-    function toSVG() {
-      const copy = svg.cloneNode(true), originals = [svg, ...svg.querySelectorAll('*')], clones = [copy, ...copy.querySelectorAll('*')];
-      originals.forEach((el, i) => {
-        const computed = root.getComputedStyle(el);
-        for (const name of ['fill', 'stroke', 'color', 'font-family', 'font-size', 'font-weight']) clones[i].style.setProperty(name, computed.getPropertyValue(name));
-        clones[i].removeAttribute('tabindex');
-      });
-      copy.setAttribute('xmlns', NS);
-      return new root.XMLSerializer().serializeToString(copy);
-    }
-    async function toPNGBlob() {
-      const blob = new Blob([toSVG()], {type: 'image/svg+xml;charset=utf-8'}), url = URL.createObjectURL(blob);
-      try {
-        const img = new root.Image();
-        await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = () => reject(new Error('图片转换失败，请下载 SVG')); img.src = url; });
-        const canvas = document.createElement('canvas'); canvas.width = svg.viewBox.baseVal.width * 2; canvas.height = svg.viewBox.baseVal.height * 2;
-        const ctx = canvas.getContext('2d'); if (!ctx) throw new Error('浏览器不支持图片转换，请下载 SVG');
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        return await new Promise((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('图片转换失败')), 'image/png'));
-      } finally { URL.revokeObjectURL(url); }
-    }
     draw();
     const observer = typeof root.MutationObserver === 'function' ? new root.MutationObserver(draw) : null;
     observer?.observe(document.documentElement, {attributes: true, attributeFilter: ['class', 'style', 'theme-mode']});
-    return {destroy() { destroyed = true; observer?.disconnect(); wrapper.remove(); }, toSVG, toPNGBlob};
+    return {destroy() { destroyed = true; observer?.disconnect(); wrapper.remove(); }, ...imageMethods(() => svg, document)};
   }
   render.sequence = 0;
-  const api = {render, monthMidpoint, monthlyBand, medianInterval, shouldBreak, splitObservations, cycleTicks, dateTicks, niceAxis, filterBand, bandRuns, nearestPoint, tooltipValues};
+  const api = {render, renderTable, monthMidpoint, monthlyBand, medianInterval, shouldBreak, splitObservations, cycleTicks, dateTicks, niceAxis, filterBand, bandRuns, nearestPoint, tooltipValues};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.ChartKit = Object.freeze(api);
 })(typeof window !== 'undefined' ? window : globalThis);

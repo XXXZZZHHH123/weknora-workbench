@@ -59,7 +59,10 @@ async function open(browser, pathname, html, handler, options = {}) {
       if (fs.existsSync(file)) return route.fulfill({body: fs.readFileSync(file), contentType: file.endsWith('.css') ? 'text/css' : 'application/javascript'});
     }
     if (url.pathname.startsWith(api)) {
-      const entry = {method: request.method(), path: url.pathname.slice(api.length), url, body: request.postData() ? request.postDataJSON() : null}; calls.push(entry);
+      const contentType = request.headers()['content-type'] || '';
+      const entry = {method: request.method(), path: url.pathname.slice(api.length), url,
+        body: request.postData() && contentType.includes('application/json') ? request.postDataJSON() : null,
+        rawBody: request.postDataBuffer(), headers: request.headers()}; calls.push(entry);
       const reply = (json, status = 200) => route.fulfill({status, json});
       if (await handler({...entry, route, reply}) !== false) return;
     }
