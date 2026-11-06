@@ -67,7 +67,7 @@ test('事件使用相对周，手工分段使用天，走势保留日期', () =>
   assert.ok(ticks.some(t => t.x === 0 && t.label === '事件日'));
   assert.ok(K.cycleTicks({kind: 'segments'}, 0, 120).every(t => t.label.endsWith('天')));
   const first = Date.parse('2030-01-01T00:00:00Z') / 86400000;
-  assert.equal(K.dateTicks(first, first + 3)[0].label, '2030-01-01');
+  assert.equal(K.dateTicks(first, first + 3)[0].label, '01-01');
 });
 test('断线阈值严格大于中位间隔的2.5倍，不生成插值或零点', () => {
   assert.equal(K.shouldBreak(0, 17.5, 7), false); assert.equal(K.shouldBreak(0, 18, 7), true);
@@ -141,4 +141,63 @@ test('tooltip不列出没有有效点的周期，零值段仍保留', () => {
     {label: '零值', points: [point(0, 0)]}], 0, 1);
   assert.deepEqual(rows.map(row => row.label), ['零值']);
   assert.equal(rows[0].point.value, 0);
+});
+
+test('日期轴按跨度选年、季度、月份、周和日，刻度落在真实日历边界', () => {
+  const years = K.dateTicks(day('2015-03-17'), day('2023-10-20'));
+  assert.ok(years.length >= 3 && years.length <= 7);
+  assert.ok(years.every(t => /^\d{4}$/.test(t.label) && new Date(t.x * 86400000).toISOString().slice(5, 10) === '01-01'));
+  const quarters = K.dateTicks(day('2023-02-14'), day('2024-01-20'));
+  assert.deepEqual(quarters.map(t => t.label), ['2023-04', '2023-07', '2023-10', '2024-01']);
+  assert.ok(quarters.every(t => new Date(t.x * 86400000).getUTCDate() === 1));
+  const months = K.dateTicks(day('2024-01-12'), day('2024-04-20'));
+  assert.deepEqual(months.map(t => t.label), ['2024-02', '2024-03', '2024-04']);
+  const weeks = K.dateTicks(day('2024-02-13'), day('2024-03-06'));
+  assert.deepEqual(weeks.map(t => t.label), ['02-19', '02-26', '03-04']);
+  assert.ok(weeks.every(t => new Date(t.x * 86400000).getUTCDay() === 1));
+  assert.deepEqual(K.dateTicks(day('2024-02-28'), day('2024-03-01')).map(t => t.label), ['02-28', '02-29', '03-01']);
+  assert.deepEqual(K.dateTicks(NaN, 10), []);
+});
+
+test('数值按量级加千分位或万亿，步长决定小数精度且保留零和负值', () => {
+  assert.equal(K.formatNumber(200000), '20万');
+  assert.equal(K.formatNumber(123456789), '1.235亿');
+  assert.equal(K.formatNumber(-200000, 5000), '-20.0万');
+  assert.equal(K.formatNumber(1234.5, .5), '1,234.5');
+  assert.equal(K.formatNumber(.5, .5), '0.5');
+  assert.equal(K.formatNumber(1, .5), '1.0');
+  assert.equal(K.formatNumber(200500, 500), '20.05万');
+  assert.equal(K.formatNumber(200000000, 10000000), '2.0亿');
+  assert.equal(K.formatNumber(-0, 1), '0');
+  assert.equal(K.formatNumber(null), '—');
+  assert.equal(K.formatNumber(.000001, .000001), '0.000001');
+});
+
+test('年度长度的手工分段以第一段起点显示月份，其余手工分段显示第N天', () => {
+  const segments = [{start: '2020-08-01', end: '2021-07-31'}, {start: '2021-09-01', end: '2022-08-31'}];
+  assert.equal(K.annualSegments(segments), true);
+  const ticks = K.cycleTicks({kind: 'segments', segments}, 0, 365, '2021-09-01');
+  assert.deepEqual(ticks.map(t => t.label), ['8月', '9月', '10月', '11月', '12月', '1月', '2月', '3月', '4月', '5月', '6月', '7月']);
+  assert.equal(ticks[1].x, 31);
+  const short = [{start: '2020-08-01', end: '2021-01-31'}, segments[1]];
+  assert.equal(K.annualSegments(short), false);
+  assert.ok(K.cycleTicks({kind: 'segments', segments: short}, 0, 365).every(t => /^第 \d+ 天$/.test(t.label)));
+  for (const length of [300, 400]) assert.equal(K.annualSegments([{start: '2020-01-01', end: new Date((day('2020-01-01') + length - 1) * 86400000).toISOString().slice(0, 10)}]), true);
+});
+
+test('周期默认当前与最近四个历史期，可配置1至40期且不解析图例名称', () => {
+  const parts = Array.from({length: 10}, (_, index) => ({key: index, label: '<任意图例>' + index, start: `${2010 + index}-08-01`, current: index === 8})).reverse();
+  assert.deepEqual([...K.visibleCycleKeys(parts)], [8, 7, 6, 5, 4]);
+  assert.deepEqual([...K.visibleCycleKeys(parts, 1)], [8]);
+  assert.deepEqual([...K.visibleCycleKeys(parts, 3)], [8, 7, 6]);
+  assert.equal(K.visibleCycleKeys(parts, 40).size, 9, '当前周期之后的段不占默认期数');
+  assert.deepEqual([...K.visibleCycleKeys(parts.map(p => ({...p, current: false})), 2)], [9, 8]);
+  assert.deepEqual([...K.visibleCycleKeys(parts, 0)], [8, 7, 6, 5, 4]);
+});
+
+test('周期悬停降序，零值在缺失项之前且当前标识保持', () => {
+  const rows = K.tooltipValues([{label: '缺失', points: [point(10, 9)]}, {label: '零值', points: [point(0, 0)]},
+    {label: '当前', current: true, points: [point(0, 12)]}, {label: '最高', points: [point(0, 99)]}], 0, 1);
+  assert.deepEqual(rows.map(row => row.label), ['最高', '当前', '零值', '缺失']);
+  assert.equal(rows[1].current, true);
 });

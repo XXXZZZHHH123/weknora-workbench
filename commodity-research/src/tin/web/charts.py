@@ -237,6 +237,23 @@ def get_chart(chart_id: str):
         return serialize(row, definition=definition, fields=fields)
 
 
+@router.get('/charts/{chart_id}/reconvert')
+def reconvert_chart(chart_id: str):
+    """Propose a fresh definition without mutating the saved chart or history."""
+    scope = require_scope()
+    with artifact_session(scope) as session:
+        row = load_artifact(session, chart_id)
+        definition = decode_definition(row)
+        revision = row.revision
+    if definition.origin.kind != 'native' or not definition.origin.ref:
+        raise HTTPException(422, '此图表没有可重新转换的原表来源')
+    # Import lazily: the import workflow shares this module's artifact helpers.
+    from tin.web.chart_import import original_native_chart, suggestions_for
+    original = original_native_chart(scope, definition.origin.ref)
+    suggestion = suggestions_for(scope, [original])[0]
+    return {'id': chart_id, 'revision': revision, 'suggestion': suggestion}
+
+
 @router.patch('/charts/{chart_id}')
 def update_chart(chart_id: str, body: ChartUpdate):
     scope = require_scope(write=True)

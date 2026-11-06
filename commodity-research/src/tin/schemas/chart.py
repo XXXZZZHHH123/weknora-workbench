@@ -132,6 +132,7 @@ class CycleTime(ChartModel):
     mode: Literal['cycle']
     template: CycleTemplate
     cycles: int = Field(default=8, ge=1, strict=True)
+    visible_cycles: int | None = Field(default=None, ge=1, le=40, strict=True)
     band_cycles: int = Field(default=5, ge=1, strict=True)
     transform: Literal['raw', 'change', 'rebase'] = 'raw'
     segment_styles: list[SegmentStyle] = Field(default_factory=list, max_length=40)

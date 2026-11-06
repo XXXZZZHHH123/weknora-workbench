@@ -73,7 +73,21 @@
   }
   function tooltipValues(segments, x, tolerance) {
     return segments.filter(part => (part.points || []).some(p => finite(p.x) && finite(p.value)))
-      .map(part => ({label: part.label, current: !!part.current, point: nearestPoint(part.points, x, tolerance)}));
+      .map(part => ({label: part.label, current: !!part.current, point: nearestPoint(part.points, x, tolerance)}))
+      .sort((a, b) => (b.point?.value ?? -Infinity) - (a.point?.value ?? -Infinity));
+  }
+  function annualSegments(segments) {
+    return !!segments?.length && segments.every(part => {
+      const length = dayNumber(part.end) - dayNumber(part.start) + 1;
+      return finite(length) && length >= 300 && length <= 400;
+    });
+  }
+  function visibleCycleKeys(series, count) {
+    const limit = Number.isInteger(count) && count >= 1 && count <= 40 ? count : 5;
+    const current = series.find(part => part.current);
+    const history = series.filter(part => part !== current && (!current || part.start <= current.start))
+      .slice().sort((a, b) => b.start.localeCompare(a.start));
+    return new Set((current ? [current, ...history] : history).slice(0, limit).map(part => part.key));
   }
   function cycleTicks(template, min, max, anchorDate, centerMonths = false) {
     if (!finite(min) || !finite(max)) return [];
@@ -84,8 +98,10 @@
       }
       return ticks;
     }
-    if (template.kind === 'repeat') {
-      const start = template.start || '01-01', anchor = finite(dayNumber(anchorDate)) ? dayNumber(anchorDate) : dayNumber('2000-' + start);
+    if (template.kind === 'repeat' || (template.kind === 'segments' && annualSegments(template.segments))) {
+      const start = template.start || '01-01';
+      const origin = template.kind === 'segments' ? template.segments[0].start : anchorDate;
+      const anchor = finite(dayNumber(origin)) ? dayNumber(origin) : dayNumber('2000-' + start);
       const first = new Date(anchor * DAY), boundary = Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), 1) / DAY - anchor;
       const ticks = [{x: centerMonths ? boundary : 0, label: (first.getUTCMonth() + 1) + '月'}];
       const months = {year: 12, half: 6, quarter: 3, month: 1}[template.period] || 12;
@@ -99,13 +115,56 @@
     }
     const step = Math.max(1, Math.ceil((max - min) / 8));
     const ticks = [];
-    for (let x = Math.ceil(min / step) * step; x <= max; x += step) ticks.push({x, label: x + '天'});
+    for (let x = Math.ceil(min / step) * step; x <= max; x += step) ticks.push({x, label: '第 ' + x + ' 天'});
     return ticks;
   }
   function dateTicks(min, max) {
-    const span = max - min, step = Math.max(1, Math.ceil(span / 6)), ticks = [];
-    for (let x = min; x <= max; x += step) ticks.push({x, label: new Date(Math.round(x) * DAY).toISOString().slice(0, 10)});
+    if (!finite(min) || !finite(max) || max < min) return [];
+    const span = max - min, ticks = [], first = new Date(min * DAY);
+    const year = first.getUTCFullYear(), month = first.getUTCMonth();
+    let x, advance, calendar = false, years = false;
+    if (span >= 730) {
+      const step = Math.max(1, Math.ceil(span / 365.2425 / 6));
+      x = Date.UTC(Math.floor(year / step) * step, 0, 1) / DAY;
+      advance = value => Date.UTC(new Date(value * DAY).getUTCFullYear() + step, 0, 1) / DAY;
+      calendar = true; years = true;
+    } else if (span >= 60) {
+      const step = span >= 180 ? 3 : 1;
+      x = Date.UTC(year, Math.floor(month / step) * step, 1) / DAY;
+      advance = value => { const d = new Date(value * DAY); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + step, 1) / DAY; };
+      calendar = true;
+    } else if (span >= 14) {
+      const step = 7 * Math.max(1, Math.ceil(span / 7 / 8));
+      // 1970-01-05 was a Monday. Align every weekly tick to that weekday.
+      x = Math.floor((min - 4) / step) * step + 4;
+      advance = value => value + step;
+    } else {
+      const step = span > 7 ? 2 : 1;
+      x = Math.floor(min / step) * step; advance = value => value + step;
+    }
+    for (; x <= max; x = advance(x)) {
+      if (x < min) continue;
+      const iso = new Date(x * DAY).toISOString();
+      ticks.push({x, label: years ? iso.slice(0, 4) : calendar ? iso.slice(0, 7) : iso.slice(5, 10)});
+    }
     return ticks;
+  }
+  function precisionForStep(step) {
+    if (!finite(step) || step <= 0) return 3;
+    let precision = Math.max(0, -Math.floor(Math.log10(step) + 1e-10));
+    const limit = Math.min(12, precision + 3);
+    while (precision < limit && Math.abs(step * 10 ** precision - Math.round(step * 10 ** precision)) > 1e-7) precision++;
+    return Math.min(12, precision);
+  }
+  function formatNumber(value, step = null) {
+    if (!finite(value)) return '—';
+    const magnitude = Math.abs(value), divisor = magnitude >= 1e8 ? 1e8 : magnitude >= 1e4 ? 1e4 : 1;
+    const precision = finite(step) && step > 0 ? precisionForStep(step / divisor) : Math.min(12, Math.max(3, magnitude && magnitude < .001 ? -Math.floor(Math.log10(magnitude)) + 1 : 0));
+    const rounded = Number((value / divisor).toFixed(precision));
+    const label = (rounded === 0 ? 0 : rounded).toLocaleString('zh-CN', {
+      minimumFractionDigits: finite(step) && step > 0 ? precision : 0, maximumFractionDigits: precision
+    });
+    return label + (divisor === 1e8 ? '亿' : divisor === 1e4 ? '万' : '');
   }
   function niceAxis(min, max, {thumbnail = false, fixedMin = false, fixedMax = false} = {}) {
     const limit = thumbnail ? 4 : 7, desired = thumbnail ? 3 : 5;
@@ -134,8 +193,21 @@
     });
     return {min: fixedMin ? min : clean(first * step), max: fixedMax ? max : clean(last * step), step, ticks};
   }
-  function format(value) {
-    return finite(value) ? value.toLocaleString('zh-CN', {maximumFractionDigits: 3}) : '—';
+  function alignAxes(left, right) {
+    if (!left.members.length || !right.members.length) return;
+    const specs = [left, right], fixed = specs.find(spec => spec.fixedMin || spec.fixedMax);
+    if (!fixed) {
+      const intervals = Math.max(...specs.map(spec => spec.ticks.length - 1));
+      for (const spec of specs) {
+        spec.max = spec.min + spec.step * intervals;
+        spec.ticks = Array.from({length: intervals + 1}, (_, index) => ({value: Number((spec.min + index * spec.step).toPrecision(15))}));
+      }
+    } else {
+      const other = specs.find(spec => spec !== fixed);
+      const fractions = fixed.ticks.map(tick => (tick.value - fixed.min) / (fixed.max - fixed.min));
+      other.ticks = fractions.map(fraction => ({value: other.min + fraction * (other.max - other.min)}));
+      if (other.ticks.length > 1) other.step = other.ticks[1].value - other.ticks[0].value;
+    }
   }
   // These are 1x slot pixels; the 2x PNG rasterization must not halve the type.
   function exportStyle(width = 960) {
@@ -268,13 +340,27 @@
         dash: dash === 'dash' ? '7 4' : dash === 'dot' ? '2 4' : null,
         opacity: !exporting && cycle && !s.current && !s.style.color ? (isPrevious ? .85 : .5) : 1};
     }
-    const hidden = new Set(), wrapper = document.createElement('div'), tip = document.createElement('div');
+    const defaultKeys = cycle ? visibleCycleKeys(series, definition.time?.visible_cycles) : new Set(series.map(s => s.key));
+    const hidden = new Set(series.filter(s => !defaultKeys.has(s.key)).map(s => s.key));
+    const wrapper = document.createElement('div'), tip = document.createElement('div');
     wrapper.className = 'chart-kit'; tip.className = 'chart-kit-tooltip'; tip.hidden = true;
     tip.setAttribute('role', 'status'); wrapper.append(tip); container.replaceChildren(wrapper);
+    let allYears;
+    if (cycle && !options.thumbnail && !exporting) {
+      allYears = document.createElement('button'); allYears.type = 'button';
+      allYears.textContent = '显示全部年份'; allYears.setAttribute('data-show-all-cycles', '');
+      allYears.addEventListener('click', () => {
+        if (hidden.size) hidden.clear();
+        else series.forEach(s => { if (!defaultKeys.has(s.key)) hidden.add(s.key); });
+        draw();
+      });
+      wrapper.append(allYears);
+    }
     let svg, destroyed = false;
     function draw() {
       if (destroyed) return;
       tip.hidden = true;
+      allYears?.setAttribute('aria-pressed', String(hidden.size === 0));
       const targetWidth = options.width || 960, targetHeight = options.height || 440;
       // Interactive exactSize callers retain their old design scale. PPT exports
       // lay out directly in slot pixels so small slots never shrink their text.
@@ -283,10 +369,11 @@
       const scale = exportTheme?.scale || 1, axisFont = exportTheme?.axisFontSize || 11;
       const legendFont = exportTheme?.legendFontSize || 12, legendRowHeight = exporting ? legendFont * 1.7 : 24;
       const titleLines = exporting ? wrapText(title, width - 16 * scale, value => measure(value, exportTheme.titleFontSize, true)) : [];
+      const legendSeries = exporting ? series.filter(s => !hidden.has(s.key)) : series;
       const legendLayout = [];
       if (exporting && !options.thumbnail) {
         let x = 8 * scale, row = 0;
-        for (const s of series) {
+        for (const s of legendSeries) {
           const label = fitText(s.label + (s.current ? '（当前）' : ''), width - 40 * scale, value => measure(value, legendFont));
           const itemWidth = measure(label, legendFont) + 24 * scale;
           if (x > 8 * scale && x + itemWidth > width - 8 * scale) { row++; x = 8 * scale; }
@@ -304,7 +391,7 @@
       const bottom = height - margin.bottom;
       const visible = series.filter(s => !hidden.has(s.key));
       const validBand = cycle ? filterBand(band) : [];
-      const showBand = cycle && visible.length > 0;
+      const showBand = cycle && validBand.length > 0;
       const allX = series.flatMap(s => s.points.filter(p => finite(p.x)).map(p => p.x));
       if (showBand) allX.push(...validBand.map(p => p.x));
       let minX = allX.length ? Math.min(...allX) : 0, maxX = allX.length ? Math.max(...allX) : 1;
@@ -326,9 +413,15 @@
         min = finite(fixed.min) ? fixed.min : min - pad; max = finite(fixed.max) ? fixed.max : max + pad;
         if (max <= min) max = min + 1;
         const nice = niceAxis(min, max, {thumbnail: !!options.thumbnail || (exporting && bottom - margin.top < axisFont * 8), fixedMin: finite(fixed.min), fixedMax: finite(fixed.max)});
-        axes[axis] = {...nice, members, scale: y => bottom - (y - nice.min) / (nice.max - nice.min) * (bottom - margin.top)};
+        axes[axis] = {...nice, members, fixedMin: finite(fixed.min), fixedMax: finite(fixed.max)};
       }
-      const ticks = cycle ? cycleTicks(payload.template || {}, minX, maxX, monthly ? anchorDate : current?.start, monthly) : dateTicks(minX, maxX);
+      alignAxes(axes.left, axes.right);
+      for (const spec of Object.values(axes)) {
+        spec.scale = y => bottom - (y - spec.min) / (spec.max - spec.min) * (bottom - margin.top);
+        spec.ticks = spec.ticks.map(tick => ({...tick, label: formatNumber(tick.value, spec.step)}));
+      }
+      const tickTemplate = payload.template?.kind === 'segments' ? {...payload.template, segments: payload.template.segments || parts} : payload.template || {};
+      const ticks = cycle ? cycleTicks(tickTemplate, minX, maxX, monthly ? anchorDate : current?.start, monthly) : dateTicks(minX, maxX);
       if (exporting) {
         const halfLabel = Math.max(0, ...ticks.map(tick => measure(tick.label, axisFont))) / 2;
         for (const axis of ['left', 'right']) {
@@ -353,13 +446,14 @@
       for (const axis of ['left', 'right']) {
         const spec = axes[axis];
         if (!series.some(s => s.axis === axis)) continue;
+        const labelColor = axis === 'right' && spec.members.length ? appearance(spec.members[0]).color : exportTheme?.text || 'var(--text-muted)';
         for (const tick of spec.ticks) {
           const y = spec.scale(tick.value);
           if (axis === 'left' || !series.some(s => s.axis === 'left')) add('line', {x1: margin.left, x2: right, y1: y, y2: y, stroke: exportTheme?.grid || 'var(--line)'});
-          add('text', {x: axis === 'left' ? margin.left - 8 * scale : right + 8 * scale, y: y + 4 * scale, fill: exportTheme?.text || 'var(--text-muted)', 'font-size': axisFont, 'text-anchor': axis === 'left' ? 'end' : 'start', 'data-axis-tick': axis}, tick.label);
+          add('text', {x: axis === 'left' ? margin.left - 8 * scale : right + 8 * scale, y: y + 4 * scale, fill: labelColor, 'font-size': axisFont, 'text-anchor': axis === 'left' ? 'end' : 'start', 'data-axis-tick': axis}, tick.label);
         }
         const unit = cycle && (payload.template || {}).transform === 'rebase' ? '起点=100' : cycle && (payload.template || {}).transform === 'change' ? '变化值' + (payload.unit ? `（${payload.unit}）` : '') : [...new Set(spec.members.map(s => s.unit || payload.unit).filter(Boolean))].join(' / ');
-        if (unit) add('text', {x: axis === 'left' ? margin.left : right, y: margin.top - (exporting ? axisFont * .6 : 10), fill: exportTheme?.text || 'var(--text-muted)', 'font-size': axisFont, 'text-anchor': axis === 'left' ? 'start' : 'end'}, unit);
+        if (unit) add('text', {x: axis === 'left' ? margin.left : right, y: margin.top - (exporting ? axisFont * .6 : 10), fill: labelColor, 'font-size': axisFont, 'text-anchor': axis === 'left' ? 'start' : 'end', 'data-axis-unit': axis}, unit);
       }
       const every = options.thumbnail ? Math.max(1, Math.ceil(ticks.length / 4)) : 1;
       let lastLabelRight = -Infinity;
@@ -373,7 +467,7 @@
             if (xScale(labelX) - half < lastLabelRight + 6 * scale) return;
             lastLabelRight = xScale(labelX) + half;
           }
-          add('text', {x: xScale(labelX), y: bottom + (exporting ? axisFont * 1.7 : 20), 'text-anchor': 'middle', fill: exportTheme?.text || 'var(--text-muted)', 'font-size': exporting ? axisFont : options.thumbnail ? 13 : 11}, tick.label);
+          add('text', {x: xScale(labelX), y: bottom + (exporting ? axisFont * 1.7 : 20), 'text-anchor': 'middle', fill: exportTheme?.text || 'var(--text-muted)', 'font-size': exporting ? axisFont : options.thumbnail ? 13 : 11, 'data-date-tick': ''}, tick.label);
         }
       });
       const plot = add('g', {'clip-path': `url(#${clipId})`});
@@ -406,9 +500,45 @@
           }
         }
       }
+      // Values stay in source units; only their text uses 万/亿. Keep annotations
+      // inside the plot so both the page and exported SVG retain the full label.
+      const latest = (cycle ? visible.filter(s => s.current) : visible).map(s => {
+        const point = s.points.filter(p => finite(p.x) && finite(p.value)).reduce((last, p) => {
+          if (!last) return p;
+          const date = dayNumber(p.date), previousDate = dayNumber(last.date);
+          if (finite(date) && finite(previousDate) && date !== previousDate) return date > previousDate ? p : last;
+          return p.x > last.x ? p : last;
+        }, null);
+        if (!point) return null;
+        const y = axes[s.axis].scale(point.value);
+        return y >= margin.top && y <= bottom ? {s, point, y, label: formatNumber(point.value, axes[s.axis].step)} : null;
+      }).filter(Boolean);
+      const annotationSize = axisFont, gap = annotationSize * 1.5;
+      let labels = latest.slice().sort((a, b) => a.y - b.y), cursor = margin.top + annotationSize;
+      for (const item of labels) { item.labelY = Math.max(item.y + annotationSize / 3, cursor); cursor = item.labelY + gap; }
+      if (labels.length && labels.at(-1).labelY > bottom) {
+        const shift = labels.at(-1).labelY - bottom;
+        labels.forEach(item => { item.labelY -= shift; });
+      }
+      if (labels.some(item => item.labelY < margin.top + annotationSize || Math.abs(item.labelY - item.y) > gap * 2)) {
+        const primary = latest.find(item => item.s.axis === 'left') || latest[0];
+        labels = primary ? [{...primary, labelY: Math.min(bottom, Math.max(margin.top + annotationSize, primary.y + annotationSize / 3))}] : [];
+      }
+      for (const item of labels) {
+        const {s, point, label, labelY} = item, color = appearance(s).color;
+        const labelWidth = measure ? measure(label, annotationSize, !!s.current) : [...label].reduce((sum, char) => sum + (char.charCodeAt(0) < 256 ? .62 : 1), 0) * annotationSize;
+        const pointX = xScale(point.x), after = pointX + labelWidth + 8 * scale < right;
+        const labelX = after ? pointX + 6 * scale : Math.max(margin.left + labelWidth, pointX - 6 * scale);
+        add('circle', {cx: pointX, cy: item.y, r: 2.5 * scale, fill: color, 'data-latest-point': s.key});
+        if (Math.abs(labelY - item.y) > gap / 2) add('line', {x1: pointX, y1: item.y, x2: labelX, y2: labelY - annotationSize / 3, stroke: color, 'stroke-width': .7 * scale});
+        add('text', {x: labelX, y: labelY, fill: exporting ? exportTheme.text : color, 'font-size': annotationSize,
+          'font-weight': s.current ? 700 : 500, 'text-anchor': after ? 'start' : 'end',
+          'paint-order': 'stroke', stroke: exportTheme?.background || 'var(--surface)', 'stroke-width': 3 * scale,
+          'data-latest-value': s.key}, label);
+      }
       if (!visible.some(s => s.points.some(p => finite(p.value)))) add('text', {x: width / 2, y: (margin.top + bottom) / 2, 'text-anchor': 'middle', fill: exportTheme?.text || 'var(--text-muted)', 'font-size': exporting ? axisFont : 14}, hidden.size ? '点击图例显示曲线' : '暂无有效观测；缺失值不会补为零');
       if (!options.thumbnail) {
-        series.forEach((s, index) => {
+        legendSeries.forEach((s, index) => {
           const layout = legendLayout[index];
           const x = exporting ? layout.x : margin.left + (index % 4) * ((right - margin.left) / 4);
           const y = exporting ? height - 8 * scale - (legendRows - 1 - layout.row) * legendRowHeight : bottom + 48 + Math.floor(index / 4) * 24;
@@ -433,11 +563,14 @@
           tip.replaceChildren();
           const heading = document.createElement('strong'); heading.textContent = cycle ? `第 ${hoverX} 天` : new Date(hoverX * DAY).toISOString().slice(0, 10); tip.append(heading);
           const tolerance = cycle ? (payload.tolerance_days ?? Math.max(1, Math.floor((payload.freq_days || 1) / 2))) : null;
-          for (const s of visible) {
-            const point = nearestPoint(s.points, hoverX, tolerance ?? Math.max(1, Math.floor((medianInterval(s.points) || 1) / 2)));
+          const rows = (cycle ? series : visible).map(s => ({s,
+            point: nearestPoint(s.points, hoverX, tolerance ?? Math.max(1, Math.floor((medianInterval(s.points) || 1) / 2)))}))
+            .sort((a, b) => (b.point?.value ?? -Infinity) - (a.point?.value ?? -Infinity));
+          for (const {s, point} of rows) {
             const row = document.createElement('div');
+            if (s.current) { row.style.fontWeight = '700'; row.setAttribute('data-tooltip-current', ''); }
             const unit = cycle && payload.template?.transform === 'rebase' ? '（起点=100）' : (payload.unit || s.unit ? ' ' + (payload.unit || s.unit) : '');
-            row.textContent = `${s.label}${s.current ? '（当前）' : ''}：${point ? format(point.value) + unit + ' · ' + point.date : '此位置缺失'}`;
+            row.textContent = `${s.label}${s.current ? '（当前）' : ''}：${point ? formatNumber(point.value, axes[s.axis].step) + unit + ' · ' + point.date : '此位置缺失'}`;
             tip.append(row);
           }
           tip.hidden = false; tip.style.left = Math.min(Math.max(0, event.clientX - rect.left + 12), Math.max(0, rect.width - 280)) + 'px'; tip.style.top = Math.max(0, (event.clientY - rect.top) - 30) + 'px';
@@ -453,7 +586,7 @@
     return {destroy() { destroyed = true; observer?.disconnect(); wrapper.remove(); }, ...imageMethods(() => svg, document)};
   }
   render.sequence = 0;
-  const api = {render, renderTable, exportStyle, monthMidpoint, monthlyBand, medianInterval, shouldBreak, splitObservations, cycleTicks, dateTicks, niceAxis, filterBand, bandRuns, nearestPoint, tooltipValues};
+  const api = {render, renderTable, exportStyle, monthMidpoint, monthlyBand, medianInterval, shouldBreak, splitObservations, cycleTicks, dateTicks, niceAxis, formatNumber, annualSegments, visibleCycleKeys, alignAxes, filterBand, bandRuns, nearestPoint, tooltipValues};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.ChartKit = Object.freeze(api);
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -1,8 +1,10 @@
 from copy import deepcopy
+from datetime import date, timedelta
 
 import pytest
 
 from tin.compute.chart_import import group_suggestions, propose_chart
+from tin.compute.cycles import compute_cycles
 from tests.chart_fixtures import FIELDS, KEY, OTHER, SID, THIRD, native_chart, native_curve, yearly_native
 
 
@@ -148,16 +150,80 @@ def test_open_ended_overlapping_native_ranges_still_form_annual_cycles():
     assert result['definition']['time']['cycles'] == 3
 
 
-def test_dominant_start_month_and_gapped_annual_origins_fall_back_to_segments():
+def test_dominant_start_month_is_preserved_when_annual_origins_skip_years():
     native = native_chart(curves=[native_curve(first_date=start, last_date='2025-12-31', label=str(i))
         for i, start in enumerate(('2019-09-01', '2020-09-01', '2021-08-31'))])
     result = propose_chart(native, FIELDS)
     assert result['definition']['time']['template']['start'] == '09-01'
     native['curves'][2]['first_date'] = '2023-08-31'
     result = propose_chart(native, FIELDS)
-    segments = result['definition']['time']['template']['segments']
-    assert segments[0]['end'] == '2020-08-31' and segments[1]['end'] == '2023-08-30'
-    assert segments[-1]['end'] == '2025-12-31'
+    assert result['definition']['time']['template']['kind'] == 'repeat'
+    assert result['definition']['time']['template']['start'] == '09-01'
+
+
+def test_missing_annual_origins_convert_to_repeat_without_fabricating_empty_years():
+    years = (2009, 2010, 2011, 2016, 2017, 2018, 2019, 2020, 2021, 2022)
+    native = native_chart(curves=[native_curve(label=f'任意段{i}', first_date=f'{year}-08-01',
+                                               last_date=f'{year + 1}-07-31')
+                                  for i, year in enumerate(years)])
+    time = propose_chart(native, FIELDS)['definition']['time']
+    assert time['template']['kind'] == 'repeat'
+    assert time['template']['start'] == '08-01'
+    assert time['cycles'] == len(years)
+    observations = [(date(year, 8, 1), float(i)) for i, year in enumerate(years)]
+    output = compute_cycles(observations, time['template'], '2023-07-31', cycles=time['cycles'])
+    assert [part['start'] for part in output['segments']] == [f'{year}-08-01' for year in years]
+    assert output['omitted_segments'] == ['12/13', '13/14', '14/15', '15/16']
+
+
+@pytest.mark.parametrize('gaps,expected', [
+    ((330, 400), 'repeat'),
+    ((695, 765), 'repeat'),
+    ((329, 365), 'segments'),
+    ((401, 365), 'segments'),
+    ((694, 730), 'segments'),
+    ((766, 730), 'segments'),
+])
+def test_annual_gap_tolerance_accepts_only_whole_year_multiples(gaps, expected):
+    starts = [date(2010, 8, 1)]
+    for gap in gaps:
+        starts.append(starts[-1] + timedelta(days=gap))
+    native = native_chart(curves=[native_curve(label=f'段{i}', first_date=start.isoformat(),
+                                               last_date=(start + timedelta(days=900)).isoformat())
+                                  for i, start in enumerate(starts)])
+    assert propose_chart(native, FIELDS)['definition']['time']['template']['kind'] == expected
+
+
+def test_segments_cap_every_end_by_typical_start_spacing_and_exclude_the_next_reset():
+    starts = [date(2020, 1, 1), date(2020, 10, 27), date(2021, 12, 1)]
+    # Gaps of 300 and 400 have a 350-day median but do not form annual cycles.
+    native = native_chart(curves=[native_curve(label=f'段{i}', first_date=start.isoformat(),
+                                               last_date='2025-12-31') for i, start in enumerate(starts)])
+    template = propose_chart(native, FIELDS)['definition']['time']['template']
+    assert template['kind'] == 'segments'
+    assert [part['end'] for part in template['segments']] == ['2020-10-26', '2021-10-12', '2022-11-16']
+    observations = [(starts[-1] + timedelta(days=offset), value)
+                    for offset, value in ((0, 1), (349, 2), (350, 3), (351, 0), (352, 100))]
+    output = compute_cycles(observations, template, '2023-01-01')
+    assert [point['raw'] for point in output['segments'][-1]['points']] == [1, 2, 3]
+
+
+def test_segment_cap_keeps_earlier_source_end_and_floors_fractional_median_days():
+    starts = [date(2020, 1, 1), date(2020, 4, 10), date(2020, 7, 20)]
+    native = native_chart(curves=[native_curve(label=f'段{i}', first_date=start.isoformat(),
+        last_date=(start + timedelta(days=10 if i == 1 else 500)).isoformat())
+        for i, start in enumerate(starts)])
+    template = propose_chart(native, FIELDS)['definition']['time']['template']
+    assert [part['end'] for part in template['segments']] == ['2020-04-09', '2020-04-20', '2020-10-28']
+
+
+def test_segments_with_typical_spacing_over_400_days_keep_the_original_end_limits():
+    starts = [date(2010, 1, 1), date(2011, 5, 16), date(2013, 1, 5)]
+    native = native_chart(curves=[native_curve(label=f'段{i}', first_date=start.isoformat(),
+                                               last_date='2016-12-31') for i, start in enumerate(starts)])
+    template = propose_chart(native, FIELDS)['definition']['time']['template']
+    assert template['kind'] == 'segments'
+    assert [part['end'] for part in template['segments']] == ['2011-05-15', '2013-01-04', '2016-12-31']
 
 
 def test_sheet_group_summary_and_unknown_chart_type():

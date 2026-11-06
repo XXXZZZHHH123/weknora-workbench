@@ -519,6 +519,107 @@ def test_native_apply_rejects_changed_snapshot_between_pages(chart_client):
     assert client.get('/api/sn/charts').json()['total'] == 0
 
 
+def test_reconvert_reads_current_original_and_only_confirmation_creates_revision(chart_client):
+    client, state = chart_client
+    old = {'mode': 'cycle', 'template': {'kind': 'segments', 'name': '原有分段', 'segments': [
+        {'label': '旧段', 'start': '2020-01-01', 'end': '2020-12-31'}]}}
+    saved = create(client, title='研究员旧标题', time=old, origin={'kind': 'native', 'ref': KEY})
+    path = '/api/sn/charts/' + saved['id']
+    state.native = [yearly_native()]
+    state.requests.clear()
+    preview = client.get(path + '/reconvert')
+    assert preview.status_code == 200, preview.text
+    proposal = preview.json()
+    assert proposal['id'] == saved['id'] and proposal['revision'] == 1
+    fresh = proposal['suggestion']['definition']
+    assert fresh['time']['template']['kind'] == 'repeat'
+    assert fresh['origin'] == {'kind': 'native', 'ref': KEY}
+    assert fresh['title'] == state.native[0]['title']
+    assert any(endpoint.endswith('/native-charts') for endpoint, _ in state.requests)
+    # A preview (including repeated previews) must not rewrite old definitions.
+    assert client.get(path).json()['definition']['time']['template']['kind'] == 'segments'
+    assert len(client.get(path + '/revisions').json()['items']) == 1
+    assert client.get(path + '/reconvert').json()['revision'] == 1
+    changed = client.patch(path, json={'revision': proposal['revision'], **fresh})
+    assert changed.status_code == 200, changed.text
+    assert changed.json()['revision'] == 2
+    history = client.get(path + '/revisions').json()['items']
+    assert [item['revision'] for item in history] == [2, 1]
+    assert history[1]['definition']['title'] == '研究员旧标题'
+    assert history[1]['definition']['time']['template']['kind'] == 'segments'
+    assert client.patch(path, json={'revision': 1, **fresh}).status_code == 409
+
+
+def test_reconvert_permission_scope_and_origin_guards(chart_client):
+    client, state = chart_client
+    manual = create(client)
+    assert client.get('/api/sn/charts/' + manual['id'] + '/reconvert').status_code == 422
+    saved = create(client, origin={'kind': 'native', 'ref': KEY})
+    path = '/api/sn/charts/' + saved['id']
+    viewer = {'x-role': 'viewer', 'x-can-edit': 'false'}
+    preview = client.get(path + '/reconvert', headers=viewer)
+    assert preview.status_code == 200
+    assert client.patch(path, json={'revision': 1, **preview.json()['suggestion']['definition']}, headers=viewer).status_code == 403
+    for headers, status in [({'x-restricted': 'true'}, 403), ({'x-scope-version': '1'}, 409),
+                            ({'x-local': 'true'}, 409), ({'x-workbench': SECOND_WB}, 404)]:
+        state.requests.clear()
+        assert client.get(path + '/reconvert', headers=headers).status_code == status
+        assert state.requests == []
+    assert client.delete(path + '?revision=1').status_code == 200
+    assert client.get(path + '/reconvert').status_code == 404
+
+
+def test_reconvert_missing_or_changed_source_never_uses_saved_snapshot(chart_client):
+    client, state = chart_client
+    imported = client.post('/api/sn/charts/import/native/apply', json={
+        'sheets': [{'knowledge_id': 'fixture-document', 'sheet': '测试表'}]}).json()['created'][0]
+    path = '/api/sn/charts/' + imported['id']
+    assert imported['source_snapshots']
+    state.native = []
+    assert client.get(path + '/reconvert').status_code == 409
+    state.native = [native_chart(curves=[native_curve(status='pending_source')])]
+    unavailable = client.get(path + '/reconvert')
+    assert unavailable.status_code == 200 and unavailable.json()['suggestion']['convertible'] is False
+    state.native_status = 403
+    assert client.get(path + '/reconvert').status_code == 403
+    state.native_status = 200
+    state.native = [native_chart(chart_key='nc-' + f'{index:032x}') for index in range(201)]
+    state.native_version = lambda offset: 'a' * 64 if offset == 0 else 'b' * 64
+    assert client.get(path + '/reconvert').status_code == 409
+    assert client.get(path).json()['revision'] == 1
+    assert len(client.get(path + '/revisions').json()['items']) == 1
+
+
+def test_reconvert_locates_original_beyond_first_page_and_rejects_changed_duplicate(chart_client):
+    client, state = chart_client
+    state.native = [native_chart(chart_key='nc-' + f'{index:032x}') for index in range(201)]
+    ref = state.native[-1]['chart_key']
+    saved = create(client, origin={'kind': 'native', 'ref': ref})
+    path = '/api/sn/charts/' + saved['id'] + '/reconvert'
+    response = client.get(path)
+    assert response.status_code == 200
+    assert response.json()['suggestion']['chart_key'] == ref
+    state.native.append(native_chart(chart_key=ref, title='目录在读取时改变'))
+    assert client.get(path).status_code == 409
+
+
+def test_cycle_visible_cycles_round_trip_and_strict_limits(chart_client):
+    client, _ = chart_client
+    time = {'mode': 'cycle', 'template': {'kind': 'repeat', 'name': '年', 'start': '01-01', 'period': 'year'}}
+    saved = create(client, time={**time, 'visible_cycles': 2})
+    path = '/api/sn/charts/' + saved['id']
+    assert saved['definition']['time']['visible_cycles'] == 2
+    assert client.get(path).json()['definition']['time']['visible_cycles'] == 2
+    changed = client.patch(path, json={'revision': 1, 'time': {**time, 'visible_cycles': 40}})
+    assert changed.status_code == 200 and changed.json()['definition']['time']['visible_cycles'] == 40
+    for invalid in (0, 41, 1.5, True, '3'):
+        assert client.post('/api/sn/charts', json=definition(time={**time, 'visible_cycles': invalid})).status_code == 422
+        assert client.patch(path, json={'revision': 2, 'time': {**time, 'visible_cycles': invalid}}).status_code == 422
+    reset = client.patch(path, json={'revision': 2, 'time': time})
+    assert reset.status_code == 200 and reset.json()['definition']['time']['visible_cycles'] is None
+    assert client.get(path + '/revisions').json()['items'][1]['definition']['time']['visible_cycles'] == 40
+
+
 def test_preview_pagination_and_template_validation_are_bounded(chart_client):
     client, state = chart_client
     state.native.append(native_chart(chart_key='nc-' + '2' * 32))

@@ -43,6 +43,7 @@ const libraryHTML = renderLibrary(), detailHTML = render('chart_detail.html');
 
     let saved = record(), conflict = true, patch, deletedRevision;
     saved.definition.time.segment_styles = [{label: '2027', color: '#AA5500', width: 1.25, dash: 'dot'}];
+    saved.definition.time.visible_cycles = 4;
     saved.warnings = [{code: 'unit_missing', label: '合成指标'}];
     const detail = await open(browser, '/sn/charts/chart-1', detailHTML, async ({path, method, body, url, reply}) => {
       if (path === '/cycle-templates') return reply(templates);
@@ -59,6 +60,8 @@ const libraryHTML = renderLibrary(), detailHTML = render('chart_detail.html');
     }, {documents: {[prefix + '/sn/indicators']: '<p>图表已删除</p>'}});
     const p = detail.page;
     await p.locator('#chart-plot svg').waitFor();
+    assert.equal(await p.locator('[name=visible_cycles]').inputValue(), '4');
+    assert.equal(await p.locator('#chart-reconvert-panel').isVisible(), false);
     const detailStar = p.locator('[data-favorite-kind="chart"]');
     assert.equal(await detailStar.getAttribute('aria-pressed'), 'false');
     await detailStar.press('Space');
@@ -100,13 +103,63 @@ const libraryHTML = renderLibrary(), detailHTML = render('chart_detail.html');
     await p.locator('[name=title]').fill('修订后的图');
     await p.locator('[name=template]').selectOption('__custom'); await p.locator('[name=cycle_start]').fill('08-01');
     await p.locator('[name=cycles]').fill('6'); await p.locator('[name=band_cycles]').fill('4'); await p.locator('[name=transform]').selectOption('change');
+    await p.locator('[name=visible_cycles]').fill('2');
     await p.locator('[data-curve-color]').fill('#abcdef'); await p.locator('#chart-editor button[type=submit]').click();
     await p.locator('#chart-detail-status').filter({hasText: '已保存图表定义'}).waitFor();
     assert.equal(patch.revision, 2); assert.equal(patch.time.template.start, '08-01'); assert.equal(patch.time.cycles, 6); assert.equal(patch.curves[0].style.color, '#abcdef');
     assert.equal(patch.time.transform, 'change'); assert.match(await p.locator('#chart-revisions').innerText(), /v3/);
+    assert.equal(patch.time.visible_cycles, 2);
     assert.deepEqual(patch.time.segment_styles, [{label: '2027', color: '#AA5500', width: 1.25, dash: 'dot'}]);
+    assert.equal(await p.locator('#chart-plot [data-series]').count(), 2);
+    assert.equal(await p.locator('#chart-plot [data-legend]').count(), 4, '隐藏年份仍可从图例打开');
+    assert.equal(await p.locator('#chart-plot [data-latest-value]').count(), 1);
+    const bandPath = await p.locator('#chart-plot [data-band=range]').first().getAttribute('d');
+    await p.locator('#chart-plot [data-show-all-cycles]').click();
+    assert.equal(await p.locator('#chart-plot [data-series]').count(), 4);
+    assert.equal(await p.locator('#chart-plot [data-show-all-cycles]').getAttribute('aria-pressed'), 'true');
+    assert.equal(await p.locator('#chart-plot [data-band=range]').first().getAttribute('d'), bandPath);
+    await p.locator('#chart-plot [data-show-all-cycles]').press('Enter');
+    assert.equal(await p.locator('#chart-plot [data-series]').count(), 2);
     p.once('dialog', dialog => dialog.accept()); await p.locator('#chart-delete').click(); await p.waitForURL(origin + prefix + '/sn/indicators?tab=charts&date=2029-09-15'); assert.equal(deletedRevision, 3);
     await detail.close();
+
+    let nativeSaved = record(), reconvertPatch;
+    nativeSaved.definition.origin = {kind: 'native', ref: 'nc-' + '1'.repeat(32)};
+    const suggestedDefinition = structuredClone(nativeSaved.definition);
+    suggestedDefinition.title = '原表新建议 <安全文本>';
+    suggestedDefinition.time.template.start = '08-01';
+    const reconvert = await open(browser, '/sn/charts/chart-1', detailHTML, ({path, method, body, reply}) => {
+      if (path === '/cycle-templates') return reply(templates);
+      if (path === '/charts/chart-1' && method === 'GET') return reply(nativeSaved);
+      if (path.endsWith('/data')) return reply({...cycle(), revision: nativeSaved.revision});
+      if (path.endsWith('/revisions')) return reply({items: [{revision: nativeSaved.revision, definition: nativeSaved.definition}], next_offset: null});
+      if (path.endsWith('/reconvert')) return reply({id: nativeSaved.id, revision: nativeSaved.revision, suggestion: {
+        chart_key: nativeSaved.definition.origin.ref, title: suggestedDefinition.title, convertible: true, mode: 'cycle',
+        definition: suggestedDefinition, warnings: [], missing_curves: []}});
+      if (path === '/charts/chart-1' && method === 'PATCH') {
+        reconvertPatch = body;
+        nativeSaved = {...nativeSaved, revision: nativeSaved.revision + 1, definition: {...body}};
+        delete nativeSaved.definition.revision; return reply(nativeSaved);
+      }
+      return false;
+    });
+    const r = reconvert.page;
+    await r.locator('#chart-reconvert').click();
+    await r.locator('#chart-reconvert-preview').waitFor({state: 'visible'});
+    assert.equal(reconvertPatch, undefined, '建议展示时不保存');
+    assert.match(await r.locator('#chart-reconvert-summary').innerText(), /08-01/);
+    assert.equal(await r.locator('#chart-reconvert-summary img').count(), 0);
+    await r.locator('#chart-reconvert-cancel').click();
+    assert.equal(reconvertPatch, undefined);
+    assert.equal(await r.locator('#chart-reconvert-preview').isVisible(), false);
+    await r.locator('#chart-reconvert').click();
+    await r.locator('#chart-reconvert-confirm').click();
+    await r.locator('#chart-detail-status').filter({hasText: '已按原表重新转换并保存新修订'}).waitFor();
+    assert.equal(reconvertPatch.revision, 1);
+    assert.equal(reconvertPatch.time.template.start, '08-01');
+    assert.equal(nativeSaved.revision, 2);
+    assert.match(await r.locator('#chart-revisions').innerText(), /v2/);
+    await reconvert.close();
 
     const readonly = await open(browser, '/sn/charts/chart-1', render('chart_detail.html', {can_write: false, write_reason: '当前账号没有研究工作台编辑权限'}), ({path, reply}) => {
       if (path === '/cycle-templates') return reply(templates);
@@ -114,7 +167,8 @@ const libraryHTML = renderLibrary(), detailHTML = render('chart_detail.html');
       if (path.endsWith('/revisions')) return reply({items: [], next_offset: null});
       return reply(record());
     });
-    assert.equal(await readonly.page.locator('[name=title]').isDisabled(), true); assert.match(await readonly.page.locator('#chart-write-reason').innerText(), /没有/); await readonly.close();
+    assert.equal(await readonly.page.locator('[name=title]').isDisabled(), true); assert.match(await readonly.page.locator('#chart-write-reason').innerText(), /没有/);
+    assert.equal(await readonly.page.locator('#chart-reconvert').count(), 0); await readonly.close();
     for (const status of [403, 409]) {
       const blocked = await open(browser, '/sn/indicators?tab=charts', libraryHTML, ({reply}) => reply({detail: status === 403 ? '受限视角暂不开放图表库和周期对比' : '请重新打开研究台更新来源授权'}, status));
       assert.match(await blocked.page.locator('#charts-status').innerText(), /受限视角|重新打开研究台/); assert.equal(await blocked.page.locator('.charts-card').count(), 0); await blocked.close();

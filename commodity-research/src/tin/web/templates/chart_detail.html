@@ -9,6 +9,20 @@
   <div id="chart-conflict" class="charts-notice warning" role="alert" hidden><span>图表已有新版本，请重新加载后修改。</span> <button type="button" id="chart-reload" class="charts-button">重新加载最新版本</button></div>
   <section class="charts-panel" aria-label="图表"><div id="chart-plot">正在读取图表…</div><p id="chart-notices" class="charts-footnote" role="status" hidden></p><div id="chart-exports"></div><p id="chart-note" class="charts-muted"></p></section>
   <section class="charts-panel" id="chart-statistics" hidden></section>
+  {% if chart_page.can_write %}
+  <section class="charts-panel" id="chart-reconvert-panel" hidden>
+    <button type="button" id="chart-reconvert" class="charts-button">按原表重新转换</button>
+    <p class="charts-muted">重新读取当前授权来源中的原表图表，生成转换建议；确认后保存为新修订。</p>
+    <div id="chart-reconvert-status" role="status" hidden></div>
+    <div id="chart-reconvert-preview" hidden>
+      <div id="chart-reconvert-summary"></div>
+      <details><summary>查看建议定义</summary><pre id="chart-reconvert-definition"></pre></details>
+      <p class="charts-muted">确认后将使用建议替换当前定义（含标题、备注与样式）。</p>
+      <button type="button" id="chart-reconvert-confirm" class="charts-button primary">确认并保存新修订</button>
+      <button type="button" id="chart-reconvert-cancel" class="charts-button">取消</button>
+    </div>
+  </section>
+  {% endif %}
   <section class="charts-panel"><h2>编辑图表定义</h2>
     {% if not chart_page.can_write %}<p class="charts-notice" id="chart-write-reason">{{ chart_page.write_reason }}</p>{% endif %}
     <form id="chart-editor">
@@ -24,6 +38,7 @@
           <p class="charts-muted">周期模式一期支持一条指标曲线。自定义起点创建年度重复周期。</p>
           <div class="charts-fields"><label>周期模板<select name="template" id="chart-template"></select></label><label id="chart-custom-start-field" hidden>自定义起点（MM-DD）<input name="cycle_start" placeholder="MM-DD" maxlength="5"></label>
             <label>展示周期数<input name="cycles" type="number" min="1" step="1" value="8"></label><label>区间带往期数<input name="band_cycles" type="number" min="1" step="1" value="5"></label>
+            <label>默认显示期数<input name="visible_cycles" type="number" min="1" max="40" step="1" placeholder="自动（最多5期）"></label>
             <label>数值变换<select name="transform"><option value="raw">原值</option><option value="change">相对起点变化</option><option value="rebase">起点=100</option></select></label></div>
         </div>
         <h3>曲线样式</h3><div id="chart-curve-fields"></div>

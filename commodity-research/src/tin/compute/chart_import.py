@@ -69,15 +69,24 @@ def propose_chart(native, fields, latest_dates=None, *, start_override=None):
     if cyclic:
         gaps = [(date.fromisoformat(right['first_date']) - date.fromisoformat(left['first_date'])).days
                 for left, right in zip(intervals, intervals[1:])]
-        if 330 <= median(gaps) <= 400 and all(300 <= gap <= 430 for gap in gaps):
+        # Missing years do not change an annual pattern. Judge only the real
+        # dates, allowing each gap to span one or more whole calendar years.
+        if all(abs(gap - max(1, round(gap / 365)) * 365) <= 35 for gap in gaps):
             months = Counter(curve['first_date'][5:7] for curve in intervals)
             start = start_override or months.most_common(1)[0][0] + '-01'
             template = {'kind': 'repeat', 'name': '原表周期', 'start': start, 'period': 'year'}
         else:
-            ends = {curve['first_date']: min(date.fromisoformat(curve['last_date']),
-                date.fromisoformat(intervals[index + 1]['first_date']) - timedelta(days=1))
-                if index + 1 < len(intervals) else date.fromisoformat(curve['last_date'])
-                for index, curve in enumerate(intervals)}
+            typical_gap = median(gaps)
+            ends = {}
+            for index, curve in enumerate(intervals):
+                first, end = date.fromisoformat(curve['first_date']), date.fromisoformat(curve['last_date'])
+                if index + 1 < len(intervals):
+                    end = min(end, date.fromisoformat(intervals[index + 1]['first_date']) - timedelta(days=1))
+                if typical_gap <= 400:
+                    # Native ranges may remain open into the next cycle. This
+                    # bound applies to every segment, including the final one.
+                    end = first + timedelta(days=min((end - first).days, int(typical_gap)))
+                ends[curve['first_date']] = end
             template = {'kind': 'segments', 'name': '原表分段', 'segments': [
                 {'label': c['label'], 'start': c['first_date'], 'end': ends[c['first_date']].isoformat()} for c in usable]}
             if start_override is not None:

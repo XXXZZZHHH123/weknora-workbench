@@ -62,9 +62,9 @@ test('导出图例根据文字宽度换行，横轴日期避开重叠，过小�
   const legends = attr(container, 'data-legend').map(node => node.children.find(child => child.name === 'text'));
   assert.ok(new Set(legends.map(node => node.attrs.y)).size > 1);
   assert.ok(legends.every(node => Number(node.attrs.x) >= 24 && Number(node.attrs.x) < 320));
-  const dates = nodes(container).filter(node => node.name === 'text' && /^2030-\d\d-\d\d$/.test(node._text));
-  assert.ok(dates.length >= 2 && dates.length < K.dateTicks(Date.parse('2030-01-01') / 86400000, Date.parse('2030-02-01') / 86400000).length);
-  for (let i = 1; i < dates.length; i++) assert.ok(Number(dates[i].attrs.x) - Number(dates[i - 1].attrs.x) >= 10 * .62 * 11 + 6);
+  const dates = attr(container, 'data-date-tick');
+  assert.ok(dates.length >= 2 && dates.length <= K.dateTicks(Date.parse('2030-01-01') / 86400000, Date.parse('2030-02-01') / 86400000).length);
+  for (let i = 1; i < dates.length; i++) assert.ok(Number(dates[i].attrs.x) - Number(dates[i - 1].attrs.x) >= 5 * .62 * 11 + 6);
   handle.destroy();
   assert.throws(() => K.render(container, payload, {width: 320, height: 60, export: true}), /图位过小/);
 });
@@ -225,7 +225,7 @@ test('空段不画线、不占图例或横轴，也不改变上一条有效段�
   const tip = nodes(container).find(node => node.className === 'chart-kit-tooltip');
   assert.match(tip.textContent, /2029-09-08/); handle.destroy();
 });
-test('renderer实际纵轴遵循刻度数量和精度，双轴分别计算', () => {
+test('renderer实际纵轴遵循刻度数量和精度，双轴网格数一致', () => {
   for (const thumbnail of [false, true]) {
     const container = fixture(), handle = K.render(container, {curves: [
       {label: '整数', axis: 'left', points: [{date: '2030-01-01', value: 20}, {date: '2030-01-02', value: 80}]},
@@ -234,9 +234,129 @@ test('renderer实际纵轴遵循刻度数量和精度，双轴分别计算', () 
       const ticks = attr(container, 'data-axis-tick', axis).map(n => n.textContent);
       assert.ok(thumbnail ? ticks.length <= 4 : ticks.length >= 5 && ticks.length <= 7);
       assert.deepEqual(ticks, axis === 'left'
-        ? thumbnail ? ['0', '50', '100'] : ['0', '20', '40', '60', '80', '100']
+        ? thumbnail ? ['0', '50', '100', '150'] : ['0', '20', '40', '60', '80', '100']
         : thumbnail ? ['0', '1', '2', '3'] : ['0.0', '0.5', '1.0', '1.5', '2.0', '2.5']);
     }
+    handle.destroy();
+  }
+});
+
+test('默认只绘制五期，全部图例可点开，全部年份开关保留区间带和悬停所有期', () => {
+  const payload = cycle(), seed = payload.segments[0];
+  payload.segments = Array.from({length: 10}, (_, index) => ({...structuredClone(seed), label: '期' + index,
+    start: `${2010 + index}-09-01`, end: `${2011 + index}-08-31`, current: index === 9,
+    points: seed.points.map(p => ({...p, value: index * 10 + p.x, date: new Date(Date.UTC(2010 + index, 8, 1 + p.x)).toISOString().slice(0, 10)}))}));
+  const original = structuredClone(payload), container = fixture(), handle = K.render(container, payload, {definition});
+  assert.deepEqual(attr(container, 'data-series').map(node => node.attrs['data-series']), ['5', '6', '7', '8', '9']);
+  assert.equal(attr(container, 'data-legend').length, 10);
+  const band = attr(container, 'data-band', 'range').map(node => node.attrs.d);
+  attr(container, 'data-chart-hover')[0].events.pointermove({clientX: 72, clientY: 100});
+  const tip = nodes(container).find(node => node.className === 'chart-kit-tooltip');
+  assert.equal(tip.children.length, 11);
+  assert.match(tip.children[1].textContent, /^期9（当前）/);
+  assert.equal(tip.children[1].style.fontWeight, '700');
+  assert.match(tip.children[10].textContent, /^期0/);
+  attr(container, 'data-show-all-cycles')[0].events.click();
+  assert.equal(attr(container, 'data-series').length, 10);
+  assert.equal(attr(container, 'data-show-all-cycles')[0].attrs['aria-pressed'], 'true');
+  attr(container, 'data-show-all-cycles')[0].events.click();
+  assert.equal(attr(container, 'data-series').length, 5);
+  attr(container, 'data-legend', '0')[0].events.click();
+  assert.equal(attr(container, 'data-series').length, 6);
+  attr(container, 'data-show-all-cycles')[0].events.click();
+  for (let i = 0; i < 10; i++) attr(container, 'data-legend', String(i))[0].events.click();
+  assert.equal(attr(container, 'data-series').length, 0);
+  assert.deepEqual(attr(container, 'data-band', 'range').map(node => node.attrs.d), band);
+  assert.deepEqual(payload, original);
+  handle.destroy();
+  const configured = K.render(container, payload, {definition: {...definition, time: {...definition.time, visible_cycles: 2}}});
+  assert.deepEqual(attr(container, 'data-series').map(node => node.attrs['data-series']), ['8', '9']);
+  configured.destroy();
+  const exported = K.render(container, payload, {width: 640, height: 300, export: true, definition});
+  assert.equal(attr(container, 'data-series').length, 5);
+  assert.equal(attr(container, 'data-legend').length, 5);
+  assert.equal(attr(container, 'data-show-all-cycles').length, 0);
+  exported.destroy();
+});
+
+test('年度手工分段渲染月份轴使用第一段，短分段仍显示第N天', () => {
+  const payload = {template: {kind: 'segments'}, freq_days: 7,
+    segments: [{label: '首段', start: '2020-08-01', end: '2021-07-31', points: [{x: 0, date: '2020-08-01', value: 1}]},
+      {label: '当前', start: '2022-09-01', end: '2023-08-31', current: true, points: [{x: 0, date: '2022-09-01', value: 2}]}], band: []};
+  const container = fixture(), handle = K.render(container, payload);
+  assert.equal(attr(container, 'data-date-tick')[0].textContent, '8月');
+  assert.equal(attr(container, 'data-date-tick').at(-1).textContent, '7月');
+  handle.destroy(); payload.segments[0].end = '2020-12-31';
+  const short = K.render(container, payload);
+  assert.ok(attr(container, 'data-date-tick').every(node => /^第 \d+ 天$/.test(node.textContent)));
+  short.destroy();
+});
+
+test('周期标注当前最新有效值，走势标注各曲线最新值，拥挤时保留左轴主曲线', () => {
+  const container = fixture(), payload = cycle(), handle = K.render(container, payload, {definition});
+  assert.equal(attr(container, 'data-latest-value').length, 1);
+  assert.equal(attr(container, 'data-latest-value')[0].attrs['data-latest-value'], '3');
+  assert.equal(attr(container, 'data-latest-value')[0].textContent, '27');
+  handle.destroy();
+  const curves = [
+    {label: '左', axis: 'left', points: [{date: '2030-01-03', value: 20}, {date: '2030-01-01', value: 10}, {date: '2030-01-04', value: null}]},
+    {label: '右', axis: 'right', points: [{date: '2030-01-01', value: 100}, {date: '2030-01-03', value: 300}]}];
+  const trend = K.render(container, {curves}, {definition: {axes: {left: {min: 0, max: 100}, right: {min: 0, max: 1000}}}});
+  assert.deepEqual(attr(container, 'data-latest-value').map(node => node.textContent), ['300', '20']);
+  assert.ok(attr(container, 'data-latest-value').every(node => Number(node.attrs.x) >= 72 && Number(node.attrs.x) <= 888));
+  trend.destroy();
+  const crowded = K.render(container, {curves: Array.from({length: 30}, (_, index) => ({label: '曲线' + index, axis: index % 2 ? 'right' : 'left',
+    points: [{date: '2030-01-01', value: 1}, {date: '2030-01-02', value: 2}]}))});
+  assert.equal(attr(container, 'data-latest-value').length, 1);
+  assert.equal(attr(container, 'data-latest-value')[0].attrs['data-latest-value'], '0');
+  crowded.destroy();
+});
+
+test('左右轴共享网格位置，右轴刻度和单位沿用右曲线颜色，固定范围保持', () => {
+  for (const fixed of [false, true]) {
+    const container = fixture(), curves = [
+      {label: '量', axis: 'left', unit: '手', style: {color: '#112233'}, points: [{date: '2030-01-01', value: 200000}, {date: '2030-01-02', value: 500000}]},
+      {label: '比率', axis: 'right', unit: '%', style: {color: '#CC5500'}, points: [{date: '2030-01-01', value: .3}, {date: '2030-01-02', value: 2.1}]}];
+    const original = structuredClone(curves), definition = fixed ? {axes: {left: {min: 123456, max: 567890}, right: {min: .1, max: 2.7}}} : {};
+    const handle = K.render(container, {curves}, {definition});
+    const left = attr(container, 'data-axis-tick', 'left'), right = attr(container, 'data-axis-tick', 'right');
+    assert.equal(left.length, right.length);
+    left.forEach((node, index) => assertClose(Number(node.attrs.y), Number(right[index].attrs.y)));
+    assert.ok(right.every(node => node.attrs.fill === '#CC5500'));
+    assert.equal(attr(container, 'data-axis-unit', 'right')[0].attrs.fill, '#CC5500');
+    assert.equal(attr(container, 'data-axis-unit', 'left')[0].textContent, '手');
+    assert.ok(left.some(node => /万$/.test(node.textContent)));
+    if (fixed) assert.ok(left.every(node => Number(node.attrs.y) >= 28 && Number(node.attrs.y) <= 366));
+    assert.deepEqual(curves, original);
+    handle.destroy();
+  }
+});
+
+test('四十个历史期在320×180的PPT图位只占默认五期图例', () => {
+  const seed = cycle(), payload = {...seed, segments: Array.from({length: 40}, (_, index) => ({
+    label: String(1980 + index), start: `${1980 + index}-09-01`, end: `${1981 + index}-08-31`, current: index === 39,
+    points: [0, 7, 14].map(x => ({x, date: new Date(Date.UTC(1980 + index, 8, 1 + x)).toISOString().slice(0, 10), value: index + x}))}))};
+  const container = fixture(), handle = K.render(container, payload, {width: 320, height: 180, exactSize: true, export: true,
+    definition: {...definition, title: '合成图'}});
+  assert.equal(attr(container, 'data-series').length, 5);
+  assert.equal(attr(container, 'data-legend').length, 5);
+  assert.equal(nodes(container).find(node => node.name === 'svg').attrs.viewBox, '0 0 320 180');
+  assert.equal(attr(container, 'data-latest-value').length, 1);
+  handle.destroy();
+});
+
+test('同月多条观测居中到相同横坐标时，末端标注仍取真实日期最新值', () => {
+  const payload = {template: {kind: 'repeat', start: '01-01', period: 'year'}, freq_days: 28,
+    segments: [{label: '当前', start: '2030-01-01', end: '2030-12-31', current: true,
+      points: [{x: 0, date: '2030-01-01', value: 10}, {x: 28, date: '2030-01-29', value: 20}]}], band: []};
+  for (const reverse of [false, true]) {
+    const container = fixture(), copy = structuredClone(payload);
+    if (reverse) copy.segments[0].points.reverse();
+    const original = structuredClone(copy), handle = K.render(container, copy);
+    const xs = pathXs(attr(container, 'data-curve-run')[0]);
+    assert.equal(xs[0], xs[1], '月内两条真实观测使用同一月份中心');
+    assert.equal(attr(container, 'data-latest-value')[0].textContent, '20');
+    assert.deepEqual(copy, original);
     handle.destroy();
   }
 });

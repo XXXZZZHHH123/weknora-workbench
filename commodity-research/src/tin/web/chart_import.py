@@ -63,6 +63,29 @@ def selected_native_charts(scope, selections):
     return list(charts.values())
 
 
+def original_native_chart(scope, chart_key):
+    """Resolve a saved origin only through the current authorized directory."""
+    found, offset, total, version = None, 0, None, None
+    while True:
+        page = native_chart_page(scope, offset=offset, limit=200)
+        if total is None:
+            total, version = page.total, page.version
+        if page.total != total or page.version != version:
+            raise HTTPException(409, '原表图表目录在分页读取期间已变化，请重新转换')
+        for chart in page.charts:
+            if chart.chart_key != chart_key:
+                continue
+            if found is not None and chart != found:
+                raise HTTPException(409, '原表图表在读取期间已变化，请重新转换')
+            found = chart
+        if page.next_offset is None:
+            break
+        offset = page.next_offset
+    if found is None:
+        raise HTTPException(409, '原表图表已不在当前来源，请核对来源授权')
+    return found
+
+
 @router.post('/apply')
 def apply(body: NativeApplyInput):
     scope = require_scope(write=True)

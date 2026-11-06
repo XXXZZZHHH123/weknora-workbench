@@ -146,7 +146,7 @@
   function detail() {
     const form = $('chart-editor'), fields = $('chart-editor-fields'), status = $('chart-detail-status'), plot = $('chart-plot');
     const path = '/charts/' + encodeURIComponent(config.id);
-    let record, templates = [], chart, loading = false, revisionOffset = null, generation = 0, currentTemplate;
+    let record, templates = [], chart, loading = false, revisionOffset = null, generation = 0, currentTemplate, reconversion;
     const input = name => form.elements.namedItem(name);
     U.exports($('chart-exports'), () => chart, () => record?.definition.title);
     function timeFields() {
@@ -184,6 +184,8 @@
       for (const name of ['title', 'group', 'note']) input(name).value = def[name] || '';
       input('mode').value = time.mode; input('points').value = time.points || 120; input('start').value = time.start || ''; input('end').value = time.end || '';
       input('cycles').value = time.cycles || 8; input('band_cycles').value = time.band_cycles || 5; input('transform').value = time.transform || 'raw';
+      input('visible_cycles').value = time.visible_cycles ?? '';
+      if ($('chart-reconvert-panel')) $('chart-reconvert-panel').hidden = def.origin?.kind !== 'native' || !def.origin.ref;
       setTemplateOptions(time);
       $('chart-curve-fields').innerHTML = def.curves.map((curve, index) => `<div class="charts-curve" data-curve-index="${index}"><div><strong>${E(curve.label)}</strong><p class="charts-muted">${E(curve.series_id)}</p></div><label class="charts-field">图型<select data-curve-kind><option value="line">线</option><option value="bar">柱</option><option value="area">面积</option></select></label><label class="charts-field">纵轴<select data-curve-axis><option value="left">左轴</option><option value="right">右轴</option></select></label><label class="charts-field">颜色（留空用调色板）<input data-curve-color maxlength="7" placeholder="#RRGGBB" pattern="#[0-9a-fA-F]{6}"></label></div>`).join('');
       $('chart-curve-fields').querySelectorAll('[data-curve-index]').forEach((row, index) => {
@@ -195,6 +197,9 @@
     }
     async function load() {
       const own = ++generation;
+      reconversion = null;
+      if ($('chart-reconvert-preview')) $('chart-reconvert-preview').hidden = true;
+      if ($('chart-reconvert-status')) U.notice($('chart-reconvert-status'), '');
       fields.disabled = true; loading = true; $('chart-conflict').hidden = true; U.notice(status, '正在读取图表…');
       chart?.destroy(); chart = null; plot.textContent = '正在读取数据…';
       $('chart-statistics').hidden = true;
@@ -252,6 +257,7 @@
         if (!template) throw new Error('请选择周期模板');
         time = {mode, template: {...template, transform: input('transform').value}, cycles: Number(input('cycles').value), band_cycles: Number(input('band_cycles').value), transform: input('transform').value,
           segment_styles: record.definition.time.segment_styles || []};
+        if (input('visible_cycles').value !== '') time.visible_cycles = Number(input('visible_cycles').value);
       }
       const curves = [...$('chart-curve-fields').querySelectorAll('[data-curve-index]')].map((row, index) => ({...record.definition.curves[index],
         kind: row.querySelector('[data-curve-kind]').value, axis: row.querySelector('[data-curve-axis]').value,
@@ -262,6 +268,41 @@
       U.notice(status, error.message, 'error');
       if (error.status === 409) { $('chart-conflict').hidden = false; fields.disabled = true; }
     }
+    $('chart-reconvert')?.addEventListener('click', async () => {
+      if (!record || !config.can_write || loading) return;
+      const own = generation, button = $('chart-reconvert'), notice = $('chart-reconvert-status');
+      reconversion = null; $('chart-reconvert-preview').hidden = true;
+      button.disabled = true; U.notice(notice, '正在读取原表并生成转换建议…');
+      try {
+        const result = await U.api(path + '/reconvert');
+        if (own !== generation) return;
+        if (result.revision !== record.revision) {
+          const error = new Error('图表已有新版本，请重新加载后转换'); error.status = 409; throw error;
+        }
+        const suggestion = result.suggestion;
+        $('chart-reconvert-summary').innerHTML = U.importMarkup([suggestion]);
+        $('chart-reconvert-definition').textContent = suggestion.definition ? JSON.stringify(suggestion.definition, null, 2) : '';
+        $('chart-reconvert-preview').hidden = false;
+        $('chart-reconvert-confirm').disabled = !suggestion.convertible;
+        if (suggestion.convertible) { reconversion = result; U.notice(notice, '请核对建议，确认后才会保存。'); }
+        else U.notice(notice, suggestion.reason || '当前原表无法转换', 'warning');
+      } catch (error) { if (own === generation) { U.notice(notice, error.message, 'error'); if (error.status === 409) conflict(error); } }
+      finally { button.disabled = false; }
+    });
+    $('chart-reconvert-cancel')?.addEventListener('click', () => {
+      reconversion = null; $('chart-reconvert-preview').hidden = true; U.notice($('chart-reconvert-status'), '已取消，图表定义未修改。');
+    });
+    $('chart-reconvert-confirm')?.addEventListener('click', async () => {
+      if (!reconversion || !record || !config.can_write || loading) return;
+      const pending = reconversion; reconversion = null;
+      loading = true; fields.disabled = true; $('chart-reconvert-confirm').disabled = true;
+      try {
+        await U.api(path, {method: 'PATCH', body: JSON.stringify({revision: pending.revision, ...pending.suggestion.definition})});
+        await load();
+        if ($('chart-conflict').hidden && status.hidden) U.notice(status, '已按原表重新转换并保存新修订');
+      } catch (error) { fields.disabled = !config.can_write; conflict(error); }
+      finally { loading = false; }
+    });
     form.addEventListener('submit', async event => {
       event.preventDefault(); if (!record || !config.can_write || loading) return;
       let body;

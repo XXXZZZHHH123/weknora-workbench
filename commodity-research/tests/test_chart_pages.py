@@ -114,6 +114,8 @@ def test_templates_and_page_projection(pages, path, marker):
     if path.endswith('chart-1'):
         assert config(response)['id'] == 'chart-1'
         assert 'disabled' in html.get_element_by_id('chart-editor-fields').attrib
+        assert html.get_element_by_id('chart-reconvert').text_content() == '按原表重新转换'
+        assert html.xpath('//input[@name="visible_cycles" and @min="1" and @max="40"]')
 
 
 @pytest.mark.parametrize('headers', [{'x-role': 'viewer'}, {'x-edit': 'false'}])
@@ -125,6 +127,7 @@ def test_readonly_controls_and_reason(pages, headers):
     html = fromstring(response.text)
     assert '没有研究工作台编辑权限' in html.get_element_by_id('chart-write-reason').text_content()
     assert 'disabled' in html.get_element_by_id('chart-editor-fields').attrib
+    assert not html.xpath('//*[@id="chart-reconvert"]')
 
 
 @pytest.mark.parametrize('path', ['/sn/charts/import', '/sn/charts/chart-1'])
