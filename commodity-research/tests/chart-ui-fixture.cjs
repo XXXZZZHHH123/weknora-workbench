@@ -29,11 +29,12 @@ import json,sys
 from types import SimpleNamespace
 from jinja2 import Environment,FileSystemLoader,DictLoader,ChoiceLoader,select_autoescape
 data=json.loads(sys.argv[3])
-host='''<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/static/app.css"><style>[hidden]{display:none!important}body{margin:0}main{max-width:1280px;margin:16px auto;padding:0 16px}</style><script>window.RESEARCH_PREFIX='/research/workbenches/fixture';window.researchFetch=(url,options)=>fetch(url,options);window.showToast=()=>{};window.copyText=()=>{};window.ChartPaletteColors={{ palette|tojson }};</script><script src="/static/chart-palette.js"></script></head><body><main>{% block main %}{% endblock %}</main></body></html>'''
+host='''<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/static/app.css"><link rel="stylesheet" href="/static/favorites.css"><style>[hidden]{display:none!important}body{margin:0}main{max-width:1280px;margin:16px auto;padding:0 16px}</style><script>window.RESEARCH_CONTEXT={tenant:17,user:'fixture-user',workbench:'fixture',scope_version:2};window.RESEARCH_PREFIX='/research/workbenches/fixture';window.researchFetch=(url,options)=>fetch(url,options);window.showToast=(text)=>{window.fixtureToast=text};window.copyText=()=>{};window.ChartPaletteColors={{ palette|tojson }};</script><script src="/static/chart-palette.js"></script><script defer src="/static/favorites-client.js"></script>{% block head %}{% endblock %}</head><body><main>{% block main %}{% endblock %}</main></body></html>'''
 env=Environment(loader=ChoiceLoader([DictLoader({'base.html':host}),FileSystemLoader(sys.argv[1])]),autoescape=select_autoescape(['html']))
 scope=SimpleNamespace(metadata=SimpleNamespace(name='合成研究台'),scope_version=2,restricted=False,can_edit=data['config']['can_write'])
 env.globals.update(research_workbench=lambda:scope,research_prefix=lambda:'/research/workbenches/fixture',research_url=lambda s:'/research/workbenches/fixture'+s,research_static_prefix=lambda:'',static_version=lambda:'chart-ui-fixture')
-ctx=dict(chart_page=data['config'],request=SimpleNamespace(query_params={'date':data['config'].get('date')}),palette=json.load(open(sys.argv[2])),restricted_view=False,**data['extra'])
+env.filters['num']=lambda value,*args: str(value) if value is not None else '—'
+ctx=dict(chart_page=data['config'],request=SimpleNamespace(query_params={'date':data['config'].get('date')}),palette=json.load(open(sys.argv[2])),restricted_view=False,d=data['config'].get('date'),**data['extra'])
 print(env.get_template(data['template']).render(**ctx))
 `, path.join(web, 'templates'), path.join(web, 'static/chart-palette.json'), JSON.stringify(input)], {stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024});
   assert.equal(rendered.status, 0, rendered.stderr); return rendered.stdout;
@@ -45,14 +46,16 @@ async function launch() {
 }
 async function open(browser, pathname, html, handler, options = {}) {
   const context = await browser.newContext({viewport: {width: 1280, height: 900}, acceptDownloads: true});
+  if (options.storage) await context.addInitScript(values => { for (const [key, value] of Object.entries(values)) localStorage.setItem(key, JSON.stringify(value)); }, options.storage);
   const page = await context.newPage(), errors = [], calls = [];
+  let favorites = {format: 'favorites.v1', revision: options.favorites?.length ? 1 : 0, items: options.favorites || []};
   page.setDefaultTimeout(10000);
   page.on('pageerror', error => errors.push(error.message));
   // Expected 403/409 API responses are asserted by the tests, not treated as JS errors.
   await page.route('**/*', async route => {
     const request = route.request(), url = new URL(request.url());
     if (url.origin !== origin) { errors.push('Unexpected origin ' + url.origin); return route.abort(); }
-    if (url.pathname === pathname) return route.fulfill({contentType: 'text/html', body: html});
+    if (url.pathname === new URL(pathname, origin).pathname) return route.fulfill({contentType: 'text/html', body: html});
     if (options.documents?.[url.pathname]) return route.fulfill({contentType: 'text/html', body: options.documents[url.pathname]});
     if (url.pathname.startsWith('/static/')) {
       const file = path.join(web, 'static', path.basename(url.pathname));
@@ -64,11 +67,27 @@ async function open(browser, pathname, html, handler, options = {}) {
         body: request.postData() && contentType.includes('application/json') ? request.postDataJSON() : null,
         rawBody: request.postDataBuffer(), headers: request.headers()}; calls.push(entry);
       const reply = (json, status = 200) => route.fulfill({status, json});
+      if (entry.path === '/favorites') {
+        if (options.handleFavorites && await options.handleFavorites({...entry, route, reply}) !== false) return;
+        if (entry.method === 'PUT') {
+          assert.equal(entry.body.revision, favorites.revision);
+          favorites = {...favorites, revision: favorites.revision + 1, items: entry.body.items.map(item => ({
+            ...favorites.items.find(previous => previous.id === item.id && previous.kind === item.kind), ...item,
+            added_at: item.added_at || '2029-09-15T00:00:00Z',
+            status: favorites.items.find(previous => previous.id === item.id && previous.kind === item.kind)?.status || 'active',
+            title: favorites.items.find(previous => previous.id === item.id && previous.kind === item.kind)?.title || (item.kind === 'chart' ? definition.title : '合成指标 <安全>')}))};
+        }
+        return reply(favorites);
+      }
       if (await handler({...entry, route, reply}) !== false) return;
     }
     errors.push('Unhandled ' + request.method() + ' ' + url.pathname); return route.abort();
   });
   await page.goto(origin + pathname, {waitUntil: 'networkidle'});
-  return {page, context, errors, calls, async close() { assert.deepEqual(errors, []); await context.close(); }};
+  return {page, context, errors, calls, get favorites() { return favorites; }, async close() { assert.deepEqual(errors, []); await context.close(); }};
 }
-module.exports = {assert, render, launch, open, prefix, origin, template, templates, definition, record, cycle};
+function renderLibrary(config = {}, extra = {}) {
+  return render('indicators.html', config, {rows: [], groups: [], checks: [], dimensions: [], sources: {rows: []},
+    catalog_remote: true, catalog_total: 0, catalog_offset: 0, catalog_next: null, ...extra});
+}
+module.exports = {assert, render, renderLibrary, launch, open, prefix, origin, template, templates, definition, record, cycle};

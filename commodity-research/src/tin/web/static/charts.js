@@ -6,7 +6,14 @@
   if (!config.enabled) return;
   const $ = id => document.getElementById(id), E = U.esc;
   const dataDate = config.date ? '?date=' + encodeURIComponent(config.date) : '';
-  if (page.dataset.chartsPage === 'library') library();
+  if (page.dataset.chartsPage === 'library') {
+    let started = false;
+    const start = () => {
+      if (!started && !page.closest('[data-indicator-panel]')?.hidden) { started = true; library(); }
+    };
+    document.addEventListener('indicator:tab', start);
+    start();
+  }
   if (page.dataset.chartsPage === 'detail') detail();
 
   async function anomalies() {
@@ -85,13 +92,15 @@
       }
     }
     function addCard(item) {
-      const def = item.definition, card = document.createElement('a'); card.className = 'charts-card'; card.href = U.pageURL('/sn/charts/' + encodeURIComponent(item.id));
+      const def = item.definition, card = document.createElement('article'); card.className = 'charts-card';
       card.dataset.chartId = item.id;
-      card.innerHTML = `<h2>${E(def.title)} <span class="charts-warning-marker" hidden></span></h2><p class="charts-muted">${E(def.group || '未分组')} · ${def.time.mode === 'cycle' ? '周期对比' : '走势'} · v${E(item.revision)}</p><div class="charts-thumbnail">等待图表进入视野…</div>`;
+      const link = U.pageURL('/sn/charts/' + encodeURIComponent(item.id)) + dataDate;
+      card.innerHTML = `<h2><a href="${E(link)}">${E(def.title)}</a> <span class="charts-warning-marker" hidden></span></h2><p class="charts-muted">${E(def.group || '未分组')} · ${def.time.mode === 'cycle' ? '周期对比' : '走势'} · v${E(item.revision)}</p><a class="charts-thumbnail" href="${E(link)}" aria-label="${E('打开图表 ' + def.title)}">等待图表进入视野…</a><button type="button" class="favorites-star" data-favorite="${E(item.id)}" data-favorite-kind="chart" data-favorite-label="${E(def.title)}" aria-pressed="false" disabled>☆ 自选</button>`;
       const element = card.querySelector('.charts-thumbnail'), warning = card.querySelector('.charts-warning-marker');
       const warnings = [...(item.warnings || []), ...(item.curves || []).filter(c => c.status === 'missing').map(c => ({code: 'missing', label: c.label}))];
       U.noticeMarker(warning, warnings);
       element._chartTask = {element, notice: warning, warnings, item, generation}; cards.append(card);
+      window.AccountFavorites?.syncButtons(card);
       if (observer) observer.observe(element); else { queue.push(element._chartTask); pump(); }
     }
     async function load(reset) {
@@ -169,6 +178,8 @@
     function populate() {
       const def = record.definition, time = def.time;
       $('chart-title').textContent = def.title; $('chart-meta').textContent = `${def.group || '未分组'} · 修订 v${record.revision}`;
+      const favorite = page.querySelector('[data-favorite-kind="chart"]');
+      if (favorite) { favorite.dataset.favoriteLabel = def.title; window.AccountFavorites?.syncButtons(page); }
       $('chart-note').textContent = def.note;
       for (const name of ['title', 'group', 'note']) input(name).value = def[name] || '';
       input('mode').value = time.mode; input('points').value = time.points || 120; input('start').value = time.start || ''; input('end').value = time.end || '';
@@ -263,7 +274,7 @@
     $('chart-delete').addEventListener('click', async () => {
       if (!record || !config.can_write || loading || !window.confirm(`确认删除图表“${record.definition.title}”？`)) return;
       loading = true; fields.disabled = true;
-      try { await U.api(path + '?revision=' + record.revision, {method: 'DELETE'}); window.location.assign(U.pageURL('/sn/charts')); }
+      try { await U.api(path + '?revision=' + record.revision, {method: 'DELETE'}); window.location.assign(U.pageURL('/sn/indicators') + '?tab=charts' + (config.date ? '&date=' + encodeURIComponent(config.date) : '')); }
       catch (error) { fields.disabled = !config.can_write; conflict(error); }
       finally { loading = false; }
     });

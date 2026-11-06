@@ -1,8 +1,7 @@
 // Isolated browser fixture: actual market/indicator templates and JS, synthetic in-memory facts only.
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
-if (!process.argv.includes('--run')) { console.log('Prepared only. --run executes a synthetic in-memory browser fixture; no real account or business data.'); process.exit(0); }
-const { chromium } = require(process.env.RESEARCH_PLAYWRIGHT || 'playwright');
+if (!process.argv.includes('--run') && !process.argv.includes('--render-only')) { console.log('Prepared only. --run executes a synthetic in-memory browser fixture; --render-only checks its templates.'); process.exit(0); }
 const repo = path.resolve(__dirname, '..'), web = path.join(repo, 'src/tin/web');
 const rendered = spawnSync(process.env.RESEARCH_PYTHON || 'python', ['-c', `
 import json
@@ -21,7 +20,7 @@ from tin.web import app as web
 from tin.export.board import _obs_card
 from tin.export.indicators import previews
 identity=Identity('fixture-user','fixture@example.invalid','隔离测试',17,'owner')
-scope=WorkbenchScope(identity,'a0000000-0000-4000-8000-000000000001','b0000000-0000-4000-8000-000000000001',17,{'name':'隔离市场工作台','workspace_mode':'isolated'})
+scope=WorkbenchScope(identity,'a0000000-0000-4000-8000-000000000001','b0000000-0000-4000-8000-000000000001',17,{'name':'隔离市场工作台','workspace_mode':'isolated'},scope_version=2,sources_revision=1)
 current_identity.set(identity);current_workbench.set(scope)
 engine=make_engine('sqlite://',poolclass=StaticPool,connect_args={'check_same_thread':False});Base.metadata.create_all(engine)
 factory=sessionmaker(engine,expire_on_commit=False)
@@ -33,8 +32,14 @@ with factory() as session:
   session.flush();session.add(Observation(series_id=sid,value=n,as_of=stamp,fetched_at=stamp,caliber_snapshot={'time_type':'原表日期'},source='知识库结构化',status='正常'))
  session.commit()
 def session():
- value=factory();value.info.update(workbench_id=scope.workbench_id,knowledge_base_id=scope.knowledge_base_id,knowledge_base_tenant_id=17);return value
+ value=factory();value.info.update(workbench_id=scope.workbench_id,knowledge_base_id=scope.knowledge_base_id,knowledge_base_tenant_id=17,knowledge_facts=True,knowledge_facts_catalog={});return value
 web.SessionLocal=session
+from tin.web import catalog as catalog_api
+with session() as database:
+ directory_rows=web.indicator_data.catalog(database)
+def directory(scope,offset=0,**kwargs):
+ return {'indicators':directory_rows,'offset':offset,'total':len(directory_rows),'next_offset':None}
+catalog_api.indicator_page=directory
 request=Request({'type':'http','method':'GET','path':'/sn','query_string':b'','headers':[],'scheme':'http','server':('market.fixture',80)})
 market=web.variety_page(request).body.decode();indicators=web.indicators_page(request).body.decode()
 cards={};favorites={}
@@ -44,10 +49,12 @@ with session() as database:
   cards[sid]=web.templates.get_template('_market_cards.html').render(cards=[card])
   preview=previews(database,[sid],stamp.date())
   favorites[sid]={'card':preview[0],'html':web.templates.get_template('_indicator_cards.html').render(cards=preview,d='2026-03-03')}
-print(json.dumps({'market':market,'indicators':indicators,'cards':cards,'favorites':favorites},ensure_ascii=False))
+print(json.dumps({'market':market,'indicators':indicators,'cards':cards,'favorites':favorites,'catalog':directory_rows},ensure_ascii=False))
 `], { cwd: repo, encoding: 'utf8', env: process.env });
 assert.equal(rendered.status, 0, rendered.stderr);
 const fixture = JSON.parse(rendered.stdout), ids = Object.keys(fixture.cards), prefix = '/workbenches/a0000000-0000-4000-8000-000000000001';
+if (process.argv.includes('--render-only')) { console.log('market-overview templates: passed'); process.exit(0); }
+const { chromium } = require(process.env.RESEARCH_PLAYWRIGHT || 'playwright');
 const coreKey = 'tin.market.core.v1:17:fixture-user:a0000000-0000-4000-8000-000000000001';
 const favoritesKey = 'tin.indicators.favorites.v1:17:fixture-user:a0000000-0000-4000-8000-000000000001';
 const report = { mode: 'isolated_market_ui_fixture', real_model_calls: 0, real_business_mutations: 0, assertions: [], requests: 0 };
@@ -58,13 +65,30 @@ const report = { mode: 'isolated_market_ui_fixture', real_model_calls: 0, real_b
   try {
     const page = await browser.newPage({ viewport: { width: 1400, height: 950 }, reducedMotion: 'reduce' }), errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
-    let fail = false;
+    let fail = false, favorites = {format: 'favorites.v1', revision: 1,
+      items: [{kind: 'indicator', id: ids[13], added_at: '2026-03-03T00:00:00Z', status: 'active', title: '隔离指标14'}]};
     await page.route('**/*', async (route) => {
       const request = route.request(), url = new URL(request.url()); report.requests++;
-      assert.equal(request.method(), 'GET', 'Fixture must never schedule model calls or business mutations');
+      assert.ok(request.method() === 'GET' || request.method() === 'PUT' && url.pathname === prefix + '/api/sn/favorites', 'Only synthetic account favorites may be written');
       assert.equal(url.origin, 'http://market.fixture', 'No external requests');
       if (url.pathname === prefix + '/sn') return route.fulfill({ contentType: 'text/html; charset=utf-8', body: fixture.market });
       if (url.pathname === prefix + '/sn/indicators') return route.fulfill({ contentType: 'text/html; charset=utf-8', body: fixture.indicators });
+      if (url.pathname === prefix + '/api/sn/favorites') {
+        if (request.method() === 'PUT') {
+          const body = request.postDataJSON(); assert.equal(body.revision, favorites.revision);
+          favorites = {...favorites, revision: favorites.revision + 1, items: body.items.map(item => ({...item, status: 'active', title: '隔离指标' + String(ids.indexOf(item.id) + 1).padStart(2, '0')}))};
+        }
+        return route.fulfill({json: favorites});
+      }
+      if (url.pathname === prefix + '/api/sn/indicators/catalog') {
+        const requested = url.searchParams.getAll('series_id'), search = url.searchParams.get('search') || '';
+        const indicators = fixture.catalog.filter(row => (!requested.length || requested.includes(row.series_id)) && (!search || row.name.includes(search)));
+        return route.fulfill({json: {indicators, total: indicators.length, offset: 0, next_offset: null}});
+      }
+      if (url.pathname.endsWith('/cycle')) {
+        const id = url.pathname.split('/').at(-2), value = ids.indexOf(id) + 1;
+        return route.fulfill({json: {unit: '件', segments: [{points: [{date: '2026-03-03', raw: value, value}]}], position: {n: 0}, warnings: []}});
+      }
       if (url.pathname === prefix + '/api/sn/market/core') {
         if (fail) return route.fulfill({ status: 503, json: { detail: 'Isolated outage' } });
         const selected = url.searchParams.getAll('series_id');
@@ -114,7 +138,8 @@ const report = { mode: 'isolated_market_ui_fixture', real_model_calls: 0, real_b
     await page.locator('#market-core-save').click();
     await page.waitForFunction(() => document.querySelectorAll('[data-market-card-series]').length === 2 && !document.getElementById('market-core-grid').hasAttribute('aria-busy'));
     assert.deepEqual(await page.locator('[data-market-card-series]').evaluateAll((elements) => elements.map((element) => element.dataset.marketCardSeries)), [ids[1], ids[3]]);
-    assert.deepEqual(await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), favoritesKey), [ids[13], ids[1], ids[3]]);
+    assert.deepEqual(favorites.items.map(item => item.id), [ids[13], ids[1], ids[3]]);
+    assert.deepEqual(await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), favoritesKey), [ids[13]], '旧浏览器记录未经同步保持原样');
     report.assertions.push('ordered_selection_and_auto_favorites_use_actual_dom');
     await page.reload();
     await page.waitForFunction(() => document.querySelectorAll('[data-market-card-series]').length === 2);
@@ -142,7 +167,7 @@ const report = { mode: 'isolated_market_ui_fixture', real_model_calls: 0, real_b
     await page.waitForFunction(() => document.querySelectorAll('[data-favorite-card]').length === 4);
     for (const index of [13, 1, 3, 4]) assert.equal(await page.locator(`tr[data-series-id="${ids[index]}"] [data-favorite]`).getAttribute('aria-pressed'), 'true');
     report.assertions.push('existing_indicator_page_reads_same_favorites');
-    assert.deepEqual(errors, []); report.assertions.push('zero_browser_errors_and_zero_mutation_requests');
+    assert.deepEqual(errors, []); report.assertions.push('zero_browser_errors_and_only_synthetic_account_writes');
     console.log(JSON.stringify(report));
   } finally { await browser.close(); }
 })().catch((error) => { console.error(error.stack); process.exitCode = 1; });

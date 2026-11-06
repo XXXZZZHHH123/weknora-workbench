@@ -1,5 +1,5 @@
-const {assert, render, launch, open, prefix, templates, record, cycle, origin} = require('./chart-ui-fixture.cjs');
-const libraryHTML = render('charts.html'), detailHTML = render('chart_detail.html');
+const {assert, render, renderLibrary, launch, open, prefix, templates, record, cycle, origin} = require('./chart-ui-fixture.cjs');
+const libraryHTML = renderLibrary(), detailHTML = render('chart_detail.html');
 (async () => {
   const browser = await launch();
   try {
@@ -7,7 +7,7 @@ const libraryHTML = render('charts.html'), detailHTML = render('chart_detail.htm
     records[0].warnings = [{code: 'unit_missing', series_id: 'kb-fixture-series', label: '合成指标'}];
     records.forEach((r, i) => { if (i) r.definition.title = '合成图' + (i + 1); r.definition.group = i % 2 ? '乙组' : '甲组'; });
     let active = 0, maximum = 0, dataCalls = 0;
-    const lib = await open(browser, '/sn/charts', libraryHTML, async ({path, url, reply}) => {
+    const lib = await open(browser, '/sn/indicators?tab=charts', libraryHTML, async ({path, url, reply}) => {
       if (path === '/charts/anomalies') return reply({as_of: '2029-09-15', items: [], total: 0, failed: []});
       if (path === '/charts') {
         const q = url.searchParams.get('q') || '', group = url.searchParams.get('group'), offset = Number(url.searchParams.get('offset') || 0), limit = Number(url.searchParams.get('limit'));
@@ -56,9 +56,15 @@ const libraryHTML = render('charts.html'), detailHTML = render('chart_detail.htm
       }
       if (path === '/charts/chart-1' && method === 'DELETE') { deletedRevision = Number(url.searchParams.get('revision')); return reply({status: 'deleted', revision: 4}); }
       return false;
-    }, {documents: {[prefix + '/sn/charts']: '<p>图表已删除</p>'}});
+    }, {documents: {[prefix + '/sn/indicators']: '<p>图表已删除</p>'}});
     const p = detail.page;
     await p.locator('#chart-plot svg').waitFor();
+    const detailStar = p.locator('[data-favorite-kind="chart"]');
+    assert.equal(await detailStar.getAttribute('aria-pressed'), 'false');
+    await detailStar.press('Space');
+    await p.waitForFunction(() => document.querySelector('[data-favorite-kind="chart"]').getAttribute('aria-pressed') === 'true');
+    assert.equal(detail.favorites.items[0].id, 'chart-1');
+    assert.equal(await p.locator('a').filter({hasText: '返回图表库'}).getAttribute('href'), prefix + '/sn/indicators?tab=charts&date=2029-09-15');
     assert.match(await p.locator('#chart-notices').innerText(), /合成指标：曲线缺少单位[\s\S]*已省略没有观测的周期/);
     assert.equal(await p.locator('#chart-notices').getAttribute('class'), 'charts-footnote');
     assert.equal(await p.locator('#chart-plot + #chart-notices').count(), 1);
@@ -99,7 +105,7 @@ const libraryHTML = render('charts.html'), detailHTML = render('chart_detail.htm
     assert.equal(patch.revision, 2); assert.equal(patch.time.template.start, '08-01'); assert.equal(patch.time.cycles, 6); assert.equal(patch.curves[0].style.color, '#abcdef');
     assert.equal(patch.time.transform, 'change'); assert.match(await p.locator('#chart-revisions').innerText(), /v3/);
     assert.deepEqual(patch.time.segment_styles, [{label: '2027', color: '#AA5500', width: 1.25, dash: 'dot'}]);
-    p.once('dialog', dialog => dialog.accept()); await p.locator('#chart-delete').click(); await p.waitForURL(origin + prefix + '/sn/charts'); assert.equal(deletedRevision, 3);
+    p.once('dialog', dialog => dialog.accept()); await p.locator('#chart-delete').click(); await p.waitForURL(origin + prefix + '/sn/indicators?tab=charts&date=2029-09-15'); assert.equal(deletedRevision, 3);
     await detail.close();
 
     const readonly = await open(browser, '/sn/charts/chart-1', render('chart_detail.html', {can_write: false, write_reason: '当前账号没有研究工作台编辑权限'}), ({path, reply}) => {
@@ -110,7 +116,7 @@ const libraryHTML = render('charts.html'), detailHTML = render('chart_detail.htm
     });
     assert.equal(await readonly.page.locator('[name=title]').isDisabled(), true); assert.match(await readonly.page.locator('#chart-write-reason').innerText(), /没有/); await readonly.close();
     for (const status of [403, 409]) {
-      const blocked = await open(browser, '/sn/charts', libraryHTML, ({reply}) => reply({detail: status === 403 ? '受限视角暂不开放图表库和周期对比' : '请重新打开研究台更新来源授权'}, status));
+      const blocked = await open(browser, '/sn/indicators?tab=charts', libraryHTML, ({reply}) => reply({detail: status === 403 ? '受限视角暂不开放图表库和周期对比' : '请重新打开研究台更新来源授权'}, status));
       assert.match(await blocked.page.locator('#charts-status').innerText(), /受限视角|重新打开研究台/); assert.equal(await blocked.page.locator('.charts-card').count(), 0); await blocked.close();
     }
     console.log('charts-ui: passed');

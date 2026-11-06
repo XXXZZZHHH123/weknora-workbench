@@ -20,27 +20,17 @@
     if (!Array.isArray(core) || core.some((id) => typeof id !== "string" || !allowed.has(id))) throw new Error("部分指标已不在当前知识库目录，请刷新后重新选择。");
     const selected = unique(core);
     if (selected.length > 12) throw new Error("核心指标最多选择 12 项。");
-    const merged = unique([...favorites.filter((id) => allowed.has(id)), ...selected]);
-    if (merged.length > 40) throw new Error("自选最多 40 项，请先在指标页移出部分自选，再添加核心指标。");
+    const merged = favorites.map(item => ({...item}));
+    const present = new Set(favorites.filter(item => item.kind === "indicator").map(item => item.id));
+    selected.forEach(id => { if (!present.has(id)) merged.push({kind: "indicator", id}); });
+    if (merged.length > 100) throw new Error("自选最多 100 项，请先在指标页移出部分自选，再添加核心指标。");
     return { core: selected, favorites: merged };
   }
-  function save(storage, context, selection) {
-    const coreKey = key(context, "core"), favoritesKey = key(context);
-    let oldCore, oldFavorites;
+  function saveCore(storage, context, selection) {
     try {
-      oldCore = storage.getItem(coreKey); oldFavorites = storage.getItem(favoritesKey);
-    } catch (_) { return false; }
-    try {
-      storage.setItem(favoritesKey, JSON.stringify(selection.favorites));
-      storage.setItem(coreKey, JSON.stringify(selection.core));
+      storage.setItem(key(context, "core"), JSON.stringify(selection.core));
       return true;
-    } catch (_) {
-      for (const [storageKey, previous] of [[coreKey, oldCore], [favoritesKey, oldFavorites]]) {
-        try { if (previous === null) storage.removeItem(storageKey); else storage.setItem(storageKey, previous); }
-        catch (_) { /* Still attempt the other key if one storage operation remains unavailable. */ }
-      }
-      return false;
-    }
+    } catch (_) { return false; }
   }
-  return Object.freeze({ key, read, plan, save });
+  return Object.freeze({ key, read, plan, saveCore });
 });

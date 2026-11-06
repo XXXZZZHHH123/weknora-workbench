@@ -16,7 +16,4 @@ window.ResearchCatalog = {
     if (!Array.isArray(value) || value.length > limit || value.some(identifier => typeof identifier !== "string" || !identifier || identifier.length > 128)) throw new Error("指标选择保存内容无效。");
     return [...new Set(value)];
   },
-  favorites(storage, key) {
-    return this.identifiers(storage, key, 40) || [];
-  },
 };

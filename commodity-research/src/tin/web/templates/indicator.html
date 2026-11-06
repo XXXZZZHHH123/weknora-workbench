@@ -8,7 +8,7 @@
 <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
   <div class="min-w-0">
     <div class="text-[10px] font-bold tracking-widest text-[var(--primary)] uppercase mb-1">
-      <a href="{{ research_prefix() }}/sn/indicators" class="hover:underline">指标登记</a> › {{ d.category or '派生指标' }}</div>
+      <a href="{{ research_prefix() }}/sn/indicators?tab=catalog" class="hover:underline">指标登记</a> › {{ d.category or '派生指标' }}</div>
     <h1 class="text-2xl font-black tracking-tight break-all">{{ d.name }}</h1>
     <p class="text-xs text-[var(--text-muted)] mt-1 tabular">
       <span class="cursor-pointer hover:underline text-[var(--primary)] font-semibold"
@@ -19,6 +19,7 @@
     </p>
   </div>
   <div class="flex items-center gap-1.5 shrink-0 text-xs">
+    {% if research_workbench() and research_workbench().scope_version == 2 and not research_workbench().restricted %}<button type="button" class="favorites-star" data-favorite="{{ d.series_id }}" data-favorite-kind="indicator" data-favorite-label="{{ d.name }}" aria-pressed="false" disabled>☆ 自选</button>{% endif %}
     <a href="{{ research_prefix() }}/sn/diagram" class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">产业图</a>
   </div>
 </div>

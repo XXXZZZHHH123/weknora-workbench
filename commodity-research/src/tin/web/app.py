@@ -228,6 +228,8 @@ from tin.web.workbench_artifacts import router as workbench_artifacts_router
 app.include_router(workbench_artifacts_router)
 from tin.web.charts import router as charts_router
 app.include_router(charts_router)
+from tin.web.favorites import router as favorites_router
+app.include_router(favorites_router)
 from tin.web.ppt import router as ppt_router
 app.include_router(ppt_router)
 from tin.web.chart_import import router as chart_import_router
@@ -673,8 +675,10 @@ def indicators_page(request: Request, date: str | None = None):
         groups = [{"name": name, "rows": [r for r in rows if r["category"] == name]}
                   for name in dict.fromkeys(r["category"] for r in rows)]
         checks = diagram_api.crosscheck(s, research_variety(s), day) if day else []
+        from tin.web.chart_pages import page_config
         return templates.TemplateResponse(request, "indicators.html", _shell(
             s, "indicators", day, rows=rows, groups=groups, dimensions=DIMENSIONS, checks=checks,
+            chart_page=page_config(request),
             catalog_remote=remote, catalog_offset=directory['offset'] if directory else 0,
             catalog_total=directory['total'] if directory else len(rows),
             catalog_next=directory['next_offset'] if directory else None,

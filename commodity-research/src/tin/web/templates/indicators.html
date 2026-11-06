@@ -6,28 +6,37 @@
 <script defer src="{{ research_static_prefix() }}/static/readonly-indicators.js?v={{ static_version() }}"></script>
 {% else %}
 <script defer src="{{ research_static_prefix() }}/static/indicator-preferences.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/favorites.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/indicators.js?v={{ static_version() }}"></script>
 {% endif %}
 {% endblock %}
 {% block main %}
 {% if restricted_view and restricted_data.owner_unavailable %}{% set rows = [] %}{% set groups = [] %}{% endif %}
+{% if not restricted_view %}{% include "_chart_assets.html" %}{% endif %}
 {% set visible_catalog_total = rows | length if restricted_view else catalog_total | default(rows | length) %}
 <div id="indicator-workspace" data-date="{{ d or '' }}" data-catalog-remote="{{ 'true' if catalog_remote and not restricted_view else 'false' }}" data-catalog-total="{{ visible_catalog_total }}" data-catalog-offset="{{ 0 if restricted_view else catalog_offset | default(0) }}"{% if restricted_view %} data-readonly="true"{% endif %} class="indicator-workspace">
   <header id="indicator-top" class="indicator-page-heading">
     <div><div class="indicator-eyebrow">INDICATORS &amp; WATCHLIST</div><h1>指标</h1>
       <p class="indicator-muted">{% if restricted_view %}本工作台已绑定指标及必要最新值；仅可筛选当前清单，不开放全库查询、历史和下载。{% else %}宏观与产业指标，一处查找。将关心的指标加入自选，先看走势，再查口径。{% endif %}</p></div>
-    <a href="#indicator-catalog" class="indicator-button">浏览 <span data-catalog-total-count>{{ visible_catalog_total }}</span> 项指标 ↓</a>
+    <a href="#indicator-catalog" data-open-catalog class="indicator-button">浏览 <span data-catalog-total-count>{{ visible_catalog_total }}</span> 项指标 ↓</a>
   </header>
   {% if restricted_view and restricted_data.owner_unavailable %}<p class="indicator-warning" role="status">工作台主人归属尚未核验，暂不展示分享内容。请主人重新保存共享配置后再试。</p>{% endif %}
-  {% if not restricted_view %}<section aria-labelledby="indicator-favorites-title">
-    <div class="indicator-section-heading"><h2 id="indicator-favorites-title">我的自选 <span id="indicator-favorite-count" class="indicator-muted">0</span></h2>
-      <span class="indicator-muted">保存在当前浏览器 · 最多 40 项</span></div>
-    <p id="indicator-storage-note" class="indicator-warning" role="status" hidden></p>
+  {% if not restricted_view %}
+  <div class="indicator-tabs" role="tablist" aria-label="指标页栏目">
+    <button type="button" id="indicator-tab-favorites" role="tab" data-indicator-tab="favorites" aria-controls="indicator-panel-favorites" aria-selected="false" tabindex="-1">自选 <span id="indicator-favorite-count">0</span></button>
+    <button type="button" id="indicator-tab-catalog" role="tab" data-indicator-tab="catalog" aria-controls="indicator-catalog" aria-selected="true">指标</button>
+    <button type="button" id="indicator-tab-charts" role="tab" data-indicator-tab="charts" aria-controls="indicator-panel-charts" aria-selected="false" tabindex="-1">图表</button>
+  </div>
+  <p id="indicator-storage-note" class="indicator-warning" role="status" hidden></p>
+  <div id="indicator-legacy-sync" class="indicator-warning" hidden><button type="button" id="indicator-legacy-sync-button" class="indicator-button"></button><p id="indicator-legacy-sync-note" role="status"></p></div>
+  <section id="indicator-panel-favorites" data-indicator-panel="favorites" role="tabpanel" aria-labelledby="indicator-tab-favorites" hidden>
+    <div class="indicator-section-heading"><h2 id="indicator-favorites-title">我的自选</h2>
+      <span class="indicator-muted">按账号保存在当前研究台 · 最多 100 项</span></div>
     <div id="indicator-favorites" class="indicator-favorites" aria-live="polite"></div>
-    <div id="indicator-favorites-empty" class="indicator-empty">还没有自选指标。点击指标名旁边的书签，这里就会显示最新值和走势小图。</div>
+    <div id="indicator-favorites-empty" class="indicator-empty">还没有自选。点击指标或图表旁边的星标加入自选。</div>
     <div id="indicator-favorites-error" class="indicator-warning" role="alert" hidden><span></span> <button type="button" id="indicator-favorites-retry" class="indicator-button">重试</button></div>
   </section>{% endif %}
-  <section id="indicator-catalog" aria-labelledby="indicator-catalog-title">
+  <section id="indicator-catalog"{% if not restricted_view %} data-indicator-panel="catalog" role="tabpanel"{% endif %} aria-labelledby="{{ 'indicator-catalog-title' if restricted_view else 'indicator-tab-catalog' }}">
     <div class="indicator-section-heading"><h2 id="indicator-catalog-title">指标清单</h2><span class="indicator-muted">{% if restricted_view %}仅本台绑定集 · 按服务端授权时点展示{% else %}勾选 2–4 项可比较走势 · 逐合约行情未列入{% endif %}</span></div>
     <div class="indicator-sticky-stack">
       <div class="indicator-toolbar">
@@ -66,7 +75,11 @@
     {% if catalog_remote and not restricted_view %}{% with pager_location='bottom' %}{% include "_indicator_catalog_pager.html" %}{% endwith %}{% endif %}
   </section>
   {% if restricted_view and not rows and not restricted_data.owner_unavailable %}<p class="indicator-empty">尚无已绑定的指标。主人配置核心指标或产业图绑定后，此处展示获授权的必要数值。</p>{% endif %}
-  {% if not restricted_view %}<section class="indicator-explanations" aria-label="数据说明">
+  {% if not restricted_view %}
+  <section id="indicator-panel-charts" data-indicator-panel="charts" role="tabpanel" aria-labelledby="indicator-tab-charts" hidden>
+    {% if chart_page is defined %}{% include "_chart_library.html" %}{% endif %}
+  </section>
+  <section class="indicator-explanations" data-catalog-explanations aria-label="数据说明">
     <div class="indicator-section-heading"><h2>数据说明</h2><span class="indicator-muted">需要核对时展开</span></div>
     <details id="indicator-checks" class="indicator-group">
       <summary>跨来源校验 <span class="indicator-muted">{{ checks | selectattr('state', 'equalto', 'ok') | list | length }} 项一致 · {{ checks | selectattr('state', 'equalto', 'stale') | list | length }} 项差异 · {{ checks | selectattr('state', 'equalto', 'no_data') | list | length }} 项无法比较</span></summary>

@@ -10,7 +10,7 @@ document.addEventListener("DOMContentLoaded", () => {
   catch (_) { storage = { getItem() { throw new Error("unavailable"); } }; }
   const get = (id) => document.getElementById(`market-core-${id}`);
   const dialog = get("dialog"), grid = get("grid"), notice = get("notice"), error = get("error");
-  let selected = metadata.defaults.filter((id) => allowed.has(id)), draft = [], favorites = [];
+  let selected = metadata.defaults.filter((id) => allowed.has(id)), draft = [];
   let controller, generation = 0, restoredCore = null, restoreController, restoreGeneration = 0;
   const announce = (message) => { notice.textContent = message; notice.hidden = !message; };
   try {
@@ -19,7 +19,6 @@ document.addEventListener("DOMContentLoaded", () => {
       const saved = preferences.read(storage, preferences.key(context, "core"), allowed, 12);
       if (saved !== null) selected = saved;
     }
-    favorites = metadata.catalog_paged ? window.ResearchCatalog.favorites(storage, preferences.key(context)) : preferences.read(storage, preferences.key(context), allowed, 40) || [];
   } catch (_) { announce("无法读取已保存的指标选择，本次使用默认排列；重新选择后可尝试保存。"); }
   function syncCount() {
     get("count").textContent = String(selected.length);
@@ -163,27 +162,23 @@ document.addEventListener("DOMContentLoaded", () => {
     if (saveButton.disabled) return;
     saveButton.disabled = true;
     try {
-      // Re-read this browser's favorites so a second tab's changes are retained.
-      let currentFavorites = favorites;
-      try { currentFavorites = metadata.catalog_paged ? window.ResearchCatalog.favorites(storage, preferences.key(context)) : preferences.read(storage, preferences.key(context), allowed, 40) || favorites; } catch (_) {}
-      let selection;
-      if (metadata.catalog_paged) {
-        selection = preferences.plan(draft, [], allowed);
-        selection.favorites = [...new Set([...currentFavorites, ...selection.core])];
-        if (selection.favorites.length > 40) throw new Error("自选最多 40 项，请先在指标页移出部分自选，再添加核心指标。");
-      } else selection = preferences.plan(draft, currentFavorites, allowed);
+      const account = window.AccountFavorites;
+      if (!account) throw new Error("账号自选需要来源版本2，请重新打开研究台。");
+      await account.refresh();
+      const selection = preferences.plan(draft, account.items, allowed);
+      await account.replace(selection.favorites);
       if (metadata.can_edit_shared) {
         const response = await window.researchFetch(`${window.RESEARCH_PREFIX || ""}/api/sn/market/core/config`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ series_ids: selection.core }),
         });
-        if (!response.ok) throw new Error("工作台核心指标未保存，请核对编辑权限后重试。");
+        if (!response.ok) throw new Error("账号自选已保存，工作台核心指标未保存，请核对编辑权限后重试。");
         const saved = await response.json();
         if (JSON.stringify(saved.series_ids) !== JSON.stringify(selection.core)) throw new Error("保存的核心指标范围不一致，请刷新后重试。");
       }
-      selected = selection.core; favorites = selection.favorites;
+      selected = selection.core;
       if (metadata.catalog_paged) restoredCore = [...selected];
-      const persisted = preferences.save(storage, context, selection);
-      announce(persisted ? `${metadata.can_edit_shared ? "工作台核心指标与排列已保存；" : "当前浏览器排列已保存；"}选中的指标已加入自选。移出核心不会移出自选。` : "浏览器未允许完整保存，本次选择在当前页面有效；请在指标页核对自选。");
+      const persisted = preferences.saveCore(storage, context, selection);
+      announce(`${metadata.can_edit_shared ? "工作台核心指标与排列已保存；" : persisted ? "当前浏览器排列已保存；" : "浏览器排列未能保存；"}选中的指标已加入账号自选。移出核心不会移出自选。`);
       dialog.close(); void loadCards();
     } catch (e) { get("dialog-error").textContent = e.message; get("dialog-error").hidden = false; }
     finally { saveButton.disabled = false; }

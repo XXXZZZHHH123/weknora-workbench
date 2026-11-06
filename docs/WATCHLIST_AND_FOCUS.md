@@ -8,6 +8,8 @@
 
 ## 一、指标页三栏
 
+本节与第二节已实现源码及隔离测试；浏览器交互待在可启动浏览器的环境验收，未部署。
+
 - `/sn/indicators` 分为三栏：**自选**、**指标**、**图表**（`?tab=favorites|catalog|charts`）。默认打开自选；自选为空时打开指标。
 - "图表"栏承载原图表库首页的内容：本周同期异动、分组、搜索、卡片、"从原表导入"入口。`/sn/charts` 跳转到 `/sn/indicators?tab=charts`；图表详情 `/sn/charts/{id}` 与导入页 `/sn/charts/import` 保持原地址。
 - 顶部导航去掉单独的"图表库"，保留"指标"。
@@ -21,6 +23,10 @@
 - 以前保存在浏览器里的自选（`tin.indicators.favorites.v1`）：账号自选为空且本浏览器有旧记录时，提示"把本浏览器的 N 个自选同步到账号"，研究员点击后才写入，不自动迁移。
 - 自选栏同时列出指标和图表：指标显示最新值、变化和周期位置摘要，图表显示缩略图。
 - 接口：`GET /api/sn/favorites`、`PUT /api/sn/favorites`（整表替换，带 revision）。受限视角返回 403。
+- 首次读取返回 `revision = 0`；首次写入也需携带 0。条目读取结果附 `status: active|invalid`，仅将 `kind`、`id`、`added_at` 存入正文；已保存的失效条目可以保留、排序或移除，不能作为新条目加入。旧来源授权返回 409；无写权限账号可读、自选写入返回 403，个人自选不要求研究台共享编辑权限。
+- 总览选择核心指标时仍自动加入自选，改为写入账号；移出核心不移出自选，也不自动同步旧浏览器记录。现有核心指标配置与上限不在本次扩展范围内。
+- 自选使用上下按钮排序；指标默认调用自然年周期接口，同时显示最新有效值、较上期差值与同期排名。周期摘要和图表缩略图在进入视野附近时读取，共用最多 4 个并发任务。
+- 隔离检查：Python `tests/test_favorites.py`、`tests/test_chart_pages.py`；Node `tests/favorites-client.test.cjs`、`tests/indicator-preferences.test.cjs`、`tests/native-catalog-v2.test.cjs`；浏览器 `tests/favorites-ui.cjs` 及更新后的图表、单指标、市场总览用例。浏览器夹具的 Python 解释器通过 `RESEARCH_PYTHON` 指定。
 
 ## 三、核心关注（研究台共享）
 

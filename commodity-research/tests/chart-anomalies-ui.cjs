@@ -1,6 +1,6 @@
 /* Browser coverage; all HTTP requests are fulfilled by synthetic fixtures. */
-const {assert, render, launch, open, prefix} = require('./chart-ui-fixture.cjs');
-const html = render('charts.html');
+const {assert, renderLibrary, launch, open, prefix} = require('./chart-ui-fixture.cjs');
+const html = renderLibrary();
 const asOf = '2029-09-15', unsafe = '<img src=x onerror="window.__xss=1">';
 const items = Array.from({length: 12}, (_, index) => ({id: 'chart-' + (index + 1), title: index ? '图表' + (index + 1) : unsafe,
   metric: index ? '指标' : unsafe, date: '2029-09-14', value: 35, rank: 1, n: 6, unit: '吨', transform: 'raw',
@@ -9,7 +9,7 @@ const items = Array.from({length: 12}, (_, index) => ({id: 'chart-' + (index + 1
 (async () => {
   const browser = await launch();
   try {
-    const library = await open(browser, '/sn/charts', html, ({path, url, reply}) => {
+    const library = await open(browser, '/sn/indicators?tab=charts', html, ({path, url, reply}) => {
       if (path === '/charts/anomalies') {
         assert.equal(url.searchParams.get('date'), asOf);
         return reply({as_of: asOf, items, total: 12, failed: [{title: unsafe, reason: unsafe}]});
@@ -34,7 +34,7 @@ const items = Array.from({length: 12}, (_, index) => ({id: 'chart-' + (index + 1
     assert.equal(await p.locator('#chart-anomalies-failed-list').innerText(), unsafe + '：' + unsafe);
     await rows.first().locator('a').click(); await p.waitForURL('**/sn/charts/chart-1?date=' + asOf);
     await library.close();
-    const empty = await open(browser, '/sn/charts', html, ({path, reply}) => {
+    const empty = await open(browser, '/sn/indicators?tab=charts', html, ({path, reply}) => {
       if (path === '/charts/anomalies') return reply({as_of: asOf, items: [], total: 0, failed: []});
       if (path === '/charts') return reply({items: [], total: 0, next_offset: null});
       return false;

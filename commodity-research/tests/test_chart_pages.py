@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 import json
 from types import SimpleNamespace
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi import FastAPI, Request
 from lxml.html import fromstring
@@ -12,7 +12,7 @@ from starlette.routing import Match
 from tin.integration.identity import Identity, current_identity
 from tin.integration.workbench_scope import WorkbenchScope, current_workbench
 from tin.web import app as web
-from tin.web.chart_pages import build_router
+from tin.web.chart_pages import build_router, page_config
 
 
 def endpoints(routes):
@@ -38,6 +38,12 @@ def pages():
 
     app = FastAPI()
     app.include_router(build_router(page_session, shell, web.templates))
+
+    @app.get('/sn/indicators')
+    def indicator_tabs(request: Request):
+        return web.templates.TemplateResponse(request, 'indicators.html', shell(None, 'indicators',
+            rows=[], groups=[], catalog_remote=True, catalog_total=0, catalog_offset=0, catalog_next=None,
+            dimensions=[], checks=[], sources={'rows': []}, chart_page=page_config(request)))
 
     @app.get('/fixture-indicator')
     def indicator(request: Request):
@@ -89,7 +95,7 @@ def config(response, element='chart-page-config'):
     return json.loads(fromstring(response.text).get_element_by_id(element).text)
 
 
-@pytest.mark.parametrize('path, marker', [('/sn/charts', 'chart-cards'), ('/sn/charts/import', 'chart-import-sheets'),
+@pytest.mark.parametrize('path, marker', [('/sn/charts/import', 'chart-import-sheets'),
                                         ('/sn/charts/chart-1', 'chart-editor')])
 def test_templates_and_page_projection(pages, path, marker):
     client, sessions = pages
@@ -100,7 +106,9 @@ def test_templates_and_page_projection(pages, path, marker):
     assert config(response)['enabled'] and config(response)['can_write']
     assert config(response)['date'] == '2030-01-02'
     assert sessions == [('indicators', {'series_ids': [], 'points_per_series': 1})]
-    assert html.xpath('//nav//a[@href="/workbenches/fixture-workbench/sn/charts"]')
+    assert html.xpath('//nav//a[@href="/workbenches/fixture-workbench/sn/indicators" and @aria-current="page"]')
+    assert not html.xpath('//nav//a[contains(@href,"/sn/charts")]')
+    assert html.xpath('//a[@href="/workbenches/fixture-workbench/sn/indicators?tab=charts&date=2030-01-02" and text()="返回图表库"]')
     if path.endswith('/import'):
         assert config(response)['id'] is None, '静态导入路由优先于动态ID'
     if path.endswith('chart-1'):
@@ -119,7 +127,7 @@ def test_readonly_controls_and_reason(pages, headers):
     assert 'disabled' in html.get_element_by_id('chart-editor-fields').attrib
 
 
-@pytest.mark.parametrize('path', ['/sn/charts', '/sn/charts/import', '/sn/charts/chart-1'])
+@pytest.mark.parametrize('path', ['/sn/charts/import', '/sn/charts/chart-1'])
 @pytest.mark.parametrize('headers, status, reason', [({'x-restricted': 'true'}, 403, '受限视角'),
     ({'x-version': '1'}, 409, '重新打开研究台'), ({'x-local': 'true'}, 409, '来源版本2')])
 def test_unavailable_pages_explain_without_reading_sources(pages, path, headers, status, reason):
@@ -170,13 +178,38 @@ def test_detail_notices_are_small_text_directly_below_the_chart(pages):
 
 def test_library_anomalies_are_expanded_before_the_chart_list(pages):
     client, _ = pages
-    html = fromstring(client.get('/sn/charts').text)
+    html = fromstring(client.get('/sn/indicators?tab=charts').text)
     panel = html.get_element_by_id('chart-anomalies')
     assert panel.tag == 'details' and 'open' in panel.attrib
     assert '本周同期异动' in panel.xpath('./summary')[0].text_content()
     assert panel.getnext().get('class') == 'charts-layout'
     more = html.get_element_by_id('chart-anomalies-more')
     assert more.get('aria-expanded') == 'false' and more.get('aria-controls') == 'chart-anomalies-rows'
+
+
+def test_chart_index_redirect_preserves_query_and_overrides_tab_without_reading_sources(pages):
+    client, sessions = pages
+    for headers in ({}, {'x-restricted': 'true'}, {'x-version': '1'}):
+        response = client.get('/sn/charts?date=2030-01-02&q=a%26b&tab=catalog&tag=a&tag=b', headers)
+        assert response.status_code == 307
+        location = urlsplit(response.headers['location'])
+        assert location.path == '/workbenches/fixture-workbench/sn/indicators'
+        assert parse_qs(location.query) == {'tab': ['charts'], 'date': ['2030-01-02'], 'q': ['a&b'], 'tag': ['a', 'b']}
+    assert not sessions
+
+
+def test_indicator_three_tabs_share_chart_library_content_and_accessible_stars(pages):
+    client, _ = pages
+    response = client.get('/sn/indicators?tab=charts&date=2030-01-02')
+    html = fromstring(response.text)
+    assert html.xpath('//*[@data-indicator-tab]/@data-indicator-tab') == ['favorites', 'catalog', 'charts']
+    assert len(html.xpath('//*[@id="chart-cards"]')) == 1
+    assert len(html.xpath('//script[contains(@src,"/static/charts.js")]')) == 1
+    assert html.xpath('//a[contains(@href,"/sn/charts/import")]')
+    assert config(response)['date'] == '2030-01-02'
+    for path in ('/fixture-indicator', '/sn/charts/chart-1'):
+        page = fromstring(client.get(path).text)
+        assert page.xpath('//button[@data-favorite and @aria-pressed="false" and @type="button"]')
 
 
 @pytest.mark.parametrize('period', ['daily', 'weekly'])

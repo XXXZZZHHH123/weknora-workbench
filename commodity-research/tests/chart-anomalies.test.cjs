@@ -8,13 +8,16 @@ class Element {
   setAttribute(name, value) { this.attrs[name] = value; }
   replaceChildren(...children) { this.children = children; }
   append(child) { this.children.push(child); }
+  closest() { return null; }
 }
-async function library(data, {error, enabled = true} = {}) {
+async function library(data, {error, enabled = true, hidden = false} = {}) {
   const elements = new Map(), requests = [];
   const get = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
   get('chart-page-config').textContent = JSON.stringify({enabled, date: '2029-09-15'});
   const page = new Element(); page.dataset.chartsPage = 'library';
-  const document = {getElementById: get, querySelector: () => page, createElement: () => new Element()};
+  const panel = {hidden}, events = {};
+  page.closest = () => panel;
+  const document = {getElementById: get, querySelector: () => page, createElement: () => new Element(), addEventListener(name, callback) { events[name] = callback; }};
   const window = {addEventListener() {}, RESEARCH_PREFIX: '/research/workbenches/synthetic'};
   const context = vm.createContext({document, window, URLSearchParams, Headers, AbortController, setTimeout, clearTimeout});
   vm.runInContext(fs.readFileSync(path.join(assets, 'chart-ui.js'), 'utf8'), context);
@@ -26,7 +29,7 @@ async function library(data, {error, enabled = true} = {}) {
   }};
   vm.runInContext(fs.readFileSync(path.join(assets, 'charts.js'), 'utf8'), context);
   await new Promise(setImmediate);
-  return {get, requests};
+  return {get, requests, async show() { panel.hidden = false; events['indicator:tab'](); await new Promise(setImmediate); }};
 }
 function payload(count = 12) {
   return {as_of: '2029-09-15', total: count, failed: [], items: Array.from({length: count}, (_, i) => ({
@@ -93,4 +96,12 @@ test('接口权限错误显示原因，禁用页面不发请求', async () => {
   }
   const disabled = await library(null, {enabled: false});
   assert.deepEqual(disabled.requests, []);
+});
+
+test('指标页图表栏首次打开才读取异动和列表，多次切换不重复初始化', async () => {
+  const instance = await library(payload(), {hidden: true});
+  assert.deepEqual(instance.requests, []);
+  await instance.show(); await instance.show();
+  assert.equal(instance.requests.filter(url => url.startsWith('/charts/anomalies')).length, 1);
+  assert.equal(instance.requests.filter(url => url.startsWith('/charts?')).length, 2, '列表和分组元数据各读一次');
 });
