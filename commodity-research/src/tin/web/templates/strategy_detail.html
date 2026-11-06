@@ -11,6 +11,7 @@
     {% if strategy.status == 'draft' %}<button class="button-primary" data-action="publish">审阅并发布</button>{% endif %}
     <button class="button-muted" data-action="cancel">作废</button></div>{% endif %}</section>
 <div id="strategy-notice" class="strategy-notice" role="status"></div>
+{% if not restricted_view %}<aside class="strategy-notice" data-dedup-references="strategy" data-dedup-reference-id="plan:{{ strategy.id }}" hidden></aside>{% endif %}
 {% if strategy_scope_status == 'unassigned' %}<p class="strategy-scope-notice">归属待核对 · 历史原记录仅供只读预览。</p>{% endif %}
 <div class="detail-grid"><div class="strategy-main">
   <section class="detail-panel"><h2>执行计划 <small>价格单位：元/吨；跨期为近月减远月</small></h2>

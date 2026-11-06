@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}导出 PPT · 商品研究{% endblock %}
 {% block main %}
+{% if not restricted_view and ppt_page.enabled %}<aside class="charts-notice" data-dedup-references="ppt" data-dedup-reference-id="{{ ppt_page.id }}" hidden></aside>{% endif %}
 {% include "_ppt_assets.html" %}
 <div class="charts-page ppt-page" data-ppt-page="export">
   <header class="charts-header"><div>{% with ppt_breadcrumb_link=true %}{% include '_ppt_breadcrumb.html' %}{% endwith %}<h1 id="ppt-title">导出 PPT</h1><p id="ppt-meta" class="charts-muted"></p></div></header>

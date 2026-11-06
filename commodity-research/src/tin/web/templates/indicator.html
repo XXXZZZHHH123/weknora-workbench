@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ detail.name }} · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
+{% block head %}{% if dedup_enabled %}<script defer src="{{ research_static_prefix() }}/static/indicator-dedup.js?v={{ static_version() }}"></script>{% endif %}{% endblock %}
 {% block main %}
 
 {% set d = detail %}
@@ -24,6 +25,8 @@
     <a href="{{ research_prefix() }}/sn/diagram" class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">产业图</a>
   </div>
 </div>
+
+{% if dedup_enabled %}<section data-dedup-sources="{{ d.series_id }}" class="mt-4 rounded-lg border border-[var(--line)] p-4" hidden aria-live="polite"></section>{% endif %}
 
 <!-- 被谁在用：放在最上面。这是「要不要维护它」的唯一依据 -->
 <section class="mt-4">

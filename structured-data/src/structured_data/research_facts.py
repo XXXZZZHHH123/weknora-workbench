@@ -220,6 +220,15 @@ def _bounded_rows(store, bindings, selection, *, strict=False):
             parameters.append(selection['as_of'])
         with info.get('_store', store)._connect(info['dataset_id']) as connection:
             if strict:
+                if selection.get('include_display_precision'):
+                    from .research_precision import precision_rows
+                    cursor = connection.execute('SELECT series_id,date,min(value),max(value),bool_and(isfinite(value)), '
+                        'min(raw_value),max(raw_value),min(source_cell),max(source_cell) '
+                        + 'FROM observations WHERE '+where+' GROUP BY series_id,date '
+                        + 'QUALIFY row_number() OVER (PARTITION BY series_id ORDER BY date DESC) <= ? '
+                        + 'ORDER BY series_id,date',[*parameters,selection['points_per_series']])
+                    rows.extend(precision_rows(info.get('_store', store), info, mapping, cursor.fetchall()))
+                    continue
                 cursor = connection.execute('SELECT series_id,date,min(value),max(value),bool_and(isfinite(value)) '
                     + 'FROM observations WHERE '+where+' GROUP BY series_id,date '
                     + 'QUALIFY row_number() OVER (PARTITION BY series_id ORDER BY date DESC) <= ? '

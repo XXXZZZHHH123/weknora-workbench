@@ -8,6 +8,7 @@
 <script defer src="{{ research_static_prefix() }}/static/indicator-preferences.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/favorites.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/indicators.js?v={{ static_version() }}"></script>
+{% if dedup_enabled %}<script defer src="{{ research_static_prefix() }}/static/indicator-dedup.js?v={{ static_version() }}"></script>{% endif %}
 {% endif %}
 {% endblock %}
 {% block main %}
@@ -30,6 +31,7 @@
   <p id="indicator-storage-note" class="indicator-warning" role="status" hidden></p>
   <div id="indicator-legacy-sync" class="indicator-warning" hidden><button type="button" id="indicator-legacy-sync-button" class="indicator-button"></button><p id="indicator-legacy-sync-note" role="status"></p></div>
   <section id="indicator-panel-favorites" data-indicator-panel="favorites" role="tabpanel" aria-labelledby="indicator-tab-favorites" hidden>
+    {% if dedup_enabled %}<div data-dedup-references="favorites"></div>{% endif %}
     <div class="indicator-section-heading"><h2 id="indicator-favorites-title">我的自选</h2>
       <span class="indicator-muted">按账号保存在当前研究台 · 最多 100 项</span>{% if chart_page is defined and chart_page.enabled %}<button type="button" id="favorites-chart-open" class="charts-button" data-chart-builder="favorites">作图</button>{% endif %}</div>
     <div id="indicator-favorites" class="indicator-favorites" aria-live="polite"></div>
@@ -37,6 +39,7 @@
     <div id="indicator-favorites-error" class="indicator-warning" role="alert" hidden><span></span> <button type="button" id="indicator-favorites-retry" class="indicator-button">重试</button></div>
   </section>{% endif %}
   <section id="indicator-catalog"{% if not restricted_view %} data-indicator-panel="catalog" role="tabpanel"{% endif %} aria-labelledby="{{ 'indicator-catalog-title' if restricted_view else 'indicator-tab-catalog' }}">
+    {% if dedup_enabled and not restricted_view %}<aside data-dedup-banner class="indicator-warning" role="status" hidden><a href="{{ research_prefix() }}/sn/indicator-dedup"></a></aside>{% endif %}
     {% if not restricted_view %}{% include '_source_status_hint.html' %}{% endif %}
     <div class="indicator-section-heading"><h2 id="indicator-catalog-title">指标清单</h2><span class="indicator-muted">{% if restricted_view %}仅本台绑定集 · 按服务端授权时点展示{% else %}勾选最多 16 项作图或生成图集 · 逐合约行情未列入{% endif %}</span></div>
     <div class="indicator-sticky-stack">

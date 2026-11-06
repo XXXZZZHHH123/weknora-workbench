@@ -7,6 +7,7 @@
   {% if not ppt_page.enabled %}<p class="charts-notice error" role="alert">{{ ppt_page.reason }}</p>{% else %}
   {% if not ppt_page.can_write %}<p class="charts-notice" id="ppt-write-reason">{{ ppt_page.write_reason }}</p>{% endif %}
   {% include '_ppt_source_status.html' %}
+  <aside class="charts-notice" data-dedup-references="ppt" data-dedup-reference-id="{{ ppt_page.id }}" hidden></aside>
   <div id="ppt-detail-status" role="status" aria-live="polite" hidden></div>
   <div id="ppt-conflict" class="charts-notice warning" role="alert" hidden>模板已有新版本。重新加载将丢弃本页未保存的选择。<button id="ppt-reload" type="button" class="charts-button">重新加载最新版本</button></div>
   <p class="charts-muted ppt-legend"><span class="ppt-kind-chart">实线：图</span><span class="ppt-kind-table">双线：数据小表</span><span class="ppt-kind-image">虚线：图片</span> 点击图位查看候选与绑定。</p>

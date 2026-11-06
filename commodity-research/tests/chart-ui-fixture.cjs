@@ -31,10 +31,10 @@ from jinja2 import Environment,FileSystemLoader,DictLoader,ChoiceLoader,select_a
 data=json.loads(sys.argv[3])
 host='''<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/static/app.css"><link rel="stylesheet" href="/static/favorites.css"><style>[hidden]{display:none!important}body{margin:0}main{max-width:1280px;margin:16px auto;padding:0 16px}</style><script>window.RESEARCH_CONTEXT={tenant:17,user:'fixture-user',workbench:'fixture',scope_version:2};window.RESEARCH_PREFIX='/research/workbenches/fixture';window.researchFetch=(url,options)=>fetch(url,options);window.showToast=(text)=>{window.fixtureToast=text};window.copyText=()=>{};window.ChartPaletteColors={{ palette|tojson }};</script><script src="/static/chart-palette.js"></script><script defer src="/static/favorites-client.js"></script>{% block head %}{% endblock %}</head><body><main>{% block main %}{% endblock %}</main></body></html>'''
 env=Environment(loader=ChoiceLoader([DictLoader({'base.html':host}),FileSystemLoader(sys.argv[1])]),autoescape=select_autoescape(['html']))
-scope=SimpleNamespace(metadata=SimpleNamespace(name='合成研究台'),scope_version=2,restricted=False,can_edit=data['config']['can_write'])
+scope=SimpleNamespace(metadata=SimpleNamespace(name='合成研究台'),scope_version=2,restricted=data['config'].get('restricted',False),can_edit=data['config']['can_write'])
 env.globals.update(research_workbench=lambda:scope,research_prefix=lambda:'/research/workbenches/fixture',research_url=lambda s:'/research/workbenches/fixture'+s,research_static_prefix=lambda:'',static_version=lambda:'chart-ui-fixture')
 env.filters['num']=lambda value,*args: str(value) if value is not None else '—'
-ctx=dict(chart_page=data['config'],request=SimpleNamespace(query_params={'date':data['config'].get('date')}),palette=json.load(open(sys.argv[2])),restricted_view=False,d=data['config'].get('date'),**data['extra'])
+ctx=dict(chart_page=data['config'],request=SimpleNamespace(query_params={'date':data['config'].get('date')}),palette=json.load(open(sys.argv[2])),restricted_view=data['config'].get('restricted',False),d=data['config'].get('date'),**data['extra'])
 print(env.get_template(data['template']).render(**ctx))
 `, path.join(web, 'templates'), path.join(web, 'static/chart-palette.json'), JSON.stringify(input)], {stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024});
   assert.equal(rendered.status, 0, rendered.stderr); return rendered.stdout;

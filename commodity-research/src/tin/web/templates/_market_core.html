@@ -5,6 +5,7 @@
   </div>
   {% if restricted_view and restricted_data.core_charts_hidden %}<p class="market-core-notice">图表条目暂不对受限视角开放</p>{% endif %}
   <p id="market-core-notice" class="market-core-notice" role="status" hidden></p>
+  {% if not restricted_view %}<aside class="market-core-notice" data-dedup-references="core" hidden></aside>{% endif %}
   <div id="market-core-grid" class="market-core-grid" aria-live="polite">{% include '_market_cards.html' %}</div>
   <div id="market-core-empty" class="market-core-empty" {% if cards %}hidden{% endif %}>
     <p>{{ '尚未配置可展示的授权指标。' if restricted_view else '尚未选择核心关注。点击“选择与排序”添加指标或图表，也可以根据研究框架生成建议。' }}</p>

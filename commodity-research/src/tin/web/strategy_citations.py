@@ -137,7 +137,7 @@ def _result(citation, title, subtitle, preview):
 
 
 def _resolve_indicator(scope, citation):
-    page = catalog_page(scope, limit=1, series_ids=[citation['series_id']])
+    page = catalog_page(scope, limit=1, series_ids=[citation['series_id']], apply_dedup=False)
     fields = page.get('series')
     if not isinstance(fields, list) or len(fields) != 1 or fields[0].get('series_id') != citation['series_id']:
         raise HTTPException(404, '引用指标已删除、失效或不在当前授权目录中，请重新选择')
@@ -163,7 +163,7 @@ def _series_names(scope, identifiers):
     if not wanted:
         return {}
     try:
-        page = catalog_page(scope, limit=len(wanted), series_ids=wanted)
+        page = catalog_page(scope, limit=len(wanted), series_ids=wanted, apply_dedup=False)
     except HTTPException:
         return {}
     return {field['series_id']: human_text(field.get('metric') or field.get('name'))

@@ -10,7 +10,8 @@ def indicator_row(spec):
             'unit': spec.get('unit') or '—', 'source': spec.get('source_file') or '知识库结构化',
             'frequency': spec.get('frequency') or '未注明', 'fetch_mode': 'readonly', 'status': '可用',
             'registered': True, 'vendor_code': None, 'is_proxy': False, 'note': '',
-            'knowledge_base_id': spec.get('knowledge_base_id'), 'source_kind': spec.get('source_kind')}
+            'knowledge_base_id': spec.get('knowledge_base_id'), 'source_kind': spec.get('source_kind'),
+            'dedup_status': spec.get('dedup_status'), 'dedup_pairs': spec.get('dedup_pairs', [])}
 
 
 def indicator_page(scope, *, offset=0, limit=200, search='', kind='all', identifiers=None):

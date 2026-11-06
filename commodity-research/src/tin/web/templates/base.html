@@ -18,6 +18,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
 {% if not restricted_view and research_workbench() and not research_workbench().restricted and research_workbench().scope_version == 2 %}
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/favorites.css?v={{ static_version() }}">
 <script defer src="{{ research_static_prefix() }}/static/favorites-client.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/dedup-references.js?v={{ static_version() }}"></script>
 {% endif %}
 {% block head %}{% endblock %}
 </head>

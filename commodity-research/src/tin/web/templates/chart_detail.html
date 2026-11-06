@@ -6,6 +6,7 @@
   <header class="charts-header"><div><a class="charts-muted" href="{{ research_url('/sn/indicators?tab=charts') }}{% if chart_page.date %}&amp;date={{ chart_page.date | urlencode }}{% endif %}">返回图表库</a><h1 id="chart-title">图表详情</h1>{% if chart_page.enabled %}<button type="button" class="favorites-star charts-button" data-favorite="{{ chart_page.id }}" data-favorite-kind="chart" data-favorite-label="图表" aria-pressed="false" disabled>☆ 自选</button>{% endif %}<p id="chart-meta" class="charts-muted"></p></div></header>
   {% if not chart_page.enabled %}<p class="charts-notice error" role="alert">{{ chart_page.reason }}</p>{% else %}
   <div id="chart-detail-status" role="status" hidden></div>
+  <aside class="charts-notice" data-dedup-references="chart" data-dedup-reference-id="{{ chart_page.id }}" hidden></aside>
   <div id="chart-conflict" class="charts-notice warning" role="alert" hidden><span>图表已有新版本，请重新加载后修改。</span> <button type="button" id="chart-reload" class="charts-button">重新加载最新版本</button></div>
   <section class="charts-panel" aria-label="图表"><div id="chart-plot">正在读取图表…</div><p id="chart-notices" class="charts-footnote" role="status" hidden></p><div id="chart-exports"></div><p id="chart-note" class="charts-muted"></p></section>
   <section class="charts-panel" id="chart-statistics" hidden></section>

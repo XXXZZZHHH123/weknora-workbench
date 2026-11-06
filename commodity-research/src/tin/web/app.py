@@ -230,6 +230,10 @@ from tin.web.charts import router as charts_router
 app.include_router(charts_router)
 from tin.web.favorites import router as favorites_router
 app.include_router(favorites_router)
+from tin.web.indicator_dedup import router as indicator_dedup_router
+app.include_router(indicator_dedup_router)
+from tin.web.dedup_references import router as dedup_references_router
+app.include_router(dedup_references_router)
 from tin.web.ppt import router as ppt_router
 app.include_router(ppt_router)
 from tin.web.chart_import import router as chart_import_router
@@ -686,10 +690,22 @@ def indicators_page(request: Request, date: str | None = None):
             s, "indicators", day, rows=rows, groups=groups, dimensions=DIMENSIONS, checks=checks,
             chart_page=page_config(request),
             source_status_hint=source_status_hint(scope),
+            dedup_enabled=bool(remote and not scope.restricted and any(item.get('source_type') == 'central_dataset' for item in scope.sources)),
             catalog_remote=remote, catalog_offset=directory['offset'] if directory else 0,
             catalog_total=directory['total'] if directory else len(rows),
             catalog_next=directory['next_offset'] if directory else None,
             sources={"rows": [], "counts": {}} if s.info.get("workbench_id") else source_catalog()))
+
+
+@app.get('/sn/indicator-dedup')
+def indicator_dedup_page(request: Request):
+    scope = current_workbench.get()
+    if scope is None or scope.scope_version != 2:
+        raise HTTPException(409, '请从已关联中心来源的研究台打开指标对应确认')
+    if scope.restricted:
+        raise HTTPException(403, '受限视角不开放指标对应确认')
+    return templates.TemplateResponse(request, 'indicator_dedup.html',
+        {'nav': 'indicators', 'ticker': [], 'names': {}, 'd': None, 'restricted_view': False})
 
 
 @app.get("/sn/indicators/{series_id}")
@@ -707,7 +723,10 @@ def indicator_page(request: Request, series_id: str, date: str | None = None):
         except diagram_api.DiagramError as e:
             raise HTTPException(404, str(e)) from e
         return templates.TemplateResponse(request, "indicator.html", _shell(
-            s, "indicators", day, detail=d, usage=diagram_api.usage(s, series_id, research_variety(s))))
+            s, "indicators", day, detail=d, usage=diagram_api.usage(s, series_id, research_variety(s)),
+            dedup_enabled=bool(current_workbench.get() and current_workbench.get().scope_version == 2
+                and not current_workbench.get().restricted
+                and any(item.get('source_type') == 'central_dataset' for item in current_workbench.get().sources))))
 
 
 @app.get("/api/sn/indicators/{series_id}/usage")

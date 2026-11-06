@@ -20,6 +20,7 @@
   </div>
 </header>
 <div id="strategy-notice" class="strategy-notice" role="status"></div>
+{% if not restricted_view %}<aside class="strategy-notice" data-dedup-references="strategy" data-dedup-reference-id="{{ workspace_selected or '' }}" data-dedup-workspace hidden></aside>{% endif %}
 {% if restricted_view %}
 <section class="strategy-readonly-list">
 {% for s in strategies %}<article class="detail-panel"><div class="strategy-card-top"><span class="status-chip status-{{ s.status }}">{{ status_labels[s.status] }}</span><span>已分享 · 只读</span></div><h2>{{ human_text(s.title, names|default({})) }}</h2><p class="research-prose">{{ human_text(s.plan.thesis, names|default({})) }}</p>{% include "_strategy_plan_readonly.html" %}</article>{% else %}<p class="empty-state">尚无已分享策略。</p>{% endfor %}

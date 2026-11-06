@@ -30,7 +30,9 @@ def catalog_fields(scope, identifiers):
     fields, version = {}, None
     for offset in range(0, len(identifiers), 200):
         batch = identifiers[offset:offset + 200]
-        page = catalog_page(scope, series_ids=batch, limit=200, version=version)
+        # Saved references keep reading their original copy until the researcher
+        # explicitly accepts a new revision. Discovery catalogs apply dedup.
+        page = catalog_page(scope, series_ids=batch, limit=200, version=version, apply_dedup=False)
         if version is None:
             version = page['version']
         if page['version'] != version:

@@ -64,6 +64,7 @@ def remember_origins(session, identifiers):
 
 
 def _save_mapping(session, key, config):
+    versioned = key == CORE_KEY
     key = mapping_key(session, key)
     row = session.get(SourceMapping, key)
     now = datetime.now(timezone.utc)
@@ -73,6 +74,8 @@ def _save_mapping(session, key, config):
         session.add(row)
     else:
         row.config, row.confirmed_by, row.confirmed_at = config, actor, now
+        if versioned:
+            row.version = (row.version or 1) + 1
 
 
 def _core_items(items):

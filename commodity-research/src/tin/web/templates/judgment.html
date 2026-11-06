@@ -29,6 +29,7 @@
   </div>{% elif item.series_id %}<span class="judgment-evidence-unbound">{{ indicator_name(item.series_id, names) }} · 暂无可用数值</span>{% else %}<span class="judgment-evidence-unbound">文字依据 · 尚未关联指标</span>{% endif %}
 {% endmacro %}
 <div class="judgment-research">
+{% if not restricted_view and j %}<aside class="research-panel" data-dedup-references="judgment" data-dedup-reference-id="{{ j.id }}" hidden></aside>{% endif %}
 <header class="rw-page-head judgment-research-header">
   <div><h1>研究判断</h1><p>{% if j %}{% if author_label(j.author) %}{{ author_label(j.author) }} · {% endif %}{{ j.written_at }} · {{ j.status }}{% else %}梳理多空分歧，跟踪依据与验证条件{% endif %}</p></div>
   {% if not restricted_view %}<div class="rw-tools"><button type="button" class="rw-btn rw-btn-primary" data-open-logic>管理研究逻辑</button></div>{% endif %}

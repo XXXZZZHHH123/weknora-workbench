@@ -34,7 +34,7 @@ def case(monkeypatch):
     scope = WorkbenchScope(identity, WB, 'library-a', 73,
         {'can_edit': True, 'can_read_source': True, 'workspace_mode': 'isolated'},
         'Bearer synthetic-source-access', scope_version=2, sources_revision=3, sources=sources)
-    state = {'metadata_reads': [], 'catalog_reads': [], 'downloads': [], 'rule_reads': [],
+    state = {'metadata_reads': [], 'catalog_reads': [], 'catalog_dedup': [], 'downloads': [], 'rule_reads': [],
         'fields': [{'series_id': SID, 'metric': 'Synthetic quantity', 'unit': 'kg', 'frequency': 'weekly',
             'source_file': 'source.xlsx', 'knowledge_base_id': 'library-default',
             'source_binding_id': 'binding-default', 'source_version': FIELD_VERSION}],
@@ -70,8 +70,9 @@ def case(monkeypatch):
         if row is None:
             raise HTTPException(404, 'Synthetic missing source')
         return {'data': deepcopy(row)}
-    def catalog(bound, *, offset=0, limit=200, search='', series_ids=None):
+    def catalog(bound, *, offset=0, limit=200, search='', series_ids=None, apply_dedup=True):
         state['catalog_reads'].append((bound.workbench_id, offset, limit, search, series_ids))
+        state['catalog_dedup'].append(apply_dedup)
         rows = [row for row in state['fields'] if (series_ids is None or row['series_id'] in series_ids)
             and search.casefold() in row['metric'].casefold()]
         return {'series': deepcopy(rows[offset:offset + limit]), 'total': len(rows), 'version': CATALOG_VERSION,
@@ -152,6 +153,7 @@ def test_indicator_options_use_search_pages_and_actual_secondary_source_version(
     assert result['total'] == 1 and result['has_more'] is False
     assert result['items'][0]['citation'] == indicator(field='thesis')
     assert state['catalog_reads'] == [(scope.workbench_id, 0, 30, 'quantity', None)]
+    assert state['catalog_dedup'] == [True]
     assert state['metadata_reads'] == [] and state['downloads'] == []
 
 
@@ -163,6 +165,7 @@ def test_indicator_preview_rebuilds_snapshot_from_authoritative_metadata(case):
     assert normalized['snapshot']['preview']['type'] == 'indicator'
     assert 'Forged' not in json.dumps(normalized) and 'private.invalid' not in json.dumps(normalized)
     assert state['catalog_reads'][0][-1] == [SID]
+    assert state['catalog_dedup'] == [False]
     assert state['downloads'] == []
 
 
@@ -185,6 +188,7 @@ def test_condition_preview_retains_exact_rule_and_version_without_reading_observ
     assert state['rule_reads'] == [('synthetic-owner', WB, '17', 4)]
     # Only the rule's own indicator name is looked up for display; no observations or files.
     assert [(read[2], read[-1]) for read in state['catalog_reads']] == [(1, [SID])] and state['downloads'] == []
+    assert state['catalog_dedup'] == [False]
 
 
 def test_condition_directory_supports_threshold_falsifier_and_literal_search(case):
