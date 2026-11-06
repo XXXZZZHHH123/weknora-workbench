@@ -25,7 +25,13 @@
     if (new Set([...rawIds(), spec.series_id]).size > 16 || curves.length >= 16) { status('最多选择 16 个指标或曲线。', 'warning'); return; }
     metadata.set(spec.series_id, spec);
     curves.push({series_id: spec.series_id, label: (spec.name || spec.series_id).slice(0, 120), kind: 'line', axis: 'left', style: {}, curve_cycles: 'current'});
-    if (!$('title').value) $('title').value = spec.name?.slice(0, 120) || '';
+    // Keep an automatic title in step with the selection until the researcher edits it.
+    const title = $('title');
+    if (!title.value || title.dataset.builderAutoTitle === title.value) {
+      const first = curves[0]?.label || '';
+      title.value = (curves.length > 1 ? `${first} 等 ${curves.length} 项` : first).slice(0, 120);
+      title.dataset.builderAutoTitle = title.value;
+    }
     renderCurves(); void updateDefault(); schedule();
   }
   async function search(pageOffset = 0) {
@@ -48,7 +54,8 @@
         const row = document.createElement('label'); row.className = 'builder-catalog-item';
         const box = document.createElement('input'); box.type = 'checkbox'; box.dataset.builderIndicator = item.series_id;
         box.checked = curves.some(c => c.series_id === item.series_id);
-        const text = document.createElement('span'); text.textContent = `${item.name} · ${unit(item) || '单位未注明'}`;
+        // Same-named fields from different sheets stay distinguishable by their source sheet.
+        const text = document.createElement('span'); text.textContent = `${item.name} · ${unit(item) || '单位未注明'}${item.sheet ? ` · ${item.sheet}` : ''}`;
         box.addEventListener('change', () => {
           if (box.checked) addIndicator(item);
           else { curves = curves.filter(c => c.series_id !== item.series_id); renderCurves(); void updateDefault(); schedule(); }
@@ -162,7 +169,8 @@
         renderers.push(K.render($('preview'), data, {definition: body, title: body.title, height: 420}));
         U.stats($('statistics'), data);
       }
-      U.notices($('status'), [...(data.notices || []), ...(data.warnings || [])]);
+      // Computation notes (omitted cycles, missing units) are context, not errors.
+      U.notices($('status'), [...(data.notices || []), ...(data.warnings || [])], 'subtle');
       if (!config.can_write) status(config.write_reason || '当前账号没有研究工作台编辑权限，可预览。');
       savedSignature = signature; $('save').disabled = !config.can_write;
     } catch (error) { if (own === previewToken && error.name !== 'AbortError') { cleanPreview(); status(error.message, 'error'); } }
