@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}导出 PPT · 商品研究{% endblock %}
+{% block main %}
+{% include "_ppt_assets.html" %}
+<div class="charts-page ppt-page" data-ppt-page="export">
+  <header class="charts-header"><div><a class="charts-muted" href="{{ research_url('/sn/ppt/' ~ ppt_page.id) }}">返回图位确认</a><h1 id="ppt-title">导出 PPT</h1><p id="ppt-meta" class="charts-muted"></p></div></header>
+  {% if not ppt_page.enabled %}<p class="charts-notice error" role="alert">{{ ppt_page.reason }}</p>{% else %}
+  {% if not ppt_page.can_write %}<p class="charts-notice" id="ppt-write-reason">{{ ppt_page.write_reason }}</p>{% endif %}
+  <section class="charts-panel"><h2>生成新一期 PPT</h2><p class="charts-muted">按原图位比例生成图片。单个图位失败时保留原图，并在报告中说明；标题文字需要人工核对。</p>
+    <form id="ppt-export-form"><fieldset id="ppt-export-fields" disabled><div class="charts-toolbar"><label class="charts-field">数据截止日<input id="ppt-export-date" type="date" required></label><label><input id="ppt-mark-headlines" type="checkbox"> 标黄提示含数字的标题</label><button class="charts-button primary" type="submit">生成</button></div></fieldset></form>
+    <p id="ppt-export-summary" class="charts-muted"></p>
+    <div id="ppt-export-status" role="status" aria-live="polite" hidden></div><progress id="ppt-render-progress" max="1" value="0" aria-label="图位渲染进度" hidden></progress>
+    <div id="ppt-export-conflict" class="charts-notice warning" role="alert" hidden>模板在生成期间已有新版本，请重新加载并生成。<button type="button" id="ppt-export-reload" class="charts-button">重新加载模板</button></div>
+  </section>
+  <section id="ppt-export-report" class="charts-panel" aria-label="导出报告" hidden></section>
+  <section aria-label="各图位新图预览"><h2>图位预览</h2><div id="ppt-export-previews" class="charts-grid"></div></section>
+  {% endif %}
+</div>
+<script type="application/json" id="ppt-page-config">{{ ppt_page | tojson }}</script>
+<script src="{{ research_static_prefix() }}/static/ppt.js?v={{ static_version() }}"></script>
+<script src="{{ research_static_prefix() }}/static/ppt-export.js?v={{ static_version() }}"></script>
+{% endblock %}
