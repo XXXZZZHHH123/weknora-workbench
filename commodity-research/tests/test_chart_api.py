@@ -468,7 +468,11 @@ def test_native_apply_selected_sheet_override_dedup_deleted_origin_and_style_sna
     again = client.post('/api/sn/charts/import/native/apply', json=body).json()
     assert again['created'] == [] and again['skipped'] == [{'chart_key': KEY, 'id': saved['id'], 'reason': 'already_imported'}]
     assert client.delete('/api/sn/charts/' + saved['id'] + '?revision=1').status_code == 200
-    assert client.post('/api/sn/charts/import/native/apply', json=body).json()['created'] == []
+    # A researcher who deleted an imported chart can import that sheet again.
+    preview = client.post('/api/sn/charts/import/native/preview', json={}).json()
+    assert preview['sheets'][0]['charts'][0]['already_imported'] is False
+    recreated = client.post('/api/sn/charts/import/native/apply', json=body).json()
+    assert len(recreated['created']) == 1 and recreated['created'][0]['id'] != saved['id']
     preview = client.post('/api/sn/charts/import/native/preview', json={}).json()
     assert preview['sheets'][0]['charts'][0]['already_imported'] is True
 

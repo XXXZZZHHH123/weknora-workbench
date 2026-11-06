@@ -31,7 +31,7 @@ def preview(body: NativePreviewInput):
     page = native_chart_page(scope, offset=body.offset, limit=body.limit)
     suggestions = suggestions_for(scope, page.charts)
     with artifact_session(scope) as session:
-        refs = {ChartDefinition.model_validate_json(row.body).origin.ref for row in session.scalars(artifact_query(deleted=True))}
+        refs = {ChartDefinition.model_validate_json(row.body).origin.ref for row in session.scalars(artifact_query())}
     for item in suggestions:
         item['already_imported'] = item['chart_key'] in refs
     return {'sheets': group_suggestions(suggestions), 'total': page.total, 'offset': page.offset,
@@ -83,7 +83,7 @@ def apply(body: NativeApplyInput):
             session.execute(select(WorkbenchStorageScope).where(
                 WorkbenchStorageScope.workbench_id == scope.workbench_id).with_for_update()).all()
         refs = {ChartDefinition.model_validate_json(row.body).origin.ref: row.id
-                for row in session.scalars(artifact_query(deleted=True))}
+                for row in session.scalars(artifact_query())}
         for item in suggestions:
             ref = item['chart_key']
             if ref in refs:
