@@ -42,7 +42,8 @@ main{max-width:1660px}
 .card-state.invalid{color:#aa3645;background:#fbe9ec}
 #mappingForm .mapping-block.review-block-error>.card-range{color:#aa3645}
 #mappingForm .mapping-block.review-block-error{outline:1px solid #e6b6bc;outline-offset:5px;border-radius:4px}
-#confirmAllSheets{white-space:nowrap}
+#confirmAllSheets,#confirmAutoReadySheets{white-space:nowrap}
+.batch-confirm-results [data-sheet-confirm="failed"]{color:var(--danger,#b33b3b)}
 .ai-job-panel{display:flex;align-items:center;gap:9px;margin:10px 0;padding:9px 11px;border:1px solid color-mix(in srgb,var(--primary,#24477f) 28%,var(--line));border-radius:7px;background:color-mix(in srgb,var(--primary,#24477f) 6%,var(--paper));color:var(--text);font-size:12px}
 .ai-job-panel[hidden]{display:none}
 .ai-job-panel #aiJobText{flex:1;min-width:0;line-height:1.5}
