@@ -31,6 +31,8 @@ def test_overview_without_core_focus_asks_for_a_selection_instead_of_reporting_n
     # is not evidence that the catalogue has no confirmed fields.
     html = _empty_notice(core_items=[])
     assert '尚未选择核心关注' in html and '选择与排序' in html
+    # An empty workbench still gets the source-preparation guidance.
+    assert '请在「资料与来源」准备并确认本知识库资料' in html
     assert '尚无已确认观测' not in html
     selected = _empty_notice(core_items=[{'kind': 'indicator', 'id': 'kb-x'}])
     assert '当前工作台尚无已确认观测' in selected
