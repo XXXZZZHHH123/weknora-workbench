@@ -330,6 +330,10 @@ const props = defineProps({
     agentId: { type: String, default: '' },
     embeddedMode: { type: Boolean, default: false },
     scopedSession: { type: Boolean, default: false },
+    // Scoped research chats pass their source knowledge bases; the template,
+    // composer scope and send path read it. The v0.9.0 sync dropped this
+    // declaration, leaving props.kbIds undefined in the research chat panel.
+    kbIds: { type: Array, default: () => [] },
     scopedModelId: { type: String, default: '' },
     scopedKbName: { type: String, default: '' },
     agentSourceTenantId: { type: String, default: '' },

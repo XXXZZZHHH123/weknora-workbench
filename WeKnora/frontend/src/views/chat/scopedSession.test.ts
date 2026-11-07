@@ -143,3 +143,9 @@ test('changing research subpages keeps the panel stream and full-page defaults i
   callback({}, {}, () => { nextCalled = true })
   assert.equal(nextCalled, true)
 })
+
+test('the embedded chat declares the kbIds prop that scoped research panels pass and its template reads', () => {
+  const props = between('const props = defineProps({', '});')
+  assert.match(props, /kbIds:\s*\{\s*type:\s*Array,\s*default:\s*\(\)\s*=>\s*\[\]\s*\}/)
+  assert.match(source, /kbIds\.length === 1 \? kbIds\[0\]/)
+})
