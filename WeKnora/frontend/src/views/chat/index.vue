@@ -1591,10 +1591,13 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
     if (composerLocked.value) return
     const useHostScope = props.embeddedMode || props.scopedSession;
     if (props.scopedSession) {
-        const kbId = props.kbIds.length === 1 ? props.kbIds[0] : '';
-        const validSource = (item) => item?.id && (item.type === 'kb' ? item.id === kbId
-            : (item.type === 'file' || item.type === 'tag') && item.kb_id === kbId);
-        if (!kbId || !modelId || imageFiles.length || attachmentFiles.length || !mentionedItems.every(validSource)) {
+        // A research workbench may bind several authorized sources (for example a
+        // personal knowledge base plus the central default library). Mentions stay
+        // restricted to those sources; anything else is refused before sending.
+        const allowedKbIds = new Set((props.kbIds || []).filter(id => typeof id === 'string' && id));
+        const validSource = (item) => item?.id && (item.type === 'kb' ? allowedKbIds.has(item.id)
+            : (item.type === 'file' || item.type === 'tag') && allowedKbIds.has(item.kb_id));
+        if (!allowedKbIds.size || !modelId || imageFiles.length || attachmentFiles.length || !mentionedItems.every(validSource)) {
             MessagePlugin.warning('资料范围已变化，请重新选择当前知识库中的资料。');
             return;
         }
