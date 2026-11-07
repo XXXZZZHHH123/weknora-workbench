@@ -112,7 +112,9 @@ const props = defineProps({
   modelId: { type: String, default: '' },
   defaultModelId: { type: String, default: '' },
   knowledgeScope: {
-    type: Object as PropType<{ kbId: string; kbName?: string; modelId?: string }>,
+    // kbIds lists every authorized source of a multi-source research workbench;
+    // kbId is set only when there is exactly one (mention browsing needs one KB).
+    type: Object as PropType<{ kbId: string; kbIds?: string[]; kbName?: string; modelId?: string }>,
     required: false
   },
   queuedSteers: {
@@ -130,11 +132,17 @@ const props = defineProps({
 const scopedMentionItems = ref<MentionItem[]>([]);
 const scopedKbName = ref('');
 const scopedModelId = ref(props.knowledgeScope?.modelId || settingsStore.conversationModels.selectedChatModelId || '');
+const scopedKbIds = computed(() => {
+  const scope = props.knowledgeScope;
+  if (!scope) return [] as string[];
+  const ids = Array.isArray(scope.kbIds) && scope.kbIds.length ? scope.kbIds : (scope.kbId ? [scope.kbId] : []);
+  return ids.filter(id => typeof id === 'string' && id);
+});
 const isScopedMention = (item: MentionItem) => {
-  const kbId = props.knowledgeScope?.kbId;
-  if (!kbId || !item.id) return false;
-  return item.type === 'kb' ? item.id === kbId
-    : (item.type === 'file' || item.type === 'tag') && item.kbId === kbId;
+  const allowed = new Set(scopedKbIds.value);
+  if (!allowed.size || !item.id) return false;
+  return item.type === 'kb' ? allowed.has(item.id)
+    : (item.type === 'file' || item.type === 'tag') && allowed.has(item.kbId);
 };
 
 let query = ref("");
@@ -2263,7 +2271,7 @@ const createSession = async (
   }
 
   if (props.knowledgeScope) {
-    if (!props.knowledgeScope.kbId || !props.sessionId || uploadedImages.value.length || uploadedAttachments.value.length
+    if (!scopedKbIds.value.length || !props.sessionId || uploadedImages.value.length || uploadedAttachments.value.length
       || !allSelectedItems.value.every(isScopedMention)) {
       MessagePlugin.warning('资料范围已变化，请重新选择当前知识库中的资料。');
       return;
