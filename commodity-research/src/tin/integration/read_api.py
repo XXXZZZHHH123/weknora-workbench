@@ -371,9 +371,23 @@ def read_chart_research(session, body: ReadRequest, workbench_id: str):
                                             'as_of', 'omitted_segments', 'warnings')}
         data['position'] = None if position is None else {key: position.get(key) for key in (
             'x', 'date', 'value', 'rank', 'n', 'share_below', 'min', 'max', 'median', 'mean', 'vs_recent_mean', 'status')}
+        notice = '往期后续是历史参照，不是预测'
+        if position is not None:
+            # State the basis explicitly: the position is computed at the latest real
+            # observation of the current segment, which may be well before the cutoff.
+            data['position']['segment'] = next(
+                (item['label'] for item in result['segments'] if item.get('current')), None)
+            data['position']['peers'] = [{key: peer.get(key) for key in ('label', 'date', 'value')}
+                                         for peer in position.get('peers') or []]
+            if position.get('date'):
+                lag = (Date.fromisoformat(result['as_of']) - Date.fromisoformat(position['date'])).days
+                data['position']['days_before_cutoff'] = lag
+                if lag > (result.get('tolerance_days') or 0):
+                    notice += (f"；同期位置按最新观测日 {position['date']} 计算，比截止日 {result['as_of']} 早 {lag} 天，"
+                               '截止日之后没有新观测，结论只代表最新观测时点')
         data['forward'] = [{key: item[key] for key in ('h', 'days', 'n', 'up', 'median', 'min', 'max')}
                            for item in result['forward']]
-        return {**base, 'data': data, 'notice': '往期后续是历史参照，不是预测'}
+        return {**base, 'data': data, 'notice': notice}
 
     rows = session.scalars(artifact_query().order_by(
         WorkbenchArtifact.updated_at.desc(), WorkbenchArtifact.id)).all()

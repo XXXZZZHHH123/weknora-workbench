@@ -180,8 +180,11 @@ def test_cycle_uses_chart_calculation_and_bounded_projection_without_curve_point
     data = result['data']
     assert set(data) == {'series_id', 'unit', 'template', 'freq_days', 'tolerance_days', 'as_of',
                          'position', 'forward', 'omitted_segments', 'warnings'}
-    assert data['position'] == {key: expected['position'].get(key) for key in (
-        'x', 'date', 'value', 'rank', 'n', 'share_below', 'min', 'max', 'median', 'mean', 'vs_recent_mean', 'status')}
+    assert data['position'] == {**{key: expected['position'].get(key) for key in (
+        'x', 'date', 'value', 'rank', 'n', 'share_below', 'min', 'max', 'median', 'mean', 'vs_recent_mean', 'status')},
+        'segment': '2024', 'days_before_cutoff': 0,
+        'peers': [{key: peer[key] for key in ('label', 'date', 'value')} for peer in expected['position']['peers']]}
+    assert len(data['position']['peers']) == 3
     assert data['position']['status'] == 'ok' and data['position']['n'] == 3
     assert data['position']['value'] == 141 and data['position']['rank'] == 1
     assert data['forward'] == [{key: item[key] for key in ('h', 'days', 'n', 'up', 'median', 'min', 'max')}
@@ -189,7 +192,7 @@ def test_cycle_uses_chart_calculation_and_bounded_projection_without_curve_point
     assert [item['median'] for item in data['forward']] == [4, 8, 12]
     assert data['omitted_segments'] == ['2022'] and 'empty_segments_omitted' in data['warnings']
     assert data['template']['name'] == '自然年' and data['freq_days'] == 1 and data['as_of'] == '2024-01-02'
-    assert all(key not in json.dumps(data) for key in ('"points"', '"band"', '"segments"', '"peers"', '"items"'))
+    assert all(key not in json.dumps(data) for key in ('"points"', '"band"', '"segments"', '"items"'))
     assert all(endpoint == '/api/research/facts' for endpoint, _ in state.requests)
     assert any(body.get('catalog_only') for _, body in state.requests)
     bounded = [body for _, body in state.requests if not body.get('catalog_only')]
@@ -197,6 +200,22 @@ def test_cycle_uses_chart_calculation_and_bounded_projection_without_curve_point
     body = bounded[0]
     assert body['series_ids'] == [SID] and body['view_module'] == 'indicators'
     assert body['points_per_series'] == 2000 and body['as_of'] == '2024-01-02'
+
+
+def test_cycle_states_when_the_position_comes_from_an_observation_before_the_cutoff(chart_reads):
+    _, read, state = chart_reads
+    observations = []
+    for year in (2018, 2019, 2020, 2021):
+        start = date(year, 1, 1)
+        observations.extend(((start + timedelta(days=offset)).isoformat(), year + offset) for offset in range(200))
+    state.observations[SID] = observations
+    result = read({'operation': 'cycle', 'series_id': SID, 'date': '2024-06-30'}).json()
+    position = result['data']['position']
+    assert position['date'] == '2021-07-19' and position['segment'] == '2021'
+    assert position['days_before_cutoff'] == (date(2024, 6, 30) - date(2021, 7, 19)).days
+    assert [peer['label'] for peer in position['peers']] == ['2020', '2019', '2018']
+    assert '最新观测日 2021-07-19' in result['notice'] and '截止日 2024-06-30' in result['notice']
+    assert result['data']['omitted_segments'] == ['2022', '2023', '2024']
 
 
 def test_cycle_default_date_insufficient_samples_empty_data_and_window_warning(chart_reads):
