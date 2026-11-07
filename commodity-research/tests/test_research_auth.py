@@ -226,3 +226,14 @@ def test_standalone_source_upload_dom_remains_available(session, monkeypatch):
     for block in ('legacy-source-upload', 'legacy-source-bridge', 'import-preview'):
         assert 'workbench-ingest-hidden' not in doc.get_element_by_id(block).get('class', '')
     assert doc.get_element_by_id('upload-form') is not None
+
+
+def test_shared_fetch_wrapper_reports_network_failures_readably():
+    import shutil
+    import subprocess
+    from pathlib import Path
+    node = shutil.which('node')
+    assert node, 'Node is required for browser script checks'
+    result = subprocess.run([node, '--test', str(Path(__file__).with_name('research-fetch.test.cjs'))],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
