@@ -142,7 +142,7 @@ const isScopedMention = (item: MentionItem) => {
   const allowed = new Set(scopedKbIds.value);
   if (!allowed.size || !item.id) return false;
   return item.type === 'kb' ? allowed.has(item.id)
-    : (item.type === 'file' || item.type === 'tag') && allowed.has(item.kbId);
+    : (item.type === 'file' || item.type === 'tag') && !!item.kbId && allowed.has(item.kbId);
 };
 
 let query = ref("");
