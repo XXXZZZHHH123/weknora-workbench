@@ -365,45 +365,45 @@ onBeforeUnmount(() => {
 </script>
 <style scoped>
 .analysis-evidence { margin: 16px 0; line-height: 1.6; color: inherit; min-width: 0; }
-summary { cursor: pointer; color: #66716b; font-size: 13px; }
+summary { cursor: pointer; color: #66716b; font-size: var(--app-text-md); }
 .analysis-table { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; }
 th,td { padding: 6px 10px; border-bottom: 1px solid #e6e9e7; text-align: left; white-space: nowrap; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; }
 .source-locator { margin-top: 16px; padding-top: 12px; border-top: 1px solid #e6e9e7; }
-.source-locator h3 { margin: 0 0 4px; font-size: 13px; font-weight: 500; color: #758078; }
+.source-locator h3 { margin: 0 0 4px; font-size: var(--app-text-md); font-weight: 500; color: #758078; }
 .source-row { padding: 10px 0; min-width: 0; }
 .source-row + .source-row { border-top: 1px solid #f0f1f0; }
 .source-heading { display: flex; align-items: center; gap: 9px; min-width: 0; }
-.source-kind { flex-shrink: 0; padding: 2px 5px; border-radius: 4px; background: #f2f3f2; color: #737c76; font-size: 10px; font-weight: 600; letter-spacing: .02em; }
-.source-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.source-pages { color: #758078; font-size: 12px; white-space: nowrap; }
-.source-locator button { font: inherit; color: #5b6860; border: 0; background: transparent; cursor: pointer; padding: 4px 6px; border-radius: 4px; }
+.source-kind { flex-shrink: 0; padding: 2px 5px; border-radius: var(--app-radius-xs); background: #f2f3f2; color: #737c76; font-size: var(--app-text-2xs); font-weight: 600; letter-spacing: .02em; }
+.source-name { font-size: var(--app-text-md); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.source-pages { color: #758078; font-size: var(--app-text-sm); white-space: nowrap; }
+.source-locator button { font: inherit; color: #5b6860; border: 0; background: transparent; cursor: pointer; padding: 4px 6px; border-radius: var(--app-radius-xs); }
 .source-locator button:hover { background: #f2f4f2; color: #304c3c; }
 .source-locator button:focus-visible, summary:focus-visible { outline: 2px solid #7b9c88; outline-offset: 2px; }
 .source-locator button:disabled { opacity: .5; cursor: default; }
-.source-locator .source-open { margin-left: auto; flex-shrink: 0; font-size: 12px; color: #365c46; }
+.source-locator .source-open { margin-left: auto; flex-shrink: 0; font-size: var(--app-text-sm); color: #365c46; }
 .pdf-locations { margin: 5px 0 0 38px; }
 .pdf-table-location { padding: 7px 0; }
-.table-location-heading { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 13px; }
+.table-location-heading { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: var(--app-text-md); }
 .table-location-heading > span { color: #4c5750; overflow-wrap: anywhere; }
-.table-location-heading button { font-size: 12px; white-space: nowrap; }
+.table-location-heading button { font-size: var(--app-text-sm); white-space: nowrap; }
 .pdf-cell-locations { margin-top: 4px; }
 .pdf-cell-list { margin-top: 6px; display: grid; gap: 3px; }
-.pdf-cell-list button { display: flex; gap: 14px; text-align: left; font-size: 12px; min-width: 0; }
+.pdf-cell-list button { display: flex; gap: 14px; text-align: left; font-size: var(--app-text-sm); min-width: 0; }
 .pdf-cell-list button > span:first-child { flex-shrink: 0; color: #758078; }
 .cell-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cell-pagination, .source-cell-picker, .catalog-pages { display: flex; flex-wrap: wrap; gap: 4px; font-size: 12px; }
+.cell-pagination, .source-cell-picker, .catalog-pages { display: flex; flex-wrap: wrap; gap: 4px; font-size: var(--app-text-sm); }
 .catalog-sources { margin-top: 6px; }
-.catalog-source { padding: 8px 0 4px 16px; font-size: 13px; }
+.catalog-source { padding: 8px 0 4px 16px; font-size: var(--app-text-md); }
 .catalog-source strong { font-weight: 500; overflow-wrap: anywhere; }
 .original-sheet { margin-top: 10px; }
-.pdf-source-overlay { position: fixed; inset: 4vh 4vw; z-index: 3000; display: flex; flex-direction: column; padding: 12px; background: white; border-radius: 10px; box-shadow: 0 16px 50px #0004; }
+.pdf-source-overlay { position: fixed; inset: 4vh 4vw; z-index: 3000; display: flex; flex-direction: column; padding: 12px; background: white; border-radius: var(--app-radius-lg); box-shadow: 0 16px 50px #0004; }
 .pdf-source-overlay header { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding-bottom: 8px; }
-.pdf-source-overlay header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.pdf-source-overlay header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--app-text-base); }
 .pdf-source-overlay header button { flex-shrink: 0; }
 .pdf-source-viewer { flex: 1; min-height: 0; }
-.blocked { color: #8a4b16; font-size: 13px; margin: 6px 0; }
+.blocked { color: #8a4b16; font-size: var(--app-text-md); margin: 6px 0; }
 .fine-print { color: #66766c; font-size: .9em; }
 .highlighted { background: #ffe59b; outline: 2px solid #c77900; outline-offset: -2px; }
 @media (max-width: 600px) {
