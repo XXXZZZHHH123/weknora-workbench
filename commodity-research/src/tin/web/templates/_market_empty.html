@@ -1,0 +1,11 @@
+{# A knowledge-base workbench reads observations only for the selected core focus, so an empty
+   selection leaves no board day even when the catalogue has confirmed fields. #}
+{% set core_unselected = research_workbench() and market_catalog and not market_catalog.core_items %}
+<section id="market-empty" role="status" class="research-panel p-5 space-y-3">
+  <h2 class="text-base font-bold">{{ '核心关注图表按需读取' if has_core_charts else '尚未选择核心关注' if core_unselected else '当前工作台尚无已确认观测' if research_workbench() else '当前空间尚无行情数据' }}</h2>
+  <p class="text-sm text-[var(--text-muted)]">{% if has_core_charts %}下方图表进入视野后，按当前来源和各自的数据时点读取。可通过「选择与排序」添加需要一起跟踪的指标。{% elif core_unselected %}总览只读取核心关注里的指标和图表，不会自动挑选。请在下方「核心关注」中点「选择与排序」添加，或按研究框架生成建议；资料还没确认时，先在「资料与来源」核对。{% elif research_workbench() %}请在「资料与来源」准备并确认本知识库资料，核对真实字段、单位和来源后，市场数据与图表将在这里显示。{% else %}尚未采集到交易日行情，市场数据与图表将在行情入库后显示。可以在下方「数据更新」中立即更新，或导入行情来源文件。{% endif %}</p>
+  <div class="flex flex-wrap gap-3 text-sm">
+    {% if research_workbench() %}{% if not restricted_view %}<button type="button" onclick="parent.postMessage({type:'research-open-sources'},location.origin)" class="text-[var(--primary)] hover:underline">准备资料</button>{% endif %}{% elif not restricted_view %}<a href="{{ research_url('/files') }}" class="text-[var(--primary)] hover:underline">导入行情文件</a>{% endif %}
+    {% if not restricted_view or 'indicators' in research_workbench().view_modules %}<a href="{{ research_url('/sn/indicators') }}" class="text-[var(--primary)] hover:underline">查看指标与来源</a>{% endif %}
+  </div>
+</section>
