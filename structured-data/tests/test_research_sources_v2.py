@@ -78,6 +78,24 @@ def test_catalog_is_real_pagination_across_sources_without_observations_or_chart
     assert catalog(read,source_kind='macro')['total']==1
     assert catalog(read,search='library-b')['total']==0
     assert catalog(read,search='kg')['total']==2
+    # Whitespace-separated terms must all match; sheet names are searchable too.
+    assert catalog(read,search='quantity kg')['total']==catalog(read,search='quantity')['total']>=1
+    assert catalog(read,search='  QUANTITY   kg ')['total']==catalog(read,search='quantity kg')['total']
+    assert catalog(read,search='quantity absent-term')['total']==0
+    assert catalog(read,search='records quantity')['total']>=1
+
+
+def test_catalog_index_built_by_older_code_is_rebuilt_once(multi):
+    import sqlite3
+    _,read,_,store,_,_=multi
+    catalog(read)
+    path=store.root/'.research-catalog'/'catalog.sqlite'
+    with sqlite3.connect(path) as writer:
+        manifest=json.loads(writer.execute("SELECT value FROM metadata WHERE key='manifest'").fetchone()[0])
+        manifest.pop('format')
+        writer.execute("UPDATE metadata SET value=? WHERE key='manifest'",(json.dumps(manifest),))
+        writer.execute("UPDATE fields SET search_text='{}'")
+    assert catalog(read,search='records')['total']>=1
 
 
 def test_catalog_warm_index_does_not_rehash_or_reparse_the_workbook(multi,monkeypatch):

@@ -147,3 +147,11 @@ def test_signed_reads_isolate_workspaces_and_reject_tampering(tmp_path, monkeypa
         oversized=b"x" * 16385
         assert client.post("/api/tools/read",content=oversized,
                            headers=signed_headers(oversized,key,identity)).status_code == 413
+
+
+def test_indicator_search_terms_separated_by_whitespace_must_all_match(loaded):
+    def names(search):
+        return [item['series_id'] for item in read_research(loaded, ReadRequest(operation='indicators', search=search))['indicators']]
+    whole = names('SHFE.SN.2610')
+    assert whole and names('shfe  SN.2610') == whole
+    assert names('SHFE.SN.2610 absent-term') == []

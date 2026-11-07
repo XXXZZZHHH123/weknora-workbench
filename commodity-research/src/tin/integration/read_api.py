@@ -86,8 +86,10 @@ def read_research(session, body: ReadRequest):
         if body.search:
             # Python matching treats %/_ literally and searches all source/name/code fields.
             rows = session.scalars(query).all()
-            rows = [r for r in rows if body.search.casefold() in
-                    " ".join((r.name, r.series_id, r.source, r.category)).casefold()]
+            # Whitespace separates terms; each must occur in the indicator's real fields.
+            terms = body.search.casefold().split()
+            rows = [r for r in rows if all(term in " ".join((r.name, r.series_id, r.source, r.category)).casefold()
+                                           for term in terms)]
         else:
             rows = session.scalars(query).all()
         result.update(total=len(rows), offset=body.offset,
