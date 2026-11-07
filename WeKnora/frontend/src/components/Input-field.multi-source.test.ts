@@ -6,7 +6,8 @@ import { runInNewContext } from 'node:vm'
 const source = readFileSync(new URL('./Input-field.vue', import.meta.url), 'utf8')
 const start = source.indexOf('const scopedKbIds = computed(')
 const end = source.indexOf('let query = ref', start)
-const snippet = source.slice(start, end)
+// The SFC script is TypeScript; strip the two annotations this snippet uses.
+const snippet = source.slice(start, end).replace(/ as string\[\]/g, '').replace(/\(item: MentionItem\)/g, '(item)')
 
 const scoped = (knowledgeScope: unknown) => runInNewContext(`${snippet}; ({ scopedKbIds, isScopedMention })`, {
   props: { knowledgeScope }, computed: (fn: () => unknown) => ({ get value() { return fn() } }),
