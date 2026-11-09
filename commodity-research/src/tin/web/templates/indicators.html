@@ -35,7 +35,7 @@
     <div class="indicator-section-heading"><h2 id="indicator-favorites-title">我的自选</h2>
       <span class="indicator-muted">按账号保存在当前研究台 · 最多 100 项</span>{% if chart_page is defined and chart_page.enabled %}<button type="button" id="favorites-chart-open" class="charts-button" data-chart-builder="favorites">作图</button>{% endif %}</div>
     <div id="indicator-favorites" class="indicator-favorites" aria-live="polite"></div>
-    <div id="indicator-favorites-empty" class="indicator-empty">还没有自选。点击指标或图表旁边的星标加入自选。</div>
+    <div id="indicator-favorites-empty" class="indicator-empty" hidden>还没有自选。在指标或图表旁点书签即可加入自选。 <button type="button" id="indicator-favorites-add" class="indicator-button">去指标目录添加</button></div>
     <div id="indicator-favorites-error" class="indicator-warning" role="alert" hidden><span></span> <button type="button" id="indicator-favorites-retry" class="indicator-button">重试</button></div>
   </section>{% endif %}
   <section id="indicator-catalog"{% if not restricted_view %} data-indicator-panel="catalog" role="tabpanel"{% endif %} aria-labelledby="{{ 'indicator-catalog-title' if restricted_view else 'indicator-tab-catalog' }}">

@@ -4,7 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (!root || root.dataset.readonly === 'true') return;
   const get = id => document.getElementById('indicator-' + id);
   const tabs = [...root.querySelectorAll('[data-indicator-tab]')], panels = [...root.querySelectorAll('[data-indicator-panel]')];
-  let tab, userSelected = false, resolvedDefault = false, rendered = '', generation = 0, active = 0, queue = [], closed = false;
+  let tab, userSelected = false, rendered = '', generation = 0, active = 0, queue = [], closed = false;
   const renderers = new Set(), controllers = new Set(), cache = new Map();
   const requested = new URLSearchParams(location.search).get('tab');
   const validTab = value => ['favorites', 'catalog', 'charts'].includes(value);
@@ -308,7 +308,6 @@ document.addEventListener('DOMContentLoaded', () => {
       if (missing.length) {
         await client.replace(window.FavoritesClient.mergeIndicators(client.items, missing));
         message(`已把本浏览器原有的 ${missing.length} 个自选同步到账号。`);
-        if (!userSelected && !validTab(requested)) choose('favorites');
       }
       try { localStorage.setItem(syncedKey(), '1'); } catch (_) { /* Retried on the next visit. */ }
     } catch (error) { message(error.message); }
@@ -335,10 +334,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const position = Math.floor(index / 2), target = position + Number(button.dataset.move);
         button.disabled = client.saving || target < 0 || target >= client.items.length;
       });
-      if (!resolvedDefault) {
-        resolvedDefault = true;
-        if (!userSelected && !validTab(requested)) choose(client.items.length ? 'favorites' : 'catalog');
-      }
     }
   }
   get('legacy-sync-button').addEventListener('click', async () => {
@@ -362,7 +357,9 @@ document.addEventListener('DOMContentLoaded', () => {
     client.subscribe(update); update();
     client.ready().catch(() => {});
   } else message('账号自选需要当前来源授权，请重新打开研究台。');
-  choose(validTab(requested) ? requested : 'catalog', validTab(requested));
+  // The page opens on 自选 (an empty list says how to add); a ?tab= link still wins.
+  choose(validTab(requested) ? requested : client ? 'favorites' : 'catalog', validTab(requested));
+  get('favorites-add')?.addEventListener('click', () => { userSelected = true; choose('catalog'); });
   window.addEventListener('pagehide', () => { closed = true; generation++; hideHover(); observer?.disconnect(); controllers.forEach(controller => controller.abort()); renderers.forEach(renderer => renderer.destroy()); });
   window.addEventListener('pageshow', event => {
     if (event.persisted) { closed = false; rendered = ''; cache.clear(); previews.clear(); if (client?.loaded) render(); }

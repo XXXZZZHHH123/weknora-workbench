@@ -30,6 +30,7 @@ function source({path, url, reply}) {
   try {
     const migration = await open(browser, '/sn/indicators?date=2029-09-15', html, source, {storage: {[key]: [sid(2), sid(1)]}});
     const p = migration.page;
+    assert.equal(await p.locator('#indicator-tab-favorites').getAttribute('aria-selected'), 'true', '指标页直接停在自选，不先显示指标再跳转');
     // This account's own earlier browser favorites join the account without a click.
     await p.waitForFunction(() => document.querySelectorAll('[data-favorite-card]').length === 2);
     assert.equal(await p.locator('#indicator-legacy-sync').isVisible(), false);
@@ -107,6 +108,11 @@ function source({path, url, reply}) {
     await unscoped.page.locator('#indicator-legacy-sync-button').waitFor();
     assert.equal(await unscoped.page.locator('#indicator-legacy-sync-button').innerText(), '把本浏览器的 1 个自选同步到账号');
     assert.equal(unscoped.calls.filter(call => call.method === 'PUT').length, 0);
+    // The page opens on 自选 even when it is empty, and says how to add one.
+    assert.equal(await unscoped.page.locator('#indicator-tab-favorites').getAttribute('aria-selected'), 'true');
+    await unscoped.page.locator('#indicator-favorites-empty').filter({hasText: '还没有自选'}).waitFor();
+    await unscoped.page.locator('#indicator-favorites-add').click();
+    assert.equal(await unscoped.page.locator('#indicator-tab-catalog').getAttribute('aria-selected'), 'true');
     await unscoped.close();
 
     let remote = {format: 'favorites.v1', revision: 1, items: [initialItem(sid(1))]};
