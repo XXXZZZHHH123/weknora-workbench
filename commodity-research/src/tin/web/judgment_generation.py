@@ -343,6 +343,8 @@ def selection_requests(catalog, text):
 
 
 SELECTION_TOO_BROAD = '模型选出的候选指标过多，超出本次分析容量'
+OUTPUT_LIMIT = '模型输出达到长度上限，未生成完整研究逻辑；请精炼输出要求或更换模型后重试'
+SELECTION_OUTPUT_LIMIT = '模型筛选指标时输出超出长度上限'
 
 
 def selected_catalog_ids(result, batch, refs):
@@ -388,7 +390,7 @@ async def completion(scope, model_id, prompt):
                 message = native_failure_message(error, status) or message
                 if (status == 503 and isinstance(error, dict) and error.get('code') == 1008
                         and error.get('details') == {'phase': 'response_validation', 'error_class': 'output_limit'}):
-                    message = '模型输出达到长度上限，未生成完整研究逻辑；请精炼输出要求或更换模型后重试'
+                    message = OUTPUT_LIMIT
             except (ValueError, AttributeError): pass
             raise HTTPException(status, message)
         envelope = response.json()
@@ -396,7 +398,7 @@ async def completion(scope, model_id, prompt):
         if envelope.get('success') is not True or not isinstance(data, dict) or data.get('model_id') != model_id:
             raise ValueError()
         if data.get('finish_reason') in {'length', 'max_tokens'}:
-            raise HTTPException(422, '模型输出达到长度上限，未生成完整研究逻辑；请精炼输出要求或更换模型后重试')
+            raise HTTPException(422, OUTPUT_LIMIT)
         return research_json(data.get('content'))
     except HTTPException:
         raise
@@ -415,7 +417,14 @@ async def choose_catalog(scope, model, catalog, text):
     selected = set()
     for batch, refs, prompt in requests:
         await notify_progress('selecting')
-        result = await completion(scope, model, prompt)
+        try:
+            result = await completion(scope, model, prompt)
+        except HTTPException as error:
+            # A truncated selection is never parsed; say which stage overflowed
+            # instead of implying the judgment text itself was too long.
+            if error.detail == OUTPUT_LIMIT:
+                raise HTTPException(error.status_code, SELECTION_OUTPUT_LIMIT) from None
+            raise
         selected.update(selected_catalog_ids(result, batch, refs))
     candidates = [row for row in catalog if row['id'] in selected]
     if len(catalog_json(candidates).encode('utf-8')) > CANDIDATE_BYTES:

@@ -136,6 +136,25 @@ def test_combined_candidates_remain_bounded_after_generous_batch_selections(monk
     assert '换用理解能力更强的模型' in failure_for(caught.value, 'selecting')['message']
 
 
+
+@pytest.mark.parametrize('status', [422, 503])
+def test_selection_output_limit_names_the_selection_stage(monkeypatch, status):
+    catalog = directory()
+
+    async def runaway(scope, model, prompt):
+        # Observed: a flash model repeated the same references until the
+        # fixed output cap; the judgment text itself was never requested.
+        raise HTTPException(status, generation.OUTPUT_LIMIT)
+
+    monkeypatch.setattr(generation, 'completion', runaway)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(generation.choose_catalog(None, 'model', catalog, TEXT))
+    assert caught.value.status_code == status and caught.value.detail == generation.SELECTION_OUTPUT_LIMIT
+    from tin.web.judgment_failures import failure_for
+    failure = failure_for(caught.value, 'selecting')
+    assert '筛选指标' in failure['message'] and '换用理解能力更强的模型' in failure['message']
+    assert '精炼输出要求' not in failure['message']
+
 @pytest.mark.parametrize('response', [
     {'series_ids': ['kb-' + '0' * 48]},
     {'selection_refs': ['kb-' + '0' * 48]},
