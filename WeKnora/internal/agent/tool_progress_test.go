@@ -153,6 +153,59 @@ func TestToolProgressCountsSuccessfulPixelsAndGeometryWithoutDescriptions(t *tes
 	require.Zero(t, guard.observe([]types.ToolCall{read}).NewEvidence)
 }
 
+func TestToolProgressCountsBoundGeometryOnlyReadOnceWithoutPixels(t *testing.T) {
+	call := boundGeometryOnlyDocumentState().RoundSteps[0].ToolCalls[0]
+	geometry := call.Result.Data["image_geometry_evidence"]
+	delete(call.Result.Data, "image_geometry_evidence")
+	var guard toolProgressGuard
+	require.Greater(t, guard.observe([]types.ToolCall{call}).NewEvidence, 0)
+	call.Result.Data["image_geometry_evidence"] = geometry
+	require.Equal(t, 1, guard.observe([]types.ToolCall{call}).NewEvidence, "successful original geometry is progress even when pixels were not requested")
+	require.Empty(t, call.Result.Images)
+	require.Zero(t, guard.observe([]types.ToolCall{call}).NewEvidence)
+	geometry.([]map[string]any)[0]["label"] = "Reworded catalog navigation"
+	require.Zero(t, guard.observe([]types.ToolCall{call}).NewEvidence, "catalog wording cannot turn the same geometry into new progress")
+}
+
+func TestToolProgressRejectsUnboundOrFailedGeometryOnlyReads(t *testing.T) {
+	for _, variant := range []string{"failed_call", "failed_geometry", "missing_catalog", "different_document", "different_chunk", "different_page", "different_part", "invalid_source_digest", "unexpected_pixels", "selection_options"} {
+		t.Run(variant, func(t *testing.T) {
+			call := boundGeometryOnlyDocumentState().RoundSteps[0].ToolCalls[0]
+			geometry := call.Result.Data["image_geometry_evidence"]
+			delete(call.Result.Data, "image_geometry_evidence")
+			var guard toolProgressGuard
+			guard.observe([]types.ToolCall{call})
+			call.Result.Data["image_geometry_evidence"] = geometry
+			read := call.Result.Data["image_evidence"].([]map[string]any)[0]
+			figure := geometry.([]map[string]any)[0]
+			evidence := figure["evidence"].(map[string]any)
+			switch variant {
+			case "failed_call":
+				call.Result.Success = false
+			case "failed_geometry":
+				read["geometry_read_success"] = false
+			case "missing_catalog":
+				delete(call.Result.Data, "image_catalog")
+			case "different_document":
+				figure["knowledge_id"] = "other-document"
+			case "different_chunk":
+				figure["chunk_id"] = "other-chunk"
+			case "different_page":
+				figure["page"] = 8
+			case "different_part":
+				figure["source_part"] = "ppt/media/other.emf"
+			case "invalid_source_digest":
+				evidence["source_media_sha256"] = "invalid"
+			case "unexpected_pixels":
+				read["returned_image_index"] = 0
+			case "selection_options":
+				evidence["version"] = "source_figure_selection_options_v1"
+			}
+			require.Zero(t, guard.observe([]types.ToolCall{call}).NewEvidence)
+		})
+	}
+}
+
 func TestToolProgressCountsNewEmptyPageScanButNotQueryRewording(t *testing.T) {
 	var guard toolProgressGuard
 	for page := 1; page <= toolProgressStopRounds+2; page++ {

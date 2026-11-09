@@ -260,6 +260,10 @@ func TestStructuredReadCacheOldInflightCannotPublishAfterRebind(t *testing.T) {
 }
 
 func TestStructuredReadCacheConcurrentTransientFailureIsRetried(t *testing.T) {
+	type attempt struct {
+		result *types.ToolResult
+		err    error
+	}
 	var calls atomic.Int64
 	entered, release := make(chan struct{}), make(chan struct{})
 	base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
@@ -271,23 +275,31 @@ func TestStructuredReadCacheConcurrentTransientFailureIsRetried(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, `{"status":"ok","value":12}`)
 	})
-	firstDone := make(chan error, 1)
+	firstDone := make(chan attempt, 1)
 	go func() {
-		_, err := base.Execute(structuredCacheTestContext("first-fails"), structuredCacheQuery(cacheDatasetA))
-		firstDone <- err
+		result, err := base.Execute(structuredCacheTestContext("first-fails"), structuredCacheQuery(cacheDatasetA))
+		firstDone <- attempt{result, err}
 	}()
 	<-entered
-	secondDone := make(chan error, 1)
+	secondDone := make(chan attempt, 1)
 	go func() {
 		result, err := base.Execute(structuredCacheTestContext("second-retries"), structuredCacheQuery(cacheDatasetA))
-		if err == nil && (result == nil || !result.Success) {
-			err = fmt.Errorf("second caller did not perform a successful retry")
-		}
-		secondDone <- err
+		secondDone <- attempt{result, err}
 	}()
 	close(release)
-	require.ErrorContains(t, <-firstDone, "HTTP 503")
-	require.NoError(t, <-secondDone)
+	first := <-firstDone
+	require.NoError(t, first.err)
+	require.NotNil(t, first.result)
+	require.False(t, first.result.Success)
+	require.Contains(t, first.result.Error, "HTTP 503")
+	require.Equal(t, http.StatusServiceUnavailable, first.result.Data["http_status"])
+	require.Equal(t, "error", first.result.Data["status"])
+	require.NotContains(t, first.result.Data, "_execution_cache", "a service failure cannot masquerade as cached success")
+	second := <-secondDone
+	require.NoError(t, second.err)
+	require.NotNil(t, second.result)
+	require.True(t, second.result.Success, "second caller must perform a fresh successful retry")
+	require.Equal(t, json.Number("12"), second.result.Data["value"])
 	require.Equal(t, int64(2), calls.Load())
 }
 

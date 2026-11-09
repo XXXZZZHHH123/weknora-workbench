@@ -169,6 +169,12 @@ func toolProgressEvidence(call types.ToolCall) ([][sha256.Size]byte, bool) {
 			var reference string
 			_ = json.Unmarshal(geometry["reference"], &reference)
 			if !readReferences[reference] {
+				// Explicit geometry does not request pixels. Reuse its existing
+				// source/catalog/chunk binding checks before counting an independently
+				// successful geometry read; labels or a failure alone add no progress.
+				if key, valid := geometryOnlyReadProgressKey(call.Result.Data, geometry); valid {
+					keys = append(keys, key)
+				}
 				continue
 			}
 			value, _ := json.Marshal(geometry)
@@ -225,6 +231,36 @@ func toolProgressEvidence(call types.ToolCall) ([][sha256.Size]byte, bool) {
 	default:
 		return nil, false
 	}
+}
+
+func geometryOnlyReadProgressKey(data map[string]any, geometry map[string]json.RawMessage) ([sha256.Size]byte, bool) {
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return [sha256.Size]byte{}, false
+	}
+	var canonical map[string]any
+	if json.Unmarshal(encoded, &canonical) != nil {
+		return [sha256.Size]byte{}, false
+	}
+	encoded, err = json.Marshal(geometry)
+	if err != nil {
+		return [sha256.Size]byte{}, false
+	}
+	var figure map[string]any
+	if json.Unmarshal(encoded, &figure) != nil {
+		return [sha256.Size]byte{}, false
+	}
+	projection := map[string]any{"original_pixels_verified": false, "pixel_status": "not_requested"}
+	for _, key := range []string{"reference", "knowledge_id", "chunk_id", "page", "source_part"} {
+		projection[key] = figure[key]
+	}
+	if !reviewGeometryProjectionBoundToSource(canonical, figure, projection) {
+		return [sha256.Size]byte{}, false
+	}
+	// Catalog labels and navigation instructions are not new original geometry.
+	projection["evidence"] = figure["evidence"]
+	encoded, err = json.Marshal(projection)
+	return sha256.Sum256(encoded), err == nil
 }
 
 // Presentation identities bind a particular read execution for integrity;

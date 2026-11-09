@@ -40,13 +40,16 @@ var documentFigureSource = regexp.MustCompile(`(?m)^来源：第([1-9][0-9]*)页
 var documentFigurePart = regexp.MustCompile(`(?i)^ppt/media/[A-Za-z0-9_.-]+\.(emf|wmf)$`)
 
 type documentImage struct {
-	Reference   string `json:"reference"`
-	KnowledgeID string `json:"knowledge_id"`
-	ChunkID     string `json:"chunk_id"`
-	Page        int    `json:"page,omitempty"`
-	Label       string `json:"label"`
-	Context     string `json:"source_context"`
-	SourcePart  string `json:"source_part,omitempty"`
+	Reference    string            `json:"reference"`
+	KnowledgeID  string            `json:"knowledge_id"`
+	ChunkID      string            `json:"chunk_id"`
+	Page         int               `json:"page,omitempty"`
+	PageHint     int               `json:"page_hint,omitempty"`
+	PageVerified bool              `json:"page_verified"`
+	Label        string            `json:"label"`
+	Context      string            `json:"source_context"`
+	SourcePart   string            `json:"source_part,omitempty"`
+	ReadArgs     ReadDocumentInput `json:"read_args"`
 }
 
 func documentImageCatalog(result *types.ToolResult, knowledgeID, sourceHash string) []documentImage {
@@ -117,6 +120,13 @@ func documentImageCatalog(result *types.ToolResult, knowledgeID, sourceHash stri
 					}
 				}
 			}
+			// A label remains untrusted navigation. Do not turn a printed page
+			// label into physical-page authority or use it to redirect a read.
+			if hint := imageSourcePageMarker.FindStringSubmatch(label); len(hint) > 0 {
+				item.PageHint = pageNumberInMarker(hint)
+			}
+			item.PageVerified = item.Page > 0
+			item.ReadArgs = ReadDocumentInput{ID: chunkID, Page: item.Page, Images: []string{reference}, ImageMode: "pixels", Detail: types.ImageDetailFull}
 			images = append(images, item)
 		}
 		for _, match := range documentMarkdownImage.FindAllStringSubmatch(content, -1) {
@@ -147,7 +157,8 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 		encoded, _ := json.Marshal(catalog)
 		result.Output += "\n<document_image_catalog untrusted_source_metadata=\"true\">" + string(encoded) + "</document_image_catalog>\n" +
 			"These are stored originals, not yet viewed. Select the relevant reference using the full question and actual source context; " +
-			"call read_document with images, image_mode=pixels, detail=full and focus to inspect it. For supported vector-chart traces, " +
+			"use that entry's read_args with its exact owning chunk, then add focus for the full question. Do not replace its page or move the reference to another range. " +
+			"page_hint is only an unverified label; page_verified=false means no physical page was established. The default image_mode=pixels reads pixels. For supported vector-chart traces, " +
 			"explicitly select image_mode=geometry and exact image_series legend identifiers to read original geometry without PNG conversion or visual inspection. " +
 			"Each image retains its document, page and cited chunk."
 	}
@@ -175,7 +186,7 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 			}
 		}
 		if !found {
-			return &types.ToolResult{Success: false, Error: "所选图片不属于本次实际读取的文档/页/分块范围；请先读取对应范围的真实图片清单。"}, nil
+			return documentImageScopeFailure(input, knowledge.ID, catalog), nil
 		}
 	}
 	if input.ImageMode == "geometry" {
@@ -257,6 +268,23 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 		"A storage read alone is not visual understanding. Ground observations in this image's exact cited chunk, axis/legend mapping and units; " +
 		"mark approximate values and ambiguity. Failed image reads supply no visual evidence."
 	return result, nil
+}
+
+func documentImageScopeFailure(input ReadDocumentInput, knowledgeID string, catalog []documentImage) *types.ToolResult {
+	const maxRecoveryImages = 16
+	data := map[string]any{
+		"kind": "document_image_scope_error", "status": "error", "reason_code": "image_not_in_read_scope",
+		"knowledge_id": knowledgeID, "requested_images": input.Images,
+		"read_scope":    map[string]any{"id": input.ID, "page": input.Page, "pages": input.Pages, "offset": input.Offset},
+		"image_catalog": catalog[:min(len(catalog), maxRecoveryImages)], "image_catalog_total": len(catalog),
+		"image_catalog_truncated": len(catalog) > maxRecoveryImages,
+		"pixels_read":             false, "geometry_read": false,
+		"notice": "No selected image was read. Only the actual current read's bounded image catalog is returned for navigation, not visual or numeric evidence. Use the chosen entry's read_args from an actual catalog and add the full question as focus; preserve its owning chunk and any verified page. A prior image reference cannot be moved to another page or document. Do not substitute a different catalog image merely because the requested one is absent, or repeat an unchanged failing read. page_hint is not physical-page proof. Existing user source/page restrictions and original image ownership checks still apply.",
+	}
+	encoded, _ := json.Marshal(data)
+	return &types.ToolResult{Success: false,
+		Error: "所选图片不属于本次实际读取的文档/页/分块范围；请使用真实图片清单中该图的read_args保留原所属分块和已验证页码，不要猜测或改页。",
+		Data:  data, Output: string(encoded)}
 }
 
 // Geometry is an explicit representation choice. Its reader independently

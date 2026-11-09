@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"strings"
@@ -45,6 +46,73 @@ func TestReadDocumentListsStoredOriginalsWithoutImageInfoOrPixelReads(t *testing
 	require.Equal(t, "chunk-1", catalog[0].ChunkID)
 	require.Contains(t, catalog[0].Context, "Source chart title")
 	require.Contains(t, result.Output, "not yet viewed")
+	require.True(t, catalog[0].PageVerified)
+	require.Equal(t, ReadDocumentInput{ID: "chunk-1", Page: 2, Images: []string{ref}, ImageMode: "pixels", Detail: types.ImageDetailFull}, catalog[0].ReadArgs)
+	request, err := json.Marshal(catalog[0].ReadArgs)
+	require.NoError(t, err)
+	read, err := tool.Execute(t.Context(), request)
+	require.NoError(t, err)
+	require.True(t, read.Success, read.Error)
+	require.Equal(t, []string{ref}, *reads, "catalog navigation keeps the actual owning chunk and verified page")
+}
+
+func TestDocumentImageCatalogKeepsUnverifiedPageLabelSeparateFromReadNavigation(t *testing.T) {
+	tool, repo := newReadDocumentFixture(3)
+	ref := "resource://AbCdEfGhIjKlMnOpQrStUv"
+	repo.ordered[1].Content = "![第5页 · 对象 7](" + ref + ")"
+	result, err := tool.Execute(t.Context(), json.RawMessage(`{"id":"doc-1"}`))
+	require.NoError(t, err)
+	item := result.Data["image_catalog"].([]documentImage)[0]
+	require.Zero(t, item.Page, "a Markdown label does not establish a physical page")
+	require.Equal(t, 5, item.PageHint)
+	require.False(t, item.PageVerified)
+	require.Equal(t, "chunk-1", item.ReadArgs.ID)
+	require.Zero(t, item.ReadArgs.Page, "navigation must not promote a label or guess a page")
+	require.Equal(t, []string{ref}, item.ReadArgs.Images)
+}
+
+func TestReadDocumentImageScopeFailureReturnsOnlyCurrentBoundedNavigation(t *testing.T) {
+	tool, ref, reads := documentFigureFixture(t)
+	// The selected image belongs to page 2; page 3 has a different real image.
+	result, err := tool.Execute(t.Context(), mustReadDocumentJSON(t, ReadDocumentInput{ID: "doc-1", Page: 3, Images: []string{ref}, ImageMode: "geometry"}))
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	require.Empty(t, *reads)
+	require.Empty(t, result.Images)
+	require.Equal(t, "image_not_in_read_scope", result.Data["reason_code"])
+	require.Equal(t, false, result.Data["pixels_read"])
+	require.Equal(t, false, result.Data["geometry_read"])
+	current := result.Data["image_catalog"].([]documentImage)
+	require.Len(t, current, 1)
+	require.NotEqual(t, ref, current[0].Reference, "a prior image must not be silently searched outside the selected page")
+	require.Equal(t, 3, current[0].ReadArgs.Page)
+	require.Equal(t, "chunk-2", current[0].ReadArgs.ID)
+	require.NotContains(t, result.Data, "chunks", "failed image selection does not issue successful body evidence")
+	require.Contains(t, result.Output, "image_not_in_read_scope")
+
+	rows := []map[string]interface{}{}
+	for i := 0; i < 23; i++ {
+		rows = append(rows, map[string]interface{}{"chunk_id": fmt.Sprintf("source-%d", i), "content": fmt.Sprintf("![Source](resource://%022d)", i)})
+	}
+	large := &types.ToolResult{Success: true, Data: map[string]interface{}{"chunks": rows}}
+	result, err = tool.finishImageRead(t.Context(), &types.Knowledge{ID: "other-document"}, ReadDocumentInput{ID: "other-document", Images: []string{ref}}, large, nil)
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	require.Empty(t, *reads)
+	require.Len(t, result.Data["image_catalog"], 16)
+	require.Equal(t, 23, result.Data["image_catalog_total"])
+	require.Equal(t, true, result.Data["image_catalog_truncated"])
+	for _, item := range result.Data["image_catalog"].([]documentImage) {
+		require.Equal(t, "other-document", item.KnowledgeID)
+		require.NotEqual(t, ref, item.Reference)
+	}
+}
+
+func mustReadDocumentJSON(t *testing.T, input ReadDocumentInput) json.RawMessage {
+	t.Helper()
+	encoded, err := json.Marshal(input)
+	require.NoError(t, err)
+	return encoded
 }
 
 func TestDocumentImageCatalogUsesPDFPhysicalPageForWholeDocument(t *testing.T) {

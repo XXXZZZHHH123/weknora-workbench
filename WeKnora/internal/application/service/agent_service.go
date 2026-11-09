@@ -1470,6 +1470,9 @@ func (s *agentService) registerTools(
 			}
 			toolToRegister = structuredTool
 		case tools.ToolCommodityResearch:
+			if !tools.CommodityResearchScopeAvailable(ctx) {
+				continue
+			}
 			toolToRegister = tools.NewCommodityResearchTool()
 		case tools.ToolTodoWrite:
 			toolToRegister = tools.NewTodoWriteTool()

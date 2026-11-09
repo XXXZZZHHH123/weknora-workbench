@@ -33,7 +33,8 @@ var readDocumentTool = BaseTool{
 		"Use pages (at most 8) to batch model-selected physical pages in one authorized read; each page has its own completion and continuation metadata. For a single physical page or PPT slide, use page (1-based). It reads only that page's explicit parser markers; offset is never a physical page number. Missing page markers are reported, never guessed.\n" +
 		"Printed page labels and table-of-contents ranges are not physical PDF pages or proof that a listed section is present in this file. Verify physical pages with parser source_locators or page reads; chunk counts and the largest observed locator do not establish total pages.\n" +
 		"The result includes an image_catalog of actual stored figures, even for older text-only imports. " +
-		"To inspect a figure, repeat the same authorized document/page read with images=[its exact reference], detail=full and focus describing the complete user request. " +
+		"To inspect a figure, use that catalog entry's read_args (its actual owning chunk and any verified physical page), then add focus describing the complete user request. " +
+		"Do not move an image reference to another page, chunk, document or pagination range. page_hint is an unverified source label, not physical-page proof; no page should be guessed when page_verified=false. " +
 		"Choose the figure from its actual source labels/context; text labels and image URLs alone do not reveal curves or their colors. " +
 		"Returned originals are delivered to a vision model or the configured separate image reader; report estimates and unclear overlaps honestly.\n" +
 		"For numeric traces in supported original vector charts, explicitly select image_mode=geometry with images and exact image_series legend identifiers. This verifies original source geometry without rasterizing or visually inspecting pixels; use image_mode=pixels (the default) when visual inspection is required.\n" +
@@ -106,7 +107,7 @@ var readDocumentTool = BaseTool{
       "type": "array",
       "items": {"type": "string"},
       "maxItems": 4,
-      "description": "Exact image references from this document/page's image_catalog; omit to list figures without reading pixels or geometry"
+      "description": "Exact image references from the actual image_catalog. Use that entry's read_args with its owning chunk and any verified page; never move a prior reference to a guessed page/range. Omit to list figures without reading pixels or geometry."
     },
     "image_mode": {
       "type": "string", "enum": ["pixels", "geometry"],

@@ -50,7 +50,7 @@
     if (headers.get('Authorization') !== 'Bearer fixture-token' || headers.get('X-Knowledge-Base-ID') !== 'kb-fixture' || headers.get('X-Tenant-ID') !== '7') throw new Error('request missing scoped auth headers')
     const url = String(input)
     if (url.includes('/report')) return new Response(JSON.stringify({ manifest: { dataset_id: data.dataset_id, sha256: data.source.sha256, import_id: 'b'.repeat(24) } }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    if (url.includes('/sheet-view')) return new Response(JSON.stringify({ sheet_name: 'Values', range: { start_row: 1, end_row: 5, start_col: 1, end_col: 3, row_count: 5, col_count: 3 }, cells: [{ row: 2, column: 2, ref: 'B2', display: '5' }], warnings: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    if (url.includes('/sheet-view')) return new Response(JSON.stringify({ sheet_name: 'Values', range: { start_row: 1, end_row: 5, start_col: 1, end_col: 3, row_count: 5, col_count: 3 }, cells: [{ row: 2, column: 2, cell: 'B2', value: 5, display: '5' }], warnings: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     if (url.includes('/api/pdf/tables/pdft_fixture_table')) return new Response(JSON.stringify({ table_id: pdfData.table_id, source: pdfData.source, rows: [...pdfRead.rows, ...laterPdfRead.rows], fragments: [{ page: 1, bbox: [0.08, 0.08, 0.7, 0.25] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     if (url.includes('/api/v1/knowledge/fixture-pdf/preview')) return new Response(Uint8Array.from(atob(window.fixturePdfBase64), c => c.charCodeAt(0)), { status: 200, headers: { 'Content-Type': 'application/pdf' } })
     return new Response('{}', { status: 404 })

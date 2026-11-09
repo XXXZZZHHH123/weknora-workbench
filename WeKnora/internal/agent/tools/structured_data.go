@@ -274,7 +274,7 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 				return structuredProtocolFailure("manifest_changed", "结构化服务能力版本已变化；本次未执行。请通过 structured_capabilities refresh=true 取得当前扁平定义，再修正调用，不能自动重放旧参数", "manifest", false), nil
 			}
 		}
-		return nil, fmt.Errorf("结构化表格读取失败（HTTP 409），本次未取得可用结果；核对真实来源范围与当前版本")
+		return serviceReadFailure("结构化表格", response.StatusCode, body, readErr), nil
 	}
 	if response.StatusCode == http.StatusBadRequest {
 		// Native argument validation happens before its operation is called.
@@ -300,7 +300,7 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 			Error: "结构化表格参数校验失败（HTTP 400）：" + detail}, nil
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("结构化表格读取失败（HTTP %d），请检查服务、身份或查询参数", response.StatusCode)
+		return readServiceFailure("结构化表格", response.StatusCode, response.Body), nil
 	}
 	if descriptor, ok := ctx.Value(structuredInvocationKey{}).(StructuredOperationDescriptor); ok && descriptor.ManifestSHA256 != "" && response.Header.Get("X-Structured-Manifest-SHA256") != descriptor.ManifestSHA256 {
 		return structuredProtocolFailure("manifest_execution_unverified", "服务未确认本次工具协议版本；未接受结果。状态操作不得重放，请核对当前服务能力", "manifest", true), nil

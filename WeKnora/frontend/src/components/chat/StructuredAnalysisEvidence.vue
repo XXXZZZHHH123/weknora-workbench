@@ -74,6 +74,7 @@
       <div v-for="view in sheetViews" :key="view.sheet_name" class="original-sheet" aria-label="原始工作表单元格">
         <p>{{ view.sheet_name }} · 当前窗口 {{ view.range.start_row }}–{{ view.range.end_row }} 行、{{ view.range.start_col }}–{{ view.range.end_col }} 列 · 已核验来源 hash · 目标 {{ selectedCell?.sheet }}!{{ selectedCell?.address }}</p>
         <div class="analysis-table"><table>
+          <thead><tr><th aria-label="行号"></th><th v-for="column in structuredSheetColumns(view)" :key="column.number" scope="col">{{ column.label }}</th></tr></thead>
           <tbody><tr v-for="row in viewRows(view)" :key="row.number">
             <th>{{ row.number }}</th><td v-for="cell in row.cells" :key="cell.ref" :class="{ highlighted: selectedCell?.sheet === view.sheet_name && selectedCell?.address === cell.ref }" :data-source-cell="cell.ref">{{ cell.display ?? cell.value ?? '' }}</td>
           </tr></tbody>
@@ -98,8 +99,10 @@ import { fetchWithAuthRetry } from '@/utils/authFetch'
 import DocumentPreview from '@/components/document-preview.vue'
 import type { SourceLocateRequest } from '@/utils/sourceLocator'
 import { groupStructuredAnswerSources, structuredPdfPages, isStructuredImportId, parseExcelCell, type StructuredAnswerSource, type StructuredSourceTable } from '@/utils/structuredAnswerSources'
+import { structuredSheetColumns, structuredSheetRows, type StructuredSheetView } from '@/utils/structuredSheetView'
+import { queueStructuredSourceRead, structuredSourceReadError } from '@/utils/structuredSourceRead'
 
-type SheetView = { sheet_name: string; cells: Array<{row:number;column:number;ref:string;display?:string;value?:unknown}>; warnings?: string[]; range: Record<string,number> }
+type SheetView = StructuredSheetView
 type PdfPreview = { blob: Blob; fileName: string; knowledgeId: string; page: number; locate: SourceLocateRequest }
 const props = defineProps<{ evidence: any; sources?: StructuredAnswerSource[] }>()
 const auth = useAuthStore()
@@ -160,22 +163,7 @@ function sourceCellsFor(data: any) {
 }
 const activeSource = computed(() => (props.sources || []).find(item => sourceKey(item) === activeSourceKey.value))
 const activeSourceStamp = ref('')
-function viewRows(view: SheetView) {
-  const cells = new Map((view.cells || []).map(cell => [cell.ref, cell]))
-  const rows: Array<{number:number;cells:any[]}> = []
-  const { start_row: startRow, end_row: endRow, start_col: startColumn, end_col: endColumn } = view.range
-  for (let row = startRow; row <= endRow; row++) {
-    const rowCells = []
-    for (let column = startColumn; column <= endColumn; column++) {
-      let n = column, letters = ''
-      while (n > 0) { const rem = (n - 1) % 26; letters = String.fromCharCode(65 + rem) + letters; n = Math.floor((n - 1) / 26) }
-      const ref = `${letters}${row}`
-      rowCells.push(cells.get(ref) || { row, column, ref, display: '' })
-    }
-    rows.push({ number: row, cells: rowCells })
-  }
-  return rows
-}
+const viewRows = structuredSheetRows
 function sourceKey(item: StructuredAnswerSource) {
   return JSON.stringify([
     item.kind,
@@ -284,9 +272,7 @@ async function getJSON(url: string, kbId: string, stamp: { token:string; user:st
     isCurrent: () => (auth.user?.id || '') === stamp.user && String(auth.selectedTenantId ?? auth.tenant?.id ?? '') === stamp.tenant,
   })
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) throw new Error('当前账号或知识库无权读取原始来源。')
-    if (response.status === 404) throw new Error('原始来源或对应数据集已不存在。')
-    throw new Error(`原件读取失败（HTTP ${response.status}）。`)
+    throw await structuredSourceReadError(response)
   }
   return response.json()
 }
@@ -327,7 +313,10 @@ async function openExcel(item: StructuredAnswerSource, target?: {sheet:string;ad
     if (!parsed) throw new Error('工具返回的来源坐标无效，无法定位。')
     const startRow = Math.max(1, parsed.row - 2), startColumn = Math.max(1, parsed.column - 1)
     const query = new URLSearchParams({ name: cell.sheet, start_row: String(startRow), start_col: String(startColumn), row_count: '5', col_count: '3' })
-    const view = await getJSON(`/structured/api/imports/${encodeURIComponent(manifest.import_id)}/sheet-view?${query}`, kbId, stamp, scopedTenant)
+    const view = await queueStructuredSourceRead(
+      () => isCurrentOperation(epoch, key, kbId, stamp.user, stamp.tenant, sourceHash),
+      () => getJSON(`/structured/api/imports/${encodeURIComponent(manifest.import_id)}/sheet-view?${query}`, kbId, stamp, scopedTenant),
+    )
     if (!isCurrentOperation(epoch, key, kbId, stamp.user, stamp.tenant, sourceHash)) return
     const range = view?.range
     const boundedRange = range &&
@@ -342,6 +331,9 @@ async function openExcel(item: StructuredAnswerSource, target?: {sheet:string;ad
     if (view?.sheet_name !== cell.sheet || !Array.isArray(view.cells) || !boundedRange) {
       throw new Error('原件窗口返回结构不完整，无法准确定位。')
     }
+    // Validate the API's real cell addresses before displaying a verified
+    // source window. A malformed response must not look like an empty sheet.
+    structuredSheetRows(view)
     sheetViews.value = [view]
   } catch (error) {
     if (!isCurrentOperation(epoch, key, kbId, stamp.user, stamp.tenant, sourceHash)) return
