@@ -38,6 +38,8 @@ def remote_fixture(tmp_path, monkeypatch):
             return httpx.Response(200, json=state['initial'])
         if request.method == 'POST' and request.url.path == '/v1/jobs/job-actual/retry':
             return httpx.Response(202, json=state.get('retry_reply', dict(id='job-actual',status='completed',lease_id='retry-lease')))
+        if request.method == 'GET' and request.url.path == '/v1/capacity':
+            return httpx.Response(state['post_status'], json={'available': True})
         if request.method == 'GET' and request.url.path == '/v1/jobs/job-actual/result':
             return httpx.Response(state['result_status'], json=state['artifact'])
         if request.method == 'GET' and request.url.path == '/v1/jobs/job-actual':
@@ -157,11 +159,13 @@ def test_result_rejects_invalid_source_coverage_and_detaches_only_own_lease(remo
 def test_queue_429_does_not_expose_provider_body_or_create_cancel(remote_fixture):
     _, _, _, state = remote_fixture
     state['post_status'] = 429
+    remote_fixture[2].queue_timeout_seconds = .08
     with pytest.raises(RemotePDFError) as captured:
         run(remote_fixture)
-    assert captured.value.code == 'http_429'
+    assert captured.value.code == 'client_queue_timeout'
     assert 'private' not in str(captured.value) and 'provider' not in str(captured.value)
-    assert [r.method for r in state['requests']] == ['POST']
+    assert sum(r.method == 'POST' for r in state['requests']) == 1
+    assert any(r.url.path == '/v1/capacity' for r in state['requests'])
 
 
 def test_queued_progress_and_completion_preserve_creation_lease(remote_fixture):
@@ -178,8 +182,10 @@ def test_queued_progress_and_completion_preserve_creation_lease(remote_fixture):
 def test_timeout_detaches_creation_lease_even_without_lease_in_poll(remote_fixture):
     _, _, cfg, state = remote_fixture
     cfg.timeout_seconds = .08
+    cfg.queue_timeout_seconds = .08
     state['initial']['status'] = 'queued'
-    with pytest.raises(RemotePDFError, match='client_timeout'):
+    state['polls'] = [dict(id='job-actual', status='queued')] * 10
+    with pytest.raises(RemotePDFError, match='client_queue_timeout'):
         run(remote_fixture)
     assert [r.method for r in state['requests']][-1] == 'DELETE'
     assert state['requests'][-1].headers['x-parse-lease'] == 'lease-consumer-a'
@@ -262,3 +268,92 @@ def test_same_remote_cache_result_produces_same_immutable_draft(remote_fixture, 
     assert a['draft_id'] == b['draft_id']
     assert len(store.list_drafts()['drafts']) == 1
     assert first['parser']['profile_sha256'] == 'b' * 64
+
+
+@pytest.mark.parametrize('override,completes', [(None, True), ('600', False)])
+def test_remote_wait_survives_local_parser_deadline_but_honors_override(remote_fixture, monkeypatch, override, completes):
+    path, sha, _, state = remote_fixture
+    state['initial']['status'] = 'running'
+    state['polls'] = [dict(id='job-actual', status='completed')]
+    monkeypatch.setenv('PDF_TABLE_PARSER_ENGINE', 'remote_vlm')
+    monkeypatch.setenv('PDF_TABLE_PARSER_URL', 'http://remote-pdf.test')
+    monkeypatch.setenv('PDF_TABLE_PARSER_API_KEY', 'server-fixture-token')
+    if override is None:
+        monkeypatch.delenv('PDF_TABLE_PARSER_TIMEOUT_SECONDS', raising=False)
+    else:
+        monkeypatch.setenv('PDF_TABLE_PARSER_TIMEOUT_SECONDS', override)
+    cfg = ParserConfig.from_env()
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        original_time, original_sleep = loop.time, asyncio.sleep
+        elapsed = [0.0]
+
+        async def advance_poll(delay):
+            if delay:
+                elapsed[0] += 601
+            await original_sleep(0)
+            await original_sleep(0)
+
+        with monkeypatch.context() as clock_patch:
+            clock_patch.setattr(loop, 'time', lambda: original_time() + elapsed[0])
+            clock_patch.setattr(asyncio, 'sleep', advance_poll)
+            return await parse_remote_pdf(path, {'sha256': sha}, cfg)
+
+    if completes:
+        assert asyncio.run(scenario())['source']['sha256'] == sha
+        assert not any(r.method == 'DELETE' for r in state['requests'])
+    else:
+        with pytest.raises(RemotePDFError, match='client_timeout'):
+            asyncio.run(scenario())
+        assert state['requests'][-1].method == 'DELETE'
+        assert state['requests'][-1].headers['x-parse-lease'] == 'lease-consumer-a'
+
+
+def test_long_queue_does_not_consume_execution_budget(remote_fixture, monkeypatch):
+    path, sha, cfg, state = remote_fixture
+    cfg.timeout_seconds = 600
+    cfg.queue_timeout_seconds = 86400
+    state['initial']['status'] = 'queued'
+    state['polls'] = [dict(id='job-actual', status='queued'), dict(id='job-actual', status='running'),
+                      dict(id='job-actual', status='completed')]
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        original_time, original_sleep = loop.time, asyncio.sleep
+        elapsed = [0.0]
+        steps = iter([8000, 8000, 100])
+        async def advance(delay):
+            if delay: elapsed[0] += next(steps)
+            await original_sleep(0); await original_sleep(0)
+        with monkeypatch.context() as patch:
+            patch.setattr(loop, 'time', lambda: original_time() + elapsed[0])
+            patch.setattr(asyncio, 'sleep', advance)
+            return await parse_remote_pdf(path, {'sha256': sha}, cfg)
+    assert asyncio.run(scenario())['source']['sha256'] == sha
+    assert not any(r.method == 'DELETE' for r in state['requests'])
+
+
+def test_manual_retry_queue_pressure_waits_and_keeps_same_action(remote_fixture, monkeypatch):
+    path,sha,cfg,state = remote_fixture
+    state['initial']['status'] = 'failed'
+    original = httpx.AsyncClient
+    attempts = 0
+    async def transport(request):
+        nonlocal attempts
+        if request.url.path.endswith('/retry'):
+            attempts += 1
+            assert request.headers['X-Parse-Retry-Key'] == 'a' * 32
+            if attempts == 1:
+                return httpx.Response(429)
+        # Delegate to the fixture transport while retaining its bounded client.
+        async with original(base_url=cfg.url, headers={'Authorization':'Bearer '+cfg.api_key}, trust_env=False, follow_redirects=False) as delegated:
+            return await delegated.send(request)
+    # The fixture factory enforces trust_env/follow_redirects and injects MockTransport.
+    def client(**kwargs):
+        delegated = original(**kwargs)
+        delegated._transport = httpx.MockTransport(transport)
+        return delegated
+    monkeypatch.setattr(httpx,'AsyncClient',client)
+    result = asyncio.run(parse_remote_pdf(path,{'sha256':sha},cfg,retry_token='a'*32))
+    assert result['remote_job_id'] == 'job-actual'
+    assert attempts == 2

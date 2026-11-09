@@ -149,3 +149,111 @@ def test_review_preserves_validated_horizontal_plan_and_units(tmp_path, monkeypa
     assert group['plan']['row_groups'] == plan['row_groups']
     assert any(issue['code'] == 'row_alignment_unverified' for issue in group['issues'])
     assert not store.list_tables()['tables']
+
+
+def _large_grouping_draft():
+    raw = bundle()
+    raw['fragments'] = []
+    raw['page_context'] = []
+    for page in range(1, 5):
+        fragment = deepcopy(bundle()['fragments'][0])
+        fragment.update(id=f'fragment-{page}', page=page)
+        fragment['rows'][1][1]['text'] = '-0001.200'
+        fragment['notes'] = ['source note ' * 60]
+        raw['fragments'].append(fragment)
+        raw['page_context'].append({'page': page, 'text': f'boundary-{page} ' + 'source ' * 100})
+    return {'bundle': raw}
+
+
+def test_long_grouping_overlaps_whole_pages_and_verifies_cross_batch_source(tmp_path, monkeypatch):
+    import structured_data.pdf_automation as automation
+    draft = _large_grouping_draft()
+    monkeypatch.setattr(automation, 'GROUPING_REQUEST_BYTES', 6500)
+    monkeypatch.setattr('structured_data.model_settings.read_model', lambda *args: {})
+    batches = automation._overlapping_batches(grouping_evidence(draft['bundle']))
+    assert len(batches) > 1
+    assert set.union(*batches) == {1, 2, 3, 4}
+    assert all(left & right for left, right in zip(batches, batches[1:]))
+    calls = []
+    def model(cfg, messages):
+        evidence = __import__('json').loads(messages[1]['content'])
+        calls.append((messages[0]['content'], evidence))
+        if 'batch_groups' in evidence:
+            # Deliberately propose an incorrect cross-batch merge. The summary
+            # alone must not authorize it; complete source verification splits it.
+            return {'groups': [{'fragment_ids': ['fragment-1', 'fragment-4'], 'reason': 'candidate'},
+                               {'fragment_ids': ['fragment-2'], 'reason': 'independent'},
+                               {'fragment_ids': ['fragment-3'], 'reason': 'independent'}]}
+        ids = [f['id'] for f in evidence['fragments']]
+        for f in evidence['fragments']:
+            assert f['rows'][1][1] == '-0001.200'
+        return {'groups': [{'fragment_ids': [i], 'reason': 'source title', 'identity': 'source identity'} for i in ids]}
+    monkeypatch.setattr('structured_data.pdf_api._model_json', model)
+    result = group_fragments(draft, tmp_path)
+    assert sorted(i for g in result for i in g['fragment_ids']) == [f'fragment-{p}' for p in range(1, 5)]
+    assert len(result) == 4
+    full_checks = [(prompt, e) for prompt, e in calls if '跨批次候选的完整原件复核' in prompt]
+    assert len(full_checks) == 1
+    assert {c['page'] for c in full_checks[0][1]['page_context']} == {1, 2, 3, 4}
+    assert len([e for _, e in calls if 'batch_groups' not in e and any(f['page'] == 2 for f in e['fragments'])]) >= 2
+
+
+def test_long_grouping_rejects_duplicate_final_ids(tmp_path, monkeypatch):
+    import structured_data.pdf_automation as automation
+    monkeypatch.setattr(automation, 'GROUPING_REQUEST_BYTES', 6500)
+    monkeypatch.setattr('structured_data.model_settings.read_model', lambda *args: {})
+    def model(cfg, messages):
+        evidence = __import__('json').loads(messages[1]['content'])
+        ids = evidence.get('source_fragment_ids') or [f['id'] for f in evidence['fragments']]
+        if 'batch_groups' in evidence:
+            ids.append(ids[0])
+        return {'groups': [{'fragment_ids': [i], 'reason': 'source title', 'identity': 'source identity'} for i in ids]}
+    monkeypatch.setattr('structured_data.pdf_api._model_json', model)
+    with pytest.raises(PDFProcessingError, match='遗漏、重复'):
+        group_fragments(_large_grouping_draft(), tmp_path)
+
+
+def test_oversized_page_is_not_truncated_or_sent(tmp_path, monkeypatch):
+    draft = _large_grouping_draft()
+    draft['bundle']['page_context'][0]['text'] = '原文' * 20000
+    monkeypatch.setattr('structured_data.model_settings.read_model', lambda *args: {})
+    monkeypatch.setattr('structured_data.pdf_api._model_json', lambda *args: pytest.fail('oversized request'))
+    with pytest.raises(PDFProcessingError, match='单页完整来源'):
+        group_fragments(draft, tmp_path)
+    assert draft['bundle']['page_context'][0]['text'] == '原文' * 20000
+
+
+def test_grouping_does_not_let_quality_diagnostics_consume_source_budget():
+    raw = bundle()
+    raw['fragments'][0]['quality'] = {'issues': [{'cells': [{'row': 0, 'column': 0}]}]}
+    compact = grouping_evidence(raw)
+    assert 'quality' not in compact['fragments'][0]
+    assert raw['fragments'][0]['quality']['issues']  # immutable review evidence kept
+
+
+def test_long_grouping_keeps_text_only_batches_and_reports_progress(tmp_path, monkeypatch):
+    import json
+    import structured_data.pdf_automation as automation
+    draft = _large_grouping_draft()
+    for page in range(5, 11):
+        draft['bundle']['page_context'].append({'page': page, 'text': f'context-{page} ' + 'narrative ' * 150})
+    monkeypatch.setattr(automation, 'GROUPING_REQUEST_BYTES', 6500)
+    monkeypatch.setattr('structured_data.model_settings.read_model', lambda *args: {})
+    seen_pages, text_only = set(), []
+    def model(cfg, messages):
+        evidence = json.loads(messages[1]['content'])
+        if 'batch_groups' in evidence:
+            assert any(not g['fragment_ids'] and g.get('identity') for g in evidence['batch_groups'])
+            return {'groups': [{'fragment_ids': [i], 'reason': 'independent'} for i in evidence['source_fragment_ids']]}
+        seen_pages.update(c['page'] for c in evidence['page_context'])
+        ids = [f['id'] for f in evidence['fragments']]
+        if not ids:
+            text_only.append(True)
+        return {'groups': [{'fragment_ids': [i], 'reason': 'source', 'identity': 'source'} for i in ids],
+                'context_identity': 'narrative continuation context'}
+    monkeypatch.setattr('structured_data.pdf_api._model_json', model)
+    stages = []
+    result = group_fragments(draft, tmp_path, stages.append)
+    assert text_only and seen_pages == set(range(1, 11))
+    assert stages[-1] == '正在核对跨批次续表关系'
+    assert len(result) == 4

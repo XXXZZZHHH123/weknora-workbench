@@ -41,6 +41,12 @@ class Store:
             lease_id TEXT NOT NULL, created REAL NOT NULL, PRIMARY KEY(job,key_hash));
           CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status,queued);
         ''')
+        # Additive migration preserves existing jobs/checkpoints and leases.
+        columns = {r[1] for r in self.db.execute('PRAGMA table_info(jobs)')}
+        for name, definition in (('queue_timeout', 'REAL'), ('execution_timeout', 'REAL'),
+                                 ('queue_used', 'REAL NOT NULL DEFAULT 0')):
+            if name not in columns:
+                self.db.execute('ALTER TABLE jobs ADD COLUMN ' + name + ' ' + definition)
         self.global_limit, self.owner_limit, self.retention = global_limit, owner_limit, retention
         self.scope_limit = scope_limit
 
@@ -79,7 +85,7 @@ class Store:
         if total >= self.global_limit or own >= self.owner_limit or scoped >= self.scope_limit:
             raise QueueFull()
 
-    def insert(self, scope, owner, digest, profile, size):
+    def insert(self, scope, owner, digest, profile, size, *, queue_timeout=None, execution_timeout=None):
         existing = self.find(scope, digest, profile)
         if existing:
             return existing, True
@@ -88,6 +94,8 @@ class Store:
         now = time.time()
         self.db.execute('INSERT INTO jobs(id,scope,owner,digest,profile,status,created,queued,size) VALUES(?,?,?,?,?,?,?,?,?)',
                         (job_id, scope, owner, digest, profile, 'queued', now, now, size))
+        self.db.execute("UPDATE jobs SET queue_timeout=?,execution_timeout=? WHERE id=?",
+                        (queue_timeout, execution_timeout, job_id))
         return self.get(job_id), False
 
     def recover(self):
@@ -100,7 +108,7 @@ class Store:
         if not row:
             return None
         now = time.time()
-        self.db.execute("UPDATE jobs SET status='running',started=? WHERE id=?", (now, row['id']))
+        self.db.execute("UPDATE jobs SET status='running',started=?,queue_used=queue_used+MAX(0,?-queued) WHERE id=?", (now, now, row['id']))
         self.db.execute('INSERT INTO owners(owner,served) VALUES(?,?) ON CONFLICT(owner) DO UPDATE SET served=excluded.served', (row['owner'], now))
         return self.get(row['id'])
 
@@ -113,7 +121,7 @@ class Store:
         self.db.execute("UPDATE jobs SET status=?,error=?,finished=?,execution_used=COALESCE(?,execution_used) WHERE id=? AND status IN ('queued','running')",
                         (status, json.dumps(error) if error else None, time.time(), elapsed, job_id))
 
-    def retry(self, job_id, key_hash, owner):
+    def retry(self, job_id, key_hash, owner, *, queue_timeout=None, execution_timeout=None):
         # The manual action key is durable. A lost HTTP response or a native task
         # retry must never buy a second execution for the same user action.
         self.db.execute('BEGIN IMMEDIATE')
@@ -131,7 +139,9 @@ class Store:
                 raise RetryConflict()
             self.check_capacity(owner, job['scope'])
             self.db.execute('UPDATE leases SET active=0 WHERE job=?', (job_id,))
-            self.db.execute("UPDATE jobs SET status='queued',owner=?,queued=?,started=NULL,finished=NULL,error=NULL,execution_used=0 WHERE id=?", (owner, time.time(), job_id))
+            self.db.execute("UPDATE jobs SET status='queued',owner=?,queued=?,started=NULL,finished=NULL,error=NULL,execution_used=0,queue_used=0 WHERE id=?", (owner, time.time(), job_id))
+            if queue_timeout is not None or execution_timeout is not None:
+                self.db.execute('UPDATE jobs SET queue_timeout=COALESCE(?,queue_timeout),execution_timeout=COALESCE(?,execution_timeout) WHERE id=?', (queue_timeout,execution_timeout,job_id))
             lease_id = self.lease(job_id)
             self.db.execute('INSERT INTO retry_requests(job,key_hash,owner,lease_id,created) VALUES(?,?,?,?,?)',
                             (job_id, key_hash, owner, lease_id, time.time()))
@@ -146,7 +156,7 @@ class Store:
         self.db.execute("UPDATE jobs SET status='queued',queued=?,started=NULL WHERE id=? AND status='running'", (time.time(), job_id))
 
     def expire_queue(self, budget):
-        ids = [r[0] for r in self.db.execute("SELECT id FROM jobs WHERE status='queued' AND queued<?", (time.time()-budget,))]
+        ids = [r[0] for r in self.db.execute("SELECT id FROM jobs WHERE status='queued' AND queue_used+MAX(0,?-queued)>COALESCE(queue_timeout,?)", (time.time(), budget))]
         for job_id in ids:
             self.finish(job_id, 'failed', {'code': 'QUEUE_TIMEOUT', 'message': '排队等待超时，请稍后手动重试。'})
 

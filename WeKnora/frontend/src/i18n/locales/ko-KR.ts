@@ -36,6 +36,7 @@ export default {
     pageLocation: "원본 페이지만 표시",
     noCoordinates: "정확한 셀 좌표가 기록되지 않았습니다.",
   },
+  pdfProcessing: {"title": "PDF table processing", "timingHint": "Queue waiting and parsing use separate clocks.", "overlap": "Overlapping pages", "batch": "Content per batch", "queue": "Maximum queue wait", "execution": "Parsing time limit", "pages": "pages", "hours": "hours", "minutes": "min", "retry": "Retry", "restore": "Restore recommended", "save": "Save settings", "saved": "Saved. New tasks will use these settings.", "applyHint": "Applies to newly started tasks.", "failed": "Could not load or save settings. Please retry.", "invalid": "Enter valid whole numbers."},
   chartRendering: {"type": "데이터 차트", "rendering": "차트 그리는 중", "completed": "차트 저장됨", "failed": "차트 생성 미완료"},
   imageGeneration: {
       "bindingDisabled": "The tool is off. Chat cannot generate images.",

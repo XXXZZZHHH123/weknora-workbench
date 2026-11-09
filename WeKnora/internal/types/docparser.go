@@ -13,6 +13,9 @@ const MaxInlineDocumentImages = 30
 // Set FileContent for file mode, URL for URL mode.
 type ReadRequest struct {
 	// ParserRetryKey is generated only by explicit user reparse, never document input.
+	DeferRemotePDF        bool
+	RemotePDFJob          *RemotePDFJobReference
+	PDFProcessing         *PDFProcessingSettings
 	ParserRetryKey        string
 	FileContent           []byte
 	FileName              string

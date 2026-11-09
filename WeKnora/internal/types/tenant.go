@@ -308,6 +308,7 @@ func (c *CredentialsConfig) Scan(value interface{}) error {
 // ParserEngineConfig holds tenant-level overrides for document parser engines (e.g. MinerU endpoint, API key).
 // These values take precedence over environment variables when parsing documents.
 type ParserEngineConfig struct {
+	PDFProcessing *PDFProcessingSettings `json:"pdf_processing,omitempty"`
 	// ChatParserEngineRules selects parser engines for session-scoped chat
 	// documents. Knowledge bases keep their own rules in ChunkingConfig.
 	ChatParserEngineRules []ParserEngineRule `json:"chat_parser_engine_rules,omitempty"`

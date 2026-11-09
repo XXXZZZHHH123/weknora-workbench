@@ -438,3 +438,92 @@ async def test_original_page_image_scope_identity_and_render_cache(tmp_path, mon
         assert (await client.get(route.replace('/1/image','/2/image'), headers=headers())).status_code == 404
         (tmp_path/'jobs'/job['id']/'input.pdf').write_bytes(b'%PDF-changed')
         assert (await client.get(route, headers=headers())).status_code == 409
+
+
+def test_queue_budget_is_independent_and_survives_restart(tmp_path):
+    store = Store(tmp_path/'policy.db')
+    job, _ = store.insert('scope', 'owner', 'digest', 'profile', 1, queue_timeout=86400, execution_timeout=600)
+    store.db.execute('UPDATE jobs SET queued=? WHERE id=?', (time.time()-7000, job['id']))
+    store.expire_queue(1800)  # A shorter deployment default cannot override this job snapshot.
+    assert store.get(job['id'])['status'] == 'queued'
+    running = store.take()
+    assert running['queue_used'] >= 7000 and running['execution_used'] == 0
+    store.progress(job['id'], {'page': 1}, 120)
+    store.recover()
+    resumed = store.get(job['id'])
+    assert resumed['status'] == 'queued' and resumed['execution_used'] == 120
+    assert resumed['queue_used'] >= 7000
+    store.db.execute('UPDATE jobs SET queue_used=86401 WHERE id=?', (job['id'],))
+    store.expire_queue(1800)
+    assert store.get(job['id'])['error'] and store.get(job['id'])['status'] == 'failed'
+    store.close()
+
+
+@pytest.mark.anyio
+async def test_queued_job_gets_full_execution_budget_and_bounded_policy(tmp_path):
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def parser(*args, **kwargs):
+        if not entered.is_set():
+            entered.set()
+            await release.wait()
+        await asyncio.sleep(.01)
+        return {'complete': True}
+    app = create_app(settings(tmp_path, document_concurrency=1, execution_timeout_seconds=.5, queue_timeout_seconds=.1), parser)
+    async with app.router.lifespan_context(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        policy_headers = headers(**{'X-Parse-Queue-Timeout': '86400', 'X-Parse-Execution-Timeout': '600'})
+        first = (await client.post('/v1/jobs', files={'file': ('a.pdf', PDF)}, headers=policy_headers)).json()
+        await entered.wait()
+        second = (await client.post('/v1/jobs', files={'file': ('b.pdf', PDF+b' second')}, headers=policy_headers)).json()
+        worker = app.state.worker
+        worker.store.db.execute('UPDATE jobs SET queued=? WHERE id=?', (time.time()-7000, second['id']))
+        await asyncio.sleep(.12)
+        queued = (await client.get('/v1/jobs/'+second['id'], headers=headers())).json()
+        assert queued['status'] == 'queued' and queued['execution_used'] == 0
+        assert queued['queue_elapsed_seconds'] >= 7000
+        release.set()
+        result = await wait(client, second['id'])
+        assert result['execution_used'] < 2
+        assert result['timeout_policy'] == {'queue_timeout_seconds': 86400, 'execution_timeout_seconds': 600}
+        bad = await client.post('/v1/jobs', files={'file': ('c.pdf', PDF+b' bad')},
+                                headers=headers(**{'X-Parse-Queue-Timeout':'86401'}))
+        assert bad.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_retry_captures_current_policy_but_replayed_action_cannot_extend_it(tmp_path):
+    async def parser(*args, **kwargs):
+        await asyncio.Event().wait()
+    app = create_app(settings(tmp_path), parser)
+    async with app.router.lifespan_context(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        first = (await submit(client)).json()
+        app.state.worker.store.finish(first['id'], 'failed')
+        url = '/v1/jobs/' + first['id'] + '/retry'
+        initial = headers(**{'X-Parse-Retry-Key': 'same-action', 'X-Parse-Queue-Timeout': '7200', 'X-Parse-Execution-Timeout': '900'})
+        a = await client.post(url, headers=initial)
+        assert a.status_code == 202
+        assert a.json()['timeout_policy'] == {'queue_timeout_seconds': 7200, 'execution_timeout_seconds': 900}
+        replay = await client.post(url, headers=initial | {'X-Parse-Execution-Timeout': '7200'})
+        assert replay.status_code == 202 and replay.json()['reused']
+        assert replay.json()['lease_id'] == a.json()['lease_id']
+        assert replay.json()['timeout_policy'] == a.json()['timeout_policy']
+
+
+def test_old_ledger_migration_preserves_pending_job_and_consumer_lease(tmp_path):
+    import sqlite3
+    path = tmp_path / 'legacy.db'
+    db = sqlite3.connect(path)
+    db.execute("""CREATE TABLE jobs (id TEXT PRIMARY KEY, scope TEXT NOT NULL, owner TEXT NOT NULL,
+        digest TEXT NOT NULL, profile TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL,
+        queued REAL NOT NULL, started REAL, finished REAL, execution_used REAL NOT NULL DEFAULT 0,
+        size INTEGER NOT NULL, progress TEXT NOT NULL DEFAULT '{}', error TEXT, UNIQUE(scope,digest,profile))""")
+    db.execute("INSERT INTO jobs(id,scope,owner,digest,profile,status,created,queued,size) VALUES('legacy','scope','owner','sha','profile','queued',?,?,1)", (time.time(),time.time()))
+    db.execute('CREATE TABLE leases (id TEXT PRIMARY KEY, job TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)')
+    db.execute("INSERT INTO leases(id,job) VALUES('old-lease','legacy')")
+    db.commit(); db.close()
+    store = Store(path)
+    assert store.get('legacy')['status'] == 'queued'
+    assert store.get('legacy')['queue_timeout'] is None
+    assert store.get('legacy')['queue_used'] == 0
+    assert store.detach('legacy', 'old-lease') == 0
+    assert store.take()['id'] == 'legacy'
+    store.close()
