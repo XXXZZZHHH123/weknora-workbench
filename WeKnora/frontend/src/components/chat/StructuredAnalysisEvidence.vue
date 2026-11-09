@@ -408,10 +408,11 @@ details + .source-locator { margin-top: 12px; }
 .fine-print { color: #66766c; font-size: .9em; }
 .highlighted { background: #ffe59b; outline: 2px solid #c77900; outline-offset: -2px; }
 @media (max-width: 600px) {
-  .source-heading { flex-wrap: wrap; gap: 6px 8px; }
-  .source-name { flex: 1; }
-  .source-pages { order: 2; flex-basis: calc(100% - 36px); margin-left: 36px; }
-  .source-locator .source-open { margin-left: 0; }
+  .source-heading { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 2px 8px; }
+  .source-kind { justify-self: start; }
+  .source-name, .source-pages { grid-column: 2; }
+  .source-pages { white-space: normal; }
+  .source-locator .source-open { grid-column: 2; justify-self: start; max-width: 100%; padding-inline: 0; text-align: left; }
   .pdf-locations { margin-left: 0; }
   .pdf-cell-list button { display: block; }
   .pdf-cell-list button > span { display: block; }

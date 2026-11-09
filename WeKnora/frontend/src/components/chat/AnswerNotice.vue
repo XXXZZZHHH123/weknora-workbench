@@ -1,9 +1,10 @@
 <template>
   <span class="answer-notice">
     <t-tooltip :content="notice" placement="top-right" :visible="hovered || focused"
+      :overlay-inner-style="{ maxWidth: 'min(320px, calc(100vw - 32px))', whiteSpace: 'normal', lineHeight: '1.6' }"
       @visible-change="hovered = $event">
       <button type="button" class="answer-notice__trigger" :aria-label="notice"
-        @focus="focused = true" @blur="focused = false" @keydown.esc="focused = false">
+        @focus="focused = true" @blur="focused = false" @keydown.esc="focused = hovered = false">
         <ChatActionIcon name="info-circle" />
       </button>
     </t-tooltip>
