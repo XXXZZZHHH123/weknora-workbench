@@ -5,13 +5,14 @@ from urllib.parse import quote
 
 from tin.integration.identity import research_url
 from tin.integration.workbench_scope import current_workbench
-from tin.web.ppt import require_scope
+from tin.web.ppt import require_enabled, require_scope
 
 
 def build_router(page_session, shell, templates):
     router = APIRouter()
 
     def render(request, template, template_id=None):
+        require_enabled()
         scope = current_workbench.get()
         config = {'enabled': True, 'id': template_id, 'can_write': False,
                   'date': request.query_params.get('date'),
@@ -31,6 +32,7 @@ def build_router(page_session, shell, templates):
             return templates.TemplateResponse(request, template, shell(session, 'reports', ppt_page=config))
 
     def redirect(request, path, fragment=''):
+        require_enabled()
         query = '?' + request.url.query if request.url.query else ''
         return RedirectResponse(research_url(path) + query + fragment, status_code=307)
 

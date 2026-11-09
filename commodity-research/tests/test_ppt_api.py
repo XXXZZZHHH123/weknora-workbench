@@ -10,6 +10,7 @@ from fastapi import HTTPException
 import pytest
 from sqlalchemy import select
 
+from tin.config import settings
 from tin.integration.workbench_scope import isolated_database_path, isolated_session_factory
 from tin.models.workbench import WorkbenchArtifact, WorkbenchArtifactRevision
 from tin.ppt import package as package_module
@@ -24,7 +25,8 @@ BASE = '/api/sn/ppt-templates'
 
 
 @pytest.fixture
-def ppt_client(chart_client):
+def ppt_client(chart_client, monkeypatch):
+    monkeypatch.setattr(settings, 'ppt_enabled', True)
     client, state = chart_client
     state.app.include_router(ppt.router)
     return client, state

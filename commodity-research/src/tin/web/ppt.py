@@ -16,6 +16,7 @@ from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
+from tin.config import settings
 from tin.integration.workbench_scope import artifact_session, current_workbench, require_shared_write
 from tin.integration import ppt_sources
 from tin.models.workbench import WorkbenchArtifact
@@ -31,11 +32,18 @@ from tin.web.chart_data import catalog_fields, cutoff, read_series, unit_notices
 from tin.web.workbench_artifacts import record_revision
 
 
+def require_enabled():
+    if not settings.ppt_enabled:
+        raise HTTPException(404, 'PPT功能暂未开放')
+
+
 class PptRoute(APIRoute):
     def get_route_handler(self):
         original = super().get_route_handler()
 
         async def handler(request):
+            # Hide every PPT API before parsing uploads or validating request bodies.
+            require_enabled()
             try:
                 return await original(request)
             except PptError as exc:
@@ -48,6 +56,7 @@ META = TypeAdapter(dict[str, ExportSlotMeta])
 
 
 def require_scope(*, write=False):
+    require_enabled()
     scope = current_workbench.get()
     if scope is not None and scope.restricted:
         raise HTTPException(403, '受限视角暂不开放PPT模板')
