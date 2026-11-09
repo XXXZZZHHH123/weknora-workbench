@@ -34,6 +34,7 @@ def test_judgment_manager_management_and_caliber_interactions():
     'judgment-manager-latest-result.test.cjs',
     'judgment-manager-pending-group.test.cjs',
     'judgment-manager-source-caliber.test.cjs',
+    'judgment-manager-frequency.test.cjs',
     'judgment-manager-multiple-bindings.test.cjs',
     'judgment-manager-item-confirmation.test.cjs',
     'judgment-manager-number-review.test.cjs',

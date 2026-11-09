@@ -558,6 +558,7 @@
     if (!append) {
       citationRows = []; citationNext = null; citationChoice = null; citationPreviewToken++;
       citationPreviewController?.abort(); citationImportController?.abort();
+      citationChartHandle?.destroy(); citationChartHandle = null;
       byId('strategy-citation-preview').replaceChildren(element('p', '选择一项查看内容。', 'strategy-small-note'));
       drawCitationOptions();
     }
@@ -595,7 +596,7 @@
     if (preview.notice) panel.append(element('p', preview.notice, 'strategy-small-note'));
     const link = citationLink(preview.url || preview.detail_url || preview.origin_url, preview.type === 'file' ? '预览知识库原件 ↗' : preview.type === 'condition' ? '查看所引研判 ↗' : '查看指标详情 ↗');
     if (link) panel.append(link);
-    if (preview.type === 'indicator') { const values = element('div', '正在读取所选指标…', 'strategy-small-note'); panel.append(values); loadCitationIndicator(data, context, values); }
+    if (preview.type === 'indicator') drawCitationIndicator(data, context, panel);
     const controls = element('div', undefined, 'strategy-citation-actions');
     if (context.mode !== 'preview') {
       const used = citations.some(item => citationKey(item) === citationKey(data.citation));
@@ -614,6 +615,7 @@
   async function previewCitation(item) {
     const context = citationContext; if (!context) return;
     citationPreviewController?.abort(); citationPreviewController = new AbortController(); const token = ++citationPreviewToken;
+    citationChartHandle?.destroy(); citationChartHandle = null;
     const panel = byId('strategy-citation-preview'); panel.replaceChildren(element('p', '正在核对引用…', 'strategy-small-note')); citationStatus('');
     try {
       const data = await request('/research-strategies/citation-preview', {method: 'POST', headers: {'Content-Type': 'application/json'}, signal: citationPreviewController.signal,
@@ -625,6 +627,54 @@
         citationChoice = null; panel.replaceChildren(button('重试预览', () => previewCitation(item))); citationStatus(error.message, true);
       }
     }
+  }
+  function drawCitationIndicator(data, context, panel) {
+    const token = citationPreviewToken;
+    const views = element('div', undefined, 'indicator-view-switch'); views.setAttribute('role', 'tablist'); views.setAttribute('aria-label', '指标视图');
+    const trend = element('div', '正在读取所选指标…', 'strategy-small-note'); trend.dataset.citationIndicatorTrend = '';
+    const cycle = element('div', undefined, 'strategy-citation-cycle'); cycle.hidden = true; cycle.dataset.citationIndicatorCycle = '';
+    let cycleData = null, cycleLoading = null, cycleChart = null;
+    const current = () => currentCitationContext(context) && token === citationPreviewToken && cycle.isConnected;
+    function renderCycle() {
+      if (cycleChart || cycle.hidden || !cycleData || !current()) return;
+      if (!window.ChartKit) throw new Error('同期图表暂时无法加载，请稍后重试。');
+      cycle.replaceChildren();
+      cycleChart = window.ChartKit.render(cycle, cycleData, {width: Math.round(cycle.clientWidth || panel.clientWidth || 480), height: 300});
+      citationChartHandle = cycleChart;
+    }
+    function showCycleError(error) {
+      if (!current()) return;
+      cycle.replaceChildren(element('p', error.message, 'strategy-small-note')); cycle.setAttribute('role', 'alert');
+    }
+    async function loadCycle() {
+      if (cycleLoading || cycleChart) return;
+      cycle.removeAttribute('role');
+      if (cycleData) { try { renderCycle(); } catch (error) { showCycleError(error); } return; }
+      cycle.textContent = '正在读取往年同期…';
+      cycleLoading = (async () => {
+        try {
+          const query = new URLSearchParams(), date = new URL(location.href).searchParams.get('date');
+          if (date) query.set('date', date);
+          const result = await request('/indicators/' + encodeURIComponent(data.preview.series_id) + '/cycle?' + query, {signal: citationPreviewController.signal});
+          if (!current()) return;
+          cycleData = result; renderCycle();
+        } catch (error) { if (error.name !== 'AbortError') showCycleError(error); }
+        finally { cycleLoading = null; }
+      })();
+      await cycleLoading;
+    }
+    function showView(name) {
+      if (!current()) return;
+      const isCycle = name === 'cycle';
+      trend.hidden = isCycle; cycle.hidden = !isCycle;
+      for (const tab of views.children) tab.setAttribute('aria-selected', String(tab.dataset.citationIndicatorView === name));
+      if (isCycle) loadCycle();
+    }
+    for (const [name, title] of [['trend', '走势'], ['cycle', '同期']]) {
+      const tab = button(title, () => showView(name), ''); tab.dataset.citationIndicatorView = name;
+      tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(name === 'trend')); views.append(tab);
+    }
+    panel.append(views, trend, cycle); loadCitationIndicator(data, context, trend);
   }
   async function loadCitationIndicator(data, context, target) {
     const token = citationPreviewToken;

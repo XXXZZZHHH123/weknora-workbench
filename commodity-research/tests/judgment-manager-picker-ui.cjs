@@ -14,8 +14,8 @@ assert.equal(rendered.status,0,rendered.stderr);
 const prefix='/research/workbenches/synthetic',job='synthetic-picker-job-0001';
 const html='<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>:root{--surface:#fff;--surface-soft:#f6f6f6;--text:#222;--text-muted:#666;--line:#ddd;--primary:#a63f25}body{font-family:Arial,sans-serif}</style><link rel="stylesheet" href="/static/judgment-manager.css"></head><body><button data-open-logic>管理研究逻辑</button>'+rendered.stdout+'<script>window.RESEARCH_PREFIX='+JSON.stringify(prefix)+';window.RESEARCH_CONTEXT={workbench:"synthetic"};window.researchFetch=(url,options)=>fetch(url,options)</script><script src="/static/judgment-manager.js"></script></body></html>';
 const clone=value=>JSON.parse(JSON.stringify(value));
-const directory=Array.from({length:45},(_,index)=>({series_id:'synthetic-'+index,name:'合成指标 '+index,unit:'吨',source_file:'synthetic.xlsx',sheet:'表'+index}));
-const pending=index=>({id:'item-'+index,kind:'binding',title:'待关联研究依据 '+index,description:'选择真实来源后保留依据。'.repeat(3),original_text:'合成研究原文 '+index,status:'pending',requires_attention:true,attention_fields:['binding'],warnings:['请选择数据来源。'],can_bind:true,can_confirm:true,binding:null});
+const directory=Array.from({length:45},(_,index)=>({series_id:'synthetic-'+index,name:'合成指标 '+index,unit:'吨',source_file:'synthetic.xlsx',sheet:'表'+index,...(index===2?{}:{frequency:index===33?'日':'周'})}));
+const pending=index=>({id:'item-'+index,kind:'binding',title:'待关联研究依据 '+index,description:'选择真实来源后保留依据。'.repeat(3),original_text:'合成研究原文 '+index,status:'pending',requires_attention:true,attention_fields:['binding'],warnings:['请选择数据来源。'],can_bind:true,can_confirm:true,binding:null,...([9,10].includes(index)?{kind:'falsifiers',rule:{expression:'change > 0',side:'bull',consecutive_periods:2}}:{})});
 let review={draft_id:'synthetic-picker-preview',revision:1,total:30,sections:[{id:"contradiction",title:"主矛盾",items:Array.from({length:30},(_,index)=>pending(index))}]};
 const preview=()=>({draft_id:review.draft_id,base_version:0,source_text:'合成研究原文',variety:'ZZ',model_id:'synthetic-model',markdown:'# 合成研究',diff:{markdown:'',fields:[]},bindings:[],unresolved:[],review_available:true,review:clone(review)});
 (async()=>{
@@ -58,10 +58,14 @@ const preview=()=>({draft_id:review.draft_id,base_version:0,source_text:'合成�
       return {scroller:box?box.className||box.id||box.tagName:'none',scrollTop:box?box.scrollTop:0,top:Math.round(node.getBoundingClientRect().top)};
     });
     const before=await place();
+    assert.equal(await card.locator('.logic-period-note').innerText(),'频率未注明，请核对连续期数的口径');
+    assert.equal(await card.locator('.logic-item-label').innerText(),'计算指标');
     assert.notEqual(before.scroller,'none','The synthetic review is long enough to scroll');
     assert.ok(before.scrollTop>0,'The reviewer has scrolled down to a later item');
     await search.click();
     await card.locator('.logic-binding-option').nth(20).waitFor({state:'visible'});
+    assert.equal(await card.locator('.logic-binding-option').nth(1).locator('span').innerText(),'合成指标 0 · 周');
+    assert.equal(await card.locator('.logic-binding-option').nth(3).locator('span').innerText(),'合成指标 2 · 频率未注明');
     const more=card.locator('.logic-binding-more');
     assert.equal(await more.isVisible(),true,'A second page of the directory is offered');
     await more.click();
@@ -84,6 +88,9 @@ const preview=()=>({draft_id:review.draft_id,base_version:0,source_text:'合成�
     assert.equal(updates.length,1,'One click on an appended row selects it');
     assert.equal(updates[0].series_id,'synthetic-33');
     assert.equal(await search.inputValue(),'合成指标 33');
+    assert.equal(await card.locator('.logic-binding-meta').innerText(),'采用指标口径 · 吨 · 日');
+    assert.equal(await card.locator('.logic-period-note').innerText(),'连续 2 期 = 2 个观测（目录频率：日）');
+    assert.match(await card.locator('.logic-item-condition').innerText(),/连续 2 期成立/);
     const after=await place();
     assert.ok(Math.abs(after.top-before.top)<=2,`The confirmed item stays where the reviewer was (${before.top} -> ${after.top})`);
     assert.equal(await page.evaluate(()=>document.activeElement?.closest?.('article')?.dataset.reviewItem||null),'item-9','Focus stays on the item just confirmed');
@@ -100,6 +107,9 @@ const preview=()=>({draft_id:review.draft_id,base_version:0,source_text:'合成�
     await page.mouse.up();
     await page.waitForFunction(()=>document.querySelector('article[data-review-item="item-10"]')?.dataset.reviewStatus==='confirmed');
     assert.equal(updates.length,2);assert.equal(updates[1].series_id,'synthetic-2');
+    assert.equal(await next.locator('.logic-binding-meta').innerText(),'采用指标口径 · 吨 · 频率未注明');
+    assert.equal(await next.locator('.logic-period-note').innerText(),'频率未注明，请核对连续期数的口径');
+    assert.match(await next.locator('.logic-item-condition').innerText(),/连续 2 期成立/);
     // In the pending-only view a confirmed item leaves; the next pending item takes its place without a jump.
     await page.locator('#logic-review-attention').click();
     const third=page.locator('article[data-review-item="item-11"]');

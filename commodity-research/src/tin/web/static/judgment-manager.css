@@ -97,6 +97,7 @@
 .logic-item-condition { font-size: 12px; }
 .logic-review-empty { padding: 15px 0; color: var(--text-muted); font-size: 12px; }
 .logic-item-condition { margin: 8px 0 0; padding: 7px 9px; border-left: 2px solid var(--primary); border-radius: 0 4px 4px 0; background: var(--surface-soft); color: var(--text); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.logic-period-note { display: block; margin: 4px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .logic-indicator-visual { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
 .logic-visual-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
 .logic-visual-value strong { color: var(--text); font-size: 17px; }

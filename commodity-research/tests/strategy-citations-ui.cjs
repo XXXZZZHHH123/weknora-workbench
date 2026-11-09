@@ -56,11 +56,13 @@ env=Environment(loader=ChoiceLoader([DictLoader({'base.html':host}),FileSystemLo
 env.globals.update(research_workbench=lambda:SimpleNamespace(metadata=SimpleNamespace(name='隔离研究台')),research_prefix=lambda:'/research/workbenches/fixture',research_static_prefix=lambda:'',static_version=lambda:'citations-fixture',human_text=lambda x,names=None:str(x or ''))
 a,b=data
 cards={'enabled':True,'can_write':True,'items':[dict(a,card=None),dict(b,card=None)],'selected':a,'metadata_only':True}
-print(env.get_template('strategies.html').render(names={},restricted_view=False,workspace_can_write=True,platform_models=False,research_cards=cards,strategies=[],strategy_entries=[],workspace_selected='research:'+a['id'],workspace_initial=None))
+context=dict(names={},workspace_can_write=True,platform_models=False,research_cards=cards,strategies=[],strategy_entries=[],workspace_selected='research:'+a['id'],workspace_initial=None,restricted_data={})
+print(json.dumps({view:env.get_template('strategies.html').render(**context,restricted_view=restricted) for view,restricted in [('normal',False),('restricted',True)]}))
 `, path.join(web, 'templates')], {input: JSON.stringify([a, b]), encoding: 'utf8', maxBuffer: 4 * 1024 * 1024});
 assert.equal(rendered.status, 0, rendered.stderr);
+const html = JSON.parse(rendered.stdout);
 const report = {passed: false, requests: [], failures: [], cases: [], model_calls: 0, real_business_writes: 0};
-let browser, failSave = false, failContent = false;
+let browser, failSave = false, failContent = false, failCycle = false;
 (async () => {
   try {
     browser = await chromium.launch({headless: true, ...((process.env.SHEET_REVIEW_BROWSER || process.env.RESEARCH_CHROMIUM) ? {executablePath: process.env.SHEET_REVIEW_BROWSER || process.env.RESEARCH_CHROMIUM} : {}),
@@ -71,7 +73,7 @@ let browser, failSave = false, failContent = false;
       const request = route.request(), url = new URL(request.url()), method = request.method();
       report.requests.push({method, path: url.pathname, search: url.search});
       if (url.origin !== origin) { report.failures.push('Unexpected origin'); return route.abort(); }
-      if (url.pathname === '/sn/strategies') return route.fulfill({contentType: 'text/html', body: rendered.stdout});
+      if (url.pathname === '/sn/strategies') return route.fulfill({contentType: 'text/html', body: url.searchParams.has('restricted') ? html.restricted : html.normal});
       if (url.pathname.startsWith('/static/')) {
         const filename = path.basename(url.pathname), file = path.join(web, 'static', filename);
         if (/^[\w.-]+$/.test(filename) && fs.existsSync(file)) return route.fulfill({body: fs.readFileSync(file), contentType: file.endsWith('.css') ? 'text/css' : 'application/javascript'});
@@ -128,6 +130,11 @@ let browser, failSave = false, failContent = false;
           text: id === 'invalid-json' ? '{"unexpected":true}' : id === 'parsed-pdf' ? '已有的解析片段\n表格摘录仍须人工核对' : '来自知识库的研究原文\n<script>window.fixtureUnsafe=true</script>'}});
       }
       if (endpoint === '/indicators/previews') return route.fulfill({json: {cards: [{series_id: url.searchParams.get('series_id'), status: 'ok', value: url.searchParams.get('series_id') === 'synthetic-price' ? 0 : '12,500', unit: 'kg', as_of: '2030-01-01', change: '+15'}]}});
+      if (/^\/indicators\/[^/]+\/cycle$/.test(endpoint)) {
+        assert.equal(url.searchParams.get('date'), '2030-01-02');
+        if (failCycle) return route.fulfill({status: 409, json: {detail: '该指标暂无足够的往年同期观测。'}});
+        return route.fulfill({json: chartPayload});
+      }
       const selected = endpoint.match(/^\/research-strategies\/([a-f0-9-]+)$/);
       if (selected && records.has(selected[1])) {
         const item = records.get(selected[1]);
@@ -145,12 +152,33 @@ let browser, failSave = false, failContent = false;
     const chooseKind = async kind => { await dialog.locator('[data-citation-kind="' + kind + '"]').click(); await dialog.locator('.strategy-citation-option').first().waitFor(); };
     const choose = async text => { await dialog.locator('.strategy-citation-option').filter({hasText: text}).first().click(); await dialog.locator('#strategy-citation-preview h3').waitFor(); };
     const done = () => dialog.getByRole('button', {name: '完成', exact: true}).click();
-    await page.goto(origin + '/sn/strategies', {waitUntil: 'networkidle'});
+    await page.goto(origin + '/sn/strategies?date=2030-01-02', {waitUntil: 'networkidle'});
+    assert(await page.evaluate(() => typeof window.ChartKit?.render === 'function'), 'Strategy workspace loads ChartKit');
+    await page.evaluate(() => {
+      const render = window.ChartKit.render; window.fixtureCycleRenders = [];
+      window.ChartKit = {...window.ChartKit, render(container, payload, options) {
+        if (container.hasAttribute('data-citation-indicator-cycle')) window.fixtureCycleRenders.push({width: options.width, height: options.height, containerWidth: container.clientWidth});
+        return render(container, payload, options);
+      }};
+    });
     await page.getByRole('button', {name: '编辑', exact: true}).click();
     assert.equal(report.requests.filter(row => /citation-|indicators\/previews/.test(row.path)).length, 0, 'No citation directory or history is preloaded');
     await page.locator('#research-card-trigger').fill('未保存的触发文字');
     await page.locator('[data-citation-field="trigger"]').click(); await choose('库存量');
     await dialog.getByText('12,500 kg', {exact: true}).waitFor();
+    const cycleRequests = () => report.requests.filter(row => /\/indicators\/[^/]+\/cycle$/.test(row.path));
+    assert.equal(cycleRequests().length, 0, 'Opening the indicator preview only reads trend observations');
+    assert.equal(await dialog.getByRole('tab', {name: '走势', exact: true}).getAttribute('aria-selected'), 'true');
+    await dialog.getByRole('tab', {name: '同期', exact: true}).click();
+    await dialog.locator('[data-citation-indicator-cycle] svg').waitFor();
+    assert.equal(cycleRequests().length, 1);
+    const cycleRender = await page.evaluate(() => window.fixtureCycleRenders[0]);
+    assert.equal(cycleRender.height, 300); assert.equal(cycleRender.width, cycleRender.containerWidth);
+    assert.equal(await dialog.locator('[data-citation-indicator-trend]').isVisible(), false);
+    await dialog.getByRole('tab', {name: '走势', exact: true}).click(); await dialog.getByText('12,500 kg', {exact: true}).waitFor();
+    await dialog.getByRole('tab', {name: '同期', exact: true}).click();
+    assert.equal(cycleRequests().length, 1, 'Revisiting the same cycle view reuses the rendered chart');
+    await dialog.getByRole('tab', {name: '走势', exact: true}).click();
     assert.match(await dialog.getByRole('link', {name: '查看指标详情 ↗'}).getAttribute('href'), /\/research\/workbenches\/fixture\/sn\/indicators\//);
     assert.equal(report.requests.filter(row => row.path.endsWith('/indicators/previews')).length, 1);
     await dialog.getByRole('button', {name: '引用此项', exact: true}).click();
@@ -161,6 +189,13 @@ let browser, failSave = false, failContent = false;
     await page.waitForFunction(() => [...document.querySelectorAll('.strategy-citation-option')].length === 2);
     assert(report.requests.some(row => row.path.endsWith('/citation-options') && new URLSearchParams(row.search).get('offset') === '90'));
     await choose('价格'); await dialog.getByText('0 kg', {exact: true}).waitFor();
+    assert.equal(cycleRequests().length, 1, 'Selecting another indicator does not preload its cycle data');
+    failCycle = true; await dialog.getByRole('tab', {name: '同期', exact: true}).click();
+    await dialog.locator('[data-citation-indicator-cycle][role="alert"]').getByText('该指标暂无足够的往年同期观测。', {exact: true}).waitFor();
+    assert.equal(await dialog.locator('[data-citation-indicator-cycle] svg').count(), 0);
+    failCycle = false; await dialog.getByRole('tab', {name: '走势', exact: true}).click(); await dialog.getByRole('tab', {name: '同期', exact: true}).click();
+    await dialog.locator('[data-citation-indicator-cycle] svg').waitFor();
+    report.cases.push('indicator cycle reads only on selection, uses page date and real ChartKit at container width/300px, reuses chart and displays API error before retry');
     await dialog.locator('#strategy-citation-search').fill('slow'); await page.waitForTimeout(300);
     await dialog.locator('#strategy-citation-search').fill('fast'); await dialog.getByText('快速结果', {exact: true}).waitFor(); await page.waitForTimeout(1000);
     assert(!await dialog.getByText('过时搜索结果', {exact: true}).count(), 'Late search cannot replace the current search');
@@ -277,6 +312,12 @@ let browser, failSave = false, failContent = false;
     await page.setViewportSize({width: 1440, height: 1000});
     assert(report.requests.some(row => row.path.endsWith('/chart-references/options') && new URLSearchParams(row.search).get('favorites') === 'true'));
     report.cases.push('shared chart picker with group/search/favorites, saved thumbnail, cycle position, current data switch, strategy monitor thumbnail and responsive theme redraw');
+    const cyclesBeforeRestricted = cycleRequests().length;
+    await page.goto(origin + '/sn/strategies?date=2030-01-02&restricted=1', {waitUntil: 'networkidle'});
+    assert.equal(await page.locator('.indicator-view-switch').count(), 0, 'Restricted view has no trend/cycle switch');
+    assert.equal(await page.locator('#strategy-citation-dialog').count(), 0);
+    assert.equal(cycleRequests().length, cyclesBeforeRestricted, 'Restricted view never loads cycle data');
+    report.cases.push('restricted strategy view omits indicator view switch and performs no cycle reads');
     assert.deepEqual(report.failures, []); report.passed = true;
   } catch (error) { report.error = error.stack; process.exitCode = 1; }
   finally {

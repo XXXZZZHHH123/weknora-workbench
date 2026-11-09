@@ -450,7 +450,7 @@ if (require.main === module) (async()=>{
   {
     const env=await generateReview({visualMode:true});await flush();
     assert.equal(descendants(env.nodes['logic-review-items']).some(node=>node.className==='logic-indicator-visual'||node.attributes.role==='img'||node.attributes.role==='meter'),false,'Binding confirmation has no numerical or chart preview, including hidden preview nodes');
-    assert.equal(reviewControl(env,'anchor','search').value,'AI quantity');assert.ok(descendants(env.nodes['logic-review-items']).some(node=>node.className==='logic-binding-meta'&&node.textContent==='采用指标口径 · kg'),'The selected indicator unit remains visible');
+    assert.equal(reviewControl(env,'anchor','search').value,'AI quantity');assert.ok(descendants(env.nodes['logic-review-items']).some(node=>node.className==='logic-binding-meta'&&node.textContent==='采用指标口径 · kg · 频率未注明'),'The selected indicator unit and missing frequency remain visible');
     await env.nodes['logic-review-nav'].children.find(node=>node.dataset.reviewSection==='rules').fire('click');await flush();
     assert.equal(env.requests.filter(row=>row.url.includes('/indicator-values?')||row.url.includes('/review/radar?')).length,0,'Opening and navigating confirmation sections never request numerical observations');env.context.window.JudgmentManager.close();
   }
