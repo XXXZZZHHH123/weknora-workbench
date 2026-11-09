@@ -201,6 +201,7 @@ templates.env.globals["research_static_prefix"] = research_static_prefix
 templates.env.globals["research_workbench"] = current_workbench.get
 templates.env.globals["research_prefix"] = research_prefix
 templates.env.globals["research_url"] = research_url
+templates.env.globals["ppt_enabled"] = settings.ppt_enabled
 templates.env.globals["research_form_url"] = research_form_url
 templates.env.globals["research_identity"] = lambda: current_identity.get()
 templates.env.globals["static_version"] = static_version

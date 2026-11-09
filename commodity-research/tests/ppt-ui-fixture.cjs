@@ -26,7 +26,7 @@ function render(template, overrides = {}) {
   F.assert.ok(process.env.RESEARCH_PYTHON, '请用 RESEARCH_PYTHON 指定可导入 Jinja 的 Python');
   const config = {enabled: true, can_write: true, id: 'template-1', date: null, write_reason: '', ...overrides};
   const reportContext = template === 'reports.html' ? {period_kind: config.period || 'daily', selected: {date: config.date},
-    files: [], report: null, preview: '', live_report: true} : {};
+    files: [], report: null, preview: '', live_report: true, ppt_enabled: true} : {};
   return F.render(template, config, {...reportContext, ppt_page: config});
 }
 function multipart(entry) {

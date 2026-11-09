@@ -23,6 +23,12 @@ def endpoints(routes):
             yield route
 
 
+@pytest.fixture(autouse=True)
+def ppt_feature_enabled(monkeypatch):
+    # The feature is off by default in this release; these tests cover the kept code.
+    monkeypatch.setitem(web.templates.env.globals, 'ppt_enabled', True)
+
+
 @pytest.fixture
 def pages():
     sessions = []
