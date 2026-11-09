@@ -441,8 +441,8 @@
       const bandShown = cycle && !multiCycle && filterBand(band).length > 0;
       const bandCount = bandShown ? Math.max(...filterBand(band).map(p => p.n)) : 0;
       const bandUnit = payload.template?.kind === 'repeat' && payload.template?.period === 'year' ? '年' : '期';
-      const bandLegend = bandShown ? [{kind: 'range', label: `往${bandUnit === '年' ? '年' : '期'}区间（近 ${bandCount} ${bandUnit}最低至最高）`},
-        {kind: 'mean', label: `往${bandUnit === '年' ? '年' : '期'}均值（近 ${bandCount} ${bandUnit}）`}] : [];
+      const bandLegend = bandShown ? [{kind: 'range', label: `近 ${bandCount} ${bandUnit}区间`, title: `往${bandUnit}同期最低至最高（近 ${bandCount} ${bandUnit}）`},
+        {kind: 'mean', label: `近 ${bandCount} ${bandUnit}均值`, title: `往${bandUnit}同期均值（近 ${bandCount} ${bandUnit}）`}] : [];
       const legendLayout = [];
       if (exporting && !options.thumbnail) {
         let x = 8 * scale, row = 0;
@@ -661,7 +661,8 @@
           const color = exportTheme?.band || 'var(--text-muted)';
           if (item.kind === 'range') add('rect', {x, y: y - 9 * scale, width: 18 * scale, height: 10 * scale, fill: color, 'fill-opacity': exporting ? .12 : .13}, undefined, key);
           else add('line', {x1: x, x2: x + 18 * scale, y1: y - 4 * scale, y2: y - 4 * scale, stroke: color, 'stroke-width': 1.5 * scale, 'stroke-dasharray': '6 4'}, undefined, key);
-          add('text', {x: x + 24 * scale, y, fill: exportTheme?.text || 'var(--text-muted)', 'font-size': legendFont}, exporting ? layout.label : item.label, key);
+          const text = add('text', {x: x + 24 * scale, y, fill: exportTheme?.text || 'var(--text-muted)', 'font-size': legendFont}, exporting ? layout.label : item.label, key);
+          add('title', {}, item.title, text);
         });
         const crosshair = add('line', {y1: margin.top, y2: bottom, stroke: 'var(--text-muted)', 'stroke-dasharray': '3 3', visibility: 'hidden', 'pointer-events': 'none'});
         const overlay = add('rect', {x: margin.left, y: margin.top, width: right - margin.left, height: bottom - margin.top, fill: 'transparent', 'data-chart-hover': ''});

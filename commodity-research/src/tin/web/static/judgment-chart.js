@@ -125,7 +125,7 @@
     semantic.value = ['change', 'inventory'].includes(preference.semantics) ? preference.semantics : metric.trend_semantics === 'inventory' ? 'inventory' : 'change';
     function semantics() { if (streak) streak.textContent = streakText(metric.streak, semantic.value); }
     function savePreference() {
-      if (key) try { window.localStorage.setItem(key, JSON.stringify({semantics: semantic.value})); } catch { /* Presentation preference is optional. */ }
+      if (key) try { window.localStorage.setItem(key, JSON.stringify({semantics: semantic.value, view: preference.view === 'cycle' ? 'cycle' : 'trend'})); } catch { /* Presentation preference is optional. */ }
       document.querySelectorAll('[data-judgment-chart]').forEach(other => {
         if (root.dataset.chartSeries && other !== root && other.dataset.chartSeries === root.dataset.chartSeries) {
           const control = other.querySelector('[data-chart-semantics]');
@@ -263,9 +263,41 @@
     render();
     if (typeof ResizeObserver !== 'undefined') {
       new ResizeObserver(() => {
-        if (Math.abs(svg.getBoundingClientRect().width - rendered.plot.width) >= 1) { hide(); render(); }
+        if (svg.getBoundingClientRect().width && Math.abs(svg.getBoundingClientRect().width - rendered.plot.width) >= 1) { hide(); render(); }
       }).observe(svg);
     }
+    // 同期: the same indicator laid over past years (the indicator page's cycle view), read on demand.
+    const views = [...root.querySelectorAll('[data-chart-view]')], cycleBox = root.querySelector('[data-chart-cycle]');
+    const plotBox = root.querySelector('.judgment-chart-plot'), averageControl = select.closest('label');
+    let cycleChart = null, cycleLoading = null;
+    function loadCycle() {
+      if (cycleChart || cycleLoading || !window.ChartKit) return cycleLoading;
+      cycleBox.textContent = '正在读取往年同期…';
+      cycleLoading = (async () => {
+        try {
+          const query = new URLSearchParams(); if (root.dataset.chartDate) query.set('date', root.dataset.chartDate);
+          const response = await window.researchFetch((window.RESEARCH_PREFIX || '') + '/api/sn/indicators/' + encodeURIComponent(metric.series_id) + '/cycle?' + query);
+          const data = await response.json();
+          if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '往年同期暂时无法读取，请稍后重试');
+          cycleBox.replaceChildren();
+          cycleChart = window.ChartKit.render(cycleBox, data, {width: Math.max(320, Math.round(cycleBox.clientWidth || root.clientWidth || 480)), height: 320});
+        } catch (error) { cycleBox.textContent = error.message; }
+        finally { cycleLoading = null; }
+      })();
+      return cycleLoading;
+    }
+    function showView(view, persist = true) {
+      const cycle = view === 'cycle' && !!cycleBox;
+      views.forEach(button => button.setAttribute('aria-selected', String((button.dataset.chartView === 'cycle') === cycle)));
+      if (plotBox) plotBox.hidden = cycle;
+      if (cycleBox) cycleBox.hidden = !cycle;
+      if (averageControl) averageControl.hidden = cycle;
+      if (cycle) { custom.hidden = true; hide(); } else if (select.value === 'custom') custom.hidden = false;
+      if (persist) { preference.view = cycle ? 'cycle' : 'trend'; savePreference(); }
+      if (cycle) loadCycle();
+    }
+    views.forEach(button => button.addEventListener('click', () => showView(button.dataset.chartView)));
+    if (preference.view === 'cycle' && cycleBox) showView('cycle', false);
   }
 
   const api = {movingAverage, shape, streakText, boundaryText};

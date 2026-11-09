@@ -559,9 +559,9 @@ test('周期图图例说明灰色底和灰色虚线：往期区间与均值', ()
   K.render(container, cycle(), {definition: structuredClone(definition)});
   const items = attr(container, 'data-band-legend');
   assert.deepEqual(items.map(node => node.attrs['data-band-legend']), ['range', 'mean']);
-  const labels = items.map(node => node.textContent);
-  assert.match(labels[0], /^往.区间（近 3 .最低至最高）$/);
-  assert.match(labels[1], /^往.均值（近 3 .）$/);
+  const labels = items.map(node => node.children.find(child => child.name === 'text').textContent);
+  assert.match(labels[0], /^近 3 .区间往.同期最低至最高（近 3 .）$/);
+  assert.match(labels[1], /^近 3 .均值往.同期均值（近 3 .）$/);
   const flat = fixture();
   K.render(flat, {curves: [{label: '甲', axis: 'left', points: [{date: '2030-01-01', value: 1}, {date: '2030-01-02', value: 2}]}]});
   assert.equal(attr(flat, 'data-band-legend').length, 0, '非周期图不出现区间图例');
