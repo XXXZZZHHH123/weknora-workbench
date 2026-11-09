@@ -56,26 +56,43 @@ document.addEventListener('DOMContentLoaded', () => {
   function paragraph(parent, text, className = '') {
     const p = document.createElement('p'); p.textContent = text; p.className = className; parent.append(p); return p;
   }
-  const fmt = value => Number.isFinite(value) ? new Intl.NumberFormat('zh-CN', {maximumFractionDigits: 4}).format(value) : '—';
-  function indicatorSummary(target, data) {
-    const points = new Map();
-    for (const segment of data.segments || []) for (const point of segment.points || []) if (Number.isFinite(point.raw)) points.set(point.date, point.raw);
-    const ordered = [...points].sort(([a], [b]) => a.localeCompare(b)), latest = ordered.at(-1), previous = ordered.at(-2);
-    target.replaceChildren();
-    paragraph(target, latest ? `${fmt(latest[1])} ${data.unit || ''}` : '暂无有效值', 'favorite-value');
-    paragraph(target, latest ? '观测日期 ' + latest[0] : '截至所选日期没有有效观测', 'indicator-muted');
-    const change = latest && previous ? latest[1] - previous[1] : null;
-    paragraph(target, change === null ? '较上期：暂无可比观测' : `较上期：${change > 0 ? '+' : ''}${fmt(change)} ${data.unit === '%' ? '个百分点' : data.unit || ''}`);
-    const position = data.position;
-    paragraph(target, position?.rank != null ? `自然年同期第 ${position.rank}/${position.n + 1} · 往期 ${position.n} 期` : '自然年周期位置：有效往期不足 3 期', 'indicator-muted');
-    if (data.warnings?.includes('observation_window_limited')) paragraph(target, '已达到观测读取上限，周期位置仅覆盖已读取窗口。', 'indicator-muted');
+  // Indicator cards keep the earlier design: one batched preview request returns
+  // each card's latest value, change and trend sparkline (click opens the history).
+  const PREVIEW_BATCH = 40, previews = new Map();
+  async function loadPreviews(cards, current) {
+    const wanted = cards.filter(card => !previews.has(card._previewId));
+    for (let offset = 0; offset < wanted.length; offset += PREVIEW_BATCH) {
+      const chunk = wanted.slice(offset, offset + PREVIEW_BATCH), query = new URLSearchParams();
+      chunk.forEach(card => query.append('series_id', card._previewId));
+      if (root.dataset.date) query.set('date', root.dataset.date);
+      try {
+        const data = await read('/indicators/previews?' + query);
+        const template = document.createElement('template'); template.innerHTML = data.html || '';
+        template.content.querySelectorAll('[data-favorite-card]').forEach(node => previews.set(node.dataset.favoriteCard, node));
+        chunk.forEach(card => { if (!previews.has(card._previewId)) previews.set(card._previewId, null); });
+      } catch (error) {
+        if (current !== generation) return;
+        chunk.forEach(card => {
+          const target = card.querySelector('.favorite-details'); target.replaceChildren();
+          paragraph(target, error.message, 'indicator-warning');
+          target.append(button('重试', () => loadPreviews([card], generation), '重试读取自选走势'));
+        });
+      }
+    }
+    if (current === generation) cards.forEach(card => card.isConnected && previews.has(card._previewId) && fillPreview(card));
+  }
+  function fillPreview(card) {
+    const preview = previews.get(card._previewId), target = card.querySelector('.favorite-details');
+    if (!preview) { target.replaceChildren(); paragraph(target, '暂无走势数据', 'indicator-muted'); return; }
+    const trend = preview.querySelector('.macro-trend-card'), meta = preview.querySelector('.indicator-card-actions');
+    const row = document.createElement('div'); row.className = 'favorite-meta';
+    meta?.querySelectorAll(':scope > span, :scope > a').forEach(node => row.append(node.cloneNode(true)));
+    card.querySelector('h3')?.remove();
+    target.replaceChildren(...[trend?.cloneNode(true), row].filter(Boolean));
   }
   function draw(task, value) {
-    if (task.item.kind === 'indicator') indicatorSummary(task.target, value.data);
-    else {
-      task.target.replaceChildren();
-      renderers.add(window.ChartKit.render(task.target, value.data, {definition: value.definition, thumbnail: true, width: 680, height: 250}));
-    }
+    task.target.replaceChildren();
+    renderers.add(window.ChartKit.render(task.target, value.data, {definition: value.definition, thumbnail: true, width: 680, height: 250}));
   }
   function enqueue(card) {
     const task = card._favoriteTask;
@@ -86,13 +103,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const {item, target, key} = task;
     let value = cache.get(key);
     if (!value) {
-      if (item.kind === 'indicator') value = {data: await read('/indicators/' + encodeURIComponent(item.id) + '/cycle' + date, controller.signal)};
-      else {
-        const record = await read('/charts/' + encodeURIComponent(item.id), controller.signal);
-        const data = await read('/charts/' + encodeURIComponent(item.id) + '/data' + date, controller.signal);
-        if (data.revision !== undefined && data.revision !== record.revision) throw new Error('图表已有新版本，请重新加载自选。');
-        value = {data, definition: record.definition};
-      }
+      const record = await read('/charts/' + encodeURIComponent(item.id), controller.signal);
+      const data = await read('/charts/' + encodeURIComponent(item.id) + '/data' + date, controller.signal);
+      if (data.revision !== undefined && data.revision !== record.revision) throw new Error('图表已有新版本，请重新加载自选。');
+      value = {data, definition: record.definition};
       if (task.generation === generation && !controller.signal.aborted) cache.set(key, value);
     }
     if (task.generation === generation && target.isConnected && !controller.signal.aborted) draw(task, value);
@@ -129,6 +143,7 @@ document.addEventListener('DOMContentLoaded', () => {
     rendered = signature; generation++; observer?.disconnect(); controllers.forEach(controller => controller.abort()); queue = [];
     renderers.forEach(renderer => renderer.destroy()); renderers.clear();
     get('favorites').replaceChildren();
+    const indicatorCards = [];
     client.items.forEach((item, index) => {
       const card = document.createElement('article'), title = document.createElement('h3'), details = document.createElement('div'), actions = document.createElement('div');
       card.className = 'favorite-entry'; card.dataset.favoriteCard = `${item.kind}:${item.id}`;
@@ -137,7 +152,7 @@ document.addEventListener('DOMContentLoaded', () => {
       else {
         const link = document.createElement('a'); link.textContent = label;
         link.href = (window.RESEARCH_PREFIX || '') + '/sn/' + (item.kind === 'indicator' ? 'indicators/' : 'charts/') + encodeURIComponent(item.id) + date;
-        title.append(link); details.textContent = '等待进入视野…';
+        title.append(link); details.textContent = item.kind === 'indicator' ? '正在读取走势…' : '等待进入视野…';
       }
       details.className = 'favorite-details'; actions.className = 'favorite-actions';
       if (!invalid && item.kind === 'indicator') {
@@ -154,17 +169,55 @@ document.addEventListener('DOMContentLoaded', () => {
       remove.setAttribute('aria-pressed', 'true'); remove.textContent = invalid ? '移除' : '★ 自选';
       if (invalid) { remove.className = 'indicator-button'; remove.dataset.favoriteInvalid = 'true'; remove.setAttribute('aria-label', '移除已失效自选 ' + label); }
       actions.append(remove); card.append(title, details, actions); get('favorites').append(card);
-      if (!invalid) {
+      if (!invalid && item.kind === 'indicator') { card._previewId = item.id; card.classList.add('is-indicator'); indicatorCards.push(card); }
+      else if (!invalid) {
         const key = `${item.kind}:${item.id}:${item.chart_revision || ''}`;
         card._favoriteTask = {card, item, target: details, generation, key};
         if (observer) observer.observe(card); else if (tab === 'favorites') enqueue(card);
       }
     });
+    if (indicatorCards.length) loadPreviews(indicatorCards, generation);
     client.syncButtons();
   }
-  let legacy = [], lastAccountError = '';
-  try { legacy = window.FavoritesClient?.legacy(localStorage, window.RESEARCH_CONTEXT) || []; }
-  catch (error) { message(error.message); }
+  let legacy = [], legacyScoped = false, legacyKey = '', migrating = false, lastAccountError = '';
+  try {
+    const entry = window.FavoritesClient?.legacyEntry(localStorage, window.RESEARCH_CONTEXT);
+    if (entry) ({ids: legacy, scoped: legacyScoped, key: legacyKey} = entry);
+  } catch (error) { message(error.message); }
+  const syncedKey = () => legacyKey + ':synced';
+  function synced() { try { return localStorage.getItem(syncedKey()) === '1'; } catch (_) { return true; } }
+  async function availableLegacy() {
+    const available = [];
+    for (let offset = 0; offset < legacy.length; offset += 100) {
+      const query = new URLSearchParams({format: 'metadata', limit: '200'});
+      legacy.slice(offset, offset + 100).forEach(id => query.append('series_id', id));
+      const data = await read('/indicators/catalog?' + query);
+      if (!Array.isArray(data.indicators) || data.next_offset !== null || data.total !== data.indicators.length) throw new Error('旧自选目录未完整返回，请重试。');
+      const requested = new Set(legacy.slice(offset, offset + 100));
+      if (data.indicators.some(row => !requested.has(row.series_id))) throw new Error('旧自选目录范围不匹配。');
+      const ids = new Set(data.indicators.map(row => row.series_id));
+      available.push(...legacy.slice(offset, offset + 100).filter(id => ids.has(id)));
+    }
+    return available;
+  }
+  // This account's own earlier browser favorites join the account once, without a click,
+  // as they appeared before. The browser record itself is kept unchanged.
+  async function carryOver() {
+    if (migrating || !legacyScoped || !legacy.length || synced()) return;
+    migrating = true;
+    try {
+      const available = await availableLegacy();
+      const present = new Set(client.items.filter(item => item.kind === 'indicator').map(item => item.id));
+      const missing = available.filter(id => !present.has(id));
+      if (missing.length) {
+        await client.replace(window.FavoritesClient.mergeIndicators(client.items, missing));
+        message(`已把本浏览器原有的 ${missing.length} 个自选同步到账号。`);
+        if (!userSelected && !validTab(requested)) choose('favorites');
+      }
+      try { localStorage.setItem(syncedKey(), '1'); } catch (_) { /* Retried on the next visit. */ }
+    } catch (error) { message(error.message); }
+    finally { migrating = false; }
+  }
   function update() {
     if (!client) return;
     get('favorite-count').textContent = String(client.items.length);
@@ -176,7 +229,8 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (lastAccountError && get('storage-note').textContent === lastAccountError) {
       message(''); lastAccountError = '';
     }
-    get('legacy-sync').hidden = !client.loaded || !!client.items.length || !legacy.length;
+    get('legacy-sync').hidden = !client.loaded || !!client.items.length || !legacy.length || legacyScoped;
+    if (client.loaded && !client.error) carryOver();
     get('legacy-sync-button').textContent = `把本浏览器的 ${legacy.length} 个自选同步到账号`;
     get('legacy-sync-button').disabled = client.saving;
     if (client.loaded) {
@@ -196,17 +250,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Recheck the server before an explicit migration; another browser may have saved meanwhile.
       await client.refresh();
       if (client.items.length) throw new Error('账号自选已有内容，请重新加载后核对。');
-      const available = [];
-      for (let offset = 0; offset < legacy.length; offset += 100) {
-        const query = new URLSearchParams({format: 'metadata', limit: '200'});
-        legacy.slice(offset, offset + 100).forEach(id => query.append('series_id', id));
-        const data = await read('/indicators/catalog?' + query);
-        if (!Array.isArray(data.indicators) || data.next_offset !== null || data.total !== data.indicators.length) throw new Error('旧自选目录未完整返回，请重试。');
-        const requested = new Set(legacy.slice(offset, offset + 100));
-        if (data.indicators.some(row => !requested.has(row.series_id))) throw new Error('旧自选目录范围不匹配。');
-        const ids = new Set(data.indicators.map(row => row.series_id));
-        available.push(...legacy.slice(offset, offset + 100).filter(id => ids.has(id)));
-      }
+      const available = await availableLegacy();
       if (!available.length) throw new Error('本浏览器的旧自选均已不在当前研究台目录，未写入账号。');
       const unavailable = legacy.length - available.length;
       await client.replace(window.FavoritesClient.mergeIndicators([], available));
@@ -215,7 +259,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) { get('legacy-sync-note').textContent = error.message; message(error.message); }
   });
   get('favorites-retry').addEventListener('click', async () => {
-    rendered = ''; cache.clear();
+    rendered = ''; cache.clear(); previews.clear();
     try { await client.refresh(); } catch (_) { /* The subscription exposes the read error. */ }
   });
   if (client) {
@@ -225,6 +269,6 @@ document.addEventListener('DOMContentLoaded', () => {
   choose(validTab(requested) ? requested : 'catalog', validTab(requested));
   window.addEventListener('pagehide', () => { closed = true; generation++; observer?.disconnect(); controllers.forEach(controller => controller.abort()); renderers.forEach(renderer => renderer.destroy()); });
   window.addEventListener('pageshow', event => {
-    if (event.persisted) { closed = false; rendered = ''; cache.clear(); if (client?.loaded) render(); }
+    if (event.persisted) { closed = false; rendered = ''; cache.clear(); previews.clear(); if (client?.loaded) render(); }
   });
 });

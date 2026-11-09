@@ -57,16 +57,19 @@
     if (result.length > 100) throw new Error('自选最多 100 项，请先移出部分自选。');
     return result;
   }
-  function legacy(storage, context) {
+  function legacyEntry(storage, context) {
     const base = 'tin.indicators.favorites.v1';
     const key = context?.workbench ? `${base}:${context.tenant}:${context.user}:${context.workbench}` : base;
-    // Unscoped legacy choices are only offered explicitly, never written on read.
-    const raw = storage.getItem(key) ?? (key === base ? null : storage.getItem(base));
-    if (raw === null) return [];
+    // A record scoped to this account and workbench may be carried over automatically.
+    // Unscoped legacy choices (possibly another account's) are only offered explicitly.
+    const scopedRaw = key === base ? null : storage.getItem(key);
+    const raw = scopedRaw ?? storage.getItem(base);
+    if (raw === null) return {ids: [], key, scoped: false};
     const ids = JSON.parse(raw);
     if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !id || id.length > 128)) throw new Error('本浏览器的旧自选格式无效。');
-    return [...new Set(ids)];
+    return {ids: [...new Set(ids)], key, scoped: scopedRaw !== null};
   }
+  function legacy(storage, context) { return legacyEntry(storage, context).ids; }
   function create(request) {
     let items = [], revision = 0, loaded = false, saving = false, error = null, pending;
     const listeners = new Set();
@@ -122,5 +125,5 @@
     };
     return client;
   }
-  return Object.freeze({create, mergeIndicators, legacy, payload});
+  return Object.freeze({create, mergeIndicators, legacy, legacyEntry, payload});
 });

@@ -38,6 +38,7 @@ function backend(capture = {}) {
     }
     if (path === '/charts' && method === 'POST') { capture.saved = body; return reply(record('builder-saved', {definition: body}), 201); }
     if (path === '/charts') return reply({items: [], total: 0, next_offset: null});
+    if (path === '/indicators/previews') return reply({cards: [], html: ''});
     if (path.endsWith('/cycle')) return reply(cycle());
     return false;
   };

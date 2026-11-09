@@ -26,3 +26,8 @@
 .favorites-bookmark[aria-pressed="true"] { color: var(--primary); }
 .favorites-bookmark[aria-pressed="true"] svg { fill: currentColor; stroke: none; }
 .favorites-bookmark:disabled { opacity: .5; cursor: wait; }
+.favorite-entry.is-indicator { border: 0; padding: 0; background: transparent; gap: 8px; }
+.favorite-entry.is-indicator .favorite-details { min-height: 0; }
+.favorite-entry .favorite-meta { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 6px; font-size: 11px; }
+.favorite-entry .favorite-meta a { color: var(--primary); }
+.favorite-entry .favorite-meta a:hover { text-decoration: underline; }
