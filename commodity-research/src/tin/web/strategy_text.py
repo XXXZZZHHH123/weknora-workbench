@@ -23,6 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from tin.config import SHANGHAI, settings
 from tin.integration.workbench_scope import require_shared_write
 from tin.web import strategy_citations as citations
+from tin.web.research_display import human_text
 
 router = APIRouter()
 TEXT_LIMIT = 6000
@@ -30,7 +31,7 @@ MAX_CARDS = 5
 MAX_JUDGMENTS = 5
 MAX_CONDITIONS = 60
 MAX_QUERIES = 8
-CANDIDATES_PER_QUERY = 6
+CANDIDATES_PER_QUERY = 8
 MAX_STRATEGIES = 20
 MAX_LISTED_FILES = 100
 MAX_EXCERPTS = 3
@@ -345,8 +346,8 @@ def selection_prompt(text, drafts, candidates, file_candidates=()):
         'indicator_queries': [query.model_dump() for query in draft.indicator_queries],
         'file_queries': [item.model_dump(include={'query', 'field', 'excerpt'}) for item in draft.files if item.query]}
         for index, draft in enumerate(drafts)], ensure_ascii=False)
-    rows = json.dumps([{key: row[key] for key in ('ref', 'query', 'name', 'unit', 'frequency', 'source')}
-                       for row in candidates], ensure_ascii=False)
+    rows = json.dumps([{key: row[key] for key in ('ref', 'query', 'name', 'unit', 'frequency', 'source', 'sheet')
+                        if row.get(key) != ''} for row in candidates], ensure_ascii=False)
     files = json.dumps([{key: row[key] for key in ('ref', 'query', 'name', 'type')} for row in file_candidates],
                        ensure_ascii=False)
     return f'''任务：下面是你刚整理的策略方案，以及按检索名称在已授权目录中找到的候选指标和候选知识库文件。为每个检索名称选出与研究员原话所指一致的候选，写明方案序号、候选编号和所属字段（沿用该检索名称的 field；文件沿用它的 excerpt）；没有一致的候选就不选，不要选名称相近但口径、对象或内容不同的候选。
@@ -363,22 +364,37 @@ def selection_prompt(text, drafts, candidates, file_candidates=()):
 def _candidates(scope, drafts):
     queries = list(dict.fromkeys(query.query.strip() for draft in drafts for query in draft.indicator_queries
                                  if query.query.strip()))[:MAX_QUERIES]
+    if not queries:
+        return []
+    # Ranked recall: a model's wording that only partly matches the catalog's naming
+    # still surfaces the field. The model then chooses; every choice is checked.
+    from tin.integration.catalog_recall import CatalogRecall
+    snapshot = citations.catalog_snapshot(scope)
+    fields = [field for field in snapshot['catalog'].values() if isinstance(field, dict) and field.get('series_id')]
+    by_id = {field['series_id']: field for field in fields}
+    index = CatalogRecall((field['series_id'], [field.get('metric') or field.get('name'), field.get('dimensions')],
+                           [field.get(key) for key in ('sheet', 'unit', 'frequency', 'source_file')]) for field in fields)
+    page = {'version': snapshot['version']}
     rows, seen = [], set()
     for query in queries:
-        page = citations.catalog_page(scope, limit=CANDIDATES_PER_QUERY, search=query)
-        for field in page.get('series') or []:
-            if not isinstance(field, dict) or field.get('series_id') in seen:
+        offered = 0
+        for identifier in index.ranked(query, CANDIDATES_PER_QUERY * 3):
+            if offered == CANDIDATES_PER_QUERY:
+                break
+            if identifier in seen:
                 continue
-            seen.add(field['series_id'])
+            field = by_id[identifier]
+            seen.add(identifier)
             try:
                 # Only a series this workbench can cite directly is offered to the model.
                 citation = citations._indicator_citation(scope, field, page)
             except HTTPException:
                 continue
+            offered += 1
             preview = citations._indicator_preview(field)
             rows.append({'ref': f'i{len(rows) + 1}', 'query': query, 'name': preview['name'], 'unit': preview['unit'],
-                'frequency': preview['frequency'], 'source': preview['source'], 'citation': citation,
-                'preview': preview})
+                'frequency': preview['frequency'], 'source': preview['source'],
+                'sheet': human_text(field.get('sheet')) or '', 'citation': citation, 'preview': preview})
     return rows
 
 

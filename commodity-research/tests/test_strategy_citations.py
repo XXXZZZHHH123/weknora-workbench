@@ -77,6 +77,10 @@ def case(monkeypatch):
             and search.casefold() in row['metric'].casefold()]
         return {'series': deepcopy(rows[offset:offset + limit]), 'total': len(rows), 'version': CATALOG_VERSION,
             'next_offset': offset + limit if offset + limit < len(rows) else None}
+    def snapshot(bound, *, apply_dedup=True):
+        state.setdefault('snapshot_reads', []).append((bound.workbench_id, apply_dedup))
+        return {'catalog': {row['series_id']: deepcopy(row) for row in state['fields']},
+                'version': CATALOG_VERSION, 'datasets': []}
     async def thread(function, *args, **kwargs): return function(*args, **kwargs)
     @contextmanager
     def session(_): yield object()
@@ -99,6 +103,7 @@ def case(monkeypatch):
         return {**actual, 'condition': found[0], 'rule_kind': reference['rule_kind'], 'rule_id': reference['rule_id']}
     monkeypatch.setattr(citations, 'go_request', go)
     monkeypatch.setattr(citations, 'catalog_page', catalog)
+    monkeypatch.setattr(citations, 'catalog_snapshot', snapshot)
     monkeypatch.setattr(citations, 'artifact_session', session)
     monkeypatch.setattr(citations, 'run_in_threadpool', thread)
     monkeypatch.setattr(research_references, 'resolve_reference', resolve)

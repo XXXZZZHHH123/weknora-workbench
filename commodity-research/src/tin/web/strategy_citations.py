@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from tin.config import SHANGHAI, settings
-from tin.integration.kb_facts import catalog_page
+from tin.integration.kb_facts import catalog_page, catalog_snapshot
 from tin.integration.workbench_scope import (artifact_session, current_workbench, go_request,
     source_scope_for_binding)
 from tin.web.research_display import condition_text, human_text, reference_label
