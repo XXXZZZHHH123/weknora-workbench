@@ -487,7 +487,8 @@
             <div v-else-if="event.type === 'answer' && !suppressStructuredProse(session.agentEventStream || [], !!session.is_completed) && (event.done || (event.content && event.content.trim()))"
               class="answer-event">
               <div v-if="event.content && event.content.trim()" class="answer-content markdown-content">
-                <div v-stable-html="renderAnswerContent(event === activeAnswerEventRef ? typedAnswer : event.content)">
+                <AnswerNotice v-if="answerPresentation(event).notice" :notice="answerPresentation(event).notice" />
+                <div v-stable-html="renderAnswerContent(event === activeAnswerEventRef ? typedAnswer : answerPresentation(event).content)">
                 </div>
               </div>
               <div v-if="event === pinnedAnswerEvent && (pinnedPageLinks.length > 0 || pinnedPageEdits.length > 0)"
@@ -833,6 +834,8 @@ import {
 } from '@/utils/sandboxArtifactRefs';
 import type { ProtectedFileAccessContext } from '@/utils/protectedFileAccess';
 import { unwrapFinalAnswerWrappers, thinkingEqualsAnswer } from '@/utils/finalAnswer';
+import { extractAnswerNotice } from '@/utils/answerNotice';
+import AnswerNotice from '@/components/chat/AnswerNotice.vue';
 import { suppressStructuredProse } from '@/utils/fieldClarification';
 import { getAgentToolIconName } from '@/utils/agent-tool-icons';
 import { getMcpToolDisplayType, getMcpToolTitle, mcpToolResultOutput } from '@/utils/mcpToolDisplay';
@@ -1857,12 +1860,17 @@ const streamingMermaidSvgCache = ref<string[]>([]);
 useStreamingHeightFloor(rootElement, computed(() => !isSegmentDone.value));
 let streamingMermaidRenderTask: Promise<void> | null = null;
 
+const answerPresentation = (event: any) => extractAnswerNotice(
+  unwrapFinalAnswerWrappers(typeof event?.content === 'string' ? event.content : ''),
+  !event?.done && !isSegmentDone.value,
+);
+
 const activeAnswerMarkdown = computed(() => {
   const stream = eventStream.value;
   if (!stream?.length) return '';
   const answers = stream.filter((e: any) => e.type === 'answer' && !e.superseded);
   const active = answers.find((e: any) => !e.done) ?? answers[answers.length - 1];
-  return typeof active?.content === 'string' ? active.content : '';
+  return answerPresentation(active).content;
 });
 
 // The answer event whose text is currently streaming. The template renders the
@@ -2990,12 +2998,10 @@ const renderMarkdownContent = (content: unknown): string => {
   return renderAgentMarkdown(content, sanitizeForDisplay);
 };
 
-// Renders an answer event's content. Strips final-answer wrappers
-// (e.g. <answer>…</answer>, "Final Answer:") that some models wrap their
-// plain-text answer in, then delegates to the standard markdown renderer.
+// The presentation envelope is removed before typewriter animation.
 const renderAnswerContent = (content: unknown): string => {
   const contentStr = typeof content === 'string' ? content : String(content || '');
-  return renderMarkdownContent(unwrapFinalAnswerWrappers(contentStr));
+  return renderMarkdownContent(contentStr);
 };
 
 // Legacy Markdown rendering function (kept for summaries)
@@ -3485,7 +3491,7 @@ const getActualContent = (answerEvent: any): string => {
   // First try to get content from answer event
   const answerContent = (answerEvent?.content || '').trim();
   if (answerContent) {
-    return unwrapFinalAnswerWrappers(answerContent).trim();
+    return answerPresentation(answerEvent).content.trim();
   }
 
   // If answer is empty, try to get from last thinking
@@ -3704,6 +3710,7 @@ const handleAddToKnowledge = (answerEvent: any) => {
   }
 
   .answer-content {
+    display: flow-root;
     &.markdown-content {
       // Chat Markdown visual styles are centralized in chat-markdown.less.
       // Do not add element-level Markdown rules here; update the shared mixin.

@@ -364,15 +364,16 @@ onBeforeUnmount(() => {
 })
 </script>
 <style scoped>
-.analysis-evidence { margin: 16px 0; line-height: 1.6; color: inherit; min-width: 0; }
+.analysis-evidence { margin: 8px 0 0; line-height: 1.6; color: inherit; min-width: 0; }
 summary { cursor: pointer; color: #66716b; font-size: 13px; }
 .analysis-table { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; }
 th,td { padding: 6px 10px; border-bottom: 1px solid #e6e9e7; text-align: left; white-space: nowrap; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; }
-.source-locator { margin-top: 16px; padding-top: 12px; border-top: 1px solid #e6e9e7; }
-.source-locator h3 { margin: 0 0 4px; font-size: 13px; font-weight: 500; color: #758078; }
-.source-row { padding: 10px 0; min-width: 0; }
+.source-locator { padding-top: 10px; border-top: 1px solid var(--td-component-stroke); }
+details + .source-locator { margin-top: 12px; }
+.source-locator h3 { margin: 0 0 6px; font-size: 12px; font-weight: 500; color: var(--td-text-color-secondary); }
+.source-row { padding: 4px 0; min-width: 0; }
 .source-row + .source-row { border-top: 1px solid #f0f1f0; }
 .source-heading { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .source-kind { flex-shrink: 0; padding: 2px 5px; border-radius: 4px; background: #f2f3f2; color: #737c76; font-size: 10px; font-weight: 600; letter-spacing: .02em; }
@@ -382,7 +383,7 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflo
 .source-locator button:hover { background: #f2f4f2; color: #304c3c; }
 .source-locator button:focus-visible, summary:focus-visible { outline: 2px solid #7b9c88; outline-offset: 2px; }
 .source-locator button:disabled { opacity: .5; cursor: default; }
-.source-locator .source-open { margin-left: auto; flex-shrink: 0; font-size: 12px; color: #365c46; }
+.source-locator .source-open { flex-shrink: 0; font-size: 12px; color: #365c46; }
 .pdf-locations { margin: 5px 0 0 38px; }
 .pdf-table-location { padding: 7px 0; }
 .table-location-heading { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 13px; }
