@@ -30,7 +30,7 @@ TEXT_LIMIT = 6000
 MAX_CARDS = 5
 MAX_JUDGMENTS = 5
 MAX_CONDITIONS = 60
-MAX_QUERIES = 8
+MAX_QUERIES = 10
 CANDIDATES_PER_QUERY = 8
 MAX_STRATEGIES = 20
 MAX_LISTED_FILES = 100
@@ -59,6 +59,8 @@ class _Ref(_Output):
 class _Query(_Output):
     query: str = Field(min_length=1, max_length=60, validation_alias=AliasChoices('query', 'name', 'keyword', 'search'))
     field: Slot = 'thesis'
+    # Other names only widen recall; anything that is not a short phrase is ignored.
+    aliases: list[Any] = Field(default_factory=list, max_length=8)
 
 
 class _FileRef(_Output):
@@ -326,7 +328,7 @@ def structure_prompt(text, today, judgments, conditions, strategies=(), files=()
 - strategy：原话说参考、沿用或在某份已有方案基础上调整时，填下方已有策略的编号（s 开头）；按含义判断是哪一份，判断不出或原话没有提到时填 null。
 - conditions：原话中与下方研判条件意思一致的部分，写出条件编号（c 开头）和它出现在哪个字段；意思不一致时不要引用。
 {file_rule}
-- indicator_queries：原话提到、但下方研判条件里没有的指标，保留原话中的研究对象与指标口径，给出在指标目录中检索用的简短名称，field 填该指标在原话中出现的那一项（例如在撤回条件里提到就填 invalidation），每份最多 4 个；没有就给空数组。
+- indicator_queries：原话提到、但下方研判条件里没有的指标，保留原话中的研究对象与指标口径，给出在指标目录中检索用的简短名称，并在 aliases 里给 1～2 个数据库中常用的规范名称或别称（原话是通俗说法时尤其需要），field 填该指标在原话中出现的那一项（例如在撤回条件里提到就填 invalidation），每份最多 6 个；没有就给空数组。
 - excerpt：原话中对应这份方案的连续原文；只有一份方案时填空字符串。
 - gaps：只写研究员需要补充或核对的业务内容（如缺少的合约、仓位、价格单位，或原话指向哪份文件、哪份研判不明确），每条一句话，最多 5 条；已经引用成功的内容不要再写，不要解释某个字段为什么为空，不要写字段名、编号或 ID；没有就给空数组。
 原话通常只写了一份方案；只有原话明确写了几份相互独立的方案时才拆成多份，最多 {MAX_CARDS} 份。
@@ -362,8 +364,13 @@ def selection_prompt(text, drafts, candidates, file_candidates=()):
 
 
 def _candidates(scope, drafts):
-    queries = list(dict.fromkeys(query.query.strip() for draft in drafts for query in draft.indicator_queries
-                                 if query.query.strip()))[:MAX_QUERIES]
+    phrasings = {}
+    for draft in drafts:
+        for query in draft.indicator_queries:
+            if query.query.strip():
+                aliases = [alias.strip() for alias in query.aliases if isinstance(alias, str) and 0 < len(alias.strip()) <= 60]
+                phrasings.setdefault(query.query.strip(), []).extend(aliases[:2])
+    queries = list(phrasings)[:MAX_QUERIES]
     if not queries:
         return []
     # Ranked recall: a model's wording that only partly matches the catalog's naming
@@ -378,7 +385,7 @@ def _candidates(scope, drafts):
     rows, seen = [], set()
     for query in queries:
         offered = 0
-        for identifier in index.ranked(query, CANDIDATES_PER_QUERY * 3):
+        for identifier in index.recall([query, *dict.fromkeys(phrasings[query])], CANDIDATES_PER_QUERY * 3):
             if offered == CANDIDATES_PER_QUERY:
                 break
             if identifier in seen:
@@ -607,7 +614,7 @@ async def draft_from_text(scope, text, model_id):
     dropped = []
     for draft in drafts:
         draft.conditions, lost_conditions = draft.items(_Ref, draft.conditions, 16)
-        draft.indicator_queries, lost_queries = draft.items(_Query, draft.indicator_queries, 4)
+        draft.indicator_queries, lost_queries = draft.items(_Query, draft.indicator_queries, 6)
         draft.files, lost_files = draft.items(_FileRef, draft.files, 6)
         if files is not None:
             # Listed files are chosen by reference; a search name is only used when files were not listed.

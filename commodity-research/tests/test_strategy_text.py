@@ -198,3 +198,17 @@ def test_wording_that_only_partly_matches_the_catalog_still_reaches_the_model(ca
     assert 'Cotton yarn spot processing margin' in calls[1]['prompt'] and 'Yarn margin' in calls[1]['prompt']
     indicator = [item for item in result['body']['card']['citations'] if item['kind'] == 'indicator']
     assert [item['series_id'] for item in indicator] == [other]
+
+
+def test_other_names_widen_recall_but_the_model_still_chooses(case, model):
+    calls, replies = model
+    other = 'kb-' + 'c' * 48
+    case[1]['fields'].append({'series_id': other, 'metric': 'C32S processing margin', 'unit': 'yuan/t',
+        'frequency': 'daily', 'sheet': 'Yarn margin', 'source_file': 'source.xlsx', 'knowledge_base_id': 'library-default',
+        'source_binding_id': 'binding-default', 'source_version': FIELD_VERSION})
+    # The everyday wording shares nothing with the catalog name; the database name the model adds does.
+    replies += [{'cards': [card(indicator_queries=[{'query': 'pure cotton spinning', 'field': 'trigger',
+                                                    'aliases': ['C32S margin', 7, '']}])]},
+                {'indicators': []}]
+    draft(case)
+    assert 'C32S processing margin' in calls[1]['prompt']
