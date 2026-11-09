@@ -81,6 +81,14 @@ submissions. Health and protocol checks do not prove live model accuracy.
 See [production deployment](../../deploy/README.md#pdf-表格识别remote_vlm) for the
 full boundary and rollback requirements; image rollback does not restore data.
 
+For the server's `regctl image export | docker load` transport, Docker may omit
+local `RepoDigests`. Export the verified `repository@sha256:<digest>` with
+`--name` set to the artifact's image tag, and require the imported image ID to
+equal `tested_image_id`. Compose may then pin that `sha256:<image-config-id>`
+with `--pull never --no-build`; verify the actual container image ID before and
+after the switch. A matching tag or a missing local RepoDigest is not proof of
+verified image content.
+
 ## Protocol
 
 All job APIs require `Authorization: Bearer <service token>` and **`X-Parse-Scope` derived by the trusted upstream from the authenticated tenant/permission context**. Optional `X-Parse-Owner` is a verified user ID for admission/fair scheduling; it must not be copied from an untrusted arbitrary field. The upstream must enforce document read/parse permission before submitting or reading a result; this internal service trusts that authorization boundary. Do not expose it directly as a browser API.

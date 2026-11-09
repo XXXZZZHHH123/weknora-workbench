@@ -491,3 +491,9 @@ attempt、镜像、registry SHA256 digest、经过检查的本地镜像 ID，以
 
 worker 的新增 SQLite 列会保留旧任务、lease 和 checkpoints，但回退旧镜像前仍须核对
 数据库结构、parser profile 及在途任务；镜像回退不等于数据恢复，不覆盖现有数据目录。
+
+使用服务器现有 `regctl image export | docker load` 传输时，Docker 可能不保留
+`RepoDigests`。应从已核对的 `repository@sha256:<digest>` 导出，用 `--name` 指定
+artifact 中的正式镜像 tag，再核对导入后镜像 ID 等于 `tested_image_id`。此时 Compose
+可固定为该 `sha256:<image-config-id>`，并使用 `--pull never --no-build`；更新前后都
+核对实际容器镜像 ID。不能只检查 tag 存在，或将缺少本地 RepoDigest 当作内容校验成功。
