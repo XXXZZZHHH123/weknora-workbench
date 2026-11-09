@@ -69,7 +69,6 @@ def test_complete_inventory_has_exact_source_quotes_and_explicit_units():
     lambda d: d['items'][0].update(quote='Invented source'),
     lambda d: d['items'][0].update(block_ids=['s9999']),
     lambda d: d['items'][0].update(block_ids=['s0002']),
-    lambda d: d['items'][0].update(source_unit='USD/ton'),
     lambda d: d['items'][0].update(kind='keyword-special-case'),
     lambda d: d['items'][1].update(id='a'),
     lambda d: d['blocks'][3].update(reason=''),
@@ -223,6 +222,19 @@ def test_out_of_capacity_rejects_explicitly_without_mutating_earlier_assessment(
     with pytest.raises(AnalysisError, match='未静默省略'):
         retain_coverage(assessment, inventory(), {}, TEXT, CATALOG, variety='UNIT', actor='synthetic-user')
     assert assessment == before
+
+
+@pytest.mark.parametrize('unit', ['USD/ton', 'kg/day', 12, '   '])
+def test_unit_not_stated_verbatim_is_dropped_instead_of_failing_the_whole_source(unit):
+    # A normalized or guessed unit never becomes source evidence, and one such
+    # annotation does not discard every other verified source item.
+    value = inventory()
+    value['items'][0]['source_unit'] = value['items'][2]['source_unit'] = unit
+    before = deepcopy(value)
+    result = validate_inventory(value, TEXT)
+    assert value == before
+    assert [item['source_unit'] for item in result['items']] == [None, None, None]
+    assert [item['quote'] for item in result['items']] == [item['quote'] for item in inventory()['items']]
 
 
 def test_coverage_does_not_mutate_model_response_or_inventory():

@@ -1,5 +1,6 @@
 """Synthetic API coverage failures never freeze a partial interpretation."""
 from copy import deepcopy
+import json
 
 from fastapi import HTTPException
 import pytest
@@ -89,8 +90,12 @@ def test_model_cannot_invent_source_currency_to_suppress_a_binding_warning(gener
 
     monkeypatch.setattr(generation, 'completion', completion)
     result = generate(client, headers)
-    assert result.status_code == 422, result.text
-    assert snapshots() == [] and rows() == [] and len(calls) == 1
+    # The guessed currency is dropped as unstated; the rest of the verified
+    # source still produces a preview, and nothing is saved.
+    assert result.status_code == 200, result.text
+    assert 'USD/ton' not in result.text and rows() == []
+    cached = json.dumps(snapshots(), ensure_ascii=False)
+    assert 'USD/ton' not in cached and '吨' in cached
 
 
 def test_review_preparation_failure_is_readable_and_cleans_pending_snapshot(generator, monkeypatch):
