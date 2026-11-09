@@ -86,15 +86,15 @@ def test_status_preserves_raw_states_counts_fields_and_never_returns_cell_or_fie
     monkeypatch.setattr(DataStore, '_connect', lambda *args, **kwargs: pytest.fail('status must never query observations'))
     document = read(research_charts)
     assert set(document) == {'sources', 'summary'}
-    assert document['summary'] == {'confirmed': 1, 'pending': 4, 'pending_fields': 7}
+    assert document['summary'] == {'confirmed': 1, 'pending': 4, 'pending_fields': 7, 'pending_without_fields': 0}
     a, b = document['sources']
     assert set(a) == {'knowledge_id', 'source_file', 'sheets', 'summary'}
     assert a['knowledge_id'] == 'original-a' and a['source_file'] == 'fixture-a.xlsx'
     assert a['sheets'] == [{'name': 'Data', 'status': 'confirmed', 'field_count': 2},
                            {'name': 'Pending', 'status': 'needs_review', 'field_count': 3},
                            {'name': 'Figures', 'status': 'auto_ready', 'field_count': 1}]
-    assert a['summary'] == {'confirmed': 1, 'pending': 2, 'pending_fields': 4}
-    assert b['summary'] == {'confirmed': 0, 'pending': 2, 'pending_fields': 3}
+    assert a['summary'] == {'confirmed': 1, 'pending': 2, 'pending_fields': 4, 'pending_without_fields': 0}
+    assert b['summary'] == {'confirmed': 0, 'pending': 2, 'pending_fields': 3, 'pending_without_fields': 0}
     assert all(set(sheet) == {'name', 'status', 'field_count'} for source in document['sources'] for sheet in source['sheets'])
     assert 'PRIVATE' not in json.dumps(document) and 'value' not in json.dumps(document)
     assert research_charts.state['checks'] == 2
@@ -111,7 +111,22 @@ def test_status_includes_unpublished_reviews_and_counts_matrix_metrics_instead_o
     save(first)
     source = read(research_charts)['sources'][0]
     assert source['sheets'][1]['field_count'] == 2
-    assert source['summary'] == {'confirmed': 0, 'pending': 2, 'pending_fields': 4}
+    assert source['summary'] == {'confirmed': 0, 'pending': 2, 'pending_fields': 4, 'pending_without_fields': 0}
+
+
+def test_status_matches_review_page_for_skipped_and_unrecognized_sheets(research_charts):
+    # The review page hides verified no-data sheets; a sheet without any
+    # recognized field is still pending but has no field awaiting confirmation.
+    first = research_charts.first
+    first.review['sheets'] = [
+        mapped_sheet('Data', 'needs_review', 2),
+        {'name': 'Notes', 'status': 'needs_review', 'layout': 'unrecognized', 'rows': 5, 'mapping': {}},
+        {'name': 'Blank values', 'status': 'needs_review', 'layout': 'unrecognized', 'rows': 5, 'mapping': {},
+         'automatic_skip': {'code': 'no_indicator_data', 'message': 'fixture'}}]
+    save(first)
+    source = read(research_charts)['sources'][0]
+    assert [sheet['field_count'] for sheet in source['sheets']] == [2, 0, 0]
+    assert source['summary'] == {'confirmed': 0, 'pending': 2, 'pending_fields': 2, 'pending_without_fields': 1}
 
 
 @pytest.mark.parametrize('change', ['hash', 'knowledge_id', 'deleted', 'removed_binding', 'binding_owner', 'binding_kb'])
@@ -195,4 +210,4 @@ def test_status_does_not_accept_caller_selected_sources(research_charts, body):
 def test_empty_status_grant_does_not_fall_back_to_old_sources(research_charts, monkeypatch):
     research_charts.state['sources'] = []
     monkeypatch.setattr(research_source_status, 'current_source_records', lambda *args, **kwargs: pytest.fail('empty grant opened a review'))
-    assert read(research_charts) == {'sources': [], 'summary': {'confirmed': 0, 'pending': 0, 'pending_fields': 0}}
+    assert read(research_charts) == {'sources': [], 'summary': {'confirmed': 0, 'pending': 0, 'pending_fields': 0, 'pending_without_fields': 0}}

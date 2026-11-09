@@ -11,16 +11,24 @@ from .research_facts_v2 import _originals
 from .workspaces import current_identity
 
 
+SUMMARY_KEYS = ('confirmed', 'pending', 'pending_fields', 'pending_without_fields')
+
+
 def _summary(sheets, review_sheets):
-    # Empty and drawing-only sheets have no data mapping to confirm. Preserve
-    # their raw status in the response without suggesting that they need review.
+    # Empty, drawing-only and verified no-data (automatically skipped) sheets
+    # have no data mapping to confirm; the knowledge-base review page does not
+    # list them as pending either. Preserve their raw status in the response.
     pending = [item for item, raw in zip(sheets, review_sheets)
                if item['status'] not in {'confirmed', 'empty'}
+               and not raw.get('automatic_skip')
                and not (raw.get('layout') == 'chart_or_image'
                         and not (raw.get('mapping') or {}).get('blocks')
                         and (raw.get('rows') or 0) <= 2)]
     return {'confirmed': sum(item['status'] == 'confirmed' for item in sheets),
-            'pending': len(pending), 'pending_fields': sum(item['field_count'] for item in pending)}
+            'pending': len(pending), 'pending_fields': sum(item['field_count'] for item in pending),
+            # Pending sheets whose structure was not recognized expose no field
+            # to confirm; callers must not describe them as fields awaiting review.
+            'pending_without_fields': sum(not item['field_count'] for item in pending)}
 
 
 def _review_files(manager):
@@ -102,4 +110,4 @@ def read_current(registry, body, sources):
             finally:
                 current_identity.reset(marker)
     return {'sources': results, 'summary': {
-        key: sum(row['summary'][key] for row in results) for key in ('confirmed', 'pending', 'pending_fields')}}
+        key: sum(row['summary'][key] for row in results) for key in SUMMARY_KEYS}}

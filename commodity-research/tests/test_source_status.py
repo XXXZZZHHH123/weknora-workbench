@@ -28,11 +28,11 @@ def status_document():
          'sheets': [{'name': 'Checked', 'status': 'confirmed', 'field_count': 2},
                     {'name': 'Automatic', 'status': 'auto_ready', 'field_count': 7},
                     {'name': 'Review', 'status': 'needs_review', 'field_count': 3}],
-         'summary': {'confirmed': 1, 'pending': 2, 'pending_fields': 10}},
+         'summary': {'confirmed': 1, 'pending': 2, 'pending_fields': 10, 'pending_without_fields': 0}},
         {'knowledge_id': 'original-2', 'source_file': 'Another workbook',
          'sheets': [{'name': 'Untitled', 'status': 'template_ready', 'field_count': 4}],
-         'summary': {'confirmed': 0, 'pending': 1, 'pending_fields': 4}}],
-        'summary': {'confirmed': 1, 'pending': 3, 'pending_fields': 14}}
+         'summary': {'confirmed': 0, 'pending': 1, 'pending_fields': 4, 'pending_without_fields': 0}}],
+        'summary': {'confirmed': 1, 'pending': 3, 'pending_fields': 14, 'pending_without_fields': 0}}
 
 
 def response(document, code=200):
@@ -123,8 +123,37 @@ def test_zero_pending_and_drawing_sheets_do_not_invent_pending_reviews(monkeypat
     # review status remains raw; the client must not turn it into another task.
     doc = {'sources': [{'knowledge_id': 'original-1', 'source_file': 'Drawings',
                        'sheets': [{'name': 'Images', 'status': 'needs_review', 'field_count': 0}],
-                       'summary': {'confirmed': 0, 'pending': 0, 'pending_fields': 0}}],
-           'summary': {'confirmed': 0, 'pending': 0, 'pending_fields': 0}}
+                       'summary': {'confirmed': 0, 'pending': 0, 'pending_fields': 0, 'pending_without_fields': 0}}],
+           'summary': {'confirmed': 0, 'pending': 0, 'pending_fields': 0, 'pending_without_fields': 0}}
+    monkeypatch.setattr('tin.provenance.bridge.structured_request', lambda *args, **kwargs: response(doc))
+    assert source_status_hint(status_scope) is None
+
+
+@pytest.mark.parametrize('fields,without,message,quiet', [
+    (0, 2, '知识库有 2 张工作表没有识别出字段，可能是说明页或没有数据的表，不影响已导入的指标；如果其中有要用的数据，请到知识库核对', True),
+    (3, 1, '知识库还有 1 张工作表待确认（含 3 个字段），确认后才能在这里使用。另有 1 张工作表没有识别出字段，'
+           '可能是说明页或没有数据的表，不影响已导入的指标；如果其中有要用的数据，请到知识库核对', False)])
+def test_sheets_without_fields_are_not_described_as_fields_awaiting_confirmation(
+        monkeypatch, status_scope, fields, without, message, quiet):
+    sheets = [{'name': 'Notes', 'status': 'needs_review', 'field_count': 0},
+              {'name': 'Other', 'status': 'needs_review', 'field_count': fields}]
+    summary = {'confirmed': 0, 'pending': 2, 'pending_fields': fields, 'pending_without_fields': without}
+    doc = {'sources': [{'knowledge_id': 'original-1', 'source_file': 'Workbook', 'sheets': sheets,
+                        'summary': summary}], 'summary': dict(summary)}
+    monkeypatch.setattr('tin.provenance.bridge.structured_request', lambda *args, **kwargs: response(doc))
+    hint = source_status_hint(status_scope)
+    assert hint['message'] == message and hint['quiet'] is quiet
+    assert '含 0 个字段' not in hint['message']
+
+
+@pytest.mark.parametrize('without', [2, 3])
+def test_impossible_field_less_counts_are_rejected(monkeypatch, status_scope, without):
+    # 2: only one open sheet has no field; 3: more field-less sheets than pending ones.
+    sheets = [{'name': 'Notes', 'status': 'needs_review', 'field_count': 0},
+              {'name': 'Other', 'status': 'needs_review', 'field_count': 1}]
+    summary = {'confirmed': 0, 'pending': 2, 'pending_fields': 1, 'pending_without_fields': without}
+    doc = {'sources': [{'knowledge_id': 'original-1', 'source_file': 'Workbook', 'sheets': sheets,
+                        'summary': summary}], 'summary': dict(summary)}
     monkeypatch.setattr('tin.provenance.bridge.structured_request', lambda *args, **kwargs: response(doc))
     assert source_status_hint(status_scope) is None
 
@@ -143,7 +172,7 @@ def test_shared_signed_transport_keeps_default_timeout_and_allows_short_optional
 
     def transport(method, url, **options):
         calls.append((method, url, options))
-        return response({'sources': [], 'summary': {'confirmed': 0, 'pending': 0, 'pending_fields': 0}})
+        return response({'sources': [], 'summary': {'confirmed': 0, 'pending': 0, 'pending_fields': 0, 'pending_without_fields': 0}})
 
     monkeypatch.setattr(bridge.httpx, 'request', transport)
     token = current_identity.set(status_scope.identity)
