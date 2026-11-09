@@ -85,15 +85,15 @@ onMounted(load)
 </script>
 
 <style scoped>
-.pdf-processing-settings { margin: 24px 0 8px; padding-top: 24px; border-top: 1px solid var(--td-component-stroke, #e7e9e8); }
+.pdf-processing-settings { margin: 24px 0 8px; padding-top: 24px; border-top: 1px solid var(--td-component-stroke); }
 .pdf-processing-heading { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
-.pdf-processing-heading h3 { margin: 0; font-size: 15px; font-weight: 600; }
-.pdf-processing-heading span, .pdf-processing-actions span { color: var(--td-text-color-secondary); font-size: 12px; }
+.pdf-processing-heading h3 { margin: 0; font-size: var(--app-text-lg); font-weight: 600; }
+.pdf-processing-heading span, .pdf-processing-actions span { color: var(--td-text-color-secondary); font-size: var(--app-text-sm); }
 .pdf-processing-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 32px; }
-.pdf-processing-fields label { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13px; }
+.pdf-processing-fields label { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: var(--app-text-md); }
 .pdf-processing-fields :deep(.t-input-number) { width: 150px; flex-shrink: 0; }
 .pdf-processing-actions { display: flex; gap: 12px; align-items: center; margin-top: 22px; flex-wrap: wrap; }
 .pdf-processing-actions span { margin-right: auto; }
-.pdf-processing-error { color: var(--td-error-color); font-size: 13px; }
+.pdf-processing-error { color: var(--td-error-color); font-size: var(--app-text-md); }
 @media (max-width: 650px) { .pdf-processing-fields { grid-template-columns: 1fr; } .pdf-processing-heading { gap: 6px; } }
 </style>
