@@ -56,6 +56,16 @@
 
 分析批次部分失败时，可以显示实际成功子执行的视图，同时保留整个批次失败状态、失败行和覆盖缺口。成功子结果不提升整个批次的完成状态。
 
+## 执行准备与索引并发
+
+父任务取得执行所有权后，准备模型上下文、规划任务和发现来源也属于实际执行。会话使用有清理边界的执行域，在原有权限检查及取得所有权的位置立即启动续租；直接调用引擎时，`Execute` 和 `Resume` 也在准备前启动续租。同一执行域与所有者复用心跳，工厂失败、准备失败、取消和正常退出均释放资源。过期、被替换或关闭的所有者不能通过重新启动心跳恢复权限；准备结束后仍核对当前所有权。没有安全检查点的真正失联执行继续终止，不能自动重放不确定的工具操作。
+
+跨知识库目录发现保留已成功读取的条目，并区分读取失败与尚未查询的范围。取消、超时或部分失败不能退回成目录读取成功，也不能证明未读范围没有数据。实际字段字面匹配继续只提供候选证据，由模型依据完整问题和真实来源选择范围。
+
+原生图表索引按实际工作区、数据集及索引版本的缓存路径协调构建。持久文件锁覆盖线程与进程，取得锁后再次检查缓存，完成后原子发布；等待超限明确返回索引尚未就绪，不能另起同一构建或返回空证据。失败不发布半份索引，损坏或身份不符的缓存拒绝使用。HTTP 读取超时可能留下仍在运行的服务计算，因此只对明确未连通服务的纯读连接失败自动重试，不自动重放响应超时或状态操作。
+
+这些改动保留来源、重复字段、日期、质量、单位和数值检查。单份大型冷索引首次构建仍可能超过 HTTP 预算；并发去重和准确状态不代表目录冷启动性能已经验收通过。
+
 ## 测试与验收边界
 
 以下是合成夹具和本地检查入口，不代表已完成真实模型或发布验收：
@@ -71,13 +81,19 @@
 | 收敛及覆盖 | `internal/agent/tool_progress_test.go`、`internal/agent/task_coverage_test.go` | 新证据与重复调用、有界重规划、用户追加要求、覆盖缺口及收据失效 |
 | 运行进度 | `internal/handler/session/agent_progress_test.go`、`frontend/src/composables/useChatStreamHandler.integration.test.ts` | 进度与正文分离、重新规划通知、重复事件及历史恢复、有界结束正文 |
 | 原格显示 | `frontend/src/utils/documentTableViewRendering.test.ts` | 实际聊天 renderer 的完整及流式渲染、标点、空值、精度和文字标签逐格保留 |
+| 准备与租约 | `internal/agent/collaboration/execution_test.go`、`internal/agent/collaboration_lease_preparation_test.go`、`internal/application/service/agent_collaboration_lease_start_test.go` | 慢准备、并发复用、取得租约后早退、临近到期、取消和恢复所有权 |
+| 目录失败状态 | `internal/agent/tools/structured_data_failure_test.go` | 部分目录、未查询范围、取消、响应形态、输出投影和仅连接失败重试 |
+| 索引并发 | `../structured-data/tests/test_native_chart_index_cache.py` | 多线程/进程单次构建、等待到期、失败重试、版本及工作区隔离 |
 
 源码路径以上述仓库内 `WeKnora` 子目录为基准；完整测试结果以对应执行日志和 CI 为准。2026-11-09 的隔离本地验证实际通过四个相关 Go 包的完整测试（4,643 条测试及子测试通过记录，9 项环境受限跳过）、前端进度恢复 20 项、实际聊天表格渲染 1 项、测试代码类型检查及服务端整包编译。新增数值权限反例在旧收集器上实际失败，修复后通过；上述测试和构建没有调用在线模型。
+
+准备阶段租约与目录并发的后续隔离验证，最终五个相关 Go 包（`agent/collaboration`、`application/service`、`agent`、`agent/tools`、`handler/session`）全量得到 9,072 条测试及子测试通过记录、11 项环境受限跳过，失败为零；续租相关竞争检测得到 19 条通过记录。旧源码叠加慢准备夹具实际复现误恢复，修复后通过。原生图表缓存相关 Python 回归 70 项通过，进程夹具改用独立解释器后新增 10 项再次通过。隔离服务包首次缺少测试 DNS 夹具的失败日志保留；最终仅在验证容器补固定域名映射，保留禁网和 URL 安全校验。上述结果不代表登录态真实问答、模型速度或生产发布验收。
 
 Go 完整检查入口（在 `WeKnora` 中运行）：
 
 ```sh
 go test -count=1 ./internal/modelcontext ./internal/agent ./internal/agent/tools ./internal/handler/session
+go test -count=1 ./internal/agent/collaboration ./internal/application/service
 go build ./cmd/server
 ```
 

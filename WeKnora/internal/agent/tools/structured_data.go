@@ -133,8 +133,8 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	}
 	if directory != nil {
 		if operation == "list_datasets" {
-			if recalled := t.recallAcrossKnowledgeBases(ctx, arguments, directory); recalled != nil {
-				return fitStructuredDirectory(ctx, operation, recalled), nil
+			if recalled, recallErr := t.recallAcrossKnowledgeBases(ctx, arguments, directory); recalled != nil {
+				return fitStructuredRecallDirectory(ctx, recalled), recallErr
 			}
 		}
 		if operation != "describe_tools" {
@@ -229,10 +229,10 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	if err != nil && ctx.Err() == nil {
 		contract := structuredOperationContracts[operation]
 		deadline, bounded := ctx.Deadline()
-		var networkError net.Error
-		if contract.effect == "read" && errors.As(err, &networkError) && (!bounded || time.Until(deadline) > 250*time.Millisecond) && req.GetBody != nil {
-			// One transport retry for a pure read. Stateful resolution and human
-			// confirmation never enter this path; no business parameters change.
+		if contract.effect == "read" && structuredConnectionFailureBeforeRequest(err) && (!bounded || time.Until(deadline) > 250*time.Millisecond) && req.GetBody != nil {
+			// Retry only an unsuccessful connection attempt. A response/read
+			// timeout can leave the original service computation running, even
+			// for pure reads. Stateful operations never enter this path.
 			if response != nil && response.Body != nil {
 				_ = response.Body.Close()
 			}
@@ -245,6 +245,9 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 	}
 	if err != nil {
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
+		}
 		ctxErr := ctx.Err()
 		ctxCancelled := errors.Is(ctxErr, context.Canceled)
 		timedOut := errors.Is(err, context.DeadlineExceeded) || errors.Is(ctxErr, context.DeadlineExceeded)
@@ -254,10 +257,7 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 		logger.Warnf(ctx, "[Tool][StructuredData] request failed operation=%s elapsed_ms=%d error_type=%T ctx_cancelled=%t timeout=%t",
 			operation, time.Since(requestStarted).Milliseconds(), err, ctxCancelled, timedOut)
-		if timedOut {
-			return nil, fmt.Errorf("结构化表格请求超时；未取得完整结果，不能据此判断来源不存在")
-		}
-		return nil, fmt.Errorf("结构化表格服务连接失败")
+		return nil, structuredRequestFailure(ctx, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusConflict {
@@ -306,7 +306,10 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		return structuredProtocolFailure("manifest_execution_unverified", "服务未确认本次工具协议版本；未接受结果。状态操作不得重放，请核对当前服务能力", "manifest", true), nil
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, 512*1024+1))
-	if err != nil || len(body) > 512*1024 {
+	if err != nil {
+		return nil, structuredRequestFailure(ctx, err)
+	}
+	if len(body) > 512*1024 {
 		return nil, fmt.Errorf("结构化表格结果过大，请缩小范围")
 	}
 	var data map[string]any
@@ -341,4 +344,32 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	}
 	cacheResult = &types.ToolResult{Success: true, Output: string(body), Data: data}
 	return fitStructuredDirectory(ctx, operation, cacheResult), nil
+}
+
+// A dial failure establishes that this attempt did not reach the service.
+// Other transport errors can occur after the request was submitted and must
+// not start a second still-running computation automatically.
+func structuredConnectionFailureBeforeRequest(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return false
+	}
+	var operationError *net.OpError
+	return errors.As(err, &operationError) && operationError.Op == "dial"
+}
+
+// Preserve cancellation/deadline identity without exposing request URLs,
+// provider bodies or credentials through the underlying transport error.
+func structuredRequestFailure(ctx context.Context, err error) error {
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		return fmt.Errorf("结构化表格请求已取消；未取得完整结果: %w", context.Canceled)
+	}
+	var networkError net.Error
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) || errors.As(err, &networkError) && networkError.Timeout() {
+		return fmt.Errorf("结构化表格请求超时；未取得完整结果，不能据此判断来源不存在: %w", context.DeadlineExceeded)
+	}
+	return fmt.Errorf("结构化表格服务连接或响应读取失败；未取得完整结果")
 }

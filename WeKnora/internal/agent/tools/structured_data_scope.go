@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -237,11 +239,13 @@ const (
 // question is then visible before the model picks a library, instead of
 // depending on whether it guesses that a token names a field. Each library is
 // queried with its own signed scope; matches are recall evidence only and
-// never select a library, field or plan. Returns nil without a question.
-func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arguments map[string]json.RawMessage, directory *types.ToolResult) *types.ToolResult {
+// never select a library, field or plan. Returns nil without a question. An
+// interrupted recall retains completed scopes and never becomes an unqueried
+// successful base directory.
+func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arguments map[string]json.RawMessage, directory *types.ToolResult) (*types.ToolResult, error) {
 	var question string
 	if raw, ok := arguments["question"]; !ok || json.Unmarshal(raw, &question) != nil || strings.TrimSpace(question) == "" || directory == nil || directory.Data == nil {
-		return nil
+		return nil, nil
 	}
 	scopes := t.knowledgeScopes
 	truncated := len(scopes) > maxRecallKnowledgeBases
@@ -254,22 +258,40 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 	pdfTablesListed := 0
 	pdfTablesTruncated := truncated
 	for _, scope := range scopes {
-		row := map[string]any{"knowledge_base_id": scope.KnowledgeBaseID}
+		row := map[string]any{"knowledge_base_id": scope.KnowledgeBaseID, "catalog_status": "not_queried"}
 		if metadata, ok := t.knowledgeMetadata[scope.KnowledgeBaseID]; ok {
 			row["name"] = metadata.Name
 		}
+		catalogs = append(catalogs, row)
+	}
+	attempted, queried, unavailable, partial := 0, 0, 0, 0
+	var interrupted error
+	for index, scope := range scopes {
+		if interrupted = ctx.Err(); interrupted != nil {
+			break
+		}
+		row := catalogs[index]
 		args, _ := json.Marshal(map[string]any{"operation": "list_datasets", "knowledge_base_id": scope.KnowledgeBaseID,
 			"arguments": map[string]string{"question": question}})
+		attempted++
 		result, err := t.Execute(ctx, args)
-		if ctx.Err() != nil {
-			return nil
-		}
-		if err != nil || result == nil || !result.Success || result.Data == nil {
+		if err != nil || result == nil || !result.Success || !structuredRecallCatalogAvailable(result.Data) {
 			// One unavailable library never hides the others or proves absence.
 			row["catalog_status"] = "unavailable"
-			catalogs = append(catalogs, row)
+			row["code"] = "catalog_unavailable"
+			if errors.Is(err, context.DeadlineExceeded) {
+				row["code"] = "request_timeout"
+			} else if errors.Is(err, context.Canceled) {
+				row["code"] = "request_cancelled"
+			}
+			row["notice"] = "本次未取得该库可用目录；不能判断为空或不存在。请求已提交时可能仍在服务端计算，不自动重放。"
+			unavailable++
+			if interrupted = ctx.Err(); interrupted != nil {
+				break
+			}
 			continue
 		}
+		queried++
 		row["catalog_status"] = "queried"
 		datasets := []map[string]any{}
 		for _, item := range structuredRecallRows(result.Data["datasets"]) {
@@ -284,14 +306,31 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 			}
 			datasets = append(datasets, compact)
 		}
-		row["datasets"] = datasets
+		if _, present := result.Data["datasets"]; present {
+			row["datasets"] = datasets
+		} else {
+			// The service contract always includes datasets, including []. A
+			// PDF-only response still supplies real navigation, but cannot
+			// establish a complete catalog response for this scope.
+			row["excel_catalog_status"] = "unavailable"
+			row["catalog_status"] = "partial"
+			partial++
+		}
 		// A library with no Excel datasets can still contain reviewed PDF
 		// tables. Preserve their captions, columns, units and provenance so
 		// the model can choose a source from evidence, not a guessed filename.
 		pdfTables := structuredRecallRows(result.Data["pdf_tables"])
-		row["pdf_table_count"] = len(pdfTables)
-		if total, ok := result.Data["pdf_table_count"]; ok {
-			row["pdf_table_count"] = total
+		if _, present := result.Data["pdf_tables"]; present {
+			row["pdf_catalog_status"] = "queried"
+			row["pdf_table_count"] = len(pdfTables)
+			if total, ok := result.Data["pdf_table_count"]; ok {
+				row["pdf_table_count"] = total
+			}
+		} else {
+			// list_datasets omits this optional family when its actual PDF
+			// directory is empty. Retain the omission, without inventing rows
+			// or a numeric table count in the aggregate view.
+			row["pdf_catalog_status"] = "not_listed"
 		}
 		pdfLimit := min(maxRecallPDFsPerKnowledge, maxRecallPDFsAcrossScopes-pdfTablesListed)
 		alreadyTruncated, _ := result.Data["pdf_tables_truncated"].(bool)
@@ -305,8 +344,10 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 		if pdfTables == nil {
 			pdfTables = []map[string]any{}
 		}
-		row["pdf_tables"] = pdfTables
-		row["pdf_tables_truncated"] = pdfTruncated
+		if _, present := result.Data["pdf_tables"]; present {
+			row["pdf_tables"] = pdfTables
+			row["pdf_tables_truncated"] = pdfTruncated
+		}
 		pdfTablesListed += len(pdfTables)
 		if notice, ok := result.Data["pdf_notice"]; ok {
 			row["pdf_notice"] = notice
@@ -330,24 +371,124 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 			}
 			fields = append(fields, field)
 		}
-		catalogs = append(catalogs, row)
 	}
 	data := make(map[string]any, len(directory.Data)+5)
 	for key, value := range directory.Data {
 		data[key] = value
 	}
 	data["dataset_catalog_status"] = "queried_with_question"
+	notQueried := len(t.knowledgeScopes) - attempted
+	complete := unavailable == 0 && partial == 0 && notQueried == 0
+	data["catalog_complete"] = complete
+	data["catalog_completion_scope"] = "authorized_scope_requests"
+	data["execution_started"] = attempted > 0
+	// Catalog navigation never grants source-body or numeric authority.
+	data["source_data_read"] = false
+	data["catalog_data_read"] = queried > 0
+	data["queried_knowledge_base_count"] = queried
+	data["partial_knowledge_base_count"] = partial
+	data["unavailable_knowledge_base_count"] = unavailable
+	data["not_queried_knowledge_base_count"] = notQueried
+	data["knowledge_base_catalogs_truncated"] = truncated
 	data["knowledge_base_catalogs"] = catalogs
 	data["literal_fields"] = fields
 	data["literal_field_count"] = len(fields)
-	data["literal_fields_truncated"] = fieldsTruncated
-	data["pdf_tables_truncated"] = pdfTablesTruncated
-	data["scope_notice"] = "已查询授权知识库的当前 Excel/PDF 目录。datasets 仅为 Excel；PDF 表见 pdf_tables，空 Excel 目录不表示没有 PDF 数据。PDF reviewed/auto_accepted 均已发布，旧文档索引的待审/仅字段说明可能过时，不能替代当前目录或据此宣称未入库；extraction_verified=false 不表示未入库。literal_fields、标题、列、页来源和目录样例仅为候选证据：按完整问题和对话选择库与表，在顶层传 knowledge_base_id。用 read_pdf_table 核对原值、真实列名/单位与来源，再 query_pdf_table 计算。pdf_tables_truncated=true 时用该库 list_pdf_tables 并按 next_offset 翻页；目录不可用或截断不能证明来源不存在。人工确认不保证 OCR 正确或整篇覆盖，保留所有质量/覆盖检查。" + CatalogMetadataEvidenceInstructions
+	data["literal_fields_truncated"] = fieldsTruncated || !complete
+	data["pdf_tables_truncated"] = pdfTablesTruncated || !complete
+	data["scope_notice"] = "knowledge_base_catalogs 逐库标记实际查询状态：queried 仅表示已取得所列目录；partial 仅取得部分目录族；unavailable 未取得可用结果；not_queried 未发起查询。catalog_complete 仅表示授权库目录请求全部成功且符合目录契约，不表示表、字段、分页或正文证据完整；另核对各项 truncated。source_data_read=false，catalog_data_read 仅记录目录读取。服务成功目录必须含 datasets；pdf_tables 在空 PDF 目录时按服务协议省略，标为 not_listed，不补造表或数量。缺失必需目录字段不能当空数据。knowledge_bases 仍只是授权导航，不能代替已读目录。datasets 仅为 Excel；PDF 表见实际返回的 pdf_tables，空 Excel 目录不表示没有 PDF 数据。PDF reviewed/auto_accepted 均已发布；extraction_verified=false 不表示未入库。literal_fields、标题、列、页来源和目录样例仅为候选证据：按完整问题和对话选择库与表，在顶层传 knowledge_base_id。用 read_pdf_table 核对原值、真实列名/单位与来源，再 query_pdf_table 计算。pdf_tables_truncated=true 时需核实该库 list_pdf_tables 的分页；目录不可用或截断不能证明来源不存在。超时请求可能仍在服务端计算，不自动重放同一请求。人工确认不保证 OCR 正确或整篇覆盖，保留所有质量/覆盖检查。" + CatalogMetadataEvidenceInstructions
+	message := ""
+	if !complete {
+		data["status"], data["code"], data["dataset_catalog_status"] = "partial", "catalog_partial", "partial"
+		message = "本次仅取得部分授权知识库目录；保留已读目录，失败或未查询范围不能推断为空。"
+		if queried == 0 {
+			data["status"], data["code"], data["dataset_catalog_status"] = "error", "catalog_unavailable", "unavailable"
+			message = "本次未取得可用知识库目录；授权导航不是查询结果，不能据此判断无数据。"
+			if attempted == 0 {
+				data["dataset_catalog_status"] = "not_queried"
+			}
+		}
+		data["reason_code"], data["stage"], data["retryable"] = data["code"], "catalog", false
+	}
+	if interrupted != nil {
+		data["interruption_code"] = "request_timeout"
+		if errors.Is(interrupted, context.Canceled) {
+			data["interruption_code"] = "request_cancelled"
+		}
+	}
 	encoded, err := json.Marshal(data)
 	if err != nil {
-		return nil
+		return &types.ToolResult{Success: false, Error: "结构化多库目录结果编码失败"}, err
 	}
-	return &types.ToolResult{Success: true, Output: string(encoded), Data: data}
+	return &types.ToolResult{Success: complete, Output: string(encoded), Data: data, Error: message}, interrupted
+}
+
+// A successful HTTP response that carries no recognized directory is unknown,
+// not an empty catalog. Missing families remain absent in the returned scope.
+func structuredRecallCatalogAvailable(data map[string]any) bool {
+	if data == nil {
+		return false
+	}
+	if status, _ := data["status"].(string); status != "" && status != "ok" && status != "no_data" {
+		return false
+	}
+	found := false
+	for _, key := range []string{"datasets", "pdf_tables"} {
+		value, present := data[key]
+		if !present {
+			continue
+		}
+		if value == nil || structuredRecallRows(value) == nil {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+// Reuse the deterministic directory projection for partial diagnostics too;
+// it performs no model call or transport, including after cancellation. The
+// canonical failed result keeps every completed scope. If navigation detail
+// exceeds the output budget, show actual scope states with explicit omissions.
+func fitStructuredRecallDirectory(ctx context.Context, result *types.ToolResult) *types.ToolResult {
+	if result == nil || result.Success {
+		return fitStructuredDirectory(ctx, "list_datasets", result)
+	}
+	view := *result
+	view.Success = true
+	projected := fitStructuredDirectory(ctx, "list_datasets", &view)
+	copy := *result
+	copy.Output = projected.Output
+	if projected.Data["status"] != "directory_output_budget_exceeded" {
+		return &copy
+	}
+	data := map[string]any{"output_truncated": true, "catalog_detail_omitted": true}
+	for _, key := range []string{"kind", "status", "code", "reason_code", "interruption_code", "dataset_catalog_status", "catalog_complete", "catalog_completion_scope", "execution_started", "source_data_read", "catalog_data_read", "queried_knowledge_base_count", "partial_knowledge_base_count", "unavailable_knowledge_base_count", "not_queried_knowledge_base_count", "selection_argument"} {
+		if value, exists := result.Data[key]; exists {
+			data[key] = value
+		}
+	}
+	rows := []map[string]any{}
+	for _, row := range structuredRecallRows(result.Data["knowledge_base_catalogs"]) {
+		stub := map[string]any{"knowledge_base_id": row["knowledge_base_id"], "catalog_status": row["catalog_status"]}
+		if code, exists := row["code"]; exists {
+			stub["code"] = code
+		}
+		rows = append(rows, stub)
+	}
+	total := len(rows)
+	for {
+		data["knowledge_base_catalogs"] = rows
+		data["omitted_scope_status_count"] = total - len(rows)
+		encoded, err := json.Marshal(data)
+		if err != nil {
+			return &copy
+		}
+		if utf8.RuneCount(encoded) <= OutputBudget(ctx) || len(rows) == 0 {
+			copy.Output = string(encoded)
+			return &copy
+		}
+		rows = rows[:len(rows)-1]
+	}
 }
 
 func structuredRecallRows(value any) []map[string]any {

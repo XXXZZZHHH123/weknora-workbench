@@ -121,7 +121,7 @@ func (b *Binding) BeforeFinish(ctx context.Context) ([]Event, error) {
 // End owns cleanup, including unexpected engine exits and user cancellation.
 // A durable prompt suspension keeps the group open for the resumed engine.
 func (b *Binding) End(suspended bool) {
-	if b.Child != nil {
+	if b.Child != nil || b.Closing {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

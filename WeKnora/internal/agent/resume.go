@@ -22,6 +22,20 @@ func (e *AgentEngine) Resume(
 	snapshot []byte,
 	answered *types.AgentPrompt,
 ) (*types.AgentState, error) {
+	loopEntered := false
+	if e.collaboration != nil {
+		var stop func()
+		ctx, stop = e.collaboration.Start(ctx)
+		defer stop()
+		defer func() {
+			if !loopEntered {
+				e.collaboration.End(false)
+			}
+		}()
+		if err := e.executionLeaseError(ctx); err != nil {
+			return nil, err
+		}
+	}
 	e.turnReview = turnReviewState{}
 	snap, err := DecodeRunSnapshot(snapshot)
 	if err != nil {
@@ -47,11 +61,6 @@ func (e *AgentEngine) Resume(
 		}
 	} else if !wait {
 		return nil, fmt.Errorf("between-round resume requires collaboration ownership")
-	}
-	if e.collaboration != nil {
-		var stop func()
-		ctx, stop = e.collaboration.Start(ctx)
-		defer stop()
 	}
 	logger.Infof(ctx, "[Agent] Resuming: session=%s, message=%s, prompt=%s, round=%d",
 		sessionID, messageID, func() string {
@@ -139,6 +148,10 @@ func (e *AgentEngine) Resume(
 		state.CurrentRound++
 	}
 
+	if err := e.executionLeaseError(ctx); err != nil {
+		return state, err
+	}
+	loopEntered = true
 	if _, err := e.executeLoop(ctx, state, snap.Query, messages, tools, sessionID, messageID); err != nil {
 		logger.Errorf(ctx, "[Agent] Resumed execution failed: %v", err)
 		if emitErr := e.eventBus.Emit(ctx, event.Event{

@@ -403,6 +403,20 @@ func (e *AgentEngine) Execute(
 	llmContext []chat.Message,
 	imageURLs ...[]string,
 ) (*types.AgentState, error) {
+	loopEntered := false
+	if e.collaboration != nil {
+		var stop func()
+		ctx, stop = e.collaboration.Start(ctx)
+		defer stop()
+		defer func() {
+			if !loopEntered {
+				e.collaboration.End(false)
+			}
+		}()
+		if err := e.executionLeaseError(ctx); err != nil {
+			return nil, err
+		}
+	}
 	e.turnReview = turnReviewState{}
 	e.memoryAcceptedSteers = nil
 	e.structuredReviewMode = false
@@ -524,6 +538,10 @@ func (e *AgentEngine) Execute(
 		messages = e.planWorkbenchTask(ctx, state, query, messages, sessionID)
 		messages = e.discoverWorkbenchSources(ctx, state, messages, query, sessionID, messageID, e.plannedSourceDiscoverySelection())
 	}
+	if err := e.executionLeaseError(ctx); err != nil {
+		finishAgentSpan(agentSpan, state, err)
+		return state, err
+	}
 
 	// Get tool definitions for function calling
 	tools := e.buildToolsForLLM()
@@ -540,6 +558,7 @@ func (e *AgentEngine) Execute(
 		finishAgentSpan(agentSpan, state, nil)
 		return state, nil
 	}
+	loopEntered = true
 	_, err := e.executeLoop(ctx, state, query, messages, tools, sessionID, messageID)
 	if err != nil {
 		logger.Errorf(ctx, "[Agent] Execution failed: %v", err)

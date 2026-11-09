@@ -75,13 +75,61 @@ func (b *Binding) Start(ctx context.Context) (context.Context, func()) {
 	if b.ParentOwner == "" {
 		return ctx, func() {}
 	}
+	if ctx.Err() != nil {
+		return ctx, func() {}
+	}
+	// Starting or sharing a heartbeat never revives an expired/replaced owner.
+	// Check synchronously, before any preparation, model request or renewal.
+	g, err := b.Runtime.Store.Read(ctx, b.Scope)
+	if err != nil {
+		return canceledLeaseContext(ctx, err)
+	}
+	closing := b.Closing && g.ParentClosePending && g.Status == "cancelling"
+	if (g.Status != "active" && !closing) || g.ParentOwner != b.ParentOwner || time.Now().After(g.ParentLease) {
+		return canceledLeaseContext(ctx, ErrConflict)
+	}
+	if b.Runtime.renewalDue(g.ParentLease, time.Now()) {
+		// A valid owner may have less time left than the first heartbeat tick.
+		// Renew before returning execution authority, while the store fence
+		// rechecks the current owner/lease and the callback rechecks its state.
+		lease := g.ParentLease
+		err = b.Runtime.Store.Change(b.Context(ctx), b.Scope, func(current *Group) error {
+			closing := b.Closing && current.ParentClosePending && current.Status == "cancelling"
+			now := time.Now()
+			if (current.Status != "active" && !closing) || current.ParentOwner != b.ParentOwner || now.After(current.ParentLease) {
+				return ErrConflict
+			}
+			if b.Runtime.renewalDue(current.ParentLease, now) {
+				current.ParentLease = now.Add(b.Runtime.Lease)
+				touchDeadline(current, now)
+			}
+			lease = current.ParentLease
+			return nil
+		})
+		if err != nil {
+			return canceledLeaseContext(ctx, err)
+		}
+		g.ParentLease = lease
+	}
+	id := b.leaseIdentity()
+	if existing, ok := ctx.Value(parentLeaseKey{}).(parentLeaseIdentity); ok && existing == id {
+		return b.Context(ctx), func() {}
+	}
+	if scope, ok := ctx.Value(executionKey{}).(*executionScope); ok {
+		return scope.start(ctx, b, g.ParentLease)
+	}
+	return b.startHeartbeat(ctx, g.ParentLease)
+}
+
+func (b *Binding) startHeartbeat(ctx context.Context, initialLease time.Time) (context.Context, func()) {
+	ctx = context.WithValue(ctx, parentLeaseKey{}, b.leaseIdentity())
 	ctx, cancel := context.WithCancel(b.Context(ctx))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		tick := time.NewTicker(b.Runtime.heartbeatInterval())
 		defer tick.Stop()
-		lease := time.Now().Add(b.Runtime.Lease)
+		lease := initialLease
 		for {
 			select {
 			case <-ctx.Done():

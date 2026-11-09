@@ -161,6 +161,10 @@ jobs:
           go test ./internal/agent ./internal/agent/tools
           -run 'Test(ToolArgument|ToolProgress|AcceptedHumanTask|ExecuteLoopBoundsSourceStall|DocumentScope|DocumentReadHint|DocumentUserPageConstraint|DocumentBatch|DocumentPhysicalPage|DocumentPageQuery|DocumentChunkPagination|TaskCoverage|TaskPlan|Direct|SynthesisAndUnplanned|Unverified|CitationReal|SourceReviewApproval|SourceStallFallback|PersistedSteer|NonSourceGreeting|CitationSourceScope|DocumentCompanionCriticalScope|ExistingCriticReceivesBatch|DocumentTable|InventedDocumentTable)'
           -count=1
+      - name: Verify execution leases across preparation and recovery
+        run: |
+          go test ./internal/agent/collaboration -count=1
+          go test ./internal/application/service ./internal/agent -run 'Test(Collaboration|Delegated|InterruptedChild|StopPrompt|Inherited|Parent|ExpiredParent|CompletedParent|ExecutionScope)' -count=1
       - name: Verify chart sources, delivery completion, and failure recovery
         run: |
           go test ./internal/structuredresult -count=1
