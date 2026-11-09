@@ -1,0 +1,36 @@
+<div class="text-[11px]">
+    <h2 class="text-sm font-bold mb-2">口径</h2>
+    {% if d.caliber %}
+      {% for c in d.caliber %}
+      <div class="flex gap-2 py-0.5 border-b border-[var(--line)] last:border-0">
+        <span class="w-20 shrink-0 text-[var(--text-muted)]">{{ c.label }}</span>
+        <span class="flex-1">{{ c.value }}</span></div>
+      {% endfor %}
+    {% else %}
+      <p class="text-[var(--text-muted)]">未标注口径维度</p>
+    {% endif %}
+    {% if d.expression %}
+    <div class="flex gap-2 py-0.5"><span class="w-20 shrink-0 text-[var(--text-muted)]">计算式</span>
+      <span class="flex-1 break-all">{{ d.expression }}</span></div>{% endif %}
+    {% if d.tolerance %}
+    <div class="flex gap-2 py-0.5"><span class="w-20 shrink-0 text-[var(--text-muted)]">容差</span>
+      <span class="flex-1">{{ d.tolerance }}</span></div>{% endif %}
+
+    <h2 class="text-sm font-bold mt-4 mb-2">来源与凭证</h2>
+    <div class="flex gap-2 py-0.5"><span class="w-20 shrink-0 text-[var(--text-muted)]">来源</span>
+      <span class="flex-1">{{ d.source or '—' }}</span></div>
+    {% if d.entered_by %}
+    <div class="flex gap-2 py-0.5"><span class="w-20 shrink-0 text-[var(--text-muted)]">录入人</span>
+      <span class="flex-1">{{ d.entered_by }}</span></div>{% endif %}
+    {% if d.owner %}
+    <div class="flex gap-2 py-0.5"><span class="w-20 shrink-0 text-[var(--text-muted)]">负责人</span>
+      <span class="flex-1 text-[var(--amber)]">{{ d.owner }}</span></div>{% endif %}
+    {% if d.latest_note %}
+    <div class="flex gap-2 py-0.5"><span class="w-20 shrink-0 text-[var(--text-muted)]">入库说明</span>
+      <span class="flex-1">{{ d.latest_note }}</span></div>{% endif %}
+    {% if d.source_url %}
+    <div class="flex gap-2 py-0.5"><span class="w-20 shrink-0 text-[var(--text-muted)]">凭证</span>
+      <a href="{{ d.source_url }}" target="_blank"
+         class="flex-1 break-all text-[var(--primary)] underline">{{ d.source_url }}</a></div>{% endif %}
+  
+</div>
