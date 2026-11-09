@@ -50,3 +50,9 @@ func TestRerankerBlocksRedirectToInternalURL(t *testing.T) {
 		t.Fatalf("Rerank error = %v, want ErrSSRFRedirectBlocked", err)
 	}
 }
+
+func TestRerankTransportHonoursProxyEnvironmentLikeChat(t *testing.T) {
+	if sharedRerankHTTPTransport.Proxy == nil {
+		t.Fatal("expected rerank transport to honour the proxy environment")
+	}
+}

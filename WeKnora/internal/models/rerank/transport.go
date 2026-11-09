@@ -22,9 +22,17 @@ func validateRerankBaseURL(baseURL string) error {
 // rerank clients. Rerankers are recreated on every GetRerankModel call, but
 // their outbound connections can be safely reused, so the transport (and its
 // keep-alive pool) is built once at package load.
-var sharedRerankHTTPTransport = secutils.NewSSRFSafeTransport(
-	secutils.DefaultSSRFSafeHTTPClientConfig(),
-)
+var sharedRerankHTTPTransport = proxiedSSRFSafeTransport()
+
+// proxiedSSRFSafeTransport uses the same egress as chat models
+// (internal/models/api/transport.go): a configured HTTP(S)_PROXY is honoured,
+// while every request URL and redirect is still validated against SSRF.
+// Without a proxy environment the connection is direct, as before.
+func proxiedSSRFSafeTransport() *http.Transport {
+	transport := secutils.NewSSRFSafeTransport(secutils.DefaultSSRFSafeHTTPClientConfig())
+	transport.Proxy = http.ProxyFromEnvironment
+	return transport
+}
 
 // defaultRerankRequestTimeout caps one rerank request when the catalog sets
 // no timeout. Chat and agent contexts carry no deadline of their own, so a
