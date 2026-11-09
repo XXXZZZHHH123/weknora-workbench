@@ -84,11 +84,14 @@ document.addEventListener('DOMContentLoaded', () => {
   function fillPreview(card) {
     const preview = previews.get(card._previewId), target = card.querySelector('.favorite-details');
     if (!preview) { target.replaceChildren(); paragraph(target, '暂无走势数据', 'indicator-muted'); return; }
-    const trend = preview.querySelector('.macro-trend-card'), meta = preview.querySelector('.indicator-card-actions');
-    const row = document.createElement('div'); row.className = 'favorite-meta';
-    meta?.querySelectorAll(':scope > span, :scope > a').forEach(node => row.append(node.cloneNode(true)));
+    const trend = preview.querySelector('.macro-trend-card')?.cloneNode(true);
+    // The whole card opens the indicator page; hovering shows the larger chart instead.
+    trend?.querySelectorAll('.macro-chart-trigger, .macro-expand-icon').forEach(node => node.remove());
+    trend?.classList.remove('is-interactive');
+    const frequency = preview.querySelector('.indicator-card-actions .indicator-muted');
+    if (frequency) card.querySelector('.favorite-frequency').textContent = frequency.textContent.trim();
     card.querySelector('h3')?.remove();
-    target.replaceChildren(...[trend?.cloneNode(true), row].filter(Boolean));
+    target.replaceChildren(...[trend].filter(Boolean));
   }
   function draw(task, value) {
     task.target.replaceChildren();
@@ -134,42 +137,57 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       await client.replace(next);
       const card = [...get('favorites').children].find(card => card.dataset.favoriteCard === `${item.kind}:${item.id}`);
-      (card?.querySelector(`[data-move="${delta}"]:not(:disabled)`) || card?.querySelector('button:not(:disabled)'))?.focus();
+      (card?.querySelector(`[data-move="${delta}"]:not(:disabled)`) || card?.querySelector('.favorite-tools button:not(:disabled)'))?.focus();
     } catch (error) { message(error.message); }
   }
+  const BOOKMARK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3.2L6 20V5.5a1 1 0 0 1 1-1z"/></svg>';
+  function tool(text, label, action, disabled) {
+    const value = document.createElement('button'); value.type = 'button'; value.className = 'favorite-tool';
+    value.textContent = text; value.title = label; value.setAttribute('aria-label', label); value.disabled = disabled;
+    value.addEventListener('click', action); return value;
+  }
+  const pageURL = item => (window.RESEARCH_PREFIX || '') + '/sn/' + (item.kind === 'indicator' ? 'indicators/' : 'charts/') + encodeURIComponent(item.id) + date;
   function render() {
     const signature = JSON.stringify(client.items);
     if (signature === rendered) return;
     rendered = signature; generation++; observer?.disconnect(); controllers.forEach(controller => controller.abort()); queue = [];
-    renderers.forEach(renderer => renderer.destroy()); renderers.clear();
+    renderers.forEach(renderer => renderer.destroy()); renderers.clear(); hideHover();
     get('favorites').replaceChildren();
     const indicatorCards = [];
     client.items.forEach((item, index) => {
-      const card = document.createElement('article'), title = document.createElement('h3'), details = document.createElement('div'), actions = document.createElement('div');
-      card.className = 'favorite-entry'; card.dataset.favoriteCard = `${item.kind}:${item.id}`;
+      const card = document.createElement('article'), title = document.createElement('h3'), details = document.createElement('div'), tools = document.createElement('div');
+      card.className = 'favorite-entry'; card.dataset.favoriteCard = `${item.kind}:${item.id}`; card.draggable = true;
       const invalid = item.status === 'invalid', label = item.title || item.id;
+      details.className = 'favorite-details'; tools.className = 'favorite-tools';
+      let body = card;
       if (invalid) { title.textContent = `${item.kind === 'chart' ? '图表' : '指标'} ${label}`; paragraph(details, '已失效', 'indicator-warning'); }
       else {
-        const link = document.createElement('a'); link.textContent = label;
-        link.href = (window.RESEARCH_PREFIX || '') + '/sn/' + (item.kind === 'indicator' ? 'indicators/' : 'charts/') + encodeURIComponent(item.id) + date;
-        title.append(link); details.textContent = item.kind === 'indicator' ? '正在读取走势…' : '等待进入视野…';
+        body = document.createElement('a'); body.className = 'favorite-link'; body.href = pageURL(item); body.draggable = false;
+        body.setAttribute('aria-label', `${item.kind === 'chart' ? '打开图表' : '打开指标'} ${label}`);
+        title.textContent = label; details.textContent = item.kind === 'indicator' ? '正在读取走势…' : '等待进入视野…';
+        body.addEventListener('mouseenter', () => showHover(card, item, label));
+        body.addEventListener('focus', () => showHover(card, item, label));
+        body.addEventListener('mouseleave', hideHover); body.addEventListener('blur', hideHover);
       }
-      details.className = 'favorite-details'; actions.className = 'favorite-actions';
+      if (body !== card) { body.append(title, details); card.append(body); } else card.append(title, details);
       if (!invalid && item.kind === 'indicator') {
-        const selection = document.createElement('label'), box = document.createElement('input');
+        const pick = document.createElement('label'), box = document.createElement('input');
+        pick.className = 'favorite-tool favorite-pick'; pick.title = '选择作图';
         box.type = 'checkbox'; box.dataset.builderFavorite = item.id; box.setAttribute('aria-label', '选择作图 ' + label);
-        selection.append(box, document.createTextNode(' 选择作图')); actions.append(selection);
+        pick.append(box); tools.append(pick);
       }
-      for (const [delta, text] of [[-1, '上移'], [1, '下移']]) {
-        const control = button(text, () => move(index, delta), `${text} ${label}`, index + delta < 0 || index + delta >= client.items.length);
-        control.dataset.move = String(delta); actions.append(control);
+      for (const [delta, text, name] of [[-1, '‹', '左移'], [1, '›', '右移']]) {
+        const control = tool(text, `${name} ${label}`, () => move(index, delta), index + delta < 0 || index + delta >= client.items.length);
+        control.dataset.move = String(delta); tools.append(control);
       }
-      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'favorites-star';
+      const frequency = document.createElement('span'); frequency.className = 'favorite-frequency'; tools.append(frequency);
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'favorites-bookmark';
       Object.assign(remove.dataset, {favorite: item.id, favoriteKind: item.kind, favoriteLabel: label});
-      remove.setAttribute('aria-pressed', 'true'); remove.textContent = invalid ? '移除' : '★ 自选';
-      if (invalid) { remove.className = 'indicator-button'; remove.dataset.favoriteInvalid = 'true'; remove.setAttribute('aria-label', '移除已失效自选 ' + label); }
-      actions.append(remove); card.append(title, details, actions); get('favorites').append(card);
-      if (!invalid && item.kind === 'indicator') { card._previewId = item.id; card.classList.add('is-indicator'); indicatorCards.push(card); }
+      remove.setAttribute('aria-pressed', 'true'); remove.innerHTML = BOOKMARK; remove.title = invalid ? '移除已失效自选' : '移出自选';
+      if (invalid) { remove.dataset.favoriteInvalid = 'true'; remove.setAttribute('aria-label', '移除已失效自选 ' + label); }
+      tools.append(remove); card.append(tools); get('favorites').append(card);
+      dragging(card, index);
+      if (!invalid && item.kind === 'indicator') { card._previewId = item.id; indicatorCards.push(card); }
       else if (!invalid) {
         const key = `${item.kind}:${item.id}:${item.chart_revision || ''}`;
         card._favoriteTask = {card, item, target: details, generation, key};
@@ -179,6 +197,84 @@ document.addEventListener('DOMContentLoaded', () => {
     if (indicatorCards.length) loadPreviews(indicatorCards, generation);
     client.syncButtons();
   }
+  // Drag a card onto another to reorder; the ‹ › buttons do the same from the keyboard.
+  let dragFrom = null;
+  function dragging(card, index) {
+    card.addEventListener('dragstart', event => {
+      if (client.saving) { event.preventDefault(); return; }
+      dragFrom = index; card.classList.add('is-dragging'); hideHover();
+      event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', card.dataset.favoriteCard);
+    });
+    card.addEventListener('dragend', () => {
+      dragFrom = null; get('favorites').querySelectorAll('.is-dragging, .drop-before, .drop-after').forEach(node => node.classList.remove('is-dragging', 'drop-before', 'drop-after'));
+    });
+    card.addEventListener('dragover', event => {
+      if (dragFrom === null || dragFrom === index) return;
+      event.preventDefault(); event.dataTransfer.dropEffect = 'move';
+      const box = card.getBoundingClientRect(), after = event.clientX > box.left + box.width / 2;
+      card.classList.toggle('drop-after', after); card.classList.toggle('drop-before', !after);
+    });
+    card.addEventListener('dragleave', () => card.classList.remove('drop-before', 'drop-after'));
+    card.addEventListener('drop', async event => {
+      if (dragFrom === null || dragFrom === index) return;
+      event.preventDefault();
+      const after = card.classList.contains('drop-after'), from = dragFrom, next = [...client.items], [moved] = next.splice(from, 1);
+      let target = index + (after ? 1 : 0); if (from < target) target--;
+      next.splice(target, 0, moved); card.classList.remove('drop-before', 'drop-after');
+      try { await client.replace(next); } catch (error) { message(error.message); }
+    });
+  }
+  // Hovering (or focusing) a card shows a larger chart; it only reads data, never navigates.
+  const hover = document.createElement('div'), hoverCache = new Map();
+  hover.className = 'favorite-hover'; hover.hidden = true; hover.setAttribute('role', 'tooltip'); document.body.append(hover);
+  let hoverTimer = 0, hoverToken = 0, hoverRenderer = null;
+  function hideHover() {
+    clearTimeout(hoverTimer); hoverToken++; hover.hidden = true;
+    hoverRenderer?.destroy(); hoverRenderer = null; hover.replaceChildren();
+  }
+  function placeHover(card) {
+    const box = card.getBoundingClientRect(), width = Math.min(640, window.innerWidth - 32), height = 340;
+    let left = box.right + 12; if (left + width > window.innerWidth - 16) left = box.left - width - 12;
+    if (left < 16) left = Math.max(16, Math.min(box.left, window.innerWidth - width - 16));
+    let top = left === box.right + 12 || left === box.left - width - 12 ? box.top : box.bottom + 8;
+    top = Math.max(16, Math.min(top, window.innerHeight - height - 16));
+    Object.assign(hover.style, {left: left + 'px', top: top + 'px', width: width + 'px'});
+  }
+  async function hoverData(item) {
+    const key = `${item.kind}:${item.id}:${item.chart_revision || ''}`;
+    if (hoverCache.has(key)) return hoverCache.get(key);
+    let value;
+    if (item.kind === 'indicator') {
+      const history = await read('/series/' + encodeURIComponent(item.id) + '/history?' + new URLSearchParams({limit: '520', ...(root.dataset.date ? {date: root.dataset.date} : {})}));
+      value = {data: {curves: [{label: history.name, axis: 'left', unit: history.unit, points: history.points || []}]}, title: history.name};
+    } else {
+      value = cache.get(key) || await (async () => {
+        const record = await read('/charts/' + encodeURIComponent(item.id));
+        return {data: await read('/charts/' + encodeURIComponent(item.id) + '/data' + date), definition: record.definition};
+      })();
+      value = {...value, title: value.definition?.title};
+    }
+    hoverCache.set(key, value); return value;
+  }
+  function showHover(card, item, label) {
+    if (dragFrom !== null || !window.ChartKit) return;
+    clearTimeout(hoverTimer);
+    const token = ++hoverToken;
+    hoverTimer = setTimeout(async () => {
+      placeHover(card); hover.hidden = false; hover.replaceChildren(); paragraph(hover, '正在读取 ' + label + '…', 'indicator-muted');
+      try {
+        const value = await hoverData(item);
+        if (token !== hoverToken) return;
+        hover.replaceChildren(); hoverRenderer?.destroy();
+        const plot = document.createElement('div'); hover.append(plot);
+        hoverRenderer = window.ChartKit.render(plot, value.data, {definition: value.definition, title: value.title || label, width: 640, height: 300});
+      } catch (error) {
+        if (token === hoverToken) { hover.replaceChildren(); paragraph(hover, error.message, 'indicator-warning'); }
+      }
+    }, 280);
+  }
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') hideHover(); });
+  window.addEventListener('scroll', hideHover, {passive: true});
   let legacy = [], legacyScoped = false, legacyKey = '', migrating = false, lastAccountError = '';
   try {
     const entry = window.FavoritesClient?.legacyEntry(localStorage, window.RESEARCH_CONTEXT);
@@ -267,7 +363,7 @@ document.addEventListener('DOMContentLoaded', () => {
     client.ready().catch(() => {});
   } else message('账号自选需要当前来源授权，请重新打开研究台。');
   choose(validTab(requested) ? requested : 'catalog', validTab(requested));
-  window.addEventListener('pagehide', () => { closed = true; generation++; observer?.disconnect(); controllers.forEach(controller => controller.abort()); renderers.forEach(renderer => renderer.destroy()); });
+  window.addEventListener('pagehide', () => { closed = true; generation++; hideHover(); observer?.disconnect(); controllers.forEach(controller => controller.abort()); renderers.forEach(renderer => renderer.destroy()); });
   window.addEventListener('pageshow', event => {
     if (event.persisted) { closed = false; rendered = ''; cache.clear(); previews.clear(); if (client?.loaded) render(); }
   });

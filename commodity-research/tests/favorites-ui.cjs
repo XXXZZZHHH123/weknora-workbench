@@ -17,6 +17,8 @@ function source({path, url, reply}) {
   if (path === '/charts') return reply({items: [record()], total: 1, next_offset: null});
   if (path === '/charts/anomalies') return reply({as_of: '2029-09-15', items: [], total: 0, failed: []});
   if (path === '/charts/chart-1') return reply(record());
+  if (path.startsWith('/series/') && path.endsWith('/history')) return reply({series_id: decodeURIComponent(path.split('/')[2]), name: '合成走势', unit: '吨',
+    points: Array.from({length: 40}, (_, index) => ({date: new Date(Date.UTC(2029, 7, 1 + index)).toISOString().slice(0, 10), value: 10 + index}))});
   if (path === '/indicators/previews') return reply({cards: [], html: url.searchParams.getAll('series_id').map(id => previewHTML.get(id) || '').join('')});
   if (path.endsWith('/cycle')) return reply(cycle());
   if (path.endsWith('/data')) return reply({...cycle(), revision: 1});
@@ -41,16 +43,30 @@ function source({path, url, reply}) {
     const first = p.locator('[data-favorite-card]').first();
     await first.locator('.macro-trend-card svg polyline').waitFor();
     assert.match(await first.innerText(), /合成指标 2[\s\S]*27[\s\S]*较前值 \+7/);
-    assert.equal(await first.locator('[data-series-chart]').count(), 1, '点击小图仍可展开历史走势');
-    assert.equal(await first.locator('.favorite-meta a', {hasText: '口径与来源'}).count(), 1);
-    assert.equal(await first.locator('[data-favorite]').count(), 1, '每张卡只有一个自选星标');
+    // The whole card opens the indicator page; hovering shows a larger chart; tools are small icons.
+    assert.equal(await first.locator('[data-series-chart]').count(), 0);
+    assert.match(await first.locator('a.favorite-link').getAttribute('href'), new RegExp(`/sn/indicators/${sid(2)}\\?date=2029-09-15$`));
+    assert.equal(await first.locator('.favorite-frequency').innerText(), '周频');
+    assert.equal(await first.locator('[data-favorite]').count(), 1, '每张卡只有一个自选书签');
+    assert.equal(await first.locator('[data-favorite]').innerText(), '');
+    await first.locator('a.favorite-link').hover();
+    await p.locator('.favorite-hover svg').waitFor();
+    assert.ok(migration.calls.some(call => call.path === `/series/${sid(2)}/history` && call.url.searchParams.get('date') === '2029-09-15'));
+    await p.mouse.move(5, 5); await p.waitForFunction(() => document.querySelector('.favorite-hover').hidden);
+    const heights = await p.$$eval('[data-favorite-card]', cards => cards.map(card => Math.round(card.getBoundingClientRect().height)));
+    assert.equal(new Set(heights).size, 1, '自选卡片大小一致');
+    // Drag the second card before the first to reorder.
+    await p.locator('[data-favorite-card]').nth(1).dragTo(first, {targetPosition: {x: 10, y: 40}});
+    await p.waitForFunction(() => document.querySelector('[data-favorite-card]')?.dataset.favoriteCard.endsWith('01'));
+    assert.deepEqual(migration.favorites.items.map(item => item.id), [sid(1), sid(2)]);
     const previewCalls = migration.calls.filter(call => call.path === '/indicators/previews');
     assert.equal(previewCalls.length, 1);
     assert.deepEqual(previewCalls[0].url.searchParams.getAll('series_id'), [sid(2), sid(1)]);
     assert.equal(previewCalls[0].url.searchParams.get('date'), '2029-09-15');
     assert.equal(migration.calls.some(call => call.path.endsWith('/cycle')), false);
+    const writes = migration.calls.filter(call => call.method === 'PUT').length;
     await p.reload(); await p.waitForFunction(() => document.querySelectorAll('[data-favorite-card]').length === 2);
-    assert.equal(migration.calls.filter(call => call.method === 'PUT').length, 1, '同一浏览器只并入一次');
+    assert.equal(migration.calls.filter(call => call.method === 'PUT').length, writes, '同一浏览器只并入一次');
     await p.locator('#indicator-tab-catalog').click();
     const star = p.locator(`tr[data-series-id="${sid(1)}"] [data-favorite]`);
     assert.equal(await star.getAttribute('aria-pressed'), 'true');
@@ -68,7 +84,7 @@ function source({path, url, reply}) {
     await p.locator('#indicator-tab-favorites').click();
     const chart = p.locator('[data-favorite-card="chart:chart-1"]');
     await chart.locator('svg').waitFor();
-    await chart.getByRole('button', {name: /^上移 /}).click();
+    await chart.getByRole('button', {name: /^左移 /}).click();
     await p.waitForFunction(() => document.querySelectorAll('[data-favorite-card]')[1]?.dataset.favoriteCard === 'chart:chart-1');
     assert.equal(await p.evaluate(() => document.activeElement?.dataset.move), '-1');
     assert.deepEqual(migration.favorites.items.map(item => item.kind), ['indicator', 'chart', 'indicator']);
