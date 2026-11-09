@@ -337,7 +337,7 @@ func ungroundedStructuredNumbersWithEmptyEvidence(answer string, messages []chat
 			percentageValues = append(percentageValues, x, x*100)
 		case map[string]any:
 			switch x["kind"] {
-			case "task_tool_capabilities", "document_table_analysis", "document_table_view", "document_table_catalog":
+			case "task_tool_capabilities", "document_table_analysis", "document_table_view", "document_table_catalog", "source_calculation_catalog":
 				// Schemas, plans and presentation snapshots are not numeric
 				// observations. Analysis executions are interpreted only at the
 				// actual executor boundary below; selected source cells still

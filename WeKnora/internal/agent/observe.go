@@ -1074,6 +1074,11 @@ func (e *AgentEngine) appendToolResultsWithReplayPrefix(messages []chat.Message,
 		}
 		resultContent := e.modelContext.ModelToolResultForTool(toolCall.Name, toolCall.Result)
 		resultContent += structuredCitations
+		if e.config != nil && e.config.WorkbenchDefault && callIndex >= replayPrefix {
+			// Navigation only: the calculator still requires an inspect-issued
+			// current-turn reference and checks the actual source scope/version.
+			resultContent += compactSourceReadHint(toolCall)
+		}
 
 		toolMsg := chat.Message{
 			Role:       "tool",

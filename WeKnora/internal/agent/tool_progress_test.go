@@ -69,6 +69,20 @@ func TestToolProgressNeedsSourceIsNotEvidence(t *testing.T) {
 	require.Equal(t, 1, result.StaleRounds)
 }
 
+func TestToolProgressSourceNumberReferencesDoNotHideRepeatedReads(t *testing.T) {
+	call := func(ref, fingerprint, value string) types.ToolCall {
+		return types.ToolCall{Name: sourceCalculationToolName, Result: &types.ToolResult{Success: true, Data: map[string]any{
+			"kind": "source_calculation_catalog", "status": "ok", "chunk_id": "actual-chunk", "source_version": "same-source-version",
+			"source_fingerprint": fingerprint, "offset": 0, "total_refs": 1, "complete": true,
+			"refs": []any{map[string]any{"ref": ref, "value": value, "context": "The source observation", "start_rune": 5, "end_rune": 7}},
+		}}}
+	}
+	var guard toolProgressGuard
+	require.Greater(t, guard.observe([]types.ToolCall{call("sv:first:1", "first-read", "42")}).NewEvidence, 0)
+	require.Zero(t, guard.observe([]types.ToolCall{call("sv:second:9", "second-identical-read", "42")}).NewEvidence)
+	require.Greater(t, guard.observe([]types.ToolCall{call("sv:second:10", "new-observation", "43")}).NewEvidence, 0)
+}
+
 func TestToolProgressDoesNotStopFailuresOfOtherWorkflows(t *testing.T) {
 	var guard toolProgressGuard
 	for round := 0; round < toolProgressStopRounds+2; round++ {

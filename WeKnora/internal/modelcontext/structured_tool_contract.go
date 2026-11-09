@@ -49,3 +49,13 @@ func (r *sourceRegistry) rootOnlyToolArguments(toolName string) bool {
 	}
 	return len(toolHandlePolicies[toolName].rootOnlySourceIDKeys) > 0
 }
+
+// Calculator formulas, units, exact quotes and issued numeric references are
+// literal protocol data. Decode only their declared source-ID fields; generic
+// prose expansion would silently rewrite an original unit or source excerpt.
+func (r *sourceRegistry) freeTextToolArguments(toolName string) bool {
+	if toolName == "calculate_source_values" || toolName == "calculate_document_table" {
+		return false
+	}
+	return !r.rootOnlyToolArguments(toolName)
+}

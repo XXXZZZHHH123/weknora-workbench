@@ -29,6 +29,8 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	ctx, cancelFinalBudget := e.standardAnswerFinalContext(ctx, state)
+	defer cancelFinalBudget()
 	if hasWorkspaceExecution(state) {
 		e.recordArtifactInventory(ctx, state, &conversation, sessionID)
 	}
@@ -62,6 +64,9 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	preliminary := len(options) > 0 && options[0].preliminary
 	if preliminary {
 		runtimeNotice += "\n" + standardAnswerBudgetNotice
+	}
+	if _, bounded := ctx.Value(standardAnswerFinalDeadlineKey{}).(time.Time); bounded && e.standardPreliminaryProse() {
+		runtimeNotice += "\nGive a concise, useful answer focused on the supported core findings. State uncovered scope briefly; omit optional item-by-item analysis."
 	}
 	if e.finalAnswerNeedsCompaction(messages, runtimeNotice) {
 		messages, _ = e.compactFinalAnswerContext(ctx, messages, state.CurrentRound+1,
@@ -106,6 +111,13 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			// answer envelope itself could become the terminal user response.
 			opts.Temperature = 0
 			opts.Format = reviewedAnswerSchema
+		}
+		if _, bounded := ctx.Value(standardAnswerFinalDeadlineKey{}).(time.Time); bounded {
+			deadline, _ := ctx.Deadline()
+			common.PipelineInfo(ctx, "Agent", "standard_answer_model_budget", map[string]any{
+				"purpose": "source_final", "attempt": attempt + 1, "remaining_ms": max(time.Until(deadline).Milliseconds(), 0),
+				"completion_tokens": opts.MaxCompletionTokens,
+			})
 		}
 		llmResult, err := e.streamLLMToEventBus(ctx, messages, opts, nil)
 		if llmResult != nil && llmResult.Usage != nil {

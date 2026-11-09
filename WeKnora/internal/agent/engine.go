@@ -493,7 +493,7 @@ func (e *AgentEngine) Execute(
 	}
 	if e.config.WorkbenchDefault && e.toolRegistry != nil {
 		agenttools.PrepareDocumentScope(e.toolRegistry, documentScopeUserTexts(query, llmContext)...)
-		e.toolRegistry.RegisterTool(newSourceCalculationTool(func() []types.AgentStep { return state.RoundSteps }))
+		e.toolRegistry.RegisterTool(newSourceCalculationTool(func() []types.AgentStep { return state.RoundSteps }, e.toolRegistry))
 		e.toolRegistry.RegisterTool(newDocumentTableCalculationTool(func() []types.AgentStep { return state.RoundSteps }, e.toolRegistry))
 		e.registerDocumentTableAnalysis(state, query, sessionID, llmContext)
 		if e.chartWriter != nil {
@@ -1143,6 +1143,12 @@ func (e *AgentEngine) runReActIteration(
 	// Background-work context rides the same boundary for the same reasons,
 	// after the user's own messages.
 	e.injectBackground(ctx, state, messagesPtr, false)
+	if remaining, bounded := e.standardAnswerModelTimeRemaining(ctx, state); bounded && remaining <= 0 {
+		if finished, err := e.finishStandardAnswerBudget(ctx, state, query, sessionID, assistantMessageID, messagesPtr, guards, "model_phase_time"); finished {
+			return iterOutcomeBreak, err
+		}
+		return iterOutcomeContinue, nil // A newly drained steer invalidated the old plan.
+	}
 
 	logger.Infof(ctx, "[Agent][Round-%d/%s] Starting: %d messages, %d tools, est_tokens=%d",
 		round, e.maxIterationsDisplay(), len(*messagesPtr), len(tools), currentTokens)
@@ -1167,6 +1173,14 @@ func (e *AgentEngine) runReActIteration(
 	guards.pendingRuntimeNotice = ""
 	resp, err := e.callLLMWithRetry(ctx, messagesPtr, tools, state, query, state.CurrentRound, sessionID, runtimeNotice)
 	if err != nil {
+		if errors.Is(err, errStandardAnswerModelBudget) {
+			if finished, finalErr := e.finishStandardAnswerBudget(ctx, state, query, sessionID, assistantMessageID, messagesPtr, guards, "model_call_time"); finished {
+				return iterOutcomeBreak, finalErr
+			}
+			if e.taskPlan == nil {
+				return iterOutcomeContinue, nil
+			}
+		}
 		retErr = err
 		return iterOutcomeNext, err
 	}
@@ -1205,6 +1219,14 @@ func (e *AgentEngine) runReActIteration(
 			runtimeNotice,
 		)
 		if err != nil {
+			if errors.Is(err, errStandardAnswerModelBudget) {
+				if finished, finalErr := e.finishStandardAnswerBudget(ctx, state, query, sessionID, assistantMessageID, messagesPtr, guards, "model_call_time"); finished {
+					return iterOutcomeBreak, finalErr
+				}
+				if e.taskPlan == nil {
+					return iterOutcomeContinue, nil
+				}
+			}
 			retErr = err
 			return iterOutcomeNext, err
 		}

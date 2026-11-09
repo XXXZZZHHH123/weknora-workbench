@@ -344,7 +344,7 @@ func TestSourceCalculationSchemaExplainsVariableBindingsAndAutomaticScaling(t *t
 	require.Contains(t, tool.Description(), "不要逐行抄成大量calculations、inputs或source_quotes")
 	require.Contains(t, properties["calculations"].(map[string]any)["description"], "inspect then calculate")
 	require.Contains(t, properties["source_quotes"].(map[string]any)["description"], "do not transcribe each row here")
-	require.Equal(t, float64(32), properties["calculations"].(map[string]any)["maxItems"], "tool guidance must preserve compatible batch execution")
+	require.Equal(t, float64(128), properties["calculations"].(map[string]any)["maxItems"], "the registry union admits the compact batch; legacy execution still enforces its own 32-plan limit")
 }
 
 func TestSourceCalculationSchemaIdentifierConstraintsMatchRuntime(t *testing.T) {

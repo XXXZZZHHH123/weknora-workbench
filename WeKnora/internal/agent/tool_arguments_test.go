@@ -34,7 +34,8 @@ func TestToolArgumentsNormalizeBeforeFinalHandleDecodeAndExactSourceChecks(t *te
 	raw := encodedCalculationArguments(t, "chunk://1", value, quote, true)
 	calls := []types.LLMToolCall{{Function: types.FunctionCall{Name: sourceCalculationToolName, Arguments: raw}}}
 	engine.modelContext.DecodeToolCalls(calls)
-	require.Contains(t, calls[0].Function.Arguments, "weknora://chunk/actual-chunk", "earlier decoding sees an encoded string as free text")
+	require.Contains(t, calls[0].Function.Arguments, "chunk://1", "an encoded container stays literal until its declared schema is normalized")
+	require.NotContains(t, calls[0].Function.Arguments, "weknora://chunk/actual-chunk", "generic prose decoding must not rewrite quoted source data")
 	result := engine.runToolCall(t.Context(), calls[0], 0, 0, 1, "session", "message")
 	require.True(t, result.Result.Success, result.Result.Error)
 	row := sourceCalculationFirstResult(t, result.Result)

@@ -39,6 +39,16 @@ type streamLLMResult struct {
 	StreamError        string // error message from stream (e.g., timeout), kept separate from Content
 }
 
+// Preserve billed usage without returning a failed draft or partial tool call.
+// Unwrap keeps provider/transport retry classification unchanged.
+type modelAttemptUsageError struct {
+	err   error
+	usage types.TokenUsage
+}
+
+func (err *modelAttemptUsageError) Error() string { return err.err.Error() }
+func (err *modelAttemptUsageError) Unwrap() error { return err.err }
+
 const incompleteAnswerFallback = "模型未能完成回答核验。本次未返回完整结论，请稍后重试。"
 const answerReviewUnavailableFallback = "回答核验服务未能返回有效结果，独立重试后仍失败。此次未交付未经核验的答案，请稍后重试。"
 
@@ -903,6 +913,9 @@ func (e *AgentEngine) streamLLMToEventBusWithModel(
 			firstChunkTime = time.Now()
 		}
 		responseTypeCounts[string(chunk.ResponseType)]++
+		if chunk.Usage != nil {
+			result.Usage = chunk.Usage // Providers may report usage on an error chunk.
+		}
 
 		// Capture error messages from the stream (e.g., "context deadline exceeded")
 		// but do NOT append them to result.Content — they would leak to the user
@@ -957,10 +970,6 @@ func (e *AgentEngine) streamLLMToEventBusWithModel(
 
 		if len(chunk.ToolCalls) > 0 {
 			result.ToolCalls = chunk.ToolCalls
-		}
-
-		if chunk.Usage != nil {
-			result.Usage = chunk.Usage
 		}
 
 		if chunk.FinishReason != "" {
@@ -1172,6 +1181,15 @@ func (e *AgentEngine) streamThinkingToEventBus(
 			opts.MaxCompletionTokens = revisionCap
 		}
 	}
+	opts.MaxCompletionTokens = e.standardAnswerDecisionCompletionBudget(ctx, opts.MaxCompletionTokens)
+	if bounded, _ := ctx.Value(standardAnswerDecisionKey{}).(bool); bounded {
+		deadline, _ := ctx.Deadline()
+		common.PipelineInfo(ctx, "Agent", "standard_answer_model_budget", map[string]any{
+			"purpose": "source_decision", "phase_remaining_ms": max(time.Until(agentExecutionStart(ctx).Add(standardAnswerActiveBudget)).Milliseconds(), 0),
+			"call_remaining_ms": max(time.Until(deadline).Milliseconds(), 0), "completion_tokens": opts.MaxCompletionTokens,
+			"configured_completion_tokens": e.config.MaxCompletionTokens,
+		})
+	}
 	logger.Debugf(ctx, "[Agent][Thinking] Iteration-%d: temp=%.2f, tools=%d, thinking=%v, max_tokens=%d, source_review=%v",
 		iteration+1, opts.Temperature, len(tools), opts.Thinking, opts.MaxCompletionTokens, e.structuredReviewMode)
 
@@ -1196,7 +1214,8 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	answerStreamed := false
 	var answerPrefix strings.Builder
 	var inlineReasoning strings.Builder
-	deferAnswerReview := e.answerReviewPending || e.structuredReviewMode || hasStructuredHistoryEvidence(messages) || e.config.SandboxConfigID != ""
+	boundedDecision, _ := ctx.Value(standardAnswerDecisionKey{}).(bool)
+	deferAnswerReview := boundedDecision || e.answerReviewPending || e.structuredReviewMode || hasStructuredHistoryEvidence(messages) || e.config.SandboxConfigID != ""
 	var documentViewStream documentTableStreamGuard
 
 	emitThought := func(content string, done bool) {
@@ -1427,6 +1446,9 @@ func (e *AgentEngine) streamThinkingToEventBus(
 			})
 		}
 		logger.Errorf(ctx, "[Agent][Thinking] Iteration-%d failed: %v", iteration+1, err)
+		if llmResult != nil && llmResult.Usage != nil && usageHasCounts(*llmResult.Usage) {
+			return nil, &modelAttemptUsageError{err: err, usage: *llmResult.Usage}
+		}
 		return nil, err
 	}
 	// A provider may close without a terminal chunk. Flush the same splitter
@@ -1563,7 +1585,45 @@ func (e *AgentEngine) callLLMWithRetry(
 	// Sanitize messages before sending to LLM (fix consecutive roles, orphaned tool results)
 	messages = agenttools.SanitizeMessages(messages)
 
-	response, err := e.streamThinkingToEventBus(ctx, messages, tools, iteration, sessionID, runtimeNotices...)
+	callModel := func(notices ...string) (*types.ChatResponse, error) {
+		callCtx, cancel, err := e.standardAnswerModelContext(ctx, state)
+		if err != nil {
+			return nil, err
+		}
+		defer cancel()
+		response, err := e.streamThinkingToEventBus(callCtx, messages, tools, iteration, sessionID, notices...)
+		budgetExpired := errors.Is(context.Cause(callCtx), errStandardAnswerModelBudget)
+		if ctx.Err() != nil && err == nil && response != nil && !budgetExpired {
+			// The engine retains received, undelivered diagnostics on a human
+			// cancellation and stops before candidate delivery or tool execution.
+			// Its existing success path accounts for this response exactly once.
+			return response, nil
+		}
+		if state != nil && (err != nil || ctx.Err() != nil || budgetExpired) {
+			// Every discarded attempt still costs its actual provider-reported
+			// usage. Successful responses retain the ordinary engine accounting.
+			var primary types.TokenUsage
+			if response != nil {
+				primary = response.Usage
+				state.TurnUsage.Accumulate(response.AuxiliaryUsage)
+			}
+			var failed *modelAttemptUsageError
+			if !usageHasCounts(primary) && errors.As(err, &failed) {
+				primary = failed.usage
+			}
+			state.TurnUsage.Accumulate(primary)
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err() // Human stop/lease loss never starts final synthesis.
+		}
+		if budgetExpired {
+			// Discard even a provider's apparently successful final chunk if it
+			// arrived after cancellation. No partial tool payload is executable.
+			return nil, errStandardAnswerModelBudget
+		}
+		return response, err
+	}
+	response, err := callModel(runtimeNotices...)
 
 	// A rejected-for-size request is neither transient nor fatal, and reading
 	// it as either is wrong in a specific way: retried unchanged it fails
@@ -1583,7 +1643,7 @@ func (e *AgentEngine) callLLMWithRetry(
 		*messagesPtr = compacted
 		messages = agenttools.SanitizeMessages(compacted)
 		e.lastSentMsgCount = len(compacted)
-		response, err = e.streamThinkingToEventBus(ctx, messages, tools, iteration, sessionID, runtimeNotices...)
+		response, err = callModel(runtimeNotices...)
 	}
 
 	// Invalid protocol text is not an answer or executable tool request. Retry
@@ -1595,12 +1655,7 @@ func (e *AgentEngine) callLLMWithRetry(
 			"Continue from the existing tool and delegated results and provide the actual " +
 			"requested response. Do not repeat completed operations or output internal " +
 			"serialization metadata.\"}</runtime_event>"
-		response, err = e.streamThinkingToEventBus(
-			ctx,
-			messages,
-			tools,
-			iteration,
-			sessionID,
+		response, err = callModel(
 			strings.Join(runtimeNotices, "\n"),
 			notice,
 		)
@@ -1608,11 +1663,17 @@ func (e *AgentEngine) callLLMWithRetry(
 	if errors.Is(err, agenttools.ErrProtocolArtifact) {
 		return nil, fmt.Errorf("model response remained invalid after recovery: %w", err)
 	}
+	if errors.Is(err, errStandardAnswerModelBudget) {
+		return nil, err // A dedicated safe-boundary handoff, never a transient retry.
+	}
 
 	if err != nil && isTransientError(err) {
 		// Retry transient errors (timeout, rate limit, server errors) up to maxLLMRetries times
 		for retry := 1; retry <= maxLLMRetries; retry++ {
 			retryDelay := llmRetryDelay(err, retry)
+			if remaining, bounded := e.standardAnswerModelTimeRemaining(ctx, state); bounded && remaining <= retryDelay {
+				return nil, errStandardAnswerModelBudget
+			}
 			logger.Warnf(ctx, "[Agent][Round-%d] LLM transient error (attempt %d/%d), retrying in %v: %v",
 				round, retry, maxLLMRetries, retryDelay, err)
 			// A stop pressed during the backoff ends the turn now rather than
@@ -1625,11 +1686,14 @@ func (e *AgentEngine) callLLMWithRetry(
 				break
 			}
 
-			response, err = e.streamThinkingToEventBus(ctx, messages, tools, iteration, sessionID, runtimeNotices...)
+			response, err = callModel(runtimeNotices...)
 			if err == nil || !isTransientError(err) {
 				break
 			}
 		}
+	}
+	if errors.Is(err, errStandardAnswerModelBudget) {
+		return nil, err
 	}
 	if err != nil {
 		logger.Errorf(ctx, "[Agent][Round-%d] LLM call failed: %v", round, err)

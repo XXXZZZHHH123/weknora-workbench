@@ -44,7 +44,8 @@ type sourceCalculationPlan struct {
 
 type sourceCalculationTool struct {
 	agenttools.BaseTool
-	steps func() []types.AgentStep
+	steps   func() []types.AgentStep
+	compact *sourceCalculationReferences
 }
 
 type sourceCalculationInputError struct {
@@ -68,8 +69,8 @@ func newSourceCalculationInputError(reason, variable, chunkID, message string, s
 	return err
 }
 
-func newSourceCalculationTool(steps func() []types.AgentStep) *sourceCalculationTool {
-	return &sourceCalculationTool{BaseTool: agenttools.NewBaseTool(sourceCalculationToolName,
+func newSourceCalculationTool(steps func() []types.AgentStep, registries ...*agenttools.ToolRegistry) *sourceCalculationTool {
+	tool := &sourceCalculationTool{BaseTool: agenttools.NewBaseTool(sourceCalculationToolName,
 		`只读执行模型提出的来源四则计算，适用于零散原文标量或少量跨段计算，不读取额外文件、不联网、不执行代码。
 真实Markdown/OCR表格需要取值或多行计算时，优先analyze_document_tables按服务器完整问题和实际表一次规划执行；也可用calculate_document_table检查明确的手动计划。不要逐行抄成大量calculations、inputs或source_quotes。
 参数：calculations为计算数组；每项有expression、inputs、result_unit。expression仅写inputs的变量名和四则括号，例如a/b-1；原始观测数字必须放inputs中对应变量的value，不能把观测数字代进expression。仅数学常数0和1可直接写入表达式。result_unit="%"已自动缩放为百分比，表达式不要再乘100。
@@ -78,9 +79,17 @@ inputs变量名、source_quotes键名和quote_ref均为1至32个ASCII字符的�
 source_quotes是可选共享引用目录，省略或空对象均可。零散计算共用同一原文片段时，只声明一次精确原文，输入通过quote_ref复用其键名，且chunk_id必须一致；也可直接提供quote。每个输入只提供quote或quote_ref其中一个，不能同时提供。只声明实际使用的共享引用，最多32段、每段8192字节；整批最多32项且总参数256KiB。
 业务口径、来源、行列选择与公式始终由模型依据完整问题和真实表头决定；以上工具分工不改变已有来源、单位和计算校验。`,
 		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["calculations"],"properties":{"source_quotes":{"type":"object","description":"Optional shared text for scalar or a few cross-passage calculations. Omit or use {} when every input provides inline quote. For real Markdown/OCR table rows sharing a formula, first inspect then calculate with calculate_document_table; do not transcribe each row here. Keys are technical ASCII identifiers, never natural-language labels containing spaces.","minProperties":0,"maxProperties":32,"propertyNames":{"type":"string","pattern":"^[A-Za-z_][A-Za-z0-9_]{0,31}$","minLength":1,"maxLength":32},"additionalProperties":{"type":"object","additionalProperties":false,"required":["chunk_id","quote"],"properties":{"chunk_id":{"type":"string","description":"Actual chunk reference returned by a successful current-turn document read; do not invent it.","minLength":1},"quote":{"type":"string","description":"Exact contiguous original text including the value and its unit header/context. Preserve original spacing, line breaks and table separators.","minLength":1,"maxLength":8192}}}},"calculations":{"type":"array","description":"Each item computes a source-bound scalar expression or a small cross-passage calculation. For multi-row formulas in a real Markdown/OCR table use calculate_document_table inspect then calculate instead of repeating rows, inputs and quotes. Use variable names from inputs; never paste source values as free expression literals.","minItems":1,"maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["expression","inputs","result_unit"],"properties":{"expression":{"type":"string","description":"Only inputs variable names, arithmetic + - * /, parentheses and constants 0/1. result_unit=% applies percentage scaling automatically; do not multiply by 100.","examples":["a+b","a/b","a/b-1"],"minLength":1,"maxLength":1024},"result_unit":{"type":"string","description":"Empty for raw quantity output; % only for verified dimensionless results. Unknown input units cannot produce %. Scaling is automatic.","enum":["","%"]},"inputs":{"type":"object","description":"Keys are technical ASCII identifiers used by expression, for example a and b, not natural-language source labels or names containing spaces. Each variable binds one real source number and its actual unit.","minProperties":1,"maxProperties":32,"propertyNames":{"type":"string","pattern":"^[A-Za-z_][A-Za-z0-9_]{0,31}$","minLength":1,"maxLength":32},"additionalProperties":{"type":"object","additionalProperties":false,"required":["value","chunk_id","unit"],"oneOf":[{"required":["quote"]},{"required":["quote_ref"]}],"properties":{"value":{"type":"string","x-weknora-exact-decimal-string":true,"description":"Exact observed number as a decimal string, taken from the bound quote. Put observations here, not in expression.","minLength":1,"maxLength":128},"chunk_id":{"type":"string","description":"Actual chunk reference returned by a successful current-turn document read; do not invent it.","minLength":1},"quote":{"type":"string","description":"Exact contiguous original text including the value and its unit header/context. Preserve original spacing, line breaks and table separators.","minLength":1,"maxLength":8192},"quote_ref":{"type":"string","description":"Technical ASCII identifier declared as a top-level source_quotes key, not a natural-language label or name containing spaces; source chunk must equal input.chunk_id. Use instead of inline quote, never together.","minLength":1,"maxLength":32,"pattern":"^[A-Za-z_][A-Za-z0-9_]{0,31}$"},"unit":{"type":"string","description":"Exact source unit appearing in this bound quote. If only in a header/caption, include that original context in quote. Empty means unknown, not dimensionless; cannot generate %.","maxLength":128}}}}}}}}}`)), steps: steps}
+	tool.configureCompactReferences(registries...)
+	return tool
 }
 
 func (tool *sourceCalculationTool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResult, error) {
+	var operation struct {
+		Operation string `json:"operation"`
+	}
+	if json.Unmarshal(raw, &operation) == nil && operation.Operation != "" {
+		return tool.executeCompactReferences(ctx, raw)
+	}
 	fail := func(err error) (*types.ToolResult, error) {
 		data := map[string]any{"kind": "source_calculation", "status": "error", "error": err.Error(), "notice": "本批未返回计算结果；请修正具体失败参数后重试，不要重复提交相同错误计划。表达式只允许已绑定变量、括号、四则和数学常数0/1；result_unit=%会自动缩放为百分比，不能再乘100。错误定位数据不是成功计算依据，不能把失败当作原文没有数据。"}
 		var inputError *sourceCalculationInputError

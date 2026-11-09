@@ -234,8 +234,17 @@ func toolProgressEvidence(call types.ToolCall) ([][sha256.Size]byte, bool) {
 func stripToolProgressTransport(value any) {
 	switch node := value.(type) {
 	case map[string]any:
-		for _, key := range []string{"view_ref", "view_digest", "source_fingerprint", "view_notice", "notice", "model_advice", "advice_notice"} {
+		for _, key := range []string{"view_ref", "view_digest", "source_fingerprint", "source_ref", "view_notice", "notice", "model_advice", "advice_notice"} {
 			delete(node, key)
+		}
+		if node["kind"] == "source_calculation_catalog" {
+			if entries, ok := node["refs"].([]any); ok {
+				for _, raw := range entries {
+					if entry, ok := raw.(map[string]any); ok {
+						delete(entry, "ref")
+					}
+				}
+			}
 		}
 		for _, child := range node {
 			stripToolProgressTransport(child)
