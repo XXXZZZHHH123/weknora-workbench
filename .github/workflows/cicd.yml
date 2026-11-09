@@ -119,6 +119,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run type-check
       - run: npm test -- 'src/**/*.test.ts' 'build/**/*.test.ts'
+      - name: Verify shared style and preview contracts
+        run: node --test src/assets/theme/styleGuard.test.mjs src/components/picture-preview.test.mjs
       - name: Build production frontend for preview
         env:
           VITE_FRONTEND_COMMIT: ${{ github.sha }}
@@ -155,28 +157,21 @@ jobs:
           cache-dependency-path: WeKnora/go.sum
       - name: Verify embedding and reranking transport boundaries
         run: go test ./internal/models/embedding ./internal/models/rerank -count=1
-      - run: go test ./internal/agent/tools ./internal/agent -run 'TestDocumentReadReuse|TestMCP|TestCastParams|TestStructured|TestNative|TestWorkbench|TestIndependentReview|TestReviewDraft|TestCommodityResearch|TestEveryBuiltIn|TestAvailableToolDefinitions|TestCandidateAdditions|TestNumericWarning' -count=1
-      - name: Verify document calculations and final answer contracts
-        run: go test ./internal/agent -run 'Test(TaskPlan|TaskCapability|SchemaOnlyToolCalls|SchemaCallExclusion|SourceConsistency|FinalSynthesisRepairsSemantic|CurrentDocument|SourceReview|FetchedDocument|DirectoryGroup|SourceCalculation|DocumentTable|FinalReview|ReviewedAnswer|Review|UnresolvedSourceBinding|ExactCatalogue)' -count=1
-      - name: Verify question execution recovery, source scope, and coverage
-        run: >-
-          go test ./internal/agent ./internal/agent/tools
-          -run 'Test(ToolArgument|ToolProgress|AcceptedHumanTask|ExecuteLoopBoundsSourceStall|DocumentScope|DocumentReadHint|DocumentUserPageConstraint|DocumentBatch|DocumentPhysicalPage|DocumentPageQuery|DocumentChunkPagination|TaskCoverage|TaskPlan|Direct|SynthesisAndUnplanned|Unverified|CitationReal|SourceReviewApproval|SourceStallFallback|PersistedSteer|NonSourceGreeting|CitationSourceScope|DocumentCompanionCriticalScope|ExistingCriticReceivesBatch|DocumentTable|InventedDocumentTable)'
-          -count=1
+      - name: Verify all agent, tool, calculation, review, and recovery contracts
+        run: go test ./internal/agent/... -count=1
       - name: Verify execution leases across preparation and recovery
         run: |
-          go test ./internal/agent/collaboration -count=1
-          go test ./internal/application/service ./internal/agent -run 'Test(Collaboration|Delegated|InterruptedChild|StopPrompt|Inherited|Parent|ExpiredParent|CompletedParent|ExecutionScope)' -count=1
+          go test ./internal/application/service -run 'Test(Collaboration|Delegated|InterruptedChild|StopPrompt|Inherited|Parent|ExpiredParent|CompletedParent|ExecutionScope|DeferRemotePDF)' -count=1
+          go test ./internal/infrastructure/docparser -run TestRemotePDF -count=1
       - name: Verify chart sources, delivery completion, and failure recovery
         run: |
           go test ./internal/structuredresult -count=1
           go test ./internal/chart -count=1
-          go test ./internal/agent -run 'Test(Chart|V2NestedMap|MappingByteBudget|MappingDepth|NonTextDelivery|MissingDelivery|DeliveryContract|DeliveryVerdict|ActualArtifactExecution|FailedToolFeedback|ExecuteLoopRepeatedFeedback)' -count=1
       - run: go test ./internal/handler/session ./internal/modelcontext ./internal/database -count=1
       - name: Verify evidence persistence, protocol negotiation, and public boundaries
         run: go test ./internal/types ./internal/logger ./internal/application/repository -count=1
-      - run: go test ./internal/handler -run TestUpdateModel -count=1
-      - run: go test ./internal/application/service -run 'TestAgentConfig|TestDefaultWorkbench|TestWorkbench|TestBuildAssistantHistoryMessages|TestBuildTurnBodyMessages|TestMCPProxyHistory|TestRegisterToolsCommodityResearch' -count=1
+      - run: go test ./internal/handler -run 'Test(UpdateModel|AgentAnswerReviewMode|PDFProcessing)' -count=1
+      - run: go test ./internal/application/service -run 'TestAgentConfig|TestDefaultWorkbench|TestWorkbench|TestBuildAssistantHistoryMessages|TestBuildTurnBodyMessages|TestMCPProxyHistory|TestRegister.*CommodityResearch' -count=1
 
   deployment-checks:
     runs-on: ubuntu-24.04
