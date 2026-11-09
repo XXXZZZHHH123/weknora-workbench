@@ -16,3 +16,13 @@
 .charts-card h2 a { color: inherit; text-decoration: none; }
 .charts-card .charts-thumbnail { display: block; }
 .charts-card .favorites-star { align-self: flex-end; }
+/* Title bookmark: an icon right after a page title, same star as the indicator catalog. */
+.favorites-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.favorites-title h1 { min-width: 0; }
+.favorites-bookmark { width: 30px; height: 30px; flex: 0 0 auto; display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); cursor: pointer; }
+.favorites-bookmark svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.favorites-bookmark:hover:not([aria-pressed="true"]), .favorites-bookmark:focus-visible { background: var(--surface-soft); color: var(--text); }
+.favorites-bookmark:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.favorites-bookmark[aria-pressed="true"] { color: var(--primary); }
+.favorites-bookmark[aria-pressed="true"] svg { fill: currentColor; stroke: none; }
+.favorites-bookmark:disabled { opacity: .5; cursor: wait; }

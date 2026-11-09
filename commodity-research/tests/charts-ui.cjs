@@ -79,6 +79,11 @@ const libraryHTML = renderLibrary(), detailHTML = render('chart_detail.html');
     assert.equal(await p.locator('#chart-reconvert-panel').isVisible(), false);
     const detailStar = p.locator('[data-favorite-kind="chart"]');
     assert.equal(await detailStar.getAttribute('aria-pressed'), 'false');
+    // The bookmark follows the title on the same line instead of wrapping below it.
+    assert.equal(await p.locator('#chart-title + .favorites-bookmark').count(), 1);
+    const [titleBox, starBox] = [await p.locator('#chart-title').boundingBox(), await detailStar.boundingBox()];
+    assert.ok(starBox.x > titleBox.x + titleBox.width - 1 && Math.abs((starBox.y + starBox.height / 2) - (titleBox.y + titleBox.height / 2)) < 12);
+    assert.equal((await detailStar.innerText()).trim(), '');
     await detailStar.press('Space');
     await p.waitForFunction(() => document.querySelector('[data-favorite-kind="chart"]').getAttribute('aria-pressed') === 'true');
     assert.equal(detail.favorites.items[0].id, 'chart-1');

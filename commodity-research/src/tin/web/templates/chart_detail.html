@@ -3,7 +3,7 @@
 {% block main %}
 {% include "_chart_assets.html" %}
 <div class="charts-page" data-charts-page="detail">
-  <header class="charts-header"><div><a class="charts-muted" href="{{ research_url('/sn/indicators?tab=charts') }}{% if chart_page.date %}&amp;date={{ chart_page.date | urlencode }}{% endif %}">返回图表库</a><h1 id="chart-title">图表详情</h1>{% if chart_page.enabled %}<button type="button" class="favorites-star charts-button" data-favorite="{{ chart_page.id }}" data-favorite-kind="chart" data-favorite-label="图表" aria-pressed="false" disabled>☆ 自选</button>{% endif %}<p id="chart-meta" class="charts-muted"></p></div></header>
+  <header class="charts-header"><div><a class="charts-muted" href="{{ research_url('/sn/indicators?tab=charts') }}{% if chart_page.date %}&amp;date={{ chart_page.date | urlencode }}{% endif %}">返回图表库</a><div class="favorites-title"><h1 id="chart-title">图表详情</h1>{% if chart_page.enabled %}<button type="button" class="favorites-bookmark" data-favorite="{{ chart_page.id }}" data-favorite-kind="chart" data-favorite-label="图表" aria-pressed="false" aria-label="加入自选 图表" title="自选" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.5 1.1 6.3-5.6-3-5.6 3 1.1-6.3L3 9.6l6.2-.9z"/></svg></button>{% endif %}</div><p id="chart-meta" class="charts-muted"></p></div></header>
   {% if not chart_page.enabled %}<p class="charts-notice error" role="alert">{{ chart_page.reason }}</p>{% else %}
   <div id="chart-detail-status" role="status" hidden></div>
   <aside class="charts-notice" data-dedup-references="chart" data-dedup-reference-id="{{ chart_page.id }}" hidden></aside>
