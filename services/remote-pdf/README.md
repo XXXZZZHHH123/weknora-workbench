@@ -43,6 +43,44 @@ Create the private data directory and its `tmp` child, writable by UID 10001. Mo
 
 Set `REMOTE_PDF_IMAGE`, `REMOTE_PDF_SETTINGS_FILE`, `REMOTE_PDF_DATA_DIR`; build/start with this compose file only after reviewing the intended environment. The HTTP port defaults to localhost 18735. Restrict service token access to trusted WeKnora backend processes. No API credential is accepted from browser-provided request data.
 
+### Formal production image
+
+The `Remote PDF parser checks` workflow tests the worker, builds `remote-pdf:ci`,
+and checks its Tesseract runtime without network access. Only a main push or a
+workflow dispatch on main then tags and pushes that same tested image as
+`ghcr.io/xxxzzzhhh123/weknora-workbench-remote-pdf:production-<commit>-<run-id>-<run-attempt>`.
+Pull requests and other branches never publish. The artifact
+`remote-pdf-image-<commit>` contains `remote-pdf-image.json` with the commit,
+workflow run ID and attempt, image, registry SHA256 digest, tested local image ID,
+and `source_input_hash=sha256(git ls-tree -r -z <commit> -- services/remote-pdf)`.
+
+This worker is independent of the seven-service release bundle. A production
+upgrade requires both the full Workbench CI/CD and this worker workflow to
+succeed for the intended main commit, with matching release/artifact metadata.
+Dispatch the worker workflow on that main commit if its path filter did not run.
+Use the published image pinned by digest; never compile a production replacement
+locally. Older workers lack `/v1/capacity` and request-specific timeout policies;
+their healthy liveness endpoint alone does not establish client compatibility.
+
+Pause new production submissions and retries, verify no queued/running jobs or
+active parser processes, and record the existing image, network and mounts before
+upgrading. Back up the entire data/state, originals and checkpoints, using SQLite
+online backup plus an integrity check or a consistent stopped snapshot. Back up
+private configuration and credentials separately without logging them. Keep the
+old image and persistent directories. Extractor/prompt changes alter the parser
+profile: restarting old active jobs can fail them with `PARSER_PROFILE_CHANGED`
+even though additive SQLite migration preserves jobs, leases and checkpoints.
+
+Update only `remote-pdf` in the existing `weknora-remote-pdf-prod` project using
+`up -d --no-deps --no-build remote-pdf` and the verified published digest. Preserve
+its existing data/configuration mounts, network, authentication and secrets;
+never start a second scheduler on the same database. Verify the running digest,
+health, authenticated capacity/permission checks and isolated queue/execution
+policy checks before updating the seven application services and reopening
+submissions. Health and protocol checks do not prove live model accuracy.
+See [production deployment](../../deploy/README.md#pdf-表格识别remote_vlm) for the
+full boundary and rollback requirements; image rollback does not restore data.
+
 ## Protocol
 
 All job APIs require `Authorization: Bearer <service token>` and **`X-Parse-Scope` derived by the trusted upstream from the authenticated tenant/permission context**. Optional `X-Parse-Owner` is a verified user ID for admission/fair scheduling; it must not be copied from an untrusted arbitrary field. The upstream must enforce document read/parse permission before submitting or reading a result; this internal service trusts that authorization boundary. Do not expose it directly as a browser API.
