@@ -38,6 +38,7 @@ func standardBudgetFixture(t *testing.T) (*AgentEngine, *types.AgentState) {
 	e.config.AnswerReviewMode, e.config.MaxIterations = "standard", 20
 	e.taskPlan = explicitTextDeliveryPlan()
 	e.taskPlan.ToolNames = []string{agenttools.ToolBindDocumentScope, agenttools.ToolReadDocument}
+	e.taskPlan.DeliveryRequirements[0].Format = "prose"
 	e.toolRegistry = agenttools.NewToolRegistry()
 	e.toolRegistry.RegisterTool(newBudgetSourceReader())
 	e.toolRegistry.RegisterTool(newCountingTool(agenttools.ToolBindDocumentScope))
@@ -54,6 +55,7 @@ func TestStandardAnswerBudgetEightSourceRoundsUseOneCheckedFinalSynthesis(t *tes
 	e.config.AnswerReviewMode, e.config.MaxIterations = "standard", 20
 	state.RoundSteps[0].Iteration = -1 // Actual preparation evidence does not consume the eight rounds.
 	e.taskPlan.ToolNames = []string{agenttools.ToolBindDocumentScope, agenttools.ToolReadDocument}
+	e.taskPlan.DeliveryRequirements[0].Format = "prose"
 	e.toolRegistry = agenttools.NewToolRegistry()
 	reader := newBudgetSourceReader()
 	e.toolRegistry.RegisterTool(reader)
@@ -72,6 +74,7 @@ func TestStandardAnswerBudgetEightSourceRoundsUseOneCheckedFinalSynthesis(t *tes
 	require.Equal(t, standardAnswerToolRounds, reader.calls)
 	require.Len(t, model.calls, standardAnswerToolRounds+1, "only one synthesis follows the eight real tool barriers")
 	require.Contains(t, state.FinalAnswer, candidate)
+	require.Contains(t, state.FinalAnswer, standardPreliminaryAnswerNotice(t.Context()))
 	require.Contains(t, model.opts[len(model.opts)-1].RuntimeNotice, standardAnswerBudgetNotice)
 	require.Equal(t, "none", model.opts[len(model.opts)-1].ToolChoice)
 	require.True(t, e.candidateApprovalCurrent(state.FinalAnswer, state))
@@ -130,6 +133,11 @@ func TestStandardAnswerBudgetExcludesNonSourceActionsWaitingAndOtherDeliveries(t
 
 func TestStandardAnswerBudgetUsesActiveIntervalAndActualLazyProtocol(t *testing.T) {
 	e, state := standardBudgetFixture(t)
+	// A genuine read-only research capability in a plan cannot disable the
+	// ordinary source budget merely because the model also considered it.
+	e.toolRegistry.RegisterTool(agenttools.NewCommodityResearchTool())
+	e.taskPlan.ToolNames = append(e.taskPlan.ToolNames, agenttools.ToolCommodityResearch)
+	require.Equal(t, "tool_rounds", e.standardAnswerBudgetReason(t.Context(), state, time.Now()))
 	state.RoundSteps, state.CurrentRound = state.RoundSteps[:1], 0
 	require.Empty(t, e.standardAnswerBudgetReason(t.Context(), state, time.Now()))
 	require.Equal(t, "active_time", e.standardAnswerBudgetReason(t.Context(), state, time.Now().Add(-61*time.Second)))
@@ -147,6 +155,33 @@ func TestStandardAnswerBudgetUsesActiveIntervalAndActualLazyProtocol(t *testing.
 	state.RoundSteps = []types.AgentStep{{ToolCalls: []types.ToolCall{{Name: agenttools.ToolStructuredCapabilities,
 		Target: &types.ToolCallTarget{ServiceName: "structured_data", ToolName: "describe_tools"}, Result: &types.ToolResult{Success: true, OutputFiles: []string{}}}}}}
 	require.Equal(t, "active_time", e.standardAnswerBudgetReason(t.Context(), state, time.Now().Add(-61*time.Second)), "the real lazy bootstrap is a recognized read-only protocol")
+}
+
+func TestStandardPreliminaryNoticeUsesLocaleAndDoesNotDuplicate(t *testing.T) {
+	for _, language := range []string{"zh-CN", "en-US"} {
+		ctx := context.WithValue(t.Context(), types.LanguageContextKey, language)
+		answer := withStandardPreliminaryNotice(ctx, "A supported finding.")
+		require.Equal(t, standardPreliminaryAnswerNotice(ctx)+"\n\nA supported finding.", answer)
+		require.Equal(t, answer, withStandardPreliminaryNotice(ctx, answer))
+	}
+}
+
+func TestStandardPreliminaryDeliveryPreservesExactAndLegacyFormats(t *testing.T) {
+	for _, format := range []string{"exact", ""} {
+		t.Run(format, func(t *testing.T) {
+			const answer = `{"status":"partial"}`
+			model := &mockChat{responses: []mockResponse{chatAnswer(answer)}}
+			e := newTestEngine(t, model)
+			e.config.AnswerReviewMode = "standard"
+			e.taskPlan = explicitTextDeliveryPlan()
+			e.taskPlan.DeliveryRequirements[0].Format = format
+			state := &types.AgentState{}
+			require.NoError(t, e.streamFinalAnswerToEventBus(t.Context(), "Return the requested exact object.", state, "s", emptyMessages(), finalAnswerOptions{preliminary: true}))
+			require.Equal(t, answer, state.FinalAnswer)
+			require.True(t, json.Valid([]byte(state.FinalAnswer)))
+			require.True(t, e.candidateApprovalCurrent(answer, state))
+		})
+	}
 }
 
 func TestStandardAnswerBudgetFinalSynthesisStillRejectsUnsupportedNumbersAndReferences(t *testing.T) {

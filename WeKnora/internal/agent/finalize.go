@@ -145,6 +145,12 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		invalid := strings.TrimSpace(fullAnswer) == "" || llmResult.StreamError != "" || len(llmResult.ToolCalls) > 0 || !isNaturalStopFinishReason(llmResult.FinishReason)
 		unsupported := []string{}
 		if !invalid {
+			if preliminary && e.standardPreliminaryProse() {
+				// The runtime knows it stopped at a source budget. Keep that
+				// delivery status visible even when the model omits the caveat,
+				// and bind the status to the same checked candidate and receipt.
+				fullAnswer = withStandardPreliminaryNotice(ctx, fullAnswer)
+			}
 			if attempt == 2 {
 				e.turnReview.NumericWarningAllowed = true
 			}

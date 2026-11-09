@@ -66,6 +66,27 @@ func validTaskPlan(t *testing.T, tools ...string) string {
 	return string(encoded)
 }
 
+func TestTaskPlanDeliveryFormatsValidateWithoutGuessingLegacyOutput(t *testing.T) {
+	for _, format := range []string{"", "prose", "exact", "unknown"} {
+		t.Run(format, func(t *testing.T) {
+			var input taskEvidencePlan
+			require.NoError(t, json.Unmarshal([]byte(validTaskPlan(t)), &input))
+			input.ToolNames = []string{}
+			input.DeliveryRequirements = []taskDeliveryRequirement{{Kind: "text", Criteria: "Preserve the requested output.", Format: format}}
+			raw, err := json.Marshal(input)
+			require.NoError(t, err)
+			plan, err := decodeTaskEvidencePlan(string(raw), nil, 1)
+			if format == "unknown" {
+				require.ErrorContains(t, err, "delivery format")
+				require.Nil(t, plan)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, format, plan.DeliveryRequirements[0].Format)
+		})
+	}
+}
+
 func TestTaskPlanProjectsOnlyRealToolsAndKeepsExecutionAuthorization(t *testing.T) {
 	model := &taskPlannerChat{plan: &types.ChatResponse{Content: validTaskPlan(t, "structured_list_series"), FinishReason: "stop", Usage: types.TokenUsage{TotalTokens: 17}}}
 	engine, state, messages := taskPlanFixture(t, model)

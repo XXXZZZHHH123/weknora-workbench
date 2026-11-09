@@ -3,16 +3,45 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/common"
+	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
 const standardAnswerToolRounds = 8
 const standardAnswerActiveBudget = 60 * time.Second
+
+func standardPreliminaryAnswerNotice(ctx context.Context) string {
+	if strings.HasPrefix(types.LanguageFromContextOrDefault(ctx), "zh") {
+		return "以下是基于本轮已读资料的初步结果，尚不代表完整覆盖全部相关内容。"
+	}
+	return "These are preliminary findings from the sources read so far; they may not cover all relevant material."
+}
+
+func withStandardPreliminaryNotice(ctx context.Context, answer string) string {
+	notice := standardPreliminaryAnswerNotice(ctx) + "\n\n"
+	if strings.HasPrefix(answer, notice) {
+		return answer
+	}
+	return notice + answer
+}
+
+func (e *AgentEngine) standardPreliminaryProse() bool {
+	if e.taskPlan == nil || len(e.taskPlan.DeliveryRequirements) == 0 {
+		return false
+	}
+	for _, requirement := range e.taskPlan.DeliveryRequirements {
+		if requirement.Kind != "text" || requirement.Format != "prose" {
+			return false
+		}
+	}
+	return true
+}
 
 const standardAnswerBudgetNotice = `<preliminary_answer>
 本轮只读文字取证已达到实用模式的阶段预算，工具调用已完整结束。只根据已取得的真实证据给出有用的初步结果，准确说明本轮已读内容尚未覆盖的要求；不能宣称全部记录、分组或任务已完整覆盖，不猜缺失值，不把未读取说成不存在。保留真实引用，只概括可直接核对的核心结论，不附加逐项分析。不得再请求工具、伪造执行或以未经核验的数字补齐答案。
@@ -43,6 +72,7 @@ func (e *AgentEngine) standardAnswerSourceTool(name string, args map[string]any)
 	case agenttools.ToolSearchKnowledge, agenttools.ToolReadDocument, agenttools.ToolListDocuments,
 		agenttools.ToolBindDocumentScope, agenttools.ToolWikiSearch, agenttools.ToolWikiReadPage,
 		agenttools.ToolQueryKnowledgeGraph, agenttools.ToolDataSchema, agenttools.ToolDataAnalysis, agenttools.ToolDatabaseQuery,
+		agenttools.ToolCommodityResearch,
 		agenttools.ToolWebSearch, agenttools.ToolWebFetch,
 		sourceCalculationToolName, documentTableCalculationToolName, documentTableAnalysisToolName:
 		return true
@@ -117,6 +147,10 @@ func (e *AgentEngine) finishStandardAnswerBudget(
 	common.PipelineInfo(ctx, "Agent", "standard_answer_budget", map[string]any{
 		"reason": reason, "tool_round_limit": standardAnswerToolRounds, "active_seconds": standardAnswerActiveBudget.Seconds(),
 	})
+	if e.eventBus != nil {
+		_ = e.eventBus.Emit(ctx, event.Event{ID: generateEventID("preliminary"), Type: event.EventAgentProgress, SessionID: sessionID,
+			Data: event.AgentProgressData{Content: standardPreliminaryAnswerNotice(ctx), Iteration: state.CurrentRound}})
+	}
 	err := e.streamFinalAnswerToEventBus(ctx, query, state, sessionID, restoreForFinalAnswer(*messages, guards), finalAnswerOptions{preliminary: true})
 	return true, err
 }
