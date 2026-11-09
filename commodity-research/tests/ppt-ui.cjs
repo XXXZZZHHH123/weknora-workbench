@@ -1,4 +1,8 @@
 /* Isolated browser test: every document, asset and API request is fulfilled in-process. */
+async function openPpt(page) {
+  if (await page.locator('[data-open-report-ppt]').count()) { await page.locator('.report-export-menu > summary').click(); await page.locator('[data-open-report-ppt]').click(); }
+  else await page.locator('#report-ppt > summary').click();
+}
 const {assert, render, launch, open, prefix, record: chartRecord, cycle, pptRecord, seriesId, otherSeriesId, slot, multipart} = require('./ppt-ui-fixture.cjs');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 // Match the bounded list response: no presentation, bindings or candidates.
@@ -43,9 +47,11 @@ const sourceRecord = (status = 'ready') => ({...pptRecord(), source: {kind: 'kno
     });
     const lp = list.page;
     assert.equal(await lp.locator('#report-ppt').getAttribute('open'), null, 'PPT 区域默认折叠');
-    assert.match(await lp.locator('#report-ppt > summary').innerText(), /按我的 PPT 版式导出/);
+    assert.match(await lp.locator('#report-ppt > summary').textContent(), /导出为 PPT/);
+    // With a report the region sits in the 导出 menu; on an empty report page it shows directly.
+    assert.equal(await lp.locator('#report-ppt').isVisible(), !(await lp.locator('[data-open-report-ppt]').count()));
     assert.equal(list.calls.some(call => call.path === '/ppt-templates'), false, '折叠时不读取个人模板列表');
-    await lp.locator('#report-ppt > summary').click();
+    await openPpt(lp);
     await lp.locator('[data-ppt-counts]').filter({hasText: '已绑定 0 / 保留原图 2 / 待确认 3'}).waitFor();
     assert.equal(await lp.locator('[data-ppt-updated]').innerText(), '2029-09-15 16:00');
     assert.match(await lp.locator('[data-ppt-last-export]').innerText(), /^2029-09-15 16:01/);
@@ -102,7 +108,7 @@ const sourceRecord = (status = 'ready') => ({...pptRecord(), source: {kind: 'kno
         if (path === '/ppt-templates') return reply({items: [listItem({...pptRecord(), last_export: lastExport})], total: 1, next_offset: null});
         return false;
       });
-      await reports.page.locator('#report-ppt > summary').click();
+      await openPpt(reports.page);
       await reports.page.locator('[data-ppt-export]').waitFor();
       assert.equal(await reports.page.locator('[data-ppt-export]').getAttribute('href'), prefix + '/sn/reports/ppt/template-1/export' + (date ? '?date=' + date : ''));
       if (lastExport) {
@@ -188,7 +194,7 @@ const sourceRecord = (status = 'ready') => ({...pptRecord(), source: {kind: 'kno
         if (path === '/ppt-templates') return reply({items: [listItem(pptRecord())], total: 1, next_offset: null});
         return reply(pptRecord());
       });
-      if (template === 'reports.html') await ro.page.locator('#report-ppt > summary').click();
+      if (template === 'reports.html') { await openPpt(ro.page); }
       assert.match(await ro.page.locator('#ppt-write-reason').innerText(), /没有研究工作台编辑权限/);
       const selector = template === 'reports.html' ? '#ppt-new-template' : template === 'ppt_export.html' ? '#ppt-export-date' : '#ppt-save';
       assert.equal(await ro.page.locator(selector).isDisabled(), true);
@@ -206,7 +212,7 @@ const sourceRecord = (status = 'ready') => ({...pptRecord(), source: {kind: 'kno
         return false;
       });
       const bp = blocked.page;
-      await bp.locator('#report-ppt > summary').click();
+      await openPpt(bp);
       await bp.locator('[data-ppt-source-warning]').filter({hasText: expected}).waitFor();
       assert.equal(await bp.locator('[data-ppt-export]').getAttribute('aria-disabled'), 'true');
       assert.equal(await bp.locator('[data-ppt-export]').getAttribute('href'), null);

@@ -185,7 +185,13 @@ def test_report_ppt_region_is_collapsed_and_offers_shared_upload_and_list(pages,
     html = fromstring(response.text)
     panel = html.get_element_by_id('report-ppt')
     assert panel.tag == 'details' and 'open' not in panel.attrib
-    assert '按我的 PPT 版式导出' in panel.xpath('./summary')[0].text_content()
+    assert '导出为 PPT' in panel.xpath('./summary')[0].text_content()
+    # A report page offers PPT from the 导出 menu; an empty report page shows the region directly.
+    if html.xpath('//*[contains(@class,"report-document")]'):
+        assert panel.get('hidden') is not None
+        assert html.xpath('//details[contains(@class,"report-export-menu")]//*[@data-open-report-ppt]')
+    else:
+        assert panel.get('hidden') is None
     assert panel.xpath('.//*[@data-ppt-page="list"]') or panel.get('data-ppt-page') == 'list'
     for marker in ('ppt-upload-form', 'ppt-file', 'ppt-upload-fields', 'ppt-upload-progress',
                    'ppt-upload-status', 'ppt-list-rows', 'ppt-list-conflict', 'ppt-list-more',

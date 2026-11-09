@@ -303,7 +303,7 @@
     let started = false;
     const start = () => { if (!started && !closed) { started = true; load(); } };
     const revealAnchor = () => {
-      if (disclosure && root.location.hash === '#' + disclosure.id) { disclosure.open = true; start(); }
+      if (disclosure && root.location.hash === '#' + disclosure.id) { disclosure.hidden = false; disclosure.open = true; start(); }
     };
     disclosure?.addEventListener('toggle', () => { if (disclosure.open) start(); });
     root.addEventListener('hashchange', revealAnchor);
