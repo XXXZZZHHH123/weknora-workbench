@@ -229,24 +229,24 @@
                   </div>
 
                   <div
-                    v-if="!event.pending && (event.tool_name === 'search_knowledge' || event.tool_name === 'knowledge_search') && event.tool_data"
+                    v-if="!event.pending && event.success !== false && (event.tool_name === 'search_knowledge' || event.tool_name === 'knowledge_search') && event.tool_data"
                     class="search-results-summary-fixed">
                     <div class="results-summary-text" v-html="getSearchResultsSummary(event)"></div>
                   </div>
 
-                  <div v-if="!event.pending && event.tool_name === 'web_search' && event.tool_data"
+                  <div v-if="!event.pending && event.success !== false && event.tool_name === 'web_search' && event.tool_data"
                     class="search-results-summary-fixed">
                     <div class="results-summary-text"
                       v-html="t('agent.webSearchFound', { count: getResultsCount(event.tool_data) })">
                     </div>
                   </div>
 
-                  <div v-if="!event.pending && event.tool_name === 'grep_chunks' && event.tool_data"
+                  <div v-if="!event.pending && event.success !== false && event.tool_name === 'grep_chunks' && event.tool_data"
                     class="search-results-summary-fixed grep-summary">
                     <div class="results-summary-text" v-html="getGrepResultsSummary(event.tool_data)"></div>
                   </div>
 
-                  <div v-if="!event.pending && (event.tool_name === 'read_document' || event.tool_name === 'list_knowledge_chunks') && event.tool_data"
+                  <div v-if="!event.pending && event.success !== false && (event.tool_name === 'read_document' || event.tool_name === 'list_knowledge_chunks') && event.tool_data"
                     class="search-results-summary-fixed knowledge-chunks-summary">
                     <div class="results-summary-text" v-html="getKnowledgeChunksSummary(event.tool_data)"></div>
                   </div>
@@ -269,6 +269,7 @@
 
                     <div v-if="isEventExpanded(event.tool_call_id) && !event.pending && hasExpandableResults(event)"
                     class="action-details">
+                    <div v-if="toolFailureReason(event)" class="tool-failure-reason">{{ toolFailureReason(event) }}</div>
                     <BrowserToolDetails v-if="event.tool_name === 'local_browser'" :event="event" />
                     <div v-else-if="resolveToolDisplayType(event)" class="tool-result-wrapper">
                       <ToolResultRenderer :display-type="resolveToolDisplayType(event)" :tool-data="event.tool_data"
@@ -486,7 +487,8 @@
             <div v-else-if="event.type === 'answer' && !suppressStructuredProse(session.agentEventStream || [], !!session.is_completed) && (event.done || (event.content && event.content.trim()))"
               class="answer-event">
               <div v-if="event.content && event.content.trim()" class="answer-content markdown-content">
-                <div v-stable-html="renderAnswerContent(event === activeAnswerEventRef ? typedAnswer : event.content)">
+                <AnswerNotice v-if="answerPresentation(event).notice" :notice="answerPresentation(event).notice" />
+                <div v-stable-html="renderAnswerContent(event === activeAnswerEventRef ? typedAnswer : answerPresentation(event).content)">
                 </div>
               </div>
               <div v-if="event === pinnedAnswerEvent && (pinnedPageLinks.length > 0 || pinnedPageEdits.length > 0)"
@@ -631,24 +633,24 @@
                 </div>
 
                 <div
-                  v-if="!event.pending && (event.tool_name === 'search_knowledge' || event.tool_name === 'knowledge_search') && event.tool_data"
+                  v-if="!event.pending && event.success !== false && (event.tool_name === 'search_knowledge' || event.tool_name === 'knowledge_search') && event.tool_data"
                   class="search-results-summary-fixed">
                   <div class="results-summary-text" v-html="getSearchResultsSummary(event)"></div>
                 </div>
 
-                <div v-if="!event.pending && event.tool_name === 'web_search' && event.tool_data"
+                <div v-if="!event.pending && event.success !== false && event.tool_name === 'web_search' && event.tool_data"
                   class="search-results-summary-fixed">
                   <div class="results-summary-text"
                     v-html="t('agent.webSearchFound', { count: getResultsCount(event.tool_data) })">
                   </div>
                 </div>
 
-                <div v-if="!event.pending && event.tool_name === 'grep_chunks' && event.tool_data"
+                <div v-if="!event.pending && event.success !== false && event.tool_name === 'grep_chunks' && event.tool_data"
                   class="search-results-summary-fixed grep-summary">
                   <div class="results-summary-text" v-html="getGrepResultsSummary(event.tool_data)"></div>
                 </div>
 
-                <div v-if="!event.pending && (event.tool_name === 'read_document' || event.tool_name === 'list_knowledge_chunks') && event.tool_data"
+                <div v-if="!event.pending && event.success !== false && (event.tool_name === 'read_document' || event.tool_name === 'list_knowledge_chunks') && event.tool_data"
                   class="search-results-summary-fixed knowledge-chunks-summary">
                   <div class="results-summary-text" v-html="getKnowledgeChunksSummary(event.tool_data)"></div>
                 </div>
@@ -671,6 +673,7 @@
 
                 <div v-if="isEventExpanded(event.tool_call_id) && !event.pending && hasExpandableResults(event)"
                   class="action-details">
+                  <div v-if="toolFailureReason(event)" class="tool-failure-reason">{{ toolFailureReason(event) }}</div>
                   <BrowserToolDetails v-if="event.tool_name === 'local_browser'" :event="event" />
                     <div v-else-if="resolveToolDisplayType(event)" class="tool-result-wrapper">
                     <ToolResultRenderer :display-type="resolveToolDisplayType(event)" :tool-data="event.tool_data"
@@ -831,6 +834,8 @@ import {
 } from '@/utils/sandboxArtifactRefs';
 import type { ProtectedFileAccessContext } from '@/utils/protectedFileAccess';
 import { unwrapFinalAnswerWrappers, thinkingEqualsAnswer } from '@/utils/finalAnswer';
+import { extractAnswerNotice } from '@/utils/answerNotice';
+import AnswerNotice from '@/components/chat/AnswerNotice.vue';
 import { suppressStructuredProse } from '@/utils/fieldClarification';
 import { getAgentToolIconName } from '@/utils/agent-tool-icons';
 import { getMcpToolDisplayType, getMcpToolTitle, mcpToolResultOutput } from '@/utils/mcpToolDisplay';
@@ -1699,7 +1704,7 @@ function getToolReferenceItems(event: any): KnowledgeReferenceLike[] {
   return [];
 }
 
-const canOpenToolReferences = (event: any): boolean => getToolReferenceItems(event).length > 0;
+const canOpenToolReferences = (event: any): boolean => event?.success !== false && getToolReferenceItems(event).length > 0;
 
 const openToolReferences = (event: any): boolean => {
   const refs = getToolReferenceItems(event);
@@ -1855,12 +1860,17 @@ const streamingMermaidSvgCache = ref<string[]>([]);
 useStreamingHeightFloor(rootElement, computed(() => !isSegmentDone.value));
 let streamingMermaidRenderTask: Promise<void> | null = null;
 
+const answerPresentation = (event: any) => extractAnswerNotice(
+  unwrapFinalAnswerWrappers(typeof event?.content === 'string' ? event.content : ''),
+  !event?.done && !isSegmentDone.value,
+);
+
 const activeAnswerMarkdown = computed(() => {
   const stream = eventStream.value;
   if (!stream?.length) return '';
   const answers = stream.filter((e: any) => e.type === 'answer' && !e.superseded);
   const active = answers.find((e: any) => !e.done) ?? answers[answers.length - 1];
-  return typeof active?.content === 'string' ? active.content : '';
+  return answerPresentation(active).content;
 });
 
 // The answer event whose text is currently streaming. The template renders the
@@ -2551,6 +2561,9 @@ const isReferenceDrawerTool = (toolName?: string | null): boolean =>
   toolName === 'wiki_read_source_doc';
 
 const hasExpandableResults = (event: any): boolean => {
+  // Failed retrievals often have no references or result rows. Keep their
+  // actual error accessible instead of applying the compact success layout.
+  if (toolFailureReason(event)) return true;
   if (isReferenceDrawerTool(event?.tool_name)) return false;
   // Its card is the result.
   if ((event?.tool_name === 'open_page' || event?.tool_name === 'view_page') && event.success !== false) return false;
@@ -2558,6 +2571,12 @@ const hasExpandableResults = (event: any): boolean => {
   // The snapshot is page text for the model, not something to read here.
   if ((event?.tool_name === 'read_page' || event?.tool_name === 'select_tab') && event.success !== false) return false;
   return hasResults(event);
+};
+
+const toolFailureReason = (event: any): string => {
+  if (event?.pending || event?.success !== false) return '';
+  const reason = event?.error || event?.tool_data?.error;
+  return typeof reason === 'string' ? reason.trim() : '';
 };
 
 const hasActionResult = (event: any): boolean => canOpenToolReferences(event) || hasExpandableResults(event);
@@ -2979,12 +2998,10 @@ const renderMarkdownContent = (content: unknown): string => {
   return renderAgentMarkdown(content, sanitizeForDisplay);
 };
 
-// Renders an answer event's content. Strips final-answer wrappers
-// (e.g. <answer>…</answer>, "Final Answer:") that some models wrap their
-// plain-text answer in, then delegates to the standard markdown renderer.
+// The presentation envelope is removed before typewriter animation.
 const renderAnswerContent = (content: unknown): string => {
   const contentStr = typeof content === 'string' ? content : String(content || '');
-  return renderMarkdownContent(unwrapFinalAnswerWrappers(contentStr));
+  return renderMarkdownContent(contentStr);
 };
 
 // Legacy Markdown rendering function (kept for summaries)
@@ -3474,7 +3491,7 @@ const getActualContent = (answerEvent: any): string => {
   // First try to get content from answer event
   const answerContent = (answerEvent?.content || '').trim();
   if (answerContent) {
-    return unwrapFinalAnswerWrappers(answerContent).trim();
+    return answerPresentation(answerEvent).content.trim();
   }
 
   // If answer is empty, try to get from last thinking
@@ -3693,6 +3710,7 @@ const handleAddToKnowledge = (answerEvent: any) => {
   }
 
   .answer-content {
+    display: flow-root;
     &.markdown-content {
       // Chat Markdown visual styles are centralized in chat-markdown.less.
       // Do not add element-level Markdown rules here; update the shared mixin.
@@ -3758,6 +3776,13 @@ const handleAddToKnowledge = (answerEvent: any) => {
 
     &.action-error {
       color: var(--td-error-color);
+    }
+
+    .tool-failure-reason {
+      color: var(--td-error-color);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      margin-bottom: 8px;
     }
 
     &.action-pending {

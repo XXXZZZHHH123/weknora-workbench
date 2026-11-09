@@ -94,6 +94,8 @@ type PatchAgentRequest struct {
 	SystemPrompt *string `json:"system_prompt" extensions:"x-agent,x-agent-max-bytes=32000"`
 	// Chat model the agent answers with
 	ModelID *string `json:"model_id" extensions:"x-agent"`
+	// Answer review strategy; empty restores this entry's compatibility default.
+	AnswerReviewMode *string `json:"answer_review_mode" enums:"standard,strict" extensions:"x-agent"`
 	// Knowledge bases searched: all, selected (knowledge_bases) or none
 	KBSelectionMode *string `json:"kb_selection_mode" enums:"all,selected,none" extensions:"x-agent"`
 	// Selected knowledge bases, replacing the current ones; without
@@ -136,6 +138,9 @@ func (p PatchAgentRequest) apply(agent *types.CustomAgent) UpdateAgentRequest {
 	}
 	if p.ModelID != nil {
 		cfg.ModelID = *p.ModelID
+	}
+	if p.AnswerReviewMode != nil {
+		cfg.AnswerReviewMode = *p.AnswerReviewMode
 	}
 	if p.KnowledgeBases != nil {
 		cfg.KnowledgeBases = append([]string{}, *p.KnowledgeBases...)
@@ -248,6 +253,10 @@ func (h *CustomAgentHandler) CreateAgent(c *gin.Context) {
 		return
 	}
 	if err := normalizeAgentReasoningEffort(&req.Config); err != nil {
+		_ = c.Error(err)
+		return
+	}
+	if err := validateAgentAnswerReviewMode(req.Config); err != nil {
 		_ = c.Error(err)
 		return
 	}
@@ -669,6 +678,10 @@ func (h *CustomAgentHandler) saveAgentUpdate(c *gin.Context, id string, req Upda
 		return
 	}
 	if err := normalizeAgentReasoningEffort(&req.Config); err != nil {
+		_ = c.Error(err)
+		return
+	}
+	if err := validateAgentAnswerReviewMode(req.Config); err != nil {
 		_ = c.Error(err)
 		return
 	}
@@ -1096,6 +1109,15 @@ func (h *CustomAgentHandler) validateAgentSandboxConfig(
 		return errors.NewBadRequestError("所选沙箱后端配置不存在，请重新选择")
 	}
 	return nil
+}
+
+func validateAgentAnswerReviewMode(cfg types.CustomAgentConfig) error {
+	switch cfg.AnswerReviewMode {
+	case "", "standard", "strict":
+		return nil
+	default:
+		return errors.NewBadRequestError("answer_review_mode must be standard or strict")
+	}
 }
 
 // normalizeAgentReasoningEffort validates config.reasoning_effort and rewrites

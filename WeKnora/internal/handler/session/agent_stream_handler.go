@@ -216,21 +216,28 @@ func (h *AgentStreamHandler) handleProgress(ctx context.Context, evt event.Event
 	if data.Stage != "" {
 		switch data.Stage {
 		case "sources", "generation", "verification":
+			return h.streamManager.AppendEvent(h.ctx, h.sessionID, h.assistantMessageID, interfaces.StreamEvent{
+				ID: evt.ID, Type: "progress", Done: true, Timestamp: time.Now(),
+				Data: map[string]interface{}{"stage": data.Stage, "iteration": data.Iteration},
+			})
+		case "replanning":
+			// This server-authored runtime update carries visible content. Keep
+			// its replay ID and snapshot on the normal progress path below.
 		default:
 			return nil
 		}
-		return h.streamManager.AppendEvent(h.ctx, h.sessionID, h.assistantMessageID, interfaces.StreamEvent{
-			ID: evt.ID, Type: "progress", Done: true, Timestamp: time.Now(),
-			Data: map[string]interface{}{"stage": data.Stage, "iteration": data.Iteration},
-		})
 	}
 	// Progress reusing an answer's ID retracts text already streamed as answer.
 	h.mu.Lock()
 	h.supersedeAnswerSegments(func(seg *answerSegment) bool { return seg.id == evt.ID })
 	h.mu.Unlock()
+	metadata := map[string]interface{}{"event_id": evt.ID, "iteration": data.Iteration}
+	if data.Stage != "" {
+		metadata["stage"] = data.Stage
+	}
 	return h.streamManager.AppendEvent(ctx, h.sessionID, h.assistantMessageID, interfaces.StreamEvent{
 		ID: evt.ID, Type: types.ResponseTypeProgress, Content: data.Content, Done: true, Timestamp: time.Now(),
-		Data: map[string]interface{}{"event_id": evt.ID, "iteration": data.Iteration},
+		Data: metadata,
 	})
 }
 

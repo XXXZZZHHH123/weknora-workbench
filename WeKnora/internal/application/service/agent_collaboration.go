@@ -261,6 +261,7 @@ func (s *AgentCollaboration) attach(
 	sessionID, messageID string,
 ) error {
 	b := collaboration.FromContext(ctx)
+	acquired := false
 	if b == nil {
 		if cfg.SharedAgentReadOnly || cfg.SkillInstallMode() {
 			return nil
@@ -280,6 +281,16 @@ func (s *AgentCollaboration) attach(
 		if err != nil {
 			return err
 		}
+		acquired = true
+	}
+	if err := collaboration.StartExecutionLease(ctx, b); err != nil {
+		// Start can fail before the execution scope owns a heartbeat/cleanup.
+		// Settle only authority acquired by this call; End retains the owner
+		// fence and uses an independent context after request cancellation.
+		if acquired {
+			b.End(false)
+		}
+		return err
 	}
 	engine.SetCollaboration(b)
 	if s.artifactFiles != nil {

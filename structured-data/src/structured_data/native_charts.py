@@ -18,6 +18,7 @@ from xml.etree import ElementTree as ET
 from zipfile import ZipFile
 
 VERSION = 'native-charts-v7-series-style-axes'
+INDEX_BUILD_WAIT_SECONDS = 25
 logger = logging.getLogger(__name__)
 NS = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
       'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
@@ -73,6 +74,10 @@ SUPPORTED_CHART_GROUPS = {
 
 class ChartReadBudgetExceeded(RuntimeError):
     """The selected real chart parts exceed the bounded source-read budget."""
+
+
+class ChartIndexBuildPending(TimeoutError):
+    """Another worker still prepares this exact immutable chart index."""
 
 
 def is_safe_chart_part(part):
@@ -456,13 +461,13 @@ def build(store, dataset_id):
             'charts': charts, 'views': views, 'curve_views':curve_views, 'notice': '只读原生图表引用；数值取自已导入的源单元格，公式使用Excel保存结果。图片不解析。未导入区域和图表缓存不会补入数据。'}
 
 
-def index(store, dataset_id):
-    started = time.perf_counter()
-    folder = store._path(dataset_id)
-    path = folder / (VERSION + '.json')
+def _read_index_cache(path, dataset_id, version, started):
     if path.is_file():
         try:
             result = json.loads(path.read_text())
+            if (not isinstance(result, dict) or result.get('dataset_id') != dataset_id
+                    or result.get('version') != version):
+                raise ValueError('Native chart cache identity does not match its dataset and version')
         except Exception as exc:
             logger.warning('native_chart_index cache_read_failed dataset_id=%s elapsed_ms=%d error_type=%s',
                            dataset_id, round((time.perf_counter()-started)*1000), type(exc).__name__)
@@ -471,25 +476,57 @@ def index(store, dataset_id):
                     dataset_id, round((time.perf_counter()-started)*1000),
                     result.get('chart_count', 0) if isinstance(result, dict) else 0)
         return result
+    return None
+
+
+def index(store, dataset_id):
+    from .store import database_lock
+
+    started = time.perf_counter()
+    folder = store._path(dataset_id)
+    version = VERSION
+    path = folder / (version + '.json')
+    cached = _read_index_cache(path, dataset_id, version, started)
+    if cached is not None:
+        return cached
     logger.info('native_chart_index cache_miss dataset_id=%s elapsed_ms=%d',
                 dataset_id, round((time.perf_counter()-started)*1000))
-    try:
-        result = build(store, dataset_id)
-        # A derived sidecar does not change any published series, observations or mappings.
-        fd, tmp = tempfile.mkstemp(prefix='.charts-', dir=folder)
-        try:
-            with os.fdopen(fd, 'w') as f:
-                json.dump(result, f, ensure_ascii=False)
-            os.replace(tmp, path)
-        finally:
-            if Path(tmp).exists(): Path(tmp).unlink()
-    except Exception as exc:
-        logger.warning('native_chart_index build_failed dataset_id=%s elapsed_ms=%d error_type=%s',
-                       dataset_id, round((time.perf_counter()-started)*1000), type(exc).__name__)
-        raise
-    logger.info('native_chart_index build_complete dataset_id=%s elapsed_ms=%d charts=%d',
-                dataset_id, round((time.perf_counter()-started)*1000), result.get('chart_count', 0))
-    return result
+    deadline = time.monotonic() + INDEX_BUILD_WAIT_SECONDS
+    while True:
+        # The lock key is the actual workspace/dataset/version sidecar path,
+        # not a source filename, question or process-local dataset identifier.
+        # Keep the lock inode after release, as for the dataset DB locks: deleting
+        # it would let later requests lock a different inode from queued workers.
+        with database_lock(path, exclusive=True, blocking=False) as acquired:
+            if acquired:
+                # A different thread/process may have published after our first
+                # miss. Only the owner that still observes a miss builds it.
+                cached = _read_index_cache(path, dataset_id, version, started)
+                if cached is not None:
+                    return cached
+                try:
+                    result = build(store, dataset_id)
+                    # Derived metadata never changes published source data.
+                    fd, tmp = tempfile.mkstemp(prefix='.charts-', dir=folder)
+                    try:
+                        with os.fdopen(fd, 'w') as f:
+                            json.dump(result, f, ensure_ascii=False)
+                        os.replace(tmp, path)
+                    finally:
+                        if Path(tmp).exists(): Path(tmp).unlink()
+                except Exception as exc:
+                    logger.warning('native_chart_index build_failed dataset_id=%s elapsed_ms=%d error_type=%s',
+                                   dataset_id, round((time.perf_counter()-started)*1000), type(exc).__name__)
+                    raise
+                logger.info('native_chart_index build_complete dataset_id=%s elapsed_ms=%d charts=%d',
+                            dataset_id, round((time.perf_counter()-started)*1000), result.get('chart_count', 0))
+                return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning('native_chart_index build_pending dataset_id=%s elapsed_ms=%d',
+                           dataset_id, round((time.perf_counter()-started)*1000))
+            raise ChartIndexBuildPending('Native chart index is still being prepared; no chart evidence was returned')
+        time.sleep(min(0.05, remaining))
 
 
 def catalog(store, dataset_id, sheet=None, question=''):

@@ -66,6 +66,27 @@ func validTaskPlan(t *testing.T, tools ...string) string {
 	return string(encoded)
 }
 
+func TestTaskPlanDeliveryFormatsValidateWithoutGuessingLegacyOutput(t *testing.T) {
+	for _, format := range []string{"", "prose", "exact", "unknown"} {
+		t.Run(format, func(t *testing.T) {
+			var input taskEvidencePlan
+			require.NoError(t, json.Unmarshal([]byte(validTaskPlan(t)), &input))
+			input.ToolNames = []string{}
+			input.DeliveryRequirements = []taskDeliveryRequirement{{Kind: "text", Criteria: "Preserve the requested output.", Format: format}}
+			raw, err := json.Marshal(input)
+			require.NoError(t, err)
+			plan, err := decodeTaskEvidencePlan(string(raw), nil, 1)
+			if format == "unknown" {
+				require.ErrorContains(t, err, "delivery format")
+				require.Nil(t, plan)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, format, plan.DeliveryRequirements[0].Format)
+		})
+	}
+}
+
 func TestTaskPlanProjectsOnlyRealToolsAndKeepsExecutionAuthorization(t *testing.T) {
 	model := &taskPlannerChat{plan: &types.ChatResponse{Content: validTaskPlan(t, "structured_list_series"), FinishReason: "stop", Usage: types.TokenUsage{TotalTokens: 17}}}
 	engine, state, messages := taskPlanFixture(t, model)
@@ -78,7 +99,7 @@ func TestTaskPlanProjectsOnlyRealToolsAndKeepsExecutionAuthorization(t *testing.
 	require.NotContains(t, messages[0].Content, "advisory_task_plan", "do not mutate the input transcript")
 	require.Equal(t, 0.7, engine.config.Temperature)
 	require.Zero(t, model.options[0].Temperature)
-	require.Equal(t, 768, model.options[0].MaxCompletionTokens)
+	require.Equal(t, 1152, model.options[0].MaxCompletionTokens)
 	require.Empty(t, model.options[0].Tools)
 	require.Equal(t, "none", model.options[0].ToolChoice)
 	require.NotNil(t, model.options[0].Thinking)
@@ -262,11 +283,15 @@ func TestTaskPlanAllowsNoExternalEvidenceAndDiscoveryUsesThatChoice(t *testing.T
 	state, err := engine.Execute(ctx, "session", "message", "解释仓单和持仓的概念差异。", nil)
 	require.NoError(t, err)
 	require.Equal(t, "概念解释。", state.FinalAnswer)
-	require.Equal(t, []string{"describe_tools"}, operations, "protocol negotiation precedes planning, while a no-evidence plan still performs no source/catalog/data read")
+	require.Empty(t, operations, "a no-evidence plan needs no remote protocol negotiation or source/catalog/data read")
 	require.NotNil(t, engine.taskProjection)
 	require.NotNil(t, engine.plannedSourceDiscoverySelection(), "explicit no-evidence plan returns an empty selection and skips both directories")
 	require.Empty(t, engine.plannedSourceDiscoverySelection())
 	require.Len(t, model.requests, 1, "reuse the existing single task-planning call")
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(model.options[0].Format, &schema))
+	discoverySchema := schema["properties"].(map[string]any)["source_discovery"].(map[string]any)
+	require.Contains(t, discoverySchema["required"], "source_domains", "new generated plans must explicitly choose their channels even while legacy decoding remains compatible")
 	var input map[string]any
 	require.NoError(t, json.Unmarshal([]byte(model.requests[0][1].Content), &input))
 	require.Empty(t, input["discovery_results"], "planning happens before discovery")
@@ -339,11 +364,24 @@ func TestTaskPlanExpansionAllowsDocumentDeliveryAndNewlyDiscoveredTools(t *testi
 	denied, err := tool.Execute(t.Context(), json.RawMessage(`{"names":["bind_document_scope","not_authorized"],"reason":"Expand evidence."}`))
 	require.NoError(t, err)
 	require.False(t, denied.Success)
+	require.Equal(t, "unknown_tool_names", denied.Data["reason_code"])
+	require.Equal(t, []string{"not_authorized"}, denied.Data["unknown_tools"])
+	capabilities := denied.Data["available_tools"].([]taskToolCapability)
+	names := []string{}
+	for _, capability := range capabilities {
+		names = append(names, capability.Name)
+	}
+	require.Contains(t, names, "read_file")
+	require.NotContains(t, names, "not_authorized")
 	require.Equal(t, before, listToolNames(engine.buildToolsForLLM()), "validate the entire choice before changing projection")
 	engine.toolRegistry.RegisterDeferredTool(newCountingTool("not_yet_discoverable"))
 	denied, err = tool.Execute(t.Context(), json.RawMessage(`{"names":["not_yet_discoverable"],"reason":"Cannot skip ordinary discovery."}`))
 	require.NoError(t, err)
 	require.False(t, denied.Success, "projection does not bypass deferred capability discovery")
+	require.NotContains(t, denied.Output, `"name":"not_yet_discoverable"`)
+	corrected, err := tool.Execute(t.Context(), json.RawMessage(`{"names":["read_file"],"reason":"Use the returned actual tool name."}`))
+	require.NoError(t, err)
+	require.True(t, corrected.Success)
 }
 
 func TestTaskPlanSteeringRestoresFullToolsBeforeTheNextModelCall(t *testing.T) {

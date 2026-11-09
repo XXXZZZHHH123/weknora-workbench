@@ -17,6 +17,26 @@ func (e *AgentEngine) SetCollaboration(b *collaboration.Binding) { e.collaborati
 // HasCollaboration reports whether this execution belongs to a collaboration.
 func (e *AgentEngine) HasCollaboration() bool { return e.collaboration != nil }
 
+// Preparation may block before executeLoop. Check the same durable authority
+// before and after it; cancellation or a replacement owner cannot publish a
+// prepared answer merely because its next heartbeat has not fired yet.
+func (e *AgentEngine) executionLeaseError(ctx context.Context) error {
+	b := e.collaboration
+	if b == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
+	if b.ParentOwner == "" {
+		return nil
+	}
+	if b.Closing {
+		return collaboration.ErrConflict
+	}
+	return b.Runtime.CheckParent(ctx, b.Scope, b.ParentOwner)
+}
+
 // collaborationOwnsFailure reports whether a stalled or exhausted turn must fail
 // instead of producing the ordinary fallback answer. A parent that never
 // delegated keeps the ordinary behavior; an unreadable group fails closed.

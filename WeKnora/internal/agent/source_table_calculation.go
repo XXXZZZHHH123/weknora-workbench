@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"regexp"
 	"strings"
+	"sync"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -29,7 +30,10 @@ type documentSourceTable struct {
 // The parser recognizes source syntax only. It never interprets a column name,
 // selects a business scope, infers a missing value or decides a formula.
 func documentSourceTables(content string) []documentSourceTable {
-	content = documentSourceProse(content)
+	return parseDocumentSourceTables(documentSourceProse(content))
+}
+
+func parseDocumentSourceTables(content string) []documentSourceTable {
 	lines := strings.Split(content, "\n")
 	tables := []documentSourceTable{}
 	for index := 0; index+1 < len(lines); index++ {
@@ -120,25 +124,35 @@ type documentTableColumn struct {
 }
 
 type documentTableRequest struct {
-	Operation  string                         `json:"operation"`
-	ChunkID    string                         `json:"chunk_id"`
-	TableIndex *int                           `json:"table_index,omitempty"`
-	RowStart   *int                           `json:"row_start,omitempty"`
-	RowEnd     *int                           `json:"row_end,omitempty"`
-	Columns    map[string]documentTableColumn `json:"columns,omitempty"`
-	Expression string                         `json:"expression,omitempty"`
-	ResultUnit string                         `json:"result_unit,omitempty"`
+	Operation         string                         `json:"operation"`
+	ChunkID           string                         `json:"chunk_id"`
+	TableIndex        *int                           `json:"table_index,omitempty"`
+	RowStart          *int                           `json:"row_start,omitempty"`
+	RowEnd            *int                           `json:"row_end,omitempty"`
+	Columns           map[string]documentTableColumn `json:"columns,omitempty"`
+	Expression        string                         `json:"expression,omitempty"`
+	ResultUnit        string                         `json:"result_unit,omitempty"`
+	RowIndices        []int                          `json:"row_indices,omitempty"`
+	SelectedColumns   []int                          `json:"selected_columns,omitempty"`
+	SourceFingerprint string                         `json:"source_fingerprint,omitempty"`
 }
 
 type documentTableCalculationTool struct {
 	agenttools.BaseTool
-	steps func() []types.AgentStep
+	steps    func() []types.AgentStep
+	registry *agenttools.ToolRegistry
+	viewsMu  sync.RWMutex
+	views    map[string]documentTableViewSnapshot
 }
 
-func newDocumentTableCalculationTool(steps func() []types.AgentStep) *documentTableCalculationTool {
-	return &documentTableCalculationTool{BaseTool: agenttools.NewBaseTool(documentTableCalculationToolName,
-		"对本轮实际已读文档/OCR的Markdown表格批量计算，不必逐行抄写数值与引用。先operation=inspect、chunk_id查看真实table_index、行列索引、表头/单位上下文和原始行；再operation=calculate，指定table_index、row_start至row_end（均0起算且包含终点；行0为第一行表头，Markdown分隔行不计）、变量columns={变量:{column:真实列索引,unit:原文单位}}、expression和result_unit。模型结合完整问题和实际表头选择表、行、列、口径、单位、表达式，程序读取真实单元格并保留来源。例：columns绑定变量a,b后expression可用a/b-1；只接受变量、括号、四则及常数0/1，不能把原值写进表达式；result_unit=%自动乘100，表达式不要乘100。单位必须出现在inspect返回的unit_context中；未知单位留空但不能生成百分比。空白/非数值/零分母逐行明确报告，不补零、不静默删行。不读文件、不联网、不执行代码。",
-		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["operation","chunk_id"],"properties":{"operation":{"type":"string","enum":["inspect","calculate"]},"chunk_id":{"type":"string","minLength":1},"table_index":{"type":"integer","minimum":0},"row_start":{"type":"integer","minimum":0},"row_end":{"type":"integer","minimum":0},"columns":{"type":"object","minProperties":1,"maxProperties":16,"additionalProperties":{"type":"object","additionalProperties":false,"required":["column","unit"],"properties":{"column":{"type":"integer","minimum":0},"unit":{"type":"string","maxLength":128}}}},"expression":{"type":"string","maxLength":1024},"result_unit":{"type":"string","enum":["","%"]}}}`)), steps: steps}
+func newDocumentTableCalculationTool(steps func() []types.AgentStep, registries ...*agenttools.ToolRegistry) *documentTableCalculationTool {
+	tool := &documentTableCalculationTool{BaseTool: agenttools.NewBaseTool(documentTableCalculationToolName,
+		"对本轮实际已读文档/OCR的Markdown表格批量计算，不必逐行抄写数值与引用。只需披露原表取值时用operation=select，明确table_index、selected_columns真实列索引及row_start/row_end或row_indices（最多200行、16列），程序保留原文数字、缺失值、标签与上下文，不需要虚构公式。返回view_ref后可在最终回复单独一行使用<document_table_view ref=\"返回的完整view_ref\" />，由服务器验证并展开不可变表格，再经过原有审核；不要重抄大量数值。先operation=inspect、chunk_id查看真实table_index、行列索引、表头/单位上下文和原始行；再operation=calculate，指定table_index、row_start至row_end（均0起算且包含终点；行0为第一行表头，Markdown分隔行不计）、变量columns={变量:{column:真实列索引,unit:原文单位}}、expression和result_unit。模型结合完整问题和实际表头选择表、行、列、口径、单位、表达式，程序读取真实单元格并保留来源。例：columns绑定变量a,b后expression可用a/b-1；只接受变量、括号、四则及常数0/1，不能把原值写进表达式；result_unit=%自动乘100，表达式不要乘100。单位必须出现在inspect返回的unit_context中；未知单位留空但不能生成百分比。空白/非数值/零分母逐行明确报告，不补零、不静默删行。不读文件、不联网、不执行代码。",
+		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["operation","chunk_id"],"properties":{"operation":{"type":"string","enum":["inspect","calculate","select"]},"chunk_id":{"type":"string","minLength":1},"table_index":{"type":"integer","minimum":0},"row_start":{"type":"integer","minimum":0},"row_end":{"type":"integer","minimum":0},"row_indices":{"type":"array","minItems":1,"maxItems":200,"uniqueItems":true,"items":{"type":"integer","minimum":0}},"selected_columns":{"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"integer","minimum":0}},"source_fingerprint":{"type":"string","pattern":"^[0-9a-f]{64}$","description":"Optional exact successful read-view fingerprint from inspect; never a model-created source"},"columns":{"type":"object","minProperties":1,"maxProperties":16,"additionalProperties":{"type":"object","additionalProperties":false,"required":["column","unit"],"properties":{"column":{"type":"integer","minimum":0},"unit":{"type":"string","maxLength":128}}}},"expression":{"type":"string","maxLength":1024},"result_unit":{"type":"string","enum":["","%"]}}}`)), steps: steps, views: map[string]documentTableViewSnapshot{}}
+	if len(registries) > 0 {
+		tool.registry = registries[0]
+	}
+	return tool
 }
 
 func (tool *documentTableCalculationTool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResult, error) {
@@ -159,21 +173,12 @@ func (tool *documentTableCalculationTool) Execute(ctx context.Context, raw json.
 	if decoder.Decode(new(any)) != io.EOF || request.ChunkID == "" || len(request.ChunkID) > 256 {
 		return fail("需要真实已读chunk_id及单个合法计划")
 	}
-	var chunk *fetchedDocumentChunk
-	for _, step := range tool.steps() {
-		for _, call := range step.ToolCalls {
-			for _, actual := range fetchedDocumentChunks(call) {
-				if actual.ID == request.ChunkID && actual.KnowledgeID != "" {
-					copy := actual
-					chunk = &copy
-					break
-				}
-			}
-		}
+	source, sourceErr := tool.selectDocumentTableSource(request.ChunkID, request.SourceFingerprint)
+	if sourceErr != nil {
+		return fail(sourceErr.Error())
 	}
-	if chunk == nil {
-		return fail("chunk_id不是本轮成功读取的实际分块，请先read_document并使用实际引用")
-	}
+	chunk := &source.Chunk
+
 	tables := documentSourceTables(chunk.Content)
 	if request.Operation == "inspect" {
 		views := []any{}
@@ -184,9 +189,31 @@ func (tool *documentTableCalculationTool) Execute(ctx context.Context, raw json.
 				break
 			}
 		}
-		data := map[string]any{"kind": "document_table_catalog", "chunk_id": chunk.ID, "knowledge_id": chunk.KnowledgeID, "table_count": len(tables), "tables": views, "tables_truncated": len(views) < len(tables), "notice": "所有索引0起算。rows含表头，排除Markdown分隔行。rows_truncated仅表示展示裁剪；parse_complete=false表示源表格式导致解析提前停止，不能将有效前缀当成全表。仅当前已读分块；完整性不代表整份文档覆盖。请按真实表头选择变量列、数据行与原文单位，不能依据目录元数据直接作统计。"}
+		for index := range views {
+			view := views[index].(map[string]any)
+			if exact, err := exactDocumentSourceTable(chunk.Content, index); err == nil {
+				view["source_rows"] = exact.Rows[:min(40, len(exact.Rows))]
+				view["source_context"] = exact.Context
+				view["selection_available"] = true
+			} else {
+				view["selection_available"] = false
+				view["selection_warning"] = err.Error()
+			}
+		}
+		data := map[string]any{"kind": "document_table_catalog", "chunk_id": chunk.ID, "knowledge_id": chunk.KnowledgeID, "source_fingerprint": source.Fingerprint, "table_count": len(tables), "tables": views, "tables_truncated": len(views) < len(tables), "notice": "所有索引0起算。rows含表头，排除Markdown分隔行。rows_truncated仅表示展示裁剪；parse_complete=false表示源表格式导致解析提前停止，不能将有效前缀当成全表。仅当前已读分块；完整性不代表整份文档覆盖。请按真实表头选择变量列、数据行与原文单位，不能依据目录元数据直接作统计。"}
 		encoded, _ := json.Marshal(data)
 		return &types.ToolResult{Success: true, Data: data, Output: string(encoded)}, nil
+	}
+	if request.Operation == "select" {
+		data, err := tool.selectDocumentTableView(ctx, source, request)
+		if err != nil {
+			return fail(err.Error())
+		}
+		encoded, _ := json.Marshal(data)
+		return &types.ToolResult{Success: true, Data: data, Output: string(encoded)}, nil
+	}
+	if len(request.RowIndices) > 0 || len(request.SelectedColumns) > 0 {
+		return fail("row_indices与selected_columns仅用于select；calculate继续使用真实行范围与变量columns")
 	}
 	if request.Operation != "calculate" || request.TableIndex == nil || *request.TableIndex < 0 || *request.TableIndex >= len(tables) || request.RowStart == nil || request.RowEnd == nil {
 		return fail("calculate需要实际table_index、row_start、row_end；可先inspect查看范围")
@@ -224,6 +251,7 @@ func (tool *documentTableCalculationTool) Execute(ctx context.Context, raw json.
 			selectedCells[name] = map[string]any{"column": *binding.Column, "source_value": row[*binding.Column]}
 		}
 		invalid := ""
+		invalidReason := ""
 		for name, binding := range request.Columns {
 			text := strings.TrimSpace(row[*binding.Column])
 			numericText := text
@@ -235,12 +263,14 @@ func (tool *documentTableCalculationTool) Execute(ctx context.Context, raw json.
 			// not silently turn 1,2 into the different number 12.
 			if !documentTableNumber.MatchString(numericText) || len(numericText) > 128 {
 				invalid = fmt.Sprintf("列%d不是完整十进制数值（空白或非数值未补零）", *binding.Column)
+				invalidReason = "source_cell_not_decimal"
 				break
 			}
 			numeric := strings.ReplaceAll(strings.ReplaceAll(numericText, ",", ""), "−", "-")
 			value, ok := new(big.Rat).SetString(numeric)
 			if !ok {
 				invalid = "数值无效"
+				invalidReason = "source_number_invalid"
 				break
 			}
 			quantity := sourceQuantity{value: value, units: map[string]int{}, unknown: binding.Unit == ""}
@@ -258,10 +288,11 @@ func (tool *documentTableCalculationTool) Execute(ctx context.Context, raw json.
 			result, err = evaluateSourceExpression(request.Expression, variables, request.ResultUnit)
 			if err != nil {
 				invalid = err.Error()
+				invalidReason = "calculation_failed"
 			}
 		}
 		if invalid != "" {
-			failures = append(failures, map[string]any{"row_index": index, "row_label": row[0], "source_row": table.RawRows[index], "selected_cells": selectedCells, "error": invalid})
+			failures = append(failures, map[string]any{"row_index": index, "row_label": row[0], "source_row": table.RawRows[index], "selected_cells": selectedCells, "error": invalid, "reason_code": invalidReason})
 			continue
 		}
 		result["row_index"], result["row_label"], result["inputs"], result["source_row"] = index, row[0], inputs, table.RawRows[index]
@@ -271,6 +302,11 @@ func (tool *documentTableCalculationTool) Execute(ctx context.Context, raw json.
 		return fail(fmt.Sprintf("所选%d行均未取得有效计算。检查行范围、数值、单位和表达式：%v", *request.RowEnd-*request.RowStart+1, failures))
 	}
 	data := map[string]any{"kind": "source_calculation", "status": "ok", "chunk_id": chunk.ID, "knowledge_id": chunk.KnowledgeID, "table_index": *request.TableIndex, "row_start": *request.RowStart, "row_end": *request.RowEnd, "selected_row_count": *request.RowEnd - *request.RowStart + 1, "calculated_row_count": len(results), "failed_rows": failures, "calculations": results, "unit_context": table.Context, "parse_complete": table.ParseComplete, "parse_warning": table.ParseWarning, "notice": "仅对模型所选真实表、行、列执行。parse_complete=false时仅有源表有效前缀，未解析行不计入selected_row_count；不能宣称原表完整覆盖。失败行未补零；不能把部分有效行当成全表统计。表头与业务口径仍需模型核对，原报告舍入比例不代表精确变化率。"}
+	if view, err := tool.calculatedDocumentTableView(source, request, data); err == nil {
+		attachDocumentTableView(data, view)
+	} else {
+		data["view_unavailable_reason"] = err.Error()
+	}
 	encoded, _ := json.Marshal(data)
 	return &types.ToolResult{Success: true, Data: data, Output: string(encoded)}, nil
 }

@@ -1055,7 +1055,8 @@ func reviewIdentityViewValueVisible(value any, record reviewEvidenceRecord, witn
 		}
 		data, _ := reviewPointerValue(record.Value, "/data")
 		dataMap, _ := data.(map[string]any)
-		if !reviewImageProjectionBoundToSource(dataMap["image_evidence"], figureMap, content) {
+		if !reviewImageProjectionBoundToSource(dataMap["image_evidence"], figureMap, content) &&
+			!reviewGeometryProjectionBoundToSource(dataMap, figureMap, content) {
 			return false
 		}
 		local := "/original_geometry_evidence/" + strings.Join(parts[3:], "/")

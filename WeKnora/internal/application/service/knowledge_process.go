@@ -3956,6 +3956,7 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 	// 幂等性检查：获取knowledge记录
 	knowledge, err := s.repo.GetKnowledgeByID(ctx, payload.TenantID, payload.KnowledgeID)
 	if errors.Is(err, repository.ErrKnowledgeNotFound) {
+		docparser.DetachRemotePDF(ctx, payload.RemotePDFJob)
 		return nil
 	}
 	if err != nil {
@@ -3964,6 +3965,7 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 	}
 
 	if knowledge == nil {
+		docparser.DetachRemotePDF(ctx, payload.RemotePDFJob)
 		return nil
 	}
 
@@ -3978,6 +3980,7 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 	// an earlier delivery of it was running). Its row, chunks and counter
 	// belong to the new run; this task must not touch them.
 	if attemptSuperseded(ctx, s.tracker(), payload.KnowledgeID, payload.Attempt) {
+		docparser.DetachRemotePDF(ctx, payload.RemotePDFJob)
 		logger.Infof(ctx, "Parse attempt %d superseded, skipping stale process task: %s",
 			payload.Attempt, payload.KnowledgeID)
 		return nil
@@ -3985,16 +3988,19 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 
 	// 检查是否正在删除 / 已被用户取消 - 如果是则直接退出
 	if knowledge.ParseStatus == types.ParseStatusDeleting {
+		docparser.DetachRemotePDF(ctx, payload.RemotePDFJob)
 		logger.Infof(ctx, "Knowledge is being deleted, aborting processing: %s", payload.KnowledgeID)
 		return nil
 	}
 	if knowledge.ParseStatus == types.ParseStatusCancelled {
+		docparser.DetachRemotePDF(ctx, payload.RemotePDFJob)
 		logger.Infof(ctx, "Knowledge cancelled by user, aborting processing: %s", payload.KnowledgeID)
 		return nil
 	}
 
 	// 检查任务状态 - 幂等性处理
 	if knowledge.ParseStatus == types.ParseStatusCompleted {
+		docparser.DetachRemotePDF(ctx, payload.RemotePDFJob)
 		logger.Infof(ctx, "Document already completed, skipping: %s", payload.KnowledgeID)
 		return nil // 幂等：已完成的任务直接返回
 	}
@@ -4044,6 +4050,10 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 		return fmt.Errorf("invalid processing scope: %v: %w", err, asynq.SkipRetry)
 	}
 
+	if payload.PDFProcessing == nil {
+		policy := types.EffectivePDFProcessingSettings(tenantInfo.ParserEngineConfig)
+		payload.PDFProcessing = &policy
+	}
 	processOverrides, _ := knowledge.ProcessOverrides()
 	eff := ResolveProcessConfig(kb, processOverrides)
 
@@ -4056,10 +4066,12 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 		return abortRetryErr(ctx, knowledge.ID, status)
 	}
 	if payload.FilePath != "" && knowledge.FilePath != "" && payload.FilePath != knowledge.FilePath {
+		docparser.DetachRemotePDF(ctx, payload.RemotePDFJob)
 		logger.Infof(ctx, "Document source replaced, skipping stale process task: %s", payload.KnowledgeID)
 		return nil
 	}
 	if s.isKnowledgeSourceReplaced(ctx, knowledge) {
+		docparser.DetachRemotePDF(ctx, payload.RemotePDFJob)
 		logger.Infof(ctx, "Document source replaced, skipping stale process task: %s", payload.KnowledgeID)
 		return nil
 	}
@@ -4069,6 +4081,7 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 		return fmt.Errorf("mark knowledge %s processing: %w", knowledge.ID, err)
 	}
 	if s.isKnowledgeSourceReplaced(ctx, knowledge) {
+		docparser.DetachRemotePDF(ctx, payload.RemotePDFJob)
 		logger.Infof(ctx, "Document source replaced, aborting after status update: %s", payload.KnowledgeID)
 		return nil
 	}
@@ -4583,6 +4596,9 @@ func (s *knowledgeService) convert(
 		Title:                 knowledge.Title,
 		ParserEngine:          parserEngine,
 		ParserRetryKey:        payload.ParserRetryKey,
+		RemotePDFJob:          payload.RemotePDFJob,
+		PDFProcessing:         payload.PDFProcessing,
+		DeferRemotePDF:        parserEngine == docparser.RemotePDFEngineName,
 		RequestID:             payload.RequestId,
 		ParserEngineOverrides: mergedOverrides,
 	}
@@ -4620,6 +4636,18 @@ func (s *knowledgeService) convert(
 	}
 
 	result, err := s.callDocReaderWithTimeout(ctx, reader, req)
+	var pending *docparser.RemotePDFPendingError
+	if errors.As(err, &pending) {
+		return nil, s.deferRemotePDF(ctx, payload, pending)
+	}
+
+	if err == nil && result != nil && len(result.StructuredTables) > 0 && payload.PDFProcessing != nil {
+		var envelope map[string]json.RawMessage
+		if json.Unmarshal(result.StructuredTables, &envelope) == nil && envelope != nil {
+			envelope["processing_settings"], _ = json.Marshal(payload.PDFProcessing)
+			result.StructuredTables, _ = json.Marshal(envelope)
+		}
+	}
 	// Parser resource limits are permanent document rejections, not transient reader failures.
 	if errors.Is(err, docparser.ErrCSVMarkdownTooLarge) || errors.Is(err, anydoc.ErrResourceLimit) {
 		result, err = &types.ReadResult{Error: err.Error()}, nil

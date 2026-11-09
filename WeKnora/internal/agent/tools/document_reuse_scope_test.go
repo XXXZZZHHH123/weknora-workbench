@@ -16,7 +16,7 @@ func TestDocumentReadReuseHonorsCurrentBindingAndPhysicalPage(t *testing.T) {
 	state := NewDocumentScopeState()
 	registry.RegisterTool(&bindDocumentScopeTool{BaseTool: NewBaseTool(ToolBindDocumentScope, "", nil), state: state})
 	require.False(t, IsCurrentDocumentRead(registry, read("doc-a", 7)), "unbound candidates cannot stand in for a validated read")
-	state.sources = map[string]DocumentSourceSelection{"doc-a": {KnowledgeID: "doc-a", Page: 7}}
+	state.sources = map[string]DocumentSourceSelection{"doc-a": {KnowledgeID: "doc-a", UserPages: &DocumentPageConstraint{Pages: []int{7}, UserQuote: "user restriction"}}}
 	require.True(t, IsCurrentDocumentRead(registry, read("doc-a", 7)))
 	require.False(t, IsCurrentDocumentRead(registry, read("doc-a", 8)))
 	require.False(t, IsCurrentDocumentRead(registry, read("doc-b", 7)))

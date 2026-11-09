@@ -244,7 +244,7 @@ func (r *sourceRegistry) decodeToolCallsWithPathPolicy(toolCalls []types.LLMTool
 			false,
 			func(path []string) bool { return policy == nil || policy(toolName, path) },
 			func(path []string) bool { return len(path) > 0 && bare != nil && bare(toolName, path[len(path)-1]) },
-			!r.rootOnlyToolArguments(toolName),
+			r.freeTextToolArguments(toolName),
 		)
 	}
 }
@@ -269,11 +269,11 @@ func (r *sourceRegistry) UnresolvedToolHandlesWithPathPolicy(
 		return nil
 	}
 	var value interface{}
-	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+	if err := decodeJSONNumbers(raw, &value); err != nil {
 		return nil
 	}
 	seen := make(map[string]struct{})
-	r.collectUnresolvedToolHandlesPath(nil, value, seen, func(path []string) bool { return policy == nil || policy(toolName, path) }, !r.rootOnlyToolArguments(toolName))
+	r.collectUnresolvedToolHandlesPath(nil, value, seen, func(path []string) bool { return policy == nil || policy(toolName, path) }, r.freeTextToolArguments(toolName))
 	result := make([]string, 0, len(seen))
 	for handle := range seen {
 		result = append(result, handle)
@@ -428,7 +428,7 @@ func (r *sourceRegistry) EncodeMessagesWithPathPolicies(
 				out[i].ToolCalls[j].Function.Arguments,
 				true,
 				func(path []string) bool { return argumentPolicy == nil || argumentPolicy(toolName, path) },
-				nil, !r.rootOnlyToolArguments(toolName),
+				nil, r.freeTextToolArguments(toolName),
 			)
 		}
 	}
@@ -535,7 +535,7 @@ func (r *sourceRegistry) registerToolArguments(raw string, allowed func([]string
 		return
 	}
 	var value interface{}
-	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+	if err := decodeJSONNumbers(raw, &value); err != nil {
 		return
 	}
 	r.registerToolArgumentValue(nil, value, allowed)
@@ -603,7 +603,7 @@ func (r *sourceRegistry) decodeJSONWithPolicy(raw string, encode bool, allowed f
 		return raw
 	}
 	var value interface{}
-	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+	if err := decodeJSONNumbers(raw, &value); err != nil {
 		return raw
 	}
 	value = r.walkJSON(nil, value, encode, allowed, bareText, freeText)

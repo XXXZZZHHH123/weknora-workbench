@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"github.com/Tencent/WeKnora/internal/models/chat"
@@ -58,4 +59,35 @@ func TestSynthesisAnswerRoundReservesReasoningHeadroom(t *testing.T) {
 	require.Equal(t, 4096+synthesisReasoningHeadroom, e.clampCompletionBudgetToContextWithHeadroom(1000, synthesisReasoningHeadroom))
 	e.config.MaxContextTokens = 20000
 	require.LessOrEqual(t, e.clampCompletionBudgetToContextWithHeadroom(15000, synthesisReasoningHeadroom), 20000-15000, "still bounded by the remaining context window")
+}
+
+func TestStandardAnswerReviewPreservesActualUserReasoningOptions(t *testing.T) {
+	for _, tc := range []struct {
+		mode, configured, want string
+		thinking               bool
+	}{
+		{"standard", "off", "off", false},
+		{"standard", "high", "high", true},
+		{"strict", "off", string(quickSynthesisGeneratorReasoning), true},
+		{"", "off", string(quickSynthesisGeneratorReasoning), true},
+	} {
+		t.Run(tc.mode+"/"+tc.configured, func(t *testing.T) {
+			model := &mockChat{responses: []mockResponse{{chunks: []types.StreamResponse{{
+				ResponseType: types.ResponseTypeAnswer, Content: "The requested explanation.", Done: true, FinishReason: "stop",
+			}}}}}
+			engine := newTestEngine(t, model)
+			configuredThinking := tc.configured != "off"
+			engine.config.AnswerReviewMode, engine.config.ReasoningEffort = tc.mode, tc.configured
+			engine.config.Thinking, engine.config.SourceReviewReasoningEffort, engine.config.QuickAnswer = &configuredThinking, "auto", true
+			engine.taskPlan = &taskEvidencePlan{ReasoningDepth: "synthesis"}
+			_, err := engine.streamThinkingToEventBus(context.Background(), emptyMessages(), nil, 0, "session")
+			require.NoError(t, err)
+			require.Len(t, model.opts, 1)
+			require.Equal(t, chat.ReasoningEffort(tc.want), model.opts[0].ReasoningEffort)
+			require.NotNil(t, model.opts[0].Thinking)
+			require.Equal(t, tc.thinking, *model.opts[0].Thinking)
+			require.Equal(t, tc.configured, engine.config.ReasoningEffort, "the caller's chosen mode remains unchanged")
+			require.Equal(t, configuredThinking, *engine.config.Thinking)
+		})
+	}
 }

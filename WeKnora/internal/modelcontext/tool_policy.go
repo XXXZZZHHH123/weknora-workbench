@@ -273,6 +273,13 @@ func HasToolPolicy(toolName string) bool {
 	return ok
 }
 
+// SupportsArgumentNormalization excludes foreign/native payload contracts.
+// Their existing envelope codecs and own schema validators remain authoritative.
+func SupportsArgumentNormalization(toolName string) bool {
+	policy, ok := toolHandlePolicies[toolName]
+	return ok && !policy.opaqueOutput && len(policy.rootOnlySourceIDKeys) == 0
+}
+
 func sourceArgumentAllowed(toolName, key string) bool {
 	policy, ok := toolHandlePolicies[toolName]
 	if !ok {
@@ -429,7 +436,7 @@ func (r *Registry) encodeToolPrivateResult(toolName, output string) string {
 
 func rewriteJSONStringValues(raw string, rewrite func(key, value string) string) string {
 	var value interface{}
-	if json.Unmarshal([]byte(raw), &value) != nil {
+	if decodeJSONNumbers(raw, &value) != nil {
 		return raw
 	}
 	value = walkJSONValue("", value, rewrite)
@@ -442,7 +449,7 @@ func rewriteJSONStringValues(raw string, rewrite func(key, value string) string)
 
 func walkJSONStringValues(raw string, rewrite func(key, value string) string) error {
 	var value interface{}
-	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+	if err := decodeJSONNumbers(raw, &value); err != nil {
 		return err
 	}
 	walkJSONValue("", value, rewrite)

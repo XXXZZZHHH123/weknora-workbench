@@ -320,6 +320,11 @@ func (s *sessionService) AgentQA(
 	})
 
 	// Create agent engine with EventBus
+	// Acquire remains inside the validated factory. Once attach acquires its
+	// parent, this scope keeps it alive through memory/image preparation and
+	// owns cleanup even when factory/preparation exits before Execute/Resume.
+	ctx, finishExecution := collaboration.BeginExecution(ctx)
+	defer finishExecution()
 	logger.Info(ctx, "Creating agent engine")
 	engine, err := s.agentService.CreateAgentEngine(
 		ctx,
@@ -598,6 +603,7 @@ func (s *sessionService) buildAgentConfig(
 		AttachmentParseWaitTimeoutSec: customAgent.Config.AttachmentParseWaitTimeoutSec,
 		Thinking:                      customAgent.Config.Thinking,
 		ReasoningEffort:               customAgent.Config.ReasoningEffort,
+		AnswerReviewMode:              customAgent.Config.AnswerReviewMode,
 		CitationEnabled:               customAgent.Config.CitationEnabled,
 		RetrieveKBOnlyWhenMentioned:   customAgent.Config.RetrieveKBOnlyWhenMentioned,
 		LLMCallTimeout:                customAgent.Config.LLMCallTimeout,

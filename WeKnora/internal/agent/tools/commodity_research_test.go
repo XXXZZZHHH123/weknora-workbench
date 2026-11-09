@@ -45,6 +45,7 @@ func TestCommodityResearchSignsCallerInsteadOfExecutionTenant(t *testing.T) {
 	t.Setenv("COMMODITY_RESEARCH_URL", server.URL)
 	ctx := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "user-a", Role: types.TenantRoleViewer})
 	ctx = types.WithExecutionTenant(ctx, 99)
+	ctx = commodityResearchTestScope(ctx)
 	result, err := NewCommodityResearchTool().Execute(ctx, json.RawMessage(`{"operation":"brief"}`))
 	require.NoError(t, err)
 	require.True(t, result.Success)
@@ -60,10 +61,63 @@ func TestCommodityResearchRefusesModelScopeAndMissingIdentity(t *testing.T) {
 	_, err := tool.Execute(context.Background(), json.RawMessage(`{"operation":"summary"}`))
 	require.Error(t, err)
 	ctx := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "a", Role: types.TenantRoleViewer})
+	ctx = commodityResearchTestScope(ctx)
 	for _, args := range []string{`{"operation":"summary","tenant_id":99}`, `{"operation":"brief","user_id":"other"}`, `{"operation":"summary","url":"http://other"}`} {
 		_, err = tool.Execute(ctx, json.RawMessage(args))
 		require.ErrorContains(t, err, "未声明")
 	}
+}
+
+func commodityResearchTestScope(ctx context.Context) context.Context {
+	caller := types.CallerFromContext(ctx)
+	ctx = types.WithResearchWorkbenchScope(ctx, types.ResearchWorkbenchScope{
+		ID: "00000000-0000-4000-8000-000000000007", TenantID: caller.TenantID, UserID: caller.UserID,
+		KnowledgeBaseID: "synthetic-library", KnowledgeBaseTenantID: 13,
+	})
+	return types.WithResearchAuthorization(ctx, "Bearer synthetic-test-authorization")
+}
+
+func TestCommodityResearchMissingScopeReturnsCorrectableFailureWithoutRequest(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+	defer server.Close()
+	t.Setenv("COMMODITY_RESEARCH_URL", server.URL)
+	ctx := types.WithCaller(t.Context(), types.Caller{TenantID: 7, UserID: "reader", Role: types.TenantRoleViewer})
+	tool := NewCommodityResearchTool()
+	result, err := tool.Execute(ctx, json.RawMessage(`{"operation":"indicators","search":"requested field"}`))
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	require.Equal(t, "scope_required", result.Data["reason_code"])
+	require.Equal(t, false, result.Data["request_started"])
+	require.Zero(t, calls)
+	require.False(t, CommodityResearchScopeAvailable(ctx))
+	scoped := commodityResearchTestScope(ctx)
+	require.True(t, CommodityResearchScopeAvailable(scoped))
+	wrong := types.WithCaller(scoped, types.Caller{TenantID: 8, UserID: "reader", Role: types.TenantRoleViewer})
+	require.False(t, CommodityResearchScopeAvailable(wrong), "a saved scope cannot follow another caller")
+}
+
+func TestCommodityResearchPreservesServiceConflictDetailsWithoutRetryOrFallback(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"detail":{"code":"source_revision_changed","message":"The current authorized source revision changed.","private":"not-forwarded"}}`)
+	}))
+	defer server.Close()
+	file := filepath.Join(t.TempDir(), "key")
+	require.NoError(t, os.WriteFile(file, []byte(strings.Repeat("a", 48)), 0600))
+	t.Setenv("COMMODITY_RESEARCH_TOKEN_FILE", file)
+	t.Setenv("COMMODITY_RESEARCH_URL", server.URL)
+	ctx := commodityResearchTestScope(types.WithCaller(t.Context(), types.Caller{TenantID: 7, UserID: "reader", Role: types.TenantRoleViewer}))
+	result, err := NewCommodityResearchTool().Execute(ctx, json.RawMessage(`{"operation":"indicators"}`))
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	require.Equal(t, http.StatusConflict, result.Data["http_status"])
+	require.Equal(t, "source_revision_changed", result.Data["reason_code"])
+	require.Contains(t, result.Error, "authorized source revision changed")
+	require.NotContains(t, result.Output, "not-forwarded")
+	require.Equal(t, 1, calls)
 }
 
 func TestCommodityResearchChartOperationsSchema(t *testing.T) {
@@ -154,6 +208,7 @@ func TestCommodityResearchRejectsInvalidTemplateBeforeRequest(t *testing.T) {
 		return nil, nil
 	})}
 	ctx := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "reader", Role: types.TenantRoleViewer})
+	ctx = commodityResearchTestScope(ctx)
 	for _, value := range []string{`null`, `123`, `true`, `[]`, `{}`, `"` + strings.Repeat("字", 81) + `"`, `"` + strings.Repeat("a", 81) + `"`} {
 		_, err := tool.Execute(ctx, json.RawMessage(`{"operation":"cycle","series_id":"kb-fixture","template":`+value+`}`))
 		require.ErrorContains(t, err, "最长80字的字符串")

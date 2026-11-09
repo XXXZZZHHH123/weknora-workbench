@@ -19,6 +19,11 @@ codec lives in this one package:
 | `mcp_sources.go` | bounded citation sidecar for HTTP(S) links in successful MCP results |
 | `handles.go` | exported `HandleTable` for invocation-local spaces (`iN`, `ref-N`, `c000`) |
 | `leaks.go` | `LeakedIdentifiers` report of raw UUIDs that survive `EncodeMessages`, logged at every model-call site |
+| `tool_arguments.go` | schema-guided lossless container normalization and precise numeric-token transport |
+| `document_table_view.go` | compact source-bound presentation references; sealed snapshots stay opaque and unchanged |
+
+The source/read recovery, page-coordinate, progress and final table-view contracts
+are documented in [QA execution recovery](../../../docs/QA_EXECUTION_RECOVERY.md).
 
 ## Identity rules
 

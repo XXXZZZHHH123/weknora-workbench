@@ -20,7 +20,7 @@ func TestWorkbenchDefaultEntersToolLoopWithoutEnablingExternalMCP(t *testing.T) 
 	require.Equal(t, "none", active.Config.MCPSelectionMode)
 	require.Equal(t, "all", active.Config.SkillsSelectionMode)
 	require.Contains(t, active.Config.AllowedTools, tools.ToolStructuredData)
-	require.Contains(t, active.Config.AllowedTools, tools.ToolCommodityResearch)
+	require.NotContains(t, active.Config.AllowedTools, tools.ToolCommodityResearch, "ordinary chat has no verified research workbench scope")
 	require.Contains(t, active.Config.AllowedTools, tools.ToolSearchKnowledge)
 	require.Contains(t, active.Config.AllowedTools, tools.ToolWikiSearch)
 	require.Contains(t, active.Config.AllowedTools, tools.ToolWikiReadPage)
@@ -48,6 +48,19 @@ func TestWorkbenchDefaultPreservesCustomQuickAnswerAndUnconfiguredInstall(t *tes
 	require.Same(t, withConfiguredTools, workbenchDefaultAgent(withConfiguredTools, 7))
 	require.Equal(t, []string{"thinking"}, withConfiguredTools.Config.AllowedTools)
 	require.True(t, workbenchDefaultAgent(nil, 7).IsAgentMode())
+}
+
+func TestWorkbenchDefaultPreservesExplicitResearchSelectionAndScopedEntryWithEmptyCapabilities(t *testing.T) {
+	t.Setenv("COMMODITY_RESEARCH_URL", "http://research:8765")
+	original := &types.CustomAgent{ID: "managed-reader", TenantID: 7,
+		Description: "[managed-by:cotton-structured-data/718d26f7-7952-4207-abd8-7210df12b421]",
+		Config:      types.CustomAgentConfig{AllowedTools: []string{tools.ToolCommodityResearch}}}
+	active := workbenchDefaultAgent(original, 7)
+	require.Contains(t, active.Config.AllowedTools, tools.ToolCommodityResearch, "an explicit saved choice remains intact; registration checks its real prerequisites")
+	require.Equal(t, []string{tools.ToolCommodityResearch}, original.Config.AllowedTools)
+	isolated := isolatedResearchAgent(&types.CustomAgent{Config: types.CustomAgentConfig{AllowedTools: []string{}}},
+		types.ResearchWorkbenchScope{ID: "00000000-0000-4000-8000-000000000007", TenantID: 7, UserID: "reader", KnowledgeBaseID: "library", KnowledgeBaseTenantID: 13})
+	require.Contains(t, isolated.Config.AllowedTools, tools.ToolCommodityResearch, "the existing research entry still installs its scoped capability")
 }
 
 func TestWorkbenchDefaultExplicitRequestAndSharedAgentRemainNarrow(t *testing.T) {
@@ -86,9 +99,10 @@ func TestWorkbenchThreeEntriesShareScopedDataToolsWhileKeepingModelSettings(t *t
 			require.True(t, active.WorkbenchDefault)
 			require.True(t, active.IsAgentMode())
 			require.Equal(t, workbenchDefaultPrompt, active.Config.SystemPrompt)
-			for _, tool := range []string{tools.ToolStructuredData, tools.ToolCommodityResearch, tools.ToolSearchKnowledge, tools.ToolReadDocument, tools.ToolListDocuments} {
+			for _, tool := range []string{tools.ToolStructuredData, tools.ToolSearchKnowledge, tools.ToolReadDocument, tools.ToolListDocuments} {
 				require.Contains(t, active.Config.AllowedTools, tool)
 			}
+			require.NotContains(t, active.Config.AllowedTools, tools.ToolCommodityResearch)
 			require.Equal(t, "chosen-model", active.Config.ModelID)
 			require.Equal(t, 0.25, active.Config.Temperature)
 			require.Equal(t, "high", active.Config.ReasoningEffort)

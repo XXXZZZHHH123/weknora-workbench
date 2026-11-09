@@ -93,7 +93,8 @@ func TestModelDocumentOnlyScopeNeverInventsPhysicalPageZero(t *testing.T) {
 			}}
 			output := r.ModelToolResultForTool("search_knowledge", result)
 			require.Contains(t, output, `<document_scope document="doc://1" matched="true" />`)
-			require.Contains(t, output, "Use only the requested document.")
+			require.Contains(t, output, "This result is bound to this document.")
+			require.Contains(t, output, "does not add a user page restriction")
 			require.NotContains(t, output, "physical_page=")
 			require.NotContains(t, output, "page=0")
 			require.NotContains(t, output, "chart_interpretation")

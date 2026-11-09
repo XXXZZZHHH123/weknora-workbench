@@ -55,3 +55,24 @@ func TestDocumentImageGeometrySurvivesSourceCodecAndKeepsSourceHandles(t *testin
 	result.Success = false
 	require.NotContains(t, r.ModelToolResultForTool("read_document", result), "document_image_evidence")
 }
+
+func TestDocumentGeometryOnlyCodecReportsUnrequestedPixelsSeparately(t *testing.T) {
+	r := NewRegistry(true)
+	ref := "resource://AbCdEfGhIjKlMnOpQrStUv"
+	result := &types.ToolResult{Success: true, Data: map[string]any{
+		"display_type": "knowledge_chunks_list", "knowledge_id": "actual-doc", "image_mode": "geometry",
+		"document":       map[string]any{"knowledge_id": "actual-doc"},
+		"chunks":         []map[string]any{{"knowledge_id": "actual-doc", "chunk_id": "actual-chunk", "content": "Original figure"}},
+		"image_evidence": []map[string]any{{"reference": ref, "read_success": false, "pixel_status": "not_requested", "geometry_read_success": true}},
+		"image_geometry_evidence": []map[string]any{{"reference": ref, "knowledge_id": "actual-doc", "chunk_id": "actual-chunk", "page": 3, "source_part": "ppt/media/plot.emf",
+			"evidence": map[string]any{"version": "source_figure_geometry_v1", "markdown": "Verified original trace; retain its approximate units and uncertainty."}}},
+	}}
+	text := r.ModelToolResultForTool("read_document", result)
+	require.Contains(t, text, `"image_mode":"geometry"`)
+	require.Contains(t, text, `"read_success":false`)
+	require.Contains(t, text, `"pixel_status":"not_requested"`)
+	require.Contains(t, text, `"geometry_read_success":true`)
+	require.Contains(t, text, "Verified original trace")
+	require.Contains(t, text, "geometry supplies no pixel inspection")
+	require.Empty(t, result.Images)
+}

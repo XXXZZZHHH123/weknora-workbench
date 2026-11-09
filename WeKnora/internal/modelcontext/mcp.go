@@ -150,10 +150,21 @@ func (r *Registry) encodeMCPDirectory(output string) string {
 // EncodeTools returns a model-facing copy. The registry/executor retains the
 // original UUID enum and validates only decoded durable identities.
 func (r *Registry) EncodeTools(tools []chat.Tool) []chat.Tool {
-	if r == nil {
-		return tools
-	}
 	encoded := append([]chat.Tool(nil), tools...)
+	for i := range encoded {
+		def := &encoded[i].Function
+		if SupportsArgumentNormalization(def.Name) {
+			if r != nil && r.sources != nil {
+				if native, current := r.sources.structuredToolContract(def.Name); current && native {
+					continue // A current native payload owns its schema vocabulary.
+				}
+			}
+			def.Parameters, _ = stripPrivateArgumentSchemaAnnotations(def.Parameters, 0)
+		}
+	}
+	if r == nil {
+		return encoded
+	}
 	// Register routing enums first, independently of tool description order.
 	for i := range encoded {
 		def := &encoded[i].Function

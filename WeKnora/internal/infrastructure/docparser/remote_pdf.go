@@ -67,6 +67,15 @@ type remotePDFJob struct {
 	Error   json.RawMessage `json:"error"`
 }
 
+// RemotePDFPendingError asks the native pipeline to persist one lease and
+// schedule another short status check, rather than hold a worker deadline.
+type RemotePDFPendingError struct {
+	Job    types.RemotePDFJobReference
+	Status string
+}
+
+func (e *RemotePDFPendingError) Error() string { return "Remote PDF is pending" }
+
 // RemotePDFError is a safe protocol failure: no backend body or secret is exposed.
 type RemotePDFError struct{ Code string }
 
@@ -99,6 +108,20 @@ func (c *RemotePDFReader) Read(ctx context.Context, req *types.ReadRequest) (*ty
 	}
 	client := utils.NewSSRFSafeHTTPClient(utils.SSRFSafeHTTPClientConfig{Timeout: 60 * time.Second, MaxRedirects: 0})
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	policy := types.DefaultPDFProcessingSettings()
+	if req.PDFProcessing != nil {
+		policy = *req.PDFProcessing
+	}
+	if err := policy.Validate(); err != nil {
+		return nil, err
+	}
+	queueRemaining := policy.QueueTimeoutSeconds
+	if req.RemotePDFJob != nil && req.RemotePDFJob.ID == "" && req.RemotePDFJob.QueuedAt > 0 {
+		queueRemaining -= int(time.Now().Unix() - req.RemotePDFJob.QueuedAt)
+		if queueRemaining <= 0 {
+			return nil, &RemotePDFError{Code: "QUEUE_TIMEOUT"}
+		}
+	}
 	leaseHeader := ""
 	retryHeader := ""
 	call := func(callCtx context.Context, method, route string, body io.Reader, contentType string, out any) error {
@@ -109,6 +132,8 @@ func (c *RemotePDFReader) Read(ctx context.Context, req *types.ReadRequest) (*ty
 		r.Header.Set("Authorization", "Bearer "+c.token)
 		r.Header.Set("X-Parse-Scope", scope)
 		r.Header.Set("X-Parse-Owner", owner)
+		r.Header.Set("X-Parse-Queue-Timeout", strconv.Itoa(queueRemaining))
+		r.Header.Set("X-Parse-Execution-Timeout", strconv.Itoa(policy.ExecutionTimeoutSeconds))
 		if retryHeader != "" {
 			r.Header.Set("X-Parse-Retry-Key", retryHeader)
 		}
@@ -141,29 +166,70 @@ func (c *RemotePDFReader) Read(ctx context.Context, req *types.ReadRequest) (*ty
 		}
 		return nil
 	}
-	var upload bytes.Buffer
-	w := multipart.NewWriter(&upload)
-	part, err := w.CreateFormFile("file", "document.pdf")
-	if err != nil {
-		return nil, err
-	}
-	if _, err = part.Write(req.FileContent); err != nil {
-		return nil, err
-	}
-	if err = w.Close(); err != nil {
-		return nil, err
+	if req.DeferRemotePDF && req.RemotePDFJob != nil && req.RemotePDFJob.ID == "" {
+		if err := call(ctx, "GET", "/v1/capacity", nil, "", nil); err != nil {
+			if remote, ok := err.(*RemotePDFError); ok && remote.Code == "http_429" {
+				return nil, &RemotePDFPendingError{Job: *req.RemotePDFJob, Status: "queued"}
+			}
+			return nil, err
+		}
 	}
 	var job remotePDFJob
-	if err = call(ctx, "POST", "/v1/jobs", &upload, w.FormDataContentType(), &job); err != nil {
-		return nil, err
+	if req.RemotePDFJob != nil && req.RemotePDFJob.ID != "" {
+		ref := req.RemotePDFJob
+		if ref.ID == "" || len(ref.ID) > 128 || len(ref.LeaseID) > 128 || strings.ContainsAny(ref.ID, "/\\?#") || ref.LeaseID == "" || strings.ContainsAny(ref.LeaseID, "/\\?#\r\n") {
+			return nil, &RemotePDFError{Code: "invalid_job_reference"}
+		}
+		if err := call(ctx, "GET", "/v1/jobs/"+url.PathEscape(ref.ID), nil, "", &job); err != nil {
+			return nil, err
+		}
+		if job.ID != ref.ID {
+			return nil, &RemotePDFError{Code: "invalid_job_reference"}
+		}
+		job.LeaseID = ref.LeaseID
+	} else {
+		var upload bytes.Buffer
+		w := multipart.NewWriter(&upload)
+		part, err := w.CreateFormFile("file", "document.pdf")
+		if err != nil {
+			return nil, err
+		}
+		if _, err = part.Write(req.FileContent); err != nil {
+			return nil, err
+		}
+		if err = w.Close(); err != nil {
+			return nil, err
+		}
+		if err := call(ctx, "POST", "/v1/jobs", &upload, w.FormDataContentType(), &job); err != nil {
+			if req.DeferRemotePDF {
+				if remote, ok := err.(*RemotePDFError); ok && remote.Code == "http_429" {
+					ref := types.RemotePDFJobReference{QueuedAt: time.Now().Unix()}
+					if req.RemotePDFJob != nil {
+						ref = *req.RemotePDFJob
+					}
+					if time.Now().Unix()-ref.QueuedAt >= int64(policy.QueueTimeoutSeconds) {
+						return nil, &RemotePDFError{Code: "QUEUE_TIMEOUT"}
+					}
+					return nil, &RemotePDFPendingError{Job: ref, Status: "queued"}
+				}
+			}
+			return nil, err
+		}
 	}
 	if job.ID == "" || strings.ContainsAny(job.ID, "/\\?#") {
 		return nil, &RemotePDFError{Code: "invalid_job_id"}
 	}
 	route := "/v1/jobs/" + url.PathEscape(job.ID)
-	if req.ParserRetryKey != "" && (job.Status == "failed" || job.Status == "cancelled" || job.Status == "canceled") {
+	if (req.RemotePDFJob == nil || req.RemotePDFJob.ID == "") && req.ParserRetryKey != "" && (job.Status == "failed" || job.Status == "cancelled" || job.Status == "canceled") {
 		retryHeader = req.ParserRetryKey
-		if err = call(ctx, "POST", route+"/retry", nil, "", &job); err != nil {
+		if err := call(ctx, "POST", route+"/retry", nil, "", &job); err != nil {
+			if remote, ok := err.(*RemotePDFError); req.DeferRemotePDF && ok && remote.Code == "http_429" {
+				ref := types.RemotePDFJobReference{QueuedAt: time.Now().Unix()}
+				if req.RemotePDFJob != nil {
+					ref = *req.RemotePDFJob
+				}
+				return nil, &RemotePDFPendingError{Job: ref, Status: "queued"}
+			}
 			return nil, err
 		}
 		retryHeader = ""
@@ -187,6 +253,15 @@ func (c *RemotePDFReader) Read(ctx context.Context, req *types.ReadRequest) (*ty
 		interval = 2 * time.Second
 	}
 	for job.Status != "completed" {
+		if req.DeferRemotePDF && (job.Status == "queued" || job.Status == "running") {
+			poll := 0
+			if req.RemotePDFJob != nil {
+				poll = req.RemotePDFJob.Poll
+			}
+			finished = true // Lease belongs to the durable follow-up, not this invocation.
+			return nil, &RemotePDFPendingError{Job: types.RemotePDFJobReference{ID: job.ID, LeaseID: leaseID, Poll: poll}, Status: job.Status}
+		}
+
 		if job.Status == "failed" || job.Status == "canceled" || job.Status == "cancelled" {
 			finished = true
 			var detail struct {
@@ -211,7 +286,7 @@ func (c *RemotePDFReader) Read(ctx context.Context, req *types.ReadRequest) (*ty
 			return nil, ctx.Err()
 		case <-time.After(interval):
 		}
-		if err = call(ctx, "GET", route, nil, "", &job); err != nil {
+		if err := call(ctx, "GET", route, nil, "", &job); err != nil {
 			return nil, err
 		}
 	}
@@ -236,7 +311,7 @@ func (c *RemotePDFReader) Read(ctx context.Context, req *types.ReadRequest) (*ty
 		Quality json.RawMessage `json:"quality"`
 		Bundle  json.RawMessage `json:"bundle"`
 	}
-	if err = call(ctx, "GET", route+"/result", nil, "", &artifact); err != nil {
+	if err := call(ctx, "GET", route+"/result", nil, "", &artifact); err != nil {
 		return nil, err
 	}
 	hash := sha256.Sum256(req.FileContent)
@@ -245,7 +320,7 @@ func (c *RemotePDFReader) Read(ctx context.Context, req *types.ReadRequest) (*ty
 	}
 	result := &types.ReadResult{Metadata: map[string]string{"pages": strconv.Itoa(len(artifact.Pages)), "parser_engine": RemotePDFEngineName, "parser_job_id": job.ID, "parser_quality": string(artifact.Quality), "parser_table_index_policy": "reviewed_structured_values_only"}}
 	if len(artifact.Bundle) > 0 {
-		result.StructuredTables, _ = json.Marshal(map[string]any{"engine": "remote_vlm", "bundle": artifact.Bundle})
+		result.StructuredTables, _ = json.Marshal(map[string]any{"engine": "remote_vlm", "bundle": artifact.Bundle, "processing_settings": policy})
 	}
 	var output strings.Builder
 	offset := 0

@@ -33,6 +33,7 @@ type candidateDecision struct {
 	TaskHash        string
 	EvidenceHash    string
 	SourceScopeHash string // Runtime scope at the check; never supplied by a model.
+	StandardReview  bool   // Approval cannot survive a change to the runtime review policy.
 	// Set only after the numeric guards and immediately before source review.
 	SourceReviewAttempted bool
 	Unsupported           []string
@@ -41,18 +42,20 @@ type candidateDecision struct {
 }
 
 type turnReviewState struct {
-	StructuredCitations     map[string]structuredCitationObservation
-	StructuredCitationCalls map[string][]string
-	StructuredCitationNonce string
-	AdditionsCache          map[string]string
-	Repairs                 int
-	Checks                  int
-	Last                    candidateDecision
-	ReadEvidence            *reviewEvidenceHandoff
-	ClosedStreams           map[string]bool
-	Committed               bool
-	Query                   string
-	Conversation            []chat.Message
+	StructuredCitations      map[string]structuredCitationObservation
+	StructuredCitationCalls  map[string][]string
+	StructuredCitationNonce  string
+	AdditionsCache           map[string]string
+	Repairs                  int
+	Checks                   int
+	Last                     candidateDecision
+	ReadEvidence             *reviewEvidenceHandoff
+	ClosedStreams            map[string]bool
+	Committed                bool
+	Query                    string
+	Conversation             []chat.Message
+	TaskConversation         []chat.Message
+	TaskConversationCaptured bool
 	// Latest numerically grounded semantic fallback, or a source-reviewed
 	// numeric-warning delivery. The latter retains the exact checked envelope
 	// separately from its deterministic decoded presentation.
@@ -67,6 +70,17 @@ type turnReviewState struct {
 // Preserve the existing two numeric and two semantic repair allowances while
 // preventing exceptional synthesis from opening another independent budget.
 const maxTurnCandidateRepairs = 4
+
+// Only explicit runtime configuration changes the quality policy. A model's
+// reasoning depth or task plan cannot silently promote standard back to strict.
+// Empty and unknown legacy values keep the existing strict behavior.
+func (e *AgentEngine) standardAnswerReview() bool {
+	return e != nil && e.config != nil && e.config.AnswerReviewMode == "standard"
+}
+
+func (e *AgentEngine) standardTextDelivery(state *types.AgentState) bool {
+	return e.standardAnswerReview() && !e.needsDeliveryReview(state) && !hasWorkspaceExecution(state)
+}
 
 func (e *AgentEngine) spendCandidateRepair() bool {
 	if e.turnReview.Repairs >= maxTurnCandidateRepairs {
@@ -94,6 +108,11 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	e.turnReview.ReadEvidence = nil
 	e.turnReview.Query = query
 	e.turnReview.Conversation = append([]chat.Message(nil), conversation...)
+	// Source exposure retains the real runtime transcript independently of
+	// the human task snapshot. The latter must survive executeLoop cleanup so
+	// completion/persistence never hashes later tool messages as human intent.
+	e.turnReview.TaskConversation = e.semanticReviewConversation(conversation)
+	e.turnReview.TaskConversationCaptured = true
 	e.answerReviewFeedback = ""
 	e.answerReviewUserNotice = ""
 	e.answerReviewAction = ""
@@ -103,6 +122,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		TaskHash:        e.candidateTaskDigest(query, conversation),
 		EvidenceHash:    reviewDigest(e.sourceConsistencyMessages(state, conversation)),
 		SourceScopeHash: e.unverifiedSourceScopeDigest(ctx),
+		StandardReview:  e.standardAnswerReview(),
 	}
 	defer func() {
 		e.turnReview.Checks++
@@ -122,6 +142,24 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		decision.Disposition = candidateProtocolFailure
 		decision.Err = ctx.Err()
 		return
+	}
+	// A runtime view reference is a compact presentation request, never a
+	// completed answer or source approval. Expand its private immutable cells
+	// before the unchanged numeric, scope, citation and full-task checks.
+	expanded, views, expansionErr := e.expandDocumentTableCandidate(candidate, state)
+	if expansionErr != nil {
+		decision.Candidate, decision.CandidateHash = "", candidateTextDigest("")
+		decision.Disposition, decision.Err = candidateProtocolFailure, expansionErr
+		e.answerReviewFeedback = "表格视图引用未通过本轮真实执行、来源版本或范围校验。请根据当前完整要求重新读取并选择实际表格，不要重抄或猜测视图内容。"
+		e.answerReviewAction = reviewCollectEvidence
+		return
+	}
+	if views > 0 {
+		candidate = expanded
+		decision.Candidate, decision.CandidateHash = candidate, candidateTextDigest(candidate)
+		common.PipelineInfo(ctx, "Agent", "document_table_view_expanded", map[string]interface{}{
+			"views": views, "candidate_hash": decision.CandidateHash,
+		})
 	}
 	if !e.candidateEvidenceBudgetFits(candidate, state) {
 		e.answerReviewFeedback = "所选证据超出单条消息存储预算。使用同一次真实返回结果的聚合引用，保留必要原格和计算依据；不能丢弃引用后把未保存证据宣布为已完成。"
@@ -149,15 +187,36 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	}
 	candidate = e.selectCandidateAdditions(ctx, query, candidate, state, conversation)
 	decision.Candidate, decision.CandidateHash = candidate, candidateTextDigest(candidate)
+	if e.standardAnswerReview() {
+		// This checks every model-selected identity against the same current
+		// actual observations used at persistence. It does not guess which source
+		// supports a claim or require another model to classify citation intent.
+		invalid := len(uniqueCandidateCitationIDs(candidate)) != len(e.currentCandidateKnowledgeReferences(candidate, state, conversation)) ||
+			len(uniqueCandidateEvidenceIDs(candidate)) != len(e.currentCandidateEvidenceReferences(candidate, state))
+		if invalid || (!e.config.CitationsEnabled() && len(uniqueCandidateCitationIDs(candidate))+len(uniqueCandidateEvidenceIDs(candidate)) > 0) {
+			e.answerReviewFeedback = "答复使用了本轮无法核实的来源引用。仅保留真实已读、身份和版本一致的来源句柄；缺少支持时准确说明该部分的缺口，不猜测或借用其他来源。"
+			e.answerReviewAction = reviewReviseAnswer
+			decision.Disposition = candidateRevise
+			return
+		}
+	}
 	if needsStructuredAnswerReviewForQuery(query, state.RoundSteps, conversation, candidate) {
 		evidence := answerNumericEvidence(candidate, state.RoundSteps, conversation)
 		decision.Unsupported = ungroundedStructuredNumbers(candidate, evidence, state.RoundSteps)
 		decision.NumericFeedback = buildNumericValidationFeedback(candidate, decision.Unsupported)
-		if len(decision.Unsupported) > 0 && !e.turnReview.NumericWarningAllowed && e.turnReview.Repairs < maxTurnCandidateRepairs {
+		if len(decision.Unsupported) > 0 && (e.standardAnswerReview() || !e.turnReview.NumericWarningAllowed && e.turnReview.Repairs < maxTurnCandidateRepairs) {
 			decision.Disposition = candidateNumericFailure
 			return
 		}
 		ctx = withNumericValidationFeedback(ctx, decision.NumericFeedback)
+	}
+	if e.standardTextDelivery(state) {
+		// Actual tools have already enforced permissions and source identities;
+		// immutable view, citation and numeric checks above remain mandatory.
+		// Ordinary answers need no second model opinion in this explicit policy.
+		// Action/file delivery retains its existing execution/completeness check.
+		common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{"reason": "standard_text_delivery"})
+		return
 	}
 	// After the bounded numeric repairs, the matcher remains diagnostic. The
 	// source model judges the complete task and actual evidence, including a
@@ -171,24 +230,10 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	if warning {
 		ctx = context.WithValue(ctx, numericWarningNoticeKey{}, numericWarningNotice(decision.Unsupported))
 	}
-	// Delivery policy (user decision 2026-10-20): direct lookups are delivered
-	// after deterministic numeric grounding, like a single-model answer with
-	// citations; the independent critic is reserved for synthesis tasks, where
-	// it caught real cross-source and trend errors. Without a planner judgement
-	// the critic still runs; fragments still get the completeness check. Actual
-	// successful PDF SQL analysis retains semantic checking even when the
-	// planner initially chose direct lookup; execution does not certify scope.
-	// The fast path also requires an explicit text-only delivery contract.
-	// Direct reasoning depth alone cannot waive requested artifact completion.
-	// With citations enabled, missing/invalid current references still need the
-	// existing critic's semantic required/not_required/unavailable decision.
-	// This eligibility check neither chooses a source nor infers a user intent.
-	if !forceReview && !warning && e.needsSourceConsistencyCheck(state) && e.taskReasoningDepth() == "direct" && e.hasExplicitTextDeliveryPlan() && !suspectAnswerFragment(candidate, reasoning) && !hasExecutedPDFAnalysis(state.RoundSteps) && !e.needsDeliveryReview(state) && e.directCitationDeliveryEligible(candidate, state, conversation) {
-		common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{
-			"reason": "direct_task", "reasoning_depth": e.taskReasoningDepth(),
-		})
-		return
-	}
+	// Reasoning depth selects model effort, never a weaker quality contract.
+	// A real citation proves identity only; directly transcribing a document
+	// still requires checking requested coverage, scope and meaning. The private
+	// full-task chart receipt above already supplies that independent review.
 	decision.SourceReviewAttempted = true
 	var repair bool
 	if forceReview {
@@ -207,21 +252,6 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		decision.Disposition = candidateNumericWarning
 	}
 	return
-}
-
-func (e *AgentEngine) directCitationDeliveryEligible(candidate string, state *types.AgentState, conversation []chat.Message) bool {
-	// A source value plus an inline position does not prove the prose's
-	// measure or scope. Retain semantic review until a private claim receipt
-	// binds those meanings; matching values, units or date digits is not one.
-	if hasStructuredEvidence(state.RoundSteps) {
-		return false
-	}
-	if !e.config.CitationsEnabled() {
-		return true
-	}
-	ids := uniqueCandidateCitationIDs(candidate)
-	evidenceIDs := uniqueCandidateEvidenceIDs(candidate)
-	return len(ids)+len(evidenceIDs) > 0 && len(e.currentCandidateKnowledgeReferences(candidate, state, conversation)) == len(ids) && len(e.currentCandidateEvidenceReferences(candidate, state)) == len(evidenceIDs)
 }
 
 // hasExecutedPDFAnalysis recognizes only current canonical results from the
@@ -258,8 +288,13 @@ func (e *AgentEngine) candidateApprovalCurrent(candidate string, state *types.Ag
 }
 
 func (e *AgentEngine) candidateDecisionCurrent(d candidateDecision, candidate string, state *types.AgentState) bool {
+	taskConversation := e.turnReview.Conversation
+	if e.turnReview.TaskConversationCaptured {
+		taskConversation = e.turnReview.TaskConversation
+	}
 	return d.CandidateHash == candidateTextDigest(candidate) &&
-		d.TaskHash == e.candidateTaskDigest(e.turnReview.Query, e.turnReview.Conversation) &&
+		d.StandardReview == e.standardAnswerReview() &&
+		d.TaskHash == e.candidateTaskDigest(e.turnReview.Query, taskConversation) &&
 		d.EvidenceHash == reviewDigest(e.sourceConsistencyMessages(state, e.turnReview.Conversation))
 }
 
@@ -316,6 +351,48 @@ func (e *AgentEngine) numericWarningDelivery(candidate string, state *types.Agen
 		return "", false
 	}
 	return delivery, true
+}
+
+// User steering preserves actual evidence and the shared repair allowance,
+// but none of the previous task's draft/approval caches may answer the new one.
+func (e *AgentEngine) invalidateCandidateTask() {
+	e.turnReview.Last = candidateDecision{}
+	e.turnReview.TaskConversation = nil
+	e.turnReview.TaskConversationCaptured = false
+	e.turnReview.ReadEvidence = nil
+	e.turnReview.UnverifiedCandidate = ""
+	e.turnReview.UnverifiedCheckedCandidate = ""
+	e.turnReview.UnverifiedUserNotice = ""
+	e.turnReview.UnverifiedDecision = candidateDecision{}
+	e.turnReview.UnverifiedCitationDelivery = nil
+}
+
+// A warning permits delivery after review failure, never reuse of another
+// task, source version, scope or candidate. This is distinct from approval.
+func (e *AgentEngine) unverifiedCandidateCurrent(ctx context.Context, state *types.AgentState) bool {
+	if e == nil || e.config == nil || state == nil {
+		return false
+	}
+	d := e.turnReview.UnverifiedDecision
+	if d.Disposition != candidateRevise && d.Disposition != candidateNeedSource && d.Disposition != candidateProtocolFailure {
+		return false
+	}
+	if !d.SourceReviewAttempted || len(d.Unsupported) != 0 || d.SourceScopeHash == "" || d.SourceScopeHash != e.unverifiedSourceScopeDigest(ctx) ||
+		!e.candidateDecisionCurrent(d, e.turnReview.UnverifiedCheckedCandidate, state) {
+		return false
+	}
+	base := e.turnReview.UnverifiedCheckedCandidate
+	if decoded, ok := decodeReviewedAnswerEnvelope(base); ok && strings.TrimSpace(decoded) != "" {
+		base = decoded
+	}
+	return strings.TrimSpace(base) != "" && strings.TrimSpace(base) == strings.TrimSpace(e.turnReview.UnverifiedCandidate)
+}
+
+func (e *AgentEngine) currentUnverifiedDelivery(ctx context.Context, state *types.AgentState) (string, bool) {
+	if !e.unverifiedCandidateCurrent(ctx, state) {
+		return "", false
+	}
+	return e.unverifiedDelivery()
 }
 
 // unverifiedDelivery is the delivery policy chosen by the user (2026-10-20):

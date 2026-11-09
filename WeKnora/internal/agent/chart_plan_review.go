@@ -97,7 +97,7 @@ func validateChartSourceColumns(table chart.Table, spec chart.Spec) error {
 // Bind the private receipt to the complete runtime task, including steering.
 // Neither arbitrary result JSON nor an accepted boolean can forge this map.
 func (e *AgentEngine) chartTaskHash(query string, conversation []chat.Message) string {
-	return reviewDigest([]any{query, e.semanticReviewConversation(conversation), e.taskPlan})
+	return reviewDigest([]any{e.candidateTaskDigest(query, conversation), e.taskPlan})
 }
 
 func (e *AgentEngine) chartPlanReviewer(query string, state *types.AgentState) chartPlanReviewer {
@@ -310,7 +310,7 @@ func (e *AgentEngine) isVerifiedChartDelivery(query, candidate string, state *ty
 				continue
 			}
 			for _, receipt := range tool.receipts {
-				if receipt.CallID != call.ID || receipt.Mode != "chart_only" || receipt.TaskHash != e.chartTaskHash(query, conversation) || receipt.DataHash != reviewDigest(call.Result.Data) {
+				if receipt.CallID != call.ID || receipt.Mode != "chart_only" || receipt.TaskHash != e.chartTaskHash(query, conversation) || receipt.DataHash != reviewDigest(call.Result.Data) || !chartReceiptSourceCurrent(call, tool, state) {
 					continue
 				}
 				if strings.Count(remaining, receipt.Output) != 1 {
@@ -322,6 +322,39 @@ func (e *AgentEngine) isVerifiedChartDelivery(query, candidate string, state *ty
 		}
 	}
 	return matched > 0 && strings.TrimSpace(remaining) == ""
+}
+
+// The caller holds tool.mu while checking its private receipt. Reconstruct
+// current sources with the renderer's existing version-sealed adapters; an old
+// render result cannot keep approval after its underlying evidence changes.
+func chartReceiptSourceCurrent(call types.ToolCall, tool *renderChartTool, state *types.AgentState) bool {
+	if call.Result == nil || state == nil {
+		return false
+	}
+	sourceID, _ := call.Result.Data["source_id"].(string)
+	raw, err := json.Marshal(call.Result.Data["semantic_validation"])
+	var validation chartSemanticValidation
+	if sourceID == "" || err != nil || json.Unmarshal(raw, &validation) != nil || validation.EvidenceHash == "" {
+		return false
+	}
+	tables, _ := chartSources(state.RoundSteps)
+	for _, source := range tables {
+		if source.ID == sourceID && reviewDigest([]any{source, source.Rows}) == validation.EvidenceHash {
+			return true
+		}
+	}
+	mapped, exists := tool.mapped[sourceID]
+	if !exists || reviewDigest([]any{mapped.Table, mapped.Table.Rows}) != validation.EvidenceHash {
+		return false
+	}
+	// Mapped tables retain the original root handle, including through remaps.
+	// The renderer already admits them only while that exact root is current.
+	for _, source := range append(tables, pdfChartInputSources(state.RoundSteps)...) {
+		if source.ID == mapped.ParentID {
+			return true
+		}
+	}
+	return false
 }
 
 // narrowVerifiedChartCandidate can discard an unrequested prose suffix only
@@ -363,7 +396,7 @@ func (e *AgentEngine) narrowVerifiedChartCandidate(query, candidate string, stat
 		return "", false
 	}
 	for handle, receipt := range tool.receipts {
-		if receipt.CallID != rendered.ID || receipt.Mode != "chart_only" || receipt.TaskHash != e.chartTaskHash(query, conversation) || receipt.DataHash != reviewDigest(rendered.Result.Data) || rendered.Result.Output != receipt.Output {
+		if receipt.CallID != rendered.ID || receipt.Mode != "chart_only" || receipt.TaskHash != e.chartTaskHash(query, conversation) || receipt.DataHash != reviewDigest(rendered.Result.Data) || rendered.Result.Output != receipt.Output || !chartReceiptSourceCurrent(*rendered, tool, state) {
 			return "", false
 		}
 		if _, valid := types.ParseResourcePath(handle); !valid || receipt.Output != "![图表]("+handle+")" || rendered.Result.Data["kind"] != "data_chart" || rendered.Result.Data["status"] != "ok" || rendered.Result.Data["delivery_mode"] != "chart_only" {

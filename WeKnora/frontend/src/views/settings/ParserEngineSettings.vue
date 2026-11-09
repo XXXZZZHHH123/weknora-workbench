@@ -94,6 +94,8 @@
     </template>
 
     <!-- 配置抽屉 — 用 SettingDrawer 包装，保持与 ModelEditorDialog 同款视觉/交互 -->
+    <PDFProcessingSettings v-if="authStore.hasRole('admin')" />
+
     <SettingDrawer
       v-model:visible="drawerVisible"
       :title="drawerTitle"
@@ -424,6 +426,7 @@ import {
   type ParserEngineConfig,
 } from '@/api/system'
 import { getWeKnoraCloudStatus } from '@/api/model'
+import PDFProcessingSettings from './PDFProcessingSettings.vue'
 
 const { t } = useI18n()
 const uiStore = useUIStore()

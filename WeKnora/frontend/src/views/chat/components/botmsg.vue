@@ -50,6 +50,7 @@
             <!-- 直接渲染完整内容，避免切分导致的问题，样式与 thinking 一致 -->
             <!-- 只有当有实际内容时才显示包围框 -->
             <div class="content-wrapper" v-if="hasActualContent">
+                <AnswerNotice v-if="answerPresentation.notice" :notice="answerPresentation.notice" />
                 <div class="ai-markdown-template markdown-content" v-stable-html="renderedHTML">
                 </div>
             </div>
@@ -157,6 +158,8 @@ import AgentStreamDisplay from './AgentStreamDisplay.vue';
 import RagPipelineProgress from './RagPipelineProgress.vue';
 import AnswerProgress from './AnswerProgress.vue';
 import ChatActionIcon from '@/components/ChatActionIcon.vue';
+import AnswerNotice from '@/components/chat/AnswerNotice.vue';
+import { extractAnswerNotice } from '@/utils/answerNotice';
 import AssistantActionsButton from '@/components/assistant/AssistantActionsButton.vue';
 import ChatRequestInfoButton from '@/components/ChatRequestInfoButton.vue';
 import ChatCitationFloat from '@/components/ChatCitationFloat.vue';
@@ -451,10 +454,11 @@ const mentionedItems = computed(() => {
 
 // Smooth the streamed answer into a steady typewriter cadence (shared with the
 // Agent path). Copy/toolbar still read the full content; only display is paced.
-const answerText = computed(() => {
+const answerPresentation = computed(() => {
     const text = props.content || props.session?.content || '';
-    return typeof text === 'string' ? text : '';
+    return extractAnswerNotice(typeof text === 'string' ? text : '', !props.session?.is_completed);
 });
+const answerText = computed(() => answerPresentation.value.content);
 const { displayed: typedAnswer } = useTypewriter(
     () => answerText.value,
     () => Boolean(props.session?.is_completed),
@@ -498,7 +502,7 @@ const hasActualContent = computed(() => {
 
 // 获取实际内容
 const getActualContent = () => {
-    return (props.content || props.session?.content || '').trim();
+    return answerText.value.trim();
 };
 
 // 复制回答内容
@@ -625,6 +629,7 @@ onBeforeUnmount(() => {
 
 // 内容包装器 - 与 Agent 模式的 answer 样式一致
 .content-wrapper {
+    display: flow-root;
     padding: 0;
 }
 

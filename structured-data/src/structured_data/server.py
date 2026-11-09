@@ -352,8 +352,8 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     async def analyze_table(series_ids: list[str], sql: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, limit: int = 200, source_question: str | None = None, source_binding: list[dict] | None = None) -> dict:
-        """source_binding可选：涉及同名来源时，由你依据完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序校验后直接执行，不再另行调用来源模型；不提供时由独立来源核验。只读通用分析SQL；先取得真实series_id并核验口径。dataset_id可省略，只有一个当前文件时自动选择；多文件先取得真实ID，不猜ID。隔离表data仅含指定字段/日期范围的全部记录（最多50000条），列series_id VARCHAR,date DATE,value DOUBLE,source_cell,date_cell,period,value_status,metric,sheet,unit均VARCHAR；缺失value为NULL。SQL方言为DuckDB，支持SELECT/WITH、四则、GROUP BY、JOIN、窗口/滚动与多阶段分析，无需预定义问题类型。优先使用原生聚合、窗口和日期函数，例如date_trunc(part,date)；不要自行拼日历算法，CAST小数到整数会舍入而非向下取整，向下取整用floor。输出columns和rows（按列顺序的二维数组）、SQL及输入覆盖/来源；输出截断不影响完整输入计算。所有聚合必须使用完整输入，按需WHERE value IS NOT NULL，SQL不自动排除零、换算单位或解释年度。输入过大/SQL错误时根据反馈修正，不让用户选字段。每个输入最多一个文件版本，不允许读取文件、联网、修改数据或多条语句。不要混加存量、累计值与当期流量。"""
-        from .table_analysis import analyze_table as run_analysis
+        """DuckDB单条只读SELECT/WITH分析；先取得真实series_id并核验口径。唯一输入表名data，列series_id VARCHAR,date DATE,value DOUBLE，其余source_cell,date_cell,period,value_status,metric,sheet,unit均VARCHAR，缺失value为NULL。SELECT混合普通聚合与非聚合列时，须在同一层用GROUP BY列出分组键（含日期表达式）；窗口聚合遵循自身OVER作用域。表一旦定义别名，只能在该作用域使用该别名；CTE后续层只看见前层实际输出列。CTE/别名避免SQL保留字，必要时使用双引号标识符。分组后再排名或跨组统计时，用CTE分开相应阶段，不把原始date或已离开作用域的别名直接混入聚合。程序不会补分组、替换别名或改写业务SQL；错误时依据真实DuckDB反馈修正。dataset_id可省略，只有一个当前文件时自动选择；多文件先取得真实ID，不猜ID。data仅含指定字段/日期范围的全部记录（最多50000条）。支持四则、GROUP BY、JOIN、窗口/滚动与多阶段分析，无需预定义问题类型。优先用原生聚合、窗口和日期函数，例如date_trunc(part,date)；不要自行拼日历算法，CAST小数到整数会舍入，向下取整用floor。输出columns和rows（按列顺序的二维数组）、SQL及输入覆盖/来源；输出截断不影响完整输入计算。所有聚合必须使用完整输入，按需WHERE value IS NOT NULL，SQL不自动排除零、换算单位或解释年度。输入过大/SQL错误时修正，不让用户选字段。每个输入最多一个文件版本，不允许文件、联网、写入或多条语句。不要混加存量、累计值与当期流量。source_binding可选：涉及同名来源时，按完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序校验后执行；不提供时由独立来源核验。"""
+        from .table_analysis import AnalysisSQLError, analyze_table as run_analysis
         try:
             selected=store.select_dataset(dataset_id)
             from .source_context import verify_selection
@@ -361,7 +361,10 @@ def create_app(data_dir: str | Path | None = None):
             if ambiguity:return ambiguity
             return await run_in_threadpool(run_analysis,store,selected,series_ids,sql,start_date,end_date,limit)
         except ValueError as exc:
-            return {'kind':'structured_analysis','status':'error','error':str(exc),'retryable':True,'next_step':'修正SQL或输入范围；这是系统反馈，不是字段确认请求'}
+            diagnostic=exc.diagnostic() if isinstance(exc,AnalysisSQLError) else {}
+            return {'kind':'structured_analysis','status':'error','error':str(exc),'retryable':True,
+                    'next_step':'依据真实错误和DuckDB输入表data的契约修正SQL或范围后重试；不会自动改写SQL，这是系统反馈，不是字段确认请求',
+                    **diagnostic}
 
     @mcp.tool()
     def list_pdf_tables(source_sha256: str | None = None, offset: int = 0, limit: int = 8) -> dict:

@@ -195,6 +195,8 @@ type CustomAgentConfig struct {
 	// low | medium | high | xhigh | max). Empty keeps the boolean Thinking
 	// semantics: true means "auto". See internal/models/api.ReasoningEffort.
 	ReasoningEffort string `yaml:"reasoning_effort,omitempty" json:"reasoning_effort,omitempty"`
+	// AnswerReviewMode is standard or strict; empty keeps the entry's legacy default.
+	AnswerReviewMode string `yaml:"answer_review_mode,omitempty" json:"answer_review_mode,omitempty"`
 	// Whether final answers include knowledge/web source citations. Nil defaults to true
 	// so agents saved before this option was introduced keep their existing behavior.
 	CitationEnabled *bool `yaml:"citation_enabled" json:"citation_enabled"`

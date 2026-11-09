@@ -464,6 +464,10 @@ func (e *AgentEngine) runToolCallAnswered(
 
 	var args map[string]any
 	argsStr := tc.Function.Arguments
+	if tc.ModelArguments == "" {
+		tc.ModelArguments = argsStr
+	}
+	normalizationRaw := tc.ModelArguments
 	if err := json.Unmarshal([]byte(argsStr), &args); err != nil {
 		repaired, truncated := agenttools.RepairJSONDetail(argsStr)
 		if repairErr := json.Unmarshal([]byte(repaired), &args); repairErr != nil {
@@ -501,6 +505,7 @@ func (e *AgentEngine) runToolCallAnswered(
 			}
 		}
 		logger.Warnf(ctx, "%s Repaired malformed JSON arguments", toolTag)
+		normalizationRaw = repaired
 		// The initial model-context pass could not inspect malformed JSON.
 		// Decode the repaired payload before execution, while preserving the
 		// exact provider payload already stored in tc.ModelArguments.
@@ -523,6 +528,21 @@ func (e *AgentEngine) runToolCallAnswered(
 					Error:   fmt.Sprintf("Failed to parse repaired tool arguments: %v", err),
 				},
 			}
+		}
+	}
+	// Container normalization must precede the final handle decode. A handle
+	// inside a JSON-encoded array is free text until that array is unwrapped.
+	// Revisit the preserved provider payload, not the earlier decoded copy.
+	if normalized, changed, err := e.normalizeRegisteredToolArguments(tc.Function.Name, normalizationRaw); err != nil {
+		return toolArgumentFailure(tc, err)
+	} else if changed {
+		decoded := tc
+		decoded.Function.Arguments = normalized
+		decodedCalls := []types.LLMToolCall{decoded}
+		e.modelContext.DecodeToolCalls(decodedCalls)
+		tc = decodedCalls[0]
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+			return toolArgumentFailure(tc, err)
 		}
 	}
 

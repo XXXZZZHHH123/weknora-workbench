@@ -15,6 +15,8 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
+type finalAnswerOptions struct{ preliminary bool }
+
 // streamFinalAnswerToEventBus streams the final answer generation through EventBus
 func (e *AgentEngine) streamFinalAnswerToEventBus(
 	ctx context.Context,
@@ -22,10 +24,13 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	state *types.AgentState,
 	sessionID string,
 	conversation []chat.Message,
+	options ...finalAnswerOptions,
 ) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	ctx, cancelFinalBudget := e.standardAnswerFinalContext(ctx, state)
+	defer cancelFinalBudget()
 	if hasWorkspaceExecution(state) {
 		e.recordArtifactInventory(ctx, state, &conversation, sessionID)
 	}
@@ -56,6 +61,13 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		"remaining work and explain any missing evidence. Use the user's requested " +
 		"language and format. Do not claim that an unperformed action " +
 		"succeeded.\"}</runtime_event>"
+	preliminary := len(options) > 0 && options[0].preliminary
+	if preliminary {
+		runtimeNotice += "\n" + standardAnswerBudgetNotice
+	}
+	if _, bounded := ctx.Value(standardAnswerFinalDeadlineKey{}).(time.Time); bounded && e.standardPreliminaryProse() {
+		runtimeNotice += "\nGive a concise, useful answer focused on the supported core findings. State uncovered scope briefly; omit optional item-by-item analysis."
+	}
 	if e.finalAnswerNeedsCompaction(messages, runtimeNotice) {
 		messages, _ = e.compactFinalAnswerContext(ctx, messages, state.CurrentRound+1,
 			runtimeNotice, compaction.ReasonThreshold)
@@ -100,6 +112,13 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			opts.Temperature = 0
 			opts.Format = reviewedAnswerSchema
 		}
+		if _, bounded := ctx.Value(standardAnswerFinalDeadlineKey{}).(time.Time); bounded {
+			deadline, _ := ctx.Deadline()
+			common.PipelineInfo(ctx, "Agent", "standard_answer_model_budget", map[string]any{
+				"purpose": "source_final", "attempt": attempt + 1, "remaining_ms": max(time.Until(deadline).Milliseconds(), 0),
+				"completion_tokens": opts.MaxCompletionTokens,
+			})
+		}
 		llmResult, err := e.streamLLMToEventBus(ctx, messages, opts, nil)
 		if llmResult != nil && llmResult.Usage != nil {
 			state.TurnUsage.Accumulate(*llmResult.Usage)
@@ -138,6 +157,12 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		invalid := strings.TrimSpace(fullAnswer) == "" || llmResult.StreamError != "" || len(llmResult.ToolCalls) > 0 || !isNaturalStopFinishReason(llmResult.FinishReason)
 		unsupported := []string{}
 		if !invalid {
+			if preliminary && e.standardPreliminaryProse() {
+				// The runtime knows it stopped at a source budget. Keep that
+				// delivery status visible even when the model omits the caveat,
+				// and bind the status to the same checked candidate and receipt.
+				fullAnswer = withStandardPreliminaryNotice(ctx, fullAnswer)
+			}
 			if attempt == 2 {
 				e.turnReview.NumericWarningAllowed = true
 			}
@@ -164,6 +189,9 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		}
 		if !invalid {
 			outcome = "answer"
+			if preliminary {
+				outcome = "partial"
+			}
 			break
 		}
 

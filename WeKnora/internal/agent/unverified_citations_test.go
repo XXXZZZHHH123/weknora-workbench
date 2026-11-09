@@ -162,7 +162,11 @@ func TestUnverifiedCitationNoPrivateDecisionOrChangedBeforeDeliveryCannotNavigat
 			}
 			e.commitTerminalResult(t.Context(), state, "session", answerReviewUnavailableFallback, "", "failed", false)
 			e.publishFinalKnowledgeReferences(t.Context(), state, "session")
-			require.Contains(t, state.FinalAnswer, "未能完成自动核验")
+			if mutation == "public_only" {
+				require.Contains(t, state.FinalAnswer, "未能完成自动核验", "same-task warning delivery remains available without a navigation binding")
+			} else {
+				require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer, "a warning cannot authorize a stale or ineligible answer body")
+			}
 			require.NotContains(t, state.FinalAnswer, "<evidence")
 			require.Empty(t, state.EvidenceRefs)
 			require.False(t, e.candidateApprovalCurrent(state.FinalAnswer, state))
@@ -193,11 +197,12 @@ func TestUnverifiedLegacyCitationKeepsOnlyActualCurrentReadAndVersion(t *testing
 			e.commitTerminalResult(t.Context(), state, "session", answerReviewUnavailableFallback, "", "failed", false)
 			e.publishFinalKnowledgeReferences(t.Context(), state, "session")
 			require.Empty(t, state.EvidenceRefs)
-			require.Contains(t, state.FinalAnswer, "未能完成自动核验")
 			if changed {
+				require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer, "an original-source change invalidates the answer body before terminal delivery")
 				require.Empty(t, state.KnowledgeRefs)
 				require.NotContains(t, state.FinalAnswer, "<kb")
 			} else {
+				require.Contains(t, state.FinalAnswer, "未能完成自动核验")
 				require.Len(t, state.KnowledgeRefs, 1)
 				require.Equal(t, "current-b", state.KnowledgeRefs[0].ID)
 				require.Equal(t, 3, state.KnowledgeRefs[0].ContentRevision)

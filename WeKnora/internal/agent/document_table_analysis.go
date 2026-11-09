@@ -23,6 +23,7 @@ type documentTableAnalysisTool struct {
 	steps    func() []types.AgentStep
 	question func() string
 	planner  documentTablePlanFunc
+	registry *agenttools.ToolRegistry
 }
 
 type documentTableAnalysisPlan struct {
@@ -34,10 +35,14 @@ type documentTableAnalysisPlan struct {
 // The trusted question is supplied by the server, never by tool arguments.
 // A caller can wrap planner to apply request-local codecs, model capability
 // settings and actual usage accounting without changing source execution.
-func newDocumentTableAnalysisTool(steps func() []types.AgentStep, question func() string, planner documentTablePlanFunc) *documentTableAnalysisTool {
-	return &documentTableAnalysisTool{BaseTool: agenttools.NewBaseTool(documentTableAnalysisToolName,
+func newDocumentTableAnalysisTool(steps func() []types.AgentStep, question func() string, planner documentTablePlanFunc, registries ...*agenttools.ToolRegistry) *documentTableAnalysisTool {
+	tool := &documentTableAnalysisTool{BaseTool: agenttools.NewBaseTool(documentTableAnalysisToolName,
 		"根据服务器保存的完整当前问题及真实已读文档表格，一次模型计划后批量执行1至4组来源绑定计算。无需手写每行原值或反复猜列。只从本轮实际成功读取的表格选源、行列、单位及公式，复用calculate_document_table全部校验；原值与计算结果保留引用。参数仅为空对象{}；分析目标只能来自服务器的真人原问题和追加指令，不接收主模型扩写的子任务。证据不足时返回needs_source/clarify；部分失败不冒充完整成功。",
 		json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{}}`)), steps: steps, question: question, planner: planner}
+	if len(registries) > 0 {
+		tool.registry = registries[0]
+	}
+	return tool
 }
 
 var documentTableAnalysisPlanSchema = json.RawMessage(`{"type":"object","additionalProperties":false,"required":["status","message","plans"],"properties":{"status":{"type":"string","enum":["ready","needs_source","clarify"]},"message":{"type":"string","maxLength":2048},"plans":{"type":"array","maxItems":4,"items":{"type":"object","additionalProperties":false,"required":["operation","chunk_id","table_index","row_start","row_end","columns","expression","result_unit"],"properties":{"operation":{"type":"string","enum":["calculate"]},"chunk_id":{"type":"string","minLength":1,"maxLength":256},"table_index":{"type":"integer","minimum":0},"row_start":{"type":"integer","minimum":0},"row_end":{"type":"integer","minimum":0},"columns":{"type":"object","minProperties":1,"maxProperties":16,"additionalProperties":{"type":"object","additionalProperties":false,"required":["column","unit"],"properties":{"column":{"type":"integer","minimum":0},"unit":{"type":"string","maxLength":128}}}},"expression":{"type":"string","minLength":1,"maxLength":1024},"result_unit":{"type":"string","enum":["","%"]}}}}}}`)
@@ -143,6 +148,19 @@ func (tool *documentTableAnalysisTool) Execute(ctx context.Context, raw json.Raw
 	}
 	steps := tool.steps()
 	metadata, metadataScope, rows, rowScope, eligible := documentTableAnalysisCatalog(steps)
+	// Bind each catalog coordinate to the exact successful source view used
+	// by its first-occurrence inventory. A shared executor may also see later
+	// search/partial views of the same durable chunk; those are different read
+	// coordinates and cannot silently replace the model's catalog selection.
+	catalogSources := map[string]string{}
+	for _, source := range documentTableSources(steps, tool.registry) {
+		for index := range documentSourceTables(source.Chunk.Content) {
+			key := documentTableIdentity(source.Chunk.ID, index)
+			if _, exists := catalogSources[key]; !exists {
+				catalogSources[key] = source.Fingerprint
+			}
+		}
+	}
 	if metadataScope.DistinctResults == 0 {
 		return documentTableAnalysisResult("needs_source", "本轮没有成功读取并解析的实际文档表格；先取得必要正文或表格来源。", nil), nil
 	}
@@ -194,7 +212,14 @@ func (tool *documentTableAnalysisTool) Execute(ctx context.Context, raw json.Raw
 			return documentTableAnalysisResult("needs_source", "所选表没有完整进入本次有界目录；不能依据裁剪行或未读来源执行，请补齐所需来源范围。", nil), nil
 		}
 	}
-	executor := newDocumentTableCalculationTool(tool.steps)
+	executor := newDocumentTableCalculationTool(tool.steps, tool.registry)
+	if tool.registry != nil {
+		if registered, err := tool.registry.GetTool(documentTableCalculationToolName); err == nil {
+			if shared, ok := registered.(*documentTableCalculationTool); ok {
+				executor = shared
+			}
+		}
+	}
 	executions := []map[string]any{}
 	complete := true
 	successful := 0
@@ -202,6 +227,11 @@ func (tool *documentTableAnalysisTool) Execute(ctx context.Context, raw json.Raw
 		if ctx.Err() != nil {
 			return fail("任务已取消；未执行剩余计划")
 		}
+		fingerprint := catalogSources[documentTableIdentity(request.ChunkID, *request.TableIndex)]
+		if fingerprint == "" || request.SourceFingerprint != "" && request.SourceFingerprint != fingerprint {
+			return documentTableAnalysisResult("needs_source", "所选表不能绑定到本次目录实际采用的成功读取视图；请重新取得当前来源，不能借另一裁剪范围的同名分块。", nil), nil
+		}
+		request.SourceFingerprint = fingerprint
 		encoded, err := json.Marshal(request)
 		if err != nil {
 			return fail("计算计划无法编码")

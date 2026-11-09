@@ -36,6 +36,108 @@ func boundDocumentImageState() *types.AgentState {
 	return state
 }
 
+func boundGeometryOnlyDocumentState() *types.AgentState {
+	state := boundDocumentImageState()
+	result := state.RoundSteps[0].ToolCalls[0].Result
+	result.Images, result.ImageDescriptions = nil, nil
+	result.Data["image_mode"] = "geometry"
+	image := result.Data["image_catalog"].([]map[string]any)[0]
+	image["source_part"] = "ppt/media/plot.emf"
+	read := result.Data["image_evidence"].([]map[string]any)[0]
+	delete(read, "sha256")
+	delete(read, "returned_image_index")
+	read["read_success"], read["pixel_status"], read["geometry_read_success"] = false, "not_requested", true
+	figure := map[string]any{}
+	for key, value := range image {
+		figure[key] = value
+	}
+	figure["evidence"] = map[string]any{"version": "source_figure_geometry_v1", "source_page": 7, "source_part": "ppt/media/plot.emf",
+		"source_file_sha256": strings.Repeat("a", 64), "source_media_sha256": strings.Repeat("b", 64), "markdown": "Original trace Alpha, approximate level 25.",
+		"geometry": map[string]any{"method": "original_emf_trace_geometry_v1", "series": []map[string]any{{"legend": "Alpha", "last": map[string]any{"approximate_value": 25}}}}}
+	result.Data["image_geometry_evidence"] = []map[string]any{figure}
+	return state
+}
+
+func TestDocumentGeometryOnlyReviewPreservesSourceEvidenceWithoutVisualAuthority(t *testing.T) {
+	state := boundGeometryOnlyDocumentState()
+	messages := sourceResultMessagesFromSteps(state.RoundSteps)
+	views, scope := documentImageConsistencySummariesWithSources(state, messages)
+	require.True(t, scope.ViewComplete)
+	require.Len(t, views, 1)
+	view := views[0].Content.(map[string]any)
+	require.Equal(t, false, view["original_pixels_verified"])
+	require.Equal(t, "not_requested", view["pixel_status"])
+	require.Equal(t, "", view["vision_observation"])
+	require.NotContains(t, view, "returned_image_index")
+	require.Equal(t, reviewEvidenceID(messages[0]), views[0].EvidenceID)
+	require.Equal(t, "/data/image_geometry_evidence/0/evidence", view["source_json_pointers"].(map[string]any)["original_geometry_evidence"])
+	geometry := view["original_geometry_evidence"].(map[string]any)
+	require.Equal(t, "Alpha", geometry["geometry"].(map[string]any)["series"].([]any)[0].(map[string]any)["legend"])
+	images, delivery := documentReviewImageInputs(state)
+	require.Empty(t, images)
+	require.Equal(t, 0, delivery["image_count"])
+	require.Empty(t, nativeGeometryImageIndexes(state.RoundSteps[0].ToolCalls[0]))
+
+	reader := newReviewEvidenceReader(messages)
+	witness := reviewSourceWitness{EvidenceID: views[0].EvidenceID,
+		JSONPointer: "/data/image_geometry_evidence/0/evidence/geometry/series/0/legend", Quote: "Alpha", Kind: "source"}
+	input := map[string]any{"source_tool_results": []any{}, "document_image_observations": views}
+	require.NoError(t, reviewWitnessVisible(input, reader, witness), "the real source pointer must remain readable without pixels")
+	witness.JSONPointer = "/data/image_descriptions/0"
+	require.Error(t, reviewWitnessVisible(input, reader, witness), "geometry never grants a visual observation witness")
+}
+
+func TestDocumentGeometryOnlyReviewRejectsFailedOrMismatchedSourceBindings(t *testing.T) {
+	for _, variant := range []string{"tool-failed", "other-tool", "pixel-mode", "pixel-read", "geometry-failed", "part", "page", "document", "chunk", "catalog", "source-page", "source-part", "source-hash", "media-hash", "unsupported-method", "bad-ref", "pixel-index"} {
+		t.Run(variant, func(t *testing.T) {
+			state := boundGeometryOnlyDocumentState()
+			call := &state.RoundSteps[0].ToolCalls[0]
+			data := call.Result.Data
+			read := data["image_evidence"].([]map[string]any)[0]
+			figure := data["image_geometry_evidence"].([]map[string]any)[0]
+			evidence := figure["evidence"].(map[string]any)
+			switch variant {
+			case "tool-failed":
+				call.Result.Success = false
+			case "other-tool":
+				call.Name = "untrusted_tool"
+			case "pixel-mode":
+				data["image_mode"] = "pixels"
+			case "pixel-read":
+				read["read_success"] = true
+			case "geometry-failed":
+				read["geometry_read_success"] = false
+			case "part":
+				figure["source_part"] = "ppt/media/other.emf"
+			case "page":
+				figure["page"] = 8
+			case "document":
+				data["knowledge_id"] = "other-document"
+			case "chunk":
+				data["chunks"] = []any{}
+			case "catalog":
+				data["image_catalog"] = []any{}
+			case "source-page":
+				evidence["source_page"] = 8
+			case "source-part":
+				evidence["source_part"] = "ppt/media/other.emf"
+			case "source-hash":
+				evidence["source_file_sha256"] = "invalid"
+			case "media-hash":
+				evidence["source_media_sha256"] = "invalid"
+			case "unsupported-method":
+				evidence["geometry"].(map[string]any)["method"] = "guessed"
+			case "bad-ref":
+				figure["reference"] = "https://example.invalid/other.emf"
+			case "pixel-index":
+				read["returned_image_index"] = 0
+			}
+			views, _ := documentImageConsistencySummaries(state)
+			require.Empty(t, views)
+		})
+	}
+}
+
 func TestDocumentImageReviewKeepsBindingAndObservationIndependentOfLongPage(t *testing.T) {
 	state := boundDocumentImageState()
 	result := state.RoundSteps[0].ToolCalls[0].Result

@@ -84,7 +84,7 @@ func (r *sourceRegistry) ModelOutput(result *types.ToolResult) string {
 // longer raw JSON sample array into a second copy of the readable evidence.
 func (r *sourceRegistry) withDocumentImageEvidence(output string, data map[string]any) string {
 	view := map[string]any{}
-	for _, key := range []string{"image_catalog", "image_evidence", "image_read_error"} {
+	for _, key := range []string{"image_mode", "image_catalog", "image_evidence", "image_read_error"} {
 		if value, ok := data[key]; ok {
 			encoded, err := json.Marshal(value)
 			if err == nil && string(encoded) != "[]" && string(encoded) != "null" && string(encoded) != `""` {
@@ -125,7 +125,8 @@ func (r *sourceRegistry) withDocumentImageEvidence(output string, data map[strin
 	}
 	footer := "\n<document_image_evidence untrusted_source_content=\"true\">" + string(encoded) + figureText.String() + "</document_image_evidence>\n" +
 		"Original geometry uses verified drawing points and calibrated axes; reconcile the actual legend, units and drawn range with any fallible vision observation. " +
-		"A catalog alone supplies no visual facts; failed reads supply no geometry.\n"
+		"A catalog alone supplies no visual facts. Explicit geometry mode does not request pixels: read_success=false with pixel_status=not_requested is not a failed geometry read. " +
+		"Use only successfully verified geometry; geometry supplies no pixel inspection or model vision observation. Failed geometry reads supply no numeric geometry evidence.\n"
 	footer = r.CompactKnownText(footer)
 	if strings.HasSuffix(output, "</retrieval>") {
 		return strings.TrimSuffix(output, "</retrieval>") + footer + "</retrieval>"
@@ -248,6 +249,11 @@ func (r *sourceRegistry) modelDocumentInfoOutput(data map[string]interface{}, fa
 		if metadata, ok := row["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
 			encoded, _ := json.Marshal(metadata)
 			fmt.Fprintf(&b, "    <source_metadata>%s</source_metadata>\n", escapeText(string(encoded)))
+		}
+		if constraint, exists := row["user_page_constraint"]; exists && constraint != nil {
+			if encoded, err := json.Marshal(constraint); err == nil && string(encoded) != "null" {
+				fmt.Fprintf(&b, "    <user_page_constraint verified=\"true\">%s</user_page_constraint>\n", escapeText(string(encoded)))
+			}
 		}
 		if description := stringValue(row, "description"); description != "" {
 			fmt.Fprintf(&b, "    <description>%s</description>\n", escapeText(description))
@@ -551,6 +557,49 @@ func renderPhysicalPageScope(data map[string]interface{}) string {
 	return b.String()
 }
 
+// renderDocumentReadPagination forwards actual read coverage. Chunk-list page
+// ordinals and selected physical pages are separate coordinate spaces; a batch
+// never inherits one global page or one global continuation cursor.
+func (r *sourceRegistry) renderDocumentReadPagination(data map[string]interface{}) string {
+	var b strings.Builder
+	b.WriteString(renderPhysicalPageScope(data))
+	if ordinal := intValue(data, "chunk_page"); ordinal > 0 && stringValue(data, "offset_space") == "document_chunks" {
+		fmt.Fprintf(&b, "  <chunk_pagination ordinal=\"%d\" offset_space=\"document_chunks\" offset=\"%d\" page_size=\"%d\" />\n",
+			ordinal, intValue(data, "offset"), intValue(data, "page_size"))
+	}
+	pages := mapsValue(data["page_results"])
+	if len(pages) == 0 {
+		return b.String()
+	}
+	document := escapeAttr(r.RegisterDocument(stringValue(data, "knowledge_id")))
+	fmt.Fprintf(&b, "  <page_batch document=\"%s\" all_pages_succeeded=\"%t\" pages_complete=\"%t\">\n",
+		document, boolValue(data, "all_pages_succeeded"), boolValue(data, "pages_complete"))
+	for _, page := range pages {
+		physicalPage := intValue(page, "page")
+		if physicalPage <= 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "    <page_result physical_page=\"%d\" success=\"%t\">\n", physicalPage, boolValue(page, "success"))
+		if boolValue(page, "success") {
+			b.WriteString("      " + renderPhysicalPageScope(page) + "\n")
+			if scope, ok := page["query_scope"].(map[string]any); ok {
+				if encoded, err := json.Marshal(scope); err == nil {
+					fmt.Fprintf(&b, "      <query_scope>%s</query_scope>\n", escapeText(string(encoded)))
+				}
+			}
+			if _, more := page["next_offset"]; more {
+				fmt.Fprintf(&b, "      <continuation>Continue read_document(id=%s, page=%d, offset=%d); this physical page is not fully read. Other pages have independent cursors.</continuation>\n",
+					document, physicalPage, intValue(page, "next_offset"))
+			}
+		} else if message := stringValue(page, "error"); message != "" {
+			fmt.Fprintf(&b, "      <error>%s</error>\n", escapeText(message))
+		}
+		b.WriteString("    </page_result>\n")
+	}
+	b.WriteString("  </page_batch>\n")
+	return b.String()
+}
+
 // annotateModeFallbacks adds the requested mode and one <mode_fallback> per
 // knowledge base that was searched with a different retrieval path.
 func (r *sourceRegistry) annotateModeFallbacks(output string, data map[string]interface{}) string {
@@ -777,7 +826,7 @@ func (r *sourceRegistry) modelKnowledgeChunksOutput(data map[string]interface{},
 		b.WriteString("<retrieval type=\"knowledge\" mode=\"deep_read\">\n")
 		fmt.Fprintf(&b, "  <document id=\"%s\" title=\"%s\">\n", escapeAttr(docHandle), escapeAttr(title))
 		writeDocumentInfo(&b, info)
-		if pageScope := renderPhysicalPageScope(data); pageScope != "" {
+		if pageScope := r.renderDocumentReadPagination(data); pageScope != "" {
 			b.WriteString("    " + pageScope + "\n")
 		}
 		if query := stringValue(data, "query"); query != "" {
@@ -802,10 +851,13 @@ func (r *sourceRegistry) modelKnowledgeChunksOutput(data map[string]interface{},
 			output += fmt.Sprintf("  <pagination remaining=\"%d\" page=\"%d\" page_size=\"%d\" />\n</retrieval>",
 				remaining, intValue(data, "page"), intValue(data, "page_size"))
 		}
+		if pagination := r.renderDocumentReadPagination(data); pagination != "" {
+			output = strings.TrimSuffix(output, "</retrieval>") + pagination + "</retrieval>"
+		}
 		return output
 	}
 	var footer strings.Builder
-	footer.WriteString(renderPhysicalPageScope(data))
+	footer.WriteString(r.renderDocumentReadPagination(data))
 	footer.WriteString(r.documentScopeFooter(data))
 	if omitted := intValue(data, "context_chunks_omitted_for_budget"); omitted > 0 {
 		fmt.Fprintf(&footer, "  <context_truncated omitted_chunks=\"%d\">Only the focus chunk and fitting neighbours are shown; do not treat omitted neighbours as read.</context_truncated>\n", omitted)
@@ -843,17 +895,33 @@ func (r *sourceRegistry) documentScopeFooter(data map[string]interface{}) string
 	}
 	document := escapeAttr(r.RegisterDocument(stringValue(scope, "knowledge_id")))
 	page := intValue(scope, "page")
+	var pages []int
+	if encoded, err := json.Marshal(scope["pages"]); err == nil {
+		_ = json.Unmarshal(encoded, &pages)
+	}
 	var footer strings.Builder
 	fmt.Fprintf(&footer, "  <document_scope document=\"%s\" matched=\"true\"", document)
 	if page > 0 {
 		fmt.Fprintf(&footer, " physical_page=\"%d\" visual_evidence=\"%t\"", page, boolValue(scope, "has_visual_evidence"))
+	} else if len(pages) > 0 {
+		encoded, _ := json.Marshal(pages)
+		fmt.Fprintf(&footer, " physical_pages=\"%s\"", escapeAttr(string(encoded)))
 	}
 	footer.WriteString(" />\n")
-	if page <= 0 {
-		footer.WriteString("  <hint>Use only the requested document. Do not substitute evidence from another report with a similar title or chart name. No physical page was selected.</hint>\n")
+	if constraint, exists := scope["user_page_constraint"]; exists && constraint != nil {
+		if encoded, err := json.Marshal(constraint); err == nil && string(encoded) != "null" {
+			fmt.Fprintf(&footer, "  <user_page_constraint verified=\"true\">%s</user_page_constraint>\n", escapeText(string(encoded)))
+		}
+	}
+	if len(pages) > 0 {
+		footer.WriteString("  <hint>The read plan selected these physical pages of the bound document. Check each page_result for actual success, completeness and its continuation cursor; a selection alone does not establish complete evidence or add a user constraint.</hint>\n")
 		return footer.String()
 	}
-	footer.WriteString("  <hint>Use only the requested document and physical page. Do not replace this chart with a same-name chart from another report. If values are estimated from a chart, label them as approximate.</hint>\n")
+	if page <= 0 {
+		footer.WriteString("  <hint>This result is bound to this document. Do not substitute evidence from another report with a similar title or chart name. No physical page was selected by this read; this does not add a user page restriction.</hint>\n")
+		return footer.String()
+	}
+	footer.WriteString("  <hint>Evidence in this result belongs to this document and physical page. Model-selected read pages may be replanned; explicit user restrictions remain enforced. Do not replace this chart with a same-name chart from another report. If values are estimated from a chart, label them as approximate.</hint>\n")
 	footer.WriteString("  <chart_interpretation>Preserve exact legend labels. A confirmed futures YYMM code describes contract year and delivery month; it does not establish a cross-year crop year, fiscal year or reporting period. Do not invent such a year range. Curves' own rightmost endpoints may have different dates: compare them as individual endpoints, never as an exact same-date or same-period ranking without source evidence. Count all legend lines separately from other lines after excluding the requested one. Answer each requested item only from the chart evidence; do not invent missing dates, years or values.</chart_interpretation>\n")
 	if _, more := data["next_offset"]; more {
 		fmt.Fprintf(&footer, "  <hint>This physical page is not fully read. Continue read_document(id=%s, page=%d, offset=%d); chart legends, tables or endpoint evidence may be in the remaining chunks. Do not treat omitted content as absent.</hint>\n", document, page, intValue(data, "next_offset"))
@@ -967,6 +1035,9 @@ func renderKnowledgeChunks(mode string, chunks []modelChunk, info map[string]int
 		}
 		for _, chunk := range group.chunks {
 			fmt.Fprintf(&b, "    <chunk id=\"%s\" index=\"%d\" view=\"%s\"", chunk.handle, chunk.index, chunk.view)
+			if chunk.page > 0 {
+				fmt.Fprintf(&b, " physical_page=\"%d\"", chunk.page)
+			}
 			if chunk.chunkType != "" {
 				fmt.Fprintf(&b, " type=\"%s\"", escapeAttr(chunk.chunkType))
 			}

@@ -7,5 +7,7 @@ import test from 'node:test'
 test('the shared picture preview never renders TDesign\'s default thumbnail trigger', () => {
   const source = readFileSync(new URL('./picture-preview.vue', import.meta.url), 'utf8')
   const viewer = source.slice(source.indexOf('<t-image-viewer'), source.indexOf('</t-image-viewer>'))
-  assert.match(viewer, /<template #trigger><\/template>/)
+  const trigger = viewer.match(/<template #trigger>([\s\S]*?)<\/template>/)?.[1]
+  assert.notEqual(trigger, undefined, 'an explicit trigger slot suppresses the default thumbnail')
+  assert.doesNotMatch(trigger, /<(?:img|t-image)\b/)
 })

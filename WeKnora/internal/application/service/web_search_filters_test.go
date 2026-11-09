@@ -67,6 +67,36 @@ func TestWebSearchServiceRejectsUnsupportedFilters(t *testing.T) {
 	require.True(t, plain.called)
 }
 
+func TestWebSearchFilterCapabilityUsesAuthorizedProviderWithoutSearching(t *testing.T) {
+	plain := &unfilteredSearchProvider{}
+	filtered := &filteredSearchProvider{}
+	r := infra.NewRegistry()
+	r.Register("plain", func(types.WebSearchProviderParameters) (interfaces.WebSearchProvider, error) { return plain, nil })
+	r.Register("filtered", func(types.WebSearchProviderParameters) (interfaces.WebSearchProvider, error) { return filtered, nil })
+	s := &WebSearchService{registry: r, providerRepo: filterProviderRepository{}}
+	ctx := context.WithValue(t.Context(), types.TenantIDContextKey, uint64(7))
+	cfg := types.DefaultWebSearchConfig()
+	supported, err := s.SupportsFilters(ctx, "plain", cfg)
+	require.NoError(t, err)
+	require.False(t, supported)
+	supported, err = s.SupportsFilters(ctx, "filtered", cfg)
+	require.NoError(t, err)
+	require.True(t, supported)
+	require.False(t, plain.called)
+	require.False(t, filtered.called)
+	require.Empty(t, filtered.filters)
+	_, err = s.SupportsFilters(t.Context(), "filtered", cfg)
+	require.ErrorContains(t, err, "workspace ID")
+	_, err = s.SupportsFilters(ctx, "not_registered", cfg)
+	require.Error(t, err, "unresolvable capability is unknown, not an unsupported-provider assertion")
+	_, err = s.SupportsFilters(ctx, "plain", nil)
+	require.Error(t, err)
+	cfg.Provider = "filtered"
+	supported, err = s.SupportsFilters(t.Context(), "", cfg)
+	require.NoError(t, err, "legacy configured providers remain supported")
+	require.True(t, supported)
+}
+
 func TestBraveProviderConfigurationIsAvailable(t *testing.T) {
 	require.True(t, isValidProviderType(types.WebSearchProviderTypeBrave))
 	require.Error(t, validateProviderParameters(types.WebSearchProviderTypeBrave, types.WebSearchProviderParameters{}))

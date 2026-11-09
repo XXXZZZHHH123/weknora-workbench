@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -21,6 +22,87 @@ type searchOnlyWebService struct {
 	query    string
 	provider string
 	calls    int
+}
+
+type filterAwareWebService struct {
+	searchOnlyWebService
+	supported          bool
+	capabilityErr      error
+	capabilityProvider string
+	capabilityConfig   *types.WebSearchConfig
+}
+
+func (s *filterAwareWebService) SupportsFilters(_ context.Context, providerID string, cfg *types.WebSearchConfig) (bool, error) {
+	s.capabilityProvider, s.capabilityConfig = providerID, cfg
+	return s.supported, s.capabilityErr
+}
+
+func TestAgentWebSearchSchemaUsesActualFilterCapabilityAndRejectsExplicitUnsupportedFilters(t *testing.T) {
+	cfg := &types.WebSearchConfig{Provider: "legacy-fixture", MaxResults: 9, CompressionMethod: "rag"}
+	ctx := context.WithValue(t.Context(), types.TenantIDContextKey, uint64(7))
+	ctx = context.WithValue(ctx, types.TenantInfoContextKey, &types.Tenant{WebSearchConfig: cfg})
+	svc := &filterAwareWebService{}
+	tool := NewWebSearchTool(svc, 3, "actual-provider").WithProviderCapabilities(ctx)
+	require.Equal(t, "actual-provider", svc.capabilityProvider)
+	require.Equal(t, "legacy-fixture", svc.capabilityConfig.Provider)
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	require.NoError(t, json.Unmarshal(tool.Parameters(), &schema))
+	require.NotContains(t, schema.Properties, "country")
+	require.NotContains(t, schema.Properties, "freshness")
+	require.Contains(t, schema.Properties, "count")
+	require.Contains(t, string(schema.Properties["count"]), "1 to 3")
+	require.Contains(t, tool.Description(), "does not support country or freshness")
+	for _, raw := range []string{`{"query":"public reference","country":"DE"}`, `{"query":"public reference","freshness":"pd"}`} {
+		result, err := tool.Execute(ctx, json.RawMessage(raw))
+		require.NoError(t, err)
+		require.False(t, result.Success)
+		require.Equal(t, "unsupported_search_filters", result.Data["reason_code"])
+		requested := result.Data["requested_filters"].(types.WebSearchFilters)
+		require.True(t, requested.Country != "" || requested.Freshness != "", "the unmet filter remains visible")
+		require.Contains(t, result.Output, "only if the task permits")
+	}
+	require.Zero(t, svc.calls, "unsupported filters must not cause an unfiltered search")
+	result, err := tool.Execute(ctx, json.RawMessage(`{"query":"public reference"}`))
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, 1, svc.calls)
+	require.Equal(t, "rag", cfg.CompressionMethod, "capability resolution must not mutate tenant settings")
+	require.Contains(t, string(NewWebSearchTool(nil, 3, "").Parameters()), `"country"`, "projection must not mutate the shared base schema")
+}
+
+func TestAgentWebSearchRechecksFilterCapabilityInsteadOfTrustingSchemaSnapshot(t *testing.T) {
+	ctx := context.WithValue(t.Context(), types.TenantIDContextKey, uint64(7))
+	svc := &filterAwareWebService{}
+	tool := NewWebSearchTool(svc, 3, "actual-provider").WithProviderCapabilities(ctx)
+	svc.supported = true // A provider setting changed after engine construction.
+	result, err := tool.Execute(ctx, json.RawMessage(`{"query":"public reference","country":"DE","freshness":"pw"}`))
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, 1, svc.calls)
+	require.Equal(t, types.WebSearchFilters{Country: "DE", Freshness: "pw"}, svc.config.Filters)
+	supportedTool := NewWebSearchTool(svc, 3, "actual-provider").WithProviderCapabilities(ctx)
+	require.Contains(t, string(supportedTool.Parameters()), `"country"`)
+	require.Contains(t, string(supportedTool.Parameters()), `"freshness"`)
+	svc.supported = false
+	result, err = supportedTool.Execute(ctx, json.RawMessage(`{"query":"public reference","country":"DE"}`))
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	require.Equal(t, 1, svc.calls, "a now-unsupported filter cannot be discarded")
+}
+
+func TestAgentWebSearchUnknownCapabilityPreservesSchemaAndExecutionFilters(t *testing.T) {
+	ctx := context.WithValue(t.Context(), types.TenantIDContextKey, uint64(7))
+	svc := &filterAwareWebService{capabilityErr: errors.New("local capability lookup unavailable")}
+	tool := NewWebSearchTool(svc, 3, "actual-provider").WithProviderCapabilities(ctx)
+	require.Contains(t, string(tool.Parameters()), `"country"`)
+	require.Contains(t, tool.Description(), "support is unknown")
+	result, err := tool.Execute(ctx, json.RawMessage(`{"query":"public reference","country":"DE","freshness":"pd"}`))
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, types.WebSearchFilters{Country: "DE", Freshness: "pd"}, svc.config.Filters,
+		"the normal service remains authoritative; failed capability lookup must not remove filters")
 }
 
 func (s *searchOnlyWebService) Search(

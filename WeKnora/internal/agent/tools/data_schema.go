@@ -14,7 +14,8 @@ var dataSchemaTool = BaseTool{
 	name: ToolDataSchema,
 	description: "Use this tool to get the schema information of a CSV or Excel file loaded into DuckDB. " +
 		"It returns the columns and row count. When querying the document with data_analysis, " +
-		"reference it as the table \"" + DataAnalysisTableName + "\".",
+		"reference it as the table \"" + DataAnalysisTableName + "\". " +
+		"Only available for documents with an existing DuckDB table schema. An unavailable schema does not mean the original file has no data; use the provided structured-source catalog or read_document instead of repeating this call.",
 	schema: utils.GenerateSchema[DataSchemaInput](),
 }
 
@@ -119,10 +120,16 @@ func (t *DataSchemaTool) Execute(ctx context.Context, args json.RawMessage) (*ty
 	}
 
 	if summaryContent == "" || columnContent == "" {
-		return &types.ToolResult{
-			Success: false,
-			Error:   fmt.Sprintf("No table schema information found for knowledge ID '%s'", input.KnowledgeID),
-		}, fmt.Errorf("no schema info found")
+		// This is a missing tool capability, not proof that the source is empty.
+		// Return it as a structured failure so the executor retains the reason
+		// and navigation instead of replacing it with a generic Go error.
+		message := "该文档未提供传统 DuckDB 表结构，本次没有取得表格数据；这不代表原文件没有数据。请使用当前提供的结构化来源目录核对数据集，或用 read_document 读取文档；不要对同一文档重复调用 data_schema。"
+		data := map[string]interface{}{
+			"kind": "tool_capability", "status": "unavailable", "reason_code": "table_schema_unavailable",
+			"knowledge_id": input.KnowledgeID, "retryable": false, "notice": message,
+		}
+		encoded, _ := json.Marshal(data)
+		return &types.ToolResult{Success: false, Error: message, Output: string(encoded), Data: data}, nil
 	}
 
 	output := fmt.Sprintf(

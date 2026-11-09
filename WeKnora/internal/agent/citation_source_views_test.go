@@ -312,7 +312,7 @@ func TestCitationRealSearchThenUncutReadKeepsCanonicalReference(t *testing.T) {
 			messages = e.appendToolResults(messages, state.RoundSteps[1])
 			candidate := e.modelContext.DecodeOutputText(`The measurement describes area.<ref id="` + handle + `"/>`)
 			require.Len(t, e.currentCandidateKnowledgeReferences(candidate, state, messages), 1)
-			model.responses = []mockResponse{chatAnswer(`The measurement describes area.<ref id="` + handle + `"/>`)}
+			model.responses = []mockResponse{chatAnswer(`The measurement describes area.<ref id="` + handle + `"/>`), sourceAcceptedVerdict()}
 			var complete event.AgentCompleteData
 			e.eventBus.On(event.EventAgentComplete, func(_ context.Context, evt event.Event) error {
 				complete = evt.Data.(event.AgentCompleteData)
@@ -321,7 +321,7 @@ func TestCitationRealSearchThenUncutReadKeepsCanonicalReference(t *testing.T) {
 			})
 			_, err = e.executeLoop(ctx, state, "Explain the measurement.", messages, emptyTools(), "session", "message")
 			require.NoError(t, err)
-			require.Len(t, model.calls, 1, "an unchanged full-source direct citation keeps the existing fast path")
+			require.Len(t, model.calls, 2, "the source-bound answer receives the same final semantic coverage review")
 			require.Len(t, complete.KnowledgeRefs, 1)
 			require.Len(t, state.KnowledgeRefs, 1)
 			require.Equal(t, chunk.ID, state.KnowledgeRefs[0].ID)

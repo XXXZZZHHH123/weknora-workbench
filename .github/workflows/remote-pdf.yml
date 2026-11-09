@@ -19,6 +19,9 @@ jobs:
   checks:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
@@ -31,3 +34,63 @@ jobs:
         run: docker build -t remote-pdf:ci services/remote-pdf
       - name: Verify local OCR runtime without network
         run: docker run --rm --network none --entrypoint tesseract remote-pdf:ci --list-langs
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish tested image and record source inputs
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        env:
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+
+          commit, run_id, attempt = (os.environ[key] for key in ('COMMIT', 'RUN_ID', 'RUN_ATTEMPT'))
+          if not re.fullmatch(r'[a-f0-9]{40}', commit) or any(
+                  not re.fullmatch(r'[1-9][0-9]*', value) for value in (run_id, attempt)):
+              raise SystemExit('Invalid immutable image identity')
+          if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != commit:
+              raise SystemExit('Checked-out source does not match workflow commit')
+          source_input_hash = hashlib.sha256(subprocess.check_output([
+              'git', 'ls-tree', '-r', '-z', commit, '--', 'services/remote-pdf'])).hexdigest()
+          repository = 'ghcr.io/' + os.environ['GITHUB_REPOSITORY'].lower() + '-remote-pdf'
+          image = f'{repository}:production-{commit}-{run_id}-{attempt}'
+
+          def inspect(reference):
+              return json.loads(subprocess.check_output(['docker', 'image', 'inspect', reference]))[0]
+
+          # Tag and push the exact image that passed this job's OCR check; never rebuild here.
+          tested_id = inspect('remote-pdf:ci')['Id']
+          subprocess.run(['docker', 'tag', 'remote-pdf:ci', image], check=True)
+          if inspect(image)['Id'] != tested_id:
+              raise SystemExit('Tagged image differs from the tested image')
+          subprocess.run(['docker', 'push', image], check=True)
+          published = inspect(image)
+          digests = {value.removeprefix(repository + '@') for value in published.get('RepoDigests', [])
+                     if value.startswith(repository + '@')}
+          if published['Id'] != tested_id or len(digests) != 1:
+              raise SystemExit('Published image identity or registry digest is ambiguous')
+          digest = digests.pop()
+          if not re.fullmatch(r'sha256:[a-f0-9]{64}', digest):
+              raise SystemExit('Registry did not return a SHA256 image digest')
+          metadata = dict(commit=commit, workflow_run_id=run_id, run_attempt=attempt,
+                          image=image, digest=digest, source_input_hash=source_input_hash,
+                          tested_image_id=tested_id)
+          Path('remote-pdf-image.json').write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        with:
+          name: remote-pdf-image-${{ github.sha }}
+          path: remote-pdf-image.json
+          if-no-files-found: error

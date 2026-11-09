@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/agent/collaboration"
+	"github.com/Tencent/WeKnora/internal/modelcontext"
+	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
@@ -81,6 +83,52 @@ func TestCollaborationRequiresIdempotencyMetadata(t *testing.T) {
 	g, err := b.Runtime.Store.Read(context.Background(), b.Scope)
 	require.NoError(t, err)
 	require.Empty(t, g.Members)
+}
+
+func TestCollaborationSpawnSchemaAndFieldFailuresDoNotCreateChildren(t *testing.T) {
+	r, b, ctx := collaborationTools(t)
+	registered, err := r.GetTool("spawn_agent")
+	require.NoError(t, err)
+	tool := registered.(*CollaborationTool)
+	resolved := 0
+	tool.resolve = func(context.Context, string) (string, error) {
+		resolved++
+		return "{}", nil
+	}
+	projected := modelcontext.NewRegistry(true).EncodeTools([]chat.Tool{{Type: "function", Function: chat.FunctionDef{
+		Name: tool.Name(), Description: tool.Description(), Parameters: tool.Parameters(),
+	}}})
+	var schema struct {
+		Required   []string `json:"required"`
+		Properties map[string]struct {
+			Pattern string `json:"pattern"`
+		} `json:"properties"`
+	}
+	require.NoError(t, json.Unmarshal(projected[0].Function.Parameters, &schema))
+	require.ElementsMatch(t, []string{"task_name", "message"}, schema.Required)
+	require.Equal(t, collaborationTaskNamePattern, schema.Properties["task_name"].Pattern)
+	for _, test := range []struct{ raw, path string }{
+		{`{"task_name":"read-child","message":"Read the source."}`, "/task_name"},
+		{`{"task_name":"read_child"}`, "/message"},
+		{`{"task_name":"read_child","message":"   "}`, "/message"},
+	} {
+		result, err := tool.Execute(ctx, json.RawMessage(test.raw))
+		require.NoError(t, err)
+		require.False(t, result.Success)
+		require.Equal(t, test.path, result.Data["field_path"])
+		require.Contains(t, result.Output, "no child was created")
+	}
+	require.Zero(t, resolved, "invalid input must fail before resolving an agent template")
+	group, err := b.Runtime.Store.Read(ctx, b.Scope)
+	require.NoError(t, err)
+	require.Empty(t, group.Members)
+	result, err := tool.Execute(ctx, json.RawMessage(`{"task_name":"read_child","message":"Read the supplied source."}`))
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, 1, resolved)
+	group, err = b.Runtime.Store.Read(ctx, b.Scope)
+	require.NoError(t, err)
+	require.Len(t, group.Members, 1)
 }
 
 func TestChildCannotControlOthersOrStartRoot(t *testing.T) {

@@ -33,14 +33,14 @@ func TestDirectCitationMissingUsesExistingCriticAndRequiresRevision(t *testing.T
 	require.Equal(t, 0, e.turnReview.Repairs, "checking opens no new repair budget")
 }
 
-func TestDirectCitationValidRetainsShortcutButEveryReferenceMustQualify(t *testing.T) {
+func TestDirectCitationValidStillReviewsScopeAndEveryReferenceMustQualify(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
-		model := &mockChat{}
+		model := &mockChat{responses: []mockResponse{sourceAcceptedVerdict()}}
 		e, state, candidate := directCitationReadFixture(t, model, true)
 		decision := e.checkCandidate(t.Context(), "Report the indicator.", candidate, "", state, nil, false)
 		require.Equal(t, candidateAccepted, decision.Disposition)
 		require.NoError(t, decision.Err)
-		require.Empty(t, model.calls, "a grounded direct lookup with a real current citation retains the existing fast path")
+		require.Len(t, model.calls, 1, "citation identity cannot waive source coverage and semantics")
 		require.True(t, e.candidateApprovalCurrent(candidate, state))
 	})
 	for _, corrupt := range []bool{false, true} {
@@ -67,14 +67,14 @@ func TestDirectCitationValidRetainsShortcutButEveryReferenceMustQualify(t *testi
 	}
 }
 
-func TestDirectCitationDisabledRetainsShortcut(t *testing.T) {
-	model := &mockChat{}
+func TestDirectCitationDisabledStillReviewsCoverage(t *testing.T) {
+	model := &mockChat{responses: []mockResponse{sourceAcceptedVerdict()}}
 	e, state, candidate := directCitationReadFixture(t, model, false)
 	require.Empty(t, uniqueCandidateCitationIDs(candidate), "the real disabled registry removes inline source tags")
 	decision := e.checkCandidate(t.Context(), "Report the indicator.", candidate, "", state, nil, false)
 	require.Equal(t, candidateAccepted, decision.Disposition)
 	require.NoError(t, decision.Err)
-	require.Empty(t, model.calls, "disabled citations preserve the authorized direct lookup policy")
+	require.Len(t, model.calls, 1, "citation presentation settings cannot waive source coverage and semantics")
 }
 
 func TestDirectCitationUnavailableStructuredSourceCanCompleteThroughExistingCritic(t *testing.T) {

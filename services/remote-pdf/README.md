@@ -18,8 +18,10 @@ Create the private data directory and its `tmp` child, writable by UID 10001. Mo
   "owner_outstanding": 4,
   "max_upload_bytes": 104857600,
   "max_uploads": 4,
-  "queue_timeout_seconds": 1800,
-  "execution_timeout_seconds": 1800,
+  "queue_timeout_seconds": 86400,
+  "execution_timeout_seconds": 7200,
+  "max_queue_timeout_seconds": 86400,
+  "max_execution_timeout_seconds": 7200,
   "retention_seconds": 86400,
   "max_storage_bytes": 5368709120,
   "max_job_output_bytes": 268435456,
@@ -40,6 +42,52 @@ Create the private data directory and its `tmp` child, writable by UID 10001. Mo
 ```
 
 Set `REMOTE_PDF_IMAGE`, `REMOTE_PDF_SETTINGS_FILE`, `REMOTE_PDF_DATA_DIR`; build/start with this compose file only after reviewing the intended environment. The HTTP port defaults to localhost 18735. Restrict service token access to trusted WeKnora backend processes. No API credential is accepted from browser-provided request data.
+
+### Formal production image
+
+The `Remote PDF parser checks` workflow tests the worker, builds `remote-pdf:ci`,
+and checks its Tesseract runtime without network access. Only a main push or a
+workflow dispatch on main then tags and pushes that same tested image as
+`ghcr.io/xxxzzzhhh123/weknora-workbench-remote-pdf:production-<commit>-<run-id>-<run-attempt>`.
+Pull requests and other branches never publish. The artifact
+`remote-pdf-image-<commit>` contains `remote-pdf-image.json` with the commit,
+workflow run ID and attempt, image, registry SHA256 digest, tested local image ID,
+and `source_input_hash=sha256(git ls-tree -r -z <commit> -- services/remote-pdf)`.
+
+This worker is independent of the seven-service release bundle. A production
+upgrade requires both the full Workbench CI/CD and this worker workflow to
+succeed for the intended main commit, with matching release/artifact metadata.
+Dispatch the worker workflow on that main commit if its path filter did not run.
+Use the published image pinned by digest; never compile a production replacement
+locally. Older workers lack `/v1/capacity` and request-specific timeout policies;
+their healthy liveness endpoint alone does not establish client compatibility.
+
+Pause new production submissions and retries, verify no queued/running jobs or
+active parser processes, and record the existing image, network and mounts before
+upgrading. Back up the entire data/state, originals and checkpoints, using SQLite
+online backup plus an integrity check or a consistent stopped snapshot. Back up
+private configuration and credentials separately without logging them. Keep the
+old image and persistent directories. Extractor/prompt changes alter the parser
+profile: restarting old active jobs can fail them with `PARSER_PROFILE_CHANGED`
+even though additive SQLite migration preserves jobs, leases and checkpoints.
+
+Update only `remote-pdf` in the existing `weknora-remote-pdf-prod` project using
+`up -d --no-deps --no-build remote-pdf` and the verified published digest. Preserve
+its existing data/configuration mounts, network, authentication and secrets;
+never start a second scheduler on the same database. Verify the running digest,
+health, authenticated capacity/permission checks and isolated queue/execution
+policy checks before updating the seven application services and reopening
+submissions. Health and protocol checks do not prove live model accuracy.
+See [production deployment](../../deploy/README.md#pdf-表格识别remote_vlm) for the
+full boundary and rollback requirements; image rollback does not restore data.
+
+For the server's `regctl image export | docker load` transport, Docker may omit
+local `RepoDigests`. Export the verified `repository@sha256:<digest>` with
+`--name` set to the artifact's image tag, and require the imported image ID to
+equal `tested_image_id`. Compose may then pin that `sha256:<image-config-id>`
+with `--pull never --no-build`; verify the actual container image ID before and
+after the switch. A matching tag or a missing local RepoDigest is not proof of
+verified image content.
 
 ## Protocol
 
@@ -106,3 +154,56 @@ The complete original transcription stays in the review artifact. Exact table
 answers must use source-reviewed, published structured data. Ordinary text pages
 retain text indexing and source-page citations. This deliberately trades immediate
 numeric recall for a verifiable table approval boundary.
+
+### Disagreeing page readings
+
+When three independent full-grid readings all disagree, one bounded assisted pass re-reads the original rendered page with the complete candidate tables. It can repair repeated or misplaced headers and column units from the image; it does not select values using business keywords, dates or numeric trends. Assisted output is retained separately and never counted as an independent agreeing vote. All independent readings and unresolved cell/header differences remain available for review. If this optional pass fails or the complete candidate evidence exceeds its budget, the initial source result remains available with review required. Parser version and prompt digest isolate older checkpoints.
+
+Unit disagreements are reviewed independently of digit agreement. Two matching transcriptions with empty units cannot hide another reading's printed unit; the finding identifies the affected columns. JSON null and empty-string absence alone do not create a unit disagreement.
+
+
+### Workspace policy and independent clocks
+
+Administrators control **Settings → Parser engines → PDF table processing**.
+Ordinary users have no configuration controls. The authenticated nonsecret policy
+endpoint is `GET /api/v1/tenants/kv/pdf-processing-settings`; only workspace owners
+and administrators can `PUT` it. Shared knowledge bases use their owner's policy
+after a fresh access check.
+
+| Setting | Recommended default | Accepted range |
+| --- | --- | --- |
+| Complete boundary overlap | 1 page | 1–5 pages |
+| Grouping request budget | 24,000 UTF-8 bytes | 12,000–96,000 bytes |
+| Queue residence | 24 hours | 1–24 hours |
+| Actual remote extraction | 120 minutes | 10–120 minutes |
+
+Policy is snapshotted when a task starts. Changes apply to new tasks and explicit
+manual retries; replaying the same retry action does not reset its clocks. Batch
+packaging retains complete pages and every source cell; it reports an input limit
+if whole overlapping pages cannot fit, rather than truncating boundary evidence.
+Overlap provides context, not permission to merge tables or approve uncertain data.
+
+Queue residence never consumes the extraction budget. `429` admission pressure
+keeps the client in a waiting state, checking the authenticated `/v1/capacity`
+endpoint before uploading again. Clients and the scheduler track queue and execution
+separately. Native document workers persist a private job/consumer lease and policy
+in durable follow-up tasks, acknowledge the current short poll, and release their
+worker slot. A worker's outer task/RPC timeout therefore does not include hours of
+remote queue residence. Queued/running states remain visible; terminal extraction
+errors do not automatically restart paid work. Cancellation detaches only that
+consumer. Existing source, permission, parser profile, and publication checks remain.
+
+Trusted clients send `X-Parse-Queue-Timeout` and `X-Parse-Execution-Timeout`.
+The worker accepts these only through its authenticated internal API, bounded by
+`max_queue_timeout_seconds` (default 86,400) and
+`max_execution_timeout_seconds` (default 7,200). The older
+`queue_timeout_seconds`/`execution_timeout_seconds` settings are fallbacks for
+clients without headers, not caps on workspace policy. A request beyond the server
+cap is rejected explicitly. Existing active jobs retain their captured limits;
+SQLite migration adds columns without discarding jobs, leases, or checkpoints.
+
+Queue capacity, disk reservations and global document/page concurrency remain
+bounded. A queue retention expiry, exhausted actual extraction budget, provider
+failure or storage exhaustion is still an explicit failure; these are separate
+from spending extraction time while waiting. This policy is for the shared remote
+PDF engine; other parsers retain their own request limits.

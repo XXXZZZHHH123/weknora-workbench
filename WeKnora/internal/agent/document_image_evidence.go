@@ -15,7 +15,8 @@ import (
 
 // Keep per-image identity beside the actual observation, independently of a
 // potentially long multi-figure page. This projection never creates evidence
-// from assistant prose or from an image URL without returned source pixels.
+// from assistant prose or an image URL. Explicit geometry has an independent
+// verified-source path and never implies returned or visually inspected pixels.
 func documentImageConsistencySummaries(state *types.AgentState) ([]reviewToolEvidence, reviewEvidenceScope) {
 	return documentImageConsistencySummariesWithSources(state, nil)
 }
@@ -56,6 +57,10 @@ func documentImageConsistencySummariesWithSources(state *types.AgentState, sourc
 			}
 			encoded, err := json.Marshal(result.Data)
 			if err != nil || json.Unmarshal(encoded, &data) != nil {
+				continue
+			}
+			var rawData map[string]any
+			if json.Unmarshal(encoded, &rawData) != nil {
 				continue
 			}
 			chunks := fetchedDocumentChunks(call)
@@ -130,6 +135,38 @@ func documentImageConsistencySummariesWithSources(state *types.AgentState, sourc
 					break
 				}
 			}
+			for geometryIndex, raw := range reviewAsSlice(rawData["image_geometry_evidence"]) {
+				figure := reviewAsMap(raw)
+				view := map[string]any{"original_pixels_verified": false, "pixel_status": "not_requested", "vision_observation": ""}
+				for _, key := range []string{"reference", "knowledge_id", "chunk_id", "page", "source_part"} {
+					view[key] = figure[key]
+				}
+				if !reviewGeometryProjectionBoundToSource(rawData, figure, view) {
+					continue
+				}
+				for _, rawImage := range reviewAsSlice(rawData["image_catalog"]) {
+					image := reviewAsMap(rawImage)
+					if reviewImageIdentityMatches(image, figure) {
+						view["label"] = image["label"]
+						context := []rune(fmt.Sprint(image["source_context"]))
+						if len(context) > 300 {
+							context = context[:300]
+						}
+						view["source_context"] = string(context)
+						break
+					}
+				}
+				compacted := compactOriginalFigureEvidence(reviewAsMap(figure["evidence"]))
+				view["original_geometry_evidence"] = compacted
+				view["geometry_scope"] = "Verified original drawing geometry only; pixels were not requested or visually inspected. Retain calibrated uncertainty, exact legends, units and drawn ranges."
+				pointer := fmt.Sprintf("/data/image_geometry_evidence/%d/evidence", geometryIndex)
+				if rawID, ok := exactImageGeometrySourceID(sourceMessages, call, pointer, view, compacted); ok {
+					view["source_evidence_id"] = rawID
+					view["source_json_pointers"] = map[string]string{"original_geometry_evidence": pointer}
+				}
+				encoded, _ := json.Marshal(view)
+				messages = append(messages, chat.Message{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: string(encoded)})
+			}
 		}
 	}
 	views, scope := boundedReviewEvidence(messages, 131072)
@@ -195,12 +232,58 @@ func exactImageGeometrySourceID(sourceMessages []chat.Message, call types.ToolCa
 		}
 		data, _ := reviewPointerValue(payload, "/data")
 		dataMap, _ := data.(map[string]any)
-		if !reviewImageProjectionBoundToSource(dataMap["image_evidence"], projectedImage, projectedImage) {
+		figure, _ := reviewPointerValue(payload, strings.TrimSuffix(pointer, "/evidence"))
+		if !reviewImageProjectionBoundToSource(dataMap["image_evidence"], projectedImage, projectedImage) &&
+			!reviewGeometryProjectionBoundToSource(dataMap, reviewAsMap(figure), projectedImage) {
 			continue
 		}
 		return reviewEvidenceID(message), true
 	}
 	return "", false
+}
+
+// A successful explicit geometry read is distinct from a successful pixel
+// read. Recheck the server result's exact fetched source and stored locator;
+// a failed read, catalog alone or model text cannot manufacture this binding.
+func reviewGeometryProjectionBoundToSource(data, figure, projection map[string]any) bool {
+	if data["image_mode"] != "geometry" || data["knowledge_id"] == nil ||
+		!reviewJSONValuesEqual(data["knowledge_id"], figure["knowledge_id"]) ||
+		projection["original_pixels_verified"] != false || projection["pixel_status"] != "not_requested" ||
+		!reviewImageIdentityMatches(figure, projection) || reviewInt(figure["page"]) < 1 {
+		return false
+	}
+	reference, _ := figure["reference"].(string)
+	if _, valid := types.ParseResourcePath(reference); !valid {
+		return false
+	}
+	evidence := reviewAsMap(figure["evidence"])
+	part, _ := figure["source_part"].(string)
+	if part == "" || projection["source_part"] != part || evidence["source_part"] != part || !reviewJSONValuesEqual(evidence["source_page"], figure["page"]) ||
+		compactOriginalFigureEvidence(evidence) == nil {
+		return false
+	}
+	readBound, catalogBound, chunkBound := false, false, false
+	for _, raw := range reviewAsSlice(data["image_evidence"]) {
+		read := reviewAsMap(raw)
+		if read["read_success"] == false && read["pixel_status"] == "not_requested" && read["geometry_read_success"] == true &&
+			read["version"] == "document-original-image-v1" && read["returned_image_index"] == nil && reviewImageIdentityMatches(figure, read) {
+			readBound = true
+		}
+	}
+	for _, raw := range reviewAsSlice(data["image_catalog"]) {
+		image := reviewAsMap(raw)
+		if reviewImageIdentityMatches(figure, image) && image["source_part"] == part {
+			catalogBound = true
+		}
+	}
+	for _, raw := range reviewAsSlice(data["chunks"]) {
+		chunk := reviewAsMap(raw)
+		if reviewJSONValuesEqual(chunk["chunk_id"], figure["chunk_id"]) &&
+			reviewJSONValuesEqual(chunk["knowledge_id"], figure["knowledge_id"]) && chunk["chunk_id"] != nil {
+			chunkBound = true
+		}
+	}
+	return readBound && catalogBound && chunkBound
 }
 
 // Preserve every trace returned by the validated source plan and its actual
@@ -390,7 +473,8 @@ func sourceReviewToolData(call types.ToolCall, native map[int]bool) map[string]a
 	if call.Result == nil {
 		return nil
 	}
-	if len(native) == 0 {
+	geometryOnly := call.Result.Data["image_mode"] == "geometry"
+	if len(native) == 0 && !geometryOnly {
 		return call.Result.Data
 	}
 	data := map[string]any{}
@@ -407,7 +491,9 @@ func sourceReviewToolData(call types.ToolCall, native map[int]bool) map[string]a
 		}
 		data["image_descriptions"] = descriptions
 	}
-	data["vision_description_scope"] = "Observations for exact images with verified original geometry are recorded for audit, not promoted to source facts."
+	if len(native) > 0 {
+		data["vision_description_scope"] = "Observations for exact images with verified original geometry are recorded for audit, not promoted to source facts."
+	}
 	encoded, _ = json.Marshal(data["image_geometry_evidence"])
 	var figures []map[string]any
 	if json.Unmarshal(encoded, &figures) == nil {

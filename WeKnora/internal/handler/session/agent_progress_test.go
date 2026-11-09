@@ -23,6 +23,24 @@ func TestAgentProgressIsStageOnlyAndNeverCompletesAnswer(t *testing.T) {
 	require.Empty(t, h.finalAnswer)
 }
 
+func TestAgentReplanningProgressForwardsRuntimeSnapshotWithoutAnswer(t *testing.T) {
+	stream := &capturingStreamManager{}
+	h := &AgentStreamHandler{ctx: context.Background(), sessionID: "s", assistantMessageID: "m", streamManager: stream}
+	const notice = "读取和纠错暂未取得新证据，正在调整取证计划。"
+	require.NoError(t, h.handleProgress(context.Background(), event.Event{ID: "source-replan", Data: event.AgentProgressData{
+		Stage: "replanning", Content: notice, Iteration: 3,
+	}}))
+	require.Len(t, stream.events, 1)
+	require.EqualValues(t, "progress", stream.events[0].Type)
+	require.Equal(t, "source-replan", stream.events[0].Data["event_id"])
+	require.Equal(t, "replanning", stream.events[0].Data["stage"])
+	require.Equal(t, 3, stream.events[0].Data["iteration"])
+	require.Equal(t, notice, stream.events[0].Content)
+	require.True(t, stream.events[0].Done)
+	require.Empty(t, h.finalAnswer)
+	require.Empty(t, h.answerSegments)
+}
+
 func TestStructuredProgressUsesWrapperOperationWithoutChangingInnerArguments(t *testing.T) {
 	streams := &capturingStreamManager{}
 	h := &AgentStreamHandler{ctx: context.Background(), sessionID: "s", assistantMessageID: "m", streamManager: streams, eventStartTimes: make(map[string]time.Time)}

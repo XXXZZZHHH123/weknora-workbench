@@ -12,11 +12,17 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
-// Negotiate capabilities before planning, independently of source discovery.
-// The fixed service has a short protocol budget; its failure cannot make an
-// unrelated task wait on the ordinary 30-second data-request timeout.
+// Negotiate source capabilities when the plan requires them. The local
+// bootstrap remains visible before planning, without remote setup IO. The
+// fixed service uses a short protocol budget independent of data requests.
 func (e *AgentEngine) prepareWorkbenchCapabilities(ctx context.Context, state *types.AgentState, messages []chat.Message, query, sessionID, messageID string) []chat.Message {
 	if e.toolRegistry == nil || state == nil {
+		return messages
+	}
+	// The local bootstrap descriptor already advertises structured capability.
+	// Negotiate its remote manifest only after the model requests this channel;
+	// neither a missing plan nor external evidence justifies internal setup IO.
+	if e.config != nil && e.config.TaskPlanningEnabled && !shouldPrefetchStructuredSources(e.plannedSourceDiscoverySelection()) {
 		return messages
 	}
 	for _, step := range state.RoundSteps {
@@ -61,7 +67,7 @@ func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types
 	messages = e.prepareWorkbenchCapabilities(ctx, state, messages, query, sessionID, messageID)
 	// The real QA model plans sources from the complete conversation and
 	// authorized metadata; code validates the explicit plan before content reads.
-	agenttools.PrepareDocumentScope(e.toolRegistry)
+	agenttools.PrepareDocumentScope(e.toolRegistry, documentScopeUserTexts(query, messages)...)
 	selection := map[string]bool(nil)
 	if len(planned) > 0 {
 		selection = planned[0]

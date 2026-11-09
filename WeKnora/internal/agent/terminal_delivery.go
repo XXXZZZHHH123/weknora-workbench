@@ -40,7 +40,7 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	e.turnReview.Committed = true
 	if delivery, ok := e.numericWarningDelivery(answer, state); ok {
 		answer, outcome = delivery, "numeric_warning"
-	} else if outcome == "answer" && e.needsSourceConsistencyCheck(state) &&
+	} else if (outcome == "answer" || outcome == "partial") && e.needsSourceConsistencyCheck(state) &&
 		!e.candidateApprovalCurrent(answer, state) {
 		answer = answerReviewUnavailableFallback
 		existingID = ""
@@ -49,12 +49,12 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	}
 	// Review failure or exhausted revisions: deliver the latest numerically
 	// grounded candidate with a notice rather than a bare failure message.
-	if answer == answerReviewUnavailableFallback || answer == incompleteAnswerFallback || answer == stalledAnswerFallback ||
+	if answer == answerReviewUnavailableFallback || answer == incompleteAnswerFallback || answer == stalledAnswerFallback || answer == sourceProgressStalledFallback ||
 		answer == numericFailureFallback || answer == finalNumericFailureFallback {
 		if delivery, ok := e.numericWarningDelivery(e.turnReview.UnverifiedCandidate, state); ok {
 			answer, outcome = delivery, "numeric_warning"
 			existingID, truncated = "", false
-		} else if delivery, ok := e.unverifiedDelivery(); ok {
+		} else if delivery, ok := e.currentUnverifiedDelivery(ctx, state); ok {
 			answer = e.prepareUnverifiedCitationDelivery(ctx, state, delivery)
 			existingID = ""
 			outcome = "unverified"

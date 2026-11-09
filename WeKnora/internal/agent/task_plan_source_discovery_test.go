@@ -122,6 +122,7 @@ func TestTaskPlanSourceRecoverySkipsBroadSearchAndKeepsRealQueryContracts(t *tes
 	registry.RegisterTool(knowledge)
 	registry.RegisterTool(newCountingTool(agenttools.ToolBindDocumentScope))
 	registry.RegisterTool(newCountingTool(agenttools.ToolReadDocument))
+	require.True(t, registry.PrepareStructuredProtocol(), "the normal execution entry advertises the local bootstrap before planning")
 	plan, err := json.Marshal(taskEvidencePlan{
 		Goals:              []string{"交付上一轮所讨论来源的图表。"},
 		Evidence:           []string{"重新绑定近期已定位的文件并读取原表，按当前权限和版本恢复证据。"},
@@ -143,10 +144,20 @@ func TestTaskPlanSourceRecoverySkipsBroadSearchAndKeepsRealQueryContracts(t *tes
 	selection := engine.plannedSourceDiscoverySelection()
 	require.NotNil(t, selection)
 	engine.discoverWorkbenchSources(ctx, state, messages, "请画出刚才的记录", "session", "message", selection)
-	require.Equal(t, []string{"describe_tools"}, operations, "recover describes real tools without new dataset or full-text searches")
+	require.Empty(t, operations, "recovery does not negotiate or search unrelated directories before the execution model chooses a capability")
 	require.Zero(t, knowledge.calls)
 	require.False(t, hasStructuredEvidence(state.RoundSteps), "recovery instructions and schemas never stand in for newly read source evidence")
 	definitions := listToolNames(engine.buildToolsForLLM())
+	require.Contains(t, definitions, agenttools.ToolStructuredCapabilities)
+	require.NotContains(t, definitions, "structured_query_pdf_table", "an unnegotiated operation must not be advertised as available")
+	capability := engine.runToolCall(ctx, types.LLMToolCall{ID: "recover-capabilities", Function: types.FunctionCall{
+		Name: agenttools.ToolStructuredCapabilities, Arguments: `{"refresh":true}`,
+	}}, 0, 0, 0, "session", "message")
+	require.NotNil(t, capability.Result)
+	require.True(t, capability.Result.Success, capability.Result.Error)
+	require.Equal(t, []string{"describe_tools"}, operations, "the first explicit capability request negotiates real query contracts without reading source data")
+	require.Zero(t, knowledge.calls)
+	definitions = listToolNames(engine.buildToolsForLLM())
 	for _, name := range []string{"structured_read_pdf_table", "structured_query_pdf_table", agenttools.ToolStructuredCapabilities, agenttools.ToolReadDocument, agenttools.ToolBindDocumentScope, agenttools.ToolSearchKnowledge} {
 		require.Contains(t, definitions, name, "the execution model can recover sources or explicitly discover a missing source")
 	}

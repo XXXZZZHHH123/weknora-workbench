@@ -453,3 +453,47 @@ for path in Path("/data/workspaces").glob("*/tin.db"):
 - 结构化服务：`PDF_TABLE_PARSER_ENGINE=remote_vlm`、`PDF_TABLE_PARSER_URL`、`PDF_TABLE_PARSER_API_KEY`（同一服务令牌）
 
 然后在需要的知识库把 PDF 解析引擎设为 `remote_vlm`。
+
+远程 PDF worker 的正式镜像由 `Remote PDF parser checks` 工作流独立发布：先通过完整
+worker 测试、镜像构建和离线 Tesseract 检查，再把同一镜像推送为
+`ghcr.io/xxxzzzhhh123/weknora-workbench-remote-pdf:production-<commit>-<run-id>-<run-attempt>`。
+只有 main 的 push 或在 main 手动运行工作流会发布；PR 只做检查。工作流的
+`remote-pdf-image-<commit>` artifact 包含 `remote-pdf-image.json`，记录 commit、运行 ID、
+attempt、镜像、registry SHA256 digest、经过检查的本地镜像 ID，以及
+`source_input_hash=sha256(git ls-tree -r -z <commit> -- services/remote-pdf)`。
+七服务正式 release bundle 和固定生产更新器不包含、也不重建此 worker。
+
+发布包含远端 PDF 协议改动时，须等待同一目标 main 的完整 Workbench CI/CD 和 worker
+工作流都成功，再核对正式 release 与上述 artifact 的 commit、源码输入哈希和镜像 digest。
+如果只改调用方而 worker 路径未触发工作流，应在目标 main 手动运行 worker 工作流，
+取得对应凭证。不要用服务器本地编译的镜像替代正式镜像。旧 worker 不支持
+`/v1/capacity` 和任务级排队/执行预算，不能只凭 `/health` 正常认定协议兼容，也不能将
+404 或忽略预算当作成功。
+
+定向升级步骤如下，保持开发环境和七服务的现有发布流程独立：
+
+1. 在维护窗口暂停新的 PDF 提交与重试，确认生产 worker 的账本中没有 `queued`、
+   `running` 任务，且没有仍在工作的解析进程。解析器版本或提示变化会改变 profile；
+   直接重启仍在排队的旧任务可能使其以 `PARSER_PROFILE_CHANGED` 失败。
+2. 记录现有生产 worker 的项目/容器、镜像 digest、网络、全部挂载和私有配置路径。
+   备份完整 data/state、原件和 checkpoints；SQLite 使用在线 backup API 并检查
+   `integrity_check`，或停写后做一致性备份，不能单独复制活跃的主库文件。
+   配置、令牌和模型凭据单独安全备份，不写入日志或 artifact。保留旧镜像与原目录。
+3. 读取已核对的正式 artifact，将镜像固定为
+   `ghcr.io/xxxzzzhhh123/weknora-workbench-remote-pdf@sha256:<digest>`，拉取并核对实际
+   digest。使用原生产 Compose 项目 `weknora-remote-pdf-prod` 及其配置，只定向更新
+   `remote-pdf` 服务（`up -d --no-deps --no-build remote-pdf`）；保留原网络、挂载、
+   数据目录、鉴权和密钥。不得启动第二个 worker 共享同一 SQLite，也不得 `down -v`。
+4. 核对 worker 健康、实际镜像 digest、源码版本及挂载，使用可信后端身份确认
+   `/v1/capacity` 已生效且权限隔离有效；通过合成、隔离测试确认队列与执行预算协议。
+   再按七服务正式流程更新应用，核对调用方连接；恢复提交前再次确认数据和来源保护。
+   健康与协议探针不代表真实模型识别准确性或付费解析全链路验收。
+
+worker 的新增 SQLite 列会保留旧任务、lease 和 checkpoints，但回退旧镜像前仍须核对
+数据库结构、parser profile 及在途任务；镜像回退不等于数据恢复，不覆盖现有数据目录。
+
+使用服务器现有 `regctl image export | docker load` 传输时，Docker 可能不保留
+`RepoDigests`。应从已核对的 `repository@sha256:<digest>` 导出，用 `--name` 指定
+artifact 中的正式镜像 tag，再核对导入后镜像 ID 等于 `tested_image_id`。此时 Compose
+可固定为该 `sha256:<image-config-id>`，并使用 `--pull never --no-build`；更新前后都
+核对实际容器镜像 ID。不能只检查 tag 存在，或将缺少本地 RepoDigest 当作内容校验成功。

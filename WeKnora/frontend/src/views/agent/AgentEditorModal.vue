@@ -636,6 +636,20 @@
             </div>
           </div>
 
+          <div class="setting-row">
+            <div class="setting-info">
+              <label>{{ $t('agent.editor.answerReviewMode') }}</label>
+              <p class="desc">{{ $t('agent.editor.answerReviewModeDesc') }}</p>
+            </div>
+            <div class="setting-control">
+              <t-select v-model="formData.config.answer_review_mode" class="reasoning-effort-select">
+                <t-option value="" :label="$t('agent.editor.answerReviewDefault')" />
+                <t-option value="standard" :label="$t('agent.editor.answerReviewStandard')" />
+                <t-option value="strict" :label="$t('agent.editor.answerReviewStrict')" />
+              </t-select>
+            </div>
+          </div>
+
           <!-- 来源引用 -->
           <div class="setting-row">
             <div class="setting-info">
@@ -2954,6 +2968,7 @@ const defaultFormData = {
     max_completion_tokens: 0,
     thinking: false, // 默认禁用思考模式
     reasoning_effort: 'off', // 思考强度；与 thinking 布尔保持同步
+    answer_review_mode: 'standard' as '' | 'standard' | 'strict',
     citation_enabled: true, // 默认输出知识库/网页来源引用
     // Agent模式设置
     max_iterations: 10,
@@ -3688,6 +3703,8 @@ watch(() => props.visible, async (val) => {
 
       // 补全可能缺失的字段
       agentData.config = { ...defaultFormData.config, ...agentData.config };
+      // Keep legacy defaults implicit while editing; unrelated saves must not switch review policy.
+      agentData.config.answer_review_mode = props.agent.config?.answer_review_mode ?? '';
       if (agentData.config.thinking == null) {
         agentData.config.thinking = false;
       }

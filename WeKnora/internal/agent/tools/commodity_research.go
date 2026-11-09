@@ -36,11 +36,27 @@ type CommodityResearchTool struct {
 func NewCommodityResearchTool() *CommodityResearchTool {
 	key, _ := os.ReadFile(os.Getenv("COMMODITY_RESEARCH_TOKEN_FILE"))
 	return &CommodityResearchTool{BaseTool: NewBaseTool(ToolCommodityResearch,
-		"只读查询当前空间商品研究数据和当前账号的判断、信号、简报、策略。charts按标题、分组或series_id检索当前研究台图表库并返回页面链接；cycle读取指标的周期位置、往期区间及往期后续汇总。由模型根据完整问题选择指标、模板和日期，程序校验后计算。往期后续是历史参照，不是预测。先检索真实指标再读取序列；所有数字、日期、口径和草稿状态以返回事实为准。缺失结果不能编造，也不能通过本工具发布判断或记录成交。",
+		"只读查询本会话已由服务器绑定的研究工作台及当前账号的判断、信号、简报、策略。需要真实已验证的工作台来源范围；普通未绑定会话不可使用，不能自行指定或猜测工作台。charts按标题、分组或series_id检索当前研究台图表库并返回页面链接；cycle读取指标的周期位置、往期区间及往期后续汇总。由模型根据完整问题选择指标、模板和日期，程序校验后计算。往期后续是历史参照，不是预测。先检索真实指标再读取序列；所有数字、日期、口径和草稿状态以返回事实为准。缺失结果不能编造，也不能通过本工具发布判断或记录成交。",
 		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["operation"],"properties":{"operation":{"type":"string","enum":["summary","indicators","series","judgment","signals","brief","strategies","charts","cycle"]},"date":{"type":"string","description":"YYYY-MM-DD；cycle为计算截止日，省略时截至今天；其他操作省略时读取最新已存行情日期"},"series_id":{"type":"string","description":"真实指标ID，series、cycle操作必填；charts按曲线指标筛选"},"template":{"type":"string","maxLength":80,"description":"cycle的内置模板名或已保存模板ID，省略时为自然年"},"search":{"type":"string","description":"指标检索词；charts按标题或分组检索"},"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0,"maximum":100000}}}`)),
 		endpoint: strings.TrimRight(os.Getenv("COMMODITY_RESEARCH_URL"), "/"),
 		key:      bytes.TrimSpace(key), client: &http.Client{Timeout: 30 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}
+}
+
+// CommodityResearchScopeAvailable checks runtime prerequisites, not model
+// arguments or a saved allowlist. It grants neither a workspace nor access.
+func CommodityResearchScopeAvailable(ctx context.Context) bool {
+	caller := types.CallerFromContext(ctx)
+	scope, ok := types.ResearchWorkbenchScopeFromContext(ctx)
+	return ok && caller.TenantID != 0 && caller.UserID != "" && caller.Role.IsValid() &&
+		validCommodityResearchScope(scope, caller) && types.ResearchAuthorizationFromContext(ctx) != ""
+}
+
+func validCommodityResearchScope(scope types.ResearchWorkbenchScope, caller types.Caller) bool {
+	_, err := uuid.Parse(scope.ID)
+	return err == nil && scope.TenantID == caller.TenantID && scope.UserID == caller.UserID &&
+		(scope.ScopeVersion == 2 && scope.SourcesRevision >= 1 ||
+			scope.ScopeVersion != 2 && scope.KnowledgeBaseID != "" && scope.KnowledgeBaseTenantID != 0)
 }
 
 func (t *CommodityResearchTool) Execute(ctx context.Context, args json.RawMessage) (*types.ToolResult, error) {
@@ -49,11 +65,14 @@ func (t *CommodityResearchTool) Execute(ctx context.Context, args json.RawMessag
 		return nil, fmt.Errorf("商品研究读取需要已核验的用户和空间")
 	}
 	scope, scoped := types.ResearchWorkbenchScopeFromContext(ctx)
-	if scoped {
-		if _, err := uuid.Parse(scope.ID); err != nil || scope.TenantID != caller.TenantID ||
-			scope.UserID != caller.UserID || (scope.ScopeVersion != 2 && (scope.KnowledgeBaseID == "" || scope.KnowledgeBaseTenantID == 0)) || (scope.ScopeVersion == 2 && scope.SourcesRevision < 1) {
-			return nil, fmt.Errorf("研究工作台作用域无效，拒绝回退到空间数据")
-		}
+	if !scoped {
+		message := "本会话未绑定已验证的研究工作台，商品研究工具未执行。请在实际已授权的研究工作台会话使用；普通文档或原表问题可选择本轮已开放的文档/结构化工具，不能猜测工作台或读取历史空间数据。"
+		data := map[string]any{"kind": "research_tool_scope", "status": "error", "reason_code": "scope_required", "request_started": false, "notice": message}
+		output, _ := json.Marshal(data)
+		return &types.ToolResult{Success: false, Error: message, Data: data, Output: string(output)}, nil
+	}
+	if !validCommodityResearchScope(scope, caller) {
+		return nil, fmt.Errorf("研究工作台作用域无效，拒绝回退到空间数据")
 	}
 	if len(t.key) < 32 || t.endpoint == "" {
 		return nil, fmt.Errorf("商品研究服务尚未配置")
@@ -122,7 +141,7 @@ func (t *CommodityResearchTool) Execute(ctx context.Context, args json.RawMessag
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("商品研究读取失败（HTTP %d），请检查服务、身份或查询参数", response.StatusCode)
+		return readServiceFailure("商品研究", response.StatusCode, response.Body), nil
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, 512*1024+1))
 	if err != nil || len(body) > 512*1024 {

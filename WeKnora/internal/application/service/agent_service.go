@@ -1470,6 +1470,9 @@ func (s *agentService) registerTools(
 			}
 			toolToRegister = structuredTool
 		case tools.ToolCommodityResearch:
+			if !tools.CommodityResearchScopeAvailable(ctx) {
+				continue
+			}
 			toolToRegister = tools.NewCommodityResearchTool()
 		case tools.ToolTodoWrite:
 			toolToRegister = tools.NewTodoWriteTool()
@@ -1548,7 +1551,7 @@ func (s *agentService) registerTools(
 				s.webSearchService,
 				config.WebSearchMaxResults,
 				config.WebSearchProviderID,
-			)
+			).WithProviderCapabilities(ctx)
 			logger.Infof(ctx, "Registered web_search tool for session: %s, maxResults: %d, providerID: %s", sessionID, config.WebSearchMaxResults, config.WebSearchProviderID)
 
 		case tools.ToolWebFetch:

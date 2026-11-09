@@ -30,12 +30,14 @@ var readDocumentTool = BaseTool{
 	description: "Read a document from the knowledge bases in scope: its metadata plus chunks in document order.\n" +
 		"id is a doc://N document handle (reads a page of chunks starting at offset) or a chunk://N chunk handle (reads that " +
 		"chunk; set context to include neighbouring chunks on each side).\n" +
-		"For a user-specified physical page or PPT slide, use page (1-based). It reads only that page's explicit parser markers; offset is never a physical page number. Missing page markers are reported, never guessed.\n" +
+		"Use pages (at most 8) to batch model-selected physical pages in one authorized read; each page has its own completion and continuation metadata. For a single physical page or PPT slide, use page (1-based). It reads only that page's explicit parser markers; offset is never a physical page number. Missing page markers are reported, never guessed.\n" +
 		"Printed page labels and table-of-contents ranges are not physical PDF pages or proof that a listed section is present in this file. Verify physical pages with parser source_locators or page reads; chunk counts and the largest observed locator do not establish total pages.\n" +
 		"The result includes an image_catalog of actual stored figures, even for older text-only imports. " +
-		"To inspect a figure, repeat the same authorized document/page read with images=[its exact reference], detail=full and focus describing the complete user request. " +
+		"To inspect a figure, use that catalog entry's read_args (its actual owning chunk and any verified physical page), then add focus describing the complete user request. " +
+		"Do not move an image reference to another page, chunk, document or pagination range. page_hint is an unverified source label, not physical-page proof; no page should be guessed when page_verified=false. " +
 		"Choose the figure from its actual source labels/context; text labels and image URLs alone do not reveal curves or their colors. " +
 		"Returned originals are delivered to a vision model or the configured separate image reader; report estimates and unclear overlaps honestly.\n" +
+		"For numeric traces in supported original vector charts, explicitly select image_mode=geometry with images and exact image_series legend identifiers. This verifies original source geometry without rasterizing or visually inspecting pixels; use image_mode=pixels (the default) when visual inspection is required.\n" +
 		"query finds passages inside the document: matching chunks come back with one chunk of context on each " +
 		"side. By default query is case-insensitive and split on whitespace: a chunk matches when it contains " +
 		"every word, in any order. Set regex=true to match query as one POSIX regular expression instead. " +
@@ -76,6 +78,11 @@ var readDocumentTool = BaseTool{
       "description": "Exact 1-based document page / PPT slide; requires explicit parsed page markers, never chunk offset",
       "minimum": 1
     },
+    "pages": {
+      "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 1},
+      "description": "Batch up to 8 physical pages of this document; use page or pages, not both. Each page returns its own completion and continuation state. Offset applies within each physical page."
+    },
     "limit": {
       "type": "integer",
       "description": "Chunks per page (default 20, max 100)",
@@ -100,7 +107,11 @@ var readDocumentTool = BaseTool{
       "type": "array",
       "items": {"type": "string"},
       "maxItems": 4,
-      "description": "Exact image references from this document/page's image_catalog; omit to list figures without reading their pixels"
+      "description": "Exact image references from the actual image_catalog. Use that entry's read_args with its owning chunk and any verified page; never move a prior reference to a guessed page/range. Omit to list figures without reading pixels or geometry."
+    },
+    "image_mode": {
+      "type": "string", "enum": ["pixels", "geometry"],
+      "description": "pixels (default) reads original pixels for visual inspection. geometry explicitly reads deterministic original vector-chart geometry without PNG conversion or visual inspection; requires images from the actual image_catalog and exact image_series legends (missing/invalid legends return original selection options). Unsupported or failed geometry is reported, never replaced by guessed values or an implicit pixel read."
     },
     "detail": {
       "type": "string", "enum": ["brief", "full"],
@@ -130,8 +141,10 @@ type ReadDocumentInput struct {
 	Regex         bool               `json:"regex,omitempty"`
 	Context       int                `json:"context,omitempty"`
 	Page          int                `json:"page,omitempty"`
+	Pages         []int              `json:"pages,omitempty"`
 	SourceScope   *DocumentScopePlan `json:"source_scope,omitempty"`
 	Images        []string           `json:"images,omitempty"`
+	ImageMode     string             `json:"image_mode,omitempty"`
 	ImageSeries   []string           `json:"image_series,omitempty"`
 	Detail        string             `json:"detail,omitempty"`
 	Focus         string             `json:"focus,omitempty"`
@@ -205,6 +218,12 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	if err := json.Unmarshal(args, &input); err != nil {
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("Failed to parse args: %v", err)}, err
 	}
+	if input.ImageMode != "" && input.ImageMode != "pixels" && input.ImageMode != "geometry" {
+		return &types.ToolResult{Success: false, Error: "image_mode must be pixels or geometry"}, nil
+	}
+	if input.ImageMode == "geometry" && len(input.Images) == 0 {
+		return &types.ToolResult{Success: false, Error: "geometry mode requires explicit images from the actual image_catalog"}, nil
+	}
 	id := strings.TrimSpace(input.ID)
 	if id == "" {
 		return &types.ToolResult{
@@ -247,6 +266,14 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	if documentIsRetired(knowledge) {
 		return &types.ToolResult{Success: false, Error: "指定文档已删除、正在删除或已归档，不能作为查询来源"}, nil
 	}
+	if tenant := t.searchTargets.GetTenantIDForKB(knowledge.KnowledgeBaseID); tenant != 0 && knowledge.TenantID != 0 && tenant != knowledge.TenantID {
+		return &types.ToolResult{Success: false, Error: "document tenant does not match the authorized knowledge base scope"}, nil
+	}
+	// Reject malformed navigation before a direct read can establish a source
+	// binding. The selected user-page constraint is checked again below.
+	if _, err := resolveReadPages(input, DocumentSourceSelection{}, chunk != nil); err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error()}, nil
+	}
 	if input.SourceScope != nil {
 		if t.documentConstraint == nil {
 			t.documentConstraint = NewDocumentScopeState()
@@ -255,57 +282,48 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 			return &types.ToolResult{Success: false, Error: err.Error()}, nil
 		}
 	}
+	selection := DocumentSourceSelection{}
 	if constraint := t.documentConstraint; constraint != nil {
-		selected, err := constraint.selection(knowledge.ID)
+		selection, err = constraint.selectionForRead(knowledge)
 		if err != nil {
 			return &types.ToolResult{Success: false, Error: err.Error()}, nil
 		}
-		if selected.Page > 0 {
-			if input.Page > 0 && input.Page != selected.Page {
-				return &types.ToolResult{Success: false, Error: "当前问题指定了不同页码，不能用其他页替代"}, nil
-			}
-			input.Page = selected.Page
+	}
+	pages, err := resolveReadPages(input, selection, chunk != nil)
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error()}, nil
+	}
+	matchers, err := documentQueryMatchers(query, input.Regex)
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error()}, err
+	}
+	if len(pages) > 0 {
+		if query != "" && (input.ContentLimit > 0 || input.ContentOffset > 0) {
+			return &types.ToolResult{Success: false, Error: "query and chunk content segmentation are separate read modes"}, nil
 		}
-	}
-	if input.Page < 0 {
-		return &types.ToolResult{Success: false, Error: "page must be a positive physical page number"}, nil
-	}
-	if input.Page > 0 {
 		var segment *chunkContentSegment
-		if input.ContentLimit > 0 || input.ContentOffset > 0 {
-			if chunk == nil {
-				return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
-			}
+		// Every chunk+page read must select that real chunk, even when the
+		// caller did not request character segmentation. Never return page[0].
+		if chunk != nil && query == "" {
 			segment = &chunkContentSegment{chunkID: chunk.ID, offset: input.ContentOffset, limit: input.ContentLimit}
+		} else if input.ContentLimit > 0 || input.ContentOffset > 0 {
+			return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
 		}
-		result, err := t.readPhysicalPage(ctx, knowledge, input.Page, offset, limit, segment)
-		return t.finishImageRead(ctx, knowledge, input, result, err)
+		result, readErr := t.readPhysicalPages(ctx, knowledge, pages, offset, limit, segment, query, matchers, input.Regex)
+		if result != nil && result.Success && selection.UserPages != nil && result.Data != nil {
+			if scope, ok := result.Data["document_scope"].(map[string]interface{}); ok {
+				scope["user_page_constraint"] = cloneDocumentPageConstraint(selection.UserPages)
+			}
+		}
+		return t.finishImageRead(ctx, knowledge, input, result, readErr)
 	}
+
 	if input.ContentLimit > 0 || input.ContentOffset > 0 {
 		if chunk == nil {
 			return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
 		}
 		result, err := t.readChunkContent(ctx, knowledge, chunk, input.ContentOffset, input.ContentLimit)
 		return t.finishImageRead(ctx, knowledge, input, result, err)
-	}
-
-	var matchers []*regexp.Regexp
-	switch {
-	case query == "":
-	case input.Regex:
-		compiled, cerr := regexp.Compile("(?i)" + query)
-		if cerr != nil {
-			return &types.ToolResult{
-				Success: false, Error: fmt.Sprintf("invalid regex query %q: %v", query, cerr),
-			}, cerr
-		}
-		matchers = []*regexp.Regexp{compiled}
-	default:
-		// Models write keyword queries ("sunflower f(n,k)"), not exact
-		// phrases, so each word is matched on its own and all must appear.
-		for _, term := range strings.Fields(query) {
-			matchers = append(matchers, regexp.MustCompile("(?i)"+regexp.QuoteMeta(term)))
-		}
 	}
 
 	// A query always searches the owning document, even when id named a
@@ -325,6 +343,24 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	return t.finishImageRead(ctx, knowledge, input, result, err)
 }
 
+func documentQueryMatchers(query string, regexMode bool) ([]*regexp.Regexp, error) {
+	if query == "" {
+		return nil, nil
+	}
+	if regexMode {
+		compiled, err := regexp.Compile("(?i)" + query)
+		if err != nil {
+			return nil, fmt.Errorf("invalid regex query %q: %v", query, err)
+		}
+		return []*regexp.Regexp{compiled}, nil
+	}
+	var matchers []*regexp.Regexp
+	for _, term := range strings.Fields(query) {
+		matchers = append(matchers, regexp.MustCompile("(?i)"+regexp.QuoteMeta(term)))
+	}
+	return matchers, nil
+}
+
 // resolveTarget accepts either a document id or a chunk id. Documents are
 // tried first because they are the common case; a chunk id falls through to
 // the chunk lookup. Scope violations are reported as such rather than being
@@ -340,7 +376,7 @@ func (t *ReadDocumentTool) resolveTarget(ctx context.Context, id string) (*types
 	chunk, err := t.chunkService.GetChunkByIDOnly(ctx, id)
 	if err != nil || chunk == nil {
 		return nil, nil, fmt.Errorf(
-			"id %s is neither a document (doc://N) nor a chunk (chunk://N) in the current scope", id)
+			"id %s is neither a document (doc://N) nor a chunk (chunk://N) in the current scope; use a real document/chunk handle from authorized results. Image resource:// references belong in images, with the actual owning document as id; never guess that document or use a resource as the read id", id)
 	}
 	authorizedChunk, authErr := authorizeChunkInSearchTargets(
 		ctx, t.searchTargets, id, t.chunkService, t.knowledgeService,
@@ -485,7 +521,7 @@ func (t *ReadDocumentTool) readPage(
 	data := t.buildData(knowledge, total, rows)
 	data["offset"] = offset
 	data["page_size"] = limit
-	data["page"] = offset/limit + 1
+	data["chunk_page"] = offset/limit + 1
 	data["offset_space"] = "document_chunks"
 	annotateContentPagination(data, rows)
 	if next := offset + len(chunks); int64(next) < total && len(chunks) > 0 {

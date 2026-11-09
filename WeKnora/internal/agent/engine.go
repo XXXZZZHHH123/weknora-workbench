@@ -253,6 +253,9 @@ func (e *AgentEngine) buildSystemPrompt(ctx context.Context) string {
 		e.systemPromptOptions(ctx),
 		e.systemPromptTemplate,
 	)
+	if e.config.AnswerReviewMode == "standard" {
+		sections = append(sections, SystemPromptSection{"answer_policy", standardAnswerGuidance})
+	}
 	for _, section := range sections {
 		logger.Debugf(ctx, "[Agent][Prompt] section=%s bytes=%d", section.Name, len(section.Content))
 	}
@@ -403,6 +406,21 @@ func (e *AgentEngine) Execute(
 	llmContext []chat.Message,
 	imageURLs ...[]string,
 ) (*types.AgentState, error) {
+	ctx = withAgentExecutionStart(ctx)
+	loopEntered := false
+	if e.collaboration != nil {
+		var stop func()
+		ctx, stop = e.collaboration.Start(ctx)
+		defer stop()
+		defer func() {
+			if !loopEntered {
+				e.collaboration.End(false)
+			}
+		}()
+		if err := e.executionLeaseError(ctx); err != nil {
+			return nil, err
+		}
+	}
 	e.turnReview = turnReviewState{}
 	e.memoryAcceptedSteers = nil
 	e.structuredReviewMode = false
@@ -474,9 +492,9 @@ func (e *AgentEngine) Execute(
 		e.toolRegistry.PrepareStructuredProtocol()
 	}
 	if e.config.WorkbenchDefault && e.toolRegistry != nil {
-		agenttools.PrepareDocumentScope(e.toolRegistry)
-		e.toolRegistry.RegisterTool(newSourceCalculationTool(func() []types.AgentStep { return state.RoundSteps }))
-		e.toolRegistry.RegisterTool(newDocumentTableCalculationTool(func() []types.AgentStep { return state.RoundSteps }))
+		agenttools.PrepareDocumentScope(e.toolRegistry, documentScopeUserTexts(query, llmContext)...)
+		e.toolRegistry.RegisterTool(newSourceCalculationTool(func() []types.AgentStep { return state.RoundSteps }, e.toolRegistry))
+		e.toolRegistry.RegisterTool(newDocumentTableCalculationTool(func() []types.AgentStep { return state.RoundSteps }, e.toolRegistry))
 		e.registerDocumentTableAnalysis(state, query, sessionID, llmContext)
 		if e.chartWriter != nil {
 			chartTool := newRenderChartTool(ctx, func() []types.AgentStep { return state.RoundSteps }, e.chartWriter, sessionID, messageID)
@@ -527,10 +545,15 @@ func (e *AgentEngine) Execute(
 	if e.collaboration != nil {
 		prepCtx, stopPrep = e.collaboration.Start(ctx)
 	}
+	defer stopPrep()
 	if !strings.HasPrefix(query, fieldConfirmationPrefix) {
 		messages = e.prepareWorkbenchCapabilities(prepCtx, state, messages, query, sessionID, messageID)
 		messages = e.planWorkbenchTask(prepCtx, state, query, messages, sessionID)
 		messages = e.discoverWorkbenchSources(prepCtx, state, messages, query, sessionID, messageID, e.plannedSourceDiscoverySelection())
+	}
+	if err := e.executionLeaseError(ctx); err != nil {
+		finishAgentSpan(agentSpan, state, err)
+		return state, err
 	}
 
 	// Get tool definitions for function calling
@@ -550,6 +573,7 @@ func (e *AgentEngine) Execute(
 		finishAgentSpan(agentSpan, state, nil)
 		return state, nil
 	}
+	loopEntered = true
 	_, err := e.executeLoop(ctx, state, query, messages, tools, sessionID, messageID)
 	if err != nil {
 		logger.Errorf(ctx, "[Agent] Execution failed: %v", err)
@@ -669,6 +693,7 @@ type loopGuards struct {
 	failedToolFeedback          failedToolFeedbackLoop
 	failedToolFeedbackNudged    bool
 	failedToolFeedbackOperation string
+	toolProgress                toolProgressGuard
 }
 
 // recordFailedToolCall tracks consecutive failures of the same model-facing
@@ -864,7 +889,7 @@ func (e *AgentEngine) executeLoop(
 		defer stop()
 		e.bindCollaborationInput(sessionID, messageID)
 	}
-	startTime := time.Now()
+	startTime := agentExecutionStart(ctx)
 	common.PipelineInfo(ctx, "Agent", "loop_start", map[string]interface{}{
 		"max_iterations": e.config.MaxIterations,
 	})
@@ -1109,6 +1134,7 @@ func (e *AgentEngine) runReActIteration(
 	if e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID) > 0 {
 		e.clearTaskToolProjection(messagesPtr)
 		e.taskPlan = nil // The user supplied new requirements.
+		e.resetDocumentTurnProgress(guards, query)
 		tools = e.buildToolsForLLM()
 	}
 	if e.collaboration != nil {
@@ -1128,6 +1154,12 @@ func (e *AgentEngine) runReActIteration(
 	// Background-work context rides the same boundary for the same reasons,
 	// after the user's own messages.
 	e.injectBackground(ctx, state, messagesPtr, false)
+	if remaining, bounded := e.standardAnswerModelTimeRemaining(ctx, state); bounded && remaining <= 0 {
+		if finished, err := e.finishStandardAnswerBudget(ctx, state, query, sessionID, assistantMessageID, messagesPtr, guards, "model_phase_time"); finished {
+			return iterOutcomeBreak, err
+		}
+		return iterOutcomeContinue, nil // A newly drained steer invalidated the old plan.
+	}
 
 	logger.Infof(ctx, "[Agent][Round-%d/%s] Starting: %d messages, %d tools, est_tokens=%d",
 		round, e.maxIterationsDisplay(), len(*messagesPtr), len(tools), currentTokens)
@@ -1152,6 +1184,14 @@ func (e *AgentEngine) runReActIteration(
 	guards.pendingRuntimeNotice = ""
 	resp, err := e.callLLMWithRetry(ctx, messagesPtr, tools, state, query, state.CurrentRound, sessionID, runtimeNotice)
 	if err != nil {
+		if errors.Is(err, errStandardAnswerModelBudget) {
+			if finished, finalErr := e.finishStandardAnswerBudget(ctx, state, query, sessionID, assistantMessageID, messagesPtr, guards, "model_call_time"); finished {
+				return iterOutcomeBreak, finalErr
+			}
+			if e.taskPlan == nil {
+				return iterOutcomeContinue, nil
+			}
+		}
 		retErr = err
 		return iterOutcomeNext, err
 	}
@@ -1190,6 +1230,14 @@ func (e *AgentEngine) runReActIteration(
 			runtimeNotice,
 		)
 		if err != nil {
+			if errors.Is(err, errStandardAnswerModelBudget) {
+				if finished, finalErr := e.finishStandardAnswerBudget(ctx, state, query, sessionID, assistantMessageID, messagesPtr, guards, "model_call_time"); finished {
+					return iterOutcomeBreak, finalErr
+				}
+				if e.taskPlan == nil {
+					return iterOutcomeContinue, nil
+				}
+			}
 			retErr = err
 			return iterOutcomeNext, err
 		}
@@ -1238,7 +1286,7 @@ func (e *AgentEngine) runReActIteration(
 			// the answer.
 			step := types.AgentStep{
 				Iteration:        state.CurrentRound,
-				Thought:          response.Content,
+				Thought:          redactDocumentTableTrace(response.Content),
 				ReasoningContent: response.ReasoningContent,
 				ToolCalls:        make([]types.ToolCall, 0),
 				Timestamp:        time.Now(),
@@ -1297,7 +1345,7 @@ func (e *AgentEngine) runReActIteration(
 		UserMessagesBefore:   state.PendingSteerMessages,
 		BackgroundInjections: state.PendingBackground,
 		Iteration:            state.CurrentRound,
-		Thought:              response.Content,
+		Thought:              redactDocumentTableTrace(response.Content),
 		ReasoningContent:     response.ReasoningContent,
 		ReasoningSignature:   response.ReasoningSignature,
 		ReasoningMetadata:    response.ReasoningMetadata,
@@ -1337,7 +1385,7 @@ func (e *AgentEngine) runReActIteration(
 			response.Content,
 		) != "" && !guards.childAnswerRevised && e.withinIterationBudget(state.CurrentRound+1) {
 		guards.childAnswerRevised = true
-		state.FinalAnswer = response.Content // retain the partial deliverable if recovery fails
+		state.FinalAnswer = redactDocumentTableTrace(response.Content) // retain safe partial text if recovery fails
 		step.Truncated, step.IntermediateAnswer = true, true
 		state.RoundSteps = append(state.RoundSteps, step)
 		*messagesPtr = append(
@@ -1381,6 +1429,7 @@ func (e *AgentEngine) runReActIteration(
 		decision := e.checkCandidate(ctx, query, response.Content, response.ReasoningContent, state, reviewConversation, false)
 		if decision.Candidate != response.Content {
 			response.Content = decision.Candidate
+			step.Thought = decision.Candidate
 			response.AnswerStreamed, response.AnswerEventID = false, ""
 		}
 		if ctx.Err() != nil {
@@ -1521,11 +1570,16 @@ func (e *AgentEngine) runReActIteration(
 					ReasoningSignature: response.ReasoningSignature,
 					ReasoningMetadata:  response.ReasoningMetadata,
 				})
-				injected := e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID)
+				humanInjected := e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID)
+				injected := humanInjected
 				injected += e.injectBackground(ctx, state, messagesPtr, true)
 				if injected > 0 {
 					e.clearTaskToolProjection(messagesPtr)
 					e.taskPlan = nil
+					guards.toolProgress = toolProgressGuard{}
+					if humanInjected > 0 {
+						e.resetDocumentTurnProgress(guards, query)
+					}
 					*messagesPtr = e.appendCollaborationDeliveryBoundary(*messagesPtr, verdict.finalAnswer)
 					verdict.step.IntermediateAnswer = true
 					state.RoundSteps = append(state.RoundSteps, verdict.step)
@@ -1633,7 +1687,7 @@ func (e *AgentEngine) runReActIteration(
 	// Page buttons that failed leave their answer text live, since the stream
 	// handler and the client keep text before a page button; retract it the
 	// same way.
-	progress := agenttools.StripThinkBlocks(response.Content)
+	progress := redactDocumentTableTrace(agenttools.StripThinkBlocks(response.Content))
 	if (buttonsRan || e.collaboration != nil && e.collaboration.Child == nil) && strings.TrimSpace(progress) != "" {
 		step.Progress = progress
 		progressID := response.AnswerEventID
@@ -1675,12 +1729,53 @@ func (e *AgentEngine) runReActIteration(
 			"asking the model to change strategy", round, failedToolName, failedToolAttempts)
 		*messagesPtr = append(*messagesPtr, chat.Message{Role: "user", Content: failedToolGuidance})
 	}
+	if e.config.WorkbenchDefault {
+		observation := guards.toolProgress.observe(step.ToolCalls)
+		common.PipelineInfo(ctx, "Agent", "tool_progress", map[string]interface{}{
+			"round": round, "new_evidence": observation.NewEvidence,
+			"stale_rounds": observation.StaleRounds, "replan": observation.Replan, "stopped": observation.Stop,
+		})
+		if observation.Replan {
+			*messagesPtr = append(*messagesPtr, chat.Message{Role: "system", Content: toolProgressReplanNotice})
+			const progressNotice = "读取和纠错暂未取得新证据，正在调整取证计划。"
+			lastStep := &state.RoundSteps[len(state.RoundSteps)-1]
+			lastStep.Progress = strings.TrimSpace(lastStep.Progress + "\n" + progressNotice)
+			if e.eventBus != nil {
+				progressID := generateEventID("source-replan")
+				lastStep.ProgressEventID = progressID
+				_ = e.eventBus.Emit(ctx, event.Event{
+					ID: progressID, Type: event.EventAgentProgress, SessionID: sessionID,
+					Data: event.AgentProgressData{Stage: "replanning", Content: lastStep.Progress, Iteration: state.CurrentRound},
+				})
+			}
+		}
+		if observation.Stop {
+			// A newly accepted user correction changes the task. Drain it before
+			// settling the old task's stall, just as for a natural final answer.
+			if e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID) > 0 {
+				e.clearTaskToolProjection(messagesPtr)
+				e.taskPlan = nil
+				e.resetDocumentTurnProgress(guards, query)
+				return iterOutcomeNext, nil
+			}
+			if e.collaborationOwnsFailure(ctx) {
+				return iterOutcomeBreak, fmt.Errorf("source collection stopped after repeated rounds without new evidence")
+			}
+			// Reaching a resource bound is a runtime failure, never semantic
+			// completion. No unchecked draft or extra synthesis is published.
+			e.commitTerminalResult(ctx, state, sessionID, sourceProgressStalledFallback, "", "stalled", false)
+			return iterOutcomeBreak, nil
+		}
+	}
 	common.PipelineInfo(ctx, "Agent", "round_end", map[string]interface{}{
 		"iteration":   state.CurrentRound,
 		"round":       round,
 		"tool_calls":  toolCallCount,
 		"thought_len": len(step.Thought),
 	})
+	if finished, err := e.finishStandardAnswerBudget(ctx, state, query, sessionID, assistantMessageID, messagesPtr, guards); finished {
+		return iterOutcomeBreak, err
+	}
 	return iterOutcomeNext, nil
 }
 
