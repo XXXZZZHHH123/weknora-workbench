@@ -437,17 +437,23 @@
       const legendFont = exportTheme?.legendFontSize || 12, legendRowHeight = exporting ? legendFont * 1.7 : 24;
       const titleLines = exporting ? wrapText(title, width - 16 * scale, value => measure(value, exportTheme.titleFontSize, true)) : [];
       const legendSeries = exporting ? series.filter(s => !hidden.has(s.key)) : series;
+      // The grey band and dashed line are past cycles at the same position: name them in the legend.
+      const bandShown = cycle && !multiCycle && filterBand(band).length > 0;
+      const bandCount = bandShown ? Math.max(...filterBand(band).map(p => p.n)) : 0;
+      const bandUnit = payload.template?.kind === 'repeat' && payload.template?.period === 'year' ? '年' : '期';
+      const bandLegend = bandShown ? [{kind: 'range', label: `往${bandUnit === '年' ? '年' : '期'}区间（近 ${bandCount} ${bandUnit}最低至最高）`},
+        {kind: 'mean', label: `往${bandUnit === '年' ? '年' : '期'}均值（近 ${bandCount} ${bandUnit}）`}] : [];
       const legendLayout = [];
       if (exporting && !options.thumbnail) {
         let x = 8 * scale, row = 0;
-        for (const s of legendSeries) {
-          const label = fitText(s.label + (s.current ? '（当前）' : ''), width - 40 * scale, value => measure(value, legendFont));
+        for (const s of [...legendSeries, ...bandLegend]) {
+          const label = fitText(s.kind ? s.label : s.label + (s.current ? '（当前）' : ''), width - 40 * scale, value => measure(value, legendFont));
           const itemWidth = measure(label, legendFont) + 24 * scale;
           if (x > 8 * scale && x + itemWidth > width - 8 * scale) { row++; x = 8 * scale; }
           legendLayout.push({x, row, label, width: itemWidth}); x += itemWidth + 14 * scale;
         }
       }
-      const legendRows = options.thumbnail ? 0 : exporting ? (legendLayout.at(-1)?.row ?? -1) + 1 : Math.ceil(series.length / 4);
+      const legendRows = options.thumbnail ? 0 : exporting ? (legendLayout.at(-1)?.row ?? -1) + 1 : Math.ceil((series.length + bandLegend.length) / 4);
       const margin = exporting ? {left: 72 * scale, right: 72 * scale,
         top: 8 * scale + titleLines.length * exportTheme.titleFontSize * 1.3 + axisFont * 1.7,
         bottom: axisFont * 2.6 + legendRows * legendRowHeight + 8 * scale}
@@ -646,6 +652,16 @@
           const toggle = () => { hidden.has(s.key) ? hidden.delete(s.key) : hidden.add(s.key); draw(); };
           legend.addEventListener('click', toggle);
           legend.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+        });
+        bandLegend.forEach((item, offset) => {
+          const index = legendSeries.length + offset, layout = legendLayout[index];
+          const x = exporting ? layout.x : margin.left + (index % 4) * ((right - margin.left) / 4);
+          const y = exporting ? height - 8 * scale - (legendRows - 1 - layout.row) * legendRowHeight : bottom + 48 + Math.floor(index / 4) * 24;
+          const key = add('g', {'data-band-legend': item.kind});
+          const color = exportTheme?.band || 'var(--text-muted)';
+          if (item.kind === 'range') add('rect', {x, y: y - 9 * scale, width: 18 * scale, height: 10 * scale, fill: color, 'fill-opacity': exporting ? .12 : .13}, undefined, key);
+          else add('line', {x1: x, x2: x + 18 * scale, y1: y - 4 * scale, y2: y - 4 * scale, stroke: color, 'stroke-width': 1.5 * scale, 'stroke-dasharray': '6 4'}, undefined, key);
+          add('text', {x: x + 24 * scale, y, fill: exportTheme?.text || 'var(--text-muted)', 'font-size': legendFont}, exporting ? layout.label : item.label, key);
         });
         const crosshair = add('line', {y1: margin.top, y2: bottom, stroke: 'var(--text-muted)', 'stroke-dasharray': '3 3', visibility: 'hidden', 'pointer-events': 'none'});
         const overlay = add('rect', {x: margin.left, y: margin.top, width: right - margin.left, height: bottom - margin.top, fill: 'transparent', 'data-chart-hover': ''});
