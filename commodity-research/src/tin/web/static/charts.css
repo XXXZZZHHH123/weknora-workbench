@@ -29,6 +29,10 @@
 .chart-kit > svg { display: block; width: 100%; height: auto; font-family: var(--app-font-family, sans-serif); }
 .chart-kit [data-legend] { cursor: pointer; }
 .chart-kit [data-legend]:focus { outline: 2px solid var(--primary); }
+.chart-hover { position: absolute; z-index: 60; box-sizing: border-box; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); overflow: auto; padding: 10px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); color: var(--text); box-shadow: 0 12px 32px rgb(0 0 0 / .18); pointer-events: auto; }
+.chart-hover-plot { min-width: 0; min-height: min(320px, calc(100vh - 54px)); }
+.chart-hover-status { margin: 8px 0; color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.chart-hover-status.error { color: var(--alert); }
 .chart-kit-tooltip { position: absolute; pointer-events: none; z-index: 3; max-width: min(360px, 95%); max-height: 280px; overflow: auto; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); border-radius: 7px; box-shadow: var(--shadow-md); padding: 10px; font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
 .charts-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 14px; }
 .charts-fields label, .charts-field { display: flex; flex-direction: column; gap: 5px; }

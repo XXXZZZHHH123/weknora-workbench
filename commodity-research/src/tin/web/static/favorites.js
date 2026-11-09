@@ -102,14 +102,17 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!task || task.queued) return;
     task.queued = true; queue.push(task); pump();
   }
+  async function chartData(item, signal) {
+    const record = await read('/charts/' + encodeURIComponent(item.id), signal);
+    const data = await read('/charts/' + encodeURIComponent(item.id) + '/data' + date, signal);
+    if (data.revision !== undefined && data.revision !== record.revision) throw new Error('图表已有新版本，请重新加载自选。');
+    return {data, definition: record.definition, title: record.definition?.title};
+  }
   async function run(task, controller) {
     const {item, target, key} = task;
     let value = cache.get(key);
     if (!value) {
-      const record = await read('/charts/' + encodeURIComponent(item.id), controller.signal);
-      const data = await read('/charts/' + encodeURIComponent(item.id) + '/data' + date, controller.signal);
-      if (data.revision !== undefined && data.revision !== record.revision) throw new Error('图表已有新版本，请重新加载自选。');
-      value = {data, definition: record.definition};
+      value = await chartData(item, controller.signal);
       if (task.generation === generation && !controller.signal.aborted) cache.set(key, value);
     }
     if (task.generation === generation && target.isConnected && !controller.signal.aborted) draw(task, value);
@@ -151,7 +154,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const signature = JSON.stringify(client.items);
     if (signature === rendered) return;
     rendered = signature; generation++; observer?.disconnect(); controllers.forEach(controller => controller.abort()); queue = [];
-    renderers.forEach(renderer => renderer.destroy()); renderers.clear(); hideHover();
+    renderers.forEach(renderer => renderer.destroy()); renderers.clear(); window.ChartHover?.close();
     get('favorites').replaceChildren();
     const indicatorCards = [];
     client.items.forEach((item, index) => {
@@ -165,9 +168,22 @@ document.addEventListener('DOMContentLoaded', () => {
         body = document.createElement('a'); body.className = 'favorite-link'; body.href = pageURL(item); body.draggable = false;
         body.setAttribute('aria-label', `${item.kind === 'chart' ? '打开图表' : '打开指标'} ${label}`);
         title.textContent = label; details.textContent = item.kind === 'indicator' ? '正在读取走势…' : '等待进入视野…';
-        body.addEventListener('mouseenter', () => showHover(card, item, label));
-        body.addEventListener('focus', () => showHover(card, item, label));
-        body.addEventListener('mouseleave', hideHover); body.addEventListener('blur', hideHover);
+        const key = `${item.kind}:${item.id}:${item.chart_revision || ''}`;
+        window.ChartHover?.attach(body, {
+          key: key + ':' + (root.dataset.date || ''), title: label,
+          load: async () => {
+            if (item.kind === 'indicator') {
+              const query = new URLSearchParams({limit: '520'});
+              if (root.dataset.date) query.set('date', root.dataset.date);
+              const history = await read('/series/' + encodeURIComponent(item.id) + '/history?' + query);
+              return {data: {curves: [{label: history.name, axis: 'left', unit: history.unit, points: history.points || []}]}, title: history.name};
+            }
+            if (cache.has(key)) return cache.get(key);
+            const current = generation, value = await chartData(item);
+            if (current === generation && !closed) cache.set(key, value);
+            return value;
+          }
+        });
       }
       if (body !== card) { body.append(title, details); card.append(body); } else card.append(title, details);
       if (!invalid && item.kind === 'indicator') {
@@ -202,7 +218,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function dragging(card, index) {
     card.addEventListener('dragstart', event => {
       if (client.saving) { event.preventDefault(); return; }
-      dragFrom = index; card.classList.add('is-dragging'); hideHover();
+      dragFrom = index; card.classList.add('is-dragging'); window.ChartHover?.close();
       event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', card.dataset.favoriteCard);
     });
     card.addEventListener('dragend', () => {
@@ -224,57 +240,6 @@ document.addEventListener('DOMContentLoaded', () => {
       try { await client.replace(next); } catch (error) { message(error.message); }
     });
   }
-  // Hovering (or focusing) a card shows a larger chart; it only reads data, never navigates.
-  const hover = document.createElement('div'), hoverCache = new Map();
-  hover.className = 'favorite-hover'; hover.hidden = true; hover.setAttribute('role', 'tooltip'); document.body.append(hover);
-  let hoverTimer = 0, hoverToken = 0, hoverRenderer = null;
-  function hideHover() {
-    clearTimeout(hoverTimer); hoverToken++; hover.hidden = true;
-    hoverRenderer?.destroy(); hoverRenderer = null; hover.replaceChildren();
-  }
-  function placeHover(card) {
-    const box = card.getBoundingClientRect(), width = Math.min(640, window.innerWidth - 32), height = 340;
-    let left = box.right + 12; if (left + width > window.innerWidth - 16) left = box.left - width - 12;
-    if (left < 16) left = Math.max(16, Math.min(box.left, window.innerWidth - width - 16));
-    let top = left === box.right + 12 || left === box.left - width - 12 ? box.top : box.bottom + 8;
-    top = Math.max(16, Math.min(top, window.innerHeight - height - 16));
-    Object.assign(hover.style, {left: left + 'px', top: top + 'px', width: width + 'px'});
-  }
-  async function hoverData(item) {
-    const key = `${item.kind}:${item.id}:${item.chart_revision || ''}`;
-    if (hoverCache.has(key)) return hoverCache.get(key);
-    let value;
-    if (item.kind === 'indicator') {
-      const history = await read('/series/' + encodeURIComponent(item.id) + '/history?' + new URLSearchParams({limit: '520', ...(root.dataset.date ? {date: root.dataset.date} : {})}));
-      value = {data: {curves: [{label: history.name, axis: 'left', unit: history.unit, points: history.points || []}]}, title: history.name};
-    } else {
-      value = cache.get(key) || await (async () => {
-        const record = await read('/charts/' + encodeURIComponent(item.id));
-        return {data: await read('/charts/' + encodeURIComponent(item.id) + '/data' + date), definition: record.definition};
-      })();
-      value = {...value, title: value.definition?.title};
-    }
-    hoverCache.set(key, value); return value;
-  }
-  function showHover(card, item, label) {
-    if (dragFrom !== null || !window.ChartKit) return;
-    clearTimeout(hoverTimer);
-    const token = ++hoverToken;
-    hoverTimer = setTimeout(async () => {
-      placeHover(card); hover.hidden = false; hover.replaceChildren(); paragraph(hover, '正在读取 ' + label + '…', 'indicator-muted');
-      try {
-        const value = await hoverData(item);
-        if (token !== hoverToken) return;
-        hover.replaceChildren(); hoverRenderer?.destroy();
-        const plot = document.createElement('div'); hover.append(plot);
-        hoverRenderer = window.ChartKit.render(plot, value.data, {definition: value.definition, title: value.title || label, width: 640, height: 300});
-      } catch (error) {
-        if (token === hoverToken) { hover.replaceChildren(); paragraph(hover, error.message, 'indicator-warning'); }
-      }
-    }, 280);
-  }
-  document.addEventListener('keydown', event => { if (event.key === 'Escape') hideHover(); });
-  window.addEventListener('scroll', hideHover, {passive: true});
   let legacy = [], legacyScoped = false, legacyKey = '', migrating = false, lastAccountError = '';
   try {
     const entry = window.FavoritesClient?.legacyEntry(localStorage, window.RESEARCH_CONTEXT);
@@ -360,7 +325,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // The page opens on 自选 (an empty list says how to add); a ?tab= link still wins.
   choose(validTab(requested) ? requested : client ? 'favorites' : 'catalog', validTab(requested));
   get('favorites-add')?.addEventListener('click', () => { userSelected = true; choose('catalog'); });
-  window.addEventListener('pagehide', () => { closed = true; generation++; hideHover(); observer?.disconnect(); controllers.forEach(controller => controller.abort()); renderers.forEach(renderer => renderer.destroy()); });
+  window.addEventListener('pagehide', () => { closed = true; generation++; window.ChartHover?.close(); observer?.disconnect(); controllers.forEach(controller => controller.abort()); renderers.forEach(renderer => renderer.destroy()); });
   window.addEventListener('pageshow', event => {
     if (event.persisted) { closed = false; rendered = ''; cache.clear(); previews.clear(); if (client?.loaded) render(); }
   });

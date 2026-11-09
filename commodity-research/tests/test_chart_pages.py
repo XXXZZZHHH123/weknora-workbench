@@ -208,6 +208,7 @@ def test_indicator_three_tabs_share_chart_library_content_and_accessible_stars(p
     assert html.xpath('//*[@data-indicator-tab]/@data-indicator-tab') == ['favorites', 'catalog', 'charts']
     assert len(html.xpath('//*[@id="chart-cards"]')) == 1
     assert len(html.xpath('//script[contains(@src,"/static/charts.js")]')) == 1
+    assert len(html.xpath('//script[contains(@src,"/static/chart-hover.js?v=") and @defer]')) == 1
     assert html.xpath('//a[contains(@href,"/sn/charts/import")]')
     assert config(response)['date'] == '2030-01-02'
     for path in ('/fixture-indicator', '/sn/charts/chart-1'):

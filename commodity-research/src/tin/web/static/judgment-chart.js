@@ -310,7 +310,7 @@
   async function bootLibrary() {
     const root = document.querySelector('[data-judgment-library]');
     if (!root || !window.ChartReferences) return;
-    const status = root.querySelector('[data-library-status]');
+    const status = root.querySelector('[data-library-status]'), date = root.dataset.chartDate || '';
     try {
       const response = await researchFetch((window.RESEARCH_PREFIX || '') + '/api/sn/judgment/library-references?judgment_id=' + encodeURIComponent(root.dataset.judgmentLibrary));
       const data = await response.json();
@@ -329,6 +329,20 @@
         for (const chart of charts) {
           const link = document.createElement('a'); link.textContent = chart.title;
           link.href = (window.RESEARCH_PREFIX || '') + '/sn/charts/' + encodeURIComponent(chart.id); link.style.marginRight = '0.6em'; container.append(link);
+          window.ChartHover?.attach(link, {
+            key: `chart:${chart.id}:${date}`, title: chart.title,
+            load: async () => {
+              const path = (window.RESEARCH_PREFIX || '') + '/api/sn/charts/' + encodeURIComponent(chart.id);
+              async function read(url) {
+                const response = await researchFetch(url), result = await response.json();
+                if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : '图表数据读取失败，请重试。');
+                return result;
+              }
+              const [record, data] = await Promise.all([read(path), read(path + '/data' + (date ? '?date=' + encodeURIComponent(date) : ''))]);
+              if (data.revision !== undefined && data.revision !== record.revision) throw new Error('图表已有新版本，请重新加载页面。');
+              return {data, definition: record.definition, title: record.title || record.definition?.title || chart.title};
+            }
+          });
         }
       });
       if (!(data.references || []).length) status.textContent = '在“管理研究逻辑”中插入图表，可作为整条研判或某条规则、证据的依据。';

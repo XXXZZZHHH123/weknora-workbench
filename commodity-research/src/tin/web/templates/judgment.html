@@ -6,6 +6,7 @@
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/judgment-manager.css?v={{ static_version() }}">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/judgment-research.css?v={{ static_version() }}">
 {% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/chart-kit.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/chart-hover.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/chart-references.js?v={{ static_version() }}"></script>{% endif %}
 <script defer src="{{ research_static_prefix() }}/static/judgment-chart.js?v={{ static_version() }}"></script>
 {% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/judgment-manager.js?v={{ static_version() }}"></script>{% endif %}
@@ -48,7 +49,7 @@
 {% if block.blockers %}<details class="judgment-research-notice"><summary>草稿尚未生效 · 查看需补充的内容</summary><p>{{ block.blockers|join('；') }}</p></details>{% endif %}
 {% if j.tone_note %}<p class="research-prose">{{ human_text(j.tone_note, names) }}</p>{% endif %}
 {% if restricted_view %}<p class="judgment-research-notice">图表引用暂不对受限视角开放</p>{% else %}
-<section class="judgment-research-section" data-judgment-library="{{ j.id }}"><h2>图表依据</h2><div data-judgment-library-target="judgment"></div><p data-library-status role="status"></p></section>
+<section class="judgment-research-section" data-judgment-library="{{ j.id }}" data-chart-date="{{ d or '' }}"><h2>图表依据</h2><div data-judgment-library-target="judgment"></div><p data-library-status role="status"></p></section>
 {% endif %}
 <section class="judgment-research-section" id="judgment-hypotheses">
   <h2>核心分歧 · 多 vs 空</h2>

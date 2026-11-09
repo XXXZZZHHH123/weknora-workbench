@@ -17,7 +17,7 @@ function source({path, url, reply}) {
   if (path === '/charts') return reply({items: [record()], total: 1, next_offset: null});
   if (path === '/charts/anomalies') return reply({as_of: '2029-09-15', items: [], total: 0, failed: []});
   if (path === '/charts/chart-1') return reply(record());
-  if (path.startsWith('/series/') && path.endsWith('/history')) return reply({series_id: decodeURIComponent(path.split('/')[2]), name: '合成走势', unit: '吨',
+  if (path.startsWith('/series/') && path.endsWith('/history')) return reply({series_id: decodeURIComponent(path.split('/')[2]), name: '合成走势 ' + path.split('/')[2].slice(-2), unit: '吨',
     points: Array.from({length: 40}, (_, index) => ({date: new Date(Date.UTC(2029, 7, 1 + index)).toISOString().slice(0, 10), value: 10 + index}))});
   if (path === '/indicators/previews') return reply({cards: [], html: url.searchParams.getAll('series_id').map(id => previewHTML.get(id) || '').join('')});
   if (path.endsWith('/cycle')) return reply(cycle());
@@ -28,7 +28,8 @@ function source({path, url, reply}) {
 (async () => {
   const browser = await launch();
   try {
-    const migration = await open(browser, '/sn/indicators?date=2029-09-15', html, source, {storage: {[key]: [sid(2), sid(1)]}});
+    const migration = await open(browser, '/sn/indicators?date=2029-09-15', html, source, {
+      storage: {[key]: [sid(2), sid(1)]}, documents: {[prefix + '/sn/charts/chart-1']: '<meta charset="utf-8"><p>已打开图表详情</p>'}});
     const p = migration.page;
     assert.equal(await p.locator('#indicator-tab-favorites').getAttribute('aria-selected'), 'true', '指标页直接停在自选，不先显示指标再跳转');
     // This account's own earlier browser favorites join the account without a click.
@@ -51,13 +52,37 @@ function source({path, url, reply}) {
     assert.equal(await first.locator('[data-favorite]').count(), 1, '每张卡只有一个自选书签');
     assert.equal(await first.locator('[data-favorite]').innerText(), '');
     await first.locator('a.favorite-link').hover();
-    await p.locator('.favorite-hover svg').waitFor();
-    assert.ok(migration.calls.some(call => call.path === `/series/${sid(2)}/history` && call.url.searchParams.get('date') === '2029-09-15'));
-    await p.mouse.move(5, 5); await p.waitForFunction(() => document.querySelector('.favorite-hover').hidden);
+    const hover = p.locator('.chart-hover');
+    await hover.locator('svg').waitFor();
+    assert.equal(await hover.getAttribute('role'), 'dialog');
+    assert.equal(await hover.getAttribute('aria-label'), '合成走势 02');
+    assert.ok(migration.calls.some(call => call.path === `/series/${sid(2)}/history` && call.url.searchParams.get('date') === '2029-09-15' && call.url.searchParams.get('limit') === '520'));
+    await p.mouse.move(5, 5); await p.waitForTimeout(350);
+    assert.equal(await hover.isVisible(), true, '移出触发卡片后浮窗保留');
+    await p.mouse.click(5, 5); await hover.waitFor({state: 'hidden'});
+    await first.locator('a.favorite-link').focus();
+    await hover.locator('svg').waitFor();
+    assert.equal(migration.calls.filter(call => call.path === `/series/${sid(2)}/history`).length, 1, '再次聚焦复用指标历史缓存');
+    await hover.locator('[data-legend]').first().focus();
+    await p.keyboard.press('Escape'); await hover.waitFor({state: 'hidden'});
+    assert.equal(await first.locator('a.favorite-link').evaluate(link => document.activeElement === link), true, 'Esc 关闭后焦点返回触发卡片');
+    await p.waitForTimeout(350);
+    assert.equal(await hover.isVisible(), false, 'Esc 回焦点不会重新打开浮窗');
+    await p.locator('[data-favorite-card]').nth(1).locator('a.favorite-link').hover();
+    await p.waitForFunction(() => document.querySelector('.chart-hover')?.getAttribute('aria-label') === '合成走势 01');
+    await first.locator('a.favorite-link').hover();
+    await p.waitForFunction(() => document.querySelector('.chart-hover')?.getAttribute('aria-label') === '合成走势 02');
+    assert.equal(await p.locator('.chart-hover:visible').count(), 1, '悬停另一张卡片替换唯一浮窗');
     const heights = await p.$$eval('[data-favorite-card]', cards => cards.map(card => Math.round(card.getBoundingClientRect().height)));
     assert.equal(new Set(heights).size, 1, '自选卡片大小一致');
     // Drag the second card before the first to reorder.
+    await p.mouse.click(5, 5); await hover.waitFor({state: 'hidden'});
+    await p.locator('[data-favorite-card]').nth(1).locator('a.favorite-link').hover(); await hover.locator('svg').waitFor();
+    await p.evaluate(() => {
+      document.addEventListener('dragstart', () => { window.favoriteDragClosedHover = !document.querySelector('.chart-hover:not([hidden])'); }, {once: true});
+    });
     await p.locator('[data-favorite-card]').nth(1).dragTo(first, {targetPosition: {x: 10, y: 40}});
+    assert.equal(await p.evaluate(() => window.favoriteDragClosedHover), true, '拖拽刚开始时已关闭浮窗');
     await p.waitForFunction(() => document.querySelector('[data-favorite-card]')?.dataset.favoriteCard.endsWith('01'));
     assert.deepEqual(migration.favorites.items.map(item => item.id), [sid(1), sid(2)]);
     const previewCalls = migration.calls.filter(call => call.path === '/indicators/previews');
@@ -84,15 +109,38 @@ function source({path, url, reply}) {
     assert.equal(new URL(p.url()).searchParams.get('date'), '2029-09-15');
     await p.locator('#indicator-tab-favorites').click();
     const chart = p.locator('[data-favorite-card="chart:chart-1"]');
-    await chart.locator('svg').waitFor();
+    await chart.locator('.favorite-details .chart-kit svg').waitFor();
+    const chartReads = migration.calls.filter(call => call.path === '/charts/chart-1' || call.path === '/charts/chart-1/data').length;
+    await chart.locator('a.favorite-link').hover(); await hover.locator('svg').waitFor();
+    assert.equal(migration.calls.filter(call => call.path === '/charts/chart-1' || call.path === '/charts/chart-1/data').length, chartReads, '图表浮窗复用卡片已读取的定义和数据');
+    assert.ok(migration.calls.some(call => call.path === '/charts/chart-1/data' && call.url.searchParams.get('date') === '2029-09-15'));
+    assert.equal(await hover.getAttribute('aria-label'), record().definition.title);
+    assert.equal(await hover.locator('img').count(), 0, '标题按文本显示');
+    const year = hover.locator('[data-legend="1"]');
+    assert.equal(await year.getAttribute('aria-pressed'), 'true');
+    await year.click();
+    assert.equal(await year.getAttribute('aria-pressed'), 'false', '移入浮窗后可以点击图例隐藏年份');
+    assert.equal(await hover.locator('[data-series="1"]').count(), 0);
+    await year.click();
+    assert.equal(await year.getAttribute('aria-pressed'), 'true', '再次点击恢复年份');
+    assert.equal(await hover.isVisible(), true, '点击图例不关闭浮窗');
+    await p.mouse.move(5, 5); await p.waitForTimeout(350);
+    assert.equal(await hover.isVisible(), true, '移出浮窗后仍保留');
+    await p.mouse.click(5, 5); await hover.waitFor({state: 'hidden'});
     await chart.getByRole('button', {name: /^左移 /}).click();
     await p.waitForFunction(() => document.querySelectorAll('[data-favorite-card]')[1]?.dataset.favoriteCard === 'chart:chart-1');
     assert.equal(await p.evaluate(() => document.activeElement?.dataset.move), '-1');
     assert.deepEqual(migration.favorites.items.map(item => item.kind), ['indicator', 'chart', 'indicator']);
+    await chart.locator('a.favorite-link').hover(); await hover.locator('svg').waitFor();
+    await chart.locator('a.favorite-link').click();
+    await p.waitForURL(url => url.pathname === prefix + '/sn/charts/chart-1');
+    assert.equal(new URL(p.url()).searchParams.get('date'), '2029-09-15', '悬停预览不拦截图表链接原有日期和跳转');
+    assert.match(await p.locator('body').innerText(), /已打开图表详情/);
     await migration.close();
 
     const invalid = await open(browser, '/sn/indicators?tab=favorites', html, source,
-      {favorites: [initialItem('gone', 'chart', 'invalid'), initialItem(sid(1))]});
+      {favorites: [initialItem('gone', 'chart', 'invalid'), initialItem(sid(1))],
+        documents: {[prefix + '/sn/indicators/' + sid(1)]: '<meta charset="utf-8"><p>已打开指标详情</p>'}});
     const invalidCard = invalid.page.locator('[data-favorite-card="chart:gone"]');
     assert.match(await invalidCard.innerText(), /已失效/);
     assert.equal(await invalidCard.locator('a').count(), 0);
@@ -101,6 +149,11 @@ function source({path, url, reply}) {
     assert.deepEqual(invalid.favorites.items.map(item => item.id), [sid(1)]);
     assert.equal(await invalid.page.locator('main img').count(), 0);
     assert.equal(await invalid.page.locator('#indicator-legacy-sync').isVisible(), false);
+    const indicatorLink = invalid.page.locator('a.favorite-link');
+    await indicatorLink.hover(); await invalid.page.locator('.chart-hover svg').waitFor();
+    await indicatorLink.click();
+    await invalid.page.waitForURL(url => url.pathname === prefix + '/sn/indicators/' + sid(1));
+    assert.match(await invalid.page.locator('body').innerText(), /已打开指标详情/);
     await invalid.close();
 
     // Records saved before favorites were per account may belong to someone else: offered, never written.

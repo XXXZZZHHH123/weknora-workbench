@@ -1,14 +1,14 @@
 /* Real judgment manager template and scripts; all API reads/writes intercepted. */
-const {assert, render, launch, open, prefix, definition, cycle} = require('./chart-ui-fixture.cjs');
+const {assert, render, launch, open, prefix, definition, record, cycle} = require('./chart-ui-fixture.cjs');
 const partial = render('_judgment_manager.html', {}, {logic_input: '', selected_judgment_id: 42, j: null});
 const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <link rel="stylesheet" href="/static/app.css"><link rel="stylesheet" href="/static/judgment-manager.css"><link rel="stylesheet" href="/static/charts.css">
 <style>[hidden]{display:none!important}body{padding:20px}</style>
 <script>window.RESEARCH_PREFIX=${JSON.stringify(prefix)};window.RESEARCH_CONTEXT={tenant:17,user:'fixture-user',workbench:'fixture',scope_version:2};window.researchFetch=(url,options)=>fetch(url,options);</script>
-<script defer src="/static/chart-kit.js"></script><script defer src="/static/chart-references.js"></script>
+<script defer src="/static/chart-kit.js"></script><script defer src="/static/chart-hover.js"></script><script defer src="/static/chart-references.js"></script>
 <script defer src="/static/judgment-chart.js"></script><script defer src="/static/judgment-manager.js"></script></head>
 <body><button data-open-logic>管理研究逻辑</button>
-<section data-judgment-library="42"><p data-library-status></p><div data-judgment-library-target="judgment"></div></section>
+<section data-judgment-library="42" data-chart-date="2029-09-15"><p data-library-status></p><div data-judgment-library-target="judgment"></div></section>
 <div data-judgment-library-target="threshold:r-one"></div><div data-chart-related-rule="r-one"></div>
 <div data-judgment-library-target="evidence:bull:0"></div>${partial}</body></html>`;
 const choice = {id: 'chart-selected', revision: 3, title: '可插入的图表 <安全>', group: '研究分组', definition_summary: '周期对比 · 数据曲线'};
@@ -32,6 +32,8 @@ const historical = {...current, id: 41, version: 2, written_at: '2028-09-15', ma
         if (path === '/judgment/library-references' && method === 'POST') {
           saves.push(body); return reply({id: 43, version: 6, status: '草稿'});
         }
+        if (path === '/charts/chart-related') return reply(record('chart-related', {revision: 4, title: '相同真实指标ID的图表'}));
+        if (path === '/charts/chart-related/data') return reply({...cycle(), revision: 4});
         if (path === '/judgment/manage') return reply({current, latest: {id: 44, version: 5}, variety: 'ZZ', can_write: true,
           versions: [{id: 41, version: 2, variety: 'ZZ', status: '已归档'}]});
         if (path === '/judgment/models') return reply({models: [{id: 'fixture-model', name: '测试模型'}]});
@@ -51,6 +53,17 @@ const historical = {...current, id: 41, version: 2, written_at: '2028-09-15', ma
     const embedded = p.locator('[data-judgment-library-target="judgment"]');
     await embedded.locator('svg').waitFor();
     assert.match(await p.locator('[data-chart-related-rule="r-one"]').innerText(), /相关图表：相同真实指标ID的图表/);
+    const related = p.locator('[data-chart-related-rule="r-one"] a');
+    assert.equal(await related.getAttribute('href'), prefix + '/sn/charts/chart-related');
+    assert.equal(fixture.calls.filter(call => call.path.startsWith('/charts/chart-related')).length, 0, '相关图表仅在悬停时读取');
+    await related.hover();
+    const hover = p.getByRole('dialog', {name: '相同真实指标ID的图表'});
+    await hover.locator('svg').waitFor();
+    const dataCall = fixture.calls.find(call => call.path === '/charts/chart-related/data');
+    assert.equal(dataCall.url.searchParams.get('date'), '2029-09-15', '相关图表采用页面日期，保持与研判写作日期独立');
+    await p.keyboard.press('Escape');
+    await hover.waitFor({state: 'hidden'});
+    assert.equal(await related.evaluate(link => document.activeElement === link), true);
     assert.equal(await embedded.locator('[data-chart-reference-mode]').inputValue(), 'historical');
     assert.equal(renders[0].reference.revision, 2); assert.equal(renders[0].reference.as_of, '2028-09-15');
     await embedded.locator('[data-chart-reference-mode]').selectOption('current');
