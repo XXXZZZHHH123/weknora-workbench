@@ -74,20 +74,34 @@
   </div>
 </section>
 
+{% set cycle_scope = research_workbench() %}
+{% set cycle_enabled = cycle_scope and cycle_scope.scope_version == 2 and not cycle_scope.restricted %}
+{% set cycle_write = cycle_enabled and cycle_scope.can_edit %}
 <section class="mt-4 grid gap-4 lg:grid-cols-3">
-  <div class="lg:col-span-2 rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
-    <div class="flex items-baseline justify-between">
-      <h2 class="text-sm font-bold">近 {{ d.history | length }} 期走势</h2>
-      {% if d.history %}
-      <span class="text-[11px] text-[var(--text-muted)] tabular">
-        {{ d.history[0].as_of }} ~ {{ d.history[-1].as_of }}</span>
-      {% endif %}
+  <div class="lg:col-span-2 rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 min-w-0">
+    <div class="flex items-center justify-between gap-3 flex-wrap">
+      <h2 class="text-sm font-bold" id="ind-view-title" data-trend-title="近 {{ d.history | length }} 期走势">近 {{ d.history | length }} 期走势</h2>
+      <div class="flex items-center gap-3">
+        {% if d.history %}
+        <span id="ind-trend-range" class="text-[11px] text-[var(--text-muted)] tabular">
+          {{ d.history[0].as_of }} ~ {{ d.history[-1].as_of }}</span>
+        {% endif %}
+        {% if cycle_enabled %}
+        <div class="indicator-view-switch" role="tablist" aria-label="走势视图">
+          <button type="button" role="tab" id="ind-view-trend" data-ind-view="trend" aria-selected="true" aria-controls="ind-trend-view">走势</button>
+          <button type="button" role="tab" id="ind-view-cycle" data-ind-view="cycle" aria-selected="false" aria-controls="indicator-cycle-panel">同期对比</button>
+        </div>
+        {% endif %}
+      </div>
     </div>
+    <div id="ind-trend-view" role="tabpanel" aria-labelledby="ind-view-trend">
     <div id="ind-chart" class="mt-2"></div>
     {% if not d.history %}
     <p class="py-10 text-center text-xs text-[var(--text-muted)]">
       这条指标尚无任何观测 —— 不是 0，是没取到。</p>
     {% endif %}
+    </div>
+    {% include "_indicator_cycle.html" %}
   </div>
 
   <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 text-[11px]">
@@ -127,7 +141,7 @@
   </div>
 </section>
 
-{% include "_indicator_cycle.html" %}
+<section class="charts-panel indicator-cycle mt-4" id="indicator-related-panel"><h2>相关图表</h2><div id="indicator-related-status" role="status" hidden></div><div id="indicator-related-charts"></div><button type="button" id="indicator-related-more" class="charts-button" hidden>加载更多相关图表</button></section>
 
 {% if d.revisions %}
 <section class="mt-4 rounded-lg border border-[var(--amber)]/40 bg-[var(--amber-soft)] p-4">
@@ -151,10 +165,24 @@
 <section class="mt-4 rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
   <div class="flex items-baseline justify-between">
     <h2 class="text-sm font-bold">观测明细</h2>
-    <button type="button" onclick="indCopyCsv()"
-      class="text-[11px] px-2 py-1 rounded border border-[var(--line)] hover:bg-[var(--surface-soft)]">复制为 CSV</button>
+    <div class="flex items-center gap-3">
+      {% if cycle_enabled %}
+      <div class="indicator-view-switch" role="tablist" aria-label="观测明细视图">
+        <button type="button" role="tab" id="ind-table-time" data-ind-table="time" aria-selected="true" aria-controls="ind-time-table">按时间</button>
+        <button type="button" role="tab" id="ind-table-year" data-ind-table="year" aria-selected="false" aria-controls="ind-year-table">按年份分列</button>
+      </div>
+      {% endif %}
+      <button type="button" onclick="indCopyCsv()"
+        class="text-[11px] px-2 py-1 rounded border border-[var(--line)] hover:bg-[var(--surface-soft)]">复制为 CSV</button>
+    </div>
   </div>
-  <div class="mt-2 max-h-80 overflow-y-auto">
+  {% if cycle_enabled %}
+  <div id="ind-year-table" class="mt-2 indicator-cycle" role="tabpanel" aria-labelledby="ind-table-year" hidden>
+    <p id="ind-year-status" class="text-[11px] text-[var(--text-muted)]" role="status"></p>
+    <div class="max-h-80 overflow-auto"><table class="w-full text-[11px] tabular text-left ind-year-grid"><thead class="text-[var(--text-muted)] sticky top-0 bg-[var(--surface)]"></thead><tbody></tbody></table></div>
+  </div>
+  {% endif %}
+  <div id="ind-time-table" class="mt-2 max-h-80 overflow-y-auto" role="tabpanel" aria-labelledby="ind-table-time">
     <table class="w-full text-[11px] tabular text-left">
       <thead class="text-[var(--text-muted)] sticky top-0 bg-[var(--surface)]">
         <tr><th class="py-1">数据时点</th><th class="text-right">值（{{ d.unit }}）</th>
@@ -165,6 +193,9 @@
 </section>
 {% endif %}
 
+<script type="application/json" id="indicator-cycle-config">{{ {'enabled': true if cycle_enabled else false, 'can_write': true if cycle_write else false, 'series_id': d.series_id, 'name': d.name, 'date': request.query_params.get('date'), 'reason': '受限视角暂不开放图表库和周期对比' if cycle_scope and cycle_scope.restricted else '图表库需要来源版本2，请重新打开研究台更新来源授权'} | tojson }}</script>
+<script src="{{ research_static_prefix() }}/static/indicator-cycle.js?v={{ static_version() }}"></script>
+{% if cycle_enabled %}{% include '_chart_builder.html' %}{% endif %}
 <script>
   window.IND = {{ d | tojson }};
 </script>
@@ -195,6 +226,12 @@
 
   function indCopyCsv() {
     const d = window.IND;
+    const byYear = window.IndicatorYearTable?.csv();
+    if (byYear) {
+      navigator.clipboard.writeText(byYear.text).then(
+        () => showToast(`已复制 ${byYear.rows} 行`), () => showToast("复制失败"));
+      return;
+    }
     const csv = ["数据时点,值,单位"].concat(
       d.history.slice().reverse().map((p) => `${p.as_of},${p.value},${d.unit || ""}`)).join("\n");
     navigator.clipboard.writeText(csv).then(

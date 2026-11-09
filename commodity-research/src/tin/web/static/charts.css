@@ -79,3 +79,10 @@
 .builder-preview h3 { margin-bottom: 8px; font-weight: 600; }
 @media(max-width: 750px) { .chart-builder-layout { grid-template-columns: 1fr; } .builder-catalog-items { max-height: 180px; } .builder-curve { grid-template-columns: 1fr 1fr; } }
 @media(max-width: 700px) { .charts-layout { grid-template-columns: 1fr; } .charts-groups { flex-direction: row; flex-wrap: wrap; } .charts-curve { grid-template-columns: 1fr 1fr; } .charts-grid { grid-template-columns: 1fr; } .charts-panel { padding: 12px; } }
+.indicator-view-switch { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; font-size: 12px; }
+.indicator-view-switch button { padding: 3px 10px; background: var(--surface); color: var(--text-muted); border: 0; cursor: pointer; }
+.indicator-view-switch button + button { border-left: 1px solid var(--line-strong); }
+.indicator-view-switch button[aria-selected="true"] { background: var(--primary); color: var(--surface); font-weight: 600; }
+.indicator-view-switch button:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+#ind-trend-view[hidden], #ind-time-table[hidden], #ind-year-table[hidden] { display: none !important; }
+.ind-year-grid th, .ind-year-grid td { white-space: nowrap; }
