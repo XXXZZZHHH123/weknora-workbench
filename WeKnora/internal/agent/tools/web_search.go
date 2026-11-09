@@ -118,6 +118,43 @@ func (t *WebSearchTool) WithPageReader(reader *WebFetchTool) *WebSearchTool {
 	return t
 }
 
+// WithProviderCapabilities projects parameters from the actual authorized
+// provider. The registered tool keeps its normal execution checks: hiding an
+// unsupported filter does not authorize silently ignoring an explicit one.
+func (t *WebSearchTool) WithProviderCapabilities(ctx context.Context) *WebSearchTool {
+	capabilities, ok := t.webSearchService.(interfaces.WebSearchFilterCapabilities)
+	if !ok {
+		return t // Older services retain the honest provider-dependent contract.
+	}
+	supported, err := capabilities.SupportsFilters(ctx, t.providerID, webSearchConfigFromContext(ctx))
+	if err != nil {
+		t.description += "\nThe current provider's filter capability could not be resolved; support is unknown and explicit filters remain validated at execution."
+		return t
+	}
+	if supported {
+		return t
+	}
+	var schema map[string]any
+	if json.Unmarshal(t.schema, &schema) == nil {
+		if properties, ok := schema["properties"].(map[string]any); ok {
+			delete(properties, "country")
+			delete(properties, "freshness")
+			if encoded, err := json.Marshal(schema); err == nil {
+				t.schema = encoded
+			}
+		}
+	}
+	t.description += "\nThe current configured provider does not support country or freshness filters. These parameters are unavailable. Do not silently relax a user's region/date requirement; report the limitation if an unfiltered search cannot satisfy it."
+	return t
+}
+
+func webSearchConfigFromContext(ctx context.Context) *types.WebSearchConfig {
+	if tenant, ok := ctx.Value(types.TenantInfoContextKey).(*types.Tenant); ok && tenant != nil {
+		return types.EffectiveWebSearchConfig(tenant.WebSearchConfig)
+	}
+	return types.EffectiveWebSearchConfig(nil)
+}
+
 // Execute executes the web search tool
 func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (*types.ToolResult, error) {
 	logger.Infof(ctx, "[Tool][WebSearch] Execute started")
@@ -193,24 +230,28 @@ func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (*typ
 		}, fmt.Errorf("workspace ID not found in context")
 	}
 
-	// Get tenant info from context (same approach as search.go)
-	var tenant *types.Tenant
-	if tenantValue := ctx.Value(types.TenantInfoContextKey); tenantValue != nil {
-		tenant, _ = tenantValue.(*types.Tenant)
-	}
-
 	// Resolve provider ID: tool-level (set from agent config, which already resolved default)
 	resolvedProviderID := t.providerID
 
 	// Create a copy of the effective web search config with maxResults from agent config.
-	searchConfig := types.EffectiveWebSearchConfig(nil)
-	if tenant != nil {
-		searchConfig = types.EffectiveWebSearchConfig(tenant.WebSearchConfig)
-	}
+	searchConfig := webSearchConfigFromContext(ctx)
 	searchConfig.MaxResults = maxResults
 	searchConfig.Filters = filters
 	// Agent reads selected pages explicitly; RAG compression belongs to the quick-answer pipeline.
 	searchConfig.CompressionMethod = "none"
+	if filters.Country != "" || filters.Freshness != "" {
+		if capabilities, ok := t.webSearchService.(interfaces.WebSearchFilterCapabilities); ok {
+			// Re-resolve instead of trusting the earlier schema snapshot: provider
+			// settings may have changed since this engine was constructed.
+			if supported, err := capabilities.SupportsFilters(ctx, resolvedProviderID, searchConfig); err == nil && !supported {
+				message := "The current provider does not support country/freshness filters. No search was executed. Use a configured provider with filter support, or omit filters only if the task permits an unfiltered search."
+				data := map[string]any{"kind": "web_search_capabilities", "status": "error", "reason_code": "unsupported_search_filters",
+					"filters_supported": false, "requested_filters": filters, "notice": message}
+				output, _ := json.Marshal(data)
+				return &types.ToolResult{Success: false, Error: message, Data: data, Output: string(output)}, nil
+			}
+		}
+	}
 
 	// Perform web search
 	logger.Infof(

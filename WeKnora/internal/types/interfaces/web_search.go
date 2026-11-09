@@ -21,6 +21,13 @@ type FilteredWebSearchProvider interface {
 		filters types.WebSearchFilters) ([]*types.WebSearchResult, error)
 }
 
+// WebSearchFilterCapabilities is an optional, local capability lookup for the
+// effective workspace provider. It must not issue a search or another external
+// request. An error means capability is unknown, not unsupported.
+type WebSearchFilterCapabilities interface {
+	SupportsFilters(ctx context.Context, providerID string, config *types.WebSearchConfig) (bool, error)
+}
+
 // WebSearchService defines the interface for web search services
 type WebSearchService interface {
 	// Search performs a web search using the provider entity identified by providerID.

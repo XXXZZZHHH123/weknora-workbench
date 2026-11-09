@@ -192,6 +192,9 @@ func executeSourceCalculation(plan sourceCalculationPlan, chunks map[string][]fe
 	sort.Strings(names)
 	for _, name := range names {
 		input := plan.Inputs[name]
+		if strings.TrimSpace(input.Quote) == "" {
+			return nil, newSourceCalculationInputError("missing_quote", name, input.ChunkID, fmt.Sprintf("变量%s缺少来源引用：必须提供实际已读分块的精确quote，或用quote_ref引用本次source_quotes中的同一分块。不能根据value猜测原文或单位。%s", name, sourceTableCalculationBindingRecovery), nil)
+		}
 		if !sourceCalculationVariable.MatchString(name) || len(input.Value) > 128 || !sourceCalculationDecimal.MatchString(input.Value) || input.ChunkID == "" || len(input.ChunkID) > 256 || strings.TrimSpace(input.Quote) == "" || len(input.Quote) > 8192 || len(input.Unit) > 128 {
 			return nil, fmt.Errorf("变量必须使用合法名称、十进制字符串及完整原文引用")
 		}

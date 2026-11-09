@@ -6,11 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/agent/collaboration"
 	"github.com/Tencent/WeKnora/internal/types"
 )
+
+const collaborationTaskNamePattern = `^[a-z][a-z0-9_]{0,47}$`
+
+var collaborationTaskNameRE = regexp.MustCompile(collaborationTaskNamePattern)
 
 // CollaborationToolNames lists the six runtime collaboration tools.
 var CollaborationToolNames = []string{
@@ -41,7 +47,10 @@ func NewCollaborationTools(b *collaboration.Binding, resolve ResolveDelegatedAge
 	}{
 		{
 			"spawn_agent",
-			"Start a child task asynchronously. Omit agent_id to create a temporary worker with " +
+			"Start a child task asynchronously. Required arguments: task_name and message. " +
+				"task_name uses lowercase ASCII letters, digits and underscores, starts with a letter, " +
+				"and is 1–48 characters; hyphens are invalid. Put the assignment in message. " +
+				"Omit agent_id to create a temporary worker with " +
 				"the current agent's effective model, instructions, tools and authorized scope. " +
 				"Supply agent_id to delegate to an existing same-workspace reasoning agent template " +
 				"using that template's model and tools. Neither mode creates a saved agent template. " +
@@ -53,8 +62,9 @@ func NewCollaborationTools(b *collaboration.Binding, resolve ResolveDelegatedAge
 				"waits release their slots. Messages and final results arrive asynchronously.",
 			"\"agent_id\":{\"type\":\"string\",\"description\":\"Optional existing reasoning agent template ID " +
 				"in this workspace. Omit to inherit the current agent. Obtain template IDs from the agent " +
-				"catalog.\"},\"task_name\":{\"type\":\"string\",\"pattern\":\"^[a-z][a-z0-9_]{0,47}$\",\"desc" +
-				"ription\":\"Unique instance name within this task, for example research_docs. " +
+				"catalog.\"},\"task_name\":{\"type\":\"string\",\"pattern\":\"" + collaborationTaskNamePattern + "\",\"desc" +
+				"ription\":\"Unique instance name: 1–48 lowercase ASCII letters/digits/underscores, " +
+				"starting with a letter, no hyphens. For example research_docs. " +
 				"Address it later as research_docs or /root/research_docs.\"},\"message\":{\"type\":\"s" +
 				"tring\",\"description\":\"Self-contained task and required context, maximum 16000 " +
 				"UTF-8 bytes.\"}",
@@ -200,6 +210,14 @@ func (t *CollaborationTool) Execute(ctx context.Context, args json.RawMessage) (
 	}
 	switch t.Name() {
 	case "spawn_agent":
+		if !collaborationTaskNameRE.MatchString(in.Name) {
+			return collaborationArgumentFailure("/task_name", "argument_pattern",
+				"task_name must match "+collaborationTaskNamePattern+" (1–48 lowercase ASCII letters/digits/underscores, starting with a letter; no hyphens). Provide a valid unique name; no child was created."), nil
+		}
+		if strings.TrimSpace(in.Message) == "" || len(in.Message) > 16000 {
+			return collaborationArgumentFailure("/message", "invalid_message",
+				"message must contain the self-contained assignment and context, at most 16000 UTF-8 bytes. Use the message field; no child was created."), nil
+		}
 		if t.resolve == nil {
 			err = errors.New("agent resolver unavailable")
 			break
@@ -286,4 +304,11 @@ func (t *CollaborationTool) Execute(ctx context.Context, args json.RawMessage) (
 		return nil, err
 	}
 	return &types.ToolResult{Success: true, Output: string(data)}, nil
+}
+
+func collaborationArgumentFailure(path, code, message string) *types.ToolResult {
+	data := map[string]any{"kind": "tool_arguments", "status": "error", "reason_code": code, "field_path": path,
+		"error": message, "notice": "Tool was not executed. Correct the indicated argument using the actual schema; missing task context must not be invented."}
+	output, _ := json.Marshal(data)
+	return &types.ToolResult{Success: false, Error: message, Data: data, Output: string(output)}
 }

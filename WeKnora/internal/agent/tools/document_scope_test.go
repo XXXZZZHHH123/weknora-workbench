@@ -204,15 +204,15 @@ func TestSearchKnowledgeBoundPageCannotFallBackToOtherReport(t *testing.T) {
 	require.False(t, res.Success)
 }
 
-func TestUnboundDocumentScopeNeverGuessesSourceFromQuestionWording(t *testing.T) {
+func TestUnboundDocumentScopeUsesExplicitReadIDWithoutQuestionClassification(t *testing.T) {
 	tool, _ := reportScopeFixture(t, "棉花周报20240310.pptx")
 	tool.WithDocumentConstraint(NewDocumentScopeState())
 	for _, query := range []string{"不要引用其他报告", "3月10日周报", "compare another report", "any metric"} {
 		args, _ := json.Marshal(map[string]any{"id": "report-a", "query": query})
 		res, err := tool.Execute(context.Background(), args)
 		require.NoError(t, err)
-		require.False(t, res.Success)
-		require.Contains(t, res.Error, "来源计划")
+		require.True(t, res.Success, res.Error)
+		require.Equal(t, "report-a", res.Data["knowledge_id"], "the model-selected ID determines the source, never query wording")
 	}
 	plan := DocumentScopePlan{Reason: "the QA model selected the actual source using conversation context", Sources: []DocumentSourceSelection{{KnowledgeID: "report-a", FileName: "棉花周报20240310.pptx", Page: 12}}}
 	args, _ := json.Marshal(ReadDocumentInput{ID: "report-a", SourceScope: &plan})
@@ -302,7 +302,8 @@ func TestUnboundSearchProvidesMetadataOnlyThenExplicitPlanReadsActualPage(t *tes
 	require.NotContains(t, res.Data, "results")
 	res, err = read.Execute(context.Background(), json.RawMessage(`{"id":"report-a","page":12}`))
 	require.NoError(t, err)
-	require.False(t, res.Success, "ID/page alone cannot bypass a required source plan")
+	require.True(t, res.Success, "an explicit authorized read ID establishes the initial source in the same call")
+	require.NotContains(t, res.Output, "红线2301")
 	plan := DocumentScopePlan{Reason: "QA model selects requested source and physical page from authorized metadata", Sources: []DocumentSourceSelection{{KnowledgeID: "report-a", FileName: "source20240310.pptx", Page: 12, Date: &DocumentDateEvidence{Date: "2024-03-10", SourceField: "file_name", SourceText: "20240310"}}}}
 	args, _ := json.Marshal(ReadDocumentInput{ID: "report-a", SourceScope: &plan})
 	res, err = registry.ExecuteTool(context.Background(), ToolReadDocument, args)
@@ -332,9 +333,13 @@ func TestVerifiedScopeIsPerTurnAndSupportsExplicitComparativePlans(t *testing.T)
 	require.NoError(t, err)
 	require.True(t, res.Success, res.Error)
 	PrepareDocumentScope(registry)
+	binder, err := registry.GetTool(ToolBindDocumentScope)
+	require.NoError(t, err)
+	require.Empty(t, binder.(*bindDocumentScopeTool).state.selectedIDs(), "a new turn does not inherit the previous comparison plan")
 	res, err = read.Execute(context.Background(), json.RawMessage(`{"id":"report-a"}`))
 	require.NoError(t, err)
-	require.False(t, res.Success, "a new turn cannot inherit a previous source plan")
+	require.True(t, res.Success, res.Error)
+	require.Equal(t, []string{"report-a"}, binder.(*bindDocumentScopeTool).state.selectedIDs(), "only the new model-selected target is bound")
 }
 
 func TestDocumentScopePlanRejectsUnknownFieldsEvenWithoutRegistryValidation(t *testing.T) {

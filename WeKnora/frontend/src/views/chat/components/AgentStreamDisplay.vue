@@ -229,24 +229,24 @@
                   </div>
 
                   <div
-                    v-if="!event.pending && (event.tool_name === 'search_knowledge' || event.tool_name === 'knowledge_search') && event.tool_data"
+                    v-if="!event.pending && event.success !== false && (event.tool_name === 'search_knowledge' || event.tool_name === 'knowledge_search') && event.tool_data"
                     class="search-results-summary-fixed">
                     <div class="results-summary-text" v-html="getSearchResultsSummary(event)"></div>
                   </div>
 
-                  <div v-if="!event.pending && event.tool_name === 'web_search' && event.tool_data"
+                  <div v-if="!event.pending && event.success !== false && event.tool_name === 'web_search' && event.tool_data"
                     class="search-results-summary-fixed">
                     <div class="results-summary-text"
                       v-html="t('agent.webSearchFound', { count: getResultsCount(event.tool_data) })">
                     </div>
                   </div>
 
-                  <div v-if="!event.pending && event.tool_name === 'grep_chunks' && event.tool_data"
+                  <div v-if="!event.pending && event.success !== false && event.tool_name === 'grep_chunks' && event.tool_data"
                     class="search-results-summary-fixed grep-summary">
                     <div class="results-summary-text" v-html="getGrepResultsSummary(event.tool_data)"></div>
                   </div>
 
-                  <div v-if="!event.pending && (event.tool_name === 'read_document' || event.tool_name === 'list_knowledge_chunks') && event.tool_data"
+                  <div v-if="!event.pending && event.success !== false && (event.tool_name === 'read_document' || event.tool_name === 'list_knowledge_chunks') && event.tool_data"
                     class="search-results-summary-fixed knowledge-chunks-summary">
                     <div class="results-summary-text" v-html="getKnowledgeChunksSummary(event.tool_data)"></div>
                   </div>
@@ -269,6 +269,7 @@
 
                     <div v-if="isEventExpanded(event.tool_call_id) && !event.pending && hasExpandableResults(event)"
                     class="action-details">
+                    <div v-if="toolFailureReason(event)" class="tool-failure-reason">{{ toolFailureReason(event) }}</div>
                     <BrowserToolDetails v-if="event.tool_name === 'local_browser'" :event="event" />
                     <div v-else-if="resolveToolDisplayType(event)" class="tool-result-wrapper">
                       <ToolResultRenderer :display-type="resolveToolDisplayType(event)" :tool-data="event.tool_data"
@@ -631,24 +632,24 @@
                 </div>
 
                 <div
-                  v-if="!event.pending && (event.tool_name === 'search_knowledge' || event.tool_name === 'knowledge_search') && event.tool_data"
+                  v-if="!event.pending && event.success !== false && (event.tool_name === 'search_knowledge' || event.tool_name === 'knowledge_search') && event.tool_data"
                   class="search-results-summary-fixed">
                   <div class="results-summary-text" v-html="getSearchResultsSummary(event)"></div>
                 </div>
 
-                <div v-if="!event.pending && event.tool_name === 'web_search' && event.tool_data"
+                <div v-if="!event.pending && event.success !== false && event.tool_name === 'web_search' && event.tool_data"
                   class="search-results-summary-fixed">
                   <div class="results-summary-text"
                     v-html="t('agent.webSearchFound', { count: getResultsCount(event.tool_data) })">
                   </div>
                 </div>
 
-                <div v-if="!event.pending && event.tool_name === 'grep_chunks' && event.tool_data"
+                <div v-if="!event.pending && event.success !== false && event.tool_name === 'grep_chunks' && event.tool_data"
                   class="search-results-summary-fixed grep-summary">
                   <div class="results-summary-text" v-html="getGrepResultsSummary(event.tool_data)"></div>
                 </div>
 
-                <div v-if="!event.pending && (event.tool_name === 'read_document' || event.tool_name === 'list_knowledge_chunks') && event.tool_data"
+                <div v-if="!event.pending && event.success !== false && (event.tool_name === 'read_document' || event.tool_name === 'list_knowledge_chunks') && event.tool_data"
                   class="search-results-summary-fixed knowledge-chunks-summary">
                   <div class="results-summary-text" v-html="getKnowledgeChunksSummary(event.tool_data)"></div>
                 </div>
@@ -671,6 +672,7 @@
 
                 <div v-if="isEventExpanded(event.tool_call_id) && !event.pending && hasExpandableResults(event)"
                   class="action-details">
+                  <div v-if="toolFailureReason(event)" class="tool-failure-reason">{{ toolFailureReason(event) }}</div>
                   <BrowserToolDetails v-if="event.tool_name === 'local_browser'" :event="event" />
                     <div v-else-if="resolveToolDisplayType(event)" class="tool-result-wrapper">
                     <ToolResultRenderer :display-type="resolveToolDisplayType(event)" :tool-data="event.tool_data"
@@ -1699,7 +1701,7 @@ function getToolReferenceItems(event: any): KnowledgeReferenceLike[] {
   return [];
 }
 
-const canOpenToolReferences = (event: any): boolean => getToolReferenceItems(event).length > 0;
+const canOpenToolReferences = (event: any): boolean => event?.success !== false && getToolReferenceItems(event).length > 0;
 
 const openToolReferences = (event: any): boolean => {
   const refs = getToolReferenceItems(event);
@@ -2551,6 +2553,9 @@ const isReferenceDrawerTool = (toolName?: string | null): boolean =>
   toolName === 'wiki_read_source_doc';
 
 const hasExpandableResults = (event: any): boolean => {
+  // Failed retrievals often have no references or result rows. Keep their
+  // actual error accessible instead of applying the compact success layout.
+  if (toolFailureReason(event)) return true;
   if (isReferenceDrawerTool(event?.tool_name)) return false;
   // Its card is the result.
   if ((event?.tool_name === 'open_page' || event?.tool_name === 'view_page') && event.success !== false) return false;
@@ -2558,6 +2563,12 @@ const hasExpandableResults = (event: any): boolean => {
   // The snapshot is page text for the model, not something to read here.
   if ((event?.tool_name === 'read_page' || event?.tool_name === 'select_tab') && event.success !== false) return false;
   return hasResults(event);
+};
+
+const toolFailureReason = (event: any): string => {
+  if (event?.pending || event?.success !== false) return '';
+  const reason = event?.error || event?.tool_data?.error;
+  return typeof reason === 'string' ? reason.trim() : '';
 };
 
 const hasActionResult = (event: any): boolean => canOpenToolReferences(event) || hasExpandableResults(event);
@@ -3758,6 +3769,13 @@ const handleAddToKnowledge = (answerEvent: any) => {
 
     &.action-error {
       color: var(--td-error-color);
+    }
+
+    .tool-failure-reason {
+      color: var(--td-error-color);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      margin-bottom: 8px;
     }
 
     &.action-pending {

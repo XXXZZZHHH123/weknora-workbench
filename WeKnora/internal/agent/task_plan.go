@@ -496,12 +496,22 @@ func (tool *taskExpansionTool) Execute(_ context.Context, raw json.RawMessage) (
 		available[definition.Name] = definition
 	}
 	chosen := []types.FunctionDefinition{}
+	unknown := []string{}
 	for _, name := range request.Names {
 		definition, exists := available[name]
 		if !exists {
-			return &types.ToolResult{Success: false, Error: "工具名不在本轮实际可发现的已授权目录中；用names=[]查看当前目录，不能猜测或扩展权限"}, nil
+			unknown = append(unknown, name)
+			continue
 		}
 		chosen = append(chosen, definition)
+	}
+	if len(unknown) > 0 {
+		message := "工具名不在本轮实际可发现的已授权目录中；本次未扩展任何工具。请从返回的真实目录选择，不要猜测工具名或扩展权限。"
+		data := map[string]any{"kind": "task_tool_capabilities", "status": "error", "reason_code": "unknown_tool_names",
+			"unknown_tools": unknown, "available_tools": taskToolCapabilities(tool.engine.taskModelToolDefinitions(definitions)),
+			"tool_directory_complete": true, "notice": message}
+		output, _ := json.Marshal(data)
+		return &types.ToolResult{Success: false, Error: message, Data: data, Output: string(output)}, nil
 	}
 	if projection := tool.engine.taskProjection; projection != nil {
 		projection.mu.Lock()

@@ -43,6 +43,20 @@ func NewWebSearchService(
 	}, nil
 }
 
+// SupportsFilters uses the same authorized provider resolution as Search. The
+// factory creates a local client; capability lookup never calls the provider.
+func (s *WebSearchService) SupportsFilters(ctx context.Context, providerID string, cfg *types.WebSearchConfig) (bool, error) {
+	if cfg == nil {
+		return false, fmt.Errorf("web search config is required")
+	}
+	provider, err := s.resolveProvider(ctx, providerID, cfg)
+	if err != nil {
+		return false, err
+	}
+	_, supported := provider.(interfaces.FilteredWebSearchProvider)
+	return supported, nil
+}
+
 // Search performs web search using the provider entity identified by providerID.
 // If providerID is empty, it falls back to the deprecated config.Provider field for backward compatibility.
 func (s *WebSearchService) Search(
@@ -79,7 +93,7 @@ func (s *WebSearchService) Search(
 		filtered, ok := searchProvider.(interfaces.FilteredWebSearchProvider)
 		if !ok {
 			return nil, fmt.Errorf("provider %s does not support country/freshness filters; "+
-				"omit them or select Brave or Serply", searchProvider.Name())
+				"use a configured provider with filter support, or omit them only if the task permits an unfiltered search", searchProvider.Name())
 		}
 		results, err = filtered.SearchWithFilters(ctx, query, config.MaxResults, config.IncludeDate, config.Filters)
 	} else {

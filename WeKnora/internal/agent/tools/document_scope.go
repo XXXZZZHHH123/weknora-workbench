@@ -151,6 +151,42 @@ func (r *RequestedDocumentConstraint) selection(id string) (DocumentSourceSelect
 	}
 	return cloneDocumentSelection(source), nil
 }
+
+// An explicit read target is already a model source choice. Its caller must
+// resolve and authorize the real document before passing it here. Bind only an
+// empty turn boundary, atomically: a read never replaces an existing plan or
+// broadens frozen user page restrictions. Search candidates alone do not call
+// this method and remain navigation metadata.
+func (r *RequestedDocumentConstraint) selectionForRead(knowledge *types.Knowledge) (DocumentSourceSelection, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if knowledge == nil || knowledge.ID == "" {
+		return DocumentSourceSelection{}, fmt.Errorf("读取目标缺少真实文档身份")
+	}
+	if len(r.sources) == 0 {
+		if knowledge.FileName == "" && knowledge.Title == "" {
+			return DocumentSourceSelection{}, fmt.Errorf("读取目标缺少实际文件元数据；请核对真实文档来源")
+		}
+		if len(r.userPages) > 0 && r.userPages[knowledge.ID] == nil {
+			return DocumentSourceSelection{}, fmt.Errorf("读取目标不在用户已限定的文档页范围内")
+		}
+		selected := DocumentSourceSelection{KnowledgeID: knowledge.ID, FileName: knowledge.FileName, Title: knowledge.Title,
+			UserPages: cloneDocumentPageConstraint(r.userPages[knowledge.ID])}
+		r.sources = map[string]DocumentSourceSelection{knowledge.ID: selected}
+		r.order = []string{knowledge.ID}
+	}
+	selected, ok := r.sources[knowledge.ID]
+	if !ok {
+		return DocumentSourceSelection{}, fmt.Errorf("该文档不在已验证来源计划中，不能用另一报告的同名图替代；比较或更改来源须明确提交完整来源计划")
+	}
+	if selected.FileName != "" && selected.FileName != knowledge.FileName || selected.Title != "" && selected.Title != knowledge.Title {
+		return DocumentSourceSelection{}, fmt.Errorf("当前文档身份元数据与已验证来源不一致；请核对当前版本后重新提交来源计划")
+	}
+	if err := validateDocumentDateEvidence(knowledge, selected.Date); err != nil {
+		return DocumentSourceSelection{}, err
+	}
+	return cloneDocumentSelection(selected), nil
+}
 func (r *RequestedDocumentConstraint) selectedIDs() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -307,7 +343,11 @@ func withDocumentScopeParameter(tool BaseTool) BaseTool {
 	properties, _ := schema["properties"].(map[string]any)
 	properties["source_scope"] = parameter
 	tool.schema, _ = json.Marshal(schema)
-	tool.description += "\nWhen this workbench requires a document source plan, inspect authorized document metadata first, then pass source_scope or bind_document_scope using the complete question/context: selected actual sources, exact metadata, requested pages/date proof and selection reason. Candidates are not content evidence until verified. Comparisons explicitly select multiple documents; do not decide scope from keywords."
+	if tool.name == ToolReadDocument {
+		tool.description += "\nChoose the actual read id from authorized metadata and the complete question/context. When this turn has no source binding, this explicit read target is verified against real authorized document metadata in the same call; a separate bind_document_scope call is unnecessary. An existing source plan or user document/page restriction remains binding. To change sources, compare multiple documents, or declare explicit source-date/user-page constraints, provide source_scope or bind_document_scope with the actual metadata and constraints. Never guess an ID or substitute a same-name source."
+	} else {
+		tool.description += "\nWhen this workbench requires a document source plan, inspect authorized document metadata first, then pass source_scope or bind_document_scope using the complete question/context: selected actual sources, exact metadata, requested pages/date proof and selection reason. Candidates are not content evidence until verified. Comparisons explicitly select multiple documents; do not decide scope from keywords."
+	}
 	return tool
 }
 
@@ -381,7 +421,7 @@ func (t *SearchKnowledgeTool) documentCandidates(ctx context.Context, results []
 		}
 		documents = append(documents, documentScopeMetadata(knowledge))
 	}
-	data := map[string]any{"display_type": "document_info", "documents": documents, "query": query, "requires_source_scope": true, "notice": "这些是实际授权文档候选元数据，不是已验证的内容证据。根据完整问题和上下文选择来源，歧义时澄清；使用 source_scope 或 bind_document_scope 绑定实际文件、日期证据及物理页，再读取正文。比较需明确选择全部来源，不得用其他报告的同名图替代。"}
+	data := map[string]any{"display_type": "document_info", "documents": documents, "query": query, "requires_source_scope": true, "notice": "这些是实际授权文档候选元数据，不是内容证据。根据完整问题和上下文选择真实来源，歧义时澄清。可直接用 read_document 读取明确选择的文档ID，首次读取在同一调用核对真实文件身份和权限；已有来源计划不可被读取目标覆盖。比较或显式日期、用户页码限制使用 source_scope 或 bind_document_scope 声明完整范围，不得用其他报告的同名图替代。"}
 	encoded, _ := json.Marshal(data)
 	return &types.ToolResult{Success: true, Data: data, Output: string(encoded)}
 }

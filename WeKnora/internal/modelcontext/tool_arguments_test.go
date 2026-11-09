@@ -67,6 +67,36 @@ func TestNormalizeToolArgumentsRequiresUnambiguousSchemaOptIn(t *testing.T) {
 	require.Equal(t, raw, got, "already typed fields preserve their exact bytes")
 }
 
+func TestNormalizeToolArgumentsDeclaredStringPatternNeverRenamesInput(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","required":["task_name","message"],"properties":{"task_name":{"type":"string","pattern":"^[a-z][a-z0-9_]{0,47}$"},"message":{"type":"string"}}}`)
+	for _, name := range []string{"read-child", "Read_child", "1child", ""} {
+		raw, err := json.Marshal(map[string]string{"task_name": name, "message": "Read the supplied source."})
+		require.NoError(t, err)
+		got, err := NormalizeToolArguments(string(raw), schema)
+		require.Equal(t, string(raw), got)
+		var validation *ToolArgumentError
+		require.ErrorAs(t, err, &validation)
+		require.Equal(t, "argument_pattern", validation.Code)
+		require.Equal(t, "/task_name", validation.Path)
+		require.Equal(t, "^[a-z][a-z0-9_]{0,47}$", validation.Expected)
+	}
+	raw := `{"task_name":"read_child","message":"Read the supplied source."}`
+	got, err := NormalizeToolArguments(raw, schema)
+	require.NoError(t, err)
+	// An already valid typed call is not reserialized or silently renamed.
+	require.Equal(t, raw, got)
+	_, err = NormalizeToolArguments(`{"task_name":"read_child","task":"not the required message"}`, schema)
+	var validation *ToolArgumentError
+	require.ErrorAs(t, err, &validation)
+	require.Equal(t, "required_argument", validation.Code)
+	require.Equal(t, "/message", validation.Path)
+	// Foreign regex dialects are delegated to the schema owner, not repaired.
+	opaque := json.RawMessage(`{"type":"string","pattern":"(?=a)a"}`)
+	got, err = NormalizeToolArguments(`"a"`, opaque)
+	require.NoError(t, err)
+	require.Equal(t, `"a"`, got)
+}
+
 func TestHandleCodecsPreserveExactNumericLexemes(t *testing.T) {
 	r := NewRegistry(true)
 	r.RegisterChunk(ChunkReference{ChunkID: "actual-chunk", KnowledgeID: "actual-document"})

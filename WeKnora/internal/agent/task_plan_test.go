@@ -364,11 +364,24 @@ func TestTaskPlanExpansionAllowsDocumentDeliveryAndNewlyDiscoveredTools(t *testi
 	denied, err := tool.Execute(t.Context(), json.RawMessage(`{"names":["bind_document_scope","not_authorized"],"reason":"Expand evidence."}`))
 	require.NoError(t, err)
 	require.False(t, denied.Success)
+	require.Equal(t, "unknown_tool_names", denied.Data["reason_code"])
+	require.Equal(t, []string{"not_authorized"}, denied.Data["unknown_tools"])
+	capabilities := denied.Data["available_tools"].([]taskToolCapability)
+	names := []string{}
+	for _, capability := range capabilities {
+		names = append(names, capability.Name)
+	}
+	require.Contains(t, names, "read_file")
+	require.NotContains(t, names, "not_authorized")
 	require.Equal(t, before, listToolNames(engine.buildToolsForLLM()), "validate the entire choice before changing projection")
 	engine.toolRegistry.RegisterDeferredTool(newCountingTool("not_yet_discoverable"))
 	denied, err = tool.Execute(t.Context(), json.RawMessage(`{"names":["not_yet_discoverable"],"reason":"Cannot skip ordinary discovery."}`))
 	require.NoError(t, err)
 	require.False(t, denied.Success, "projection does not bypass deferred capability discovery")
+	require.NotContains(t, denied.Output, `"name":"not_yet_discoverable"`)
+	corrected, err := tool.Execute(t.Context(), json.RawMessage(`{"names":["read_file"],"reason":"Use the returned actual tool name."}`))
+	require.NoError(t, err)
+	require.True(t, corrected.Success)
 }
 
 func TestTaskPlanSteeringRestoresFullToolsBeforeTheNextModelCall(t *testing.T) {

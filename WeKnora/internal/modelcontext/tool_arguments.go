@@ -29,6 +29,7 @@ type argumentSchema struct {
 	AdditionalProperties json.RawMessage            `json:"additionalProperties"`
 	Items                json.RawMessage            `json:"items"`
 	Required             []string                   `json:"required"`
+	Pattern              string                     `json:"pattern"`
 	ExactDecimalString   bool                       `json:"x-weknora-exact-decimal-string"`
 }
 
@@ -121,8 +122,17 @@ func normalizeArgumentValue(value any, rawSchema json.RawMessage, path string, d
 			array[i], changed = child, changed || childChanged
 		}
 	case "string":
-		if _, ok := value.(string); !ok {
+		text, ok := value.(string)
+		if !ok {
 			return typeMismatch()
+		}
+		if schema.Pattern != "" {
+			// This is deliberately not a complete JSON Schema validator. An
+			// unsupported regex dialect remains the owning tool's contract.
+			if pattern, err := regexp.Compile(schema.Pattern); err == nil && !pattern.MatchString(text) {
+				return nil, false, &ToolArgumentError{Code: "argument_pattern", Path: path, Expected: schema.Pattern,
+					Message: "string must match the declared pattern " + schema.Pattern + "; correct this field before retrying"}
+			}
 		}
 	}
 	return value, changed, nil

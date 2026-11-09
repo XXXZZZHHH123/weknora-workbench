@@ -57,6 +57,23 @@ func TestSourceCalculationUsesExactDecimalArithmeticAndRetainsActualEvidence(t *
 	require.Equal(t, "First mass 0.1 kg", input["quote"])
 }
 
+func TestSourceCalculationMissingQuoteCanBeCorrectedWithoutInventingEvidence(t *testing.T) {
+	tool := sourceCalculationFixture("Mass 12 kg")
+	plan := sourceCalculationPlan{Expression: "mass", Inputs: map[string]sourceCalculationInput{
+		"mass": calculationSourceInput("12", "", "kg"),
+	}}
+	failed := runSourceCalculationTest(t, tool, plan)
+	require.False(t, failed.Success)
+	require.Equal(t, "missing_quote", failed.Data["reason_code"])
+	require.Equal(t, "mass", failed.Data["variable"])
+	require.Contains(t, failed.Error, "quote_ref")
+	require.NotContains(t, failed.Data, "calculations", "missing source text never becomes a successful result")
+	plan.Inputs["mass"] = calculationSourceInput("12", "Mass 12 kg", "kg")
+	require.Equal(t, "12", sourceCalculationFirstResult(t, runSourceCalculationTest(t, tool, plan))["value"])
+	plan.Inputs["mass"] = calculationSourceInput("12", "Invented mass 12 kg", "kg")
+	require.Equal(t, "quote_mismatch", runSourceCalculationTest(t, tool, plan).Data["reason_code"])
+}
+
 func TestSourceCalculationBatchesKnownUnitRatiosAndExplicitPercent(t *testing.T) {
 	tool := sourceCalculationFixture("Current 120 kg; previous 100 kg; ratio 125%.")
 	plan := sourceCalculationPlan{Expression: "(a / b - 1)", ResultUnit: "%", Inputs: map[string]sourceCalculationInput{

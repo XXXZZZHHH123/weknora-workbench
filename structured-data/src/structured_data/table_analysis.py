@@ -12,6 +12,26 @@ import duckdb
 MAX_INPUT_ROWS = 50000
 
 
+ANALYSIS_INPUT_COLUMNS = (
+    ('series_id', 'VARCHAR'), ('date', 'DATE'), ('value', 'DOUBLE'),
+    ('source_cell', 'VARCHAR'), ('date_cell', 'VARCHAR'), ('period', 'VARCHAR'),
+    ('value_status', 'VARCHAR'), ('metric', 'VARCHAR'), ('sheet', 'VARCHAR'), ('unit', 'VARCHAR'),
+)
+
+
+class AnalysisSQLError(ValueError):
+    """A rejected SQL request, never an analysis result or rewritten query."""
+    def __init__(self, cause, stage):
+        super().__init__('分析SQL未完成：'+str(cause)[:800]+'；数据表名为data，可根据错误修正查询')
+        self.stage = stage
+
+    def diagnostic(self):
+        return {'code': 'analysis_sql_'+self.stage+'_error', 'stage': 'sql_'+self.stage,
+                'query_completed': False,
+                'sql_contract': {'dialect': 'DuckDB', 'table': 'data', 'read_only': True,
+                                 'columns': [{'name': name, 'type': dtype} for name, dtype in ANALYSIS_INPUT_COLUMNS]}}
+
+
 def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=None, limit=200):
     if not isinstance(series_ids,list) or not 1 <= len(series_ids) <= 16 or any(not isinstance(s,str) for s in series_ids):
         raise ValueError('series_ids需要1至16个真实字段ID')
@@ -50,10 +70,15 @@ def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=
     # The analysis connection has no dataset file attached. It contains only the
     # selected inputs, even if the model queries system catalogues or subqueries.
     with duckdb.connect(config={'enable_external_access':'false','threads':'2','memory_limit':'256MB'}) as con:
-        statements=con.extract_statements(sql)
+        try:
+            statements=con.extract_statements(sql)
+        except duckdb.Error as exc:
+            # Parsing happens before execute(), so syntax errors must use the
+            # same corrective tool response as binding/execution errors.
+            raise AnalysisSQLError(exc, 'parse') from None
         if not re.match(r'^\s*(SELECT|WITH)\b',sql,re.I) or len(statements)!=1 or statements[0].type!=duckdb.StatementType.SELECT:
             raise ValueError('仅允许单条SELECT/WITH查询；修改、导入导出及配置命令不可执行')
-        con.execute('CREATE TABLE data(series_id VARCHAR,date DATE,value DOUBLE,source_cell VARCHAR,date_cell VARCHAR,period VARCHAR,value_status VARCHAR,metric VARCHAR,sheet VARCHAR,unit VARCHAR)')
+        con.execute('CREATE TABLE data('+','.join(name+' '+dtype for name,dtype in ANALYSIS_INPUT_COLUMNS)+')')
         if data:
             # Column types are explicit even when an entire column is NULL.
             con.execute('INSERT INTO data SELECT r.series_id,r.date,r.value,r.source_cell,r.date_cell,r.period,r.value_status,r.metric,r.sheet,r.unit FROM UNNEST(?::STRUCT(series_id VARCHAR,date DATE,value DOUBLE,source_cell VARCHAR,date_cell VARCHAR,period VARCHAR,value_status VARCHAR,metric VARCHAR,sheet VARCHAR,unit VARCHAR)[]) t(r)',[data])
@@ -72,13 +97,13 @@ def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=
             rows=result.fetchmany(limit+1)
             from .result_contract import excel_value_unit, unknown_unit
             from .sql_result_units import infer_sql_units, describe_excel_dependencies
-            source_columns=['series_id','date','value','source_cell','date_cell','period','value_status','metric','sheet','unit']
+            source_columns=[name for name,_ in ANALYSIS_INPUT_COLUMNS]
             source_units={name:unknown_unit() for name in source_columns}
             source_units['value']=excel_value_unit(series,manifest['sha256'])
             units=infer_sql_units(con,sql,source_units,len(columns))
             dependencies,dependency_verified=describe_excel_dependencies(con,sql,source_columns,len(columns))
         except duckdb.Error as exc:
-            raise ValueError('分析SQL未完成：'+str(exc)[:800]+'；数据表名为data，可根据错误修正查询') from None
+            raise AnalysisSQLError(exc, 'execute') from None
         finally:timer.cancel()
     def encode(v):
         if isinstance(v,(dt.date,dt.datetime)):return v.isoformat()

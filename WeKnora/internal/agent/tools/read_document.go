@@ -265,6 +265,14 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	if documentIsRetired(knowledge) {
 		return &types.ToolResult{Success: false, Error: "指定文档已删除、正在删除或已归档，不能作为查询来源"}, nil
 	}
+	if tenant := t.searchTargets.GetTenantIDForKB(knowledge.KnowledgeBaseID); tenant != 0 && knowledge.TenantID != 0 && tenant != knowledge.TenantID {
+		return &types.ToolResult{Success: false, Error: "document tenant does not match the authorized knowledge base scope"}, nil
+	}
+	// Reject malformed navigation before a direct read can establish a source
+	// binding. The selected user-page constraint is checked again below.
+	if _, err := resolveReadPages(input, DocumentSourceSelection{}, chunk != nil); err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error()}, nil
+	}
 	if input.SourceScope != nil {
 		if t.documentConstraint == nil {
 			t.documentConstraint = NewDocumentScopeState()
@@ -275,7 +283,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	}
 	selection := DocumentSourceSelection{}
 	if constraint := t.documentConstraint; constraint != nil {
-		selection, err = constraint.selection(knowledge.ID)
+		selection, err = constraint.selectionForRead(knowledge)
 		if err != nil {
 			return &types.ToolResult{Success: false, Error: err.Error()}, nil
 		}
@@ -367,7 +375,7 @@ func (t *ReadDocumentTool) resolveTarget(ctx context.Context, id string) (*types
 	chunk, err := t.chunkService.GetChunkByIDOnly(ctx, id)
 	if err != nil || chunk == nil {
 		return nil, nil, fmt.Errorf(
-			"id %s is neither a document (doc://N) nor a chunk (chunk://N) in the current scope", id)
+			"id %s is neither a document (doc://N) nor a chunk (chunk://N) in the current scope; use a real document/chunk handle from authorized results. Image resource:// references belong in images, with the actual owning document as id; never guess that document or use a resource as the read id", id)
 	}
 	authorizedChunk, authErr := authorizeChunkInSearchTargets(
 		ctx, t.searchTargets, id, t.chunkService, t.knowledgeService,

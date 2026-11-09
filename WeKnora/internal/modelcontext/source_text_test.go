@@ -132,10 +132,10 @@ func TestDelegatedTaskCarriesDurableReferencesToTheChild(t *testing.T) {
 	parent.RegisterKnowledgeBase("kb-a")
 	parent.RegisterDocument("doc-a")
 	calls := []types.LLMToolCall{{Function: types.FunctionCall{
-		Name: "spawn_agent", Arguments: `{"task":"Summarize doc://1 from kb://1"}`,
+		Name: "spawn_agent", Arguments: `{"task_name":"read_child","message":"Summarize doc://1 from kb://1"}`,
 	}}}
 	parent.DecodeToolCalls(calls)
-	require.JSONEq(t, `{"task":"Summarize weknora://doc/doc-a from weknora://kb/kb-a"}`, calls[0].Function.Arguments)
+	require.JSONEq(t, `{"task_name":"read_child","message":"Summarize weknora://doc/doc-a from weknora://kb/kb-a"}`, calls[0].Function.Arguments)
 
 	child := NewRegistry(true)
 	child.RegisterKnowledgeBase("kb-child-bound")
@@ -148,7 +148,7 @@ func TestDelegatedTaskCarriesDurableReferencesToTheChild(t *testing.T) {
 func TestUnknownHandleInFreeTextFailsClosed(t *testing.T) {
 	registry := NewRegistry(true)
 	calls := []types.LLMToolCall{{Function: types.FunctionCall{
-		Name: "spawn_agent", Arguments: `{"task":"read kb://3"}`,
+		Name: "spawn_agent", Arguments: `{"task_name":"read_child","message":"read kb://3"}`,
 	}}}
 	registry.DecodeToolCalls(calls)
 	require.Equal(t, []string{"kb://3"}, calls[0].UnresolvedHandles)
