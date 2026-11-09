@@ -342,10 +342,21 @@ def selection_requests(catalog, text):
             for index, (start, end) in enumerate(batches)]
 
 
+SELECTION_TOO_BROAD = '模型选出的候选指标过多，超出本次分析容量'
+
+
 def selected_catalog_ids(result, batch, refs):
-    """Resolve only explicit references from this request; never guess an ID."""
-    references = result.get('selection_refs') if isinstance(result, dict) and set(result) == {'selection_refs'} else None
-    valid = isinstance(references, list) and len(references) <= 96
+    """Resolve only explicit references from this request; never guess an ID.
+
+    A bare JSON array of references states the same selection as the wrapped
+    object. Choosing more than the requested per-batch count is not ambiguous
+    either; the combined candidate catalog stays bounded by CANDIDATE_BYTES.
+    """
+    if isinstance(result, list):
+        references = result
+    else:
+        references = result.get('selection_refs') if isinstance(result, dict) and set(result) == {'selection_refs'} else None
+    valid = isinstance(references, list)
     if valid:
         valid = (all(isinstance(reference, str) for reference in references)
                  and len(set(references)) == len(references)
@@ -408,7 +419,8 @@ async def choose_catalog(scope, model, catalog, text):
         selected.update(selected_catalog_ids(result, batch, refs))
     candidates = [row for row in catalog if row['id'] in selected]
     if len(catalog_json(candidates).encode('utf-8')) > CANDIDATE_BYTES:
-        raise HTTPException(413, '候选目录超过本次容量，请进一步精炼研究范围')
+        # The source text is unchanged; the model kept too much of the catalog.
+        raise HTTPException(422, SELECTION_TOO_BROAD)
     return candidates, True
 
 

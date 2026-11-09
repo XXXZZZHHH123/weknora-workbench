@@ -97,19 +97,43 @@ def test_short_references_resolve_exact_real_ids_without_mutating_or_guessing():
         directory(32), tuple(f'r{index + 1}' for index in range(32))) == [row['id'] for row in directory(32)]
 
 
-@pytest.mark.parametrize('count', [96, 97])
-def test_explicit_reference_selection_accepts_the_complete_limit_and_rejects_one_more(count):
+@pytest.mark.parametrize('count', [96, 98])
+def test_explicit_reference_selection_is_not_capped_by_the_requested_batch_count(count):
+    # A model observed returning 98 valid references must not lose the whole
+    # analysis; capacity is enforced on the combined candidates instead.
     batch = directory(count)
     before = deepcopy(batch)
     refs = tuple(f'r{index + 1}' for index in range(count))
     response = {'selection_refs': list(refs)}
-    if count == 96:
-        assert generation.selected_catalog_ids(response, batch, refs) == [row['id'] for row in batch]
-    else:
+    assert generation.selected_catalog_ids(response, batch, refs) == [row['id'] for row in batch]
+    assert batch == before and response['selection_refs'] == list(refs)
+
+
+def test_bare_reference_array_states_the_same_selection_and_is_checked_the_same_way():
+    batch = directory(3)
+    refs = ('r41', 'r42', 'r43')
+    assert generation.selected_catalog_ids(['r43', 'r41'], batch, refs) == [batch[2]['id'], batch[0]['id']]
+    assert generation.selected_catalog_ids([], batch, refs) == []
+    for response in (['r44'], ['r41', 'r41'], [41], ['kb-' + '0' * 48], [{'selection_refs': ['r41']}]):
         with pytest.raises(HTTPException) as caught:
             generation.selected_catalog_ids(response, batch, refs)
         assert caught.value.status_code == 422
-    assert batch == before and response['selection_refs'] == list(refs)
+
+
+def test_combined_candidates_remain_bounded_after_generous_batch_selections(monkeypatch):
+    catalog = directory()
+
+    async def everything(scope, model, prompt):
+        return list(encoded_directory(prompt)['indicators'])
+
+    monkeypatch.setattr(generation, 'completion', everything)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(generation.choose_catalog(None, 'model', catalog, TEXT))
+    # Observed: a small model kept 1931 of 2372 fields. Say so instead of
+    # asking the researcher to shorten an unchanged source.
+    assert caught.value.status_code == 422 and caught.value.detail == generation.SELECTION_TOO_BROAD
+    from tin.web.judgment_failures import failure_for
+    assert '换用理解能力更强的模型' in failure_for(caught.value, 'selecting')['message']
 
 
 @pytest.mark.parametrize('response', [
@@ -172,8 +196,8 @@ def test_all_capacity_failures_are_preflighted_before_the_first_model_call(monke
     assert caught.value.status_code == 413 and calls == []
 
 
-@pytest.mark.parametrize('kind', ['invented', 'another-batch', 'too-many'])
-def test_large_selection_still_rejects_unknown_cross_batch_and_excess_ids(monkeypatch, kind):
+@pytest.mark.parametrize('kind', ['invented', 'another-batch'])
+def test_large_selection_still_rejects_unknown_and_cross_batch_ids(monkeypatch, kind):
     catalog, calls = directory(), []
 
     async def invalid(scope, model, prompt):
@@ -181,10 +205,8 @@ def test_large_selection_still_rejects_unknown_cross_batch_and_excess_ids(monkey
         calls.append(prompt)
         if kind == 'invented':
             return {'selection_refs': ['not-a-real-reference']}
-        if kind == 'another-batch':
-            assert catalog[-1]['id'] not in {item['id'] for item in fields}
-            return {'selection_refs': [f'r{len(catalog)}']}
-        return {'selection_refs': list(encoded_directory(prompt)['indicators'])[:97]}
+        assert catalog[-1]['id'] not in {item['id'] for item in fields}
+        return {'selection_refs': [f'r{len(catalog)}']}
 
     monkeypatch.setattr(generation, 'completion', invalid)
     with pytest.raises(HTTPException) as caught:

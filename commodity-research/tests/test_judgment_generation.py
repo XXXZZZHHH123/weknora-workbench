@@ -692,7 +692,7 @@ def test_selection_empty_example_keeps_one_object_shape_on_every_complete_batch(
 
 
 @pytest.mark.parametrize('response', [
-    [], {'selection_refs': [], 'extra': 'not part of protocol'}, {'selection_refs': None},
+    [{'selection_refs': []}], {'selection_refs': [], 'extra': 'not part of protocol'}, {'selection_refs': None},
     {'selection_refs': ['unknown-ref']}, {'selection_refs': [True]}, {'selection_refs': ['r1'] * 33},
     {'selection_refs': ['r1', 'r1']}, {'series_ids': ['real-0']},
 ])
