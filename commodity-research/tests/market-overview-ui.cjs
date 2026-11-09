@@ -107,6 +107,8 @@ const report = {mode: 'isolated_market_focus_ui_fixture', real_model_calls: 0, r
         const indicators = fixture.catalog.filter(row => (!requested.length || requested.includes(row.series_id)) && (!search || row.name.includes(search)));
         return route.fulfill({json: {indicators, total: indicators.length, offset: 0, next_offset: null}});
       }
+      // The core list asks whether its indicators have confirmed default-library replacements.
+      if (pathName === prefix + '/api/sn/indicator-dedup/references') return route.fulfill({json: {items: [], related_charts: [], can_rewrite: true, revision: 1, sources_revision: 7, reason: ''}});
       if (pathName === prefix + '/api/sn/charts') return route.fulfill({json: {items: chartItems, total: chartItems.length, next_offset: null}});
       if (pathName.startsWith(prefix + '/api/sn/charts/')) {
         const id = pathName.split('/')[6], item = chartItems.find(item => item.id === id); assert.ok(item, pathName);
