@@ -51,6 +51,8 @@ export interface CustomAgentConfig {
   // 思考强度：off | auto | minimal | low | medium | high | xhigh | max。
   // 为空时退回 thinking 布尔值（true == auto，false == off）。
   reasoning_effort?: string;
+  // Empty inherits the entry's compatibility default; explicit modes are saved unchanged.
+  answer_review_mode?: '' | 'standard' | 'strict';
   citation_enabled?: boolean;        // 是否在最终回答中输出知识库/网页来源引用（默认开启）
 
   // ===== Agent模式设置 =====

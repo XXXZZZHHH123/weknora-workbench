@@ -603,6 +603,7 @@ func (s *sessionService) buildAgentConfig(
 		AttachmentParseWaitTimeoutSec: customAgent.Config.AttachmentParseWaitTimeoutSec,
 		Thinking:                      customAgent.Config.Thinking,
 		ReasoningEffort:               customAgent.Config.ReasoningEffort,
+		AnswerReviewMode:              customAgent.Config.AnswerReviewMode,
 		CitationEnabled:               customAgent.Config.CitationEnabled,
 		RetrieveKBOnlyWhenMentioned:   customAgent.Config.RetrieveKBOnlyWhenMentioned,
 		LLMCallTimeout:                customAgent.Config.LLMCallTimeout,

@@ -34,9 +34,15 @@ func (s *knowledgeService) ReadDocumentFigureEvidence(ctx context.Context, knowl
 	if !ok {
 		return nil, errors.New("original figure binding verifier unavailable")
 	}
-	if _, err := images.ReadDocumentImage(ctx, knowledge, reference); err != nil {
+	media, err := images.ReadDocumentImage(ctx, knowledge, reference)
+	if err != nil {
 		return nil, err
 	}
+	if len(media) == 0 || len(media) > 32<<20 {
+		return nil, errors.New("original figure size/read check failed")
+	}
+	mediaDigest := sha256.Sum256(media)
+	mediaHash := hex.EncodeToString(mediaDigest[:])
 	kb, err := s.kbService.GetKnowledgeBaseByID(ctx, knowledge.KnowledgeBaseID)
 	if err != nil || kb == nil || kb.TenantID != knowledge.TenantID {
 		return nil, errors.New("original figure storage scope mismatch")
@@ -79,7 +85,8 @@ func (s *knowledgeService) ReadDocumentFigureEvidence(ctx context.Context, knowl
 		return nil, err
 	}
 	if result == nil || result.Error != "" ||
-		result.Metadata["source_file_sha256"] != fileHash || result.Metadata["source_page"] != strconv.Itoa(page) || result.Metadata["source_part"] != part {
+		result.Metadata["source_file_sha256"] != fileHash || result.Metadata["source_media_sha256"] != mediaHash ||
+		result.Metadata["source_page"] != strconv.Itoa(page) || result.Metadata["source_part"] != part {
 		return nil, errors.New("original figure extraction did not verify its source")
 	}
 	if result.Metadata["evidence_version"] == "source_figure_selection_options_v1" {

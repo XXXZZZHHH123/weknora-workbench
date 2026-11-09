@@ -165,3 +165,93 @@ func TestReadDocumentGeometryUsesOnlyUnambiguousParserSourceLocator(t *testing.T
 		})
 	}
 }
+
+func TestReadDocumentExplicitGeometryDoesNotRequireOrAttemptPixels(t *testing.T) {
+	for _, variant := range []string{"pixel-timeout", "no-pixel-reader", "denied", "no-figure-reader", "no-part", "invalid-selection", "unsupported"} {
+		t.Run(variant, func(t *testing.T) {
+			tool, repo := newReadDocumentFixture(1)
+			ref := "resource://AbCdEfGhIjKlMnOpQrStUv"
+			repo.ordered[0].Content = "<!-- Slide number: 1 -->\n![Plot](" + ref + ")\n来源：第1页 · ppt/media/synthetic.emf（原图）。"
+			if variant == "no-part" {
+				repo.ordered[0].Content = "<!-- Slide number: 1 -->\n![Plot](" + ref + ")"
+			}
+			pixelReads, figureReads := 0, 0
+			tool.WithSourceImageReader(func(context.Context, *types.Knowledge, string, int, string) ([]byte, error) {
+				pixelReads++
+				return nil, context.DeadlineExceeded
+			})
+			if variant == "no-pixel-reader" {
+				tool.sourceImageReader = nil
+			}
+			tool.WithFigureReader(func(_ context.Context, knowledge *types.Knowledge, reference string, page int, part string, series []string) (map[string]any, error) {
+				figureReads++
+				require.Equal(t, "doc-1", knowledge.ID)
+				require.Equal(t, ref, reference)
+				require.Equal(t, 1, page)
+				require.Equal(t, "ppt/media/synthetic.emf", part)
+				require.Equal(t, []string{"Alpha"}, series)
+				if variant == "denied" {
+					return nil, errors.New("private authorization failure")
+				}
+				if variant == "invalid-selection" {
+					return map[string]any{"version": "source_figure_selection_options_v1", "available_series": []string{"Beta"}}, nil
+				}
+				if variant == "unsupported" {
+					return nil, nil
+				}
+				return map[string]any{"version": "source_figure_geometry_v1", "markdown": "Verified original trace; approximate value with original units."}, nil
+			})
+			if variant == "no-figure-reader" {
+				tool.figureReader = nil
+			}
+			input, _ := json.Marshal(ReadDocumentInput{ID: "doc-1", Page: 1, Images: []string{ref}, ImageMode: "geometry", ImageSeries: []string{"Alpha"}})
+			result, err := tool.Execute(t.Context(), input)
+			require.NoError(t, err)
+			require.Zero(t, pixelReads, "explicit geometry must not spend a PNG conversion timeout or fall back to pixels")
+			require.Empty(t, result.Images)
+			require.Equal(t, "geometry", result.Data["image_mode"])
+			reads := result.Data["image_evidence"].([]map[string]interface{})
+			require.Equal(t, false, reads[0]["read_success"])
+			require.Equal(t, "not_requested", reads[0]["pixel_status"])
+			require.NotContains(t, reads[0], "returned_image_index")
+			if variant == "pixel-timeout" || variant == "no-pixel-reader" {
+				require.True(t, result.Success, result.Error)
+				require.Equal(t, true, reads[0]["geometry_read_success"])
+				require.Len(t, result.Data["image_geometry_evidence"], 1)
+				require.Contains(t, result.Output, "no visual inspection")
+			} else {
+				require.False(t, result.Success)
+				require.Equal(t, false, reads[0]["geometry_read_success"])
+				require.Empty(t, result.Data["image_geometry_evidence"])
+				require.NotContains(t, result.Output, "private authorization failure")
+			}
+			if variant == "no-part" || variant == "no-figure-reader" {
+				require.Zero(t, figureReads)
+			} else {
+				require.Equal(t, 1, figureReads)
+			}
+		})
+	}
+}
+
+func TestReadDocumentGeometryModeRejectsUnselectedOrForeignImages(t *testing.T) {
+	for _, input := range []string{
+		`{"id":"doc-1","page":2,"image_mode":"geometry"}`,
+		`{"id":"doc-1","page":2,"image_mode":"unknown","images":["resource://AbCdEfGhIjKlMnOpQrStUv"]}`,
+		`{"id":"doc-1","page":2,"image_mode":"geometry","images":["resource://ZyXwVuTsRqPoNmLkJiHgFe"]}`,
+		`{"id":"doc-1","page":2,"image_mode":"geometry","images":["https://example.invalid/private.emf"]}`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			tool, _, reads := documentFigureFixture(t)
+			tool.WithFigureReader(func(context.Context, *types.Knowledge, string, int, string, []string) (map[string]any, error) {
+				t.Fatal("invalid image selection reached source geometry extraction")
+				return nil, nil
+			})
+			result, err := tool.Execute(t.Context(), json.RawMessage(input))
+			require.NoError(t, err)
+			require.False(t, result.Success)
+			require.Empty(t, *reads)
+			require.Empty(t, result.Images)
+		})
+	}
+}

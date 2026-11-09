@@ -147,7 +147,9 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 		encoded, _ := json.Marshal(catalog)
 		result.Output += "\n<document_image_catalog untrusted_source_metadata=\"true\">" + string(encoded) + "</document_image_catalog>\n" +
 			"These are stored originals, not yet viewed. Select the relevant reference using the full question and actual source context; " +
-			"call read_document with images, detail=full and focus to inspect it. Each image retains its document, page and cited chunk."
+			"call read_document with images, image_mode=pixels, detail=full and focus to inspect it. For supported vector-chart traces, " +
+			"explicitly select image_mode=geometry and exact image_series legend identifiers to read original geometry without PNG conversion or visual inspection. " +
+			"Each image retains its document, page and cited chunk."
 	}
 	if len(input.Images) == 0 {
 		return result, nil
@@ -175,6 +177,9 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 		if !found {
 			return &types.ToolResult{Success: false, Error: "所选图片不属于本次实际读取的文档/页/分块范围；请先读取对应范围的真实图片清单。"}, nil
 		}
+	}
+	if input.ImageMode == "geometry" {
+		return t.finishGeometryRead(ctx, knowledge, input, result, catalog, selected), nil
 	}
 	if t.imageReader == nil && t.sourceImageReader == nil {
 		result.Data["image_read_error"] = "原图读取服务不可用"
@@ -252,4 +257,67 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 		"A storage read alone is not visual understanding. Ground observations in this image's exact cited chunk, axis/legend mapping and units; " +
 		"mark approximate values and ambiguity. Failed image reads supply no visual evidence."
 	return result, nil
+}
+
+// Geometry is an explicit representation choice. Its reader independently
+// verifies the resource binding, original bytes and physical page/part; it
+// never inherits authorization from a failed pixel read or a chart label.
+func (t *ReadDocumentTool) finishGeometryRead(ctx context.Context, knowledge *types.Knowledge, input ReadDocumentInput, result *types.ToolResult, catalog, selected []documentImage) *types.ToolResult {
+	evidence := []map[string]interface{}{}
+	geometryEvidence := []map[string]any{}
+	failed := false
+	for _, item := range selected {
+		entry := map[string]interface{}{"reference": item.Reference, "knowledge_id": knowledge.ID,
+			"chunk_id": item.ChunkID, "page": item.Page, "version": documentImageEvidenceVersion,
+			"read_success": false, "pixel_status": "not_requested", "geometry_read_success": false}
+		evidence = append(evidence, entry)
+		if t.figureReader == nil || item.SourcePart == "" || item.Page < 1 {
+			entry["geometry_error"] = "原图几何读取不可用或缺少已验证的物理页/部件；可显式选择pixels读取像素"
+			failed = true
+			continue
+		}
+		geometry, err := t.figureReader(ctx, knowledge, item.Reference, item.Page, item.SourcePart, input.ImageSeries)
+		if err != nil || geometry == nil {
+			entry["geometry_error"] = "原图几何证据未通过归属、来源或解析校验；不能据此生成数值"
+			failed = true
+			continue
+		}
+		if geometry["version"] == "source_figure_selection_options_v1" {
+			options, _ := json.Marshal(geometry["available_series"])
+			return &types.ToolResult{Success: false,
+				Error: "image_series must explicitly select exact original legend identifiers, not the chart title or metric. Available original legend identifiers: " + string(options) + ". Choose the relevant identifiers from the full question and retry read_document; no numeric or visual evidence was delivered for this missing/invalid selection.",
+				Data: map[string]any{"knowledge_id": knowledge.ID, "image_mode": "geometry", "image_catalog": catalog,
+					"image_evidence": evidence, "image_selection_options": geometry}}
+		}
+		markdown, validMarkdown := geometry["markdown"].(string)
+		if geometry["version"] != "source_figure_geometry_v1" || !validMarkdown || strings.TrimSpace(markdown) == "" {
+			entry["geometry_error"] = "原图几何证据格式无效；不能据此生成数值"
+			failed = true
+			continue
+		}
+		entry["geometry_read_success"] = true
+		geometryEvidence = append(geometryEvidence, map[string]any{"reference": item.Reference,
+			"knowledge_id": knowledge.ID, "chunk_id": item.ChunkID, "page": item.Page,
+			"source_part": item.SourcePart, "evidence": geometry})
+		metadata := map[string]any{}
+		for key, value := range geometry {
+			if key != "geometry" && key != "markdown" {
+				metadata[key] = value
+			}
+		}
+		identity, _ := json.Marshal(metadata)
+		result.Output += "\n<original_figure_geometry reference=\"" + item.Reference + "\" chunk_id=\"" + item.ChunkID + "\">\n" +
+			string(identity) + "\n" + markdown + "\n</original_figure_geometry>\n"
+	}
+	result.Data["image_mode"] = "geometry"
+	result.Data["image_evidence"] = evidence
+	result.Data["image_geometry_evidence"] = geometryEvidence
+	encoded, _ := json.Marshal(evidence)
+	result.Output += "\n<original_image_reads>" + string(encoded) + "</original_image_reads>\n" +
+		"Geometry mode did not request or return pixels and supplies no visual inspection. Only successfully verified original geometry may support approximate trace values, with its source axes, legend mapping, units and uncertainty."
+	if failed {
+		result.Success = false
+		result.Error = "请求的原图几何证据未全部通过校验；请检查逐图状态，或显式选择pixels读取像素"
+	}
+	return result
 }

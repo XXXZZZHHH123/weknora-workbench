@@ -33,6 +33,7 @@ type candidateDecision struct {
 	TaskHash        string
 	EvidenceHash    string
 	SourceScopeHash string // Runtime scope at the check; never supplied by a model.
+	StandardReview  bool   // Approval cannot survive a change to the runtime review policy.
 	// Set only after the numeric guards and immediately before source review.
 	SourceReviewAttempted bool
 	Unsupported           []string
@@ -69,6 +70,17 @@ type turnReviewState struct {
 // Preserve the existing two numeric and two semantic repair allowances while
 // preventing exceptional synthesis from opening another independent budget.
 const maxTurnCandidateRepairs = 4
+
+// Only explicit runtime configuration changes the quality policy. A model's
+// reasoning depth or task plan cannot silently promote standard back to strict.
+// Empty and unknown legacy values keep the existing strict behavior.
+func (e *AgentEngine) standardAnswerReview() bool {
+	return e != nil && e.config != nil && e.config.AnswerReviewMode == "standard"
+}
+
+func (e *AgentEngine) standardTextDelivery(state *types.AgentState) bool {
+	return e.standardAnswerReview() && !e.needsDeliveryReview(state) && !hasWorkspaceExecution(state)
+}
 
 func (e *AgentEngine) spendCandidateRepair() bool {
 	if e.turnReview.Repairs >= maxTurnCandidateRepairs {
@@ -110,6 +122,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		TaskHash:        e.candidateTaskDigest(query, conversation),
 		EvidenceHash:    reviewDigest(e.sourceConsistencyMessages(state, conversation)),
 		SourceScopeHash: e.unverifiedSourceScopeDigest(ctx),
+		StandardReview:  e.standardAnswerReview(),
 	}
 	defer func() {
 		e.turnReview.Checks++
@@ -174,15 +187,36 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	}
 	candidate = e.selectCandidateAdditions(ctx, query, candidate, state, conversation)
 	decision.Candidate, decision.CandidateHash = candidate, candidateTextDigest(candidate)
+	if e.standardAnswerReview() {
+		// This checks every model-selected identity against the same current
+		// actual observations used at persistence. It does not guess which source
+		// supports a claim or require another model to classify citation intent.
+		invalid := len(uniqueCandidateCitationIDs(candidate)) != len(e.currentCandidateKnowledgeReferences(candidate, state, conversation)) ||
+			len(uniqueCandidateEvidenceIDs(candidate)) != len(e.currentCandidateEvidenceReferences(candidate, state))
+		if invalid || (!e.config.CitationsEnabled() && len(uniqueCandidateCitationIDs(candidate))+len(uniqueCandidateEvidenceIDs(candidate)) > 0) {
+			e.answerReviewFeedback = "答复使用了本轮无法核实的来源引用。仅保留真实已读、身份和版本一致的来源句柄；缺少支持时准确说明该部分的缺口，不猜测或借用其他来源。"
+			e.answerReviewAction = reviewReviseAnswer
+			decision.Disposition = candidateRevise
+			return
+		}
+	}
 	if needsStructuredAnswerReviewForQuery(query, state.RoundSteps, conversation, candidate) {
 		evidence := answerNumericEvidence(candidate, state.RoundSteps, conversation)
 		decision.Unsupported = ungroundedStructuredNumbers(candidate, evidence, state.RoundSteps)
 		decision.NumericFeedback = buildNumericValidationFeedback(candidate, decision.Unsupported)
-		if len(decision.Unsupported) > 0 && !e.turnReview.NumericWarningAllowed && e.turnReview.Repairs < maxTurnCandidateRepairs {
+		if len(decision.Unsupported) > 0 && (e.standardAnswerReview() || !e.turnReview.NumericWarningAllowed && e.turnReview.Repairs < maxTurnCandidateRepairs) {
 			decision.Disposition = candidateNumericFailure
 			return
 		}
 		ctx = withNumericValidationFeedback(ctx, decision.NumericFeedback)
+	}
+	if e.standardTextDelivery(state) {
+		// Actual tools have already enforced permissions and source identities;
+		// immutable view, citation and numeric checks above remain mandatory.
+		// Ordinary answers need no second model opinion in this explicit policy.
+		// Action/file delivery retains its existing execution/completeness check.
+		common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{"reason": "standard_text_delivery"})
+		return
 	}
 	// After the bounded numeric repairs, the matcher remains diagnostic. The
 	// source model judges the complete task and actual evidence, including a
@@ -259,6 +293,7 @@ func (e *AgentEngine) candidateDecisionCurrent(d candidateDecision, candidate st
 		taskConversation = e.turnReview.TaskConversation
 	}
 	return d.CandidateHash == candidateTextDigest(candidate) &&
+		d.StandardReview == e.standardAnswerReview() &&
 		d.TaskHash == e.candidateTaskDigest(e.turnReview.Query, taskConversation) &&
 		d.EvidenceHash == reviewDigest(e.sourceConsistencyMessages(state, e.turnReview.Conversation))
 }

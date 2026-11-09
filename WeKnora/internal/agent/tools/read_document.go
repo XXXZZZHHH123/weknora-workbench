@@ -36,6 +36,7 @@ var readDocumentTool = BaseTool{
 		"To inspect a figure, repeat the same authorized document/page read with images=[its exact reference], detail=full and focus describing the complete user request. " +
 		"Choose the figure from its actual source labels/context; text labels and image URLs alone do not reveal curves or their colors. " +
 		"Returned originals are delivered to a vision model or the configured separate image reader; report estimates and unclear overlaps honestly.\n" +
+		"For numeric traces in supported original vector charts, explicitly select image_mode=geometry with images and exact image_series legend identifiers. This verifies original source geometry without rasterizing or visually inspecting pixels; use image_mode=pixels (the default) when visual inspection is required.\n" +
 		"query finds passages inside the document: matching chunks come back with one chunk of context on each " +
 		"side. By default query is case-insensitive and split on whitespace: a chunk matches when it contains " +
 		"every word, in any order. Set regex=true to match query as one POSIX regular expression instead. " +
@@ -105,7 +106,11 @@ var readDocumentTool = BaseTool{
       "type": "array",
       "items": {"type": "string"},
       "maxItems": 4,
-      "description": "Exact image references from this document/page's image_catalog; omit to list figures without reading their pixels"
+      "description": "Exact image references from this document/page's image_catalog; omit to list figures without reading pixels or geometry"
+    },
+    "image_mode": {
+      "type": "string", "enum": ["pixels", "geometry"],
+      "description": "pixels (default) reads original pixels for visual inspection. geometry explicitly reads deterministic original vector-chart geometry without PNG conversion or visual inspection; requires images from the actual image_catalog and exact image_series legends (missing/invalid legends return original selection options). Unsupported or failed geometry is reported, never replaced by guessed values or an implicit pixel read."
     },
     "detail": {
       "type": "string", "enum": ["brief", "full"],
@@ -138,6 +143,7 @@ type ReadDocumentInput struct {
 	Pages         []int              `json:"pages,omitempty"`
 	SourceScope   *DocumentScopePlan `json:"source_scope,omitempty"`
 	Images        []string           `json:"images,omitempty"`
+	ImageMode     string             `json:"image_mode,omitempty"`
 	ImageSeries   []string           `json:"image_series,omitempty"`
 	Detail        string             `json:"detail,omitempty"`
 	Focus         string             `json:"focus,omitempty"`
@@ -210,6 +216,12 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	var input ReadDocumentInput
 	if err := json.Unmarshal(args, &input); err != nil {
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("Failed to parse args: %v", err)}, err
+	}
+	if input.ImageMode != "" && input.ImageMode != "pixels" && input.ImageMode != "geometry" {
+		return &types.ToolResult{Success: false, Error: "image_mode must be pixels or geometry"}, nil
+	}
+	if input.ImageMode == "geometry" && len(input.Images) == 0 {
+		return &types.ToolResult{Success: false, Error: "geometry mode requires explicit images from the actual image_catalog"}, nil
 	}
 	id := strings.TrimSpace(input.ID)
 	if id == "" {

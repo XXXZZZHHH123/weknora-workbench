@@ -20,7 +20,11 @@ func formatGroundingGuidance(names []string) string {
 		"presentations, reports, tutorials, and technical instructions, consult relevant available " +
 		"sources before drafting unsupported content.\n")
 	b.WriteString("- Follow the user's current source restrictions and explicit selections. Otherwise " +
-		"choose relevant bound knowledge bases or connected sources. A selected source does not exclude " +
+		"choose the evidence domain from the complete request and conversation: reliable general " +
+		"knowledge, user-supplied content, internal documents/data, external sources, or a necessary " +
+		"combination. Available knowledge bases describe access, not an obligation to retrieve. " +
+		"For external/current facts, start with an appropriate available external tool; searching " +
+		"internal knowledge bases is not a prerequisite. A selected source does not exclude " +
 		"complementary sources unless the user says so. File directory entries, document titles, and " +
 		"summaries are navigation hints, not proof of detailed document claims. Actual source-bound field " +
 		"catalogues and program-returned grouping counts can support field-structure claims within their " +
@@ -56,8 +60,9 @@ func formatGroundingGuidance(names []string) string {
 			"Choose an available search or reader appropriate to the missing evidence and scope.\n")
 	}
 	if slices.Contains(names, tools.ToolWebSearch) {
-		b.WriteString("- web_search is available: use it when relevant local evidence is missing, " +
-			"insufficient, or needs external/current verification. Prefer authoritative sources and " +
+		b.WriteString("- web_search is available: use it directly when the complete task needs external " +
+			"or current evidence, without first checking internal knowledge bases. It can also supplement " +
+			"insufficient local evidence when the user permits that. Prefer authoritative sources and " +
 			"verify the requested version and prerequisites. Do not send private source content to " +
 			"external search.\n")
 	}
@@ -71,12 +76,16 @@ func formatGroundingGuidance(names []string) string {
 			"selected service when applicable; a service description or a discovered tool is not " +
 			"itself evidence that an action was performed.\n")
 	}
-	b.WriteString("- Use only resources accessible through this turn's tools and supplied context. " +
+	b.WriteString("- Access external and private resources only through this turn's tools and supplied context; " +
+		"this access boundary does not prohibit answering from reliable general knowledge. " +
 		"If relevant sources are unavailable or searches leave gaps, state a limitation only when it " +
 		"affects the answer and distinguish unverified background knowledge from supported claims. Do " +
 		"not invent sources or treat a failed/empty lookup as verification, and say you searched or " +
 		"found nothing only when a search tool actually ran for this task. Ask for missing material " +
-		"only when needed to complete the task accurately.\n")
+		"only when needed to complete the task accurately. An internal lookup miss is not a reason to " +
+		"refuse an unrelated general or external task. If live verification is unavailable, say which " +
+		"current claims remain unverified and still provide the reliable general part; never present " +
+		"recalled information as a current observation or invent precise current values.\n")
 	b.WriteString("- Direct conversation, creative writing, and translation or formatting of supplied " +
 		"content do not require research unless you add factual claims. Stable general explanations " +
 		"need no lookup unless the user's intent or the task depends on specific source " +

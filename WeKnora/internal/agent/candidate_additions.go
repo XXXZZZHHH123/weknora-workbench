@@ -728,7 +728,7 @@ func applyCandidateAdditionRanges(candidate string, protected []candidateTextSpa
 }
 
 func (e *AgentEngine) selectCandidateAdditions(ctx context.Context, query, candidate string, state *types.AgentState, conversation []chat.Message) string {
-	if e.config == nil || !e.config.WorkbenchDefault || !e.config.CandidateAdditionsEnabled || e.chatModel == nil || state == nil || len(candidate) > 32768 {
+	if e.standardAnswerReview() || e.config == nil || !e.config.WorkbenchDefault || !e.config.CandidateAdditionsEnabled || e.chatModel == nil || state == nil || len(candidate) > 32768 {
 		return candidate
 	}
 	// An action's missing output or failure explanation is part of delivery,

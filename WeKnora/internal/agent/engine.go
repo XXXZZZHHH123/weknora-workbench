@@ -403,6 +403,7 @@ func (e *AgentEngine) Execute(
 	llmContext []chat.Message,
 	imageURLs ...[]string,
 ) (*types.AgentState, error) {
+	ctx = withAgentExecutionStart(ctx)
 	loopEntered := false
 	if e.collaboration != nil {
 		var stop func()
@@ -874,7 +875,7 @@ func (e *AgentEngine) executeLoop(
 		defer stop()
 		e.bindCollaborationInput(sessionID, messageID)
 	}
-	startTime := time.Now()
+	startTime := agentExecutionStart(ctx)
 	common.PipelineInfo(ctx, "Agent", "loop_start", map[string]interface{}{
 		"max_iterations": e.config.MaxIterations,
 	})

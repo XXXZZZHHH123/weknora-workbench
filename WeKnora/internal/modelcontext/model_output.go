@@ -84,7 +84,7 @@ func (r *sourceRegistry) ModelOutput(result *types.ToolResult) string {
 // longer raw JSON sample array into a second copy of the readable evidence.
 func (r *sourceRegistry) withDocumentImageEvidence(output string, data map[string]any) string {
 	view := map[string]any{}
-	for _, key := range []string{"image_catalog", "image_evidence", "image_read_error"} {
+	for _, key := range []string{"image_mode", "image_catalog", "image_evidence", "image_read_error"} {
 		if value, ok := data[key]; ok {
 			encoded, err := json.Marshal(value)
 			if err == nil && string(encoded) != "[]" && string(encoded) != "null" && string(encoded) != `""` {
@@ -125,7 +125,8 @@ func (r *sourceRegistry) withDocumentImageEvidence(output string, data map[strin
 	}
 	footer := "\n<document_image_evidence untrusted_source_content=\"true\">" + string(encoded) + figureText.String() + "</document_image_evidence>\n" +
 		"Original geometry uses verified drawing points and calibrated axes; reconcile the actual legend, units and drawn range with any fallible vision observation. " +
-		"A catalog alone supplies no visual facts; failed reads supply no geometry.\n"
+		"A catalog alone supplies no visual facts. Explicit geometry mode does not request pixels: read_success=false with pixel_status=not_requested is not a failed geometry read. " +
+		"Use only successfully verified geometry; geometry supplies no pixel inspection or model vision observation. Failed geometry reads supply no numeric geometry evidence.\n"
 	footer = r.CompactKnownText(footer)
 	if strings.HasSuffix(output, "</retrieval>") {
 		return strings.TrimSuffix(output, "</retrieval>") + footer + "</retrieval>"

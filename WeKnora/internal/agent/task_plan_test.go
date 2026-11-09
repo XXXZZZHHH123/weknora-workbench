@@ -262,11 +262,15 @@ func TestTaskPlanAllowsNoExternalEvidenceAndDiscoveryUsesThatChoice(t *testing.T
 	state, err := engine.Execute(ctx, "session", "message", "解释仓单和持仓的概念差异。", nil)
 	require.NoError(t, err)
 	require.Equal(t, "概念解释。", state.FinalAnswer)
-	require.Equal(t, []string{"describe_tools"}, operations, "protocol negotiation precedes planning, while a no-evidence plan still performs no source/catalog/data read")
+	require.Empty(t, operations, "a no-evidence plan needs no remote protocol negotiation or source/catalog/data read")
 	require.NotNil(t, engine.taskProjection)
 	require.NotNil(t, engine.plannedSourceDiscoverySelection(), "explicit no-evidence plan returns an empty selection and skips both directories")
 	require.Empty(t, engine.plannedSourceDiscoverySelection())
 	require.Len(t, model.requests, 1, "reuse the existing single task-planning call")
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(model.options[0].Format, &schema))
+	discoverySchema := schema["properties"].(map[string]any)["source_discovery"].(map[string]any)
+	require.Contains(t, discoverySchema["required"], "source_domains", "new generated plans must explicitly choose their channels even while legacy decoding remains compatible")
 	var input map[string]any
 	require.NoError(t, json.Unmarshal([]byte(model.requests[0][1].Content), &input))
 	require.Empty(t, input["discovery_results"], "planning happens before discovery")

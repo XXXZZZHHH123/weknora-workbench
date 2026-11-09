@@ -22,6 +22,7 @@ func (e *AgentEngine) Resume(
 	snapshot []byte,
 	answered *types.AgentPrompt,
 ) (*types.AgentState, error) {
+	ctx = withAgentExecutionStart(ctx)
 	loopEntered := false
 	if e.collaboration != nil {
 		var stop func()

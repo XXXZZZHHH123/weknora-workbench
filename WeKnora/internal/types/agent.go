@@ -105,6 +105,9 @@ type AgentConfig struct {
 	TaskPlanningEnabled       bool `json:"-"`                                // internal, per-request tool projection; never changes authorization
 	CandidateAdditionsEnabled bool `json:"-"`                                // internal source-grounded deletion pass, enabled explicitly by the workbench runtime
 	ThinkingBudgetTokens      int  `json:"thinking_budget_tokens,omitempty"` // optional per-call reasoning budget; 0 uses vendor default
+	// AnswerReviewMode selects standard or strict answer review. Empty retains
+	// strict compatibility unless the workbench adapter supplies its default.
+	AnswerReviewMode string `json:"answer_review_mode,omitempty"`
 	// MaxIterations caps ReAct rounds. Zero is unset (filled with a default);
 	// a negative value is unlimited — the loop runs until the model stops,
 	// the user cancels, or another guard fires. See UnlimitedMaxIterations.

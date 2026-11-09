@@ -314,6 +314,17 @@ func (e *AgentEngine) streamReviewWithEvidence(ctx context.Context, model chat.C
 	}
 	for {
 		opts := *options
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		budget := reviewGenerationFromContext(ctx)
+		if budget != nil {
+			bounded, err := budget.prepare(&opts)
+			if err != nil {
+				return nil, err
+			}
+			opts = *bounded
+		}
 		opts.Tools = nil
 		opts.ToolChoice = "none"
 		if reader != nil && reader.reads < reviewEvidenceReadLimit && reader.remaining > 0 {
@@ -323,6 +334,11 @@ func (e *AgentEngine) streamReviewWithEvidence(ctx context.Context, model chat.C
 		result, err := e.streamLLMToEventBusWithModel(ctx, model, messages, &opts, nil)
 		if result != nil && result.Usage != nil && state != nil {
 			state.TurnUsage.Accumulate(*result.Usage)
+		}
+		if budget != nil {
+			if budgetErr := budget.consume(result); budgetErr != nil {
+				return result, budgetErr
+			}
 		}
 		if err != nil || ctx.Err() != nil || result == nil || result.StreamError != "" {
 			return result, err
