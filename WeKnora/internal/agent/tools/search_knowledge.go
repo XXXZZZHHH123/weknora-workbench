@@ -280,17 +280,20 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 					return &types.ToolResult{Success: false, Error: err.Error()}, nil
 				}
 			}
+			// Model-selected page hints do not constrain later searches.
+			// Explicit user restrictions route through the same clipped reader
+			// so lexical/vector search cannot leak content from other pages.
 			for _, id := range input.DocumentIDs {
 				selection, _ := constraint.selection(id)
-				if selection.Page > 0 {
-					if len(input.DocumentIDs) != 1 {
-						return &types.ToolResult{Success: false, Error: "多文档计划包含指定物理页；请分别指定每个 document_ids 读取其页证据后再比较"}, nil
-					}
-					if input.Page > 0 && input.Page != selection.Page {
-						return &types.ToolResult{Success: false, Error: "请求页码与已验证来源计划不同"}, nil
-					}
-					input.Page = selection.Page
+				if selection.UserPages == nil {
+					continue
 				}
+				if len(input.DocumentIDs) != 1 {
+					return &types.ToolResult{Success: false, Error: "多文档计划包含用户指定物理页；请分别读取各文档页证据后再比较"}, nil
+				}
+				args, _ := json.Marshal(ReadDocumentInput{ID: id, Page: input.Page, Query: input.Query, Limit: limit})
+				return NewReadDocumentTool(t.knowledgeService, t.chunkService, searchTargets).
+					WithDocumentConstraint(constraint).WithWikiPageService(t.wikiPageService).Execute(ctx, args)
 			}
 		}
 	}
@@ -304,7 +307,7 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 		if len(input.DocumentIDs) != 1 {
 			return &types.ToolResult{Success: false, Error: "精确页码读取需要指定唯一 document_ids；不能在多个报告之间混用页码"}, nil
 		}
-		args, _ := json.Marshal(ReadDocumentInput{ID: input.DocumentIDs[0], Page: input.Page, Limit: limit})
+		args, _ := json.Marshal(ReadDocumentInput{ID: input.DocumentIDs[0], Page: input.Page, Query: input.Query, Limit: limit})
 		return NewReadDocumentTool(t.knowledgeService, t.chunkService, searchTargets).
 			WithDocumentConstraint(t.documentConstraint).
 			WithWikiPageService(t.wikiPageService).

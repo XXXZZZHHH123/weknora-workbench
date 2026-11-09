@@ -92,6 +92,7 @@ func (e *AgentEngine) drainSteerMessages(
 		injected++
 	}
 	if injected > 0 {
+		e.invalidateCandidateTask()
 		logger.Infof(ctx, "[Agent][Round-%d] Injected %d steered user message(s) into the turn",
 			state.CurrentRound+1, injected)
 	}

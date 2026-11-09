@@ -80,7 +80,7 @@ func (e *AgentEngine) registerDocumentTableAnalysis(state *types.AgentState, que
 		}
 		return steps
 	}
-	e.toolRegistry.RegisterTool(newDocumentTableAnalysisTool(readSteps, question, planner))
+	e.toolRegistry.RegisterTool(newDocumentTableAnalysisTool(readSteps, question, planner, e.toolRegistry))
 }
 
 // Decode each executable plan with the existing calculator's owned argument

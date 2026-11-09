@@ -71,11 +71,31 @@ func (e *AgentEngine) hasExplicitTextDeliveryPlan() bool {
 }
 
 func (e *AgentEngine) candidateTaskDigest(query string, conversation []chat.Message) string {
+	// Bind all review/reuse paths, including chart receipts and warning
+	// delivery, to the same complete task contract and runtime source scope.
+	// This packet contains only existing non-secret routing and permission
+	// metadata; credentials and provider configuration never enter it.
+	var scope any
+	if e.config != nil {
+		scope = struct {
+			KnowledgeBases            []string
+			KnowledgeIDs              []string
+			SearchTargets             types.SearchTargets
+			QuestionOrigin            *types.QuestionOrigin
+			PageContext               *types.PageContext
+			SharedAgentReadOnly       bool
+			CitationsEnabled          bool
+			EvidenceReferencesEnabled bool
+		}{e.config.KnowledgeBases, e.config.KnowledgeIDs, e.config.SearchTargets,
+			e.config.QuestionOrigin, e.config.PageContext, e.config.SharedAgentReadOnly,
+			e.config.CitationsEnabled(), e.config.EvidenceReferencesEnabled}
+	}
 	return reviewDigest(struct {
-		Query                string
-		Conversation         []chat.Message
-		DeliveryRequirements []taskDeliveryRequirement
-	}{query, e.semanticReviewConversation(conversation), e.nonTextDeliveryRequirements()})
+		Query        string
+		Conversation []chat.Message
+		Plan         map[string]any
+		Scope        any
+	}{query, e.semanticReviewConversation(conversation), e.taskReviewPlan(), scope})
 }
 
 type answerDeliveryCheck struct {

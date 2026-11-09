@@ -71,13 +71,13 @@ func TestPDFAnalysisGateUsesCanonicalSuccessAndActualOperation(t *testing.T) {
 	require.True(t, hasExecutedPDFAnalysis([]types.AgentStep{{ToolCalls: []types.ToolCall{call}}}), "canonical result data, not presentation text, identifies execution")
 }
 
-func TestDirectFailedPDFQueryKeepsLookupDeliveryPolicy(t *testing.T) {
+func TestDirectFailedPDFQueryStillReviewsSuccessfulDocumentEvidence(t *testing.T) {
 	call := pdfAnalysisDeliveryFixture(t)
 	call.Result.Success = false
-	model := &mockChat{}
+	model := &mockChat{responses: []mockResponse{sourceAcceptedVerdict()}}
 	engine, state, candidate := directCitationReadFixture(t, model, true)
 	state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{call}})
 	decision := engine.checkCandidate(t.Context(), "Report the source indicator.", candidate, "", state, nil, false)
 	require.Equal(t, candidateAccepted, decision.Disposition)
-	require.Empty(t, model.calls, "a failed query must not reclassify ordinary direct source lookup")
+	require.Len(t, model.calls, 1, "a failed query is a limitation; the successful document still requires source coverage review")
 }

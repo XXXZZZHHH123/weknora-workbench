@@ -336,6 +336,14 @@ func ungroundedStructuredNumbersWithEmptyEvidence(answer string, messages []chat
 			values = append(values, x)
 			percentageValues = append(percentageValues, x, x*100)
 		case map[string]any:
+			switch x["kind"] {
+			case "task_tool_capabilities", "document_table_analysis", "document_table_view", "document_table_catalog":
+				// Schemas, plans and presentation snapshots are not numeric
+				// observations. Analysis executions are interpreted only at the
+				// actual executor boundary below; selected source cells still
+				// require the original scoped cited-document evidence path.
+				return
+			}
 			if x["source_kind"] == "pdf_table" {
 				// PDF coordinates, plan indexes and raw-cell provenance describe
 				// where values came from. They are never SQL result statistics.
@@ -361,11 +369,6 @@ func ungroundedStructuredNumbersWithEmptyEvidence(answer string, messages []chat
 						hasDigest = true
 					}
 				}
-				return
-			}
-			if x["kind"] == "task_tool_capabilities" || x["kind"] == "document_table_analysis" {
-				// Analysis wrappers are interpreted only at an actual executor
-				// boundary below. Never recurse into plans, schemas or advice.
 				return
 			}
 			if x["kind"] == "source_calculation" && x["status"] == "ok" {

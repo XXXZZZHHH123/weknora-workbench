@@ -181,6 +181,9 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 	hasImageObservations := false
 	var evidenceReader *reviewEvidenceReader
 	inputData := map[string]any{"current_user_question": query, "candidate_answer": content, "recent_conversation": contextRows, "omitted_conversation_messages": omittedConversation, "conversation_notice": "Conversation resolves user intent and references; prior assistant claims are not source facts.", "execution_evidence": execution}
+	if coverage := e.taskCoverageReview(state); coverage != nil {
+		inputData["task_coverage"] = coverage
+	}
 	if requirements := e.nonTextDeliveryRequirements(); len(requirements) > 0 {
 		inputData["delivery_requirements"] = requirements
 	}
@@ -263,7 +266,7 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 	completionBudget := 256
 	format := answerCompletenessSchema
 	if checkSources {
-		system = sourceConsistencyReviewInstructions + "\n" + sourceRecoveryReviewInstructions + "\n" + sourceReviewReceiptInstructions + "\n" + researchSynthesisInstructions + "\n" + sourceCitationReviewInstructions + "\n" + sourceCitationDecisionInstructions
+		system = taskCoverageReviewInstructions + "\n" + sourceConsistencyReviewInstructions + "\n" + sourceRecoveryReviewInstructions + "\n" + sourceReviewReceiptInstructions + "\n" + researchSynthesisInstructions + "\n" + sourceCitationReviewInstructions + "\n" + sourceCitationDecisionInstructions
 		if notice, ok := ctx.Value(numericWarningNoticeKey{}).(string); ok {
 			inputData["numeric_warning_delivery_notice"] = notice
 			// Re-encode below: the numeric matcher has diagnosed a limitation,
@@ -1180,6 +1183,7 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	var answerPrefix strings.Builder
 	var inlineReasoning strings.Builder
 	deferAnswerReview := e.answerReviewPending || e.structuredReviewMode || hasStructuredHistoryEvidence(messages) || e.config.SandboxConfigID != ""
+	var documentViewStream documentTableStreamGuard
 
 	emitThought := func(content string, done bool) {
 		if content == "" && !done {
@@ -1238,7 +1242,7 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	}
 	// Delay only the first few characters; normal answers still stream. A
 	// fragment that ends here is validated before anything reaches the UI.
-	emitAnswer := func(content string) {
+	emitAnswerBody := func(content string) {
 		if deferAnswerReview {
 			return
 		}
@@ -1251,6 +1255,24 @@ func (e *AgentEngine) streamThinkingToEventBus(
 			emitAnswerText(answerPrefix.String())
 			answerPrefix.Reset()
 		}
+	}
+
+	emitAnswer := func(content string) {
+		safe, held := documentViewStream.Feed(content)
+		if held {
+			// No protocol bytes have streamed. Retract earlier prose too so a
+			// later expanded/failed candidate cannot concatenate a stale prefix.
+			if answerStreamed {
+				_ = e.eventBus.Emit(ctx, event.Event{
+					ID: answerID, Type: event.EventAgentFinalAnswer, SessionID: sessionID,
+					Data: event.AgentFinalAnswerData{Replace: true},
+				})
+			}
+			answerStreamed = false
+			answerPrefix.Reset()
+			deferAnswerReview = true
+		}
+		emitAnswerBody(safe)
 	}
 
 	llmResult, err := e.streamLLMToEventBus(
@@ -1402,6 +1424,7 @@ func (e *AgentEngine) streamThinkingToEventBus(
 		emitThought(thinkTail, false)
 	}
 	emitAnswer(answerTail)
+	emitAnswerBody(documentViewStream.Flush())
 	closeThinking()
 
 	// Emit diagnostics: helps identify when answer content went to "thought" vs "final_answer" events

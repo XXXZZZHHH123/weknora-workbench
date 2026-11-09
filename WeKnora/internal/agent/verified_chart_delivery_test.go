@@ -210,6 +210,15 @@ func TestVerifiedChartCandidateNarrowingRequiresCompletePrivateSingleChartContra
 		{name: "stale_user_task", mutate: func(f *verifiedChartCandidateFixture) {
 			f.engine.reviewConversation = append(f.engine.reviewConversation, chat.Message{Role: "user", Content: "Use a different source scope."})
 		}},
+		{name: "changed_runtime_source_scope", mutate: func(f *verifiedChartCandidateFixture) {
+			f.engine.config.KnowledgeIDs = []string{"different-authorized-source"}
+		}},
+		{name: "changed_underlying_source_rows", mutate: func(f *verifiedChartCandidateFixture) {
+			f.state.RoundSteps[0].ToolCalls[0].Result.Data["rows"].([]any)[0].(map[string]any)["value"] = 18.0
+		}},
+		{name: "changed_underlying_source_version", mutate: func(f *verifiedChartCandidateFixture) {
+			f.state.RoundSteps[0].ToolCalls[0].Result.Data["source"].(map[string]any)["sha256"] = strings.Repeat("cd", 32)
+		}},
 		{name: "stale_result", mutate: func(f *verifiedChartCandidateFixture) { f.result.Data["row_count"] = 999 }},
 		{name: "changed_actual_output", mutate: func(f *verifiedChartCandidateFixture) { f.result.Output += " changed" }},
 		{name: "different_call_id", mutate: func(f *verifiedChartCandidateFixture) {

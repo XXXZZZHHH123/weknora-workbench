@@ -53,8 +53,12 @@ func documentImageCatalog(result *types.ToolResult, knowledgeID, sourceHash stri
 	rows, _ := result.Data["chunks"].([]map[string]interface{})
 	seen := map[string]bool{}
 	images := []documentImage{}
-	page, _ := result.Data["page"].(int)
+	documentPage, _ := result.Data["page"].(int)
 	for _, row := range rows {
+		page := documentPage
+		if rowPage, ok := row["page"].(int); ok && rowPage > 0 {
+			page = rowPage
+		}
 		content, _ := row["content"].(string)
 		chunkID, _ := row["chunk_id"].(string)
 		var sources []types.DocumentImageSource

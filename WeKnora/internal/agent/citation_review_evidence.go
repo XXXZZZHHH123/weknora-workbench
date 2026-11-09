@@ -536,7 +536,7 @@ func citationDocumentMetadata(data map[string]any, knowledgeID string) map[strin
 }
 
 func citationChunkMetadata(chunk map[string]any, content string) map[string]any {
-	metadata := selectCitationFields(chunk, []string{"chunk_id", "knowledge_id", "chunk_index", "chunk_type", "start_at", "end_at", "parent_chunk_id", "page", "physical_page", "source_page", "content_offset", "content_offset_space", "content_complete", "content_revision", "content_source_view", "next_content_offset", "source_locators"})
+	metadata := selectCitationFields(chunk, []string{"chunk_id", "knowledge_id", "chunk_index", "chunk_type", "start_at", "end_at", "parent_chunk_id", "page", "physical_page", "source_page", "offset_space", "content_offset", "content_offset_space", "content_complete", "content_revision", "content_source_view", "next_content_offset", "source_locators"})
 	locators, ok := metadata["source_locators"].([]any)
 	if !ok {
 		return metadata
@@ -574,12 +574,12 @@ func citationWhitespaceFoldContains(content, quote string) bool {
 }
 
 func citationSourceScope(data map[string]any) map[string]any {
-	scope := selectCitationFields(data, []string{"knowledge_id", "knowledge_base_id", "total_chunks", "fetched_chunks", "total_docs", "page", "page_size", "offset", "offset_space", "truncated", "next_offset", "content_complete", "content_offset", "next_content_offset", "document_scope", "requires_source_scope", "query_scope", "page_complete", "page_chunks"})
+	scope := selectCitationFields(data, []string{"knowledge_id", "knowledge_base_id", "total_chunks", "fetched_chunks", "total_docs", "page", "page_size", "offset", "offset_space", "truncated", "next_offset", "content_complete", "content_offset", "next_content_offset", "document_scope", "requires_source_scope", "query_scope", "page_complete", "page_chunks", "chunk_page", "requested_pages", "page_results", "pages_complete", "all_pages_succeeded"})
 	if scope == nil {
 		scope = map[string]any{}
 	}
 	if coverage, ok := data["coverage"].(map[string]any); ok {
-		if selected := selectCitationFields(coverage, []string{"complete", "truncated", "next_offset", "total", "returned", "page", "page_size", "offset", "content_complete", "next_content_offset"}); len(selected) > 0 {
+		if selected := selectCitationFields(coverage, []string{"complete", "truncated", "next_offset", "total", "returned", "page", "page_size", "offset", "content_complete", "next_content_offset", "chunk_page", "requested_pages", "page_results", "pages_complete", "all_pages_succeeded"}); len(selected) > 0 {
 			scope["coverage"] = selected
 		} else {
 			scope["coverage_omitted"] = true
@@ -589,7 +589,7 @@ func citationSourceScope(data map[string]any) map[string]any {
 	}
 	if value, exists := scope["document_scope"]; exists {
 		if object, ok := value.(map[string]any); ok {
-			selected := selectCitationFields(object, []string{"matched", "knowledge_id", "page", "plan_validated", "has_visual_evidence"})
+			selected := selectCitationFields(object, []string{"matched", "knowledge_id", "page", "pages", "user_page_constraint", "plan_validated", "has_visual_evidence"})
 			if len(selected) > 0 {
 				scope["document_scope"] = selected
 			} else {

@@ -474,9 +474,9 @@ func (e *AgentEngine) Execute(
 		e.toolRegistry.PrepareStructuredProtocol()
 	}
 	if e.config.WorkbenchDefault && e.toolRegistry != nil {
-		agenttools.PrepareDocumentScope(e.toolRegistry)
+		agenttools.PrepareDocumentScope(e.toolRegistry, documentScopeUserTexts(query, llmContext)...)
 		e.toolRegistry.RegisterTool(newSourceCalculationTool(func() []types.AgentStep { return state.RoundSteps }))
-		e.toolRegistry.RegisterTool(newDocumentTableCalculationTool(func() []types.AgentStep { return state.RoundSteps }))
+		e.toolRegistry.RegisterTool(newDocumentTableCalculationTool(func() []types.AgentStep { return state.RoundSteps }, e.toolRegistry))
 		e.registerDocumentTableAnalysis(state, query, sessionID, llmContext)
 		if e.chartWriter != nil {
 			chartTool := newRenderChartTool(ctx, func() []types.AgentStep { return state.RoundSteps }, e.chartWriter, sessionID, messageID)
@@ -659,6 +659,7 @@ type loopGuards struct {
 	failedToolFeedback          failedToolFeedbackLoop
 	failedToolFeedbackNudged    bool
 	failedToolFeedbackOperation string
+	toolProgress                toolProgressGuard
 }
 
 // recordFailedToolCall tracks consecutive failures of the same model-facing
@@ -1099,6 +1100,7 @@ func (e *AgentEngine) runReActIteration(
 	if e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID) > 0 {
 		e.clearTaskToolProjection(messagesPtr)
 		e.taskPlan = nil // The user supplied new requirements.
+		e.resetDocumentTurnProgress(guards, query)
 		tools = e.buildToolsForLLM()
 	}
 	if e.collaboration != nil {
@@ -1228,7 +1230,7 @@ func (e *AgentEngine) runReActIteration(
 			// the answer.
 			step := types.AgentStep{
 				Iteration:        state.CurrentRound,
-				Thought:          response.Content,
+				Thought:          redactDocumentTableTrace(response.Content),
 				ReasoningContent: response.ReasoningContent,
 				ToolCalls:        make([]types.ToolCall, 0),
 				Timestamp:        time.Now(),
@@ -1287,7 +1289,7 @@ func (e *AgentEngine) runReActIteration(
 		UserMessagesBefore:   state.PendingSteerMessages,
 		BackgroundInjections: state.PendingBackground,
 		Iteration:            state.CurrentRound,
-		Thought:              response.Content,
+		Thought:              redactDocumentTableTrace(response.Content),
 		ReasoningContent:     response.ReasoningContent,
 		ReasoningSignature:   response.ReasoningSignature,
 		ReasoningMetadata:    response.ReasoningMetadata,
@@ -1327,7 +1329,7 @@ func (e *AgentEngine) runReActIteration(
 			response.Content,
 		) != "" && !guards.childAnswerRevised && e.withinIterationBudget(state.CurrentRound+1) {
 		guards.childAnswerRevised = true
-		state.FinalAnswer = response.Content // retain the partial deliverable if recovery fails
+		state.FinalAnswer = redactDocumentTableTrace(response.Content) // retain safe partial text if recovery fails
 		step.Truncated, step.IntermediateAnswer = true, true
 		state.RoundSteps = append(state.RoundSteps, step)
 		*messagesPtr = append(
@@ -1371,6 +1373,7 @@ func (e *AgentEngine) runReActIteration(
 		decision := e.checkCandidate(ctx, query, response.Content, response.ReasoningContent, state, reviewConversation, false)
 		if decision.Candidate != response.Content {
 			response.Content = decision.Candidate
+			step.Thought = decision.Candidate
 			response.AnswerStreamed, response.AnswerEventID = false, ""
 		}
 		if ctx.Err() != nil {
@@ -1511,11 +1514,16 @@ func (e *AgentEngine) runReActIteration(
 					ReasoningSignature: response.ReasoningSignature,
 					ReasoningMetadata:  response.ReasoningMetadata,
 				})
-				injected := e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID)
+				humanInjected := e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID)
+				injected := humanInjected
 				injected += e.injectBackground(ctx, state, messagesPtr, true)
 				if injected > 0 {
 					e.clearTaskToolProjection(messagesPtr)
 					e.taskPlan = nil
+					guards.toolProgress = toolProgressGuard{}
+					if humanInjected > 0 {
+						e.resetDocumentTurnProgress(guards, query)
+					}
 					*messagesPtr = e.appendCollaborationDeliveryBoundary(*messagesPtr, verdict.finalAnswer)
 					verdict.step.IntermediateAnswer = true
 					state.RoundSteps = append(state.RoundSteps, verdict.step)
@@ -1623,7 +1631,7 @@ func (e *AgentEngine) runReActIteration(
 	// Page buttons that failed leave their answer text live, since the stream
 	// handler and the client keep text before a page button; retract it the
 	// same way.
-	progress := agenttools.StripThinkBlocks(response.Content)
+	progress := redactDocumentTableTrace(agenttools.StripThinkBlocks(response.Content))
 	if (buttonsRan || e.collaboration != nil && e.collaboration.Child == nil) && strings.TrimSpace(progress) != "" {
 		step.Progress = progress
 		progressID := response.AnswerEventID
@@ -1664,6 +1672,44 @@ func (e *AgentEngine) runReActIteration(
 		logger.Warnf(ctx, "[Agent][Round-%d] Repeated failed call to %q (%d attempts); "+
 			"asking the model to change strategy", round, failedToolName, failedToolAttempts)
 		*messagesPtr = append(*messagesPtr, chat.Message{Role: "user", Content: failedToolGuidance})
+	}
+	if e.config.WorkbenchDefault {
+		observation := guards.toolProgress.observe(step.ToolCalls)
+		common.PipelineInfo(ctx, "Agent", "tool_progress", map[string]interface{}{
+			"round": round, "new_evidence": observation.NewEvidence,
+			"stale_rounds": observation.StaleRounds, "replan": observation.Replan, "stopped": observation.Stop,
+		})
+		if observation.Replan {
+			*messagesPtr = append(*messagesPtr, chat.Message{Role: "system", Content: toolProgressReplanNotice})
+			const progressNotice = "读取和纠错暂未取得新证据，正在调整取证计划。"
+			lastStep := &state.RoundSteps[len(state.RoundSteps)-1]
+			lastStep.Progress = strings.TrimSpace(lastStep.Progress + "\n" + progressNotice)
+			if e.eventBus != nil {
+				progressID := generateEventID("source-replan")
+				lastStep.ProgressEventID = progressID
+				_ = e.eventBus.Emit(ctx, event.Event{
+					ID: progressID, Type: event.EventAgentProgress, SessionID: sessionID,
+					Data: event.AgentProgressData{Stage: "replanning", Content: lastStep.Progress, Iteration: state.CurrentRound},
+				})
+			}
+		}
+		if observation.Stop {
+			// A newly accepted user correction changes the task. Drain it before
+			// settling the old task's stall, just as for a natural final answer.
+			if e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID) > 0 {
+				e.clearTaskToolProjection(messagesPtr)
+				e.taskPlan = nil
+				e.resetDocumentTurnProgress(guards, query)
+				return iterOutcomeNext, nil
+			}
+			if e.collaborationOwnsFailure(ctx) {
+				return iterOutcomeBreak, fmt.Errorf("source collection stopped after repeated rounds without new evidence")
+			}
+			// Reaching a resource bound is a runtime failure, never semantic
+			// completion. No unchecked draft or extra synthesis is published.
+			e.commitTerminalResult(ctx, state, sessionID, sourceProgressStalledFallback, "", "stalled", false)
+			return iterOutcomeBreak, nil
+		}
 	}
 	common.PipelineInfo(ctx, "Agent", "round_end", map[string]interface{}{
 		"iteration":   state.CurrentRound,

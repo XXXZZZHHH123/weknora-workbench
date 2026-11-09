@@ -11,7 +11,6 @@
 package modelcontext
 
 import (
-	"encoding/json"
 	"reflect"
 	"sort"
 	"strings"
@@ -148,7 +147,7 @@ func (r *Registry) DecodeToolCalls(toolCalls []types.LLMToolCall) {
 func jsonEquivalent(left, right string) bool {
 	var leftValue interface{}
 	var rightValue interface{}
-	if json.Unmarshal([]byte(left), &leftValue) != nil || json.Unmarshal([]byte(right), &rightValue) != nil {
+	if decodeJSONNumbers(left, &leftValue) != nil || decodeJSONNumbers(right, &rightValue) != nil {
 		return left == right
 	}
 	return reflect.DeepEqual(leftValue, rightValue)
@@ -338,7 +337,9 @@ func (r *Registry) ModelToolResultForTool(toolName string, result *types.ToolRes
 	copyResult.Output = r.resources.EncodeText(r.encodeToolPrivateResult(toolName, copyResult.Output))
 	copyResult.Error = r.resources.EncodeText(r.encodeToolPrivateResult(toolName, result.Error))
 	var modelOutput string
-	if sourceOutputAllowed(toolName) {
+	if view, ok := r.sources.modelDocumentTableViews(toolName, &copyResult); ok {
+		modelOutput = view
+	} else if sourceOutputAllowed(toolName) {
 		modelOutput = r.sources.ModelOutput(&copyResult)
 	} else if copyResult.Success {
 		modelOutput = copyResult.Output

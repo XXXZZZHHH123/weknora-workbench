@@ -7,13 +7,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDirectTaskSkipsSourceCriticAfterNumericGrounding(t *testing.T) {
-	model := &mockChat{}
+func TestDirectTaskUsesSameSourceCriticAfterNumericGrounding(t *testing.T) {
+	model := &mockChat{responses: []mockResponse{sourceAcceptedVerdict()}}
 	e, state, candidate := directCitationReadFixture(t, model, true)
 	decision := e.checkCandidate(t.Context(), "Report the indicator.", candidate, "", state, nil, false)
 	require.Equal(t, candidateAccepted, decision.Disposition)
-	require.Empty(t, model.calls, "no critic call for a direct lookup")
-	require.True(t, e.candidateApprovalCurrent(candidate, state), "terminal delivery accepts the direct decision")
+	require.Len(t, model.calls, 1, "a direct lookup must establish the same source meaning and requested coverage")
+	require.True(t, decision.SourceReviewAttempted)
+	require.True(t, e.candidateApprovalCurrent(candidate, state), "terminal delivery accepts the reviewed decision")
 }
 
 func TestSynthesisAndUnplannedTasksKeepSourceCritic(t *testing.T) {

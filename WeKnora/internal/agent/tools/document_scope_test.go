@@ -43,7 +43,7 @@ func reportScopeFixture(t *testing.T, titles ...string) (*ReadDocumentTool, *Req
 
 func TestReadDocumentPhysicalPageClipsNeighboursAndImages(t *testing.T) {
 	tool, _ := reportScopeFixture(t, "棉花周报20240310(2).pptx")
-	res, err := tool.Execute(context.Background(), json.RawMessage(`{"id":"report-a","offset":0,"limit":20}`))
+	res, err := tool.Execute(context.Background(), json.RawMessage(`{"id":"report-a","page":12,"offset":0,"limit":20}`))
 	require.NoError(t, err)
 	require.True(t, res.Success, res.Error)
 	require.Equal(t, 12, res.Data["page"])
@@ -194,7 +194,7 @@ func TestRequestedReportIgnoresDeletingDuplicateButRefusesRetiredExplicitSource(
 func TestSearchKnowledgeBoundPageCannotFallBackToOtherReport(t *testing.T) {
 	read, constraint := reportScopeFixture(t, "棉花周报20240310(2).pptx")
 	search := NewSearchKnowledgeTool(nil, read.knowledgeService, read.chunkService, read.searchTargets, nil, nil).WithDocumentConstraint(constraint)
-	res, err := search.Execute(context.Background(), json.RawMessage(`{"query":"郑棉01-05价差"}`))
+	res, err := search.Execute(context.Background(), json.RawMessage(`{"query":"郑棉01-05价差","page":12}`))
 	require.NoError(t, err)
 	require.True(t, res.Success, res.Error)
 	require.Equal(t, "report-a", res.Data["knowledge_id"])

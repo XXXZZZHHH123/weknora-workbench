@@ -78,7 +78,7 @@ func TestTaskPlanProjectsOnlyRealToolsAndKeepsExecutionAuthorization(t *testing.
 	require.NotContains(t, messages[0].Content, "advisory_task_plan", "do not mutate the input transcript")
 	require.Equal(t, 0.7, engine.config.Temperature)
 	require.Zero(t, model.options[0].Temperature)
-	require.Equal(t, 768, model.options[0].MaxCompletionTokens)
+	require.Equal(t, 1152, model.options[0].MaxCompletionTokens)
 	require.Empty(t, model.options[0].Tools)
 	require.Equal(t, "none", model.options[0].ToolChoice)
 	require.NotNil(t, model.options[0].Thinking)

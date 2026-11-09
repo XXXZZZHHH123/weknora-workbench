@@ -30,7 +30,7 @@ var readDocumentTool = BaseTool{
 	description: "Read a document from the knowledge bases in scope: its metadata plus chunks in document order.\n" +
 		"id is a doc://N document handle (reads a page of chunks starting at offset) or a chunk://N chunk handle (reads that " +
 		"chunk; set context to include neighbouring chunks on each side).\n" +
-		"For a user-specified physical page or PPT slide, use page (1-based). It reads only that page's explicit parser markers; offset is never a physical page number. Missing page markers are reported, never guessed.\n" +
+		"Use pages (at most 8) to batch model-selected physical pages in one authorized read; each page has its own completion and continuation metadata. For a single physical page or PPT slide, use page (1-based). It reads only that page's explicit parser markers; offset is never a physical page number. Missing page markers are reported, never guessed.\n" +
 		"Printed page labels and table-of-contents ranges are not physical PDF pages or proof that a listed section is present in this file. Verify physical pages with parser source_locators or page reads; chunk counts and the largest observed locator do not establish total pages.\n" +
 		"The result includes an image_catalog of actual stored figures, even for older text-only imports. " +
 		"To inspect a figure, repeat the same authorized document/page read with images=[its exact reference], detail=full and focus describing the complete user request. " +
@@ -75,6 +75,11 @@ var readDocumentTool = BaseTool{
       "type": "integer",
       "description": "Exact 1-based document page / PPT slide; requires explicit parsed page markers, never chunk offset",
       "minimum": 1
+    },
+    "pages": {
+      "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 1},
+      "description": "Batch up to 8 physical pages of this document; use page or pages, not both. Each page returns its own completion and continuation state. Offset applies within each physical page."
     },
     "limit": {
       "type": "integer",
@@ -130,6 +135,7 @@ type ReadDocumentInput struct {
 	Regex         bool               `json:"regex,omitempty"`
 	Context       int                `json:"context,omitempty"`
 	Page          int                `json:"page,omitempty"`
+	Pages         []int              `json:"pages,omitempty"`
 	SourceScope   *DocumentScopePlan `json:"source_scope,omitempty"`
 	Images        []string           `json:"images,omitempty"`
 	ImageSeries   []string           `json:"image_series,omitempty"`
@@ -255,57 +261,48 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 			return &types.ToolResult{Success: false, Error: err.Error()}, nil
 		}
 	}
+	selection := DocumentSourceSelection{}
 	if constraint := t.documentConstraint; constraint != nil {
-		selected, err := constraint.selection(knowledge.ID)
+		selection, err = constraint.selection(knowledge.ID)
 		if err != nil {
 			return &types.ToolResult{Success: false, Error: err.Error()}, nil
 		}
-		if selected.Page > 0 {
-			if input.Page > 0 && input.Page != selected.Page {
-				return &types.ToolResult{Success: false, Error: "当前问题指定了不同页码，不能用其他页替代"}, nil
-			}
-			input.Page = selected.Page
+	}
+	pages, err := resolveReadPages(input, selection, chunk != nil)
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error()}, nil
+	}
+	matchers, err := documentQueryMatchers(query, input.Regex)
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error()}, err
+	}
+	if len(pages) > 0 {
+		if query != "" && (input.ContentLimit > 0 || input.ContentOffset > 0) {
+			return &types.ToolResult{Success: false, Error: "query and chunk content segmentation are separate read modes"}, nil
 		}
-	}
-	if input.Page < 0 {
-		return &types.ToolResult{Success: false, Error: "page must be a positive physical page number"}, nil
-	}
-	if input.Page > 0 {
 		var segment *chunkContentSegment
-		if input.ContentLimit > 0 || input.ContentOffset > 0 {
-			if chunk == nil {
-				return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
-			}
+		// Every chunk+page read must select that real chunk, even when the
+		// caller did not request character segmentation. Never return page[0].
+		if chunk != nil && query == "" {
 			segment = &chunkContentSegment{chunkID: chunk.ID, offset: input.ContentOffset, limit: input.ContentLimit}
+		} else if input.ContentLimit > 0 || input.ContentOffset > 0 {
+			return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
 		}
-		result, err := t.readPhysicalPage(ctx, knowledge, input.Page, offset, limit, segment)
-		return t.finishImageRead(ctx, knowledge, input, result, err)
+		result, readErr := t.readPhysicalPages(ctx, knowledge, pages, offset, limit, segment, query, matchers, input.Regex)
+		if result != nil && result.Success && selection.UserPages != nil && result.Data != nil {
+			if scope, ok := result.Data["document_scope"].(map[string]interface{}); ok {
+				scope["user_page_constraint"] = cloneDocumentPageConstraint(selection.UserPages)
+			}
+		}
+		return t.finishImageRead(ctx, knowledge, input, result, readErr)
 	}
+
 	if input.ContentLimit > 0 || input.ContentOffset > 0 {
 		if chunk == nil {
 			return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
 		}
 		result, err := t.readChunkContent(ctx, knowledge, chunk, input.ContentOffset, input.ContentLimit)
 		return t.finishImageRead(ctx, knowledge, input, result, err)
-	}
-
-	var matchers []*regexp.Regexp
-	switch {
-	case query == "":
-	case input.Regex:
-		compiled, cerr := regexp.Compile("(?i)" + query)
-		if cerr != nil {
-			return &types.ToolResult{
-				Success: false, Error: fmt.Sprintf("invalid regex query %q: %v", query, cerr),
-			}, cerr
-		}
-		matchers = []*regexp.Regexp{compiled}
-	default:
-		// Models write keyword queries ("sunflower f(n,k)"), not exact
-		// phrases, so each word is matched on its own and all must appear.
-		for _, term := range strings.Fields(query) {
-			matchers = append(matchers, regexp.MustCompile("(?i)"+regexp.QuoteMeta(term)))
-		}
 	}
 
 	// A query always searches the owning document, even when id named a
@@ -323,6 +320,24 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 		result.Data["document_scope"] = map[string]interface{}{"matched": true, "knowledge_id": knowledge.ID, "plan_validated": true}
 	}
 	return t.finishImageRead(ctx, knowledge, input, result, err)
+}
+
+func documentQueryMatchers(query string, regexMode bool) ([]*regexp.Regexp, error) {
+	if query == "" {
+		return nil, nil
+	}
+	if regexMode {
+		compiled, err := regexp.Compile("(?i)" + query)
+		if err != nil {
+			return nil, fmt.Errorf("invalid regex query %q: %v", query, err)
+		}
+		return []*regexp.Regexp{compiled}, nil
+	}
+	var matchers []*regexp.Regexp
+	for _, term := range strings.Fields(query) {
+		matchers = append(matchers, regexp.MustCompile("(?i)"+regexp.QuoteMeta(term)))
+	}
+	return matchers, nil
 }
 
 // resolveTarget accepts either a document id or a chunk id. Documents are
@@ -485,7 +500,7 @@ func (t *ReadDocumentTool) readPage(
 	data := t.buildData(knowledge, total, rows)
 	data["offset"] = offset
 	data["page_size"] = limit
-	data["page"] = offset/limit + 1
+	data["chunk_page"] = offset/limit + 1
 	data["offset_space"] = "document_chunks"
 	annotateContentPagination(data, rows)
 	if next := offset + len(chunks); int64(next) < total && len(chunks) > 0 {

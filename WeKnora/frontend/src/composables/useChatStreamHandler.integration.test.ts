@@ -209,6 +209,44 @@ for (const mode of ['quick-timeline', 'agent'] as const) {
     h.send('complete')
     assert.equal(h.message.is_completed, true)
   })
+
+  test(`${mode}: runtime replanning stays separate from a stalled final answer through replay and history reload`, async t => {
+    const h = setup(t, mode)
+    const progress = '读取和纠错暂未取得新证据，正在调整取证计划。'
+    const final = '本轮读取和纠错未取得新证据，已停止重复尝试，尚未完成回答。'
+    for (let replay = 0; replay < 2; replay++) {
+      h.send('progress', progress, true, { stage: 'replanning', iteration: 3, event_id: 'source-replan' })
+    }
+    assert.equal(h.message.agentEventStream.filter((event: any) => event.type === 'progress').length, 1)
+    assert.equal(h.message.agentEventStream[0].content, progress)
+    assert.equal(h.message.content, '', 'runtime diagnostics are never the answer')
+    assert.equal(h.message.is_completed, false)
+    assert.equal(h.isReplying.value, true)
+    h.send('answer', final, false, { event_id: 'bounded-result' })
+    h.send('answer', '', true, { event_id: 'bounded-result' })
+    assert.equal(h.message.is_completed, false, 'answer closure still awaits persisted completion')
+    h.send('complete', '', true, { final_content: final })
+    assert.equal(h.message.content, final)
+    assert.equal(h.message.is_completed, true)
+    assert.equal(h.isReplying.value, false)
+    assert.deepEqual(h.replies, [final])
+
+    const restored = vue.reactive<Record<string, any>[]>([])
+    const handler = useChatStreamHandler({
+      messagesList: restored, loading: vue.ref(false), isReplying: vue.ref(false),
+      currentAssistantMessageId: vue.ref(''), fullContent: vue.ref(''),
+      isAgentStreamSession: () => mode === 'agent', scrollToBottom() {},
+    })
+    await handler.handleMsgList([{
+      id: 'assistant', request_id: 'request', role: 'assistant', content: final, is_completed: true,
+      agent_steps: [{ iteration: 3, progress, progress_event_id: 'source-replan', tool_calls: [] }],
+    }])
+    assert.equal(restored[0].content, final)
+    assert.equal(restored[0].is_completed, true)
+    assert.equal(restored[0].agentEventStream.find((event: any) => event.type === 'progress').content, progress)
+    assert.equal(restored[0].agentEventStream.find((event: any) => event.type === 'answer').content, final)
+    assert.equal(restored[0].agentEventStream.filter((event: any) => event.type === 'answer').length, 1)
+  })
 }
 
 for (const mode of ['ordinary', 'quick-timeline', 'agent'] as const) {

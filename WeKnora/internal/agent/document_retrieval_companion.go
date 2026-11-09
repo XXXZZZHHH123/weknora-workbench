@@ -356,6 +356,8 @@ func documentRetrievalScopeMetadata(data map[string]any) map[string]any {
 		"query", "queries", "mode", "requested_mode", "knowledge_base_ids", "document_ids",
 		"count", "total", "fetched_chunks", "omitted_for_budget", "partial_failures", "search_failures",
 		"truncated", "offset", "next_offset", "query_scope", "withheld_retracted_or_unverified_wiki_chunks",
+		"page", "chunk_page", "page_size", "page_chunks", "page_complete", "offset_space",
+		"requested_pages", "page_results", "pages_complete", "all_pages_succeeded", "document_scope",
 	} {
 		if value, ok := data[key]; ok {
 			metadata[key] = value
@@ -389,7 +391,7 @@ func cloneDocumentRetrievalCriticalMetadata(row map[string]any) map[string]any {
 	metadata := make(map[string]any)
 	for _, key := range []string{
 		"content_offset", "content_offset_space", "content_limit", "content_complete", "next_content_offset",
-		"role", "content_status", "offset_space",
+		"role", "content_status", "offset_space", "page", "physical_page", "source_page",
 	} {
 		if value, ok := row[key]; ok {
 			metadata[key] = value

@@ -56,22 +56,7 @@ func filterFallbackCitationTags(text string, evidence, chunks map[string]bool) s
 }
 
 func (e *AgentEngine) unverifiedBaseCurrent(ctx context.Context, state *types.AgentState) bool {
-	if e == nil || e.config == nil || state == nil || !e.config.CitationsEnabled() {
-		return false
-	}
-	d := e.turnReview.UnverifiedDecision
-	if d.Disposition != candidateRevise && d.Disposition != candidateNeedSource && d.Disposition != candidateProtocolFailure {
-		return false
-	}
-	if !d.SourceReviewAttempted || len(d.Unsupported) != 0 || d.SourceScopeHash == "" || d.SourceScopeHash != e.unverifiedSourceScopeDigest(ctx) ||
-		!e.candidateDecisionCurrent(d, e.turnReview.UnverifiedCheckedCandidate, state) {
-		return false
-	}
-	base := e.turnReview.UnverifiedCheckedCandidate
-	if decoded, ok := decodeReviewedAnswerEnvelope(base); ok && strings.TrimSpace(decoded) != "" {
-		base = decoded
-	}
-	return strings.TrimSpace(base) == strings.TrimSpace(e.turnReview.UnverifiedCandidate)
+	return e != nil && e.config != nil && e.config.CitationsEnabled() && e.unverifiedCandidateCurrent(ctx, state)
 }
 
 func unverifiedInlineBindings(candidate, id string) json.RawMessage {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -40,12 +41,23 @@ func (p *DocumentScopePlan) UnmarshalJSON(data []byte) error {
 }
 
 type DocumentSourceSelection struct {
-	KnowledgeID string                `json:"knowledge_id"`
-	FileName    string                `json:"expected_file_name,omitempty"`
-	Title       string                `json:"expected_title,omitempty"`
-	Page        int                   `json:"page,omitempty"`
-	Date        *DocumentDateEvidence `json:"date_evidence,omitempty"`
+	KnowledgeID string                  `json:"knowledge_id"`
+	FileName    string                  `json:"expected_file_name,omitempty"`
+	Title       string                  `json:"expected_title,omitempty"`
+	Page        int                     `json:"page,omitempty"`
+	Pages       []int                   `json:"pages,omitempty"`
+	UserPages   *DocumentPageConstraint `json:"user_page_constraint,omitempty"`
+	Date        *DocumentDateEvidence   `json:"date_evidence,omitempty"`
 }
+
+// DocumentPageConstraint is a model-interpreted user restriction, distinct from
+// the model's revisable reading hints. The exact quote must come from a trusted
+// user message; it is not classified by keywords or page-number patterns.
+type DocumentPageConstraint struct {
+	Pages     []int  `json:"pages"`
+	UserQuote string `json:"user_quote"`
+}
+
 type DocumentDateEvidence struct {
 	Date        string `json:"date"`
 	SourceField string `json:"source_field"`
@@ -58,18 +70,24 @@ const documentScopePlanSchema = `{"type":"object","additionalProperties":false,"
 "knowledge_id":{"type":"string","minLength":1,"description":"Actual authorized doc://N document handle from search/list metadata"},
 "expected_file_name":{"type":"string","description":"Exact file_name from real source metadata; at least file_name or title is required"},
 "expected_title":{"type":"string","description":"Exact title from real source metadata"},
-"page":{"type":"integer","minimum":1,"description":"Physical page / PPT slide selected by the QA model, not chunk offset"},
+"page":{"type":"integer","minimum":1,"description":"Revisable model-selected physical-page read hint, not a user restriction or chunk offset; use page or pages, not both"},
+"pages":{"type":"array","minItems":1,"maxItems":8,"uniqueItems":true,"items":{"type":"integer","minimum":1},"description":"Revisable model-selected physical-page hints for one document; keep one source entry per document"},
+"user_page_constraint":{"type":"object","additionalProperties":false,"required":["pages","user_quote"],"properties":{"pages":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":{"type":"integer","minimum":1}},"user_quote":{"type":"string","minLength":1,"maxLength":2000}},"description":"Only when the user explicitly restricts physical pages: model interprets the full request, lists all allowed pages and quotes the exact user text. A verified restriction persists for this turn and cannot be removed by a read plan."},
 "date_evidence":{"type":"object","additionalProperties":false,"required":["date","source_field","source_text"],"description":"When the question constrains a source date, include actual date proof; an upload timestamp is not a source date.","properties":{
 "date":{"type":"string","description":"Verified source date, YYYY-MM-DD"},"source_field":{"type":"string","enum":["file_name","title","metadata.report_date","metadata.published_date","metadata.date"]},"source_text":{"type":"string","minLength":1,"description":"Exact date substring in that actual source field"}}}
 }}}}}`
 
 type RequestedDocumentConstraint struct {
-	mu      sync.RWMutex
-	sources map[string]DocumentSourceSelection
-	order   []string
+	mu           sync.RWMutex
+	sources      map[string]DocumentSourceSelection
+	order        []string
+	userMessages []string
+	userPages    map[string]*DocumentPageConstraint
 }
 
-func NewDocumentScopeState() *RequestedDocumentConstraint { return &RequestedDocumentConstraint{} }
+func NewDocumentScopeState(userMessages ...string) *RequestedDocumentConstraint {
+	return &RequestedDocumentConstraint{userMessages: append([]string(nil), userMessages...), userPages: map[string]*DocumentPageConstraint{}}
+}
 
 // IsCurrentDocumentRead checks a previously executed read against the current
 // binding. Reusing a read must not bypass a later document/page restriction.
@@ -94,12 +112,31 @@ func IsCurrentDocumentRead(registry *ToolRegistry, result *types.ToolResult) boo
 		Matched     bool   `json:"matched"`
 		KnowledgeID string `json:"knowledge_id"`
 		Page        int    `json:"page"`
+		Pages       []int  `json:"pages"`
 	}
 	if json.Unmarshal(encoded, &scope) != nil || !scope.Matched {
 		return false
 	}
 	selected, err := binder.state.selection(scope.KnowledgeID)
-	return err == nil && (selected.Page == 0 || selected.Page == scope.Page)
+	if err != nil {
+		return false
+	}
+	if selected.UserPages == nil {
+		return true
+	}
+	pages := scope.Pages
+	if scope.Page > 0 {
+		pages = append(pages, scope.Page)
+	}
+	if len(pages) == 0 {
+		return false
+	}
+	for _, page := range pages {
+		if !slices.Contains(selected.UserPages.Pages, page) {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *RequestedDocumentConstraint) selection(id string) (DocumentSourceSelection, error) {
@@ -112,7 +149,7 @@ func (r *RequestedDocumentConstraint) selection(id string) (DocumentSourceSelect
 	if !ok {
 		return source, fmt.Errorf("该文档不在已验证来源计划中，不能用另一报告的同名图替代；比较或更改来源须明确提交完整来源计划")
 	}
-	return source, nil
+	return cloneDocumentSelection(source), nil
 }
 func (r *RequestedDocumentConstraint) selectedIDs() []string {
 	r.mu.RLock()
@@ -128,7 +165,7 @@ func (r *RequestedDocumentConstraint) bind(ctx context.Context, plan DocumentSco
 	metadata := []map[string]any{}
 	for _, selection := range plan.Sources {
 		if _, exists := validated[selection.KnowledgeID]; exists {
-			return nil, fmt.Errorf("来源计划不能重复同一文档")
+			return nil, fmt.Errorf("来源计划不能重复同一文档；同一来源的多个物理页请合并为一个条目的 pages 数组")
 		}
 		knowledge, err := authorizeKnowledgeInSearchTargets(ctx, targets, selection.KnowledgeID, service)
 		if err != nil {
@@ -143,9 +180,15 @@ func (r *RequestedDocumentConstraint) bind(ctx context.Context, plan DocumentSco
 		if selection.FileName != "" && selection.FileName != knowledge.FileName || selection.Title != "" && selection.Title != knowledge.Title {
 			return nil, fmt.Errorf("来源计划文件名或标题与实际文档不一致；请重新核对真实目录")
 		}
-		if selection.Page < 0 {
-			return nil, fmt.Errorf("页码必须为真实文档的正整数页码")
+		if err := validateDocumentPageHints(selection); err != nil {
+			return nil, err
 		}
+		if selection.UserPages != nil {
+			if err := r.validateUserPageConstraint(selection.UserPages); err != nil {
+				return nil, err
+			}
+		}
+		selection = cloneDocumentSelection(selection)
 		if err := validateDocumentDateEvidence(knowledge, selection.Date); err != nil {
 			return nil, err
 		}
@@ -157,7 +200,10 @@ func (r *RequestedDocumentConstraint) bind(ctx context.Context, plan DocumentSco
 		order = append(order, knowledge.ID)
 		row := documentScopeMetadata(knowledge)
 		if selection.Page > 0 {
-			row["selected_page"] = selection.Page
+			row["read_hint_page"] = selection.Page
+		}
+		if len(selection.Pages) > 0 {
+			row["read_hint_pages"] = append([]int(nil), selection.Pages...)
 		}
 		if selection.Date != nil {
 			proof := *selection.Date
@@ -166,6 +212,39 @@ func (r *RequestedDocumentConstraint) bind(ctx context.Context, plan DocumentSco
 		metadata = append(metadata, row)
 	}
 	r.mu.Lock()
+	// Only commit after every source/constraint has passed validation. A later
+	// model read plan may change hints, but cannot broaden a user restriction.
+	for id, selection := range validated {
+		if frozen := r.userPages[id]; frozen != nil {
+			if selection.UserPages != nil && !sameDocumentPages(frozen.Pages, selection.UserPages.Pages) {
+				r.mu.Unlock()
+				return nil, fmt.Errorf("来源计划不能改变当前用户已限定的物理页；请在该范围内重新规划读取")
+			}
+			selection.UserPages = cloneDocumentPageConstraint(frozen)
+		}
+		if selection.UserPages != nil {
+			for _, hint := range documentSelectionHints(selection) {
+				if !slices.Contains(selection.UserPages.Pages, hint) {
+					r.mu.Unlock()
+					return nil, fmt.Errorf("读取计划页码超出用户明确限定的物理页")
+				}
+			}
+		}
+		validated[id] = selection
+	}
+	if r.userPages == nil {
+		r.userPages = map[string]*DocumentPageConstraint{}
+	}
+	for id, selection := range validated {
+		if selection.UserPages != nil {
+			r.userPages[id] = cloneDocumentPageConstraint(selection.UserPages)
+		}
+	}
+	for i, id := range order {
+		if constraint := validated[id].UserPages; constraint != nil {
+			metadata[i]["user_page_constraint"] = cloneDocumentPageConstraint(constraint)
+		}
+	}
 	r.sources, r.order = validated, order
 	r.mu.Unlock()
 	return metadata, nil
@@ -248,14 +327,14 @@ func (t *bindDocumentScopeTool) Execute(ctx context.Context, args json.RawMessag
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error()}, nil
 	}
-	data := map[string]any{"display_type": "document_info", "documents": metadata, "source_plan_validated": true, "notice": "已核验实际文件身份及声明的日期证据；这是来源选择，不是图表内容。请按所选物理页读取实际证据，不混用其他报告。"}
+	data := map[string]any{"display_type": "document_info", "documents": metadata, "source_plan_validated": true, "notice": "已核验实际文件身份及声明的日期证据；这是来源选择，不是图表内容。page/pages 是可调整的读取计划；仅 user_page_constraint 是已验证用户页码限制。请读取实际证据，不混用其他报告。"}
 	encoded, _ := json.Marshal(data)
 	return &types.ToolResult{Success: true, Data: data, Output: string(encoded)}, nil
 }
 
 // Install a per-turn model-planned boundary. The full question/context stays in
 // the normal QA messages and is never passed through a keyword classifier.
-func PrepareDocumentScope(registry *ToolRegistry) {
+func PrepareDocumentScope(registry *ToolRegistry, userMessages ...string) {
 	var service interfaces.KnowledgeService
 	var targets types.SearchTargets
 	searchTool, _ := registry.GetTool(ToolSearchKnowledge)
@@ -270,7 +349,7 @@ func PrepareDocumentScope(registry *ToolRegistry) {
 	if service == nil {
 		return
 	}
-	state := NewDocumentScopeState()
+	state := NewDocumentScopeState(userMessages...)
 	if existing, err := registry.GetTool(ToolBindDocumentScope); err == nil {
 		if binder, ok := existing.(*bindDocumentScopeTool); ok {
 			binder.state = state
@@ -278,7 +357,7 @@ func PrepareDocumentScope(registry *ToolRegistry) {
 			binder.targets = targets
 		}
 	} else {
-		registry.RegisterTool(&bindDocumentScopeTool{BaseTool: NewBaseTool(ToolBindDocumentScope, "Select document sources from real authorized metadata using the full question and context. Submit exact IDs/file names/titles, date proof when constrained, physical pages and a reason. Clarify ambiguous dates/versions rather than silently choosing a candidate. Comparisons explicitly include all compared sources. This validates source identity, not chart facts.", json.RawMessage(documentScopePlanSchema)), state: state, service: service, targets: targets})
+		registry.RegisterTool(&bindDocumentScopeTool{BaseTool: NewBaseTool(ToolBindDocumentScope, "Select document sources from real authorized metadata using the full question and context. Submit exact IDs/file names/titles, date proof when constrained, revisable physical-page hints and a reason. User-imposed page limits must be separately provided in user_page_constraint with an exact user quote; model read hints never become user restrictions. Clarify ambiguous dates/versions rather than silently choosing a candidate. Comparisons explicitly include all compared sources. This validates source identity, not chart facts.", json.RawMessage(documentScopePlanSchema)), state: state, service: service, targets: targets})
 	}
 	if search != nil {
 		search.WithDocumentConstraint(state)

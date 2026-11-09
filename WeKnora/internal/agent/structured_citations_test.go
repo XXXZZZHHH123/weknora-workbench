@@ -130,7 +130,7 @@ func TestStructuredCitationInlineIdentityCannotWaiveClaimSemantics(t *testing.T)
 	for _, text := range []string{"Measure A is 12.500 kg.", "Measure B is 12.500 kg.", "The measurement is 2031 kg."} {
 		candidate := text + `<evidence evidence_id="` + id + `" />`
 		require.Len(t, e.currentCandidateEvidenceReferences(candidate, state), 1, "identity remains distinct from a semantic judgement")
-		require.False(t, e.directCitationDeliveryEligible(candidate, state, nil), "same value, source date or unit must not waive the existing semantic critic")
+		require.True(t, e.needsSourceConsistencyCheck(state), "same value, source date or unit must not waive the existing semantic critic")
 	}
 }
 

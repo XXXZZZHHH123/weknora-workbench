@@ -127,36 +127,10 @@ func pageImages(info, content string, page int, clipped bool) string {
 }
 
 func (t *ReadDocumentTool) readPhysicalPage(ctx context.Context, knowledge *types.Knowledge, requested, offset, limit int, segment *chunkContentSegment) (*types.ToolResult, error) {
-	var selected []*types.Chunk
-	views := map[string]*types.ChunkContentView{}
-	var total int64
-	current := 0
-	for page := 1; ; page++ {
-		chunks, count, err := t.listChunks(ctx, knowledge, page, readDocumentScanPageSize)
-		if err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error()}, err
-		}
-		total = count
-		enrichChunkImageInfo(ctx, t.chunkService.GetRepository(), t.tenantFor(knowledge), chunks)
-		for _, c := range chunks {
-			if metadataPage := chunkMetadataPage(c); metadataPage > 0 {
-				current = metadataPage
-			}
-			content, nextPage, ranges := pageTextWithRanges(c.Content, current, requested)
-			current = nextPage
-			if content == "" {
-				continue
-			}
-			copy := *c
-			copy.Content = content
-			copy.ImageInfo = pageImages(c.ImageInfo, content, requested, content != strings.TrimSpace(c.Content))
-			views[c.ID] = chunkContentView(c, ranges)
-			selected = append(selected, &copy)
-		}
-		if len(chunks) == 0 || int64(page*readDocumentScanPageSize) >= total {
-			break
-		}
-	}
+	return t.readPhysicalPages(ctx, knowledge, []int{requested}, offset, limit, segment, "", nil, false)
+}
+
+func (t *ReadDocumentTool) renderPhysicalPage(ctx context.Context, knowledge *types.Knowledge, requested, offset, limit int, segment *chunkContentSegment, selected []*types.Chunk, views map[string]*types.ChunkContentView, total int64) (*types.ToolResult, error) {
 	if len(selected) == 0 {
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("指定文档第 %d 页未找到可读取的页码标记或内容。需要补齐该文档的页码解析；不能把第 %d 个分块当作第 %d 页，也不能引用其他报告的同名图。", requested, requested, requested), Data: map[string]interface{}{"knowledge_id": knowledge.ID, "requested_page": requested}}, nil
 	}

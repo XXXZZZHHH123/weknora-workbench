@@ -156,6 +156,11 @@ jobs:
       - run: go test ./internal/agent/tools ./internal/agent -run 'TestDocumentReadReuse|TestMCP|TestCastParams|TestStructured|TestNative|TestWorkbench|TestIndependentReview|TestReviewDraft|TestCommodityResearch|TestEveryBuiltIn|TestAvailableToolDefinitions|TestCandidateAdditions|TestNumericWarning' -count=1
       - name: Verify document calculations and final answer contracts
         run: go test ./internal/agent -run 'Test(TaskPlan|TaskCapability|SchemaOnlyToolCalls|SchemaCallExclusion|SourceConsistency|FinalSynthesisRepairsSemantic|CurrentDocument|SourceReview|FetchedDocument|DirectoryGroup|SourceCalculation|DocumentTable|FinalReview|ReviewedAnswer|Review|UnresolvedSourceBinding|ExactCatalogue)' -count=1
+      - name: Verify question execution recovery, source scope, and coverage
+        run: >-
+          go test ./internal/agent ./internal/agent/tools
+          -run 'Test(ToolArgument|ToolProgress|AcceptedHumanTask|ExecuteLoopBoundsSourceStall|DocumentScope|DocumentReadHint|DocumentUserPageConstraint|DocumentBatch|DocumentPhysicalPage|DocumentPageQuery|DocumentChunkPagination|TaskCoverage|TaskPlan|Direct|SynthesisAndUnplanned|Unverified|CitationReal|SourceReviewApproval|SourceStallFallback|PersistedSteer|NonSourceGreeting|CitationSourceScope|DocumentCompanionCriticalScope|ExistingCriticReceivesBatch|DocumentTable|InventedDocumentTable)'
+          -count=1
       - name: Verify chart sources, delivery completion, and failure recovery
         run: |
           go test ./internal/structuredresult -count=1
