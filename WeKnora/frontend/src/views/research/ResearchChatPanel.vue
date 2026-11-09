@@ -1,5 +1,6 @@
 <template>
-  <aside v-show="visible" id="research-chat-panel" class="research-chat-panel" aria-label="研究工作台问答助手">
+  <aside v-show="visible" id="research-chat-panel" class="research-chat-panel" aria-label="研究工作台问答助手"
+    :data-bottom-composer="visible ? '' : undefined">
     <div class="research-chat-panel__header">
       <strong>问答助手</strong>
       <t-button variant="text" size="small" aria-label="收起问答助手" @click="$emit('close')">

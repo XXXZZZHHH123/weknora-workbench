@@ -273,6 +273,17 @@ def declared_references(payload, *, strict=True):
     if len(rows) > 32:
         raise HTTPException(413, '研究引用数量过多，请精简引用')
     references.extend(rows)
+    charts = payload.get('chart_references', [])
+    if not isinstance(charts, list) or len(charts) > 32:
+        if strict:
+            raise HTTPException(422, '图表引用列表格式无效或超过32项')
+        charts = []
+    for item in charts:
+        if not isinstance(item, dict) or item.get('kind') != 'chart':
+            if strict:
+                raise HTTPException(422, '图表引用格式无效')
+            continue
+        references.append(item)
     citations = payload.get('citations', [])
     if not isinstance(citations, list):
         if strict:
@@ -286,6 +297,8 @@ def declared_references(payload, *, strict=True):
                 raise HTTPException(422, '策略引用格式无效')
             continue
         if item['kind'] == 'judgment_condition':
+            references.append(item)
+        elif item['kind'] == 'chart':
             references.append(item)
         elif item['kind'] not in {'indicator', 'knowledge_file'} and strict:
             raise HTTPException(422, '策略引用类型无效')

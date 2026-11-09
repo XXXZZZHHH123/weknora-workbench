@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}图表详情 · 商品研究{% endblock %}
+{% block main %}
+{% include "_chart_assets.html" %}
+<div class="charts-page" data-charts-page="detail">
+  <header class="charts-header"><div><a class="charts-muted" href="{{ research_url('/sn/indicators?tab=charts') }}{% if chart_page.date %}&amp;date={{ chart_page.date | urlencode }}{% endif %}">返回图表库</a><div class="favorites-title"><h1 id="chart-title">图表详情</h1>{% if chart_page.enabled %}<button type="button" class="favorites-bookmark" data-favorite="{{ chart_page.id }}" data-favorite-kind="chart" data-favorite-label="图表" aria-pressed="false" aria-label="加入自选 图表" title="自选" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3.2L6 20V5.5a1 1 0 0 1 1-1z"/></svg></button>{% endif %}</div><p id="chart-meta" class="charts-muted"></p></div></header>
+  {% if not chart_page.enabled %}<p class="charts-notice error" role="alert">{{ chart_page.reason }}</p>{% else %}
+  <div id="chart-detail-status" role="status" hidden></div>
+  <aside class="charts-notice" data-dedup-references="chart" data-dedup-reference-id="{{ chart_page.id }}" hidden></aside>
+  <div id="chart-conflict" class="charts-notice warning" role="alert" hidden><span>图表已有新版本，请重新加载后修改。</span> <button type="button" id="chart-reload" class="charts-button">重新加载最新版本</button></div>
+  <section class="charts-panel" aria-label="图表"><div id="chart-plot">正在读取图表…</div><p id="chart-notices" class="charts-footnote" role="status" hidden></p><div id="chart-exports"></div><p id="chart-note" class="charts-muted"></p></section>
+  <section class="charts-panel" id="chart-statistics" hidden></section>
+  {% if chart_page.can_write %}
+  <section class="charts-panel" id="chart-reconvert-panel" hidden>
+    <button type="button" id="chart-reconvert" class="charts-button">按原表重新转换</button>
+    <p class="charts-muted">重新读取当前授权来源中的原表图表，生成转换建议；确认后保存为新修订。</p>
+    <div id="chart-reconvert-status" role="status" hidden></div>
+    <div id="chart-reconvert-preview" hidden>
+      <div id="chart-reconvert-summary"></div>
+      <details><summary>查看建议定义</summary><pre id="chart-reconvert-definition"></pre></details>
+      <p class="charts-muted">确认后将使用建议替换当前定义（含标题、备注与样式）。</p>
+      <button type="button" id="chart-reconvert-confirm" class="charts-button primary">确认并保存新修订</button>
+      <button type="button" id="chart-reconvert-cancel" class="charts-button">取消</button>
+    </div>
+  </section>
+  {% endif %}
+  <section class="charts-panel"><h2>编辑图表定义</h2>
+    {% if not chart_page.can_write %}<p class="charts-notice" id="chart-write-reason">{{ chart_page.write_reason }}</p>{% endif %}
+    <form id="chart-editor">
+      <fieldset id="chart-editor-fields" disabled>
+        <div class="charts-fields"><label>标题<input name="title" maxlength="120" required></label><label>分组<input name="group" maxlength="80"></label></div>
+        <label class="charts-field">备注<textarea name="note" maxlength="600" rows="3"></textarea></label>
+        <div class="charts-fields" style="margin-top:12px">
+          <label>时间模式<select name="mode"><option value="recent">最近若干观测</option><option value="since">从指定日期至今</option><option value="range">日期区间</option><option value="cycle">周期对比</option></select></label>
+          <label data-time-field="recent">最近观测数<input name="points" type="number" min="1" max="2000" value="120"></label>
+          <label data-time-field="since range">起始日期<input name="start" type="date"></label><label data-time-field="range">结束日期<input name="end" type="date"></label>
+        </div>
+        <div id="chart-cycle-fields" data-time-field="cycle" hidden>
+          <p class="charts-muted">周期模式一期支持一条指标曲线。自定义起点创建年度重复周期。</p>
+          <div class="charts-fields"><label>周期模板<select name="template" id="chart-template"></select></label><label id="chart-custom-start-field" hidden>自定义起点（MM-DD）<input name="cycle_start" placeholder="MM-DD" maxlength="5"></label>
+            <label>展示周期数<input name="cycles" type="number" min="1" step="1" value="8"></label><label>区间带往期数<input name="band_cycles" type="number" min="1" step="1" value="5"></label>
+            <label>默认显示期数<input name="visible_cycles" type="number" min="1" max="40" step="1" placeholder="自动（最多5期）"></label>
+            <label>数值变换<select name="transform"><option value="raw">原值</option><option value="change">相对起点变化</option><option value="rebase">起点=100</option></select></label></div>
+        </div>
+        <h3>曲线样式</h3><div id="chart-curve-fields"></div>
+        <button type="submit" class="charts-button primary">保存修改</button> <button type="button" id="chart-delete" class="charts-button danger">删除图表</button>
+      </fieldset>
+    </form>
+  </section>
+  <section class="charts-panel"><h2>修订历史</h2><div id="chart-revision-status" role="status" hidden></div><div id="chart-revisions" class="charts-history"></div><button type="button" id="chart-revisions-more" class="charts-button" hidden>加载更多修订</button></section>
+  {% endif %}
+</div>
+<script type="application/json" id="chart-page-config">{{ chart_page | tojson }}</script>
+<script src="{{ research_static_prefix() }}/static/charts.js?v={{ static_version() }}"></script>
+{% endblock %}

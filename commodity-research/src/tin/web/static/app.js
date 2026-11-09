@@ -6,7 +6,19 @@ async function researchFetch(input, options = {}) {
     headers.set('X-Tenant-ID', String(window.RESEARCH_CONTEXT.tenant));
     headers.set('X-Research-User', window.RESEARCH_CONTEXT.user);
   }
-  const response = await window.fetch(input, {...options, headers});
+  let response;
+  try {
+    response = await window.fetch(input, {...options, headers});
+  } catch (error) {
+    // A dropped connection surfaces as the browser's English TypeError ("Failed to fetch");
+    // cancellations keep their AbortError so callers can still ignore them.
+    if (error?.name === 'TypeError') {
+      const offline = new Error('网络连接中断，数据没有读取完成，请检查网络后重试。');
+      offline.network = true; offline.cause = error;
+      throw offline;
+    }
+    throw error;
+  }
   if (response.status === 401 && window.RESEARCH_CONTEXT) {
     parent.postMessage({type: 'research-auth-expired'}, location.origin);
   }

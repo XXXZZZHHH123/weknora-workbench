@@ -41,7 +41,7 @@ for (const mode of ['normal', 'embedded', 'after', 'inject']) {
       uploadedAttachments: { value: [] }, uploadedImages: { value: [] },
       allSelectedItems: { value: [] }, selectedModelId: { value: 'model' },
       composerModelId: { value: 'host-model' },
-      selectedAgent: { value: { config: {} } },
+      selectedAgent: { value: { config: {} } }, draftMemoryDisabled: { value: false },
       settingsStore: {}, chatResources: { isLoaded: () => true },
       collectAgentNotReadyReasons: () => ({ keys: [], labels: [] }),
       attachmentUploadRef: { value: null },
@@ -92,7 +92,7 @@ for (const embeddedMode of [false, true]) {
       const send = vm.runInNewContext(ts.transpile(`${sendCode}\ncreateSession`), {
         props: { embeddedMode, isReplying: true, canSteer: true },
         uploadedAttachments: { value: [] }, uploadedImages: { value: [] },
-        allSelectedItems: { value: selected },
+        allSelectedItems: { value: selected }, draftMemoryDisabled: { value: false },
         emit: (...args) => { emitted = args },
         clearvalue() {}, focusInput: async () => {},
       })
@@ -134,7 +134,10 @@ test('new-session focus survives consumption of the first query and runs on chil
     firstQuery: { value: 'main draft' }, props: { embeddedMode: true, initialQuery: '' },
   }), false)
   assert.match(page, /:auto-focus="focusComposerOnMount"/)
-  const mountStart = source.slice(source.indexOf('onMounted(() => {'), source.indexOf('// 嵌入时 agent/KB 由宿主注入，只需'))
+  // The composer's mount hook starts with the auto-focus request; take only that statement.
+  const mountAt = source.indexOf('onMounted(() => {\n  if (props.autoFocus)')
+  assert.ok(mountAt >= 0, 'the composer mount hook still begins with its auto-focus request')
+  const mountStart = source.slice(mountAt, source.indexOf('\n', source.indexOf('if (props.autoFocus)', mountAt)))
   let mounted, focused = false
   vm.runInNewContext(`${mountStart}\n});`, {
     props: { autoFocus }, onMounted: fn => { mounted = fn }, focusInput: () => { focused = true },

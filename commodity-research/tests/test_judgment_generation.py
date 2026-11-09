@@ -432,34 +432,34 @@ def test_total_generate_deadline_preserves_existing_versions_and_no_preview(gene
     assert rows() == [] and not generation.previews.items
 
 
-def test_222k_catalog_uses_three_complete_selections_then_analysis_and_coverage(generator,monkeypatch):
+def test_222k_catalog_is_recalled_per_item_then_only_picked_fields_reach_analysis(generator,monkeypatch):
     client, headers, _, response, _ = generator
     catalog = [{'id': SERIES if index == 0 else 'real-' + str(index), 'unit': '吨',
                 'name': '量' * 1400 + str(index)} for index in range(53)]
     original = generation.snapshot
     def large_snapshot(): return {**original(), 'catalog': catalog}
     monkeypatch.setattr(generation, 'snapshot', large_snapshot)
-    calls, seen = [], []
+    calls, shown = [], []
     async def complete(scope, model, prompt):
+        import json
         calls.append(prompt)
         if prompt.startswith('research-source-inventory.v1'):
             return inventory_fixture()
-        if prompt.startswith(generation.SELECTION_PROTOCOL):
-            import json
-            chunk = restore_catalog(encoded_directory(prompt))
-            seen.extend(item['id'] for item in chunk)
-            return {'selection_refs': selected_refs(encoded_directory(prompt), [SERIES])}
-        # Temporary selector references never become analysis IDs or metadata.
-        assert all('selection_ref' not in field for field in restore_catalog(encoded_directory(prompt)))
+        if prompt.startswith('research-catalog-recall.v1'):
+            return {'queries': {'i_stock': ['量量 0']}}
+        if 'research-catalog-pick.v1' in prompt:
+            candidates = json.loads(prompt.split('候选指标：', 1)[1].split('\n完整原文：', 1)[0])
+            shown.extend(candidates.values())
+            return {'picks': {'i_stock': [ref for ref, field in candidates.items() if field['name'] == catalog[0]['name']]}}
+        # Temporary references never become analysis IDs; analysis sees only the picked real field.
         assert {field['id'] for field in restore_catalog(encoded_directory(prompt))} == {SERIES}
         return covered_fixture(response)
     monkeypatch.setattr(generation, 'completion', complete)
     result = generate(client, headers)
     assert result.status_code == 200, result.text
-    assert len(calls) == 6 and len(seen) == len(catalog)
-    assert sum(prompt.startswith(generation.SELECTION_PROTOCOL) for prompt in calls) == 3
-    assert seen == [item['id'] for item in catalog]
-    assert all(TEXT in prompt for prompt in calls)
+    # The whole 222 KB catalog never went to the model; each item saw a bounded shortlist.
+    assert 0 < len(shown) <= 20 and all('id' not in field for field in shown)
+    assert len(calls) == 5 and all(TEXT in prompt for prompt in calls)
     assert rows() == []
     assert result.json()['bindings'] == [{'series_id': SERIES, 'unit': '吨', 'name': catalog[0]['name']}]
 
@@ -692,7 +692,7 @@ def test_selection_empty_example_keeps_one_object_shape_on_every_complete_batch(
 
 
 @pytest.mark.parametrize('response', [
-    [], {'selection_refs': [], 'extra': 'not part of protocol'}, {'selection_refs': None},
+    [{'selection_refs': []}], {'selection_refs': [], 'extra': 'not part of protocol'}, {'selection_refs': None},
     {'selection_refs': ['unknown-ref']}, {'selection_refs': [True]}, {'selection_refs': ['r1'] * 33},
     {'selection_refs': ['r1', 'r1']}, {'series_ids': ['real-0']},
 ])

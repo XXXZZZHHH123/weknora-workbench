@@ -319,7 +319,7 @@ onMounted(reload)
 
 .feedback-item__page-path {
   margin-left: 6px;
-  font-family: var(--td-font-family-mono, ui-monospace, monospace);
+  font-family: var(--td-font-family-mono);
   opacity: 0.8;
 }
 

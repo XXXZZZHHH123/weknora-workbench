@@ -143,3 +143,35 @@ test('changing research subpages keeps the panel stream and full-page defaults i
   callback({}, {}, () => { nextCalled = true })
   assert.equal(nextCalled, true)
 })
+
+test('the embedded chat declares the kbIds prop that scoped research panels pass and its template reads', () => {
+  const props = between('const props = defineProps({', '});')
+  assert.match(props, /kbIds:\s*\{\s*type:\s*Array,\s*default:\s*\(\)\s*=>\s*\[\]\s*\}/)
+  assert.match(source, /kbIds\.length === 1 \? kbIds\[0\]/)
+})
+
+test('a research panel with several authorized sources sends to all of them and still refuses foreign mentions', async () => {
+  let sent: any
+  const base = {
+    props: { scopedSession: true, scopedModelId: 'panel-model', embeddedMode: true,
+      kbIds: ['personal-kb', 'central-kb'], agentId: 'selected-agent' },
+    composerLocked: { value: false }, useSettingsStoreInstance: { selectedAgentId: 'global-agent',
+      settings: { selectedKnowledgeBases: ['unrelated-kb'], selectedFiles: [] } },
+    stopStream() {}, prepareForNewOutgoingMessage() {}, scrollToBottom() {},
+    activitySessionId: { value: '' }, session_id: { value: 'panel-session' },
+    isReplying: { value: false }, loading: { value: false }, userHasScrolledUp: { value: false },
+    messagesList: [], pendingSuggestionKnowledgeBaseIds: [], pendingSuggestionAttribution: null,
+    notifySessionMutation() {},
+    startStream: async (payload: unknown) => { sent = payload },
+  }
+  const send = runInNewContext(`${between('const sendMsg = async', '// Quietly recover')}\nsendMsg`, base)
+  await send('两个来源一起看', 'panel-model', [{ id: 'file-1', type: 'file', kb_id: 'central-kb' }])
+  assert.deepEqual(Array.from(sent.knowledge_base_ids).sort(), ['central-kb', 'personal-kb'])
+  const effects: string[] = []
+  const refused = runInNewContext(`${between('const sendMsg = async', '// Quietly recover')}\nsendMsg`, {
+    ...base, MessagePlugin: { warning: () => effects.push('refused') },
+    stopStream: () => { throw new Error('foreign mention reached the conversation') }, t: (key: string) => key,
+  })
+  await refused('外部资料', 'panel-model', [{ id: 'foreign-file', type: 'file', kb_id: 'foreign-kb' }])
+  assert.deepEqual(effects, ['refused'])
+})

@@ -373,7 +373,8 @@ def judgment_record_block(j, today):
         "id": j.id, "version": j.version, "status": j.status, "author": j.author,
         "written_at": j.written_at.isoformat(), "review_due": j.review_due.isoformat(),
         "expired_days": expired if expired > 0 else 0, "tone": j.tone, "tone_note": j.tone_note,
-        "contradiction": j.contradiction, "priority_rule": j.priority_rule,
+        "contradiction": {key: value for key, value in j.contradiction.items() if key != "chart_references"},
+        "priority_rule": j.priority_rule,
         "thresholds": j.thresholds, "falsifiers": j.falsifiers, "unstructured": j.unstructured,
         "blockers": activation_blockers(to_payload(j)),
     }

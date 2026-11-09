@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/google/uuid"
@@ -35,8 +36,8 @@ type CommodityResearchTool struct {
 func NewCommodityResearchTool() *CommodityResearchTool {
 	key, _ := os.ReadFile(os.Getenv("COMMODITY_RESEARCH_TOKEN_FILE"))
 	return &CommodityResearchTool{BaseTool: NewBaseTool(ToolCommodityResearch,
-		"只读查询当前空间商品研究数据和当前账号的判断、信号、简报、策略。先检索真实指标再读取序列；所有数字、日期、口径和草稿状态以返回事实为准。缺失结果不能编造，也不能通过本工具发布判断或记录成交。",
-		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["operation"],"properties":{"operation":{"type":"string","enum":["summary","indicators","series","judgment","signals","brief","strategies"]},"date":{"type":"string","description":"YYYY-MM-DD；省略时读取最新已存行情日期"},"series_id":{"type":"string","description":"真实指标ID，series操作必填"},"search":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0,"maximum":100000}}}`)),
+		"只读查询当前空间商品研究数据和当前账号的判断、信号、简报、策略。charts按标题、分组或series_id检索当前研究台图表库并返回页面链接；cycle读取指标的周期位置、往期区间及往期后续汇总。由模型根据完整问题选择指标、模板和日期，程序校验后计算。往期后续是历史参照，不是预测。先检索真实指标再读取序列；所有数字、日期、口径和草稿状态以返回事实为准。缺失结果不能编造，也不能通过本工具发布判断或记录成交。",
+		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["operation"],"properties":{"operation":{"type":"string","enum":["summary","indicators","series","judgment","signals","brief","strategies","charts","cycle"]},"date":{"type":"string","description":"YYYY-MM-DD；cycle为计算截止日，省略时截至今天；其他操作省略时读取最新已存行情日期"},"series_id":{"type":"string","description":"真实指标ID，series、cycle操作必填；charts按曲线指标筛选"},"template":{"type":"string","maxLength":80,"description":"cycle的内置模板名或已保存模板ID，省略时为自然年"},"search":{"type":"string","description":"指标检索词；charts按标题或分组检索"},"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0,"maximum":100000}}}`)),
 		endpoint: strings.TrimRight(os.Getenv("COMMODITY_RESEARCH_URL"), "/"),
 		key:      bytes.TrimSpace(key), client: &http.Client{Timeout: 30 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}
@@ -67,8 +68,14 @@ func (t *CommodityResearchTool) Execute(ctx context.Context, args json.RawMessag
 		return nil, fmt.Errorf("商品研究参数格式无效")
 	}
 	for field := range input {
-		if field != "operation" && field != "date" && field != "series_id" && field != "search" && field != "limit" && field != "offset" {
+		if field != "operation" && field != "date" && field != "series_id" && field != "template" && field != "search" && field != "limit" && field != "offset" {
 			return nil, fmt.Errorf("商品研究不接受账号、空间或未声明的参数")
+		}
+	}
+	if raw, ok := input["template"]; ok {
+		var template string
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &template) != nil || utf8.RuneCountInString(template) > 80 {
+			return nil, fmt.Errorf("周期模板必须是最长80字的字符串")
 		}
 	}
 	identity := map[string]any{"user_id": caller.UserID, "tenant_id": caller.TenantID,

@@ -257,6 +257,7 @@ class JudgmentIn(_Model):
     falsifiers: list[Falsifier] = Field(default_factory=list)
     unstructured: list[UnstructuredItem] = Field(default_factory=list)
     source_note: str | None = None
+    chart_references: list[dict] = Field(default_factory=list, max_length=32)
 
     @field_validator("tone")
     @classmethod
@@ -278,6 +279,26 @@ class JudgmentIn(_Model):
         dup = {i for i in ids if ids.count(i) > 1}
         if dup:
             raise ValueError(f"阈值/证伪条件 id 重复：{sorted(dup)}")
+        for reference in self.chart_references:
+            if (reference.get('kind', 'chart') != 'chart'
+                    or not isinstance(reference.get('id'), str) or not 1 <= len(reference['id']) <= 128
+                    or type(reference.get('revision')) is not int or reference['revision'] < 1):
+                raise ValueError('图表引用需要明确的图表ID和修订号')
+            target = reference.get('target', {'kind': 'judgment'})
+            if not isinstance(target, dict) or not isinstance(target.get('kind'), str) or target['kind'] not in {'judgment', 'threshold', 'falsifier', 'evidence'}:
+                raise ValueError('图表挂载位置无效')
+            kind = target['kind']
+            if kind in {'threshold', 'falsifier'}:
+                rules = self.thresholds if kind == 'threshold' else self.falsifiers
+                if not isinstance(target.get('id'), str) or target['id'] not in {rule.id for rule in rules}:
+                    raise ValueError('图表挂载的规则不在当前研判中')
+            if kind == 'evidence':
+                side, index = target.get('side'), target.get('index')
+                if not isinstance(side, str) or side not in {'bull', 'bear'} or type(index) is not int or not 0 <= index < len(getattr(self.contradiction, side).evidence):
+                    raise ValueError('图表挂载的证据不在当前研判中')
+            allowed = {'kind'} | ({'id'} if kind in {'threshold', 'falsifier'} else {'side', 'index'} if kind == 'evidence' else set())
+            if set(target) != allowed:
+                raise ValueError('图表挂载参数无效')
         if self.priority_rule:
             unknown = set(self.priority_rule.order) - {t.id for t in self.thresholds}
             if unknown:

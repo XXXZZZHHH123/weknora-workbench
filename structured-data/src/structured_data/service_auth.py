@@ -14,6 +14,8 @@ import httpx
 from fastapi import HTTPException
 from .workspaces import Identity, valid_knowledge_base_id
 
+WHOLE_RESEARCH_SOURCE_PATHS = frozenset({'/api/research/native-charts', '/api/research/source-status'})
+
 
 async def verify_service(request):
     try:
@@ -85,6 +87,8 @@ async def verify_service(request):
                     or not hmac.compare_digest(authorization_hash, hashlib.sha256(authorization.encode()).hexdigest())):
                 raise ValueError('unexpected authorization binding')
         identity = Identity(**data)
+        if request.url.path in WHOLE_RESEARCH_SOURCE_PATHS and identity.scope_version != 2:
+            raise HTTPException(409, '此读取只支持新版来源授权，请重新打开研究台')
         if identity.workbench_id:
             await verify_research_projection(request, identity)
         elif scoped and principal != 'api_key':
@@ -162,16 +166,18 @@ async def verify_research_projection(request, identity):
                 or not isinstance(grant.get('sources'), list)):
             raise ValueError('invalid research grant')
         if identity.scope_version == 2:
+            whole_source_read = request.url.path in WHOLE_RESEARCH_SOURCE_PATHS
             if (grant.get('scope_version') != 2 or type(grant.get('sources_revision')) is not int
                     or grant['sources_revision'] != identity.sources_revision or len(grant['sources']) > 8
-                    or request.url.path != '/api/research/facts'):
+                    or request.url.path not in WHOLE_RESEARCH_SOURCE_PATHS | {'/api/research/facts'}):
                 raise HTTPException(409, '研究台来源版本已变化，请刷新后重新读取')
-            body = await request.json()
-            bindings = body.get('source_bindings') if isinstance(body, dict) else None
-            if (not isinstance(bindings, list) or len(bindings) > 8 or len(set(bindings)) != len(bindings)
-                    or any(not isinstance(value, str) or not 1 <= len(value) <= 128
-                           or any(ord(char) < 32 for char in value) for value in bindings)):
-                raise ValueError('invalid source binding selection')
+            if not whole_source_read:
+                body = await request.json()
+                bindings = body.get('source_bindings') if isinstance(body, dict) else None
+                if (not isinstance(bindings, list) or len(bindings) > 8 or len(set(bindings)) != len(bindings)
+                        or any(not isinstance(value, str) or not 1 <= len(value) <= 128
+                               or any(ord(char) < 32 for char in value) for value in bindings)):
+                    raise ValueError('invalid source binding selection')
             indexed = {}
             for source in grant['sources']:
                 if (not isinstance(source, dict) or not isinstance(source.get('id'), str)
@@ -184,6 +190,22 @@ async def verify_research_projection(request, identity):
                         or not isinstance(source.get('view_modules'), list)):
                     raise ValueError('invalid multi-source grant')
                 indexed[source['id']] = source
+            if whole_source_read:
+                resource = '原表图表' if request.url.path == '/api/research/native-charts' else '来源状态'
+                unavailable = grant.get('unavailable_sources', [])
+                if not isinstance(unavailable, list):
+                    raise ValueError('invalid unavailable source scope')
+                if any(source['delegated'] for source in indexed.values()):
+                    raise HTTPException(403, f'受限视角暂不支持{resource}读取')
+                if any(isinstance(source, dict) and source.get('status', 'unavailable') in {'active', 'unavailable'}
+                       for source in unavailable):
+                    raise HTTPException(403, f'研究台有来源暂不可用，处理来源后才能读取{resource}')
+                if bool(indexed or unavailable) and grant.get('can_read_source') is False:
+                    raise HTTPException(403, f'当前账号不能读取研究台{resource}')
+                # Unlike facts, this endpoint reads the current whole grant;
+                # the caller cannot add sources or hide a delegated binding.
+                request.state.research_sources = list(indexed.values())
+                return
             if any(binding not in indexed for binding in bindings):
                 raise HTTPException(403, '所选来源已不在当前研究台授权范围中')
             selected = [indexed[binding] for binding in bindings]

@@ -36,11 +36,18 @@ def _readonly(path):
     return connection
 
 
+# Bump when the indexed search text changes, so an index built by older code is rebuilt once.
+INDEX_FORMAT = 2
+SEARCH_KEYS = ('metric','name','series_id','source_series_id','source_file','sheet','unit','frequency','dimensions')
+MAX_SEARCH_TERMS = 16
+
+
 def _metadata(connection, fingerprint):
     try:
         value = connection.execute('SELECT value FROM metadata WHERE key=\'manifest\'').fetchone()
         data = json.loads(value[0]) if value else None
-        return data if isinstance(data,dict) and data.get('fingerprint')==fingerprint else None
+        return (data if isinstance(data,dict) and data.get('fingerprint')==fingerprint
+                and data.get('format')==INDEX_FORMAT else None)
     except (sqlite3.DatabaseError,ValueError,TypeError):
         return None
 
@@ -70,7 +77,8 @@ def current_index(store, manager, sources):
                 prepared = read_facts(store,manager,{'sources':sources,'catalog_only':True},_prepare_only=True)
                 if len(prepared['indicators']) > 25000:
                     raise HTTPException(413,'单个来源目录超过25000项，请拆分来源范围')
-                metadata = {'fingerprint':fingerprint,'version':prepared['version'],'datasets':prepared['datasets']}
+                metadata = {'fingerprint':fingerprint,'version':prepared['version'],'datasets':prepared['datasets'],
+                            'format':INDEX_FORMAT}
                 descriptor, temporary = tempfile.mkstemp(prefix='catalog-',suffix='.sqlite',dir=root)
                 os.close(descriptor)
                 try:
@@ -83,7 +91,7 @@ def current_index(store, manager, sources):
                             size += len(raw.encode())
                             if size > 32*1024*1024:
                                 raise HTTPException(413,'单个来源目录超过32MiB，请拆分来源范围')
-                            text = json.dumps({key:field.get(key) for key in ('metric','name','series_id','source_series_id','source_file','unit','frequency','dimensions')},ensure_ascii=False).casefold()
+                            text = json.dumps({key:field.get(key) for key in SEARCH_KEYS},ensure_ascii=False).casefold()
                             writer.execute('INSERT INTO fields VALUES (?,?,?)',(field['series_id'],text,raw))
                         writer.execute('INSERT INTO metadata VALUES (?,?)',('manifest',json.dumps(metadata,ensure_ascii=False)))
                     if _fingerprint(store,manager,sources) != fingerprint:
@@ -104,8 +112,11 @@ def current_index(store, manager, sources):
 
 def page(connection, *, search='', series_ids=None, offset=0, limit=200):
     clauses, values = [], []
-    if search:
-        clauses.append('instr(search_text,?)>0');values.append(search.casefold().strip())
+    # Whitespace separates terms; every term must occur in the field's real metadata.
+    # This only widens recall for the caller's own words; the caller still chooses the field.
+    terms = list(dict.fromkeys(search.casefold().split()))[:MAX_SEARCH_TERMS] if search else []
+    for term in terms:
+        clauses.append('instr(search_text,?)>0');values.append(term)
     if series_ids is not None:
         if not series_ids: return [],0,set()
         clauses.append('series_id IN ('+','.join('?' for _ in series_ids)+')');values.extend(series_ids)

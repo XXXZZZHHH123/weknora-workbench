@@ -1,0 +1,4 @@
+[
+  {"vendor": "wind_edb", "format": "[SM][0-9]{7}", "description": "Wind EDB identifier: S or M followed by seven ASCII digits"},
+  {"vendor": "mysteel", "format": "ID[0-9]{8}|CM[0-9]{10}|FU[0-9]{8}", "description": "Mysteel terminal identifiers present in imported source metadata"}
+]

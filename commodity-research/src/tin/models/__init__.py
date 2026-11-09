@@ -18,3 +18,5 @@ __all__ = [
     "PlaybookItem", "Researcher", "ReviewTask", "Signal", "Strategy", "StrategyEvent",
     "TradingDay", "User", "VendorColumnMap", "SourceArtifact", "SourceBatch", "SourceMapping", "ObservationSource", "RefreshSettings", "RefreshRun", "LibraryOperation",
 ]
+
+from tin.models.indicator_dedup import IndicatorCorrespondence

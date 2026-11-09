@@ -14,7 +14,8 @@ from .research_facts import _hash, _bounded_parameters, _bounded_rows, _same_day
 
 def parameters(body):
     allowed = {'source_bindings','catalog_only','offset','limit','search','series_ids','version',
-               'view_module','as_of','points_per_series','same_day_series_ids','allow_unavailable','source_kind','include_invalid'}
+               'view_module','as_of','points_per_series','same_day_series_ids','allow_unavailable','source_kind','include_invalid',
+               'include_display_precision'}
     if not isinstance(body, dict) or set(body) - allowed:
         raise ValueError('多来源读取只接受明确绑定、目录分页或页面所需字段')
     sources = body.get('source_bindings')
@@ -27,11 +28,14 @@ def parameters(body):
         raise ValueError('目录读取参数无效')
     if type(body.get('allow_unavailable',False)) is not bool:
         raise ValueError('绑定失效处理参数无效')
+    precision = body.get('include_display_precision', False)
+    if type(precision) is not bool:
+        raise ValueError('显示精度读取参数无效')
     requested = body.get('version')
     if requested is not None and (not isinstance(requested, str) or not re.fullmatch('[a-f0-9]{64}', requested)):
         raise ValueError('多来源快照版本无效')
     if catalog:
-        if {'view_module','as_of','points_per_series','same_day_series_ids','include_invalid'} & body.keys():
+        if {'view_module','as_of','points_per_series','same_day_series_ids','include_invalid','include_display_precision'} & body.keys():
             raise ValueError('目录接口不接受观测取值参数')
         offset, limit, search = body.get('offset', 0), body.get('limit', 200), body.get('search', '')
         if (type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 200
@@ -46,7 +50,13 @@ def parameters(body):
         return {'catalog':True,'offset':offset,'limit':limit,'search':search,'series_ids':identifiers,'source_kind':kind}
     if {'offset','limit','search','source_kind'} & body.keys() or 'series_ids' not in body:
         raise ValueError('观测读取必须明确所需字段，不接受全量目录或观测分页')
-    selection = _bounded_parameters({key:value for key,value in body.items() if key not in {'source_bindings','version','catalog_only','allow_unavailable'}},extended=True)
+    selection = _bounded_parameters({key:value for key,value in body.items() if key not in {'source_bindings','version','catalog_only','allow_unavailable','include_display_precision'}},extended=True)
+    if precision:
+        if (body.get('view_module') != 'indicators' or body.get('include_invalid')
+                or 'same_day_series_ids' in body
+                or len(selection['series_ids']) * selection['points_per_series'] > 1000):
+            raise ValueError('显示精度仅用于指标核实，最多1000个明确观测点')
+        selection['include_display_precision'] = True
     return {'catalog':False,'selection':selection}
 
 
@@ -83,6 +93,8 @@ def _read_current(registry, body, sources, leases):
         raise HTTPException(403, '多来源读取缺少已核验的研究台范围')
     if {source['id'] for source in sources} != set(body['source_bindings']):
         raise HTTPException(403, '来源选择与实时授权不一致')
+    if body.get('include_display_precision') and any(source.get('delegated') for source in sources):
+        raise HTTPException(403, '受限来源不允许核实原值显示精度')
     if parsed['catalog']:
         return read_catalog(registry,identity,body,parsed,sources)
     parts, fields, datasets, bindings, metadata_bytes = [], [], [], [], 0
@@ -110,7 +122,10 @@ def _read_current(registry, body, sources, leases):
                 'knowledge_base_tenant_id':source['tenant_id'],'source_kind':source.get('kind') or source['source_type']}
             fields.extend({**field,**extra,'source_version':prepared['version']} for field in prepared['indicators'])
             datasets.extend({**dataset,**extra} for dataset in prepared['datasets'])
-            bindings.extend(({**info,'_store':objects['store'],'_direct':not source['delegated']},mapping) for info,mapping in prepared['bindings'])
+            bindings.extend(({**info,'_store':objects['store'],'_direct':not source['delegated'],
+                '_series_sheets':{field['source_series_id']:field.get('sheet') for field in selected
+                    if field['dataset_id']==info['dataset_id'] and field['source_knowledge_id']==info['source_knowledge_id']}},mapping)
+                for info,mapping in prepared['bindings'])
         finally:
             current_identity.reset(marker)
     known = {field['series_id'] for field in fields}

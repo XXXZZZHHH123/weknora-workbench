@@ -1,0 +1,46 @@
+<dialog id="chart-builder" class="charts-page chart-builder" aria-labelledby="chart-builder-title">
+  <header class="charts-toolbar"><h2 id="chart-builder-title">依据指标作图</h2><button type="button" id="chart-builder-close" class="charts-button">关闭</button></header>
+  <form id="builder-form">
+    <fieldset id="builder-controls">
+    <div class="chart-builder-layout">
+      <section aria-label="选择指标">
+        <label class="charts-field">搜索指标目录<input id="builder-search" type="search" maxlength="200" placeholder="搜索目录中的真实字段" autocomplete="off"></label>
+        <div class="charts-toolbar"><button type="button" id="builder-favorites" class="charts-button">自选快捷</button><button type="button" id="builder-catalog" class="charts-button">全部目录</button><span id="builder-catalog-count" class="charts-muted"></span></div>
+        <p id="builder-catalog-status" role="status" hidden></p><div id="builder-catalog-items" class="builder-catalog-items"></div>
+        <div class="charts-toolbar"><button type="button" id="builder-prev" class="charts-button" disabled>上一页</button><button type="button" id="builder-next" class="charts-button" disabled>下一页</button></div>
+      </section>
+      <section aria-label="图表设置">
+        <div class="charts-fields">
+          <label class="charts-field">图型<select id="builder-mode"><option value="cycle">周期对比</option><option value="trend">走势</option><option value="batch">批量周期图（图集）</option></select></label>
+          <label class="charts-field">数值口径<select id="builder-transform"><option value="raw">原值</option><option value="change">相对起点变化（原单位）</option><option value="rebase">起点 = 100</option></select></label>
+          <label class="charts-field">图表标题<input id="builder-title" maxlength="120" placeholder="填写图表标题"></label>
+          <label class="charts-field">保存分组（可新建）<input id="builder-group" list="builder-groups" maxlength="80" placeholder="选择已有分组或输入新分组"><datalist id="builder-groups"></datalist></label>
+        </div>
+        <div class="charts-fields" id="builder-cycle-fields">
+          <label class="charts-field">周期模板<select id="builder-template"><option value="__auto">按工作表导入图表的默认模板</option></select></label>
+          <label class="charts-field" id="builder-custom-field" hidden>年度起点（MM-DD）<input id="builder-cycle-start" placeholder="MM-DD" maxlength="5"></label>
+          <label class="charts-field">读取周期数<input id="builder-cycles" type="number" min="1" max="40" value="8"></label>
+        </div>
+        <p id="builder-template-note" class="charts-muted"></p>
+        <p class="charts-muted">最多选 16 个指标；单张周期对比最多 8 条曲线。相同单位共用轴，第二种单位用右轴；超过两种单位可选起点 = 100。相对起点变化仍保留原单位。</p>
+        <div class="charts-toolbar"><h3>曲线 <span id="builder-curve-count"></span></h3><button type="button" id="builder-add-derived" class="charts-button">添加计算序列</button></div>
+        <div id="builder-curves"></div>
+        <fieldset id="builder-derived" class="charts-panel" hidden>
+          <legend>计算序列</legend><div class="charts-fields">
+            <label class="charts-field">指标 A<select id="builder-derived-a"></select></label><label class="charts-field">运算<select id="builder-derived-op"><option value="sub">A − B</option><option value="div">A ÷ B</option></select></label><label class="charts-field">指标 B<select id="builder-derived-b"></select></label>
+            <label class="charts-field">图例名称<input id="builder-derived-label" maxlength="120" placeholder="研究员填写计算序列名称"></label>
+          </div><p id="builder-derived-unit" class="charts-muted"></p>
+          <label id="builder-unit-confirm-field" hidden><input id="builder-unit-confirm" type="checkbox"> 已核对缺失的单位，确认 A 与 B 可按相同单位相减</label>
+          <p class="charts-muted">只计算双方都有有效观测的相同日期，不插值、不补点；除数为零时该点不可用。保存公式，读取时重新计算。</p>
+          <button type="button" id="builder-derived-apply" class="charts-button">加入曲线</button><button type="button" id="builder-derived-cancel" class="charts-button">取消</button>
+        </fieldset>
+      </section>
+    </div>
+    <p id="builder-status" role="status" aria-live="polite" hidden></p>
+    <div id="builder-preview" class="builder-preview"></div><div id="builder-statistics" hidden></div>
+    <footer class="charts-toolbar"><label><input id="builder-save-favorite" type="checkbox"> 保存后加入我的自选</label><button type="submit" id="builder-save" class="charts-button primary" disabled>保存到图表库</button></footer>
+    <div id="builder-saved" role="status"></div>
+    </fieldset>
+  </form>
+</dialog>
+<script defer src="{{ research_static_prefix() }}/static/chart-builder.js?v={{ static_version() }}"></script>

@@ -5,6 +5,7 @@
 <script src="{{ research_static_prefix() }}/static/research-display.js?v={{ static_version() }}"></script>
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/strategy.css?v={{ static_version() }}">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/research-strategy.css?v={{ static_version() }}">
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/charts.css?v={{ static_version() }}">
 <header class="rw-page-head strategy-workspace-head">
   <div><h1>策略</h1><p>选择方案查看条件、应对与引用依据，核对后编辑或引用为独立草稿。</p></div>
   <div class="rw-tools strategy-workspace-tools">
@@ -20,7 +21,9 @@
   </div>
 </header>
 <div id="strategy-notice" class="strategy-notice" role="status"></div>
+{% if not restricted_view %}<aside class="strategy-notice" data-dedup-references="strategy" data-dedup-reference-id="{{ workspace_selected or '' }}" data-dedup-workspace hidden></aside>{% endif %}
 {% if restricted_view %}
+<p class="strategy-small-note">图表引用暂不对受限视角开放</p>
 <section class="strategy-readonly-list">
 {% for s in strategies %}<article class="detail-panel"><div class="strategy-card-top"><span class="status-chip status-{{ s.status }}">{{ status_labels[s.status] }}</span><span>已分享 · 只读</span></div><h2>{{ human_text(s.title, names|default({})) }}</h2><p class="research-prose">{{ human_text(s.plan.thesis, names|default({})) }}</p>{% include "_strategy_plan_readonly.html" %}</article>{% else %}<p class="empty-state">尚无已分享策略。</p>{% endfor %}
 </section>
@@ -64,6 +67,8 @@
   </div>
 </section>
 <script id="strategy-workspace-data" type="application/json">{{ {'plans': strategy_entries, 'selected': workspace_selected, 'initial_plan': workspace_initial if workspace_selected and workspace_selected.startswith('plan:') else none, 'can_write': workspace_can_write}|tojson }}</script>
+<script src="{{ research_static_prefix() }}/static/chart-kit.js?v={{ static_version() }}"></script>
+<script src="{{ research_static_prefix() }}/static/chart-references.js?v={{ static_version() }}"></script>
 <script src="{{ research_static_prefix() }}/static/research-strategy.js?v={{ static_version() }}"></script>
 {% if not restricted_view and research_cards and research_cards.enabled %}<script src="{{ research_static_prefix() }}/static/strategy-tools.js?v={{ static_version() }}"></script>{% endif %}
 <script src="{{ research_static_prefix() }}/static/strategy.js?v={{ static_version() }}"></script>

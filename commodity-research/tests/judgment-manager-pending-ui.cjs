@@ -90,7 +90,7 @@ const preview=()=>({draft_id:review.draft_id,base_version:0,source_text:'合成�
     assert.equal(await caliber.getByRole('button',{name:'确认本条口径',exact:true}).count(),0);
     assert.equal(await caliber.getByRole('button',{name:'保存口径修改',exact:true}).count(),0);
     assert.equal(await caliber.locator('[data-review-control="caliber-unit"]').count(),0);
-    assert.equal(await caliber.locator('.logic-binding-meta').innerText(),'采用指标口径 · 吨');
+    assert.equal(await caliber.locator('.logic-binding-meta').innerText(),'采用指标口径 · 吨 · 频率未注明');
     assert.equal(requests.filter(row=>row.path.endsWith('/apply')).length,0);
     assert.equal(requests.filter(row=>row.path.endsWith('/jobs')&&row.method==='POST').length,1);
     assert.deepEqual(errors,[]);

@@ -86,7 +86,59 @@ def _request(scope, body):
         current_workbench.reset(marker)
 
 
-def catalog_page(scope, offset=0, limit=200, search=None, series_ids=None, *, version=None, source_kind=None):
+def catalog_page(scope, offset=0, limit=200, search=None, series_ids=None, *, version=None, source_kind=None, apply_dedup=True):
+    """Selectors hide confirmed copies; saved real-ID bindings remain readable."""
+    if (not apply_dedup or scope.scope_version != 2 or scope.restricted
+            or not any(source.get('source_type') == 'central_dataset' for source in scope.sources)):
+        return _raw_catalog_page(scope, offset, limit, search, series_ids, version=version, source_kind=source_kind)
+    from tin.integration.indicator_dedup import confirmed_replacements, catalog_annotations
+    replacements = confirmed_replacements(scope)
+    if not replacements:
+        result = _raw_catalog_page(scope, offset, limit, search, series_ids, version=version, source_kind=source_kind)
+        complete = (result['series'] if not offset and not search and series_ids is None and source_kind is None
+                    and result['total'] == len(result['series']) and result.get('next_offset') is None else None)
+        return {**result, 'series': catalog_annotations(scope, result['series'], current_fields=complete)}
+    if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 200:
+        raise HTTPException(400, '指标目录分页无效')
+    # Filter before paginating. Each source request is still metadata-only, <=200.
+    selected, raw_offset, raw_version, total, datasets, present = [], 0, None, 0, [], set()
+    raw_total, complete = None, [] if not search and series_ids is None and source_kind is None else None
+    while True:
+        result = _raw_catalog_page(scope, raw_offset, 200, search, series_ids, version=raw_version, source_kind=source_kind)
+        if raw_version is None:
+            raw_version, raw_total, datasets = result['version'], result['total'], result['datasets']
+        if result['total'] != raw_total or result['version'] != raw_version:
+            raise HTTPException(409, '指标目录在分页期间变化，请刷新后重试')
+        for field in result['series']:
+            if field['series_id'] in present:
+                raise HTTPException(503, '指标目录分页出现重复')
+            present.add(field['series_id'])
+            if complete is not None:
+                complete.append(field)
+            if field['series_id'] in replacements:
+                continue
+            if offset <= total < offset + limit:
+                selected.append(field)
+            total += 1
+        following = result.get('next_offset')
+        if following is None:
+            if result.get('truncated') or len(present) != raw_total:
+                raise HTTPException(503, '指标目录未完整读取，未返回部分目录')
+            break
+        if not result['series'] or following != raw_offset + len(result['series']):
+            raise HTTPException(503, '指标目录分页进度无效')
+        raw_offset = following
+    filtered_version = hashlib.sha256(json.dumps([raw_version, sorted(replacements.items())], separators=(',', ':')).encode()).hexdigest()
+    if version is not None and version != filtered_version:
+        raise HTTPException(409, '指标对应或来源目录已变化，请刷新后重试')
+    following = offset + len(selected) if offset + len(selected) < total else None
+    return {'series': catalog_annotations(scope, selected, current_fields=complete), 'datasets': datasets,
+        'version': filtered_version, 'total': total, 'offset': offset,
+        'next_offset': following, 'truncated': following is not None,
+        'unavailable_series_ids': sorted(set(series_ids or []) - present)}
+
+
+def _raw_catalog_page(scope, offset=0, limit=200, search=None, series_ids=None, *, version=None, source_kind=None):
     if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 200:
         raise HTTPException(400, '指标目录分页无效')
     if source_kind is not None and (not isinstance(source_kind,str) or source_kind not in {'macro','industry'}):
@@ -116,10 +168,24 @@ def catalog_page(scope, offset=0, limit=200, search=None, series_ids=None, *, ve
     return result
 
 
-def catalog_snapshot(scope):
+def catalog_snapshot(scope, *, apply_dedup=True):
+    if (apply_dedup and scope.scope_version == 2 and not scope.restricted
+            and any(source.get('source_type') == 'central_dataset' for source in scope.sources)):
+        from tin.integration.indicator_dedup import raw_metadata, confirmed_replacements, catalog_annotations
+        metadata = raw_metadata(scope)
+        fields = list(metadata['catalog'].values())
+        replacements = confirmed_replacements(scope)
+        visible = [field for field in fields if field['series_id'] not in replacements]
+        if len(visible) > 10000:
+            raise HTTPException(413, '本次模型分析目录超过10000项，请缩小明确的数据来源范围')
+        annotated = catalog_annotations(scope, visible, current_fields=fields)
+        version = (hashlib.sha256(json.dumps([metadata['version'], sorted(replacements.items())], separators=(',', ':')).encode()).hexdigest()
+                   if replacements else metadata['version'])
+        return {'catalog': {field['series_id']: field for field in annotated},
+                'version': version, 'datasets': metadata['datasets']}
     catalog, datasets, offset, version, total = {}, [], 0, None, None
     while True:
-        page = catalog_page(scope,offset=offset,limit=200,version=version)
+        page = catalog_page(scope,offset=offset,limit=200,version=version,apply_dedup=apply_dedup)
         if version is None:
             version, total, datasets = page['version'],page['total'],page.get('datasets',[])
             if total > 10000:
@@ -272,7 +338,7 @@ def _saved_plan(scope, request):
         return plans,origins
 
 
-def bounded_facts(scope, identifiers, module, *, day=None, points=2, same_day=None, origins=None, direct_only=False, include_invalid=False):
+def bounded_facts(scope, identifiers, module, *, day=None, points=2, same_day=None, origins=None, direct_only=False, include_invalid=False, include_display_precision=False):
     identifiers = list(dict.fromkeys(identifiers))
     query_ids=[identifier for identifier in identifiers if isinstance(identifier,str) and SERIES.fullmatch(identifier)]
     legacy_unavailable=set(identifiers)-set(query_ids)
@@ -280,7 +346,7 @@ def bounded_facts(scope, identifiers, module, *, day=None, points=2, same_day=No
         raise HTTPException(422,'指定指标必须使用当前知识库真实ID')
     targets = [source for source in scope.sources if not source['delegated'] or not direct_only and module in source['view_modules']]
     if direct_only:
-        available = catalog_page(scope,limit=200,series_ids=query_ids)
+        available = catalog_page(scope,limit=200,series_ids=query_ids,apply_dedup=False)
         if available.get('unavailable_series_ids'):
             raise HTTPException(403,'指定指标不在当前直接来源授权中')
     else:
@@ -305,6 +371,10 @@ def bounded_facts(scope, identifiers, module, *, day=None, points=2, same_day=No
         if module != 'judgments' or scope.scope_version != 2 or same_day:
             raise HTTPException(400, '缺失观测仅允许新版研究判断的明确窗口')
         body['include_invalid'] = True
+    if include_display_precision:
+        if module != 'indicators' or scope.scope_version != 2 or scope.restricted or any(source['delegated'] for source in targets):
+            raise HTTPException(403, '显示精度仅用于直接授权的指标核实')
+        body['include_display_precision'] = True
     result = _request(scope,body)
     unavailable = result.get('unavailable_series_ids',[])
     if (not isinstance(unavailable,list) or any(identifier not in query_ids for identifier in unavailable)

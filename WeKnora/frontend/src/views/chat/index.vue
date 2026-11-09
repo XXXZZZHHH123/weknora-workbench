@@ -197,7 +197,7 @@
                         @stop-confirmed="handleStopConfirmed"
                         @stop-failed="handleStopFailed" :isReplying="isReplying" :composer-locked="composerLocked" :sessionId="session_id"
                         :assistantMessageId="currentAssistantMessageId" :embeddedMode="embeddedMode"
-                        :knowledge-scope="scopedSession ? { kbId: kbIds.length === 1 ? kbIds[0] : '', kbName: scopedKbName, modelId: scopedModelId } : undefined"
+                        :knowledge-scope="scopedSession ? { kbId: kbIds.length === 1 ? kbIds[0] : '', kbIds, kbName: scopedKbName, modelId: scopedModelId } : undefined"
                         :model-id="modelId" :default-model-id="defaultModelId"
                         @update:model-id="(id) => emit('update:modelId', id)"
                         :queuedSteers="steerQueue.filter(item => item.delivery === 'after')" :canSteer="isAgentStreamSession() && !scopedSession">
@@ -330,6 +330,10 @@ const props = defineProps({
     agentId: { type: String, default: '' },
     embeddedMode: { type: Boolean, default: false },
     scopedSession: { type: Boolean, default: false },
+    // Scoped research chats pass their source knowledge bases; the template,
+    // composer scope and send path read it. The v0.9.0 sync dropped this
+    // declaration, leaving props.kbIds undefined in the research chat panel.
+    kbIds: { type: Array, default: () => [] },
     scopedModelId: { type: String, default: '' },
     scopedKbName: { type: String, default: '' },
     agentSourceTenantId: { type: String, default: '' },
@@ -1587,10 +1591,13 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
     if (composerLocked.value) return
     const useHostScope = props.embeddedMode || props.scopedSession;
     if (props.scopedSession) {
-        const kbId = props.kbIds.length === 1 ? props.kbIds[0] : '';
-        const validSource = (item) => item?.id && (item.type === 'kb' ? item.id === kbId
-            : (item.type === 'file' || item.type === 'tag') && item.kb_id === kbId);
-        if (!kbId || !modelId || imageFiles.length || attachmentFiles.length || !mentionedItems.every(validSource)) {
+        // A research workbench may bind several authorized sources (for example a
+        // personal knowledge base plus the central default library). Mentions stay
+        // restricted to those sources; anything else is refused before sending.
+        const allowedKbIds = new Set((props.kbIds || []).filter(id => typeof id === 'string' && id));
+        const validSource = (item) => item?.id && (item.type === 'kb' ? allowedKbIds.has(item.id)
+            : (item.type === 'file' || item.type === 'tag') && allowedKbIds.has(item.kb_id));
+        if (!allowedKbIds.size || !modelId || imageFiles.length || attachmentFiles.length || !mentionedItems.every(validSource)) {
             MessagePlugin.warning('资料范围已变化，请重新选择当前知识库中的资料。');
             return;
         }

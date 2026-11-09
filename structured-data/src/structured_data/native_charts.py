@@ -17,7 +17,7 @@ import time
 from xml.etree import ElementTree as ET
 from zipfile import ZipFile
 
-VERSION = 'native-charts-v6-verified-source-dates'
+VERSION = 'native-charts-v7-series-style-axes'
 logger = logging.getLogger(__name__)
 NS = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main',
       'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
@@ -121,6 +121,33 @@ def _real_chart_bindings(z):
     return bindings
 
 
+def _series_style(ser):
+    """Read explicit line styling only; theme/default/compound styles stay unknown."""
+    style = {'color': None, 'width_pt': None, 'dash': None}
+    line = ser.find('c:spPr/a:ln', NS)
+    if line is None:
+        return style
+    color = line.find('a:solidFill/a:srgbClr', NS)
+    if (color is not None and not len(color)
+            and re.fullmatch(r'[0-9a-fA-F]{6}', color.get('val', ''))):
+        style['color'] = '#' + color.get('val').upper()
+    try:
+        width = int(line.get('w', ''))
+        if width > 0:
+            points = round(width / 12700, 2)
+            # Zero or subprecision widths cannot be represented by the chart
+            # style contract; leave them unspecified for the renderer default.
+            if points > 0:
+                style['width_pt'] = points
+    except (ValueError, OverflowError):
+        pass
+    dash = line.find('a:prstDash', NS)
+    if dash is not None:
+        style['dash'] = {'solid': 'solid', 'dash': 'dash', 'lgDash': 'dash',
+                         'sysDash': 'dash', 'dot': 'dot', 'sysDot': 'dot'}.get(dash.get('val'))
+    return style
+
+
 def _parse_chart_part(z, binding):
     cp = binding['part']
     root = ET.fromstring(z.read(cp))
@@ -135,6 +162,8 @@ def _parse_chart_part(z, binding):
         axis_title = ''.join(t.text or '' for t in axis.findall('c:title//a:t', NS))
         id_node = axis.find('c:axId', NS)
         cross_node = axis.find('c:crossAx', NS)
+        position_node = axis.find('c:axPos', NS)
+        position = position_node.get('val') if position_node is not None else None
         display_units = axis.find('c:units/c:builtInUnit', NS)
         custom_units = axis.find('c:units/c:custUnit', NS)
         if display_units is None:
@@ -145,12 +174,15 @@ def _parse_chart_part(z, binding):
             'id': id_node.get('val') if id_node is not None else None,
             'type': axis.tag.rsplit('}', 1)[-1],
             'title': axis_title,
+            'position': position if position in {'l', 'r', 'b', 't'} else None,
             'cross_ax': cross_node.get('val') if cross_node is not None else None,
             'display_units': ({'built_in': display_units.get('val') if display_units is not None else None,
                                'custom': custom_units.get('val') if custom_units is not None else None}
                               if display_units is not None or custom_units is not None else None),
         })
     curves = []
+    value_axes = [axis['id'] for axis in axes if axis['type'] == 'valAx']
+    secondary_axis = value_axes[1] if len(value_axes) == 2 else None
     groups = root.findall('c:chart/c:plotArea/*', NS)
     unsupported_groups = [group.tag.rsplit('}', 1)[-1] for group in groups
                          if group.findall('c:ser', NS)
@@ -165,6 +197,8 @@ def _parse_chart_part(z, binding):
             curves.append({'label': label or f'曲线 {len(curves)+1}', 'value_ref': values,
                            'category_ref': cats, 'reference': reference(values),
                            'axis_ids': axis_ids,
+                           'axis': 'secondary' if secondary_axis is not None and secondary_axis in axis_ids else 'primary',
+                           'style': _series_style(ser),
                            'chart_type': group.tag.rsplit('}', 1)[-1], 'status': 'pending_source',
                            'reason': '', 'series_id': None})
     return ({'chart_id': cid, 'sheet': binding['sheet'], 'title': title or '未命名图表',

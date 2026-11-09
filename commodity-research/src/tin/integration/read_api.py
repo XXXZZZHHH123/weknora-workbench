@@ -28,6 +28,8 @@ class Operation(str, Enum):
     signals = "signals"
     brief = "brief"
     strategies = "strategies"
+    charts = "charts"
+    cycle = "cycle"
 
 
 class ReadRequest(BaseModel):
@@ -35,6 +37,7 @@ class ReadRequest(BaseModel):
     operation: Operation
     date: Date | None = None
     series_id: str | None = Field(default=None, max_length=80)
+    template: str | None = Field(default=None, max_length=80)
     search: str = Field(default="", max_length=200)
     limit: int = Field(default=30, ge=1, le=200)
     offset: int = Field(default=0, ge=0, le=100000)
@@ -42,6 +45,8 @@ class ReadRequest(BaseModel):
 
 def read_research(session, body: ReadRequest):
     """Return actual coverage, provenance and explicit gaps, without generating data."""
+    if body.operation in {Operation.charts, Operation.cycle}:
+        raise HTTPException(409, '图表库和周期对比需要来源版本2，请重新打开研究台更新来源授权')
     from tin.integration.research_profile import research_variety
     variety = research_variety(session)
     latest = latest_trade_date(session)
@@ -81,8 +86,10 @@ def read_research(session, body: ReadRequest):
         if body.search:
             # Python matching treats %/_ literally and searches all source/name/code fields.
             rows = session.scalars(query).all()
-            rows = [r for r in rows if body.search.casefold() in
-                    " ".join((r.name, r.series_id, r.source, r.category)).casefold()]
+            # Whitespace separates terms; each must occur in the indicator's real fields.
+            terms = body.search.casefold().split()
+            rows = [r for r in rows if all(term in " ".join((r.name, r.series_id, r.source, r.category)).casefold()
+                                           for term in terms)]
         else:
             rows = session.scalars(query).all()
         result.update(total=len(rows), offset=body.offset,
@@ -179,8 +186,17 @@ def research_read(body: ReadRequest):
     if identity.workbench_id:
         from tin.integration.workbench_scope import current_workbench, workbench_session
         scope = current_workbench.get()
-        if scope is None or scope.workbench_id != identity.workbench_id:
+        if (scope is None or scope.workbench_id != identity.workbench_id
+                or scope.identity.user_id != identity.user_id or scope.identity.tenant_id != identity.tenant_id):
             raise HTTPException(403, '缺少当前已核验工作台范围')
+        if body.operation in {Operation.charts, Operation.cycle}:
+            from tin.integration.workbench_scope import artifact_session
+            from tin.web.charts import require_scope
+            require_scope()
+            # Chart definitions need results-only storage. Observations are
+            # loaded by chart_data through its bounded indicator projection.
+            with artifact_session(scope) as session:
+                return read_isolated_research(session, body, identity.workbench_id)
         if scope.scope_version == 2:
             from tin.integration.page_facts import catalog_page,page_read_scope
             if body.operation == Operation.indicators:
@@ -207,6 +223,8 @@ def research_read(body: ReadRequest):
                 return result
         with workbench_session(scope) as session:
             return read_isolated_research(session, body, identity.workbench_id)
+    if body.operation in {Operation.charts, Operation.cycle}:
+        raise HTTPException(409, '图表库和周期对比需要来源版本2，请重新打开研究台更新来源授权')
     if settings.weknora_api_url:
         raise HTTPException(409, '请先选择绑定知识库的研究工作台')
     with SessionLocal() as session:
@@ -269,6 +287,8 @@ def research_result_records(session, scope, module, limit, offset):
 
 def read_isolated_research(session, body: ReadRequest, workbench_id: str):
     """Actual scoped facts for model tools; never initializes legacy research."""
+    if body.operation in {Operation.charts, Operation.cycle}:
+        return read_chart_research(session, body, workbench_id)
     from tin.web.workbenches import fact_counts, indicator_payload, observation_payload, observation_rows
     base = {"operation": body.operation.value, "workbench_id": workbench_id,
             "knowledge_base_id": session.info["knowledge_base_id"], "requested_date": body.date,
@@ -325,3 +345,79 @@ def read_isolated_research(session, body: ReadRequest, workbench_id: str):
                           "不代表该日历史版本、当时可知信息或交易判断回放。记录内历史引用不充当当前知识库事实。"}
     return {**base, "signals": [], "total": 0,
             "gap": "本工作台尚无已配置并计算的条件监测结果"}
+
+
+def read_chart_research(session, body: ReadRequest, workbench_id: str):
+    """Read shared definitions and compact cycle facts using chart-library rules."""
+    from tin.models.workbench import WorkbenchArtifact
+    from tin.web.charts import artifact_query, decode_definition, indicator_cycle, require_scope
+    from tin.web.chart_data import catalog_fields, curve_series_ids, definition_series_ids
+
+    identity = current_identity.get()
+    if identity is None:
+        raise HTTPException(401, '缺少已核验研究身份')
+    scope = require_scope()
+    if (identity.workbench_id != workbench_id or scope.workbench_id != workbench_id
+            or scope.identity.user_id != identity.user_id or scope.identity.tenant_id != identity.tenant_id
+            or session.info.get('workbench_id') != workbench_id
+            or session.info.get('tenant_id') != identity.tenant_id):
+        raise HTTPException(403, '缺少当前已核验工作台范围')
+    base = {'operation': body.operation.value, 'workbench_id': workbench_id, 'requested_date': body.date}
+    if body.operation == Operation.cycle:
+        if not body.series_id:
+            raise HTTPException(400, '周期对比必须先提供本工作台真实指标 ID（series_id）')
+        result = indicator_cycle(body.series_id, template=body.template if body.template is not None else '自然年',
+                                 date=body.date.isoformat() if body.date is not None else None)
+        position = result['position']
+        data = {key: result[key] for key in ('series_id', 'unit', 'template', 'freq_days', 'tolerance_days',
+                                            'as_of', 'omitted_segments', 'warnings')}
+        data['position'] = None if position is None else {key: position.get(key) for key in (
+            'x', 'date', 'value', 'rank', 'n', 'share_below', 'min', 'max', 'median', 'mean', 'vs_recent_mean', 'status')}
+        notice = '往期后续是历史参照，不是预测'
+        if position is not None:
+            # State the basis explicitly: the position is computed at the latest real
+            # observation of the current segment, which may be well before the cutoff.
+            data['position']['segment'] = next(
+                (item['label'] for item in result['segments'] if item.get('current')), None)
+            data['position']['peers'] = [{key: peer.get(key) for key in ('label', 'date', 'value')}
+                                         for peer in position.get('peers') or []]
+            if position.get('date'):
+                lag = (Date.fromisoformat(result['as_of']) - Date.fromisoformat(position['date'])).days
+                data['position']['days_before_cutoff'] = lag
+                if lag > (result.get('tolerance_days') or 0):
+                    notice += (f"；同期位置按最新观测日 {position['date']} 计算，比截止日 {result['as_of']} 早 {lag} 天，"
+                               '截止日之后没有新观测，结论只代表最新观测时点')
+        data['forward'] = [{key: item[key] for key in ('h', 'days', 'n', 'up', 'median', 'min', 'max')}
+                           for item in result['forward']]
+        return {**base, 'data': data, 'notice': notice}
+
+    rows = session.scalars(artifact_query().order_by(
+        WorkbenchArtifact.updated_at.desc(), WorkbenchArtifact.id)).all()
+    definitions = [(row, decode_definition(row)) for row in rows]
+    if body.search:
+        search = body.search.casefold()
+        definitions = [(row, value) for row, value in definitions
+                       if search in value.title.casefold() or search in value.group.casefold()]
+    if body.series_id is not None:
+        definitions = [(row, value) for row, value in definitions
+                       if body.series_id in definition_series_ids(value)]
+    total = len(definitions)
+    selected = definitions[body.offset:body.offset + body.limit]
+    fields = catalog_fields(scope, [sid for _, value in selected for sid in definition_series_ids(value)])
+
+    def curve_summary(curve):
+        field = fields.get(curve.series_id, {})
+        result = {'series_id': curve.series_id, 'label': curve.label,
+                  'name': field.get('metric') or field.get('name') or curve.label,
+                  'status': 'linked' if all(sid in fields for sid in curve_series_ids(curve)) else 'missing'}
+        if curve.derived is not None:
+            result['derived'] = curve.derived.model_dump(mode='json')
+        return result
+
+    charts = [{'id': row.id, 'title': value.title, 'group': value.group,
+               'mode': 'cycle' if value.time.mode == 'cycle' else 'trend',
+               'curves': [curve_summary(curve) for curve in value.curves],
+               'url': '/sn/charts/' + row.id} for row, value in selected]
+    end = body.offset + len(selected)
+    return {**base, 'charts': charts, 'total': total, 'limit': body.limit, 'offset': body.offset,
+            'truncated': end < total, 'next_offset': end if end < total else None}

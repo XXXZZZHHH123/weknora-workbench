@@ -21,6 +21,11 @@ def _hash(value):
     return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
 
 
+def research_series_id(knowledge_base_id, knowledge_id, field_series_id):
+    """One stable field identity shared by research facts and native charts."""
+    return 'kb-'+_hash([knowledge_base_id,knowledge_id,field_series_id])[:48]
+
+
 def _parameters(body):
     if not isinstance(body,dict) or set(body)-{'sources','offset','limit','version','metadata_only','encoding',
                                               'series_ids','as_of','points_per_series','view_module','same_day_series_ids','catalog_only','include_invalid'}:
@@ -215,6 +220,15 @@ def _bounded_rows(store, bindings, selection, *, strict=False):
             parameters.append(selection['as_of'])
         with info.get('_store', store)._connect(info['dataset_id']) as connection:
             if strict:
+                if selection.get('include_display_precision'):
+                    from .research_precision import precision_rows
+                    cursor = connection.execute('SELECT series_id,date,min(value),max(value),bool_and(isfinite(value)), '
+                        'min(raw_value),max(raw_value),min(source_cell),max(source_cell) '
+                        + 'FROM observations WHERE '+where+' GROUP BY series_id,date '
+                        + 'QUALIFY row_number() OVER (PARTITION BY series_id ORDER BY date DESC) <= ? '
+                        + 'ORDER BY series_id,date',[*parameters,selection['points_per_series']])
+                    rows.extend(precision_rows(info.get('_store', store), info, mapping, cursor.fetchall()))
+                    continue
                 cursor = connection.execute('SELECT series_id,date,min(value),max(value),bool_and(isfinite(value)) '
                     + 'FROM observations WHERE '+where+' GROUP BY series_id,date '
                     + 'QUALIFY row_number() OVER (PARTITION BY series_id ORDER BY date DESC) <= ? '
@@ -256,19 +270,17 @@ def _page_series(identifiers,counts,offset,limit):
     return selected,offset-(start or 0)
 
 
-def read_facts(store,manager,body,*,_allow_partial=False,_prepare_only=False):
+def current_source_records(manager, sources, *, include_unpublished=False):
+    """Select current reviews using only owner-verified original bindings."""
     identity=current_identity.get()
     if identity is None or not identity.knowledge_base_id:
         raise ValueError('研究指标必须绑定已授权知识库，不能读取空间旧事实')
-    sources,offset,limit,requested=_parameters(body)
-    bounded = _bounded_parameters(body,extended=_allow_partial)
-    compact=body.get('encoding')==RESEARCH_ROWS_ENCODING
     records=manager.list()
     selected=[]
     for source in sources:
         matches=[]
         for record in records:
-            if not record.get('dataset_id') or record.get('dataset_kind')!='business':
+            if (not include_unpublished and not record.get('dataset_id')) or record.get('dataset_kind')!='business':
                 continue
             if any(isinstance(binding,dict)
                    and binding.get('source_knowledge_id')==source['knowledge_id']
@@ -281,9 +293,20 @@ def read_facts(store,manager,body,*,_allow_partial=False,_prepare_only=False):
             continue
         newest=max(str(record.get('updated_at','')) for record in matches)
         current=[record for record in matches if str(record.get('updated_at',''))==newest]
-        if len({record['dataset_id'] for record in current})!=1:
+        versions = {(record.get('dataset_id'), record['import_id']) if include_unpublished
+                    else record['dataset_id'] for record in current}
+        if len(versions)!=1:
             raise HTTPException(409,'同一原件有互相冲突的当前结构化版本，请在知识库核对')
         selected.append((source,current[0]))
+    return selected
+
+
+def read_facts(store,manager,body,*,_allow_partial=False,_prepare_only=False):
+    identity=current_identity.get()
+    sources,offset,limit,requested=_parameters(body)
+    bounded = _bounded_parameters(body,extended=_allow_partial)
+    compact=body.get('encoding')==RESEARCH_ROWS_ENCODING
+    selected=current_source_records(manager,sources)
 
     datasets=[];indicators=[];bindings=[];verified={}
     for source,record in selected:
@@ -321,7 +344,7 @@ def read_facts(store,manager,body,*,_allow_partial=False,_prepare_only=False):
               'confirmed_sheets':sorted(confirmed_names),'review_fingerprint':_hash(confirmed)}
         mapping={}
         for field in catalog:
-            identifier='kb-'+_hash([identity.knowledge_base_id,source['knowledge_id'],field['series_id']])[:48]
+            identifier=research_series_id(identity.knowledge_base_id,source['knowledge_id'],field['series_id'])
             if bounded is not None and identifier not in bounded['series_ids']:
                 continue
             mapping[field['series_id']]=identifier

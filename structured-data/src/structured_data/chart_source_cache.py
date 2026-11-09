@@ -39,8 +39,8 @@ class _Flight:
 
 
 _lock = threading.Lock()
-_cache: OrderedDict[tuple[str, str, tuple[str, ...] | None], tuple[dict, int]] = OrderedDict()
-_inflight: dict[tuple[str, str, tuple[str, ...] | None], _Flight] = {}
+_cache: OrderedDict[tuple[str, str, str, tuple[str, ...] | None], tuple[dict, int]] = OrderedDict()
+_inflight: dict[tuple[str, str, str, tuple[str, ...] | None], _Flight] = {}
 _cache_bytes = 0
 
 
@@ -199,7 +199,7 @@ def load_native_chart_snapshot(path: str | Path, expected_sha256: str,
     selection = None if parts is None else tuple(sorted(set(parts)))
     if selection is not None and any(not native_charts.is_safe_chart_part(part) for part in selection):
         raise ValueError('Invalid chart part selection')
-    key = (os.path.normcase(str(source_path)), expected_sha256, selection)
+    key = (native_charts.VERSION, os.path.normcase(str(source_path)), expected_sha256, selection)
 
     with _lock:
         cached = _cache.get(key)

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}PPT 图位确认 · 商品研究{% endblock %}
+{% block main %}
+{% include "_ppt_assets.html" %}
+<div class="charts-page ppt-page" data-ppt-page="detail">
+  <header class="charts-header"><div>{% include '_ppt_breadcrumb.html' %}<h1 id="ppt-title">PPT 图位确认</h1><p id="ppt-meta" class="charts-muted"></p></div>{% if ppt_page.enabled %}<a id="ppt-export-link" class="charts-button" href="{{ research_url('/sn/reports/ppt/' ~ (ppt_page.id | urlencode) ~ '/export') }}{% if ppt_page.date %}?date={{ ppt_page.date | urlencode }}{% endif %}">导出 PPT</a>{% endif %}</header>
+  {% if not ppt_page.enabled %}<p class="charts-notice error" role="alert">{{ ppt_page.reason }}</p>{% else %}
+  {% if not ppt_page.can_write %}<p class="charts-notice" id="ppt-write-reason">{{ ppt_page.write_reason }}</p>{% endif %}
+  {% include '_ppt_source_status.html' %}
+  <aside class="charts-notice" data-dedup-references="ppt" data-dedup-reference-id="{{ ppt_page.id }}" hidden></aside>
+  <div id="ppt-detail-status" role="status" aria-live="polite" hidden></div>
+  <div id="ppt-conflict" class="charts-notice warning" role="alert" hidden>模板已有新版本。重新加载将丢弃本页未保存的选择。<button id="ppt-reload" type="button" class="charts-button">重新加载最新版本</button></div>
+  <p class="charts-muted ppt-legend"><span class="ppt-kind-chart">实线：图</span><span class="ppt-kind-table">双线：数据小表</span><span class="ppt-kind-image">虚线：图片</span> 点击图位查看候选与绑定。</p>
+  <div class="ppt-workspace"><section id="ppt-slides" aria-label="逐页版面示意"></section><aside id="ppt-inspector" class="charts-panel ppt-inspector" aria-label="图位详情"><p class="charts-muted">点击左侧图位开始确认。</p></aside></div>
+  <footer class="charts-panel ppt-savebar"><p id="ppt-summary" aria-live="polite"></p><span id="ppt-dirty" class="charts-muted"></span><button id="ppt-save" type="button" class="charts-button primary" disabled>保存绑定</button></footer>
+  {% endif %}
+</div>
+<script type="application/json" id="ppt-page-config">{{ ppt_page | tojson }}</script>
+<script src="{{ research_static_prefix() }}/static/ppt.js?v={{ static_version() }}"></script>
+{% endblock %}

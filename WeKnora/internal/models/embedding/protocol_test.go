@@ -55,9 +55,16 @@ func TestUnreachableUpstreamIsAnErrorForEveryProtocol(t *testing.T) {
 // A signing vendor without its identity pair would send unsigned requests
 // and fail at the far end with a less useful error.
 func TestSignedVendorNeedsItsIdentityPair(t *testing.T) {
+	allowLoopback(t)
+	// Identity validation must not depend on public DNS or contact an upstream.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("missing signing identity reached the upstream")
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
 	_, err := newEmbedder(Config{
 		Source: types.ModelSourceRemote, Provider: "weknoracloud",
-		BaseURL: "https://weknora.weixin.qq.com", ModelName: "m", AppSecret: "s",
+		BaseURL: server.URL, ModelName: "m", AppSecret: "s",
 	}, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "AppID is required")

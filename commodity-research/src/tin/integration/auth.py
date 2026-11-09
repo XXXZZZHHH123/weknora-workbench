@@ -21,6 +21,8 @@ from tin.integration.identity import Identity, current_identity, research_prefix
 COOKIE = "research_session"
 # POST bodies that only read: viewers may run them, and they never save anything.
 READ_ONLY_POSTS = frozenset({"/api/sn/diagram/values", "/api/sn/diagram/markdown/dump", "/api/sn/affairs/check",
+                             "/api/sn/charts/import/native/preview",
+                             "/api/sn/charts/preview", "/api/sn/charts/batch/preview",
                              "/api/sn/research-strategies/citation-preview"})
 
 

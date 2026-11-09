@@ -7,10 +7,11 @@ def indicator_row(spec):
     return {'series_id': spec['series_id'], 'name': spec.get('metric') or spec.get('name') or spec['series_id'],
             'category': '宏观数据' if macro else '知识库字段', 'macro': macro,
             'caliber': spec.get('dimensions') if isinstance(spec.get('dimensions'), dict) else {},
-            'unit': spec.get('unit') or '—', 'source': spec.get('source_file') or '知识库结构化',
+            'unit': spec.get('unit') or '—', 'source': spec.get('source_file') or '知识库结构化', 'sheet': spec.get('sheet') or '',
             'frequency': spec.get('frequency') or '未注明', 'fetch_mode': 'readonly', 'status': '可用',
             'registered': True, 'vendor_code': None, 'is_proxy': False, 'note': '',
-            'knowledge_base_id': spec.get('knowledge_base_id'), 'source_kind': spec.get('source_kind')}
+            'knowledge_base_id': spec.get('knowledge_base_id'), 'source_kind': spec.get('source_kind'),
+            'dedup_status': spec.get('dedup_status'), 'dedup_pairs': spec.get('dedup_pairs', [])}
 
 
 def indicator_page(scope, *, offset=0, limit=200, search='', kind='all', identifiers=None):

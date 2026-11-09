@@ -1,0 +1,18 @@
+<dialog id="ppt-source-dialog" class="ppt-source-dialog" aria-labelledby="ppt-source-title">
+  <div class="charts-toolbar"><h2 id="ppt-source-title">新建 PPT 模板</h2><button id="ppt-source-close" type="button" class="charts-button" aria-label="关闭选择 PPT 对话框">关闭</button></div>
+  <p class="charts-muted">选择当前研究台已授权来源知识库中的 PPTX，直接复用知识库原件。</p>
+  <p id="ppt-source-reset-warning" class="charts-notice warning" hidden>重新选择后会重新解析 PPT 并清空现有图位绑定，请重新确认绑定。</p>
+  <form id="ppt-source-search" class="charts-toolbar"><label class="charts-field">搜索 PPT 文件<input id="ppt-source-query" name="search" type="search" maxlength="200" placeholder="文件名"></label><button type="submit" class="charts-button">搜索</button></form>
+  <p id="ppt-source-status" role="status" aria-live="polite" hidden></p>
+  <div class="charts-table-scroll"><table class="charts-table ppt-source-list"><thead><tr><th scope="col">选择</th><th scope="col">文件名</th><th scope="col">上传时间（北京时间）</th><th scope="col">大小</th><th scope="col">页数</th></tr></thead><tbody id="ppt-source-rows"></tbody></table></div>
+  <div class="charts-toolbar ppt-source-pagination"><button id="ppt-source-prev" type="button" class="charts-button" disabled>上一页</button><span id="ppt-source-page"></span><button id="ppt-source-next" type="button" class="charts-button" disabled>下一页</button></div>
+  <button id="ppt-source-create" type="button" class="charts-button primary" disabled>使用所选 PPT 创建模板</button>
+  {% if ppt_source_upload %}
+  <details id="ppt-local-upload"><summary>上传本地文件（备选）</summary>
+    <form id="ppt-upload-form"><fieldset id="ppt-upload-fields" disabled>
+      <div class="charts-toolbar"><label class="charts-field">选择 .pptx 文件（不超过 60 MB）<input id="ppt-file" type="file" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" required></label><button class="charts-button primary" type="submit">上传并解析</button></div>
+    </fieldset></form>
+    <div id="ppt-upload-progress" hidden><progress id="ppt-upload-bar" max="100" value="0" aria-label="上传与解析进度"></progress><p id="ppt-upload-status" role="status" aria-live="polite"></p></div>
+  </details>
+  {% endif %}
+</dialog>

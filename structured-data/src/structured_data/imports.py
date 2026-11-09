@@ -24,6 +24,13 @@ AUTOMATIC_REVIEW_REVISION = 'full-candidate-block-validation-v1'
 logger = logging.getLogger(__name__)
 
 
+def sheet_field_count(sheet):
+    """Count mapped fields without reading source cells (matrix fields are rows)."""
+    return sum(len(block.get('row_rules') or []) if block.get('layout') == 'matrix'
+               else len(block.get('columns') or [])
+               for block in (sheet.get('mapping') or {}).get('blocks', []))
+
+
 class NoIndicatorDataError(ValueError):
     """A validated mapping yielded no records; absence never approves a mapping."""
 

@@ -1,0 +1,6 @@
+{% include "_chart_assets.html" %}
+<div class="indicator-cycle mt-2" id="indicator-cycle-panel" role="tabpanel" aria-labelledby="ind-view-cycle" hidden>
+  <div class="charts-toolbar"><label class="charts-field">周期模板<select id="indicator-cycle-template" disabled aria-label="周期模板"></select></label><button type="button" id="indicator-cycle-save" class="charts-button" disabled>另存为图表</button></div>
+  {% if not cycle_write %}<p id="indicator-cycle-write-reason" class="charts-notice">{{ '当前账号没有研究工作台编辑权限' if cycle_enabled else '周期对比与图表保存需要来源版本2，请重新打开研究台更新来源授权' if not cycle_scope or not cycle_scope.restricted else '受限视角暂不开放图表库和周期对比' }}</p>{% endif %}
+  <div id="indicator-cycle-status" role="status" hidden></div><div id="indicator-cycle-plot"></div><div id="indicator-cycle-exports"></div><div id="indicator-cycle-statistics" hidden></div>
+</div>

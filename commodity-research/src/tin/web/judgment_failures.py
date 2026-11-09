@@ -20,7 +20,9 @@ FIELD_LABELS = {
 MESSAGES = {
     'timeout': '研究分析超时，原文已保留，请稍后重新分析。',
     'output_limit': '模型输出达到长度上限，尚未生成完整研判；请精炼输出要求或更换模型后重试。',
-    'selection_invalid': '模型推荐的指标未能与当前授权目录核对，请重新分析。',
+    'selection_invalid': '模型推荐的指标未能与当前授权目录核对，请重新分析；多次失败时请换用理解能力更强的模型。',
+    'selection_output_limit': '模型筛选指标时输出超出长度上限（通常是选得过多或反复列出同一批指标），还没开始写研判；原文已保留，请换用理解能力更强的模型后重试。',
+    'selection_too_broad': '模型选出的候选指标过多，超出本次分析容量；原文已保留，请换用理解能力更强的模型后重试。',
     'source_coverage': '原文内容尚未完整核对，未生成可导入结果；原文已保留，请重新分析。',
     'field_schema': '研究内容的字段格式不符合要求，未生成可导入结果，请重新分析。',
     'number_validation': '规则数值尚未通过原文核验，未生成可导入结果，请重新分析。',
@@ -73,6 +75,8 @@ ISSUE_REASONS = {
 STRING_REASONS = {
     '连接模型服务超时，请检查网络或代理设置': 'timeout',
     '模型未给出有效的真实指标选择': 'selection_invalid',
+    '模型选出的候选指标过多，超出本次分析容量': 'selection_too_broad',
+    '模型筛选指标时输出超出长度上限': 'selection_output_limit',
     '模型输出达到长度上限，未生成完整研究逻辑；请精炼输出要求或更换模型后重试': 'output_limit',
     '模型没有返回完整有效的配置，请调整资料后重试': 'invalid_json',
     '研究品种代码格式无效': 'request_invalid',

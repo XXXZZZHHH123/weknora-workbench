@@ -19,28 +19,58 @@
   function plan(core, favorites, allowed) {
     if (!Array.isArray(core) || core.some((id) => typeof id !== "string" || !allowed.has(id))) throw new Error("部分指标已不在当前知识库目录，请刷新后重新选择。");
     const selected = unique(core);
-    if (selected.length > 12) throw new Error("核心指标最多选择 12 项。");
-    const merged = unique([...favorites.filter((id) => allowed.has(id)), ...selected]);
-    if (merged.length > 40) throw new Error("自选最多 40 项，请先在指标页移出部分自选，再添加核心指标。");
+    if (selected.length > 16) throw new Error("核心关注最多选择 16 项。");
+    const merged = favorites.map(item => ({...item}));
+    const present = new Set(favorites.filter(item => item.kind === "indicator").map(item => item.id));
+    selected.forEach(id => { if (!present.has(id)) merged.push({kind: "indicator", id}); });
+    if (merged.length > 100) throw new Error("自选最多 100 项，请先在指标页移出部分自选，再添加核心关注。");
     return { core: selected, favorites: merged };
   }
-  function save(storage, context, selection) {
-    const coreKey = key(context, "core"), favoritesKey = key(context);
-    let oldCore, oldFavorites;
+  function saveCore(storage, context, selection) {
     try {
-      oldCore = storage.getItem(coreKey); oldFavorites = storage.getItem(favoritesKey);
-    } catch (_) { return false; }
-    try {
-      storage.setItem(favoritesKey, JSON.stringify(selection.favorites));
-      storage.setItem(coreKey, JSON.stringify(selection.core));
+      storage.setItem(key(context, "core"), JSON.stringify(selection.core));
       return true;
-    } catch (_) {
-      for (const [storageKey, previous] of [[coreKey, oldCore], [favoritesKey, oldFavorites]]) {
-        try { if (previous === null) storage.removeItem(storageKey); else storage.setItem(storageKey, previous); }
-        catch (_) { /* Still attempt the other key if one storage operation remains unavailable. */ }
-      }
-      return false;
-    }
+    } catch (_) { return false; }
   }
-  return Object.freeze({ key, read, plan, save });
+  const identity = item => `${item.kind}:${item.id}`;
+  function focusPlan(items, favorites, allowed) {
+    if (!Array.isArray(items) || items.some(item => !item || !['indicator', 'chart'].includes(item.kind) ||
+        typeof item.id !== 'string' || !item.id || !allowed.has(identity(item)))) throw new Error('部分条目已不在当前目录或图表库，请刷新后重新选择。');
+    const seen = new Set(), core = [];
+    for (const item of items) if (!seen.has(identity(item))) { seen.add(identity(item)); core.push({kind: item.kind, id: item.id}); }
+    if (core.length > 16) throw new Error('核心关注最多选择 16 项。');
+    const merged = favorites.map(item => ({...item})), present = new Set(merged.map(identity));
+    for (const item of core) if (!present.has(identity(item))) merged.push({...item});
+    if (merged.length > 100) throw new Error('自选最多 100 项，请先在指标页移出部分自选，再添加核心关注。');
+    return {core, favorites: merged};
+  }
+  function chartSummary(data, definition) {
+    const cycle = definition?.time?.mode === 'cycle';
+    const finite = value => typeof value === 'number' && Number.isFinite(value);
+    const sourceValue = point => cycle || finite(point.raw) ? point.raw : point.value;
+    const latest = points => (points || []).filter(point => finite(sourceValue(point)))
+      .reduce((previous, point) => !previous || point.date > previous.date ? point : previous, null);
+    if (cycle) {
+      const summarize = (result, label, unit) => {
+        const segment = (result?.segments || []).find(item => item.current), point = latest(segment?.points);
+        return {label, value: point?.raw ?? null, date: point?.date || null,
+          unit: unit || '', rank: result?.position?.rank ?? null, n: result?.position?.n ?? null};
+      };
+      if ((data.curves || []).some(curve => curve.cycle)) return data.curves.map((curve, index) =>
+        summarize(curve.cycle, curve.label || definition.curves?.[index]?.label || '', curve.unit));
+      return [summarize(data, definition.curves?.[0]?.label || '', data.unit)];
+    }
+    return (data.curves || []).map(curve => { const point = latest(curve.points); return {
+      label: curve.label || '', value: point ? sourceValue(point) : null, date: point?.date || null, unit: curve.unit || '', rank: null, n: null,
+    }; });
+  }
+  function pool(limit = 4) {
+    let active = 0; const queue = [];
+    const pump = () => { while (active < limit && queue.length) {
+      const {task, resolve, reject} = queue.shift(); active++;
+      Promise.resolve().then(task).then(resolve, reject).finally(() => { active--; pump(); });
+    } };
+    return task => new Promise((resolve, reject) => { queue.push({task, resolve, reject}); pump(); });
+  }
+  return Object.freeze({ key, read, plan, saveCore, identity, focusPlan, chartSummary, pool });
 });

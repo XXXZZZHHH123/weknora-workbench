@@ -108,12 +108,23 @@ body:has(.feedback-launcher.is-raised) {
   --feedback-launcher-clearance: 212px;
 }
 
+// An embedded chat panel outside the chat routes (the research workbench assistant) also keeps its
+// composer and send button at the bottom-right; it marks itself with data-bottom-composer while open.
+body:has([data-bottom-composer]) {
+  --feedback-launcher-clearance: 212px;
+
+  .feedback-launcher {
+    bottom: 160px;
+  }
+}
+
 @media (max-width: 768px) {
   body:has(.feedback-launcher) {
     --feedback-launcher-clearance: 72px;
   }
 
-  body:has(.feedback-launcher.is-raised) {
+  body:has(.feedback-launcher.is-raised),
+  body:has([data-bottom-composer]) {
     --feedback-launcher-clearance: 216px;
   }
 }

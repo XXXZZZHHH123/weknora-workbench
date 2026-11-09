@@ -97,6 +97,7 @@ function mountComposer(overrides = {}, remote = {}) {
     './MentionSelector.vue': { default: mentionPopup },
     './KnowledgeBaseSelector.vue': { default: silent }, './AgentSelector.vue': { default: silent },
     './AttachmentUpload.vue': { default: silent }, '@/components/icons/BrowserIcon.vue': { default: silent },
+    './ConversationMemoryToggle.vue': { default: silent },
   }
   const exports = {}
   const document = { addEventListener() {}, removeEventListener() {}, activeElement: null, querySelector: () => null }

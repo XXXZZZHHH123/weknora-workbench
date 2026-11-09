@@ -51,7 +51,7 @@ const html=render.stdout.replace('</head>','<script>window.ChartPaletteColors='+
     return route.fulfill({contentType:file.endsWith('.css')?'text/css':'font/woff2',body:fs.readFileSync(file)});
    }
    if(url.pathname==='/static/judgment-research.css'&&process.env.JUDGMENT_CHART_TEST_CSS)return route.fulfill({contentType:'text/css',body:fs.readFileSync(process.env.JUDGMENT_CHART_TEST_CSS)});
-   if(['/static/chart-palette.js','/static/judgment-chart.js','/static/judgment-research.css','/static/judgment-manager.css','/static/research-display.js'].includes(url.pathname))return route.fulfill({contentType:url.pathname.endsWith('.js')?'application/javascript':'text/css',body:fs.readFileSync(path.join(web,url.pathname.slice(1)),'utf8')});
+   if(['/static/chart-palette.js','/static/judgment-chart.js','/static/charts.css','/static/judgment-research.css','/static/judgment-manager.css','/static/research-display.js'].includes(url.pathname))return route.fulfill({contentType:url.pathname.endsWith('.js')?'application/javascript':'text/css',body:fs.readFileSync(path.join(web,url.pathname.slice(1)),'utf8')});
    throw new Error('Unexpected fixture request '+url.pathname);
   });
   await page.goto('http://judgment-chart.fixture/');
