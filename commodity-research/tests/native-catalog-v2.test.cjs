@@ -11,6 +11,12 @@ const row = (letter) => ({ series_id: sid(letter), name: 'Fixture ' + letter, ca
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 const settle = async () => { for (let index = 0; index < 10; index++) await Promise.resolve(); };
 
+
+function accountFixture(items = []) {
+  return {items, loaded: true, saving: false, ready: async () => {}, refresh: async () => {},
+    subscribe() {}, syncButtons() {}, replace: async () => { throw Error('Unexpected write'); }};
+}
+
 class Element {
   constructor(id) {
     this.id = id; this.children = []; this.listeners = {}; this.dataset = {}; this.attributes = {};
@@ -99,6 +105,8 @@ test('off-page favorite retains its server-rendered accessible name without anot
   f.sandbox.history = { replaceState() {} }; f.sandbox.localStorage = f.window.localStorage; f.sandbox.performance = { now: () => 5000 };
   Object.assign(f.window, { scrollY: 0, innerHeight: 900 });
   f.window.researchFetch = async (url) => { requests.push(url); return { ok: true, json: async () => ({ cards: [], html: '' }) }; };
+  f.window.AccountFavorites = accountFixture([{kind: 'indicator', id: sid('b'), status: 'active'}]);
+  f.window.AccountFavorites.syncButtons = () => favorite.setAttribute('aria-pressed', 'true');
   f.load('indicator-preferences.js'); f.load('indicators.js'); f.boot(); await settle();
   assert.equal(favorite.getAttribute('aria-label'), '移出 Fixture b');
   assert.equal(favorite.getAttribute('aria-pressed'), 'true');
@@ -140,6 +148,7 @@ function pagedIndicators({ total = 405, offset = 0, count = 200, favorites = [] 
       total: matched, offset: at, next_offset: at + length < matched ? at + length : null,
       html: JSON.stringify({ offset: at, count: length }), nav_html: '' }) };
   };
+  f.window.AccountFavorites = accountFixture(favorites.map(id => ({kind: 'indicator', id, status: 'active'})));
   f.load('indicator-preferences.js'); f.load('indicators.js'); f.boot();
   return { ...f, requests, previewRequests, compareRequests, header, namesCache: maps.find(map => map.has('fixture.' + offset)) };
 }
@@ -212,7 +221,7 @@ test('long indicator paging retains only current, favorite and compared names wi
   await f.element('indicator-compare-open').emit('click'); await settle();
   assert.deepEqual(f.compareRequests[0].getAll('series_id'), chosen);
   assert.deepEqual(f.requests.map(query => Number(query.get('offset'))), Array.from({ length: 11 }, (_, index) => (index + 1) * 200));
-  assert.equal(f.previewRequests.length, 1, 'Name retention must not add preview reads while paging');
+  assert.equal(f.previewRequests.length, 0, 'Catalog paging must not read favorites previews');
   assert.equal(f.compareRequests.length, 1);
 });
 
@@ -263,34 +272,101 @@ test('diagram stale suggestions must never be displayed for another active node'
   assert.doesNotMatch(f.element('dg-suggest').innerHTML, /Fixture a/);
 });
 
-test('v2 personal core survives reload when its ID is outside the initial bounded projection', async () => {
-  const context = { tenant: 17, user: 'fixture-user', workbench: 'fixture-workbench', scope_version: 2 };
-  const storage = new Map([['tin.market.core.v1:17:fixture-user:fixture-workbench', JSON.stringify([sid('b')])]]);
-  const f = fixture({ context, storage, metadata: { indicators: [row('a')], defaults: [sid('a')], catalog_paged: true, can_edit_shared: false } });
+test('v2 shared core_items survive a bounded catalog and ignore old personal browser selections', async () => {
+  const context = {tenant: 17, user: 'fixture-user', workbench: 'fixture-workbench', scope_version: 2};
+  const browserKey = 'tin.market.core.v1:17:fixture-user:fixture-workbench';
+  const items = [{kind: 'indicator', id: sid('b')}, {kind: 'chart', id: 'selected-chart'}];
+  const f = fixture({context, storage: new Map([[browserKey, JSON.stringify([sid('a')])]]),
+    metadata: {indicators: [row('a')], defaults: [sid('a')], core_items: items,
+      charts: [{id: 'selected-chart', title: 'Fixture chart'}], catalog_paged: true, can_edit_shared: false}});
   const requests = [];
-  f.window.researchFetch = async (url) => {
+  f.window.researchFetch = async url => {
     const parsed = new URL(url, 'http://fixture.invalid'); requests.push(parsed);
-    if (parsed.pathname.endsWith('/catalog')) return { ok: true, json: async () => ({ indicators: [row('b')], total: 1, offset: 0, next_offset: null }) };
-    return { ok: true, json: async () => ({ series_ids: [sid('b')], ready_count: 1, html: '<div>Fixture B card</div>' }) };
+    assert.ok(parsed.pathname.endsWith('/core'), 'Saved shared items are already authorized server metadata; no browser restoration catalog reads');
+    return {ok: true, json: async () => ({items, ready_count: 1, html: '<div>Fixture B card and chart</div>'})};
   };
   f.load('indicator-preferences.js'); f.load('catalog-client.js'); f.load('market-overview.js'); f.boot(); await settle();
-  assert.equal(f.element('market-core-count').textContent, '1', 'An off-page valid saved core must not disappear');
-  assert.ok(requests.some((url) => url.pathname.endsWith('/catalog') && url.searchParams.getAll('series_id').includes(sid('b'))), 'Validate saved IDs against the actual authorized global metadata catalog');
-  assert.ok(requests.some((url) => url.pathname.endsWith('/core') && url.searchParams.getAll('series_id').includes(sid('b'))));
+  assert.equal(f.element('market-core-count').textContent, '2');
+  assert.equal(requests.length, 0, 'Initial server-rendered core does not issue a restoration request');
+  await f.element('market-core-retry').emit('click'); await settle();
+  assert.deepEqual(requests[0].searchParams.getAll('item'), ['indicator:' + sid('b'), 'chart:selected-chart']);
+  assert.deepEqual(requests[0].searchParams.getAll('series_id'), []);
+  assert.equal(f.element('market-core-grid').innerHTML, '<div>Fixture B card and chart</div>');
+  assert.equal(f.storage.get(browserKey), JSON.stringify([sid('a')]), 'Old browser selections are neither migrated nor allowed to replace shared core');
 });
 
-test('adding v2 core does not silently evict an existing full watchlist', async () => {
-  const context = { tenant: 17, user: 'fixture-user', workbench: 'fixture-workbench', scope_version: 2 };
+test('adding shared v2 core does not silently evict an existing full account watchlist', async () => {
+  const context = {tenant: 17, user: 'fixture-user', workbench: 'fixture-workbench', scope_version: 2};
   const favoriteKey = 'tin.indicators.favorites.v1:17:fixture-user:fixture-workbench';
-  const original = Array.from({ length: 40 }, (_, index) => 'kb-' + index.toString(16).padStart(48, '0'));
-  const f = fixture({ context, storage: new Map([[favoriteKey, JSON.stringify(original)]]), metadata: { indicators: [row('a')], defaults: [sid('a')], catalog_paged: true, can_edit_shared: false } });
-  f.window.researchFetch = async (url) => new URL(url, 'http://fixture.invalid').pathname.endsWith('/catalog')
-    ? { ok: true, json: async () => ({ indicators: [row('a')], total: 1, offset: 0, next_offset: null }) }
-    : { ok: true, json: async () => ({ series_ids: [sid('a')], ready_count: 1, html: '<div>Fixture A card</div>' }) };
+  const original = Array.from({length: 100}, (_, index) => 'kb-' + index.toString(16).padStart(48, '0'));
+  const f = fixture({context, storage: new Map([[favoriteKey, JSON.stringify(original)]]), metadata: {
+    indicators: [row('a')], core_items: [{kind: 'indicator', id: sid('a')}], catalog_paged: true, can_edit_shared: true}});
+  f.window.researchFetch = async () => {throw Error('No write or card read is allowed after account overflow');};
+  f.window.AccountFavorites = accountFixture(original.map(id => ({kind: 'indicator', id, status: 'active'})));
   f.load('indicator-preferences.js'); f.load('catalog-client.js'); f.load('market-overview.js'); f.boot();
   await f.element('market-core-open').emit('click'); await settle();
   await f.element('market-core-save').emit('click'); await settle();
-  assert.deepEqual(JSON.parse(f.storage.get(favoriteKey)), original, 'A 40-item watchlist must be preserved instead of truncating its last item');
+  assert.deepEqual(f.window.AccountFavorites.items.map(item => item.id), original);
+  assert.deepEqual(JSON.parse(f.storage.get(favoriteKey)), original, 'Legacy browser watchlist must remain untouched');
   assert.equal(f.element('market-core-dialog-error').hidden, false);
-  assert.match(f.element('market-core-dialog-error').textContent, /40/);
+  assert.match(f.element('market-core-dialog-error').textContent, /100/);
+});
+
+test('saving the actual mixed picker writes shared items and account favorites and leaves legacy browser data untouched', async () => {
+  const {create} = require('../src/tin/web/static/favorites-client.js');
+  const context = {tenant: 17, user: 'fixture-user', workbench: 'fixture-workbench', scope_version: 2};
+  const legacyKey = 'tin.indicators.favorites.v1:17:fixture-user:fixture-workbench';
+  const items = [{kind: 'chart', id: 'selected-chart'}, {kind: 'indicator', id: sid('a')}];
+  const f = fixture({context, storage: new Map([[legacyKey, '["browser-only"]']]), metadata: {
+    indicators: [row('a')], core_items: items, charts: [{id: 'selected-chart', title: 'Selected chart'}], can_edit_shared: true}});
+  let account = {format: 'favorites.v1', revision: 3, items: [
+    {kind: 'chart', id: 'existing-chart', status: 'active'},
+    {kind: 'indicator', id: sid('b'), status: 'invalid', added_at: '2026-01-01T00:00:00Z'}]};
+  const requests = [];
+  f.window.researchFetch = async (url, options = {}) => {
+    const parsed = new URL(url, 'http://fixture.invalid'); requests.push([parsed, options]);
+    if (parsed.pathname.endsWith('/favorites')) {
+      if (options.method === 'PUT') {
+        const body = JSON.parse(options.body); assert.equal(body.revision, 3);
+        account = {...account, revision: 4, items: body.items.map(item => ({...item, status: 'active'}))};
+      }
+      return {ok: true, json: async () => structuredClone(account)};
+    }
+    if (parsed.pathname.endsWith('/config')) return {ok: true, json: async () => ({items: JSON.parse(options.body).items})};
+    assert.ok(parsed.pathname.endsWith('/core'));
+    return {ok: true, json: async () => ({items, ready_count: 1, html: '<div>Fixture mixed core</div>'})};
+  };
+  f.window.AccountFavorites = create((_, options) => f.window.researchFetch('/api/sn/favorites', options));
+  f.load('indicator-preferences.js'); f.load('market-overview.js'); f.boot();
+  await f.element('market-core-open').emit('click'); await settle();
+  await f.element('market-core-save').emit('click'); await settle();
+  assert.deepEqual(account.items.map(item => item.id), ['existing-chart', sid('b'), 'selected-chart', sid('a')]);
+  assert.equal(account.items[1].added_at, '2026-01-01T00:00:00Z');
+  assert.equal(f.storage.get(legacyKey), '["browser-only"]');
+  assert.match(f.element('market-core-notice').textContent, /已加入账号自选/);
+  assert.equal(requests.filter(([, options]) => options.method === 'PUT').length, 1);
+  const save = requests.find(([url]) => url.pathname.endsWith('/config'));
+  assert.deepEqual(JSON.parse(save[1].body), {items});
+  const read = requests.find(([url]) => url.pathname.endsWith('/core'));
+  assert.deepEqual(read[0].searchParams.getAll('item'), ['chart:selected-chart', 'indicator:' + sid('a')]);
+});
+
+test('actual picker accepts sixteen entries and rejects a seventeenth chart without altering the draft', async () => {
+  const indicators = Array.from({length: 16}, (_, i) => ({...row('a'), series_id: 'kb-' + i.toString(16).padStart(48, '0'), name: 'Fixture ' + i}));
+  const items = indicators.map(row => ({kind: 'indicator', id: row.series_id}));
+  const f = fixture({metadata: {indicators, core_items: items, can_edit_shared: true}});
+  f.window.AccountFavorites = accountFixture();
+  f.window.researchFetch = async url => {
+    assert.ok(new URL(url, 'http://fixture.invalid').pathname.endsWith('/charts'));
+    return {ok: true, json: async () => ({items: [{id: 'extra-chart', definition: {title: 'Extra chart'}}], total: 1, next_offset: null})};
+  };
+  f.load('indicator-preferences.js'); f.load('market-overview.js'); f.boot();
+  await f.element('market-core-open').emit('click'); await settle();
+  assert.equal(f.element('market-core-selected').children.length, 16);
+  assert.equal(f.element('market-core-draft-count').textContent, '16/16');
+  f.element('market-core-source').value = 'charts'; await f.element('market-core-source').emit('change'); await settle();
+  const checkbox = f.element('market-core-choices').children[0].children[0]; checkbox.checked = true; await checkbox.emit('change');
+  assert.equal(checkbox.checked, false);
+  assert.match(f.element('market-core-dialog-error').textContent, /16/);
+  assert.equal(f.element('market-core-selected').children.length, 16);
 });

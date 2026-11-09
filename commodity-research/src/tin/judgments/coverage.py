@@ -71,7 +71,7 @@ def validate_inventory(value, text):
         dispositions[block['id']] = block['disposition']
     if set(dispositions) != set(known):
         _fail('原文覆盖清单遗漏段落')
-    seen, referenced = set(), set()
+    seen, referenced, unstated = set(), set(), set()
     for item in value['items']:
         if (not isinstance(item, dict) or set(item) != {'id', 'block_ids', 'quote', 'kind', 'source_unit'}
                 or not isinstance(item['id'], str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,63}', item['id'])
@@ -102,11 +102,19 @@ def validate_inventory(value, text):
             _fail('已识别研究条目的原文段落不能同时标记为纯背景')
         unit = item['source_unit']
         if unit is not None and (not isinstance(unit, str) or not unit.strip() or len(unit) > 80 or unit not in quote):
-            _fail('原文口径必须是该条依据中的逐字单位，不能补猜币种或倍率')
+            # A unit the quote does not spell out verbatim (for example a
+            # normalized "元/吨" for "每吨…元") is the model's guess. It never
+            # becomes source evidence; the item stays and its unit is treated
+            # as unstated, so a researcher confirms it during review.
+            unstated.add(item['id'])
         referenced.update(item['block_ids'])
     if {identifier for identifier, disposition in dispositions.items() if disposition == 'research'} != referenced:
         _fail('有研究内容的原文段落尚未形成条目，不能跳过')
-    return deepcopy(value)
+    result = deepcopy(value)
+    for item in result['items']:
+        if item['id'] in unstated:
+            item['source_unit'] = None
+    return result
 
 
 def coverage_protocol(inventory):

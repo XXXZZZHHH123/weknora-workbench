@@ -12,9 +12,17 @@ import (
 // all embedding clients. Embedders are recreated as model configuration changes,
 // but their outbound connections can be safely reused across client instances,
 // so the transport (and its keep-alive pool) is built once at package load.
-var sharedEmbeddingHTTPTransport = secutils.NewSSRFSafeTransport(
-	secutils.DefaultSSRFSafeHTTPClientConfig(),
-)
+var sharedEmbeddingHTTPTransport = proxiedSSRFSafeTransport()
+
+// proxiedSSRFSafeTransport uses the same egress as chat models
+// (internal/models/api/transport.go): a configured HTTP(S)_PROXY is honoured,
+// while every request URL and redirect is still validated against SSRF.
+// Without a proxy environment the connection is direct, as before.
+func proxiedSSRFSafeTransport() *http.Transport {
+	transport := secutils.NewSSRFSafeTransport(secutils.DefaultSSRFSafeHTTPClientConfig())
+	transport.Proxy = http.ProxyFromEnvironment
+	return transport
+}
 
 // validateEmbeddingBaseURL checks that a resolved embedding API base URL is safe
 // for outbound requests. Empty URLs are allowed (callers apply provider defaults).

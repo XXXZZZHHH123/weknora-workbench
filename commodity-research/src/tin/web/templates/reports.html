@@ -13,11 +13,19 @@
 {% if restricted_view %}{% include "_reports_readonly.html" %}{% else %}
 {% set weekly = period_kind == 'weekly' %}{% set scope = research_workbench() %}{% set can_edit = live_report and scope and scope.can_edit %}
 <header class="report-header"><div><h1>日报与周报</h1><p>{{ "依据当前已确认数据回放；并非历史冻结归档，研究判断为当前版本" if live_report else "历史冻结归档：保留生成时的数据、口径、研判与缺口状态" }}</p></div><div class="report-controls">
+{% if scope and scope.scope_version == 2 and not scope.restricted %}<a class="report-button" id="report-chart-anomalies" href="{{ research_url('/sn/charts') }}{% if selected.date %}?date={{ selected.date | urlencode }}{% endif %}#chart-anomalies">本周同期异动</a>{% endif %}
 <nav id="report-period-switch" class="report-segment" aria-label="报告周期"><a href="{{ research_prefix() }}/sn/reports?period=daily{% if selected.date %}&amp;date={{ selected.date }}{% endif %}" {% if not weekly %}aria-current="page"{% endif %}>日报</a><a href="{{ research_prefix() }}/sn/reports?period=weekly{% if selected.date %}&amp;date={{ selected.date }}{% endif %}" {% if weekly %}aria-current="page"{% endif %}>周报</a></nav>
 <form action="{{ research_prefix() }}/sn/reports" method="get" class="report-date-form"><input type="hidden" name="period" value="{{ period_kind }}"><label>截至<input type="date" name="date" value="{{ selected.date or '' }}" onchange="this.form.submit()" aria-label="报告截止日期"></label>{% if files %}<label class="report-history-label"><span class="sr-only">可回放日期</span><select name="history" aria-label="可回放日期" onchange="this.form.elements.date.value=this.value;this.form.submit()"><option value="" disabled>选择历史日期</option>{% for f in files %}<option value="{{ f.date }}" {% if f.date == selected.date %}selected{% endif %}>{{ f.date }} · 周{{ f.weekday }}</option>{% endfor %}</select></label>{% endif %}<noscript><button type="submit">查看</button></noscript></form></div></header>
+{% if ppt_enabled and scope and scope.scope_version == 2 and not scope.restricted %}
+<details id="report-ppt" class="report-ppt"{% if report %} hidden{% endif %}><summary>导出为 PPT（按我的版式）</summary>
+{% with ppt_page={'enabled': true, 'can_write': scope.can_edit, 'id': none, 'date': selected.date or '', 'write_reason': '' if scope.can_edit else '当前账号没有研究工作台编辑权限，无法上传、修改、删除或生成PPT'} %}
+{% include '_ppt_library.html' %}
+{% endwith %}
+</details>
+{% endif %}
 {% if not report %}<section class="report-section report-empty"><strong>尚无{{ '周报' if weekly else '日报' }}数据</strong><p>可先准备绑定资料、保存研究逻辑，再将需要的内容整理成报告。</p></section>
 {% else %}
-<div class="report-document"><header class="report-document-header"><div><span class="report-eyebrow">{{ 'WEEKLY' if weekly else 'DAILY' }} RESEARCH</span><h2>{{ report.report_title or (scope.metadata.name if scope else '研究') }}{% if not report.report_title %} {{ '周报' if weekly else '日报' }}{% endif %}</h2><p>{{ report_start if weekly else selected.date }}{% if weekly %} — {{ selected.date }}{% endif %} · {% if report.is_manual_report %}个人草稿 v{{ report.manual_report.revision }}{% else %}沿用已保存研究记录{% endif %}{% if report.coverage.latest_data_date %} · 最近数据 {{ report.coverage.latest_data_date[:10] }}{% endif %}</p></div><div class="report-actions">{% if can_edit %}<button type="button" class="report-button" id="report-edit-open">编辑报告</button>{% endif %}{% with export_kind='weekly' if weekly else 'snapshot', export_id=selected.date %}{% include '_brief_export.html' %}{% endwith %}<a href="{{ research_prefix() }}/sn/reports/{{ selected.date }}/{{ 'weekly' if weekly else 'daily' }}.md" class="report-button">下载 Markdown</a><button type="button" class="report-button" onclick="window.print()">打印</button></div></header>
+<div class="report-document"><header class="report-document-header"><div><span class="report-eyebrow">{{ 'WEEKLY' if weekly else 'DAILY' }} RESEARCH</span><h2>{{ report.report_title or (scope.metadata.name if scope else '研究') }}{% if not report.report_title %} {{ '周报' if weekly else '日报' }}{% endif %}</h2><p>{{ report_start if weekly else selected.date }}{% if weekly %} — {{ selected.date }}{% endif %} · {% if report.is_manual_report %}个人草稿 v{{ report.manual_report.revision }}{% else %}沿用已保存研究记录{% endif %}{% if report.coverage.latest_data_date %} · 最近数据 {{ report.coverage.latest_data_date[:10] }}{% endif %}</p></div><div class="report-actions">{% if can_edit %}<button type="button" class="report-button" id="report-edit-open">编辑</button>{% endif %}<details class="report-export-menu"><summary class="report-button">导出</summary><div class="report-export-items" role="menu">{% if ppt_enabled and scope and scope.scope_version == 2 and not scope.restricted %}<button type="button" class="report-export-item" role="menuitem" data-open-report-ppt>导出为 PPT（按我的版式）</button>{% endif %}{% with export_kind='weekly' if weekly else 'snapshot', export_id=selected.date %}{% include '_brief_export.html' %}{% endwith %}<a href="{{ research_prefix() }}/sn/reports/{{ selected.date }}/{{ 'weekly' if weekly else 'daily' }}.md" class="report-export-item" role="menuitem">下载 Markdown</a><button type="button" class="report-export-item" role="menuitem" onclick="window.print()">打印</button></div></details></div></header>
 <div id="report-readable" class="report-content">
 {% set panels = report.panels %}
 {% if panels.summary.visible %}{% include '_report_lead.html' %}{% endif %}
@@ -39,5 +47,21 @@
 <details class="report-editor-tools"><summary>选图与图说 · 最多6条</summary><div id="report-figure-options"></div></details><p class="report-muted">手工文字与引用保留版本；数值、单位、日期和来源仍由系统读取。清空后不会重新填回默认内容。</p><p id="report-edit-status" class="report-edit-status" role="status" aria-live="polite"></p></div><footer class="report-editor-footer"><button type="button" id="report-edit-cancel" class="report-button">取消</button><button type="submit" id="report-edit-save" class="report-button report-button-primary">保存草稿</button></footer></form></dialog>
 {% endif %}
 {% endif %}
+
 {% endif %}
+<script>
+  // 导出 menu: PPT opens the template panel above the report; the menu closes after a choice.
+  (function () {
+    const menu = document.querySelector('.report-export-menu'); if (!menu) return;
+    menu.querySelector('[data-open-report-ppt]')?.addEventListener('click', () => {
+      const panel = document.getElementById('report-ppt'); if (!panel) return;
+      panel.hidden = false; panel.open = true; menu.open = false;
+      panel.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start'});
+      panel.querySelector('summary')?.focus({preventScroll: true});
+    });
+    menu.querySelectorAll('a.report-export-item, button.report-export-item:not([data-open-report-ppt])').forEach(item => item.addEventListener('click', () => { menu.open = false; }));
+    document.addEventListener('click', event => { if (menu.open && !menu.contains(event.target)) menu.open = false; });
+    document.addEventListener('keydown', event => { if (event.key === 'Escape' && menu.open) { menu.open = false; menu.querySelector('summary').focus(); } });
+  })();
+</script>
 {% endblock %}

@@ -27,6 +27,7 @@ def test_shared_indicators_reuse_catalog_with_only_bound_latest_values(canonical
     scripts = html.xpath('//script[@src]/@src')
     assert any('/static/readonly-indicators.js?' in script for script in scripts)
     assert not any('/static/indicators.js?' in script or '/static/indicator-preferences.js?' in script
+                   or '/static/chart-hover.js?' in script or '/static/favorites.js?' in script
                    for script in scripts)
     assert not root.xpath('.//*[@data-favorite or @data-compare or @data-series-chart]')
     assert not root.xpath('.//a[not(starts-with(@href,"#"))]')

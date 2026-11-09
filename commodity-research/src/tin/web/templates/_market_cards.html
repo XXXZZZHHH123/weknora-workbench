@@ -1,2 +1,8 @@
 {% from '_card.html' import card with context %}
-{% for c in cards %}<div data-market-card-series="{{ c.series_id }}">{{ card(c, compact=true) }}</div>{% endfor %}
+{% for c in cards %}{% if c.kind | default('indicator') == 'chart' %}
+<article data-market-card-chart="{{ c.id }}" class="market-focus-chart">
+  <h3><a href="{{ research_prefix() }}/sn/charts/{{ c.id }}">{{ c.title }}</a></h3>
+  <div data-focus-chart-plot>{{ '图表已删除或不再可用' if c.status == 'missing' else '等待进入视野…' }}</div>
+  <div data-focus-chart-summary role="status"></div>
+</article>
+{% else %}<div data-market-card-series="{{ c.series_id }}">{{ card(c, compact=true) }}</div>{% endif %}{% endfor %}

@@ -99,6 +99,10 @@
     const blocks = s.block_count ?? s.mapping?.blocks?.length ?? 0;
     return s.layout === 'chart_or_image' && !blocks && (s.rows || 0) <= 2;
   }
+  // Same count as the structured catalogue: matrix blocks map rows, other blocks map columns.
+  function mappedFieldCount(s) {
+    return (s.mapping?.blocks||[]).reduce((sum,block)=>sum+(block.layout==='matrix'?(block.row_rules||[]).length:(block.columns||[]).length),0);
+  }
   function sheetVisible(s, needle) {
     if (needle && !s.name.toLowerCase().includes(needle)) return false;
     if (ui.filter === 'all') return true;
@@ -201,6 +205,10 @@
   function updateImportSummary() {
     const sheets=currentImport?.sheets||[],ready=sheets.filter(isPublished).length;
     $('importSummary').textContent=`${currentImport?.source_file||''} · ${sheets.length} 张工作表 · ${ready} 张已可查询 · ${sheets.filter(waitingImport).length} 张待导入 · ${sheets.filter(s=>!isPublished(s)&&!s.automatic_skip&&s.status==='needs_review').length} 张待核对${sheets.some(s=>s.automatic_skip&&!isPublished(s))?' · '+sheets.filter(s=>s.automatic_skip&&!isPublished(s)).length+' 张已跳过':''}`;
+    // Said here, at import, rather than on research pages: pending sheets in which no field was recognised.
+    const fieldless=sheets.filter(s=>!isPublished(s)&&!s.automatic_skip&&s.status==='needs_review'&&!isChartOnly(s)&&!mappedFieldCount(s));
+    const hint=$('importFieldless');
+    if(hint){hint.hidden=!fieldless.length;hint.textContent=fieldless.length?`有 ${fieldless.length} 张工作表没有识别出字段（${fieldless.slice(0,5).map(s=>s.name).join('、')}${fieldless.length>5?' 等':''}），可能是说明页或没有数据的表，不影响其他表；如果其中有要用的数据，请打开该表，在原表上框选数据区域后确认。`:'';}
     updateBatchState();
   }
   function updateBatchState() {
@@ -209,9 +217,12 @@
     button.disabled=mappingBusy||ui.batchBusy||!sheets.length;
     button.textContent='导入所有已确认表'+(sheets.length?` (${sheets.length})`:'');
     button.title=sheets.length?'仅导入已确认且尚未发布的工作表；待确认表保持不变。':'当前没有尚未导入的已确认工作表。';
+    const auto=$('confirmAutoReadySheets'),ready=autoReadySheets();
+    if(auto){auto.disabled=mappingBusy||ui.batchBusy||!ready.length;auto.textContent='确认全部已检查通过的工作表'+(ready.length?` (${ready.length})`:'');auto.title='仅确认状态为 auto_ready 的工作表，包括已自动导入的表；其他状态仍需逐表核对。';}
     const ai=$('aiImportAllSheets'),pending=(currentImport?.sheets||[]).filter(s=>!isPublished(s)&&s.status!=='empty');
     if(ai){ai.disabled=mappingBusy||ui.batchBusy||!pending.length;ai.title='逐表辅助核对并导入；无数据页跳过，无法确认的内容保留待核对。';}
   }
+  const autoReadySheets = () => (currentImport?.sheets||[]).filter(sheet=>sheet.status==='auto_ready');
   function confirmedBatch() {
     const sheets=[],mappings=[];
     for(const sheet of currentImport?.sheets||[]){
@@ -245,7 +256,7 @@
     currentSheet=null;mappingConfirmed=false;mappingBusy=false;ui.checkSignature=null;
     $('sheetDetail').innerHTML='<p class="grid-loading">正在读取当前工作表…</p>';
     const sheet=await timedApi(`/api/imports/${encodeURIComponent(importId)}/sheet?name=${encodeURIComponent(s.name)}`,{},controller,30000,requestApi);
-    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,import_state:sheet.import_state,review_state:sheet.review_state,automatic_skip:sheet.automatic_skip,mapping:sheet.mapping,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons,published_in_dataset:sheet.published_in_dataset===true,published_dataset_id:sheet.published_dataset_id??null,published_mapping:sheet.published_mapping??null,published_fingerprint:sheet.published_fingerprint??null});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);setMappingBusy(false);
+    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,import_state:sheet.import_state,review_state:sheet.review_state,automatic_skip:sheet.automatic_skip,mapping:sheet.mapping,field_count:sheet.field_count??s.field_count,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons,published_in_dataset:sheet.published_in_dataset===true,published_dataset_id:sheet.published_dataset_id??null,published_mapping:sheet.published_mapping??null,published_fingerprint:sheet.published_fingerprint??null});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);setMappingBusy(false);
     if(isChartOnly(sheet)){showPreview('charts');return;}
     showPreview('table');await loadWindow(1,1,requestApi);
   };
@@ -913,20 +924,41 @@
     $('confirmList').innerHTML=sheets.map(s=>`<p>导入 ${esc(s.name)}</p>`).join('')+'<p class="muted">仅处理已确认表；待确认区块和当前浏览器的未提交草稿保持不变。</p>';
     if(!$('confirmDialog').open)$('confirmDialog').showModal();
   }
+  function confirmAutoReadySheets() {
+    if(mappingBusy||ui.batchBusy)return;
+    saveDraft();const sheets=autoReadySheets();if(!sheets.length)return;
+    ui.autoReadySelection={importId:currentImport.import_id,scopeEpoch:authEpoch,sheets:sheets.map(sheet=>sheet.name)};
+    ui.confirmMode='auto-ready';$('confirmDialogTitle').textContent='确认全部已检查通过的工作表';
+    $('confirmWarning').textContent='逐表重新执行现有检查，通过后才确认已保存的映射。单表失败会显示原因，已成功的确认保留；其他状态的工作表不参与本次操作。本地修改请逐表检查并导入。';
+    $('saveTemplate')?.closest('label')?.setAttribute('hidden','');
+    $('confirmList').innerHTML=sheets.map(sheet=>`<p>${esc(sheet.name)} · ${esc(sheet.field_count??0)} 个字段</p>`).join('');
+    if(!$('confirmDialog').open)$('confirmDialog').showModal();
+  }
   async function publishAllSheets() {
     const importId=currentImport.import_id,sheetName=currentSheet?.name,scopeEpoch=authEpoch,version=reviewVersion;
-    saveDraft();ui.batchBusy=true;setMappingBusy(true);$('mappingFeedback').textContent='正在导入所有已确认工作表…';
+    const autoReady=ui.confirmMode==='auto-ready',selection=ui.autoReadySelection;
+    if(autoReady&&(!selection||selection.importId!==importId||selection.scopeEpoch!==scopeEpoch))throw Error('文件或账号已变化，请重新查看将确认的工作表。');
+    const action=autoReady?'confirm-auto-ready':'confirm-all',body=autoReady?{sheets:selection.sheets,save_template:true}:{mappings:ui.batchMappings||[],save_template:true};
+    saveDraft();ui.batchBusy=true;setMappingBusy(true);$('mappingFeedback').textContent=autoReady?'正在逐表检查并确认…':'正在导入所有已确认工作表…';
     try{
-      const job=await timedApi(`/api/imports/${encodeURIComponent(importId)}/confirm-all`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mappings:ui.batchMappings||[],save_template:true})});
+      const job=await timedApi(`/api/imports/${encodeURIComponent(importId)}/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       if(version!==reviewVersion)return;
       const result=job.id?await scopedJob(job.id,version,stage=>{if(version===reviewVersion)$('mappingFeedback').textContent=stage;}):job;
       if(scopeEpoch!==authEpoch||version!==reviewVersion)return;
-      for(const name of result.sheets_imported||[]){const sheet=currentImport.sheets.find(item=>item.name===name);if(sheet)removeDraftFor(sheet);}
+      for(const name of result.sheets_imported||[]){const sheet=currentImport.sheets.find(item=>item.name===name);if(sheet&&!autoReady)removeDraftFor(sheet);}
       applyBatchErrors(result);
       ui.batchMappings=[];
       ui.editable=false;await refreshReviewResult(importId,sheetName,result,scopeEpoch);
-      if(scopeEpoch===authEpoch&&$('mappingFeedback'))$('mappingFeedback').textContent=result.notice||'已完成确认表导入；失败表仍可逐块核对。';
+      if(scopeEpoch===authEpoch&&currentImport?.import_id===importId&&$('mappingFeedback'))renderBatchConfirmResult(result,autoReady);
     }finally{ui.batchBusy=false;if(scopeEpoch===authEpoch&&currentImport?.import_id===importId)setMappingBusy(false);}
+  }
+  function renderBatchConfirmResult(result,autoReady) {
+    const host=$('mappingFeedback'),imported=result.sheets_imported||[],failed=result.sheets_failed||[];
+    host.textContent=result.notice||(autoReady?`已确认 ${imported.length} 张工作表；${failed.length} 张未完成。`:'已完成确认表导入；失败表仍可逐块核对。');
+    const list=document.createElement('ul');list.className='batch-confirm-results';
+    for(const name of imported){const row=document.createElement('li');row.dataset.sheetConfirm='success';row.textContent=`${name}：${autoReady?'已确认':'已导入'}`;list.append(row);}
+    for(const item of failed){const row=document.createElement('li');row.dataset.sheetConfirm='failed';row.textContent=`${item.sheet}：${item.message||'检查未通过，请打开工作表继续核对。'}`;list.append(row);}
+    if(list.childElementCount)host.append(list);
   }
   function applyBatchErrors(result) {
     for(const failed of result.sheets_failed||[]){
@@ -941,7 +973,7 @@
   }
   async function runConfirm() {
     if(confirmRunning||mappingBusy)return;confirmRunning=true;
-    try{if($('confirmDialog')?.open)$('confirmDialog').close();if(ui.confirmMode==='all'){await publishAllSheets();return;}await previewMapping();if(ui.checkSignature!==JSON.stringify(submittedMapping()))return;await publishMapping();}
+    try{if($('confirmDialog')?.open)$('confirmDialog').close();if(['all','auto-ready'].includes(ui.confirmMode)){await publishAllSheets();return;}await previewMapping();if(ui.checkSignature!==JSON.stringify(submittedMapping()))return;await publishMapping();}
     catch(e){mappingError(e);}finally{confirmRunning=false;}
   }
   $('aiCancel').onclick=()=>$('aiDialog').close();
@@ -950,6 +982,7 @@
   $('confirmBack').onclick=()=>$('confirmDialog').close();
   $('confirmGo').onclick=()=>runConfirm();
   if($('confirmAllSheets'))$('confirmAllSheets').onclick=confirmAllSheets;
+  if($('confirmAutoReadySheets'))$('confirmAutoReadySheets').onclick=confirmAutoReadySheets;
   if($('aiImportAllSheets'))$('aiImportAllSheets').onclick=()=>assistAllSheets().catch(mappingError);
   function openSheetMenu(){renderSheetMenu();$('sheetMenu').hidden=false;$('allSheets').setAttribute('aria-expanded','true');}
   $('sheetSearch').oninput=openSheetMenu;
@@ -981,7 +1014,7 @@
   };
   window.sheetReviewAuthChanged=()=>{
     volatileDrafts.clear();purgeUnsafeDraftKeys();
-    ui.batchBusy=false;ui.batchOwner=null;ui.aiMode=null;ui.aiBatchScope=null;ui.aiBatchMappings=[];
+    ui.batchBusy=false;ui.batchOwner=null;ui.aiMode=null;ui.aiBatchScope=null;ui.aiBatchMappings=[];ui.autoReadySelection=null;
     ui.activeAIJob=null;ui.jobController?.abort();
     for(const id of ['aiDialog','confirmDialog'])if($(id)?.open)$(id).close();
     if($('aiJobPanel'))$('aiJobPanel').hidden=true;

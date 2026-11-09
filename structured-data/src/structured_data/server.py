@@ -16,7 +16,7 @@ import time
 import uuid
 import contextvars
 import inspect
-from typing import get_type_hints
+from typing import Annotated, get_type_hints
 from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field, ConfigDict, create_model, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from .store import DataStore, dump
-from .imports import ImportManager, NativeSourceVersionConflict
+from .imports import ImportManager, NativeSourceVersionConflict, sheet_field_count
 from .workspaces import WorkspaceRegistry, Identity, current_identity, valid_knowledge_base_id
 from .review_worker import run_review_task, MAX_REQUEST_BYTES
 from .review_errors import error_location
@@ -77,6 +77,12 @@ class SuggestRequest(BaseModel):
 class BatchConfirmRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     mappings: list[dict] = Field(default_factory=list, max_length=256)
+    save_template: bool = Field(default=True, strict=True)
+
+
+class AutoReadyConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    sheets: list[Annotated[str, Field(min_length=1, max_length=254, strict=True)]] = Field(min_length=1, max_length=256)
     save_template: bool = Field(default=True, strict=True)
 
 
@@ -488,6 +494,30 @@ def create_app(data_dir: str | Path | None = None):
             return _ResearchFactsJSONResponse(document)
         return await run_in_threadpool(read_current)
 
+    async def read_research_metadata(request, read_current):
+        from .service_auth import verify_research_projection
+        sources = getattr(request.state, 'research_sources', None)
+        document = await run_in_threadpool(read_current, registry, await request.json(), sources)
+        try:
+            await verify_research_projection(request, current_identity.get())
+        except HTTPException as exc:
+            if exc.status_code in {401, 403, 404, 409}:
+                raise HTTPException(409, '研究台来源或权限在读取期间变化，请重新打开研究台') from None
+            raise
+        if getattr(request.state, 'research_sources', None) != sources:
+            raise HTTPException(409, '研究台来源或权限在读取期间变化，未返回旧范围数据')
+        return document
+
+    @app.post('/api/research/native-charts')
+    async def research_native_charts(request: Request):
+        from .research_native_charts import read_current
+        return await read_research_metadata(request, read_current)
+
+    @app.post('/api/research/source-status')
+    async def research_source_status(request: Request):
+        from .research_source_status import read_current
+        return await read_research_metadata(request, read_current)
+
     @app.post('/api/research/export')
     async def research_export(request: Request):
         body = await request.json()
@@ -595,7 +625,8 @@ def create_app(data_dir: str | Path | None = None):
             finally:
                 current_identity.reset(marker)
         identity = None
-        signed = path in {'/api/tools/read', '/api/research/export', '/api/research/facts'} or path.startswith('/api/research/source/')
+        from .service_auth import WHOLE_RESEARCH_SOURCE_PATHS
+        signed = path in WHOLE_RESEARCH_SOURCE_PATHS | {'/api/tools/read', '/api/research/export', '/api/research/facts'} or path.startswith('/api/research/source/')
         if signed:
             from .service_auth import verify_service
             try:
@@ -643,7 +674,7 @@ def create_app(data_dir: str | Path | None = None):
                 if origin != expected_origin(request):
                     return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
             request.state.verified_authorization = authorization
-        if request.method == 'POST' and path.endswith(('/assist-confirm', '/confirm-all', '/assist-confirm-all')):
+        if request.method == 'POST' and path.endswith(('/assist-confirm', '/confirm-all', '/confirm-auto-ready', '/assist-confirm-all')):
             chunks, total = [], 0
             async for chunk in request.stream():
                 total += len(chunk)
@@ -831,15 +862,21 @@ def create_app(data_dir: str | Path | None = None):
                     progress_callback=lambda value: update_job_progress(job_id, value))
             if native_source:
                 result['source_knowledge_id'] = native_source['source_knowledge_id']
-            with job_lock:
-                jobs[job_id].update(status='completed', result=result)
+            completion = {'status': 'completed', 'result': result}
         except Exception as exc:
-            with job_lock:
-                jobs[job_id].update(status='failed', error=str(exc), **error_location(exc))
+            completion = {'status': 'failed', 'error': str(exc), **error_location(exc)}
         finally:
-            path.unlink(missing_ok=True)
-            path.parent.rmdir()
-            import_lock.release()
+            try:
+                path.unlink(missing_ok=True)
+                path.parent.rmdir()
+            except OSError:
+                logger.warning('import_staging_cleanup_failed', exc_info=True)
+            finally:
+                # A completed job promises that its next review operation can
+                # acquire the import lock, including immediately after polling.
+                with job_lock:
+                    import_lock.release()
+                    jobs[job_id].update(**completion)
 
     @app.get('/api/knowledge-results/{source_id}')
     async def knowledge_results(source_id: str, request: Request):
@@ -1050,6 +1087,7 @@ def create_app(data_dir: str | Path | None = None):
             for sheet in doc["sheets"]:
                 item = {k: v for k, v in sheet.items() if k in fields}
                 item["block_count"] = len((sheet.get("mapping") or {}).get("blocks") or [])
+                item["field_count"] = sheet_field_count(sheet)
                 charts = sheet.get("charts") or {}
                 item["chart_count"] = charts.get("chart_count") or 0
                 item["image_count"] = charts.get("image_count") or 0
@@ -1062,7 +1100,8 @@ def create_app(data_dir: str | Path | None = None):
         sheet = manager.sheet(import_id, name)
         doc = manager.presentation_view(manager.get(import_id), verified_legacy_sheet=sheet)
         publication = next(s for s in doc['sheets'] if s['name'] == name)
-        return {**sheet, **{k: v for k, v in publication.items() if k.startswith('published_')}}
+        return {**sheet, 'field_count': sheet_field_count(sheet),
+                **{k: v for k, v in publication.items() if k.startswith('published_')}}
 
     @app.get("/api/imports/{import_id}/sheet-view")
     async def sheet_view(
@@ -1147,13 +1186,13 @@ def create_app(data_dir: str | Path | None = None):
                 mapping=body.mapping, save_template=body.save_template,
                 publish_guard=lambda: check_job_write(authorization, identity),
                 progress_callback=lambda value: update_job_progress(job_id, value))
-            with job_lock:
-                jobs[job_id].update(status='completed', result=result)
+            completion = {'status': 'completed', 'result': result}
         except Exception as exc:
-            with job_lock:
-                jobs[job_id].update(status='failed', error=str(exc), **error_location(exc))
+            completion = {'status': 'failed', 'error': str(exc), **error_location(exc)}
         finally:
-            import_lock.release()
+            with job_lock:
+                import_lock.release()
+                jobs[job_id].update(**completion)
 
     @app.post("/api/imports/{import_id}/confirm")
     def confirm(import_id: str, body: MappingRequest, request: Request):
@@ -1194,11 +1233,12 @@ def create_app(data_dir: str | Path | None = None):
         try:
             from .imports import READY
             doc = manager.get(import_id)
-            selected = {sheet['name']: sheet['mapping'] for sheet in doc['sheets']
+            auto_ready_only = isinstance(body, AutoReadyConfirmRequest)
+            selected = {name: None for name in body.sheets} if auto_ready_only else {sheet['name']: sheet['mapping'] for sheet in doc['sheets']
                         if sheet['status'] in READY and sheet.get('mapping')
                         and sheet.get('import_state') != 'imported'}
             seen = set()
-            for mapping in body.mappings:
+            for mapping in ([] if auto_ready_only else body.mappings):
                 name = mapping.get('sheet')
                 if not isinstance(name, str) or name in seen:
                     raise ValueError('批量确认工作表无效或重复。')
@@ -1211,7 +1251,6 @@ def create_app(data_dir: str | Path | None = None):
             for index, (name, mapping) in enumerate(selected.items()):
                 # A long batch must not continue publishing other sheets after
                 # the caller loses editing rights during an earlier sheet.
-                check_job_write(authorization, identity)
                 update_job_progress(job_id, {'phase': 'batch', 'completed': index, 'total': total})
 
                 def sheet_progress(value):
@@ -1220,11 +1259,24 @@ def create_app(data_dir: str | Path | None = None):
                         jobs[job_id]['stage'] = f'工作表 {index + 1}/{total} · {value["stage"]}'
 
                 try:
+                    def publish_guard():
+                        check_job_write(authorization, identity)
+                        if auto_ready_only:
+                            status = manager.sheet(import_id, name)['status']
+                            if status != 'auto_ready':
+                                raise ValueError(f'工作表状态已变化（当前为 {status}），仅可批量确认 auto_ready 工作表。')
+
+                    publish_guard()
+                    if auto_ready_only:
+                        sheet = manager.sheet(import_id, name)
+                        mapping = sheet.get('mapping')
+                        if not mapping or not mapping.get('blocks'):
+                            raise ValueError('工作表没有可确认的映射区块。')
                     run_review_task(registry.directory(), 'confirm', import_id=import_id,
                         mapping=mapping, save_template=body.save_template,
-                        publish_guard=lambda: check_job_write(authorization, identity),
+                        publish_guard=publish_guard,
                         progress_callback=sheet_progress)
-                except ValueError as exc:
+                except Exception as exc:
                     failed.append({'sheet': name, 'message': str(exc), **error_location(exc)})
                 else:
                     imported.append(name)
@@ -1232,17 +1284,27 @@ def create_app(data_dir: str | Path | None = None):
             doc = manager.get(import_id)
             result = {**manager._result(doc), 'sheets_imported': imported, 'sheets_failed': failed,
                 'sheets_pending': [sheet['name'] for sheet in doc['sheets']
-                    if sheet['status'] not in READY and sheet['status'] != 'trusted_existing']}
-            with job_lock:
-                jobs[job_id].update(status='completed', result=result)
+                    if (sheet['status'] not in {'confirmed', 'empty'} if auto_ready_only
+                        else sheet['status'] not in READY and sheet['status'] != 'trusted_existing')]}
+            completion = {'status': 'completed', 'result': result}
         except Exception as exc:
-            with job_lock:
-                jobs[job_id].update(status='failed', error=str(exc), **error_location(exc))
+            completion = {'status': 'failed', 'error': str(exc), **error_location(exc)}
         finally:
-            import_lock.release()
+            with job_lock:
+                import_lock.release()
+                jobs[job_id].update(**completion)
 
     @app.post('/api/imports/{import_id}/confirm-all')
     def confirm_all(import_id: str, body: BatchConfirmRequest, request: Request):
+        return start_batch_confirm(import_id, body, request)
+
+    @app.post('/api/imports/{import_id}/confirm-auto-ready')
+    def confirm_auto_ready(import_id: str, body: AutoReadyConfirmRequest, request: Request):
+        if len(set(body.sheets)) != len(body.sheets):
+            raise HTTPException(400, '批量确认不能重复提交同一工作表。')
+        return start_batch_confirm(import_id, body, request)
+
+    def start_batch_confirm(import_id, body, request):
         manager.path(import_id)
         if not import_lock.acquire(blocking=False):
             raise HTTPException(409, '已有导入或确认任务，请等待完成。')
@@ -1251,7 +1313,8 @@ def create_app(data_dir: str | Path | None = None):
         with job_lock:
             jobs[job_id] = {'id': job_id, 'tenant_id': identity.tenant_id,
                 'knowledge_base_id': identity.knowledge_base_id, 'user_id': identity.user_id,
-                'status': 'processing', 'stage': '逐表校验并导入已确认工作表，失败表保留待确认'}
+                'status': 'processing', 'stage': ('逐表检查并确认已检查通过的工作表' if isinstance(body, AutoReadyConfirmRequest)
+                                                 else '逐表校验并导入已确认工作表，失败表保留待确认')}
         context = contextvars.copy_context()
         threading.Thread(target=context.run, args=(run_batch_confirm, job_id, import_id, body,
             request.state.verified_authorization, identity), daemon=True).start()

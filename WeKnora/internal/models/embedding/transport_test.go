@@ -69,3 +69,11 @@ func TestNewEmbedder_RejectsPrivateBaseURL(t *testing.T) {
 		t.Fatal("expected SSRF rejection for link-local metadata URL")
 	}
 }
+
+func TestEmbeddingTransportHonoursProxyEnvironmentLikeChat(t *testing.T) {
+	// Chat models already honour HTTP(S)_PROXY; embeddings used to dial
+	// directly, so they timed out where only the proxy can reach the vendor.
+	if sharedEmbeddingHTTPTransport.Proxy == nil {
+		t.Fatal("expected embedding transport to honour the proxy environment")
+	}
+}

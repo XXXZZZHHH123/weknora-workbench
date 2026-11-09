@@ -1,5 +1,6 @@
 """Explicit, versioned references in authored strategy prose; never executable rules."""
 from copy import deepcopy
+from datetime import datetime
 import hashlib
 import json
 from typing import Annotated, Any, Literal, Union
@@ -10,8 +11,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from tin.config import settings
-from tin.integration.kb_facts import catalog_page
+from tin.config import SHANGHAI, settings
+from tin.integration.kb_facts import catalog_page, catalog_snapshot
 from tin.integration.workbench_scope import (artifact_session, current_workbench, go_request,
     source_scope_for_binding)
 from tin.web.research_display import condition_text, human_text, reference_label
@@ -55,7 +56,20 @@ class KnowledgeFileCitation(CitationBase):
     file_version: str = Field(pattern=r'^[a-f0-9]{64}$')
 
 
-Citation = Annotated[Union[IndicatorCitation, JudgmentConditionCitation, KnowledgeFileCitation], Field(discriminator='kind')]
+class ChartCitation(CitationBase):
+    kind: Literal['chart']
+    id: str = Field(min_length=1, max_length=128)
+    revision: int = Field(ge=1, strict=True)
+    # Round-trip frozen metadata is rebuilt from the shared chart at publication.
+    source_version: str | None = Field(default=None, max_length=256)
+    source_versions: dict[str, str] | None = None
+    as_of: str | None = Field(default=None, max_length=10)
+    title: str | None = Field(default=None, max_length=120)
+    definition_summary: str | None = Field(default=None, max_length=2000)
+    definition: dict[str, Any] | None = None
+
+
+Citation = Annotated[Union[IndicatorCitation, JudgmentConditionCitation, KnowledgeFileCitation, ChartCitation], Field(discriminator='kind')]
 _citation = TypeAdapter(Citation)
 _citations = TypeAdapter(Annotated[list[Citation], Field(max_length=MAX_CITATIONS)])
 
@@ -79,7 +93,7 @@ def parse_citation(value):
     try:
         model = _citation.validate_python(value)
     except (ValidationError, TypeError, ValueError):
-        raise HTTPException(422, '请选择有效的指标、研判条件或知识库文件引用') from None
+        raise HTTPException(422, '请选择有效的指标、研判条件、知识库文件或图表引用') from None
     return model.model_dump(mode='json', exclude_none=True, exclude={'snapshot'})
 
 
@@ -137,7 +151,7 @@ def _result(citation, title, subtitle, preview):
 
 
 def _resolve_indicator(scope, citation):
-    page = catalog_page(scope, limit=1, series_ids=[citation['series_id']])
+    page = catalog_page(scope, limit=1, series_ids=[citation['series_id']], apply_dedup=False)
     fields = page.get('series')
     if not isinstance(fields, list) or len(fields) != 1 or fields[0].get('series_id') != citation['series_id']:
         raise HTTPException(404, '引用指标已删除、失效或不在当前授权目录中，请重新选择')
@@ -163,7 +177,7 @@ def _series_names(scope, identifiers):
     if not wanted:
         return {}
     try:
-        page = catalog_page(scope, limit=len(wanted), series_ids=wanted)
+        page = catalog_page(scope, limit=len(wanted), series_ids=wanted, apply_dedup=False)
     except HTTPException:
         return {}
     return {field['series_id']: human_text(field.get('metric') or field.get('name'))
@@ -277,7 +291,18 @@ async def _resolve_file(scope, citation, *, strict_version=True):
     return _result(citation, preview['file_name'], '知识库文件 · ' + (preview['file_type'] or '原件'), preview)
 
 
-async def resolve_citations(scope, values):
+def _resolve_chart(scope, citation, as_of):
+    from tin.web.chart_references import freeze_chart_references
+    with artifact_session(scope) as session:
+        [reference] = freeze_chart_references(session, scope,
+            [{key: value for key, value in citation.items() if key != 'field'}], as_of)
+    normalized = {**reference, 'field': citation['field']}
+    return _result(normalized, reference['title'], reference['definition_summary'],
+        {'type': 'chart', 'reference': reference, 'detail_url': '/sn/charts/' + quote(reference['id'], safe=''),
+         'as_of': reference['as_of']})
+
+
+async def resolve_citations(scope, values, *, as_of=None):
     require_scope(scope)
     try:
         models = _citations.validate_python(values)
@@ -290,6 +315,9 @@ async def resolve_citations(scope, values):
             result = await run_in_threadpool(_resolve_indicator, scope, citation)
         elif citation['kind'] == 'judgment_condition':
             result = await run_in_threadpool(_resolve_condition, scope, citation)
+        elif citation['kind'] == 'chart':
+            result = await run_in_threadpool(_resolve_chart, scope, citation,
+                as_of or datetime.now(SHANGHAI).date().isoformat())
         else:
             result = await _resolve_file(scope, citation)
         normalized.append(result['citation'])

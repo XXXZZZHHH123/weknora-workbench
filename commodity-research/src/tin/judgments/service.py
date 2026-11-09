@@ -85,6 +85,16 @@ def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool 
                         .where(Judgment.variety == j.variety, Judgment.status == "生效")
                         .values(status="已归档"), Judgment))
     data = j.model_dump(mode="json", by_alias=True)
+    if j.chart_references:
+        from copy import deepcopy
+        from tin.integration.workbench_scope import current_workbench
+        from tin.web.chart_references import freeze_chart_references
+        frozen = freeze_chart_references(session, current_workbench.get(), j.chart_references, j.written_at.isoformat())
+        for original, reference in zip(j.chart_references, frozen):
+            reference['target'] = deepcopy(original.get('target', {'kind': 'judgment'}))
+        # Reuse the existing immutable JSON snapshot. Public payloads expose the
+        # pins at the top level and never present this storage detail to authors.
+        data['contradiction']['chart_references'] = frozen
     row = Judgment(
         variety=j.variety, version=version, author=actor if rid is not None else j.author,
         researcher_id=rid, written_at=j.written_at,
@@ -116,9 +126,16 @@ def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool 
 
 
 def to_payload(row: Judgment) -> JudgmentIn:
+    contradiction = dict(row.contradiction)
+    references = contradiction.pop('chart_references', [])
+    from tin.integration.workbench_scope import current_workbench
+    scope = current_workbench.get()
+    if scope is not None and scope.restricted:
+        references = []
     return JudgmentIn.model_validate({
         "variety": row.variety, "author": row.author, "written_at": row.written_at,
-        "review_period_days": row.review_period_days, "contradiction": row.contradiction,
+        "review_period_days": row.review_period_days, "contradiction": contradiction,
+        "chart_references": references,
         "marginal_focus": row.marginal_focus, "cost_line": row.cost_line,
         "pricing_power": row.pricing_power, "time_dimension": row.time_dimension,
         "survey_notes": row.survey_notes, "whitelist": row.whitelist, "paradigm": row.paradigm,

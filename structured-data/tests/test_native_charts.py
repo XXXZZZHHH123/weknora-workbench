@@ -1,6 +1,7 @@
 """Source-bound chart regressions, including seasonal year traps and scope leaks."""
 import hashlib
 import json
+from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 from zipfile import ZipFile
 
@@ -62,6 +63,45 @@ def test_real_objects_preserve_literal_legends_and_actual_dates(chart_store):
     assert [c['status'] for c in chart['curves']]==['linked','linked','pending_source','unsupported','unsupported']
     assert chart['status']=='partial'
     assert store.chart_index(ds)==idx
+
+
+@pytest.mark.parametrize('style,expected', [
+    ('<a:ln w="25400"><a:solidFill><a:srgbClr val="00abEF"/></a:solidFill><a:prstDash val="solid"/></a:ln>',
+     {'color': '#00ABEF', 'width_pt': 2.0, 'dash': 'solid'}),
+    ('<a:ln w="12701"><a:prstDash val="dot"/></a:ln>',
+     {'color': None, 'width_pt': 1.0, 'dash': 'dot'}),
+    ('<a:ln w="0"><a:solidFill><a:srgbClr val="00abEF"/></a:solidFill><a:prstDash val="solid"/></a:ln>',
+     {'color': '#00ABEF', 'width_pt': None, 'dash': 'solid'}),
+    ('<a:ln w="1"/>', {'color': None, 'width_pt': None, 'dash': None}),
+    ('<a:ln w="63"/>', {'color': None, 'width_pt': None, 'dash': None}),
+    ('<a:ln w="64"/>', {'color': None, 'width_pt': 0.01, 'dash': None}),
+    ('<a:ln><a:solidFill><a:schemeClr val="accent1"/></a:solidFill><a:prstDash val="sysDash"/></a:ln>',
+     {'color': None, 'width_pt': None, 'dash': 'dash'}),
+    ('<a:ln w="invalid"><a:solidFill><a:srgbClr val="XYZXYZ"/></a:solidFill><a:prstDash val="dashDot"/></a:ln>',
+     {'color': None, 'width_pt': None, 'dash': None}),
+    ('<a:ln w="-12700"><a:solidFill><a:srgbClr val="AA0000"><a:tint val="50000"/></a:srgbClr></a:solidFill></a:ln>',
+     {'color': None, 'width_pt': None, 'dash': None}),
+    ('<a:solidFill><a:srgbClr val="AA0000"/></a:solidFill><a:ln/>',
+     {'color': None, 'width_pt': None, 'dash': None}),
+    ('', {'color': None, 'width_pt': None, 'dash': None}),
+])
+def test_series_style_only_uses_determined_line_properties_from_xml(chart_store, tmp_path, style, expected):
+    from structured_data.native_charts import NS
+    _, _, original = chart_store
+    edited = tmp_path / 'styled.xlsx'
+    with ZipFile(original) as source, ZipFile(edited, 'w') as target:
+        for name in source.namelist():
+            data = source.read(name)
+            if name == 'xl/charts/chart1.xml':
+                root = ET.fromstring(data)
+                root.find('.//c:ser', NS).append(ET.fromstring(
+                    f'<c:spPr xmlns:c="{NS["c"]}" xmlns:a="{NS["a"]}">{style}</c:spPr>'))
+                data = ET.tostring(root)
+            target.writestr(name, data)
+    chart = extract(edited)[0]
+    assert chart['curves'][0]['style'] == expected
+    assert chart['curves'][1]['style'] == {'color': None, 'width_pt': None, 'dash': None}
+    assert chart['curves'][0]['axis'] == 'primary'
 
 
 def test_dual_axis_binding_is_preserved_as_xml_evidence(chart_store, tmp_path):

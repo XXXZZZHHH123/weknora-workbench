@@ -537,10 +537,19 @@ func (e *AgentEngine) Execute(
 		e.toolRegistry.RefreshMCPTools(ctx)
 	}
 
+	// Capability negotiation, task planning, source discovery and a confirmed
+	// field plan run before the loop and can outlast one parent lease (a slow
+	// retrieval provider alone may take a minute). Renew ownership for this
+	// phase exactly as the loop does, so a slow source cannot fence the turn.
+	prepCtx, stopPrep := ctx, func() {}
+	if e.collaboration != nil {
+		prepCtx, stopPrep = e.collaboration.Start(ctx)
+	}
+	defer stopPrep()
 	if !strings.HasPrefix(query, fieldConfirmationPrefix) {
-		messages = e.prepareWorkbenchCapabilities(ctx, state, messages, query, sessionID, messageID)
-		messages = e.planWorkbenchTask(ctx, state, query, messages, sessionID)
-		messages = e.discoverWorkbenchSources(ctx, state, messages, query, sessionID, messageID, e.plannedSourceDiscoverySelection())
+		messages = e.prepareWorkbenchCapabilities(prepCtx, state, messages, query, sessionID, messageID)
+		messages = e.planWorkbenchTask(prepCtx, state, query, messages, sessionID)
+		messages = e.discoverWorkbenchSources(prepCtx, state, messages, query, sessionID, messageID, e.plannedSourceDiscoverySelection())
 	}
 	if err := e.executionLeaseError(ctx); err != nil {
 		finishAgentSpan(agentSpan, state, err)
@@ -558,7 +567,9 @@ func (e *AgentEngine) Execute(
 		"tools":      toolListStr,
 	})
 
-	if e.executeStructuredConfirmation(ctx, state, query, sessionID, messageID, &messages) {
+	confirmed := e.executeStructuredConfirmation(prepCtx, state, query, sessionID, messageID, &messages)
+	stopPrep()
+	if confirmed {
 		finishAgentSpan(agentSpan, state, nil)
 		return state, nil
 	}

@@ -10,7 +10,9 @@ from datetime import date, datetime
 import json
 import logging
 import re
+from time import perf_counter
 from typing import Any, Literal
+from types import SimpleNamespace
 from urllib.parse import quote
 
 import httpx
@@ -21,14 +23,15 @@ from starlette.concurrency import run_in_threadpool
 from tin.config import SHANGHAI, settings
 from tin.integration.workbench_scope import require_shared_write
 from tin.web import strategy_citations as citations
+from tin.web.research_display import human_text
 
 router = APIRouter()
 TEXT_LIMIT = 6000
 MAX_CARDS = 5
 MAX_JUDGMENTS = 5
 MAX_CONDITIONS = 60
-MAX_QUERIES = 8
-CANDIDATES_PER_QUERY = 6
+MAX_QUERIES = 10
+CANDIDATES_PER_QUERY = 8
 MAX_STRATEGIES = 20
 MAX_LISTED_FILES = 100
 MAX_EXCERPTS = 3
@@ -56,6 +59,8 @@ class _Ref(_Output):
 class _Query(_Output):
     query: str = Field(min_length=1, max_length=60, validation_alias=AliasChoices('query', 'name', 'keyword', 'search'))
     field: Slot = 'thesis'
+    # Other names only widen recall; anything that is not a short phrase is ignored.
+    aliases: list[Any] = Field(default_factory=list, max_length=8)
 
 
 class _FileRef(_Output):
@@ -139,36 +144,79 @@ class TextInput(_Strict):
     model_id: str = Field(min_length=1, max_length=128)
 
 
-async def completion(scope, model_id, prompt):
+def _record_completion(scope, model_id, prompt, purpose, envelope, error, elapsed_ms):
+    """Use the existing llm_calls writer for platform completions as well."""
+    from tin.llm.audit import _persist
+    from tin.llm.base import LlmRequest, LlmResponse, Message
+    data = envelope.get('data') if isinstance(envelope, dict) else None
+    text = data.get('content') if isinstance(data, dict) else None
+    response = LlmResponse(status='error' if error else 'ok', provider='workbench', model=model_id,
+        text=text if isinstance(text, str) else None, raw=envelope if isinstance(envelope, dict) else {},
+        latency_ms=elapsed_ms, error=error)
+    with citations.artifact_session(scope) as session:
+        _persist(session, SimpleNamespace(name='workbench', model=model_id),
+                 LlmRequest(purpose=purpose, messages=(Message('user', prompt),)), response, elapsed_ms)
+
+
+async def completion(scope, model_id, prompt, *, purpose=None):
     """One JSON object from the workbench's fixed strategy drafting route."""
     body = {'model_id': model_id, 'prompt': prompt, 'knowledge_base_id': scope.knowledge_base_id}
     if type(getattr(scope, 'sources_revision', None)) is int and scope.sources_revision > 0:
         body['sources_revision'] = scope.sources_revision
+    envelope, failure, started = None, None, perf_counter()
     try:
         async with httpx.AsyncClient(timeout=125, follow_redirects=False, trust_env=False) as client:
             response = await client.post(settings.weknora_api_url.rstrip('/') + '/api/v1/workspaces/research/'
                 + quote(scope.workbench_id, safe='') + '/strategy/generate', json=body,
                 headers={'Authorization': scope.authorization, 'X-Tenant-ID': str(scope.identity.tenant_id)})
         if response.status_code != 200:
+            if purpose:
+                try:
+                    envelope = response.json()
+                except ValueError:
+                    envelope = {'http_status': response.status_code}
             status = response.status_code if response.status_code in {401, 403, 404, 409, 413, 429} else 503
+            unavailable = ('模型服务暂时不可用，核心关注尚未修改，请稍后重试' if purpose
+                           else '模型未完成整理，原文保持不变，请稍后重试')
             raise HTTPException(status, {401: '登录已失效，请重新登录', 403: '没有当前知识库或模型的使用权限',
                 404: '模型或知识库已不存在', 409: '工作台来源已改变，请刷新后重试', 413: '文字过长，请缩短后重试',
-                429: '模型请求受限，请稍后重试'}.get(status, '模型未完成整理，原文保持不变，请稍后重试'))
+                429: '模型请求受限，请稍后重试'}.get(status, unavailable))
         envelope = response.json()
         data = envelope.get('data')
         if envelope.get('success') is not True or not isinstance(data, dict) or data.get('model_id') != model_id:
             raise ValueError('invalid model envelope')
         if data.get('finish_reason') in {'length', 'max_tokens'}:
-            raise HTTPException(422, '模型输出达到长度上限，请缩短文字或分几次整理')
+            raise HTTPException(422, '模型输出达到长度上限，请重新生成建议或更换模型' if purpose
+                                else '模型输出达到长度上限，请缩短文字或分几次整理')
         from tin.web.diagram_generation import strict_json
-        document = strict_json(data.get('content'))
+        try:
+            document = strict_json(data.get('content'))
+        except HTTPException:
+            if purpose:
+                raise HTTPException(422, '模型返回了无效 JSON，请重新生成建议；未使用固定列表') from None
+            raise
         if not isinstance(document, dict):
+            if purpose:
+                raise HTTPException(422, '模型未返回有效的 JSON 对象，请重新生成建议；未使用固定列表')
             raise ValueError('expected an object')
         return document
-    except HTTPException:
+    except asyncio.CancelledError:
+        failure = '模型调用已取消或超时'
+        raise
+    except HTTPException as exc:
+        failure = str(exc.detail)
         raise
     except (httpx.HTTPError, ValueError, TypeError, AttributeError, RecursionError):
-        raise HTTPException(503, '模型服务暂时不可用，原文保持不变') from None
+        failure = '模型服务响应不可用'
+        raise HTTPException(503, '模型服务暂时不可用，核心关注尚未修改' if purpose else '模型服务暂时不可用，原文保持不变') from None
+    finally:
+        if purpose:
+            try:
+                await run_in_threadpool(_record_completion, scope, model_id, prompt, purpose,
+                                        envelope, failure, int((perf_counter() - started) * 1000))
+            except Exception:
+                logging.getLogger(__name__).exception('Platform model call audit could not be saved')
+                raise HTTPException(503, '模型调用审计未能保存，请稍后重试；建议未采用') from None
 
 
 def _context(scope):
@@ -280,7 +328,7 @@ def structure_prompt(text, today, judgments, conditions, strategies=(), files=()
 - strategy：原话说参考、沿用或在某份已有方案基础上调整时，填下方已有策略的编号（s 开头）；按含义判断是哪一份，判断不出或原话没有提到时填 null。
 - conditions：原话中与下方研判条件意思一致的部分，写出条件编号（c 开头）和它出现在哪个字段；意思不一致时不要引用。
 {file_rule}
-- indicator_queries：原话提到、但下方研判条件里没有的指标，保留原话中的研究对象与指标口径，给出在指标目录中检索用的简短名称，field 填该指标在原话中出现的那一项（例如在撤回条件里提到就填 invalidation），每份最多 4 个；没有就给空数组。
+- indicator_queries：原话提到、但下方研判条件里没有的指标，保留原话中的研究对象与指标口径，给出在指标目录中检索用的简短名称，并在 aliases 里给 1～2 个数据库中常用的规范名称或别称（原话是通俗说法时尤其需要），field 填该指标在原话中出现的那一项（例如在撤回条件里提到就填 invalidation），每份最多 6 个；没有就给空数组。
 - excerpt：原话中对应这份方案的连续原文；只有一份方案时填空字符串。
 - gaps：只写研究员需要补充或核对的业务内容（如缺少的合约、仓位、价格单位，或原话指向哪份文件、哪份研判不明确），每条一句话，最多 5 条；已经引用成功的内容不要再写，不要解释某个字段为什么为空，不要写字段名、编号或 ID；没有就给空数组。
 原话通常只写了一份方案；只有原话明确写了几份相互独立的方案时才拆成多份，最多 {MAX_CARDS} 份。
@@ -300,8 +348,8 @@ def selection_prompt(text, drafts, candidates, file_candidates=()):
         'indicator_queries': [query.model_dump() for query in draft.indicator_queries],
         'file_queries': [item.model_dump(include={'query', 'field', 'excerpt'}) for item in draft.files if item.query]}
         for index, draft in enumerate(drafts)], ensure_ascii=False)
-    rows = json.dumps([{key: row[key] for key in ('ref', 'query', 'name', 'unit', 'frequency', 'source')}
-                       for row in candidates], ensure_ascii=False)
+    rows = json.dumps([{key: row[key] for key in ('ref', 'query', 'name', 'unit', 'frequency', 'source', 'sheet')
+                        if row.get(key) != ''} for row in candidates], ensure_ascii=False)
     files = json.dumps([{key: row[key] for key in ('ref', 'query', 'name', 'type')} for row in file_candidates],
                        ensure_ascii=False)
     return f'''任务：下面是你刚整理的策略方案，以及按检索名称在已授权目录中找到的候选指标和候选知识库文件。为每个检索名称选出与研究员原话所指一致的候选，写明方案序号、候选编号和所属字段（沿用该检索名称的 field；文件沿用它的 excerpt）；没有一致的候选就不选，不要选名称相近但口径、对象或内容不同的候选。
@@ -316,24 +364,44 @@ def selection_prompt(text, drafts, candidates, file_candidates=()):
 
 
 def _candidates(scope, drafts):
-    queries = list(dict.fromkeys(query.query.strip() for draft in drafts for query in draft.indicator_queries
-                                 if query.query.strip()))[:MAX_QUERIES]
+    phrasings = {}
+    for draft in drafts:
+        for query in draft.indicator_queries:
+            if query.query.strip():
+                aliases = [alias.strip() for alias in query.aliases if isinstance(alias, str) and 0 < len(alias.strip()) <= 60]
+                phrasings.setdefault(query.query.strip(), []).extend(aliases[:2])
+    queries = list(phrasings)[:MAX_QUERIES]
+    if not queries:
+        return []
+    # Ranked recall: a model's wording that only partly matches the catalog's naming
+    # still surfaces the field. The model then chooses; every choice is checked.
+    from tin.integration.catalog_recall import CatalogRecall
+    snapshot = citations.catalog_snapshot(scope)
+    fields = [field for field in snapshot['catalog'].values() if isinstance(field, dict) and field.get('series_id')]
+    by_id = {field['series_id']: field for field in fields}
+    index = CatalogRecall((field['series_id'], [field.get('metric') or field.get('name'), field.get('dimensions')],
+                           [field.get(key) for key in ('sheet', 'unit', 'frequency', 'source_file')]) for field in fields)
+    page = {'version': snapshot['version']}
     rows, seen = [], set()
     for query in queries:
-        page = citations.catalog_page(scope, limit=CANDIDATES_PER_QUERY, search=query)
-        for field in page.get('series') or []:
-            if not isinstance(field, dict) or field.get('series_id') in seen:
+        offered = 0
+        for identifier in index.recall([query, *dict.fromkeys(phrasings[query])], CANDIDATES_PER_QUERY * 3):
+            if offered == CANDIDATES_PER_QUERY:
+                break
+            if identifier in seen:
                 continue
-            seen.add(field['series_id'])
+            field = by_id[identifier]
+            seen.add(identifier)
             try:
                 # Only a series this workbench can cite directly is offered to the model.
                 citation = citations._indicator_citation(scope, field, page)
             except HTTPException:
                 continue
+            offered += 1
             preview = citations._indicator_preview(field)
             rows.append({'ref': f'i{len(rows) + 1}', 'query': query, 'name': preview['name'], 'unit': preview['unit'],
-                'frequency': preview['frequency'], 'source': preview['source'], 'citation': citation,
-                'preview': preview})
+                'frequency': preview['frequency'], 'source': preview['source'],
+                'sheet': human_text(field.get('sheet')) or '', 'citation': citation, 'preview': preview})
     return rows
 
 
@@ -546,7 +614,7 @@ async def draft_from_text(scope, text, model_id):
     dropped = []
     for draft in drafts:
         draft.conditions, lost_conditions = draft.items(_Ref, draft.conditions, 16)
-        draft.indicator_queries, lost_queries = draft.items(_Query, draft.indicator_queries, 4)
+        draft.indicator_queries, lost_queries = draft.items(_Query, draft.indicator_queries, 6)
         draft.files, lost_files = draft.items(_FileRef, draft.files, 6)
         if files is not None:
             # Listed files are chosen by reference; a search name is only used when files were not listed.

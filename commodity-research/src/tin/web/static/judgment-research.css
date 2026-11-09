@@ -42,3 +42,5 @@
   .judgment-hypothesis .judgment-falsifier-section,.judgment-hypothesis .judgment-falsifier-empty,.judgment-hypothesis .judgment-falsifier{margin:0}
 }}
 @media(max-width:760px){.judgment-evidence-list>li.judgment-item-card,.judgment-falsifier.judgment-item-card{padding:12px}}
+.judgment-chart-toolbar .indicator-view-switch{font-size:11px}.judgment-chart-toolbar .indicator-view-switch button{padding:1px 8px}.judgment-chart-plot[hidden],.judgment-chart-cycle[hidden]{display:none}.judgment-chart-cycle{min-height:120px;margin-top:4px;font-size:11px;color:var(--text-muted)}
+.judgment-metric .judgment-chart-cycle svg{height:auto;margin:0}

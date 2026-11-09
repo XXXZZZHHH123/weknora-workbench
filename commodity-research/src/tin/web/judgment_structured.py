@@ -79,7 +79,9 @@ def _state(scope, payload):
     metadata = None
     if scope.scope_version == 2:
         from tin.integration.kb_facts import catalog_page
-        page = catalog_page(scope, limit=200, series_ids=wanted)
+        # Editing saved research retains its explicit old bindings until the
+        # researcher chooses a replacement, even when a copy is hidden in selectors.
+        page = catalog_page(scope, limit=200, series_ids=wanted, apply_dedup=False)
         metadata = {'catalog': {row['series_id']: row for row in page['series']},
                     'version': page['version'], 'datasets': page.get('datasets', [])}
     with result_session(scope) as session:

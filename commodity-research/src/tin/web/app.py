@@ -201,6 +201,7 @@ templates.env.globals["research_static_prefix"] = research_static_prefix
 templates.env.globals["research_workbench"] = current_workbench.get
 templates.env.globals["research_prefix"] = research_prefix
 templates.env.globals["research_url"] = research_url
+templates.env.globals["ppt_enabled"] = settings.ppt_enabled
 templates.env.globals["research_form_url"] = research_form_url
 templates.env.globals["research_identity"] = lambda: current_identity.get()
 templates.env.globals["static_version"] = static_version
@@ -226,6 +227,28 @@ app.include_router(sources_router)
 app.include_router(workbench_router)
 from tin.web.workbench_artifacts import router as workbench_artifacts_router
 app.include_router(workbench_artifacts_router)
+from tin.web.charts import router as charts_router
+app.include_router(charts_router)
+from tin.web.chart_references import router as chart_references_router
+app.include_router(chart_references_router)
+from tin.web.favorites import router as favorites_router
+app.include_router(favorites_router)
+from tin.web.indicator_dedup import router as indicator_dedup_router
+app.include_router(indicator_dedup_router)
+from tin.web.dedup_references import router as dedup_references_router
+app.include_router(dedup_references_router)
+from tin.web.ppt import router as ppt_router
+app.include_router(ppt_router)
+from tin.web.chart_import import router as chart_import_router
+app.include_router(chart_import_router)
+from tin.web.chart_pages import build_router as build_chart_pages_router
+app.include_router(build_chart_pages_router(
+    lambda *args, **kwargs: _page_session(*args, **kwargs),
+    lambda *args, **kwargs: _shell(*args, **kwargs), templates))
+from tin.web.ppt_pages import build_router as build_ppt_pages_router
+app.include_router(build_ppt_pages_router(
+    lambda *args, **kwargs: _page_session(*args, **kwargs),
+    lambda *args, **kwargs: _shell(*args, **kwargs), templates))
 from tin.web.workbench_sources import router as workbench_sources_router
 app.include_router(workbench_sources_router)
 from tin.web.brief_export import router as brief_export_router
@@ -262,6 +285,8 @@ app.include_router(report_figures_router)
 from tin.web.affairs import router as affairs_router
 app.include_router(affairs_router)
 from tin.web.market import build_market_router, market_catalog as market_catalog_data, saved_core_cards
+from tin.web.focus_suggestions import router as focus_suggestions_router
+app.include_router(focus_suggestions_router)
 app.include_router(build_market_router(lambda: _page_session('market'), templates,
                                        lambda session, day: _home_date(session, day)))
 
@@ -550,11 +575,14 @@ def variety_page(request: Request, date: str | None = None, err: str | None = No
         cards = saved_core_cards(s, d, core_cards(s, research_variety(s), d) if d is not None else [])
         from tin.web.market_history import market_history
         from tin.web.market_contracts import configured_contract_curve
+        from tin.integration.source_status import source_status_hint
         curve = (configured_contract_curve(s, d if date else None) if s.info.get('workbench_id')
                  else contract_curve(s, research_variety(s), d) if d is not None else None)
         return templates.TemplateResponse(request, "variety.html", _shell(
             s, "variety", d, cards=cards,
+            has_core_charts=any(isinstance(card, dict) and card.get('kind') == 'chart' for card in cards),
             market_catalog=market_catalog_data(s, cards, d) if s.info.get('workbench_id') else None,
+            source_status_hint=source_status_hint(),
             judgment=judgment_block(s, research_variety(s), today),
             radar=threshold_radar(s, research_variety(s), d) if d is not None else [],
             gaps=gaps(s, research_variety(s), d) if d is not None else [],
@@ -659,12 +687,28 @@ def indicators_page(request: Request, date: str | None = None):
         groups = [{"name": name, "rows": [r for r in rows if r["category"] == name]}
                   for name in dict.fromkeys(r["category"] for r in rows)]
         checks = diagram_api.crosscheck(s, research_variety(s), day) if day else []
+        from tin.web.chart_pages import page_config
+        from tin.integration.source_status import source_status_hint
         return templates.TemplateResponse(request, "indicators.html", _shell(
             s, "indicators", day, rows=rows, groups=groups, dimensions=DIMENSIONS, checks=checks,
+            chart_page=page_config(request),
+            source_status_hint=source_status_hint(scope),
+            dedup_enabled=bool(remote and not scope.restricted and any(item.get('source_type') == 'central_dataset' for item in scope.sources)),
             catalog_remote=remote, catalog_offset=directory['offset'] if directory else 0,
             catalog_total=directory['total'] if directory else len(rows),
             catalog_next=directory['next_offset'] if directory else None,
             sources={"rows": [], "counts": {}} if s.info.get("workbench_id") else source_catalog()))
+
+
+@app.get('/sn/indicator-dedup')
+def indicator_dedup_page(request: Request):
+    scope = current_workbench.get()
+    if scope is None or scope.scope_version != 2:
+        raise HTTPException(409, '请从已关联中心来源的研究台打开指标对应确认')
+    if scope.restricted:
+        raise HTTPException(403, '受限视角不开放指标对应确认')
+    return templates.TemplateResponse(request, 'indicator_dedup.html',
+        {'nav': 'indicators', 'ticker': [], 'names': {}, 'd': None, 'restricted_view': False})
 
 
 @app.get("/sn/indicators/{series_id}")
@@ -682,7 +726,10 @@ def indicator_page(request: Request, series_id: str, date: str | None = None):
         except diagram_api.DiagramError as e:
             raise HTTPException(404, str(e)) from e
         return templates.TemplateResponse(request, "indicator.html", _shell(
-            s, "indicators", day, detail=d, usage=diagram_api.usage(s, series_id, research_variety(s))))
+            s, "indicators", day, detail=d, usage=diagram_api.usage(s, series_id, research_variety(s)),
+            dedup_enabled=bool(current_workbench.get() and current_workbench.get().scope_version == 2
+                and not current_workbench.get().restricted
+                and any(item.get('source_type') == 'central_dataset' for item in current_workbench.get().sources))))
 
 
 @app.get("/api/sn/indicators/{series_id}/usage")

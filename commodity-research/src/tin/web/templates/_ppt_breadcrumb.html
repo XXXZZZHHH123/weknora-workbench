@@ -1,0 +1,5 @@
+<nav class="charts-toolbar charts-muted" aria-label="面包屑">
+  <a href="{{ research_url('/sn/reports') }}{% if ppt_page.date %}?date={{ ppt_page.date | urlencode }}{% endif %}">日报周报</a><span aria-hidden="true">›</span>
+  <a href="{{ research_url('/sn/reports') }}{% if ppt_page.date %}?date={{ ppt_page.date | urlencode }}{% endif %}#report-ppt">PPT 版式</a><span aria-hidden="true">›</span>
+  {% if ppt_breadcrumb_link %}<a id="ppt-breadcrumb-title" href="{{ research_url('/sn/reports/ppt/' ~ (ppt_page.id | urlencode)) }}{% if ppt_page.date %}?date={{ ppt_page.date | urlencode }}{% endif %}">模板</a>{% else %}<span id="ppt-breadcrumb-title" aria-current="page">模板</span>{% endif %}
+</nav>

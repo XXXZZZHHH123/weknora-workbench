@@ -8,7 +8,7 @@ from tin.schemas.judgment import JudgmentIn
 from tin.web import app as web
 
 
-def render(**overrides):
+def render(*, restricted_view=False, **overrides):
     payload = JudgmentIn(variety='XY', author='Synthetic', written_at=date(2026, 1, 2),
         contradiction={'bull': {'claim': 'Supply is constrained'},
                        'bear': {'claim': 'Demand is soft'}}).model_dump(mode='json')
@@ -25,11 +25,12 @@ def render(**overrides):
         'pending_conditions': [{'text': 'Measured stock above 12 kg', 'requires_manual_observation': True}]}
     data.update(overrides)
     env = web.templates.env.overlay(loader=ChoiceLoader([
-        DictLoader({'base.html': '{% block main %}{% endblock %}', '_judgment_manager.html': ''}),
+        DictLoader({'base.html': '{% block head %}{% endblock %}{% block main %}{% endblock %}', '_judgment_manager.html': ''}),
         web.templates.env.loader]))
     env.globals = dict(web.templates.env.globals)
     env.globals.update(research_workbench=lambda: None, research_identity=lambda: None)
     return env.get_template('judgment.html').render(j=judgment, names={}, research=data,
+        restricted_view=restricted_view, restricted_data={},
         block={'expired_days': 0, 'blockers': []}, versions=[], radar=[], d=date(2026, 1, 2))
 
 
@@ -67,3 +68,17 @@ def test_no_data_is_not_presented_as_zero_or_as_a_trigger():
     html = render(**data)
     assert '暂无可用数值' in html
     assert 'data-metric-trend' not in html
+
+
+def test_chart_hover_loads_with_page_date_for_unrestricted_judgment_only():
+    from lxml.html import fromstring
+    html = fromstring(render())
+    scripts = html.xpath('//script[@src]/@src')
+    assert len([script for script in scripts if '/static/chart-hover.js?v=' in script]) == 1
+    assert next(index for index, script in enumerate(scripts) if '/chart-kit.js?' in script) < \
+        next(index for index, script in enumerate(scripts) if '/chart-hover.js?' in script) < \
+        next(index for index, script in enumerate(scripts) if '/judgment-chart.js?' in script)
+    assert html.xpath('//*[@data-judgment-library]/@data-chart-date') == ['2026-01-02']
+    restricted = fromstring(render(restricted_view=True))
+    assert not restricted.xpath('//script[contains(@src,"/static/chart-hover.js")]')
+    assert not restricted.xpath('//*[@data-judgment-library or @data-chart-related-rule]')

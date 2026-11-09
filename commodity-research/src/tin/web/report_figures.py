@@ -28,7 +28,7 @@ def validate_selection(identifiers, allowed):
             or len(set(identifiers)) != len(identifiers)):
         raise HTTPException(422, '报告最多选择6条不同的真实绑定指标')
     if set(identifiers) - set(allowed):
-        raise HTTPException(403, '选图超出本台已保存的研判、策略或核心指标绑定')
+        raise HTTPException(403, '选图超出本台已保存的研判、策略或核心关注绑定')
     return list(identifiers)
 
 

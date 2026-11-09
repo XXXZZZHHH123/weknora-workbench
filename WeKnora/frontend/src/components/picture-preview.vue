@@ -6,6 +6,8 @@ const close = () => {
 }
 </script>
 <template>
+    <!-- Opened programmatically. Without a trigger slot TDesign renders a default thumbnail of the
+         first image, which shows as a broken "图片无法显示 / 预览" box when nothing is selected. -->
     <t-image-viewer :visible="reviewImg" closeOnOverlay closeOnEscKeydown @close="close"
         :images="reviewUrl ? [reviewUrl] : []">
         <template #trigger><span class="picture-preview-trigger" aria-hidden="true"></span></template>

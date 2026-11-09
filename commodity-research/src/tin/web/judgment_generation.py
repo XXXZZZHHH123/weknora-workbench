@@ -26,7 +26,8 @@ from tin.integration.workbench_scope import artifact_session, current_workbench,
 from tin.judgments.analysis import AnalysisError, SOURCE_BYTES, assess_draft, unique_condition_kinds, validate_analysis
 from tin.judgments.numbers import exact_float, NumericPrecisionError
 from tin.judgments.markdown import dump_markdown, version_diff
-from tin.judgments.prompt import GENERAL_METHOD, OUTPUT_PROTOCOL, PROMPT_VERSION, SELECTION_PROTOCOL
+from tin.judgments.prompt import (GENERAL_METHOD, OUTPUT_PROTOCOL, PROMPT_VERSION, RECALL_PICK_PROTOCOL,
+    RECALL_QUERY_PROTOCOL, SELECTION_PROTOCOL)
 from tin.judgments.service import JudgmentError, current, latest, latest_workbench_payload, save_version, to_payload
 from tin.models import AuditLog, Judgment
 from tin.ownership import scope_query, verified_actor
@@ -342,10 +343,23 @@ def selection_requests(catalog, text):
             for index, (start, end) in enumerate(batches)]
 
 
+SELECTION_TOO_BROAD = '模型选出的候选指标过多，超出本次分析容量'
+OUTPUT_LIMIT = '模型输出达到长度上限，未生成完整研究逻辑；请精炼输出要求或更换模型后重试'
+SELECTION_OUTPUT_LIMIT = '模型筛选指标时输出超出长度上限'
+
+
 def selected_catalog_ids(result, batch, refs):
-    """Resolve only explicit references from this request; never guess an ID."""
-    references = result.get('selection_refs') if isinstance(result, dict) and set(result) == {'selection_refs'} else None
-    valid = isinstance(references, list) and len(references) <= 96
+    """Resolve only explicit references from this request; never guess an ID.
+
+    A bare JSON array of references states the same selection as the wrapped
+    object. Choosing more than the requested per-batch count is not ambiguous
+    either; the combined candidate catalog stays bounded by CANDIDATE_BYTES.
+    """
+    if isinstance(result, list):
+        references = result
+    else:
+        references = result.get('selection_refs') if isinstance(result, dict) and set(result) == {'selection_refs'} else None
+    valid = isinstance(references, list)
     if valid:
         valid = (all(isinstance(reference, str) for reference in references)
                  and len(set(references)) == len(references)
@@ -377,7 +391,7 @@ async def completion(scope, model_id, prompt):
                 message = native_failure_message(error, status) or message
                 if (status == 503 and isinstance(error, dict) and error.get('code') == 1008
                         and error.get('details') == {'phase': 'response_validation', 'error_class': 'output_limit'}):
-                    message = '模型输出达到长度上限，未生成完整研究逻辑；请精炼输出要求或更换模型后重试'
+                    message = OUTPUT_LIMIT
             except (ValueError, AttributeError): pass
             raise HTTPException(status, message)
         envelope = response.json()
@@ -385,12 +399,49 @@ async def completion(scope, model_id, prompt):
         if envelope.get('success') is not True or not isinstance(data, dict) or data.get('model_id') != model_id:
             raise ValueError()
         if data.get('finish_reason') in {'length', 'max_tokens'}:
-            raise HTTPException(422, '模型输出达到长度上限，未生成完整研究逻辑；请精炼输出要求或更换模型后重试')
+            raise HTTPException(422, OUTPUT_LIMIT)
         return research_json(data.get('content'))
     except HTTPException:
         raise
     except (httpx.HTTPError, ValueError, TypeError, AttributeError, RecursionError):
         raise HTTPException(503, '模型服务暂时不可用，原文和现有版本保持不变') from None
+
+
+async def selection_completion(scope, model, prompt):
+    try:
+        return await completion(scope, model, prompt)
+    except HTTPException as error:
+        # A truncated selection is never parsed; say which stage overflowed
+        # instead of implying the judgment text itself was too long.
+        if error.detail == OUTPUT_LIMIT:
+            raise HTTPException(error.status_code, SELECTION_OUTPUT_LIMIT) from None
+        raise
+
+
+async def recalled_catalog(scope, model, catalog, text, inventory):
+    """Per research item: model phrasings, ranked recall from the real catalog, bounded model picks."""
+    from tin.web import judgment_recall as recall
+    request = recall.query_prompt(text, inventory)
+    if len(request.encode('utf-8')) > PROMPT_BYTES:
+        raise HTTPException(413, '完整资料超过本次指标检索容量，请缩小范围后重试')
+    await notify_progress('selecting')
+    phrased = recall.item_queries(await selection_completion(scope, model, request), inventory)
+    index, by_id = recall.catalog_index(catalog), {row['id']: row for row in catalog}
+    for per_item in recall.RECALL_STEPS:
+        groups = recall.recall_groups(index, inventory, phrased, per_item)
+        prompt, mapping = recall.pick_request(text, groups, by_id)
+        if len(prompt.encode('utf-8')) <= PROMPT_BYTES:
+            break
+    else:
+        raise HTTPException(413, '完整资料与召回候选超过本次容量，请缩小范围后重试')
+    if not groups:
+        return [], True
+    await notify_progress('selecting')
+    selected = set(recall.picked_ids(await selection_completion(scope, model, prompt), mapping))
+    candidates = [row for row in catalog if row['id'] in selected]
+    if len(catalog_json(candidates).encode('utf-8')) > CANDIDATE_BYTES:
+        raise HTTPException(422, SELECTION_TOO_BROAD)
+    return candidates, True
 
 
 async def choose_catalog(scope, model, catalog, text):
@@ -400,15 +451,20 @@ async def choose_catalog(scope, model, catalog, text):
         if error.status_code != 413: raise
     else:
         return catalog, False
+    inventory = _source_inventory.get()
+    if inventory is not None:
+        return await recalled_catalog(scope, model, catalog, text, inventory)
+    # Without an item inventory, fall back to complete batched catalog selection.
     requests = selection_requests(catalog, text)
     selected = set()
     for batch, refs, prompt in requests:
         await notify_progress('selecting')
-        result = await completion(scope, model, prompt)
+        result = await selection_completion(scope, model, prompt)
         selected.update(selected_catalog_ids(result, batch, refs))
     candidates = [row for row in catalog if row['id'] in selected]
     if len(catalog_json(candidates).encode('utf-8')) > CANDIDATE_BYTES:
-        raise HTTPException(413, '候选目录超过本次容量，请进一步精炼研究范围')
+        # The source text is unchanged; the model kept too much of the catalog.
+        raise HTTPException(422, SELECTION_TOO_BROAD)
     return candidates, True
 
 
@@ -628,13 +684,25 @@ async def fresh(scope, previous):
     return state
 
 
+def chart_targets(payload):
+    targets = [{'target': {'kind': 'judgment'}, 'title': '整条研判的图表依据'}]
+    targets.extend({'target': {'kind': kind, 'id': rule.id}, 'title': ('阈值：' if kind == 'threshold' else '证伪：') + (getattr(rule, 'name', None) or rule.desc)}
+        for kind, rules in (('threshold', payload.thresholds), ('falsifier', payload.falsifiers)) for rule in rules)
+    targets.extend({'target': {'kind': 'evidence', 'side': side, 'index': index}, 'title': ('多方依据：' if side == 'bull' else '空方依据：') + item.desc}
+        for side in ('bull', 'bear') for index, item in enumerate(getattr(payload.contradiction, side).evidence))
+    return targets
+
+
 def serialize(row, session=None, scope=None):
     if row is None: return None
     payload = to_payload(row)
     from tin.web.judgment_lifecycle import delete_revision
     return {'id': row.id, 'version': row.version, 'status': row.status, 'author': row.author, 'variety': row.variety,
             'delete_revision': delete_revision(session, scope, row) if session is not None and scope is not None else 0,
-            'created_at': row.created_at.isoformat(), 'markdown': dump_markdown(payload),
+            'created_at': row.created_at.isoformat(), 'written_at': row.written_at.isoformat(),
+            'chart_references': [] if scope is not None and scope.restricted else payload.chart_references,
+            'chart_rules': [rule.model_dump(mode='json') for rule in [*payload.thresholds, *payload.falsifiers]],
+            'chart_targets': chart_targets(payload), 'markdown': dump_markdown(payload),
             'source_text': row.source_note or dump_markdown(payload)}
 
 
@@ -760,6 +828,7 @@ async def _analyze_scoped(scope, body):
         raise HTTPException(422, validation_detail(error)) from None
     model = await current_model(scope, body.model_id)
     protocol = cache.digest([PROMPT_VERSION, GENERAL_METHOD, OUTPUT_PROTOCOL, SELECTION_PROTOCOL,
+        RECALL_QUERY_PROTOCOL, RECALL_PICK_PROTOCOL,
         inventory_request, binding_protocol([])])
     key = cache.identity(scope, body, before, model, protocol)
     await fresh(scope, before)

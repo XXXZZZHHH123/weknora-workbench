@@ -4,7 +4,9 @@
 {% block head %}
 {% if research_workbench() %}
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/market-overview.css?v={{ static_version() }}">
+{% if not restricted_view %}<link rel="stylesheet" href="{{ research_static_prefix() }}/static/charts.css?v={{ static_version() }}">{% endif %}
 {% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/indicator-preferences.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/chart-kit.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/market-overview.js?v={{ static_version() }}"></script>{% endif %}
 {% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/market-history.js?v={{ static_version() }}"></script>{% endif %}
 {% endif %}
@@ -36,14 +38,7 @@
 </div>
 
 {% if not d %}
-<section id="market-empty" role="status" class="research-panel p-5 space-y-3">
-  <h2 class="text-base font-bold">{{ '当前工作台尚无已确认观测' if research_workbench() else '当前空间尚无行情数据' }}</h2>
-  <p class="text-sm text-[var(--text-muted)]">{% if research_workbench() %}请在「资料与来源」准备并确认本知识库资料，核对真实字段、单位和来源后，市场数据与图表将在这里显示。{% else %}尚未采集到交易日行情，市场数据与图表将在行情入库后显示。可以在下方「数据更新」中立即更新，或导入行情来源文件。{% endif %}</p>
-  <div class="flex flex-wrap gap-3 text-sm">
-    {% if research_workbench() %}{% if not restricted_view %}<button type="button" onclick="parent.postMessage({type:'research-open-sources'},location.origin)" class="text-[var(--primary)] hover:underline">准备资料</button>{% endif %}{% elif not restricted_view %}<a href="{{ research_url('/files') }}" class="text-[var(--primary)] hover:underline">导入行情文件</a>{% endif %}
-    {% if not restricted_view or 'indicators' in research_workbench().view_modules %}<a href="{{ research_url('/sn/indicators') }}" class="text-[var(--primary)] hover:underline">查看指标与来源</a>{% endif %}
-  </div>
-</section>
+{% include '_market_empty.html' %}
 {% endif %}
 
 {% if not restricted_view %}{% include '_refresh.html' %}{% endif %}

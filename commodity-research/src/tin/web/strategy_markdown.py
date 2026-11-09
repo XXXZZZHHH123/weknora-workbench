@@ -28,10 +28,11 @@ DIRECTIONS = {'bull': '偏多观察', 'bear': '偏空观察', 'range': '区间�
 DIRECTION_VALUES = {**{label: key for key, label in DIRECTIONS.items()}, **{key: key for key in DIRECTIONS},
     '偏多': 'bull', '看多': 'bull', '多': 'bull', '偏空': 'bear', '看空': 'bear', '空': 'bear',
     '区间': 'range', '震荡': 'range', '观察': 'observe', '等待': 'observe'}
-KINDS = {'indicator': '指标', 'judgment_condition': '研判条件', 'knowledge_file': '知识库原件'}
+KINDS = {'indicator': '指标', 'judgment_condition': '研判条件', 'knowledge_file': '知识库原件', 'chart': '图表'}
 IDENTITY = {'indicator': ('series_id', 'source_version', 'source_binding_id'),
     'judgment_condition': ('id', 'revision', 'rule_kind', 'rule_id'),
-    'knowledge_file': ('source_binding_id', 'knowledge_id', 'file_version')}
+    'knowledge_file': ('source_binding_id', 'knowledge_id', 'file_version'),
+    'chart': ('id', 'revision')}
 HELP = ('<!-- ' + FORMAT + '：每个“## 方案名称”是一份方案。修改文字后在「md管理」中检查并导入；'
         '保留注释里的编号会更新原方案，删去编号则作为新方案导入。文档里没有的方案保持不变，不会被删除。 -->')
 

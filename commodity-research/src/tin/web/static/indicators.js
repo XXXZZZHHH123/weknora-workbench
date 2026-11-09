@@ -15,24 +15,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const names = new Map(rows.map((r) => [r.dataset.seriesId, r.dataset.name]));
   const normalize = (s) => String(s).normalize("NFKC").toLocaleLowerCase();
   const searchText = new Map(rows.map((r) => [r, normalize(r.dataset.search)]));
-  const context = window.RESEARCH_CONTEXT;
-  const storageKey = window.IndicatorPreferences.key(context);
+  const account = window.AccountFavorites;
   let favorites = [];
   const selected = new Set();
-  let previewController;
   let compareController;
-  const storageNotice = (text) => {
-    get("storage-note").textContent = text;
-    get("storage-note").hidden = false;
-  };
-  try {
-    const saved = JSON.parse(localStorage.getItem(storageKey) || "[]");
-    if (!Array.isArray(saved) || saved.some((sid) => typeof sid !== "string")) throw new Error("invalid");
-    favorites = [...new Set(saved)].filter((sid) => remoteCatalog ? sid.length > 0 && sid.length <= 128 : names.has(sid)).slice(0, 40);
-    if (!remoteCatalog && saved.some((sid) => !names.has(sid))) storageNotice("部分原自选指标已不在清单中，本次未显示。其余自选仍保留。");
-  } catch (_) {
-    storageNotice("无法读取已保存的自选，请重新选择；若浏览器禁止存储，自选仅在本页有效。");
-  }
   let scope = "all";
   const params = new URLSearchParams(location.search);
   get("search").value = params.get("q") || "";
@@ -147,15 +133,8 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function syncFavorites() {
-    root.querySelectorAll("[data-favorite]").forEach((button) => {
-      const sid = button.dataset.favorite;
-      const active = favorites.includes(sid);
-      button.setAttribute("aria-pressed", String(active));
-      if (names.has(sid)) button.setAttribute("aria-label", `${active ? "移出" : "加入自选"} ${names.get(sid)}`);
-    });
+    account?.syncButtons();
     get("scope-favorite-count").textContent = favorites.length;
-    get("favorite-count").textContent = favorites.length;
-    get("favorites-empty").hidden = favorites.length > 0;
   }
 
   function apiParams(ids) {
@@ -163,33 +142,6 @@ document.addEventListener("DOMContentLoaded", () => {
     ids.forEach((sid) => query.append("series_id", sid));
     if (root.dataset.date) query.set("date", root.dataset.date);
     return query;
-  }
-
-  async function loadFavorites() {
-    if (previewController) previewController.abort();
-    previewController = new AbortController();
-    const controller = previewController;
-    get("favorites-error").hidden = true;
-    syncFavorites();
-    if (!favorites.length) { get("favorites").replaceChildren(); get("favorites").removeAttribute("aria-busy"); return; }
-    get("favorites").setAttribute("aria-busy", "true");
-    get("favorites").textContent = "正在读取自选走势…";
-    try {
-      const response = await researchFetch(`${window.RESEARCH_PREFIX || ""}/api/sn/indicators/previews?${apiParams(favorites)}`, { signal: controller.signal });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json();
-      if (controller !== previewController) return;
-      get("favorites").innerHTML = data.html;
-      syncFavorites();
-      if (performance.now() - jumpAt < 2000) scrollToJumpTarget();
-    } catch (error) {
-      if (controller !== previewController || error.name === "AbortError") return;
-      get("favorites").replaceChildren();
-      get("favorites-error").querySelector("span").textContent = "自选数据暂时无法加载，选择已保留。";
-      get("favorites-error").hidden = false;
-    } finally {
-      if (controller === previewController) get("favorites").removeAttribute("aria-busy");
-    }
   }
 
   let jumpCurrent = "indicator-top";
@@ -305,26 +257,13 @@ document.addEventListener("DOMContentLoaded", () => {
     if (scopeButton) { scope = scopeButton.dataset.scope; remoteCatalog ? void loadCatalog() : filterRows(); return; }
     const copy = event.target.closest("[data-copy-series]");
     if (copy) { copyText(copy.dataset.copySeries); return; }
-    const button = event.target.closest("[data-favorite]");
-    if (!button) return;
-    const sid = button.dataset.favorite;
-    if (favorites.includes(sid)) favorites = favorites.filter((s) => s !== sid);
-    else {
-      if (favorites.length >= 40) { showToast("最多自选 40 项，请先移出一项"); return; }
-      favorites.push(sid);
-    }
-    try { localStorage.setItem(storageKey, JSON.stringify(favorites)); }
-    catch (_) { storageNotice("浏览器未允许保存自选，本次选择仅在当前页面有效。"); }
-    filterRows();
-    if (remoteCatalog && scope === "favorites") void loadCatalog();
-    loadFavorites();
   });
 
   function syncSelection() {
     pruneNames();
     get("compare-bar").hidden = !selected.size;
-    get("selection").textContent = `已选 ${selected.size}/4：${[...selected].map((sid) => names.get(sid)).join("、")}`;
-    get("compare-open").disabled = selected.size < 2;
+    get("selection").textContent = `已选 ${selected.size}/16：${[...selected].map((sid) => names.get(sid)).join("、")}`;
+    get("compare-open").disabled = selected.size < 2 || selected.size > 4;
     root.querySelectorAll("[data-compare]").forEach((box) => { box.checked = selected.has(box.dataset.compare); });
     updateJumpFromScroll();
   }
@@ -332,8 +271,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const box = event.target.closest("[data-compare]");
     if (!box) return;
     if (!box.checked) selected.delete(box.dataset.compare);
-    else if (selected.size < 4) selected.add(box.dataset.compare);
-    else showToast("最多同时比较 4 项指标");
+    else if (selected.size < 16) selected.add(box.dataset.compare);
+    else showToast("最多选择 16 项指标作图");
     syncSelection();
   });
 
@@ -363,7 +302,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   get("compare-open").addEventListener("click", async () => {
-    if (selected.size < 2) return;
+    if (selected.size < 2 || selected.size > 4) return;
     const dialog = get("compare-dialog");
     get("compare-result").textContent = "正在对齐共同观测日…";
     dialog.showModal();
@@ -381,7 +320,7 @@ document.addEventListener("DOMContentLoaded", () => {
   get("compare-close").addEventListener("click", () => get("compare-dialog").close());
   get("compare-dialog").addEventListener("close", () => { if (compareController) compareController.abort(); });
   get("selection-clear").addEventListener("click", () => { selected.clear(); syncSelection(); });
-  get("favorites-retry").addEventListener("click", loadFavorites);
+  get("chart-open")?.addEventListener("click", () => window.ChartBuilder?.open([...selected]));
   get("search").addEventListener("input", searchCatalog);
   get("expand").addEventListener("click", () => groups.forEach((g) => { g.open = true; }));
   get("collapse").addEventListener("click", () => groups.forEach((g) => { g.open = false; }));
@@ -396,7 +335,19 @@ document.addEventListener("DOMContentLoaded", () => {
     if (scope === "favorites") void loadCatalog();
   }
   filterRows();
-  loadFavorites();
+  if (account) {
+    const syncAccount = () => {
+      const previous = favorites.join("\n");
+      favorites = account.items.filter(item => item.kind === "indicator" && item.status === "active").map(item => item.id);
+      syncFavorites();
+      if (previous !== favorites.join("\n")) {
+        if (remoteCatalog && scope === "favorites") void loadCatalog();
+        else filterRows();
+      }
+    };
+    account.subscribe(syncAccount); syncAccount();
+    account.ready().catch(() => {});
+  }
   const initialJump = (location.hash || "").slice(1);
   if (initialJump && root.querySelector(`[data-indicator-jump][data-target="${CSS.escape(initialJump)}"]`)) {
     const target = document.getElementById(initialJump);

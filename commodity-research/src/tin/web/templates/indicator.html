@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ detail.name }} · {{ research_workbench().metadata.name if research_workbench() else '锡 SN' }}{% endblock %}
+{% block head %}{% if dedup_enabled %}<script defer src="{{ research_static_prefix() }}/static/indicator-dedup.js?v={{ static_version() }}"></script>{% endif %}{% endblock %}
 {% block main %}
 
 {% set d = detail %}
@@ -8,20 +9,32 @@
 <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-[var(--line-strong)]">
   <div class="min-w-0">
     <div class="text-[10px] font-bold tracking-widest text-[var(--primary)] uppercase mb-1">
-      <a href="{{ research_prefix() }}/sn/indicators" class="hover:underline">指标登记</a> › {{ d.category or '派生指标' }}</div>
-    <h1 class="text-2xl font-black tracking-tight break-all">{{ d.name }}</h1>
+      <a href="{{ research_prefix() }}/sn/indicators?tab=catalog" class="hover:underline">指标登记</a> › {{ d.category or '派生指标' }}</div>
+    <div class="favorites-title">
+      <h1 class="text-2xl font-black tracking-tight break-all">{{ d.name }}</h1>
+      {% if research_workbench() and research_workbench().scope_version == 2 and not research_workbench().restricted %}<button type="button" class="favorites-bookmark" data-favorite="{{ d.series_id }}" data-favorite-kind="indicator" data-favorite-label="{{ d.name }}" aria-pressed="false" aria-label="加入自选 {{ d.name }}" title="自选" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3.2L6 20V5.5a1 1 0 0 1 1-1z"/></svg></button>{% endif %}
+      <span class="ind-info" data-ind-info>
+        <button type="button" class="ind-info-button" aria-expanded="false" aria-controls="ind-info-pop" aria-label="口径与来源" title="口径与来源">i</button>
+        <div id="ind-info-pop" class="ind-info-pop" role="dialog" aria-label="口径与来源" hidden>
+          {% include "_indicator_caliber.html" %}
+        </div>
+      </span>
+    </div>
     <p class="text-xs text-[var(--text-muted)] mt-1 tabular">
       <span class="cursor-pointer hover:underline text-[var(--primary)] font-semibold"
-            onclick="copyText('{{ d.series_id }}')" title="点击复制">{{ d.series_id }}</span>
+            data-copy-series="{{ d.series_id }}" title="点击复制">{{ d.series_id }}</span>
       {% if d.vendor_code %}· 供应商编码 {{ d.vendor_code }}{% endif %}
       · {{ d.frequency }}频 · {{ d.unit }}
       · {{ '自动采集' if d.fetch_mode == 'auto' else '人工录入' }}
     </p>
   </div>
   <div class="flex items-center gap-1.5 shrink-0 text-xs">
+    {% if research_workbench() and research_workbench().scope_version == 2 and not research_workbench().restricted %}<button type="button" class="charts-button" data-chart-builder="single" data-builder-series="{{ d.series_id }}">作图</button>{% endif %}
     <a href="{{ research_prefix() }}/sn/diagram" class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">产业图</a>
   </div>
 </div>
+
+{% if dedup_enabled %}<section data-dedup-sources="{{ d.series_id }}" class="mt-4 rounded-lg border border-[var(--line)] p-4" hidden aria-live="polite"></section>{% endif %}
 
 <!-- 被谁在用：放在最上面。这是「要不要维护它」的唯一依据 -->
 <section class="mt-4">
@@ -57,6 +70,7 @@
     </div>
     {% endif %}
 
+    <p id="indicator-chart-usage" class="mt-3 pt-3 border-t border-[var(--line)] text-[11px] text-[var(--text-muted)]" aria-live="polite">正在读取图表引用数…</p>
     {% if usage.crosscheck %}
     <div class="mt-3 pt-3 border-t border-[var(--line)]">
       <div class="text-[10px] font-semibold text-[var(--text-muted)] mb-1">参与跨来源校验</div>
@@ -68,58 +82,39 @@
   </div>
 </section>
 
-<section class="mt-4 grid gap-4 lg:grid-cols-3">
-  <div class="lg:col-span-2 rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
-    <div class="flex items-baseline justify-between">
-      <h2 class="text-sm font-bold">近 {{ d.history | length }} 期走势</h2>
-      {% if d.history %}
-      <span class="text-[11px] text-[var(--text-muted)] tabular">
-        {{ d.history[0].as_of }} ~ {{ d.history[-1].as_of }}</span>
-      {% endif %}
+{% set cycle_scope = research_workbench() %}
+{% set cycle_enabled = cycle_scope and cycle_scope.scope_version == 2 and not cycle_scope.restricted %}
+{% set cycle_write = cycle_enabled and cycle_scope.can_edit %}
+<section class="mt-4">
+  <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 min-w-0">
+    <div class="flex items-center justify-between gap-3 flex-wrap">
+      <h2 class="text-sm font-bold" id="ind-view-title" data-trend-title="近 {{ d.history | length }} 期走势">近 {{ d.history | length }} 期走势</h2>
+      <div class="flex items-center gap-3">
+        {% if d.history %}
+        <span id="ind-trend-range" class="text-[11px] text-[var(--text-muted)] tabular">
+          {{ d.history[0].as_of }} ~ {{ d.history[-1].as_of }}</span>
+        {% endif %}
+        {% if cycle_enabled %}
+        <div class="indicator-view-switch" role="tablist" aria-label="走势视图">
+          <button type="button" role="tab" id="ind-view-trend" data-ind-view="trend" aria-selected="true" aria-controls="ind-trend-view">走势</button>
+          <button type="button" role="tab" id="ind-view-cycle" data-ind-view="cycle" aria-selected="false" aria-controls="indicator-cycle-panel">同期对比</button>
+        </div>
+        {% endif %}
+      </div>
     </div>
+    <div id="ind-trend-view" role="tabpanel" aria-labelledby="ind-view-trend">
     <div id="ind-chart" class="mt-2"></div>
     {% if not d.history %}
     <p class="py-10 text-center text-xs text-[var(--text-muted)]">
       这条指标尚无任何观测 —— 不是 0，是没取到。</p>
     {% endif %}
+    </div>
+    {% include "_indicator_cycle.html" %}
   </div>
 
-  <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 text-[11px]">
-    <h2 class="text-sm font-bold mb-2">口径</h2>
-    {% if d.caliber %}
-      {% for c in d.caliber %}
-      <div class="flex gap-2 py-0.5 border-b border-[var(--line)] last:border-0">
-        <span class="w-20 shrink-0 text-[var(--text-muted)]">{{ c.label }}</span>
-        <span class="flex-1">{{ c.value }}</span></div>
-      {% endfor %}
-    {% else %}
-      <p class="text-[var(--text-muted)]">未标注口径维度</p>
-    {% endif %}
-    {% if d.expression %}
-    <div class="flex gap-2 py-0.5"><span class="w-20 shrink-0 text-[var(--text-muted)]">计算式</span>
-      <span class="flex-1 break-all">{{ d.expression }}</span></div>{% endif %}
-    {% if d.tolerance %}
-    <div class="flex gap-2 py-0.5"><span class="w-20 shrink-0 text-[var(--text-muted)]">容差</span>
-      <span class="flex-1">{{ d.tolerance }}</span></div>{% endif %}
-
-    <h2 class="text-sm font-bold mt-4 mb-2">来源与凭证</h2>
-    <div class="flex gap-2 py-0.5"><span class="w-20 shrink-0 text-[var(--text-muted)]">来源</span>
-      <span class="flex-1">{{ d.source or '—' }}</span></div>
-    {% if d.entered_by %}
-    <div class="flex gap-2 py-0.5"><span class="w-20 shrink-0 text-[var(--text-muted)]">录入人</span>
-      <span class="flex-1">{{ d.entered_by }}</span></div>{% endif %}
-    {% if d.owner %}
-    <div class="flex gap-2 py-0.5"><span class="w-20 shrink-0 text-[var(--text-muted)]">负责人</span>
-      <span class="flex-1 text-[var(--amber)]">{{ d.owner }}</span></div>{% endif %}
-    {% if d.latest_note %}
-    <div class="flex gap-2 py-0.5"><span class="w-20 shrink-0 text-[var(--text-muted)]">入库说明</span>
-      <span class="flex-1">{{ d.latest_note }}</span></div>{% endif %}
-    {% if d.source_url %}
-    <div class="flex gap-2 py-0.5"><span class="w-20 shrink-0 text-[var(--text-muted)]">凭证</span>
-      <a href="{{ d.source_url }}" target="_blank"
-         class="flex-1 break-all text-[var(--primary)] underline">{{ d.source_url }}</a></div>{% endif %}
-  </div>
 </section>
+
+<section class="charts-panel indicator-cycle mt-4" id="indicator-related-panel"><h2>相关图表</h2><div id="indicator-related-status" role="status" hidden></div><div id="indicator-related-charts"></div><button type="button" id="indicator-related-more" class="charts-button" hidden>加载更多相关图表</button></section>
 
 {% if d.revisions %}
 <section class="mt-4 rounded-lg border border-[var(--amber)]/40 bg-[var(--amber-soft)] p-4">
@@ -143,10 +138,24 @@
 <section class="mt-4 rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4">
   <div class="flex items-baseline justify-between">
     <h2 class="text-sm font-bold">观测明细</h2>
-    <button type="button" onclick="indCopyCsv()"
-      class="text-[11px] px-2 py-1 rounded border border-[var(--line)] hover:bg-[var(--surface-soft)]">复制为 CSV</button>
+    <div class="flex items-center gap-3">
+      {% if cycle_enabled %}
+      <div class="indicator-view-switch" role="tablist" aria-label="观测明细视图">
+        <button type="button" role="tab" id="ind-table-time" data-ind-table="time" aria-selected="true" aria-controls="ind-time-table">按时间</button>
+        <button type="button" role="tab" id="ind-table-year" data-ind-table="year" aria-selected="false" aria-controls="ind-year-table">按年份分列</button>
+      </div>
+      {% endif %}
+      <button type="button" onclick="indCopyCsv()"
+        class="text-[11px] px-2 py-1 rounded border border-[var(--line)] hover:bg-[var(--surface-soft)]">复制为 CSV</button>
+    </div>
   </div>
-  <div class="mt-2 max-h-80 overflow-y-auto">
+  {% if cycle_enabled %}
+  <div id="ind-year-table" class="mt-2 indicator-cycle" role="tabpanel" aria-labelledby="ind-table-year" hidden>
+    <p id="ind-year-status" class="text-[11px] text-[var(--text-muted)]" role="status"></p>
+    <div class="max-h-80 overflow-auto"><table class="w-full text-[11px] tabular text-left ind-year-grid"><thead class="text-[var(--text-muted)] sticky top-0 bg-[var(--surface)]"></thead><tbody></tbody></table></div>
+  </div>
+  {% endif %}
+  <div id="ind-time-table" class="mt-2 max-h-80 overflow-y-auto" role="tabpanel" aria-labelledby="ind-table-time">
     <table class="w-full text-[11px] tabular text-left">
       <thead class="text-[var(--text-muted)] sticky top-0 bg-[var(--surface)]">
         <tr><th class="py-1">数据时点</th><th class="text-right">值（{{ d.unit }}）</th>
@@ -157,17 +166,36 @@
 </section>
 {% endif %}
 
+<script type="application/json" id="indicator-cycle-config">{{ {'enabled': true if cycle_enabled else false, 'can_write': true if cycle_write else false, 'series_id': d.series_id, 'name': d.name, 'date': request.query_params.get('date'), 'reason': '受限视角暂不开放图表库和周期对比' if cycle_scope and cycle_scope.restricted else '图表库需要来源版本2，请重新打开研究台更新来源授权'} | tojson }}</script>
+<script src="{{ research_static_prefix() }}/static/indicator-cycle.js?v={{ static_version() }}"></script>
+{% if cycle_enabled %}{% include '_chart_builder.html' %}{% endif %}
 <script>
+  (function () {
+    // 口径与来源 sits behind the ⓘ next to the title: hover or focus to read, click to keep it open.
+    const box = document.querySelector('[data-ind-info]'); if (!box) return;
+    const button = box.querySelector('button'), pop = box.querySelector('.ind-info-pop');
+    let pinned = false;
+    const show = open => { pop.hidden = !open; button.setAttribute('aria-expanded', String(open)); };
+    box.addEventListener('mouseenter', () => show(true));
+    box.addEventListener('mouseleave', () => { if (!pinned) show(false); });
+    button.addEventListener('focus', () => show(true));
+    button.addEventListener('blur', () => { if (!pinned) show(false); });
+    button.addEventListener('click', () => { pinned = !pinned || pop.hidden; show(pinned); });
+    document.addEventListener('click', event => { if (!box.contains(event.target)) { pinned = false; show(false); } });
+    document.addEventListener('keydown', event => { if (event.key === 'Escape' && !pop.hidden) { pinned = false; show(false); button.focus(); } });
+  })();
   window.IND = {{ d | tojson }};
 </script>
 <script src="{{ research_static_prefix() }}/static/diagram.js?v={{ static_version() }}"></script>
 <script>
   (function () {
     const d = window.IND;
+    document.querySelector('[data-copy-series]')?.addEventListener('click', event => copyText(event.currentTarget.dataset.copySeries));
     if (!d || !d.history || !d.history.length) return;
     const box = document.getElementById("ind-chart");
     if (box && d.history.length > 1) {
-      box.innerHTML = dgChart(d.history, d.unit, 720, 300);
+      // The trend card is full width now; draw at the card's width instead of a fixed 720.
+      box.innerHTML = dgChart(d.history, d.unit, Math.max(480, Math.min(1400, Math.round(box.clientWidth || 720))), 320);
       dgBindChartHover();
     }
     const tb = document.getElementById("ind-rows");
@@ -178,7 +206,7 @@
       const pct = prev && prev.value ? ((p.value - prev.value) / Math.abs(prev.value)) * 100 : null;
       const cls = pct == null || pct === 0 ? "text-[var(--text-muted)]"
         : pct > 0 ? "text-[var(--up)]" : "text-[var(--down)]";
-      return `<tr class="border-t border-[var(--line)]"><td class="py-1">${p.as_of}</td>
+      return `<tr class="border-t border-[var(--line)]"><td class="py-1">${dgEsc(p.as_of)}</td>
         <td class="text-right font-semibold">${dgFmt(p.value)}</td>
         <td class="text-right ${cls}">${pct == null ? "—" : (pct > 0 ? "+" : "") + pct.toFixed(2) + "%"}</td></tr>`;
     }).join("");
@@ -186,6 +214,12 @@
 
   function indCopyCsv() {
     const d = window.IND;
+    const byYear = window.IndicatorYearTable?.csv();
+    if (byYear) {
+      navigator.clipboard.writeText(byYear.text).then(
+        () => showToast(`已复制 ${byYear.rows} 行`), () => showToast("复制失败"));
+      return;
+    }
     const csv = ["数据时点,值,单位"].concat(
       d.history.slice().reverse().map((p) => `${p.as_of},${p.value},${d.unit || ""}`)).join("\n");
     navigator.clipboard.writeText(csv).then(

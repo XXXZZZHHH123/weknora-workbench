@@ -23,6 +23,8 @@ def validation(code, path='/', **extra):
     (HTTPException(422, '模型输出达到长度上限，未生成完整研究逻辑；请精炼输出要求或更换模型后重试'), 'output_limit'),
     (HTTPException(503, '模型输出达到长度上限，未生成完整研究逻辑；请精炼输出要求或更换模型后重试'), 'output_limit'),
     (HTTPException(422, '模型未给出有效的真实指标选择'), 'selection_invalid'),
+    (HTTPException(422, '模型选出的候选指标过多，超出本次分析容量'), 'selection_too_broad'),
+    (HTTPException(422, '模型筛选指标时输出超出长度上限'), 'selection_output_limit'),
     (validation('source_coverage'), 'source_coverage'),
     (validation('field_schema', '/judgment/pricing_power/category'), 'field_schema'),
     (validation('unknown_series_id', '/binding_units/kb-private-series'), 'selection_invalid'),

@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     llm_timeout: float = 120.0
     llm_max_retries: int = 2
     llm_max_tokens: int = 16000
+    # 按旧 PPT 版式导出（图位绑定）暂不对外提供；完整功能保留在 feature/ppt-templates 分支。
+    ppt_enabled: bool = False
     # OpenAI 兼容端点的结构化输出模式，各家支持度不一致：
     #   json_schema —— 服务端按 schema 强约束（vLLM、以及部分百炼模型支持）
     #   json_object —— 只保证是合法 JSON，形状靠 prompt 说明 + 闸门兜底

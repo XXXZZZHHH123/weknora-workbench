@@ -2,8 +2,12 @@
 {% from "_judgment_metric.html" import metric_view with context %}
 {% block title %}研究判断 · {{ research_workbench().metadata.name if research_workbench() else '商品研究' }}{% endblock %}
 {% block head %}
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/charts.css?v={{ static_version() }}">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/judgment-manager.css?v={{ static_version() }}">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/judgment-research.css?v={{ static_version() }}">
+{% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/chart-kit.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/chart-hover.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/chart-references.js?v={{ static_version() }}"></script>{% endif %}
 <script defer src="{{ research_static_prefix() }}/static/judgment-chart.js?v={{ static_version() }}"></script>
 {% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/judgment-manager.js?v={{ static_version() }}"></script>{% endif %}
 {% endblock %}
@@ -29,6 +33,7 @@
   </div>{% elif item.series_id %}<span class="judgment-evidence-unbound">{{ indicator_name(item.series_id, names) }} · 暂无可用数值</span>{% else %}<span class="judgment-evidence-unbound">文字依据 · 尚未关联指标</span>{% endif %}
 {% endmacro %}
 <div class="judgment-research">
+{% if not restricted_view and j %}<aside class="research-panel" data-dedup-references="judgment" data-dedup-reference-id="{{ j.id }}" hidden></aside>{% endif %}
 <header class="rw-page-head judgment-research-header">
   <div><h1>研究判断</h1><p>{% if j %}{% if author_label(j.author) %}{{ author_label(j.author) }} · {% endif %}{{ j.written_at }} · {{ j.status }}{% else %}梳理多空分歧，跟踪依据与验证条件{% endif %}</p></div>
   {% if not restricted_view %}<div class="rw-tools"><button type="button" class="rw-btn rw-btn-primary" data-open-logic>管理研究逻辑</button></div>{% endif %}
@@ -43,6 +48,9 @@
 {% if block.expired_days %}<div class="judgment-research-notice">判断需要复核 · 超过复核周期 {{ block.expired_days }} 天。监测继续，结论需复核。</div>{% endif %}
 {% if block.blockers %}<details class="judgment-research-notice"><summary>草稿尚未生效 · 查看需补充的内容</summary><p>{{ block.blockers|join('；') }}</p></details>{% endif %}
 {% if j.tone_note %}<p class="research-prose">{{ human_text(j.tone_note, names) }}</p>{% endif %}
+{% if restricted_view %}<p class="judgment-research-notice">图表引用暂不对受限视角开放</p>{% else %}
+<section class="judgment-research-section" data-judgment-library="{{ j.id }}" data-chart-date="{{ d or '' }}"><h2>图表依据</h2><div data-judgment-library-target="judgment"></div><p data-library-status role="status"></p></section>
+{% endif %}
 <section class="judgment-research-section" id="judgment-hypotheses">
   <h2>核心分歧 · 多 vs 空</h2>
   {% set rows = namespace(evidence=1, falsifiers=1) %}
@@ -63,6 +71,7 @@
       {% for evidence in hypothesis.evidence|default(original.evidence) %}
         <li class="judgment-item-card" data-research-item="evidence"><p class="judgment-evidence-desc">{{ human_text(evidence.desc, names) }}</p>
           {{ item_metrics(evidence) }}
+          {% if not restricted_view %}<div data-judgment-library-target="evidence:{{ side }}:{{ loop.index0 }}"></div>{% endif %}
         </li>
       {% else %}<li class="judgment-research-empty">尚待补充支持依据</li>{% endfor %}
       </ul>
@@ -71,6 +80,7 @@
         <div class="judgment-falsifier judgment-item-card" data-research-item="falsifier" style="grid-row:{{ 5 + rows.evidence + loop.index0 }}"><div class="judgment-falsifier-heading"><strong>{{ human_text(item.rule.desc, names) }}</strong><span class="judgment-falsifier-state" data-state="{{ item.state }}">{{ item.state }}</span></div>
           {% if item.condition %}<p>{{ item.condition }}</p>{% endif %}
           {{ item_metrics(item) }}
+          {% if not restricted_view %}<div data-judgment-library-target="falsifier:{{ item.rule.id }}"></div><div data-chart-related-rule="{{ item.rule.id }}"></div>{% endif %}
           {% if item.gap_note %}<p>{{ human_text(item.gap_note, names) }}</p>{% endif %}
         </div>
       {% else %}<p class="judgment-research-empty judgment-falsifier-empty" style="grid-row:{{ 5 + rows.evidence }}">尚无已核验的证伪条件{% if research.pending_conditions %}，待验证内容见下方。{% endif %}</p>{% endfor %}
@@ -112,7 +122,7 @@
       <tbody class="divide-y divide-[var(--line)]">
         {% for t in radar %}
         <tr>
-          <td class="py-3 px-3 font-bold">{{ human_text(t.name, names) }}<div class="text-[10px] font-normal text-[var(--text-muted)]">{{ t.type }} · {{ t.horizon }}</div></td>
+          <td class="py-3 px-3 font-bold">{{ human_text(t.name, names) }}<div class="text-[10px] font-normal text-[var(--text-muted)]">{{ t.type }} · {{ t.horizon }}</div>{% if not restricted_view %}<div data-chart-related-rule="{{ t.id }}"></div>{% endif %}</td>
           <td class="py-3 px-3"><span data-indicator-reference>{{ indicator_name(t.series_id, names) }}</span>
             {% set related = (research.threshold_related|default({})).get(t.id, []) %}
             {% if related %}<details class="judgment-threshold-related"><summary>关联观察 · {{ related|length }} 项</summary>
@@ -137,6 +147,7 @@
             {% elif t.state == '数据缺失' %}bg-[var(--amber-soft)] text-[var(--amber)]
             {% else %}bg-[var(--primary-soft)] text-[var(--primary)]{% endif %}">{{ t.state }}</span></td>
         </tr>
+        {% if not restricted_view %}<tr data-rule-chart-row hidden><td colspan="7"><div data-judgment-library-target="threshold:{{ t.id }}"></div></td></tr>{% endif %}
         {% else %}
         <tr><td colspan="7" class="py-4 px-3 text-center text-[var(--text-muted)]">尚无已核验的可计算阈值；待验证条件列在下方。</td></tr>
         {% endfor %}

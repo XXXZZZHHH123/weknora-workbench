@@ -125,7 +125,7 @@
     semantic.value = ['change', 'inventory'].includes(preference.semantics) ? preference.semantics : metric.trend_semantics === 'inventory' ? 'inventory' : 'change';
     function semantics() { if (streak) streak.textContent = streakText(metric.streak, semantic.value); }
     function savePreference() {
-      if (key) try { window.localStorage.setItem(key, JSON.stringify({semantics: semantic.value})); } catch { /* Presentation preference is optional. */ }
+      if (key) try { window.localStorage.setItem(key, JSON.stringify({semantics: semantic.value, view: preference.view === 'cycle' ? 'cycle' : 'trend'})); } catch { /* Presentation preference is optional. */ }
       document.querySelectorAll('[data-judgment-chart]').forEach(other => {
         if (root.dataset.chartSeries && other !== root && other.dataset.chartSeries === root.dataset.chartSeries) {
           const control = other.querySelector('[data-chart-semantics]');
@@ -263,15 +263,92 @@
     render();
     if (typeof ResizeObserver !== 'undefined') {
       new ResizeObserver(() => {
-        if (Math.abs(svg.getBoundingClientRect().width - rendered.plot.width) >= 1) { hide(); render(); }
+        if (svg.getBoundingClientRect().width && Math.abs(svg.getBoundingClientRect().width - rendered.plot.width) >= 1) { hide(); render(); }
       }).observe(svg);
     }
+    // 同期: the same indicator laid over past years (the indicator page's cycle view), read on demand.
+    const views = [...root.querySelectorAll('[data-chart-view]')], cycleBox = root.querySelector('[data-chart-cycle]');
+    const plotBox = root.querySelector('.judgment-chart-plot'), averageControl = select.closest('label');
+    let cycleChart = null, cycleLoading = null;
+    function loadCycle() {
+      if (cycleChart || cycleLoading || !window.ChartKit) return cycleLoading;
+      cycleBox.textContent = '正在读取往年同期…';
+      cycleLoading = (async () => {
+        try {
+          const query = new URLSearchParams(); if (root.dataset.chartDate) query.set('date', root.dataset.chartDate);
+          const response = await window.researchFetch((window.RESEARCH_PREFIX || '') + '/api/sn/indicators/' + encodeURIComponent(metric.series_id) + '/cycle?' + query);
+          const data = await response.json();
+          if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '往年同期暂时无法读取，请稍后重试');
+          cycleBox.replaceChildren();
+          cycleChart = window.ChartKit.render(cycleBox, data, {width: Math.max(320, Math.round(cycleBox.clientWidth || root.clientWidth || 480)), height: 320});
+        } catch (error) { cycleBox.textContent = error.message; }
+        finally { cycleLoading = null; }
+      })();
+      return cycleLoading;
+    }
+    function showView(view, persist = true) {
+      const cycle = view === 'cycle' && !!cycleBox;
+      views.forEach(button => button.setAttribute('aria-selected', String((button.dataset.chartView === 'cycle') === cycle)));
+      if (plotBox) plotBox.hidden = cycle;
+      if (cycleBox) cycleBox.hidden = !cycle;
+      if (averageControl) averageControl.hidden = cycle;
+      if (cycle) { custom.hidden = true; hide(); } else if (select.value === 'custom') custom.hidden = false;
+      if (persist) { preference.view = cycle ? 'cycle' : 'trend'; savePreference(); }
+      if (cycle) loadCycle();
+    }
+    views.forEach(button => button.addEventListener('click', () => showView(button.dataset.chartView)));
+    if (preference.view === 'cycle' && cycleBox) showView('cycle', false);
   }
 
   const api = {movingAverage, shape, streakText, boundaryText};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (typeof document === 'undefined') return;
-  function boot() { document.querySelectorAll('[data-judgment-chart]').forEach(initialize); }
+  function targetKey(target = {kind: 'judgment'}) {
+    if (target.kind === 'evidence') return `evidence:${target.side}:${target.index}`;
+    return target.id ? `${target.kind}:${target.id}` : 'judgment';
+  }
+  async function bootLibrary() {
+    const root = document.querySelector('[data-judgment-library]');
+    if (!root || !window.ChartReferences) return;
+    const status = root.querySelector('[data-library-status]'), date = root.dataset.chartDate || '';
+    try {
+      const response = await researchFetch((window.RESEARCH_PREFIX || '') + '/api/sn/judgment/library-references?judgment_id=' + encodeURIComponent(root.dataset.judgmentLibrary));
+      const data = await response.json();
+      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '图表依据暂不可用');
+      document.querySelectorAll('[data-judgment-library-target]').forEach(container => {
+        const references = (data.references || []).filter(reference => targetKey(reference.target) === container.dataset.judgmentLibraryTarget);
+        if (references.length) {
+          const row = container.closest('[data-rule-chart-row]'); if (row) row.hidden = false;
+          window.ChartReferences.mount(container, {references, rules: data.rules || [], asOf: data.as_of});
+        }
+      });
+      document.querySelectorAll('[data-chart-related-rule]').forEach(container => {
+        const charts = data.related?.[container.dataset.chartRelatedRule] || [];
+        if (!charts.length) return;
+        const title = document.createElement('span'); title.textContent = '相关图表：'; container.append(title);
+        for (const chart of charts) {
+          const link = document.createElement('a'); link.textContent = chart.title;
+          link.href = (window.RESEARCH_PREFIX || '') + '/sn/charts/' + encodeURIComponent(chart.id); link.style.marginRight = '0.6em'; container.append(link);
+          window.ChartHover?.attach(link, {
+            key: `chart:${chart.id}:${date}`, title: chart.title,
+            load: async () => {
+              const path = (window.RESEARCH_PREFIX || '') + '/api/sn/charts/' + encodeURIComponent(chart.id);
+              async function read(url) {
+                const response = await researchFetch(url), result = await response.json();
+                if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : '图表数据读取失败，请重试。');
+                return result;
+              }
+              const [record, data] = await Promise.all([read(path), read(path + '/data' + (date ? '?date=' + encodeURIComponent(date) : ''))]);
+              if (data.revision !== undefined && data.revision !== record.revision) throw new Error('图表已有新版本，请重新加载页面。');
+              return {data, definition: record.definition, title: record.title || record.definition?.title || chart.title};
+            }
+          });
+        }
+      });
+      if (!(data.references || []).length) status.textContent = '在“管理研究逻辑”中插入图表，可作为整条研判或某条规则、证据的依据。';
+    } catch (error) { if (status) status.textContent = error.message; }
+  }
+  function boot() { document.querySelectorAll('[data-judgment-chart]').forEach(initialize); bootLibrary(); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, {once: true});
   else boot();
 })();

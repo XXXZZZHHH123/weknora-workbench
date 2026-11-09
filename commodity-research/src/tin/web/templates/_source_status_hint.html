@@ -1,0 +1,6 @@
+{% if not restricted_view and source_status_hint %}
+<aside data-source-status-hint class="rounded-lg border border-[var(--line)] bg-[var(--surface-soft)] p-3 text-sm{% if source_status_hint.quiet %} text-[var(--text-muted)]{% endif %}" role="status">
+  <p>{{ source_status_hint.message }}</p>
+  <p>{% for link in source_status_hint.links %}<a href="{{ link.url }}" target="_top" class="underline">核对 {{ link.source_file }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>
+</aside>
+{% endif %}

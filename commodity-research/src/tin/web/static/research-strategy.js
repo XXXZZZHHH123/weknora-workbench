@@ -17,7 +17,7 @@
     review_date: 'review', original_text: 'original'};
   const citationFields = {thesis: '适用范围与目标', watch_for: '执行前核对', trigger: '适用 / 触发',
     response_action: '应对措施', invalidation: '暂停 / 撤回', original_text: '原始研究文字'};
-  const citationKinds = {indicator: '指标', judgment_condition: '研判条件', knowledge_file: '知识库原件'};
+  const citationKinds = {indicator: '指标', judgment_condition: '研判条件', knowledge_file: '知识库原件', chart: '图表'};
   const cache = new Map(), drafts = new Map(), metadata = new Map();
   for (const item of research.items || []) metadata.set('research:' + item.id, item);
   for (const item of state.plans || []) metadata.set(item.key, item);
@@ -32,6 +32,7 @@
   let citationListController = null, citationPreviewController = null, citationImportController = null;
   let citationParent = null, citationParents = [], citationParentNext = 0, citationParentsLoaded = false;
   let citationParentController = null, citationParentToken = 0;
+  let cardChartHandles = [], citationChartHandle = null;
   const citationDialog = byId('strategy-citation-dialog');
   const host = document.createElement('div'); host.id = 'strategy-dynamic-preview';
   byId('strategy-preview-content').prepend(host);
@@ -181,6 +182,7 @@
     });
   }
   function hideEditors() {
+    clearCardChartViews();
     closeCitations();
     editSequence += 1; activeEditor = null;
     if (editor) editor.hidden = true;
@@ -188,6 +190,7 @@
     host.hidden = false;
   }
   function renderCard(item, key) {
+    clearCardChartViews();
     const article = element('article', undefined, 'strategy-preview-article');
     const header = element('header', undefined, 'strategy-preview-header'), title = element('div');
     const card = item.card;
@@ -201,6 +204,7 @@
       () => openCard(key, drafts.get(key)?.source || item, drafts.get(key))));
     if (item.can_apply !== false && item.scope_status !== 'unassigned' && state.can_write && card)
       actions.append(button('引用为新草稿', () => applyCard(key, item)));
+    loadCardRevisions(item, key, actions);
     header.append(title, actions); article.append(header);
     if (item.scope_status === 'unassigned') article.append(element('p', '归属待核对 · 历史原记录仅供只读预览。', 'strategy-small-note'));
     if (card) {
@@ -223,11 +227,62 @@
       }
       const sources = item.source_snapshots || [];
       if (sources.length) disclosure(article, '关联资料（' + sources.length + '）', sources.map(row => row.title || row.file_name || '未命名关联资料').join('\n'));
+      const references = libraryReferences(card.citations || []);
+      if (references.length) {
+        const charts = element('section', undefined, 'strategy-library-charts');
+        charts.setAttribute('aria-label', '引用图表'); article.append(charts);
+        mountCardCharts(charts, {references, thumbnail: true});
+      }
     } else disclosure(article, '历史研究记录全文', item.legacy_body);
     article.append(element('small', item.evidence_notice || '', 'strategy-small-note'));
     host.replaceChildren(article);
-    if (card && (card.citations || []).some(row => row.kind === 'indicator' || row.kind === 'judgment_condition'))
+    if (card && (card.citations || []).some(row => ['indicator', 'judgment_condition', 'chart'].includes(row.kind)))
       loadMonitor(item, article.querySelector('.research-preview-fields'));
+  }
+  function libraryReferences(items) {
+    return items.filter(item => item.kind === 'chart').map(({field, snapshot, ...reference}) => reference);
+  }
+  function clearCardChartViews() {
+    for (const handle of cardChartHandles) handle?.destroy();
+    cardChartHandles = [];
+  }
+  function mountCardCharts(container, options) {
+    const handle = window.ChartReferences?.mount(container, options);
+    if (handle) cardChartHandles.push(handle);
+  }
+  async function loadCardRevisions(item, key, actions) {
+    const own = selectSequence;
+    try {
+      const data = await request('/research-strategies/' + encodeURIComponent(item.id) + '/revisions');
+      if (own !== selectSequence || selected !== key || (data.items || []).length < 2) return;
+      const choice = element('select'); choice.setAttribute('aria-label', '策略版本');
+      for (const row of data.items) {
+        const option = element('option', '第 ' + row.revision + ' 版' + (row.revision === data.current_revision ? '（最新）' : ''));
+        option.value = row.revision; option.selected = row.revision === item.revision; choice.append(option);
+      }
+      choice.addEventListener('change', async () => {
+        const revision = choice.value; choice.disabled = true;
+        try {
+          const value = await request('/research-strategies/' + encodeURIComponent(item.id) + '?revision=' + encodeURIComponent(revision));
+          if (own !== selectSequence || selected !== key) return;
+          ++selectSequence; renderCard(value, key);
+        } catch (error) { if (own === selectSequence) status(error.message, true); }
+        finally { choice.disabled = false; }
+      });
+      actions.append(choice);
+    } catch (_) { /* A failed history directory does not hide the saved card. */ }
+  }
+  async function insertChart(slot = 'thesis') {
+    if (saving || !activeEditor || !window.ChartReferences || !Object.hasOwn(citationFields, slot)) return;
+    const own = editSequence, key = activeEditor;
+    try {
+      const reference = await window.ChartReferences.pick({});
+      if (!reference || own !== editSequence || key !== activeEditor || editor.hidden) return;
+      if (citations.length >= 32) throw new Error('每份策略最多引用32项，请先移除不需要的引用。');
+      const citation = {...reference, field: slot, snapshot: {title: reference.title, subtitle: reference.definition_summary}};
+      if (!citations.some(item => citationKey(item) === citationKey(citation))) citations.push(citation);
+      renderCitationFields(); dirty();
+    } catch (error) { if (own === editSequence) status(error.message, true, field('form-status')); }
   }
   function localDay(value) {
     const stamp = value ? new Date(value) : null;
@@ -277,6 +332,7 @@
     panel.append(head); (anchor || host.firstChild)?.after(panel);
     try {
       const query = new URLSearchParams(); const day = new URL(location.href).searchParams.get('date'); if (day) query.set('date', day);
+      if (item.historical) query.set('revision', String(item.revision));
       const data = await request('/research-strategies/' + encodeURIComponent(item.id) + '/monitor' + (query.size ? '?' + query : ''));
       if (own !== selectSequence || !panel.isConnected) return;
       const counts = data.counts || {};
@@ -284,6 +340,11 @@
       const grid = element('div', undefined, 'strategy-monitor-grid');
       for (const row of data.conditions || []) grid.append(monitorItem(row, 'condition'));
       for (const row of data.indicators || []) grid.append(monitorItem(row, 'indicator'));
+      const references = (data.charts || []).map(row => row.reference);
+      if (references.length) {
+        const chartPanel = element('div', undefined, 'strategy-monitor-charts'); grid.append(chartPanel);
+        mountCardCharts(chartPanel, {references, thumbnail: true});
+      }
       panel.append(grid);
     } catch (error) {
       if (own !== selectSequence || !panel.isConnected) return;
@@ -291,6 +352,7 @@
     }
   }
   function renderPlan(item, key) {
+    clearCardChartViews();
     const article = element('article', undefined, 'strategy-preview-article'), plan = item.plan;
     const header = element('header', undefined, 'strategy-preview-header'), title = element('div');
     const statusLabel = metadata.get(key)?.status_label || item.status;
@@ -311,6 +373,10 @@
     disclosure(article, '证据与数据口径（' + plan.evidence.length + '）', plan.evidence.map(row =>
       [row.statement, row.series_id ? display.indicator(row.series_id) : null, row.value, row.source, row.as_of].filter(value => value !== undefined && value !== null).join(' · ')).join('\n\n'));
     const link = element('a', '完整计划与成交记录 ↗', 'strategy-detail-link'); link.href = prefix + '/sn/strategies/' + item.id; article.append(link);
+    if ((plan.chart_references || []).length) {
+      const charts = element('section', undefined, 'strategy-library-charts'); charts.setAttribute('aria-label', '引用图表'); article.append(charts);
+      mountCardCharts(charts, {references: plan.chart_references, thumbnail: true});
+    }
     host.replaceChildren(article);
   }
   async function select(key, restoreDraft = true) {
@@ -353,8 +419,10 @@
     if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.hasOwn(citationFields, value.field))
       throw new Error('引用所属文字项无效，请重新选择。');
     const keys = {indicator: ['series_id', 'source_version', 'source_binding_id'],
-      judgment_condition: ['id', 'revision', 'rule_kind', 'rule_id'], knowledge_file: ['source_binding_id', 'knowledge_id', 'file_version']}[value.kind];
-    if (!keys || Object.keys(value).some(key => !['kind', 'field', 'snapshot', ...keys].includes(key)))
+      judgment_condition: ['id', 'revision', 'rule_kind', 'rule_id'], knowledge_file: ['source_binding_id', 'knowledge_id', 'file_version'],
+      chart: ['id', 'revision']}[value.kind];
+    const frozen = value.kind === 'chart' ? ['source_version', 'source_versions', 'as_of', 'title', 'definition_summary', 'definition'] : [];
+    if (!keys || Object.keys(value).some(key => !['kind', 'field', 'snapshot', ...keys, ...frozen].includes(key)))
       throw new Error('引用格式无效，请从当前工作台重新选择。');
     const result = {kind: value.kind, field: value.field};
     for (const key of keys) {
@@ -375,7 +443,7 @@
       const chip = element('span', undefined, 'strategy-citation-chip');
       const title = item.snapshot?.title || citationKinds[item.kind] || '待核对引用';
       const open = button('', () => openCitationPreview(item, editing ? null : selectionKey), 'strategy-citation-open');
-      open.append(element('small', {indicator: '指标', judgment_condition: '条件', knowledge_file: '文件'}[item.kind] || '引用', 'strategy-citation-kind'), element('span', title));
+      open.append(element('small', {indicator: '指标', judgment_condition: '条件', knowledge_file: '文件', chart: '图表'}[item.kind] || '引用', 'strategy-citation-kind'), element('span', title));
       chip.dataset.kind = item.kind;
       open.title = [title, item.snapshot?.subtitle].filter(Boolean).join(' · '); chip.append(open);
       if (editing) {
@@ -395,6 +463,7 @@
     citationParentController?.abort(); citationParentToken++;
   }
   function closeCitations() {
+    citationChartHandle?.destroy(); citationChartHandle = null;
     cancelCitationRequests(); citationContext = null; citationChoice = null;
     if (citationDialog?.open) citationDialog.close();
   }
@@ -425,7 +494,14 @@
     const context = {mode: selectionKey ? 'preview' : 'edit', field: item.field, key: activeEditor,
       editing: editSequence, selection: selectSequence, selected,
       parent: item.kind === 'judgment_condition' ? {id: item.id, revision: item.revision, title: item.snapshot?.preview?.judgment_title} : null};
-    showCitationDialog(context); if (!selectionKey) { citationKind = item.kind; byId('strategy-citation-search').value = ''; loadCitationOptions(); }
+    showCitationDialog(context);
+    if (item.kind === 'chart') {
+      byId('strategy-citation-browser').hidden = true; byId('strategy-citation-clear').hidden = true;
+      const panel = byId('strategy-citation-preview'); panel.replaceChildren();
+      citationChartHandle = window.ChartReferences?.mount(panel, {references: libraryReferences([item]), thumbnail: false});
+      return;
+    }
+    if (!selectionKey) { citationKind = item.kind; byId('strategy-citation-search').value = ''; loadCitationOptions(); }
     previewCitation(item);
   }
   function drawCitationOptions() {
@@ -482,6 +558,7 @@
     if (!append) {
       citationRows = []; citationNext = null; citationChoice = null; citationPreviewToken++;
       citationPreviewController?.abort(); citationImportController?.abort();
+      citationChartHandle?.destroy(); citationChartHandle = null;
       byId('strategy-citation-preview').replaceChildren(element('p', '选择一项查看内容。', 'strategy-small-note'));
       drawCitationOptions();
     }
@@ -519,7 +596,7 @@
     if (preview.notice) panel.append(element('p', preview.notice, 'strategy-small-note'));
     const link = citationLink(preview.url || preview.detail_url || preview.origin_url, preview.type === 'file' ? '预览知识库原件 ↗' : preview.type === 'condition' ? '查看所引研判 ↗' : '查看指标详情 ↗');
     if (link) panel.append(link);
-    if (preview.type === 'indicator') { const values = element('div', '正在读取所选指标…', 'strategy-small-note'); panel.append(values); loadCitationIndicator(data, context, values); }
+    if (preview.type === 'indicator') drawCitationIndicator(data, context, panel);
     const controls = element('div', undefined, 'strategy-citation-actions');
     if (context.mode !== 'preview') {
       const used = citations.some(item => citationKey(item) === citationKey(data.citation));
@@ -538,6 +615,7 @@
   async function previewCitation(item) {
     const context = citationContext; if (!context) return;
     citationPreviewController?.abort(); citationPreviewController = new AbortController(); const token = ++citationPreviewToken;
+    citationChartHandle?.destroy(); citationChartHandle = null;
     const panel = byId('strategy-citation-preview'); panel.replaceChildren(element('p', '正在核对引用…', 'strategy-small-note')); citationStatus('');
     try {
       const data = await request('/research-strategies/citation-preview', {method: 'POST', headers: {'Content-Type': 'application/json'}, signal: citationPreviewController.signal,
@@ -549,6 +627,54 @@
         citationChoice = null; panel.replaceChildren(button('重试预览', () => previewCitation(item))); citationStatus(error.message, true);
       }
     }
+  }
+  function drawCitationIndicator(data, context, panel) {
+    const token = citationPreviewToken;
+    const views = element('div', undefined, 'indicator-view-switch'); views.setAttribute('role', 'tablist'); views.setAttribute('aria-label', '指标视图');
+    const trend = element('div', '正在读取所选指标…', 'strategy-small-note'); trend.dataset.citationIndicatorTrend = '';
+    const cycle = element('div', undefined, 'strategy-citation-cycle'); cycle.hidden = true; cycle.dataset.citationIndicatorCycle = '';
+    let cycleData = null, cycleLoading = null, cycleChart = null;
+    const current = () => currentCitationContext(context) && token === citationPreviewToken && cycle.isConnected;
+    function renderCycle() {
+      if (cycleChart || cycle.hidden || !cycleData || !current()) return;
+      if (!window.ChartKit) throw new Error('同期图表暂时无法加载，请稍后重试。');
+      cycle.replaceChildren();
+      cycleChart = window.ChartKit.render(cycle, cycleData, {width: Math.round(cycle.clientWidth || panel.clientWidth || 480), height: 300});
+      citationChartHandle = cycleChart;
+    }
+    function showCycleError(error) {
+      if (!current()) return;
+      cycle.replaceChildren(element('p', error.message, 'strategy-small-note')); cycle.setAttribute('role', 'alert');
+    }
+    async function loadCycle() {
+      if (cycleLoading || cycleChart) return;
+      cycle.removeAttribute('role');
+      if (cycleData) { try { renderCycle(); } catch (error) { showCycleError(error); } return; }
+      cycle.textContent = '正在读取往年同期…';
+      cycleLoading = (async () => {
+        try {
+          const query = new URLSearchParams(), date = new URL(location.href).searchParams.get('date');
+          if (date) query.set('date', date);
+          const result = await request('/indicators/' + encodeURIComponent(data.preview.series_id) + '/cycle?' + query, {signal: citationPreviewController.signal});
+          if (!current()) return;
+          cycleData = result; renderCycle();
+        } catch (error) { if (error.name !== 'AbortError') showCycleError(error); }
+        finally { cycleLoading = null; }
+      })();
+      await cycleLoading;
+    }
+    function showView(name) {
+      if (!current()) return;
+      const isCycle = name === 'cycle';
+      trend.hidden = isCycle; cycle.hidden = !isCycle;
+      for (const tab of views.children) tab.setAttribute('aria-selected', String(tab.dataset.citationIndicatorView === name));
+      if (isCycle) loadCycle();
+    }
+    for (const [name, title] of [['trend', '走势'], ['cycle', '同期']]) {
+      const tab = button(title, () => showView(name), ''); tab.dataset.citationIndicatorView = name;
+      tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(name === 'trend')); views.append(tab);
+    }
+    panel.append(views, trend, cycle); loadCitationIndicator(data, context, trend);
   }
   async function loadCitationIndicator(data, context, target) {
     const token = citationPreviewToken;
@@ -751,6 +877,7 @@
     } finally { saving = false; unlock(); }
   }
   if (form) {
+    document.querySelectorAll('[data-strategy-chart-field]').forEach(node => node.addEventListener('click', () => insertChart(node.dataset.strategyChartField)));
     form.addEventListener('input', dirty); form.addEventListener('change', dirty);
     form.addEventListener('submit', event => { event.preventDefault(); saveCard(); });
     field('add')?.addEventListener('click', () => openCard(draftKey()));
