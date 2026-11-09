@@ -130,6 +130,8 @@ def _related_charts(session, kind, value):
 
 @router.get('')
 def reference_notices(kind: ReferenceKind, id: str = ''):
+    if kind == 'ppt':
+        ppt.require_enabled()
     scope = charts.require_scope()
     with artifact_session(scope) as session:
         _, value, identifiers, revision = _load(session, scope, kind, id)
@@ -191,6 +193,8 @@ def _core_history(session, scope, value, revision):
 
 @router.post('/rewrite')
 def rewrite_references(body: RewriteInput):
+    if body.kind == 'ppt':
+        ppt.require_enabled()
     scope = charts.require_scope()
     if body.confirmed is not True:
         raise HTTPException(422, '改写引用需要研究员明确确认')
