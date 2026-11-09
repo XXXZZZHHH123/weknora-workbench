@@ -26,7 +26,8 @@ from tin.integration.workbench_scope import artifact_session, current_workbench,
 from tin.judgments.analysis import AnalysisError, SOURCE_BYTES, assess_draft, unique_condition_kinds, validate_analysis
 from tin.judgments.numbers import exact_float, NumericPrecisionError
 from tin.judgments.markdown import dump_markdown, version_diff
-from tin.judgments.prompt import GENERAL_METHOD, OUTPUT_PROTOCOL, PROMPT_VERSION, SELECTION_PROTOCOL
+from tin.judgments.prompt import (GENERAL_METHOD, OUTPUT_PROTOCOL, PROMPT_VERSION, RECALL_PICK_PROTOCOL,
+    RECALL_QUERY_PROTOCOL, SELECTION_PROTOCOL)
 from tin.judgments.service import JudgmentError, current, latest, latest_workbench_payload, save_version, to_payload
 from tin.models import AuditLog, Judgment
 from tin.ownership import scope_query, verified_actor
@@ -406,6 +407,43 @@ async def completion(scope, model_id, prompt):
         raise HTTPException(503, '模型服务暂时不可用，原文和现有版本保持不变') from None
 
 
+async def selection_completion(scope, model, prompt):
+    try:
+        return await completion(scope, model, prompt)
+    except HTTPException as error:
+        # A truncated selection is never parsed; say which stage overflowed
+        # instead of implying the judgment text itself was too long.
+        if error.detail == OUTPUT_LIMIT:
+            raise HTTPException(error.status_code, SELECTION_OUTPUT_LIMIT) from None
+        raise
+
+
+async def recalled_catalog(scope, model, catalog, text, inventory):
+    """Per research item: model phrasings, ranked recall from the real catalog, bounded model picks."""
+    from tin.web import judgment_recall as recall
+    request = recall.query_prompt(text, inventory)
+    if len(request.encode('utf-8')) > PROMPT_BYTES:
+        raise HTTPException(413, '完整资料超过本次指标检索容量，请缩小范围后重试')
+    await notify_progress('selecting')
+    phrased = recall.item_queries(await selection_completion(scope, model, request), inventory)
+    index, by_id = recall.catalog_index(catalog), {row['id']: row for row in catalog}
+    for per_item in recall.RECALL_STEPS:
+        groups = recall.recall_groups(index, inventory, phrased, per_item)
+        prompt, mapping = recall.pick_request(text, groups, by_id)
+        if len(prompt.encode('utf-8')) <= PROMPT_BYTES:
+            break
+    else:
+        raise HTTPException(413, '完整资料与召回候选超过本次容量，请缩小范围后重试')
+    if not groups:
+        return [], True
+    await notify_progress('selecting')
+    selected = set(recall.picked_ids(await selection_completion(scope, model, prompt), mapping))
+    candidates = [row for row in catalog if row['id'] in selected]
+    if len(catalog_json(candidates).encode('utf-8')) > CANDIDATE_BYTES:
+        raise HTTPException(422, SELECTION_TOO_BROAD)
+    return candidates, True
+
+
 async def choose_catalog(scope, model, catalog, text):
     try:
         make_prompt(analysis_protocol(False), catalog, text)
@@ -413,18 +451,15 @@ async def choose_catalog(scope, model, catalog, text):
         if error.status_code != 413: raise
     else:
         return catalog, False
+    inventory = _source_inventory.get()
+    if inventory is not None:
+        return await recalled_catalog(scope, model, catalog, text, inventory)
+    # Without an item inventory, fall back to complete batched catalog selection.
     requests = selection_requests(catalog, text)
     selected = set()
     for batch, refs, prompt in requests:
         await notify_progress('selecting')
-        try:
-            result = await completion(scope, model, prompt)
-        except HTTPException as error:
-            # A truncated selection is never parsed; say which stage overflowed
-            # instead of implying the judgment text itself was too long.
-            if error.detail == OUTPUT_LIMIT:
-                raise HTTPException(error.status_code, SELECTION_OUTPUT_LIMIT) from None
-            raise
+        result = await selection_completion(scope, model, prompt)
         selected.update(selected_catalog_ids(result, batch, refs))
     candidates = [row for row in catalog if row['id'] in selected]
     if len(catalog_json(candidates).encode('utf-8')) > CANDIDATE_BYTES:
@@ -793,6 +828,7 @@ async def _analyze_scoped(scope, body):
         raise HTTPException(422, validation_detail(error)) from None
     model = await current_model(scope, body.model_id)
     protocol = cache.digest([PROMPT_VERSION, GENERAL_METHOD, OUTPUT_PROTOCOL, SELECTION_PROTOCOL,
+        RECALL_QUERY_PROTOCOL, RECALL_PICK_PROTOCOL,
         inventory_request, binding_protocol([])])
     key = cache.identity(scope, body, before, model, protocol)
     await fresh(scope, before)
