@@ -1,5 +1,6 @@
 """Recall never decides identity; scope, evidence and researchers decide."""
 from dataclasses import replace
+import json
 
 from fastapi import HTTPException
 import pytest
@@ -38,7 +39,7 @@ def setup(tmp_path, monkeypatch):
         {'series_id': DEFAULT, 'date': '2026-01-08', 'value': 2}]}
     def snapshot(actual):
         assert actual.scope_version == 2
-        return {'catalog': {item['series_id']: item for item in state['fields']}, 'version': 'catalog'}
+        return {'catalog': {item['series_id']: item for item in state['fields']}, 'version': 'catalog', 'datasets': []}
     def facts(actual, ids, module, **kwargs):
         assert module == 'indicators' and kwargs['points'] == 500 and kwargs['include_display_precision'] is True
         assert set(kwargs['origins']) == {OWN, DEFAULT}
@@ -268,19 +269,69 @@ def test_matching_strong_candidate_batch_confirmation_preserves_decision_snapsho
 @pytest.mark.parametrize('withdrawn', [OWN, DEFAULT])
 def test_withdrawn_document_fields_never_expose_stored_decision_snapshots(setup, decision, withdrawn):
     scope, state = setup
+    secret = 'WITHDRAWN_FIELD_PRIVATE_METADATA'
+    state['fields'] = [{**item, 'metric': secret, 'source_file': secret + '.xlsx'}
+                       if item['series_id'] == withdrawn else item for item in state['fields']]
     saved = decide(scope, only(scope), decision)
     state['fields'] = [field for field in state['fields'] if field['series_id'] != withdrawn]
     # KB grants are deliberately unchanged: the document/field was withdrawn.
     result = service.list_mappings(scope)
-    assert result['items'] == [] and result['pending_count'] == 0
+    assert len(result['items']) == 1 and result['pending_count'] == 0
+    item = result['items'][0]
+    side = 'personal' if withdrawn == OWN else 'default'
+    assert item[side] is None and item['unavailable_sides'] == [side]
+    assert item['source_unavailable'] and not item['batch_eligible']
+    assert item['candidate'] is None and item['evidence'] is None and item['history'] == []
+    assert secret not in json.dumps(result, default=str)
+    reader = replace(scope, identity=replace(scope.identity, role='viewer'))
+    assert service.list_mappings(reader)['items'] == []
+    with pytest.raises(HTTPException) as error:
+        service.undo(reader, saved['id'], saved['revision'])
+    assert error.value.status_code == 403
     annotated = service.catalog_annotations(scope, state['fields'])
     assert all('dedup_pairs' not in field for field in annotated)
-    with pytest.raises(HTTPException) as error:
-        service.undo(scope, saved['id'], saved['revision'])
-    assert error.value.status_code == 404
-    # Loss of read access must not automatically switch the chosen source.
+    # The unavailable source does not silently change a confirmed selection.
     if decision == 'confirmed_default':
         assert service.confirmed_replacements(scope) == {OWN: DEFAULT}
+    with pytest.raises(HTTPException) as error:
+        service.undo(scope, saved['id'], saved['revision'] - 1)
+    assert error.value.status_code == 409
+    undone = service.undo(scope, saved['id'], saved['revision'])
+    assert undone['state'] == 'pending' and undone['revision'] == saved['revision'] + 1
+    assert undone[side] is None and undone['evidence'] is None and undone['history'] == []
+    assert secret not in json.dumps(undone, default=str)
+    assert service.confirmed_replacements(scope) == {}
+    assert service.list_mappings(scope)['items'] == []
+
+
+def test_explicit_undo_restores_only_the_still_authorized_personal_selector(setup):
+    scope, state = setup
+    saved = decide(scope, only(scope))
+    state['fields'] = [item for item in state['fields'] if item['series_id'] == OWN]
+    assert page_facts.catalog_snapshot(scope)['catalog'] == {}, 'A withdrawn default never switches the source automatically'
+    item = service.list_mappings(scope)['items'][0]
+    assert item['default'] is None and item['state'] == 'confirmed_default'
+    service.undo(scope, saved['id'], item['revision'])
+    catalog = page_facts.catalog_snapshot(scope)['catalog']
+    assert set(catalog) == {OWN} and DEFAULT not in catalog
+
+
+def test_unavailable_decision_of_another_center_tenant_cannot_be_exposed_or_undone(setup):
+    from tin.models.indicator_dedup import IndicatorCorrespondence
+    scope, state = setup
+    saved = decide(scope, only(scope))
+    with service.correspondence_session(scope) as session:
+        session.get(IndicatorCorrespondence, saved['id']).default_tenant_id = 18
+        session.commit()
+    foreign_center = {**scope.sources[1], 'tenant_id': 18}
+    own_center = {**source(3), 'source_type': 'central_dataset'}
+    scope = replace(scope, sources=(scope.sources[0], foreign_center, own_center))
+    state['fields'] = state['fields'][:1]
+    assert service.can_confirm(scope), 'A different local center must not grant ownership of this decision'
+    assert service.list_mappings(scope)['items'] == []
+    with pytest.raises(HTTPException) as error:
+        service.undo(scope, saved['id'], saved['revision'])
+    assert error.value.status_code == 403
 
 
 def test_decided_pair_uses_current_metadata_even_after_names_stop_recalling(setup):

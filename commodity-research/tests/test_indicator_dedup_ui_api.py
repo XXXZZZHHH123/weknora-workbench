@@ -72,3 +72,26 @@ def test_read_only_and_restricted_review_routes_enforce_current_scope(setup, mon
     client = client_for(restricted, state, monkeypatch)
     assert client.get('/sn/indicator-dedup').status_code == 403
     assert client.get('/api/sn/indicator-dedup').status_code == 403
+
+
+def test_withdrawn_default_requires_explicit_undo_before_personal_field_returns(setup, monkeypatch):
+    from tests.test_indicator_dedup import decide, only
+    scope, state = setup
+    secret = 'WITHDRAWN_DEFAULT_METADATA'
+    state['fields'][1] = {**state['fields'][1], 'metric': secret, 'source_file': secret + '.xlsx'}
+    saved = decide(scope, only(scope))
+    state['fields'] = state['fields'][:1]
+    client = client_for(scope, state, monkeypatch)
+    assert client.get('/api/sn/indicators/catalog?format=metadata').json()['total'] == 0
+    listing = client.get('/api/sn/indicator-dedup')
+    assert secret not in listing.text
+    item = listing.json()['items'][0]
+    assert item['default'] is None and item['source_unavailable']
+    assert item['candidate'] is None and item['evidence'] is None and item['history'] == []
+    response = client.post(f"/api/sn/indicator-dedup/{saved['id']}/undo", json={
+        'sources_revision': 7, 'revision': item['revision']})
+    assert response.status_code == 200 and response.json()['state'] == 'pending'
+    assert secret not in response.text
+    catalog = client.get('/api/sn/indicators/catalog?format=metadata').json()
+    assert [row['series_id'] for row in catalog['indicators']] == [OWN]
+    assert client.get('/api/sn/indicator-dedup').json()['items'] == []

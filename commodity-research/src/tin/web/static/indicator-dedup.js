@@ -6,7 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (!root && !banner && !sources) return;
   const prefix = window.RESEARCH_PREFIX || '', api = prefix + '/api/sn/indicator-dedup';
   const states = {pending: '待确认', confirmed_default: '以 default 库为准', keep_both: '保留两者', rejected: '不是同一指标'};
-  const name = field => field.metric || field.name || field.series_id;
+  const name = field => field ? field.metric || field.name || field.series_id : '来源已不可用';
   function node(tag, text, className) {
     const result = document.createElement(tag);
     if (text !== undefined) result.textContent = text;
@@ -56,11 +56,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const buckets = new Map();
       for (const item of data.items) {
         const personal = item.personal, standard = item.default;
-        const key = JSON.stringify([personal.knowledge_base_id, personal.source_file, personal.sheet]);
+        const key = JSON.stringify(personal ? [personal.knowledge_base_id, personal.source_file, personal.sheet] : ['unavailable']);
         let group = buckets.get(key);
         if (!group) {
           group = node('section', undefined, 'dedup-group'); group.dataset.dedupGroup = key;
-          group.append(node('h2', `${personal.knowledge_base_name || personal.knowledge_base_id || '个人库'} · ${personal.source_file || '来源文件'} · ${personal.sheet || '未注明工作表'}`));
+          group.append(node('h2', personal ? `${personal.knowledge_base_name || personal.knowledge_base_id || '个人库'} · ${personal.source_file || '来源文件'} · ${personal.sheet || '未注明工作表'}` : '个人库来源已不可用'));
           buckets.set(key, group); groups.append(group);
         }
         const row = node('article', undefined, 'dedup-row'); row.dataset.dedupRow = item.id;
@@ -72,19 +72,27 @@ document.addEventListener('DOMContentLoaded', () => {
         heading.append(select, node('strong', states[item.state] || item.state)); row.append(heading);
         const fields = node('div', undefined, 'dedup-fields');
         for (const [label, field] of [['个人库副本', personal], ['default 库', standard]]) {
+          if (!field) {
+            const box = node('div'); box.append(node('b', label), node('p', '来源已不可用，未读取历史字段资料。', 'indicator-muted'));
+            fields.append(box); continue;
+          }
           const box = node('div'); box.append(node('b', label), node('p')); box.lastChild.append(indicatorLink(field));
           box.append(node('p', `${field.unit || '单位未注明'} · ${field.frequency || '频率未注明'}`), node('p', field.series_id, 'dedup-code'));
           fields.append(box);
         }
         row.append(fields);
-        const codes = item.codes || item.candidate?.codes || item.shared_codes;
-        row.append(node('p', (item.candidate?.reason ? item.candidate.reason + '。' : '') +
-          (codes?.length ? '共同编码：' + codes.map(c => typeof c === 'string' ? c : `${c.vendor} · ${c.code}`).join('、') : '候选证据请结合完整名称与字段口径核对。'), 'indicator-muted'));
-        row.append(node('p', evidenceText(item.evidence), 'dedup-evidence'));
+        if (item.source_unavailable) {
+          row.append(node('p', '一侧来源已不可用。原决定继续保留，不会自动切换来源；可显式撤销决定。', 'indicator-warning'));
+        } else {
+          const codes = item.codes || item.candidate?.codes || item.shared_codes;
+          row.append(node('p', (item.candidate?.reason ? item.candidate.reason + '。' : '') +
+            (codes?.length ? '共同编码：' + codes.map(c => typeof c === 'string' ? c : `${c.vendor} · ${c.code}`).join('、') : '候选证据请结合完整名称与字段口径核对。'), 'indicator-muted'));
+          row.append(node('p', evidenceText(item.evidence), 'dedup-evidence'));
+        }
         if (item.evidence?.stale_default) row.append(node('p', 'default 库序列截至日期早于个人库副本，请核对中心来源更新情况；仍使用已确认的 default 库序列。', 'indicator-warning'));
         const actions = node('div', undefined, 'dedup-actions');
         const verify = button('核实最近 500 期', async () => { await request('/' + encodeURIComponent(item.id) + '/verify', {sources_revision: data.sources_revision}); await load(); });
-        verify.dataset.dedupVerify = item.id; actions.append(verify);
+        verify.dataset.dedupVerify = item.id; verify.disabled = Boolean(item.source_unavailable); actions.append(verify);
         for (const state of ['confirmed_default', 'keep_both', 'rejected']) {
           const choice = button(states[state], async () => {
             await request('/decisions', {ids: [item.id], revisions: {[item.id]: item.revision}, state, batch: false, sources_revision: data.sources_revision}); await load();
@@ -127,7 +135,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }).catch(error => { banner.hidden = false; banner.textContent = error.message; });
   if (sources) request().then(async data => {
     const identifier = sources.dataset.dedupSources;
-    const related = data.items.filter(item => item.state === 'confirmed_default' && [item.personal.series_id, item.default.series_id].includes(identifier));
+    const related = data.items.filter(item => !item.source_unavailable && item.state === 'confirmed_default' && [item.personal.series_id, item.default.series_id].includes(identifier));
     if (!related.length) return;
     sources.hidden = false; sources.append(node('h2', '指标对应来源'));
     for (const item of related) {

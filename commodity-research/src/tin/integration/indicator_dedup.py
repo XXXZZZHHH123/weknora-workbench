@@ -149,6 +149,24 @@ def _current_pair(row, catalog):
     return {'personal': own, 'default': default, 'candidate': row.candidate}
 
 
+def _unavailable_decision(row, catalog):
+    """Expose only this space's decision and currently authorized side metadata.
+
+    Saved evidence, candidate codes and history can contain a withdrawn field's
+    contents. They remain in the audit store but never leave it in this view.
+    """
+    fields = {}
+    for side in ('personal', 'default'):
+        field = catalog.get(getattr(row, side + '_id'))
+        fields[side] = field if field and (
+            field.get('knowledge_base_id') == getattr(row, side + '_kb_id')
+            and field.get('knowledge_base_tenant_id') == getattr(row, side + '_tenant_id')) else None
+    return {key: getattr(row, key) for key in ('id', 'state', 'revision', 'confirmed_by', 'confirmed_at')} | {
+        **fields, 'source_unavailable': True,
+        'unavailable_sides': [side for side, field in fields.items() if field is None],
+        'candidate': None, 'evidence': None, 'history': [], 'batch_eligible': False}
+
+
 def raw_metadata(scope):
     """Read complete authorized metadata in bounded pages, never observations.
 
@@ -236,7 +254,12 @@ def list_mappings(scope, *, discover_current=True):
             if not _authorized(scope, row):
                 continue
             pair = _current_pair(row, catalog)
-            if pair is None or row.id not in current and row.state == 'pending':
+            if pair is None:
+                if (row.state != 'pending' and can_confirm(scope)
+                        and row.default_tenant_id == scope.identity.tenant_id):
+                    items.append(_unavailable_decision(row, catalog))
+                continue
+            if row.id not in current and row.state == 'pending':
                 continue
             items.append(serialize(row, current.get(row.id, pair)))
         return {'items': items, 'can_confirm': can_confirm(scope),
@@ -470,7 +493,7 @@ def undo(scope, identifier, revision):
     with correspondence_session(scope) as session:
         row = session.get(IndicatorCorrespondence, identifier)
         pair = _current_pair(row, catalog) if row is not None else None
-        if row is None or not _authorized(scope, row) or pair is None:
+        if row is None or not _authorized(scope, row):
             raise HTTPException(404, '指标对应不存在或当前来源字段无读取授权')
         if row.default_tenant_id != scope.identity.tenant_id:
             raise HTTPException(403, '只能维护本空间中心来源的指标对应')
@@ -487,4 +510,4 @@ def undo(scope, identifier, revision):
             raise HTTPException(409, '指标对应记录已更新，请刷新')
         session.commit()
         session.refresh(row)
-        return serialize(row, pair)
+        return serialize(row, pair) if pair is not None else _unavailable_decision(row, catalog)

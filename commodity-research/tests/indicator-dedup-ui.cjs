@@ -133,6 +133,32 @@ function mock(items = initial, options = {}) {
     assert.equal(detail.calls.some(call => call.path.endsWith('/decisions') || call.path.endsWith('/undo')), false);
     await detail.close();
 
+    for (const side of ['personal', 'default']) {
+      const unavailable = mock([pair('withdrawn', 1, {state: 'confirmed_default', revision: 3,
+        [side]: null, source_unavailable: true, unavailable_sides: [side],
+        candidate: null, codes: [], evidence: null, history: [], batch_eligible: false})]);
+      const withdrawn = await open(browser, prefix + '/sn/indicator-dedup', html, event => {
+        if (event.path === '/indicator-dedup' && event.method === 'GET'
+            && unavailable.state[0].state === 'pending') {
+          return event.reply({items: [], pending_count: 0, can_confirm: true, sources_revision: 7});
+        }
+        return unavailable.handler(event);
+      });
+      const row = withdrawn.page.locator('[data-dedup-row="withdrawn"]');
+      assert.match(await row.innerText(), /来源已不可用[\s\S]*不会自动切换来源[\s\S]*显式撤销/);
+      assert.equal(await row.locator('a').count(), 1, 'Only the currently authorized side has a field link');
+      assert.equal(await row.locator('[data-dedup-verify]').isDisabled(), true);
+      assert.equal(await row.locator('[data-dedup-decision]:enabled').count(), 0);
+      assert.equal(await row.locator('[data-dedup-undo]').isEnabled(), true);
+      assert.equal(withdrawn.calls.filter(call => call.method === 'POST').length, 0, 'Withdrawal never undoes a decision automatically');
+      await row.locator('[data-dedup-undo]').click();
+      await row.waitFor({state: 'detached'});
+      assert.deepEqual(withdrawn.calls.find(call => call.path.endsWith('/undo')).body,
+        {revision: 3, sources_revision: 7});
+      assert.equal(unavailable.state[0].state, 'pending');
+      await withdrawn.close();
+    }
+
     const catalogHtml = renderLibrary({}, {dedup_enabled: true});
     const catalogSource = mock();
     const catalog = await open(browser, prefix + '/sn/indicators?tab=catalog', catalogHtml, event => {

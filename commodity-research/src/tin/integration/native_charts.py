@@ -4,7 +4,7 @@ from typing import Literal
 
 import httpx
 from fastapi import HTTPException
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 
 from tin.schemas.chart import ChartModel
 
@@ -13,6 +13,15 @@ class NativeStyle(ChartModel):
     color: str | None = Field(default=None, pattern=r'^#[0-9a-fA-F]{6}$')
     width_pt: float | None = Field(default=None, gt=0)
     dash: Literal['solid', 'dash', 'dot'] | None = None
+
+    @field_validator('width_pt', mode='before')
+    @classmethod
+    def unspecified_zero_width(cls, value):
+        # Older derived indexes rounded hairline OOXML widths to zero. Treat
+        # that optional style as unspecified without rejecting the whole page.
+        if type(value) in (int, float) and value == 0:
+            return None
+        return value
 
 
 class NativeDescriptor(ChartModel):

@@ -133,8 +133,12 @@ def _series_style(ser):
         style['color'] = '#' + color.get('val').upper()
     try:
         width = int(line.get('w', ''))
-        if width >= 0:
-            style['width_pt'] = round(width / 12700, 2)
+        if width > 0:
+            points = round(width / 12700, 2)
+            # Zero or subprecision widths cannot be represented by the chart
+            # style contract; leave them unspecified for the renderer default.
+            if points > 0:
+                style['width_pt'] = points
     except (ValueError, OverflowError):
         pass
     dash = line.find('a:prstDash', NS)
