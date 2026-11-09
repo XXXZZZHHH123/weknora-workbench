@@ -129,12 +129,10 @@ def test_zero_pending_and_drawing_sheets_do_not_invent_pending_reviews(monkeypat
     assert source_status_hint(status_scope) is None
 
 
-@pytest.mark.parametrize('fields,without,message,quiet', [
-    (0, 2, '知识库有 2 张工作表没有识别出字段，可能是说明页或没有数据的表，不影响已导入的指标；如果其中有要用的数据，请到知识库核对', True),
-    (3, 1, '知识库还有 1 张工作表待确认（含 3 个字段），确认后才能在这里使用。另有 1 张工作表没有识别出字段，'
-           '可能是说明页或没有数据的表，不影响已导入的指标；如果其中有要用的数据，请到知识库核对', False)])
-def test_sheets_without_fields_are_not_described_as_fields_awaiting_confirmation(
-        monkeypatch, status_scope, fields, without, message, quiet):
+@pytest.mark.parametrize('fields,without,message', [
+    (0, 2, None),
+    (3, 1, '知识库还有 1 张工作表待确认（含 3 个字段），确认后才能在这里使用')])
+def test_sheets_without_fields_are_left_to_the_import_page(monkeypatch, status_scope, fields, without, message):
     sheets = [{'name': 'Notes', 'status': 'needs_review', 'field_count': 0},
               {'name': 'Other', 'status': 'needs_review', 'field_count': fields}]
     summary = {'confirmed': 0, 'pending': 2, 'pending_fields': fields, 'pending_without_fields': without}
@@ -142,8 +140,12 @@ def test_sheets_without_fields_are_not_described_as_fields_awaiting_confirmation
                         'summary': summary}], 'summary': dict(summary)}
     monkeypatch.setattr('tin.provenance.bridge.structured_request', lambda *args, **kwargs: response(doc))
     hint = source_status_hint(status_scope)
-    assert hint['message'] == message and hint['quiet'] is quiet
-    assert '含 0 个字段' not in hint['message']
+    # Field-less sheets (notes, empty tabs) are reported where the workbook is imported.
+    if message is None:
+        assert hint is None
+    else:
+        assert hint['message'] == message and hint['quiet'] is False and '没有识别出字段' not in hint['message']
+        assert [link['pending'] for link in hint['links']] == [2]
 
 
 @pytest.mark.parametrize('without', [2, 3])

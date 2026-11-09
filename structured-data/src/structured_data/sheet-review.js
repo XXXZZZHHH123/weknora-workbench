@@ -99,6 +99,10 @@
     const blocks = s.block_count ?? s.mapping?.blocks?.length ?? 0;
     return s.layout === 'chart_or_image' && !blocks && (s.rows || 0) <= 2;
   }
+  // Same count as the structured catalogue: matrix blocks map rows, other blocks map columns.
+  function mappedFieldCount(s) {
+    return (s.mapping?.blocks||[]).reduce((sum,block)=>sum+(block.layout==='matrix'?(block.row_rules||[]).length:(block.columns||[]).length),0);
+  }
   function sheetVisible(s, needle) {
     if (needle && !s.name.toLowerCase().includes(needle)) return false;
     if (ui.filter === 'all') return true;
@@ -201,6 +205,10 @@
   function updateImportSummary() {
     const sheets=currentImport?.sheets||[],ready=sheets.filter(isPublished).length;
     $('importSummary').textContent=`${currentImport?.source_file||''} · ${sheets.length} 张工作表 · ${ready} 张已可查询 · ${sheets.filter(waitingImport).length} 张待导入 · ${sheets.filter(s=>!isPublished(s)&&!s.automatic_skip&&s.status==='needs_review').length} 张待核对${sheets.some(s=>s.automatic_skip&&!isPublished(s))?' · '+sheets.filter(s=>s.automatic_skip&&!isPublished(s)).length+' 张已跳过':''}`;
+    // Said here, at import, rather than on research pages: pending sheets in which no field was recognised.
+    const fieldless=sheets.filter(s=>!isPublished(s)&&!s.automatic_skip&&s.status==='needs_review'&&!isChartOnly(s)&&!mappedFieldCount(s));
+    const hint=$('importFieldless');
+    if(hint){hint.hidden=!fieldless.length;hint.textContent=fieldless.length?`有 ${fieldless.length} 张工作表没有识别出字段（${fieldless.slice(0,5).map(s=>s.name).join('、')}${fieldless.length>5?' 等':''}），可能是说明页或没有数据的表，不影响其他表；如果其中有要用的数据，请打开该表，在原表上框选数据区域后确认。`:'';}
     updateBatchState();
   }
   function updateBatchState() {

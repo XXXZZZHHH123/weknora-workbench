@@ -77,7 +77,9 @@ def source_status_hint(scope=None):
                         summary.pending, sum(not sheet.field_count for sheet in open_sheets))
                     or (summary.pending_fields and summary.pending_without_fields == summary.pending)):
                 raise ValueError('Invalid worksheet review counts')
-            if summary.pending:
+            # Sheets without any recognised field are reported at import, in the
+            # knowledge base, not on research pages; only reviewable ones link here.
+            if summary.pending > summary.pending_without_fields:
                 kb_id = next(iter(bases))
                 links.append({'knowledge_base_id': kb_id, 'knowledge_id': row.knowledge_id,
                               'source_file': row.source_file, 'pending': summary.pending,
@@ -88,21 +90,13 @@ def source_status_hint(scope=None):
         for key in ('confirmed', 'pending', 'pending_fields', 'pending_without_fields'):
             if getattr(status.summary, key) != sum(getattr(row.summary, key) for row in status.sources):
                 raise ValueError('Worksheet status totals do not match source counts')
-        if not status.summary.pending:
-            return None
         pending, fields = status.summary.pending, status.summary.pending_fields
-        without_fields = status.summary.pending_without_fields
-        reviewable = pending - without_fields
-        parts = []
-        if reviewable:
-            parts.append(f'知识库还有 {reviewable} 张工作表待确认（含 {fields} 个字段），确认后才能在这里使用')
-        if without_fields:
-            # No field was recognized, so there is nothing to confirm; only a
-            # manual mapping in the knowledge base can make such a sheet usable.
-            parts.append(f'{"另有" if reviewable else "知识库有"} {without_fields} 张工作表没有识别出字段，'
-                         '可能是说明页或没有数据的表，不影响已导入的指标；如果其中有要用的数据，请到知识库核对')
-        return {'pending': pending, 'pending_fields': fields, 'pending_without_fields': without_fields,
-                'quiet': not reviewable, 'message': '。'.join(parts), 'links': links}
+        reviewable = pending - status.summary.pending_without_fields
+        if not reviewable:
+            return None
+        return {'pending': reviewable, 'pending_fields': fields, 'quiet': False,
+                'message': f'知识库还有 {reviewable} 张工作表待确认（含 {fields} 个字段），确认后才能在这里使用',
+                'links': links}
     except (HTTPException, httpx.HTTPError, ValidationError, ValueError, TypeError,
             AttributeError, KeyError, OSError, PermissionError):
         return None
