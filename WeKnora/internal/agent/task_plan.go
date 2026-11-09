@@ -200,6 +200,9 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 	if e.chartWriter != nil {
 		planMessages[0].Content += "\n" + dataChartInstructions
 	}
+	if e.config.AnswerReviewMode == "standard" {
+		planMessages[0].Content += "\n" + standardAnswerGuidance
+	}
 	planMessages = e.modelContext.EncodeMessages(planMessages)
 	planCtx, cancel := context.WithTimeout(ctx, taskPlanTimeout)
 	defer cancel()

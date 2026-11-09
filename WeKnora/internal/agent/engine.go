@@ -253,6 +253,9 @@ func (e *AgentEngine) buildSystemPrompt(ctx context.Context) string {
 		e.systemPromptOptions(ctx),
 		e.systemPromptTemplate,
 	)
+	if e.config.AnswerReviewMode == "standard" {
+		sections = append(sections, SystemPromptSection{"answer_policy", standardAnswerGuidance})
+	}
 	for _, section := range sections {
 		logger.Debugf(ctx, "[Agent][Prompt] section=%s bytes=%d", section.Name, len(section.Content))
 	}
@@ -1737,6 +1740,9 @@ func (e *AgentEngine) runReActIteration(
 		"tool_calls":  toolCallCount,
 		"thought_len": len(step.Thought),
 	})
+	if finished, err := e.finishStandardAnswerBudget(ctx, state, query, sessionID, assistantMessageID, messagesPtr, guards); finished {
+		return iterOutcomeBreak, err
+	}
 	return iterOutcomeNext, nil
 }
 

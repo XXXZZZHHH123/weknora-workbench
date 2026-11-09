@@ -15,6 +15,8 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
+type finalAnswerOptions struct{ preliminary bool }
+
 // streamFinalAnswerToEventBus streams the final answer generation through EventBus
 func (e *AgentEngine) streamFinalAnswerToEventBus(
 	ctx context.Context,
@@ -22,6 +24,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	state *types.AgentState,
 	sessionID string,
 	conversation []chat.Message,
+	options ...finalAnswerOptions,
 ) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -56,6 +59,10 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		"remaining work and explain any missing evidence. Use the user's requested " +
 		"language and format. Do not claim that an unperformed action " +
 		"succeeded.\"}</runtime_event>"
+	preliminary := len(options) > 0 && options[0].preliminary
+	if preliminary {
+		runtimeNotice += "\n" + standardAnswerBudgetNotice
+	}
 	if e.finalAnswerNeedsCompaction(messages, runtimeNotice) {
 		messages, _ = e.compactFinalAnswerContext(ctx, messages, state.CurrentRound+1,
 			runtimeNotice, compaction.ReasonThreshold)
@@ -164,6 +171,9 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		}
 		if !invalid {
 			outcome = "answer"
+			if preliminary {
+				outcome = "partial"
+			}
 			break
 		}
 

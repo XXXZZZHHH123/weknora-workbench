@@ -40,7 +40,7 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	e.turnReview.Committed = true
 	if delivery, ok := e.numericWarningDelivery(answer, state); ok {
 		answer, outcome = delivery, "numeric_warning"
-	} else if outcome == "answer" && e.needsSourceConsistencyCheck(state) &&
+	} else if (outcome == "answer" || outcome == "partial") && e.needsSourceConsistencyCheck(state) &&
 		!e.candidateApprovalCurrent(answer, state) {
 		answer = answerReviewUnavailableFallback
 		existingID = ""
