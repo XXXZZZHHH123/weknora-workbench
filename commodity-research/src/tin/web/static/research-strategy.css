@@ -94,3 +94,7 @@
 .research-cited-label .button-muted{min-height:0}
 .button-muted[hidden],.button-primary[hidden],.rw-btn[hidden]{display:none}
 .strategy-tool-dialog h2{font-size:16px}.strategy-tool-row select{font-size:13px}.strategy-tool-row label{font-size:12px;font-weight:600;color:var(--text-muted)}
+/* The generation menu floats above the page: wide enough for model names, above preview controls. */
+.strategy-generation-menu .strategy-generation-controls{z-index:40;width:min(320px,calc(100vw - 32px));max-width:none;box-shadow:0 10px 28px rgb(0 0 0/.14)}
+.strategy-generation-menu .strategy-generation-controls select{width:100%;max-width:none;height:34px}
+.strategy-generation-menu .strategy-generation-controls .button-primary{width:100%}
