@@ -99,6 +99,14 @@ test('断线阈值严格大于中位间隔的2.5倍，不生成插值或零点',
   const raw = [{date: '2030-01-01', value: 0}, {date: '2030-01-02', value: 1}, {date: '2030-01-03', value: 2}, {date: '2030-01-20', value: 3}];
   assert.equal(K.medianInterval(raw), 1); assert.deepEqual(K.splitObservations(raw).map(run => run.length), [3, 1]);
 });
+test('工作日序列的周末与节假日不断线，偶发的长缺口仍断线', () => {
+  const days = [];
+  for (let x = 0; x < 120; x++) if (x % 7 < 5 && ![30, 31, 75].includes(x)) days.push(point(x, x));
+  assert.equal(K.medianInterval(days, true), 1);
+  assert.deepEqual(K.splitObservations(days, true).map(run => run.length), [days.length]);
+  const gapped = days.filter(p => p.x < 50 || p.x > 70);
+  assert.deepEqual(K.splitObservations(gapped, true).map(run => run.length), [days.filter(p => p.x < 50).length, days.filter(p => p.x > 70).length]);
+});
 test('明确缺失的观测断线；负数和零保留', () => {
   const points = [point(0, -1), point(1, 0), point(2, null), point(3, 2), point(4, NaN)];
   assert.deepEqual(K.splitObservations(points, true).map(run => run.map(p => p.value)), [[-1, 0], [2]]);

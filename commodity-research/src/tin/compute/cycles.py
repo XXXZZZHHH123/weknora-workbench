@@ -4,9 +4,10 @@ Intervals are inclusive. Ties choose the earlier observation. Forward changes
 use raw observations, including observations outside the displayed segments.
 """
 from bisect import bisect_left
+from collections import Counter
 from copy import deepcopy
 from datetime import date, timedelta
-from math import floor, isfinite
+from math import ceil, floor, isfinite
 from statistics import mean, median
 
 from pydantic import TypeAdapter
@@ -155,6 +156,17 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
     gaps = [(right[0] - left[0]).days for left, right in zip(rows, rows[1:])]
     freq = median(gaps) if gaps else None
     tol = max(1, floor(freq / 2)) if freq is not None else 1
+    # Regular non-observation runs (weekends, exchange holidays) are part of a
+    # series' own rhythm. The band matches each past cycle's real observation
+    # across them, so a cycle does not drop out of the range on a holiday and make
+    # the band edges and mean jump. The cap keeps genuine data gaps as gaps.
+    # A gap counts as regular only when it is at most a week (weekends, public
+    # holidays) and recurs at least 3 times; one-off breaks between segments or
+    # missing months do not widen it.
+    band_tol = tol
+    recurring = [gap for gap, count in Counter(gaps).items() if gap <= 7 and count >= 3]
+    if recurring:
+        band_tol = max(tol, min(ceil(max(recurring) / 2), 3 * tol))
     result = {'template': deepcopy(template), 'freq_days': freq, 'tolerance_days': tol,
               'as_of': as_of.isoformat(), 'segments': [], 'omitted_segments': [],
               'position': None, 'band': [], 'forward': [], 'warnings': []}
@@ -270,7 +282,7 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
     step = max(1, floor(freq + 0.5))
     band_points = [(part['points'], [point['x'] for point in part['points']]) for part in band_parts]
     for x in range(first_x, last_x + 1, step):
-        matches = [_nearest(points, positions, x, tol) for points, positions in band_points]
+        matches = [_nearest(points, positions, x, band_tol) for points, positions in band_points]
         values = [match['value'] for match in matches if match is not None]
         if values:
             result['band'].append({'x': x, 'min': min(values), 'max': max(values), 'mean': mean(values), 'n': len(values)})

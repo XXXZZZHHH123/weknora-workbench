@@ -29,8 +29,20 @@
   function shouldBreak(a, b, interval) {
     return finite(interval) && interval > 0 && b - a > 2.5 * interval;
   }
-  function splitObservations(points, cycle = false, fallback = null) {
-    const interval = medianInterval(points, cycle) || fallback, runs = [];
+  // The largest gap of at most a week that recurs (at least 3 times): weekends and
+  // exchange holidays in daily data. One-off missing stretches and longer pauses
+  // never qualify, so they still break the line.
+  function recurringGap(points, cycle = false, groups = [points]) {
+    // Every cycle of one series shares the same rhythm, so their gaps are counted together.
+    const gaps = groups.flatMap(group => {
+      const xs = group.filter(p => finite(p.value)).map(p => cycle ? p.x : dayNumber(p.date)).filter(finite).sort((a, b) => a - b);
+      return xs.slice(1).map((x, i) => x - xs[i]).filter(x => x > 0);
+    }), counts = new Map();
+    gaps.forEach(gap => counts.set(gap, (counts.get(gap) || 0) + 1));
+    return Math.max(0, ...[...counts].filter(([gap, count]) => gap <= 7 && count >= 3).map(([gap]) => gap));
+  }
+  function splitObservations(points, cycle = false, fallback = null, siblings = null) {
+    const interval = medianInterval(points, cycle) || fallback, regular = recurringGap(points, cycle, siblings || [points]), runs = [];
     let run = [], previous = null;
     for (const point of points) {
       const x = cycle ? point.x : dayNumber(point.date);
@@ -38,7 +50,8 @@
         if (run.length) runs.push(run);
         run = []; previous = null; continue;
       }
-      if (previous !== null && shouldBreak(previous, x, interval)) {
+      // A series' own rhythm (a daily line over weekends) stays one line; real gaps still break.
+      if (previous !== null && shouldBreak(previous, x, interval) && x - previous > 1.5 * regular) {
         if (run.length) runs.push(run);
         run = [];
       }
@@ -468,7 +481,9 @@
         let min = values.length ? Math.min(...values) : 0, max = values.length ? Math.max(...values) : 1;
         const pad = max === min ? Math.max(Math.abs(max) * .05, 1) : (max - min) * .08;
         const fixed = (definition.axes || payload.axes || {})[axis] || {};
-        min = finite(fixed.min) ? fixed.min : min - pad; max = finite(fixed.max) ? fixed.max : max + pad;
+        // Breathing room never crosses zero: all-positive data does not get a negative axis.
+        min = finite(fixed.min) ? fixed.min : min >= 0 && min - pad < 0 ? 0 : min - pad;
+        max = finite(fixed.max) ? fixed.max : max <= 0 && max + pad > 0 ? 0 : max + pad;
         if (max <= min) max = min + 1;
         const nice = niceAxis(min, max, {thumbnail: !!options.thumbnail || (exporting && bottom - margin.top < axisFont * 8), fixedMin: finite(fixed.min), fixedMax: finite(fixed.max)});
         axes[axis] = {...nice, members, fixedMin: finite(fixed.min), fixedMax: finite(fixed.max)};
@@ -544,7 +559,8 @@
       for (const s of ordered) {
         const y = axes[s.axis].scale, {color, width: strokeWidth, dash, opacity} = appearance(s);
         const group = add('g', {'data-series': s.key, opacity}, undefined, plot);
-        const runs = splitObservations(s.points, cycle, s.freq_days ?? payload.freq_days);
+        const runs = splitObservations(s.points, cycle, s.freq_days ?? payload.freq_days,
+          cycle && !multiCycle ? series.map(other => other.points) : null);
         const interval = medianInterval(s.points, cycle) || 1;
         const barMembers = visible.filter(other => other.kind === 'bar' && other.axis === s.axis), barIndex = barMembers.indexOf(s);
         const barWidth = Math.min(32, Math.max(1, Math.abs(xScale(minX + interval) - xScale(minX)) * .75 / Math.max(1, barMembers.length)));
@@ -671,7 +687,7 @@
     return {destroy() { destroyed = true; observer?.disconnect(); wrapper.remove(); }, ...imageMethods(() => svg, document)};
   }
   render.sequence = 0;
-  const api = {render, renderTable, exportStyle, monthMidpoint, monthlyBand, medianInterval, shouldBreak, splitObservations, cycleTicks, dateTicks, niceAxis, formatNumber, annualSegments, visibleCycleKeys, alignAxes, filterBand, bandRuns, nearestPoint, tooltipValues, ruleOverlays};
+  const api = {render, renderTable, exportStyle, monthMidpoint, monthlyBand, medianInterval, recurringGap, shouldBreak, splitObservations, cycleTicks, dateTicks, niceAxis, formatNumber, annualSegments, visibleCycleKeys, alignAxes, filterBand, bandRuns, nearestPoint, tooltipValues, ruleOverlays};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.ChartKit = Object.freeze(api);
 })(typeof window !== 'undefined' ? window : globalThis);

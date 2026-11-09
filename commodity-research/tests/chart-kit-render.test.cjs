@@ -541,3 +541,15 @@ test('变化量证伪边界按真实日期显示为动态线，不标成均线',
   assert.match(attr(container, 'data-rule-tooltip')[0].textContent, /前次观测加变化阈值：13/);
   handle.destroy();
 });
+
+test('全为正数时纵轴留白不越过 0，不出现负刻度', () => {
+  for (const [low, high] of [[600, 9000], [645, 9100], [0, 50]]) {
+    const container = fixture();
+    K.render(container, {curves: [{label: '库存', axis: 'left', points: [{date: '2030-01-01', value: low}, {date: '2030-01-02', value: high}]}]});
+    const ticks = attr(container, 'data-axis-tick', 'left').map(node => node.textContent);
+    assert.ok(ticks.length >= 5 && ticks.every(label => !label.trim().startsWith('-')), ticks.join(','));
+  }
+  const container = fixture();
+  K.render(container, {curves: [{label: '利润', axis: 'left', points: [{date: '2030-01-01', value: -300}, {date: '2030-01-02', value: 900}]}]});
+  assert.ok(attr(container, 'data-axis-tick', 'left').some(node => node.textContent.trim().startsWith('-')), '跨零数据仍保留负半轴');
+});

@@ -356,3 +356,25 @@ def test_stale_series_current_segment_coverage_uses_latest_observation():
     current = next(part for part in result['segments'] if part['current'])
     assert 'sparse' not in current['flags']
     assert result['position']['status'] == 'ok' and result['position']['n'] == 7
+
+
+def test_band_matches_past_cycles_across_recurring_holiday_breaks_but_not_one_off_gaps():
+    # Business days with a recurring four-day break that falls on different dates each year.
+    template = {'kind': 'repeat', 'name': '自然年', 'period': 'year', 'start': '01-01'}
+    points = []
+    for year in range(2019, 2026):
+        day = date(year, 1, 1)
+        breaks = {date(year, month, 10 + year % 5 + offset) for month in (3, 5, 8, 11) for offset in range(2)}
+        while day.year == year:
+            if day.weekday() < 5 and day not in breaks:
+                points.append((day, 100 + year))
+            day += timedelta(days=1)
+    result = compute_cycles(points, template, '2025-12-31')
+    counts = [point['n'] for point in result['band'] if point['x'] < 365]
+    # Every past cycle stays in the range on every day; holidays no longer make it jump.
+    # (Only leap years reach day 365.)
+    assert result['tolerance_days'] == 1 and len(counts) == 365 and set(counts) == {5}
+    gapped = [(day, value) for day, value in points if not (day.year == 2024 and 6 <= day.month <= 7)]
+    result = compute_cycles(gapped, template, '2025-12-31')
+    july = [point['n'] for point in result['band'] if 170 <= point['x'] <= 200]
+    assert july and set(july) == {4}
