@@ -74,8 +74,8 @@ func (s *tenantService) CreateTenant(ctx context.Context, tenant *types.Tenant) 
 		return nil, err
 	}
 	if err := s.createDefaultStorageBackend(ctx, tenant); err != nil {
-		// No related rows exist yet, so rolling the tenant back is safe and
-		// avoids leaving a workspace that cannot bind new knowledge bases.
+		// DeleteTenant also removes the provisioned search default, avoiding
+		// a partially configured workspace when storage setup fails.
 		_ = s.repo.DeleteTenant(ctx, tenant.ID)
 		return nil, err
 	}
