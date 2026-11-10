@@ -28,7 +28,27 @@ func NewTenantRepository(db *gorm.DB) interfaces.TenantRepository {
 
 // CreateTenant creates tenant
 func (r *tenantRepository) CreateTenant(ctx context.Context, tenant *types.Tenant) error {
-	return r.db.WithContext(ctx).Create(tenant).Error
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(tenant).Error; err != nil {
+			return err
+		}
+		// Legacy provider credentials and proxies are explicit workspace choices.
+		// Search tuning alone (result count, compression, etc.) is not a provider.
+		if cfg := tenant.WebSearchConfig; cfg != nil &&
+			(cfg.Provider != "" || cfg.APIKey != "" || cfg.ProxyURL != "") {
+			return nil
+		}
+		// Persist a tenant-owned, keyless provider once, rather than falling back
+		// at request time or sharing another workspace's provider/credentials.
+		return tx.Create(&types.WebSearchProviderEntity{
+			TenantID:    tenant.ID,
+			Name:        "Keenable",
+			Provider:    types.WebSearchProviderTypeKeenable,
+			Description: "Public web search",
+			Parameters:  types.WebSearchProviderParameters{},
+			IsDefault:   true,
+		}).Error
+	})
 }
 
 // GetTenantByID gets tenant by ID
@@ -144,6 +164,11 @@ func (r *tenantRepository) UpdateTenantProfile(ctx context.Context, id uint64, n
 func (r *tenantRepository) DeleteTenant(ctx context.Context, id uint64) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("tenant_id = ?", id).Delete(&types.TenantMember{}).Error; err != nil {
+			return err
+		}
+		// Also clean up provisioning defaults when registration/storage setup
+		// rolls back. The tenant and provider rows remain recoverable.
+		if err := tx.Where("tenant_id = ?", id).Delete(&types.WebSearchProviderEntity{}).Error; err != nil {
 			return err
 		}
 		return tx.Where("id = ?", id).Delete(&types.Tenant{}).Error

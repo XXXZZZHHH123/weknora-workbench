@@ -17,7 +17,7 @@ func TestCreateTenantCreatesConcreteDefaultStorageBackend(t *testing.T) {
 	t.Setenv("STORAGE_TYPE", "local")
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&types.Tenant{}, &types.StorageBackend{}))
+	require.NoError(t, db.AutoMigrate(&types.Tenant{}, &types.StorageBackend{}, &types.WebSearchProviderEntity{}))
 	tenantRepo := repository.NewTenantRepository(db)
 	storageRepo := repository.NewStorageBackendRepository(db)
 	tenantSvc := service.NewTenantService(tenantRepo, storageRepo, nil)
