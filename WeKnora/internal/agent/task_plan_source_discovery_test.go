@@ -139,23 +139,24 @@ func TestTaskPlanSourceRecoverySkipsBroadSearchAndKeepsRealQueryContracts(t *tes
 	engine.prepareTaskPlanning()
 	state := &types.AgentState{}
 	ctx := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "verified", Role: types.TenantRoleViewer})
-	messages := engine.planWorkbenchTask(ctx, state, "请画出刚才的记录", []chat.Message{{Role: "system", Content: "Actual runtime rules."}}, "session")
+	messages := engine.prepareWorkbenchCapabilities(ctx, state, []chat.Message{{Role: "system", Content: "Actual runtime rules."}}, "请画出刚才的记录", "session", "message")
+	messages = engine.planWorkbenchTask(ctx, state, "请画出刚才的记录", messages, "session")
 	require.NotNil(t, engine.taskPlan)
 	selection := engine.plannedSourceDiscoverySelection()
 	require.NotNil(t, selection)
 	engine.discoverWorkbenchSources(ctx, state, messages, "请画出刚才的记录", "session", "message", selection)
-	require.Empty(t, operations, "recovery does not negotiate or search unrelated directories before the execution model chooses a capability")
+	require.Equal(t, []string{"describe_tools"}, operations, "recovery negotiates real schemas without searching or reading unrelated source directories")
 	require.Zero(t, knowledge.calls)
 	require.False(t, hasStructuredEvidence(state.RoundSteps), "recovery instructions and schemas never stand in for newly read source evidence")
 	definitions := listToolNames(engine.buildToolsForLLM())
 	require.Contains(t, definitions, agenttools.ToolStructuredCapabilities)
-	require.NotContains(t, definitions, "structured_query_pdf_table", "an unnegotiated operation must not be advertised as available")
+	require.Contains(t, definitions, "structured_query_pdf_table", "negotiated query contracts remain available for explicit source recovery")
 	capability := engine.runToolCall(ctx, types.LLMToolCall{ID: "recover-capabilities", Function: types.FunctionCall{
-		Name: agenttools.ToolStructuredCapabilities, Arguments: `{"refresh":true}`,
+		Name: agenttools.ToolStructuredCapabilities, Arguments: `{}`,
 	}}, 0, 0, 0, "session", "message")
 	require.NotNil(t, capability.Result)
 	require.True(t, capability.Result.Success, capability.Result.Error)
-	require.Equal(t, []string{"describe_tools"}, operations, "the first explicit capability request negotiates real query contracts without reading source data")
+	require.Equal(t, []string{"describe_tools"}, operations, "viewing an already negotiated capability snapshot does not repeat protocol IO or read data")
 	require.Zero(t, knowledge.calls)
 	definitions = listToolNames(engine.buildToolsForLLM())
 	for _, name := range []string{"structured_read_pdf_table", "structured_query_pdf_table", agenttools.ToolStructuredCapabilities, agenttools.ToolReadDocument, agenttools.ToolBindDocumentScope, agenttools.ToolSearchKnowledge} {

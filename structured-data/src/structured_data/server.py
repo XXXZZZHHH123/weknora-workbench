@@ -284,7 +284,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     async def get_result_evidence(resolution_id: str) -> dict:
-        """读取上次查询的事实而不重新理解问题：请求范围、各字段实际记录/有效值范围、数值、来源、缺失情况和公式。resolution_id来自真实历史工具结果，亦可填写analyze_table返回的result_id以读取该次分析。日期边界不是极值日期。旧结果没有保存证据时只重新执行原计划，不调用意图模型。"""
+        """读取已保存的字段计划或分析事实而不重新理解问题：请求范围、各字段实际记录/有效值范围、数值、来源、缺失情况和公式。参数名固定为resolution_id，其值只能来自字段计划返回的resolution_id或analyze_table返回的result_id。query_series的result_contract.result_id不是可读取的计划或分析编号；其rows/source_evidence已在查询结果中，可直接核对。日期边界不是极值日期。旧结果没有保存证据时只重新执行原计划，不调用意图模型。"""
         def read():
             import re
             if not isinstance(resolution_id,str) or not re.fullmatch(r'[a-f0-9]{24}',resolution_id):raise ValueError('结果编号无效')

@@ -264,6 +264,8 @@ func TestTaskPlanAllowsNoExternalEvidenceAndDiscoveryUsesThatChoice(t *testing.T
 		operations = append(operations, request.Operation)
 		_, _ = io.WriteString(w, `{}`)
 	})
+	knowledge := newCountingTool(agenttools.ToolSearchKnowledge)
+	registry.RegisterTool(knowledge)
 	plan, err := json.Marshal(taskEvidencePlan{
 		Goals:              []string{"Explain the requested concepts."},
 		Evidence:           []string{},
@@ -283,7 +285,10 @@ func TestTaskPlanAllowsNoExternalEvidenceAndDiscoveryUsesThatChoice(t *testing.T
 	state, err := engine.Execute(ctx, "session", "message", "解释仓单和持仓的概念差异。", nil)
 	require.NoError(t, err)
 	require.Equal(t, "概念解释。", state.FinalAnswer)
-	require.Empty(t, operations, "a no-evidence plan needs no remote protocol negotiation or source/catalog/data read")
+	require.Equal(t, []string{"describe_tools"}, operations, "a no-evidence plan performs protocol discovery without source/catalog/data reads")
+	require.Zero(t, knowledge.calls)
+	require.False(t, state.RoundSteps[0].ToolCalls[0].Result.Success, "a failed optional schema negotiation must remain an explicit failure")
+	require.Equal(t, "manifest_unavailable", state.RoundSteps[0].ToolCalls[0].Result.Data["code"])
 	require.NotNil(t, engine.taskProjection)
 	require.NotNil(t, engine.plannedSourceDiscoverySelection(), "explicit no-evidence plan returns an empty selection and skips both directories")
 	require.Empty(t, engine.plannedSourceDiscoverySelection())

@@ -12,17 +12,12 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
-// Negotiate source capabilities when the plan requires them. The local
-// bootstrap remains visible before planning, without remote setup IO. The
-// fixed service uses a short protocol budget independent of data requests.
+// Negotiate the authorized service's protocol schemas before planning so the
+// model can choose among real capabilities. This reads no source directory or
+// business data; source_domains still controls subsequent discovery. The fixed
+// service uses a short protocol budget independent of data requests.
 func (e *AgentEngine) prepareWorkbenchCapabilities(ctx context.Context, state *types.AgentState, messages []chat.Message, query, sessionID, messageID string) []chat.Message {
 	if e.toolRegistry == nil || state == nil {
-		return messages
-	}
-	// The local bootstrap descriptor already advertises structured capability.
-	// Negotiate its remote manifest only after the model requests this channel;
-	// neither a missing plan nor external evidence justifies internal setup IO.
-	if e.config != nil && e.config.TaskPlanningEnabled && !shouldPrefetchStructuredSources(e.plannedSourceDiscoverySelection()) {
 		return messages
 	}
 	for _, step := range state.RoundSteps {
