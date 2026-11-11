@@ -418,10 +418,19 @@ def _inspect_source_validated(store, dataset_id, request):
         raise SourceInspectionReadError('workbook_open', exc) from exc
     cached = None
     try:
-        try:
-            cached = load_workbook(original, read_only=True, data_only=True, keep_links=False)
-        except Exception as exc:
-            raise SourceInspectionReadError('workbook_open', exc) from exc
+        def cached_workbook():
+            # A second reader is only needed for cells containing formulas.
+            # Literal source values, errors and text are already present in
+            # the formula reader. Keep this reuse within the current verified
+            # read so no workbook or authorization survives the request.
+            nonlocal cached
+            if cached is None:
+                try:
+                    cached = load_workbook(original, read_only=True, data_only=True, keep_links=False)
+                except Exception as exc:
+                    raise SourceInspectionReadError('workbook_open', exc) from exc
+            return cached
+
         if sheet is not None and sheet not in formulas.sheetnames:
             raise ValueError('指定原工作表不存在；不替换为其他工作表')
         selected = [sheet] if sheet else formulas.sheetnames
@@ -507,9 +516,26 @@ def _inspect_source_validated(store, dataset_id, request):
             left, top, right, bottom = bounds
             try:
                 source_rows = formulas[name].iter_rows(min_row=top, max_row=bottom, min_col=left, max_col=right)
-                cached_rows = cached[name].iter_rows(min_row=top, max_row=bottom, min_col=left, max_col=right)
+                # Requests have already been limited to max_cells (at most
+                # 400). Inspect their exact cells before opening or scanning
+                # the cached-value workbook; formulas elsewhere do not need
+                # their caches read for this range.
+                rows = []
+                needs_cached_values = False
+                for row, fs in enumerate(source_rows, top):
+                    if time.monotonic() - started > MAX_SCAN_SECONDS:
+                        start = f'{get_column_letter(left)}{top}'
+                        end = f'{get_column_letter(right)}{bottom}'
+                        raise SourceEvidenceReadBudgetExceeded(
+                            'original-source cell read exceeded time budget', phase='range_read',
+                            scope={'sheet': name, 'range': start if start == end else f'{start}:{end}'})
+                    rows.append(fs)
+                    needs_cached_values = needs_cached_values or any(fc.data_type == 'f' for fc in fs)
+                cached_rows = (cached_workbook()[name].iter_rows(
+                    min_row=top, max_row=bottom, min_col=left, max_col=right)
+                    if needs_cached_values else rows)
                 cells = []
-                for row, (fs, cs) in enumerate(zip(source_rows, cached_rows), top):
+                for row, (fs, cs) in enumerate(zip(rows, cached_rows), top):
                     if time.monotonic() - started > MAX_SCAN_SECONDS:
                         start = f'{get_column_letter(left)}{top}'
                         end = f'{get_column_letter(right)}{bottom}'
@@ -518,7 +544,7 @@ def _inspect_source_validated(store, dataset_id, request):
                             scope={'sheet': name, 'range': start if start == end else f'{start}:{end}'})
                     cells.extend(cell_doc(f, c, row, col, name) for col, (f, c) in enumerate(zip(fs, cs), left))
                 return cells
-            except SourceEvidenceReadBudgetExceeded:
+            except (SourceEvidenceReadBudgetExceeded, SourceInspectionReadError):
                 raise
             except Exception as exc:
                 raise SourceInspectionReadError('range_read', exc) from exc

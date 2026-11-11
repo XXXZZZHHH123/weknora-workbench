@@ -33,6 +33,15 @@ func formatGroundingGuidance(names []string) string {
 		"successfully running its script does not verify the subject matter. Gather needed factual " +
 		"evidence before supplying content to a generator; no extra lookup is needed if the supplied " +
 		"material already supports that content.\n")
+	b.WriteString("- Deliver the requested results at the requested granularity. A measured change or " +
+		"correlation alone does not establish its cause. Omit unrequested causal explanations, " +
+		"predictions, and extra statistics that the actual evidence does not support; do not perform " +
+		"more retrieval merely to add them. When interpretation is requested, distinguish supported " +
+		"explanations from explicitly qualified hypotheses.\n")
+	b.WriteString("- Report directly supplied values without recomputing them. When the requested " +
+		"answer requires arithmetic over retrieved data, use a source-bound calculation tool and " +
+		"its executed result. Do not append mental differences, percentages, or conversions to an " +
+		"otherwise complete answer; omit optional calculations instead of triggering extra work.\n")
 
 	if slices.Contains(names, "local_browser") {
 		b.WriteString(localBrowserSourcePrompt)

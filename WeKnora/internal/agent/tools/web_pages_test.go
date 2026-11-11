@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/modelcontext"
@@ -160,4 +161,56 @@ func TestSearchOptionsAndExplicitPageContent(t *testing.T) {
 	model = modelcontext.NewRegistry(true).ModelToolResultForTool(ToolWebSearch, result)
 	require.Contains(t, model, "verified page")
 	require.Contains(t, model, "could not be saved")
+}
+
+func TestSearchAndFetchKeepPublicationTimeAndFactEvidenceSeparate(t *testing.T) {
+	published := time.Date(2031, 6, 16, 9, 0, 0, 0, time.UTC)
+	const url = "https://example.com/dated-bulletin"
+	const summary = "2031-06-18: 17 units."
+	const page = "2031-06-19: 23 units."
+	for _, withContent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("content=%t", withContent), func(t *testing.T) {
+			svc := &searchOnlyWebService{results: []*types.WebSearchResult{{
+				URL: url, Title: "Dated bulletin", Snippet: summary, Age: "2 days ago", PublishedAt: &published,
+			}}}
+			fetcher := newStubWebContentFetcher(map[string]string{url: page}, nil)
+			pages := newWebFetchTool(fetcher)
+			search := NewWebSearchTool(svc, 1, "provider").WithPageReader(pages)
+			ctx := context.WithValue(t.Context(), types.TenantIDContextKey, uint64(7))
+			result, err := search.Execute(ctx, []byte(fmt.Sprintf(`{"query":"dated bulletin","content":%t}`, withContent)))
+			require.NoError(t, err)
+			require.True(t, result.Success)
+			before, err := json.Marshal(result.Data)
+			require.NoError(t, err)
+			registry := modelcontext.NewRegistry(true)
+			model := registry.ModelToolResultForTool(ToolWebSearch, result)
+			require.Contains(t, model, `<evidence type="search_summary" verified="false" />`)
+			require.Contains(t, model, "<match>"+summary+"</match>")
+			require.Contains(t, model, `<published source="search_provider" meaning="reported_publication_time">2031-06-16T09:00:00Z</published>`)
+			require.Contains(t, model, `<age source="search_provider">2 days ago</age>`)
+			require.Contains(t, model, "A successful fetch verifies retrieval, not summary claims absent from the excerpt")
+			if withContent {
+				require.Contains(t, model, "<fetched_content>"+page+"</fetched_content>")
+				require.Contains(t, model, `scope="retrieved_excerpt_only"`)
+			} else {
+				require.NotContains(t, model, "<fetched_content>")
+				require.Empty(t, fetcher.callCount, "evidence guidance must not add an automatic fetch")
+			}
+			after, err := json.Marshal(result.Data)
+			require.NoError(t, err)
+			require.JSONEq(t, string(before), string(after), "rendering must preserve actual source metadata")
+
+			fetched, err := pages.Execute(ctx, webFetchArgs(WebFetchItem{URL: url}))
+			require.NoError(t, err)
+			require.True(t, fetched.Success)
+			model = registry.ModelToolResultForTool(ToolWebFetch, fetched)
+			require.Contains(t, model, `<page id="url://1" status="success" view="excerpt">`)
+			require.Contains(t, model, "<content>"+page+"</content>")
+			require.NotContains(t, model, summary, "a fetch cannot promote a missing summary value into the page")
+			require.NotContains(t, model, "<published", "retrieval must not invent publication/update time")
+			require.Contains(t, registry.DecodeOutputText(`<ref id="url://1"/>`), `url="`+url+`"`)
+			require.Equal(t, 1, svc.calls)
+			require.Equal(t, 1, fetcher.callCount[url], "an explicit fetch may reuse the current snapshot")
+		})
+	}
 }
