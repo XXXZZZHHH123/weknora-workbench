@@ -1105,7 +1105,8 @@ func renderKnowledgeChunks(mode string, chunks []modelChunk, info map[string]int
 const webEvidenceScopeNotice = "  <evidence_scope>Search summaries and fetched excerpts are separate evidence. " +
 	"A successful fetch verifies retrieval, not summary claims absent from the excerpt. " +
 	"Match each fact to its own event/forecast period; publication and retrieval times do not establish that period " +
-	"or prove an update today.</evidence_scope>\n"
+	"or prove an update today. Source blocks preserve Markdown layout; parent_offset identifies an enclosing " +
+	"heading or list item within this page, not a citation. Keep facts with their own section, not adjacent siblings.</evidence_scope>\n"
 
 func (r *sourceRegistry) modelWebSearchOutput(rows []map[string]interface{}, fallback string) string {
 	if len(rows) == 0 {
@@ -1144,10 +1145,14 @@ func (r *sourceRegistry) modelWebSearchOutput(rows []map[string]interface{}, fal
 			fmt.Fprintf(&b, "    <age source=\"search_provider\">%s</age>\n", escapeText(age))
 		}
 		if boolValue(row, "page_verified") {
-			writeLimitedWebEvidence(&b, "fetched_content", stringValue(row, "page_content"), perEvidence, nil)
+			pageContent := stringValue(row, "page_content")
+			shown := writeWebSourceEvidence(&b, "fetched_content", pageContent, 0, perEvidence, nil)
 			b.WriteString("    <page_fetch status=\"success\" verified=\"true\" scope=\"retrieved_excerpt_only\" />\n")
 			writeWebPageFileHint(&b, row)
-			if stringValue(row, "full_output_path") == "" {
+			if boolValue(row, "page_truncated") || shown < len([]rune(pageContent)) {
+				fmt.Fprintf(&b, "    <continue url=\"%s\" next_offset=\"%d\">"+
+					"Read with web_fetch for more page content.</continue>\n", handle, shown)
+			} else if stringValue(row, "full_output_path") == "" {
 				fmt.Fprintf(&b, "    <continue url=\"%s\" next_offset=\"0\">"+
 					"Read with web_fetch for more page content.</continue>\n", handle)
 			}
@@ -1219,9 +1224,8 @@ func (r *sourceRegistry) modelWebFetchOutput(rows []map[string]interface{}, fall
 			}
 			if content := stringValue(row, "raw_content"); content != "" {
 				limit := min(modelWebFetchContentMaxRunes, remainingEvidence)
-				writeLimitedWebEvidence(&b, "content", content, limit, &remainingEvidence)
-				shown := min(len([]rune(content)), limit)
 				offset := intValue(row, "offset")
+				shown := writeWebSourceEvidence(&b, "content", content, offset, limit, &remainingEvidence)
 				total := intValue(row, "content_length")
 				if total == 0 {
 					total = offset + len([]rune(content))

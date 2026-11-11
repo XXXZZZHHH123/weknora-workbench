@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"strings"
 	"sync"
@@ -213,4 +214,50 @@ func TestSearchAndFetchKeepPublicationTimeAndFactEvidenceSeparate(t *testing.T) 
 			require.Equal(t, 1, fetcher.callCount[url], "an explicit fetch may reuse the current snapshot")
 		})
 	}
+}
+
+func TestWebSourceBlockContinuationReadsSameSnapshotAtRawUnicodeOffset(t *testing.T) {
+	const rawURL = "https://example.com/period-records"
+	page := "# 原始记录🌱\n\n- ## Alpha\n\n  " + strings.Repeat("记录🌱\n", 2400)
+	fetcher := newStubWebContentFetcher(map[string]string{rawURL: page}, nil)
+	pages := newWebFetchTool(fetcher)
+	registry := modelcontext.NewRegistry(true)
+	result, err := pages.Execute(t.Context(), webFetchArgs(WebFetchItem{URL: rawURL}))
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	model := registry.ModelToolResultForTool(ToolWebFetch, result)
+	var decoded struct {
+		Page struct {
+			Content struct {
+				Blocks []struct {
+					Text string `xml:",chardata"`
+				} `xml:"source_blocks>block"`
+			} `xml:"content"`
+			Continue struct {
+				URL    string `xml:"url,attr"`
+				Offset int    `xml:"next_offset,attr"`
+			} `xml:"continue"`
+		} `xml:"page"`
+	}
+	require.NoError(t, xml.Unmarshal([]byte(model), &decoded))
+	var shown strings.Builder
+	for _, block := range decoded.Page.Content.Blocks {
+		shown.WriteString(block.Text)
+	}
+	require.NotEmpty(t, shown.String())
+	require.Equal(t, utf8.RuneCountInString(shown.String()), decoded.Page.Continue.Offset)
+	require.Equal(t, string([]rune(page)[:decoded.Page.Continue.Offset]), shown.String())
+	args, err := json.Marshal(map[string]interface{}{"items": []WebFetchItem{{
+		URL: decoded.Page.Continue.URL, Offset: decoded.Page.Continue.Offset,
+	}}})
+	require.NoError(t, err)
+	calls := []types.LLMToolCall{{Function: types.FunctionCall{Name: ToolWebFetch, Arguments: string(args)}}}
+	registry.DecodeToolCalls(calls)
+	next, err := pages.Execute(t.Context(), json.RawMessage(calls[0].Function.Arguments))
+	require.NoError(t, err)
+	require.True(t, next.Success)
+	row := next.Data["results"].([]map[string]interface{})[0]
+	require.Equal(t, string([]rune(page)[decoded.Page.Continue.Offset:]), row["raw_content"])
+	require.Equal(t, 1, fetcher.callCount[rawURL], "projection and continuation must not refetch the page")
+	require.Contains(t, registry.DecodeOutputText(`<ref id="url://1"/>`), `url="`+rawURL+`"`)
 }

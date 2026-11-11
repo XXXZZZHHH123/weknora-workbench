@@ -24,14 +24,23 @@ func lightStructuredFixture(t *testing.T, replies ...mockResponse) (*AgentEngine
 }
 
 func lightReviewReply(action, answer string) mockResponse {
+	if action == "keep" && answer == "" {
+		raw, _ := json.Marshal(map[string]any{"action": "keep", "edits": []structuredResultEdit{}})
+		return deliveryReply(string(raw), "stop", types.TokenUsage{PromptTokens: 40, CompletionTokens: 12, TotalTokens: 52})
+	}
 	raw, _ := json.Marshal(map[string]string{"action": action, "answer": answer})
+	return deliveryReply(string(raw), "stop", types.TokenUsage{PromptTokens: 40, CompletionTokens: 12, TotalTokens: 52})
+}
+
+func lightReviewEdits(edits ...structuredResultEdit) mockResponse {
+	raw, _ := json.Marshal(map[string]any{"action": "correct", "edits": edits})
 	return deliveryReply(string(raw), "stop", types.TokenUsage{PromptTokens: 40, CompletionTokens: 12, TotalTokens: 52})
 }
 
 func TestStructuredResultReviewCorrectsOnceAndKeepsApprovalBound(t *testing.T) {
 	const original = "The observation is 12.500 tonnes."
 	const corrected = "The observation is 12.500 kg."
-	e, state, model := lightStructuredFixture(t, lightReviewReply("correct", corrected))
+	e, state, model := lightStructuredFixture(t, lightReviewEdits(structuredResultEdit{"tonnes", "kg"}))
 	before := reviewDigest(state.RoundSteps)
 	decision := e.checkCandidate(t.Context(), "Report the observed measure.", original, "", state, nil, false)
 	require.Equal(t, candidateAccepted, decision.Disposition)
@@ -146,9 +155,9 @@ func TestStructuredResultReviewUnavailableOrUnsafeCorrectionRetainsCheckedCore(t
 			case "tool":
 				reply.chunks[0].ToolCalls = []types.LLMToolCall{{ID: "unexpected", Function: types.FunctionCall{Name: "read_review_evidence"}}}
 			case "invented_number":
-				reply = lightReviewReply("correct", "The observation is 99999991 kg.")
+				reply = lightReviewEdits(structuredResultEdit{"12.500", "99999991"})
 			case "invented_citation":
-				reply = lightReviewReply("correct", `The observation is 12.500 kg.<evidence evidence_id="invented" />`)
+				reply = lightReviewEdits(structuredResultEdit{"12.500.", `12.500 kg.<evidence evidence_id="invented" />`})
 			case "empty_correction":
 				reply = lightReviewReply("correct", "")
 			case "mixed_keep":
@@ -196,20 +205,95 @@ func TestStructuredResultReviewPreservesEscapedRealCitations(t *testing.T) {
 	id, _ := selectRawCitation(t, e, 1, 1)
 	handle := e.modelContext.CitableEvidenceHandle(id)
 	original := `The observation is 12.500 tonnes.<evidence evidence_id="` + id + `" />`
-	correction := `The observation is 12.500 kg.<ref id="` + handle + `"/>`
-	model.responses = []mockResponse{lightReviewReply("correct", correction)}
+	model.responses = []mockResponse{lightReviewEdits(structuredResultEdit{"tonnes", "kg"})}
 	decision := e.checkCandidate(t.Context(), "Report the observation.", original, "", state, nil, false)
 	require.Equal(t, "corrected", decision.StructuredResultReviewStatus)
 	require.Contains(t, decision.Candidate, `<evidence evidence_id="`+id+`" />`)
 	require.NotContains(t, decision.Candidate, "evidence://")
+	require.Contains(t, model.calls[0][1].Content, handle)
 	state.FinalAnswer = decision.Candidate
 	require.Len(t, e.finalAnswerEvidenceReferences(state), 1)
 }
 
 func TestStructuredResultReviewMalformedVerdictIsNeverApproval(t *testing.T) {
-	for _, value := range []string{`{"action":"keep"}`, `{"action":"keep","answer":null}`, `{"action":"keep","answer":"","answer":""}`, `{"action":"keep","answer":""} extra`, `{"action":"keep","answer":"","other":true}`} {
+	for _, value := range []string{`{"action":"keep"}`, `{"action":"keep","answer":null}`, `{"action":"keep","answer":"","answer":""}`, `{"action":"keep","answer":""} extra`, `{"action":"keep","answer":"","other":true}`,
+		`{"action":"keep","edits":null}`, `{"action":"correct","edits":[]}`, `{"action":"correct","edits":[{"old":"x","new":"y","new":"z"}]}`,
+		`{"action":"correct","edits":[{"old":"","new":"x"}]}`, `{"action":"correct","edits":[{"old":"x","new":null}]}`,
+		`{"action":"correct","edits":[{"old":"x","new":"x"}]}`, `{"action":"correct","answer":"rewritten answer"}`} {
 		_, _, valid := decodeStructuredResultReview(value)
 		require.False(t, valid, value)
+	}
+	for _, value := range []string{`{"action":"keep","answer":""}`, `{"action":"keep","edits":[]}`} {
+		action, edits, valid := decodeStructuredResultReview(value)
+		require.True(t, valid)
+		require.Equal(t, "keep", action)
+		require.Empty(t, edits)
+	}
+}
+
+func TestStructuredResultReviewExactEditsPreserveCheckedCoreAndCitation(t *testing.T) {
+	e, state, model := lightStructuredFixture(t)
+	e.currentStructuredCitationView(state.RoundSteps[0].ToolCalls[0])
+	id, _ := selectRawCitation(t, e, 1, 1)
+	core := `The observation is 12.500 kg.<evidence evidence_id="` + id + `" />`
+	const comparison = " This group's average is the highest across every group."
+	const cause = " Missing observations must be caused by holidays."
+	model.responses = []mockResponse{lightReviewEdits(structuredResultEdit{comparison, ""}, structuredResultEdit{cause, ""})}
+	decision := e.checkCandidate(t.Context(), "Report the observation.", core+comparison+cause, "", state, nil, false)
+	require.Equal(t, candidateAccepted, decision.Disposition)
+	require.Equal(t, core, decision.Candidate)
+	require.Equal(t, "corrected", decision.StructuredResultReviewStatus)
+	require.Equal(t, 0, e.turnReview.Repairs)
+	require.Len(t, model.calls, 1)
+	require.True(t, e.candidateApprovalCurrent(core, state))
+	require.NotContains(t, string(model.opts[0].Format), `"answer"`, "the model is never asked to regenerate the checked answer")
+}
+
+func TestStructuredResultReviewExactPatchBoundsAndRejections(t *testing.T) {
+	for _, test := range []struct {
+		name, candidate, expected, failure string
+		edits                              []structuredResultEdit
+	}{
+		{name: "unicode", candidate: "原值12.500；原因待查。", expected: "原值12.500。", edits: []structuredResultEdit{{"；原因待查", ""}}},
+		{name: "order", candidate: "Alpha 12.500 kg. Beta uncertain.", expected: "Alpha 12.500 kg.", edits: []structuredResultEdit{{" Beta uncertain.", ""}}},
+		{name: "missing", candidate: "Alpha 12.500 kg.", failure: "patch_not_unique", edits: []structuredResultEdit{{"absent", "correct"}}},
+		{name: "ambiguous", candidate: "Alpha Alpha", failure: "patch_not_unique", edits: []structuredResultEdit{{"Alpha", "Beta"}}},
+		{name: "overlapping_occurrences", candidate: "aaa", failure: "patch_not_unique", edits: []structuredResultEdit{{"aa", "b"}}},
+		{name: "overlap", candidate: "Alpha Beta Gamma", failure: "patch_overlap", edits: []structuredResultEdit{{"Alpha Beta", "A"}, {"Beta Gamma", "B"}}},
+		{name: "empty_result", candidate: "Alpha", failure: "patch_answer_budget", edits: []structuredResultEdit{{"Alpha", ""}}},
+		{name: "answer_budget", candidate: "Alpha", failure: "patch_answer_budget", edits: []structuredResultEdit{{"Alpha", strings.Repeat("x", structuredResultReviewAnswerBytes+1)}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			answer, failure := applyStructuredResultEdits(test.candidate, test.edits)
+			require.Equal(t, test.failure, failure)
+			if failure == "" {
+				require.Equal(t, test.expected, answer)
+			}
+		})
+	}
+	for _, edits := range [][]structuredResultEdit{
+		{{"a", "b"}, {"c", "d"}, {"e", "f"}, {"g", "h"}, {"i", "j"}},
+		{{"a", strings.Repeat("b", structuredResultReviewAnswerBytes)}},
+	} {
+		raw, _ := json.Marshal(map[string]any{"action": "correct", "edits": edits})
+		_, _, valid := decodeStructuredResultReview(string(raw))
+		require.False(t, valid)
+	}
+}
+
+func TestStructuredResultReviewInvalidPatchNeverRequestsAnotherCheck(t *testing.T) {
+	for _, edits := range [][]structuredResultEdit{
+		{{"missing", "replacement"}},
+		{{"The observation", "Observed"}, {"observation is", "value is"}},
+	} {
+		e, state, model := lightStructuredFixture(t, lightReviewEdits(edits...))
+		const core = "The observation is 12.500 kg."
+		decision := e.checkCandidate(t.Context(), "Report the observation.", core, "", state, nil, false)
+		require.Equal(t, core, decision.Candidate)
+		require.Equal(t, "not_checked_invalid_correction", decision.StructuredResultReviewStatus)
+		e.checkCandidate(t.Context(), "Report the observation.", core, "", state, nil, true)
+		require.Len(t, model.calls, 1)
+		require.Equal(t, 0, e.turnReview.Repairs)
 	}
 }
 
@@ -257,7 +341,7 @@ func TestStructuredResultReviewSharedDeadlineAndTimeoutDoNotReset(t *testing.T) 
 func TestStructuredResultReviewCorrectionIsTheOnlyFinalStreamAndStoredAnswer(t *testing.T) {
 	const original = "The observation is 12.500 tonnes."
 	const corrected = "The observation is 12.500 kg."
-	e, state, model := lightStructuredFixture(t, chatAnswer(original), lightReviewReply("correct", corrected))
+	e, state, model := lightStructuredFixture(t, chatAnswer(original), lightReviewEdits(structuredResultEdit{"tonnes", "kg"}))
 	recorder := &terminalAnswerRecorder{}
 	recorder.attach(e.eventBus)
 	require.NoError(t, e.streamFinalAnswerToEventBus(t.Context(), "Report the observation.", state, "s", []chat.Message{{Role: "user", Content: "Report the observation."}}))
@@ -277,7 +361,7 @@ func TestStructuredResultReviewExecuteLoopWithLargeRuntimePrompt(t *testing.T) {
 			review := lightReviewReply("keep", "")
 			expected := original
 			if outcome == "correct" {
-				review, expected = lightReviewReply("correct", correction), correction
+				review, expected = lightReviewEdits(structuredResultEdit{"12.500.", "12.500 kg."}), correction
 			}
 			if outcome == "unavailable" {
 				review = chatAnswer(`{"action":`)
