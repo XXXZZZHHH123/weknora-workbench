@@ -82,6 +82,38 @@ func TestV2ContractPythonExecutionFixtureAndLegacy(t *testing.T) {
 	require.Nil(t, legacy)
 }
 
+func TestValidatePayloadPreservesTypedTransportAndSerializedEvidence(t *testing.T) {
+	for _, valid := range []bool{true, false} {
+		t.Run(map[bool]string{true: "valid", false: "invalid"}[valid], func(t *testing.T) {
+			data := fixture(t)
+			// Transport-owned values intentionally use nonalphabetical field
+			// order and a raw JSON object. They are not contract-bound source data.
+			type transport struct {
+				Operation  string          `json:"operation"`
+				Generation uint64          `json:"generation"`
+				Parameters json.RawMessage `json:"parameters"`
+			}
+			witness := transport{Operation: "read", Generation: 1, Parameters: json.RawMessage(`{"z":1,"a":2}`)}
+			data["_transport"] = witness
+			if !valid {
+				data["result_contract"].(map[string]any)["result_hash"] = strings.Repeat("0", 64)
+			}
+			before, err := json.Marshal(data)
+			require.NoError(t, err)
+			_, err = ValidatePayload(data)
+			if valid {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+			after, err := json.Marshal(data)
+			require.NoError(t, err)
+			require.True(t, bytes.Equal(before, after), "verification must preserve exact evidence bytes on success and failure")
+			require.Equal(t, witness, data["_transport"], "verification must preserve runtime-owned Go types and RawMessage")
+		})
+	}
+}
+
 func TestDeclaredV2CannotSilentlyDowngradeOrLoseBinding(t *testing.T) {
 	mutations := map[string]func(map[string]any){
 		"null":              func(d map[string]any) { d["result_contract"] = nil },

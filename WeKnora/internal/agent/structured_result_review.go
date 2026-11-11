@@ -78,23 +78,25 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 	if !e.structuredResultReviewEnabled() {
 		return decision
 	}
+	started := time.Now()
 	selected := currentStructuredResultReviewState(state)
 	if len(selected.RoundSteps) == 0 {
 		return decision
 	}
 	budget := e.turnReview.StructuredResultReview
 	if budget == nil {
-		deadline := time.Now().Add(structuredResultReviewTimeout)
+		deadline := started.Add(structuredResultReviewTimeout)
 		if parent, ok := ctx.Deadline(); ok && parent.Before(deadline) {
 			deadline = parent
 		}
 		budget = &structuredResultReviewTurn{Deadline: deadline}
 		e.turnReview.StructuredResultReview = budget
 	}
+	inputBytes := 0
 	defer func() {
 		common.PipelineInfo(ctx, "Agent", "structured_result_delivery_review", map[string]interface{}{
 			"status": decision.StructuredResultReviewStatus, "attempted": budget.Attempted,
-			"candidate_hash": decision.CandidateHash,
+			"candidate_hash": decision.CandidateHash, "input_bytes": inputBytes, "elapsed_ms": time.Since(started).Milliseconds(),
 		})
 	}()
 	if budget.Attempted {
@@ -115,11 +117,15 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 		decision.StructuredResultReviewStatus = "not_checked_evidence_projection"
 		return decision
 	}
+	// Runtime system instructions and tool transcripts are not human semantic
+	// history. Reuse the bounded intent view; source facts have dedicated views.
+	humanConversation, omittedConversation := reviewConversationView(e.semanticReviewConversation(conversation), 4*1024, 8)
 	input, err := json.Marshal(map[string]any{
-		"question": query, "conversation": e.semanticReviewConversation(conversation),
+		"question": query, "conversation": humanConversation, "omitted_conversation_messages": omittedConversation,
 		"candidate_answer": decision.Candidate, "actual_structured_results": rows,
 		"supporting_structured_observations": structuredResultSupportingEvidence(state),
 	})
+	inputBytes = len(input)
 	if err != nil || len(input) > structuredResultReviewInputBytes {
 		return decision
 	}

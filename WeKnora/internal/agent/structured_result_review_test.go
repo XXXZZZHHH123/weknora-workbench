@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/structuredresult"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -266,4 +267,73 @@ func TestStructuredResultReviewCorrectionIsTheOnlyFinalStreamAndStoredAnswer(t *
 	require.Equal(t, corrected, visible)
 	require.Len(t, model.calls, 2, "one generation and one check/correction; no second critic")
 	require.True(t, e.candidateApprovalCurrent(corrected, state))
+}
+
+func TestStructuredResultReviewExecuteLoopWithLargeRuntimePrompt(t *testing.T) {
+	for _, outcome := range []string{"keep", "correct", "unavailable"} {
+		t.Run(outcome, func(t *testing.T) {
+			const original = "The observation is 12.500."
+			const correction = "The observation is 12.500 kg."
+			review := lightReviewReply("keep", "")
+			expected := original
+			if outcome == "correct" {
+				review, expected = lightReviewReply("correct", correction), correction
+			}
+			if outcome == "unavailable" {
+				review = chatAnswer(`{"action":`)
+			}
+			e, state, model := lightStructuredFixture(t, chatAnswer(original), review)
+			// Native tools attach this typed transport witness after the service
+			// response was parsed. Validation must not turn it into a generic map:
+			// changed JSON field ordering would invalidate the source identity.
+			state.RoundSteps[0].ToolCalls[0].Result.Data["_structured_execution"] = agenttools.StructuredOperationDescriptor{
+				Operation: "read_pdf_table", ToolName: "structured_read_pdf_table", Generation: 1,
+				ScopeMode: "knowledge_base", EffectClass: "read",
+			}
+			// The real source flow reads a directory before querying. Its existing
+			// catalog facts qualify source review without visiting the later v2
+			// result, so the new trigger becomes that result's first validation.
+			state.RoundSteps[0].ToolCalls = append([]types.ToolCall{{ID: "current-directory", Name: "structured_list_series", Result: &types.ToolResult{
+				Success: true, Data: map[string]any{"catalog_summary": map[string]any{"kind": "catalog_group_counts"}},
+				Output: `{"catalog_summary":{"kind":"catalog_group_counts"}}`,
+			}}}, state.RoundSteps[0].ToolCalls...)
+			originalEvidence := reviewDigest(e.sourceConsistencyMessages(state, nil))
+			recorder := &terminalAnswerRecorder{}
+			recorder.attach(e.eventBus)
+			messages := []chat.Message{{Role: "system", Content: strings.Repeat("Runtime protocol. ", 3000)}, {Role: "user", Content: "Report the observation."}}
+			_, err := e.executeLoop(t.Context(), state, "Report the observation.", messages, emptyTools(), "s", "m")
+			require.NoError(t, err)
+			require.Equal(t, originalEvidence, reviewDigest(e.sourceConsistencyMessages(state, nil)), "checking must preserve the exact native execution witness")
+			t.Logf("candidate_identity=%v task_identity=%v evidence_identity=%v policy_identity=%v status=%s", e.turnReview.Last.CandidateHash == candidateTextDigest(expected), e.turnReview.Last.TaskHash == e.candidateTaskDigest(e.turnReview.Query, e.turnReview.TaskConversation), e.turnReview.Last.EvidenceHash == reviewDigest(e.sourceConsistencyMessages(state, e.turnReview.Conversation)), e.turnReview.Last.StructuredResultReview == e.structuredResultReviewEnabled(), e.turnReview.Last.StructuredResultReviewStatus)
+			require.Equal(t, expected, state.FinalAnswer)
+			require.Equal(t, 2, len(model.calls))
+			require.NotContains(t, model.calls[1][1].Content, "Runtime protocol.")
+			require.LessOrEqual(t, len(model.calls[1][1].Content), structuredResultReviewInputBytes)
+			require.True(t, e.candidateApprovalCurrent(expected, state))
+			done, visible := recorder.snapshot()
+			require.Equal(t, 1, done)
+			require.Equal(t, expected, visible)
+		})
+	}
+}
+
+func TestStructuredResultReviewTypedWitnessProjectionStillRejectsChangedValues(t *testing.T) {
+	e, state, _ := lightStructuredFixture(t)
+	state.RoundSteps[0].ToolCalls[0].Result.Data["_structured_execution"] = agenttools.StructuredOperationDescriptor{
+		Operation: "read_pdf_table", ToolName: "structured_read_pdf_table", Generation: 1, ScopeMode: "knowledge_base", EffectClass: "read",
+	}
+	before := reviewDigest(state.RoundSteps)
+	messages := e.sourceConsistencyMessages(state, nil)
+	require.NotNil(t, structuredQueryRowReviewEvidence(state, messages, structuredQueryRowReviewBudget))
+	require.Equal(t, before, reviewDigest(state.RoundSteps))
+	changed := false
+	for i := range messages {
+		if strings.Contains(messages[i].Content, `"kg"`) {
+			messages[i].Content = strings.ReplaceAll(messages[i].Content, `"kg"`, `"other_unit"`)
+			changed = true
+		}
+	}
+	require.True(t, changed)
+	require.Nil(t, structuredQueryRowReviewEvidence(state, messages, structuredQueryRowReviewBudget), "field ordering may differ, but changed evidence values never qualify")
+	require.Equal(t, before, reviewDigest(state.RoundSteps))
 }

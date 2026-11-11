@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/structuredresult"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -115,9 +116,12 @@ func structuredQueryRowReviewEvidence(state *types.AgentState, sourceMessages []
 			if !ok {
 				continue
 			}
-			actualData, err := json.Marshal(call.Result.Data)
-			messageData, messageDataErr := json.Marshal(data)
-			if err != nil || messageDataErr != nil || !bytes.Equal(actualData, messageData) {
+			// Native execution annotations can be typed structs while their
+			// immutable JSON message decodes into maps. Compare typed JSON values,
+			// not field serialization order; never normalize the caller's data.
+			actualData, err := structuredresult.TypedSHA256(call.Result.Data)
+			messageData, messageDataErr := structuredresult.TypedSHA256(data)
+			if err != nil || messageDataErr != nil || actualData != messageData {
 				continue
 			}
 			if status, ok := data["status"].(string); !ok || status != "ok" {
