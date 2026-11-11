@@ -127,6 +127,15 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 		decision.StructuredResultReviewStatus = "not_checked_evidence_projection"
 		return decision
 	}
+	// An optional editor must not remove a supported assertion about a row it
+	// cannot see. Omission notices alone did not prevent that failure in actual
+	// answers. Preserve the already numerically/source-validated candidate when
+	// any executed result's rows are omitted; do not spend another model call or
+	// fetch more evidence just to enable this optional correction.
+	if !structuredResultReviewRowsComplete(rows) {
+		decision.StructuredResultReviewStatus = "not_checked_row_omission"
+		return decision
+	}
 	// Runtime system instructions and tool transcripts are not human semantic
 	// history. Reuse the bounded intent view; source facts have dedicated views.
 	humanConversation, omittedConversation := reviewConversationView(e.semanticReviewConversation(conversation), 4*1024, 8)
@@ -210,6 +219,21 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 	decision.Candidate, decision.CandidateHash = answer, candidateTextDigest(answer)
 	decision.StructuredResultReviewStatus = "corrected"
 	return decision
+}
+
+func structuredResultReviewRowsComplete(view map[string]any) bool {
+	entries, ok := view["entries"].([]structuredQueryRowCompanionEntry)
+	count, known := view["source_result_count"].(int)
+	if !ok || !known || count == 0 || len(entries) != count {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.ProjectionComplete || entry.RetainedRowCount != entry.SourceRowCount || len(entry.OmittedRowRanges) != 0 {
+			return false
+		}
+	}
+	// Metadata has its own explicit omissions; these are not missing rows.
+	return true
 }
 
 // Directory ranges and inspected original cells can qualify the queried

@@ -139,6 +139,28 @@ func rehashLightFixture(t *testing.T, data map[string]any) {
 	require.NotNil(t, validated)
 }
 
+func TestStructuredResultReviewDoesNotDeleteAValidRowOutsideItsProjection(t *testing.T) {
+	const original = "The requested final observation is 12.500 kg."
+	e, state, model := lightStructuredFixture(t, lightReviewEdits(structuredResultEdit{original, "Only earlier observations are available."}))
+	data := state.RoundSteps[0].ToolCalls[0].Result.Data
+	for i, row := range data["rows"].([]any) {
+		row.(map[string]any)["provenance_detail"] = strings.Repeat(string(rune('a'+i)), 9000)
+	}
+	rehashLightFixture(t, data)
+	selected := currentStructuredResultReviewState(state)
+	view := structuredQueryRowReviewEvidence(selected, e.sourceConsistencyMessages(selected, nil), structuredQueryRowReviewBudget)
+	entries := view["entries"].([]structuredQueryRowCompanionEntry)
+	require.Less(t, entries[0].RetainedRowCount, entries[0].SourceRowCount)
+	before := reviewDigest(state.RoundSteps)
+	decision := e.checkCandidate(t.Context(), "Report the final observation.", original, "", state, nil, false)
+	require.Equal(t, candidateAccepted, decision.Disposition)
+	require.Equal(t, original, decision.Candidate)
+	require.Equal(t, "not_checked_row_omission", decision.StructuredResultReviewStatus)
+	require.Empty(t, model.calls)
+	require.Equal(t, before, reviewDigest(state.RoundSteps))
+	require.True(t, e.candidateApprovalCurrent(original, state))
+}
+
 func TestStructuredResultReviewUnavailableOrUnsafeCorrectionRetainsCheckedCore(t *testing.T) {
 	for _, failure := range []string{"malformed", "empty", "error", "length", "tool", "invented_number", "invented_citation", "empty_correction", "mixed_keep"} {
 		t.Run(failure, func(t *testing.T) {
