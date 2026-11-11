@@ -247,6 +247,17 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 	if raw, ok := arguments["question"]; !ok || json.Unmarshal(raw, &question) != nil || strings.TrimSpace(question) == "" || directory == nil || directory.Data == nil {
 		return nil, nil
 	}
+	recallArguments := map[string]json.RawMessage{
+		"question": arguments["question"], "latest_only": json.RawMessage("true"),
+		"limit": json.RawMessage("8"), "offset": json.RawMessage("0"),
+	}
+	for _, key := range []string{"search", "limit", "offset", "latest_only"} {
+		if value, exists := arguments[key]; exists {
+			recallArguments[key] = value
+		}
+	}
+	latestOnly := true
+	_ = json.Unmarshal(recallArguments["latest_only"], &latestOnly)
 	scopes := t.knowledgeScopes
 	truncated := len(scopes) > maxRecallKnowledgeBases
 	if truncated {
@@ -255,6 +266,10 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 	catalogs := make([]map[string]any, 0, len(scopes))
 	fields := []any{}
 	fieldsTruncated := truncated
+	candidates := []any{}
+	candidateCount := 0
+	candidatesTruncated := truncated
+	datasetsTruncated := truncated
 	pdfTablesListed := 0
 	pdfTablesTruncated := truncated
 	for _, scope := range scopes {
@@ -272,7 +287,7 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 		}
 		row := catalogs[index]
 		args, _ := json.Marshal(map[string]any{"operation": "list_datasets", "knowledge_base_id": scope.KnowledgeBaseID,
-			"arguments": map[string]string{"question": question}})
+			"arguments": recallArguments})
 		attempted++
 		result, err := t.Execute(ctx, args)
 		if err != nil || result == nil || !result.Success || !structuredRecallCatalogAvailable(result.Data) {
@@ -295,11 +310,11 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 		row["catalog_status"] = "queried"
 		datasets := []map[string]any{}
 		for _, item := range structuredRecallRows(result.Data["datasets"]) {
-			if latest, _ := item["is_latest_for_source"].(bool); !latest {
+			if latest, _ := item["is_latest_for_source"].(bool); latestOnly && !latest {
 				continue
 			}
 			compact := map[string]any{}
-			for _, key := range []string{"dataset_id", "source_file", "sheets", "pending_sheets"} {
+			for _, key := range []string{"dataset_id", "source_file", "sha256", "imported_at", "is_latest_for_source", "import_id", "parent_dataset_id", "series_count", "sheet_count", "sheets", "sheets_truncated", "pending_sheets", "pending_sheets_count", "pending_sheets_truncated", "pending_sheet_states", "pending_sheet_states_count", "pending_sheet_states_truncated", "empty_sheets", "empty_sheets_count", "empty_sheets_truncated", "directory_metadata_truncated", "next_operation"} {
 				if value, ok := item[key]; ok {
 					compact[key] = value
 				}
@@ -308,6 +323,15 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 		}
 		if _, present := result.Data["datasets"]; present {
 			row["datasets"] = datasets
+			for _, key := range []string{"dataset_count", "total_dataset_count", "offset", "limit", "next_offset", "datasets_truncated", "latest_only"} {
+				if value, exists := result.Data[key]; exists {
+					row[key] = value
+				}
+			}
+			if more, _ := result.Data["datasets_truncated"].(bool); more {
+				datasetsTruncated = true
+				row["dataset_catalog_next_operation"] = "list_datasets"
+			}
 		} else {
 			// The service contract always includes datasets, including []. A
 			// PDF-only response still supplies real navigation, but cannot
@@ -365,12 +389,42 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 				fieldsTruncated = true
 				break
 			}
-			field := map[string]any{"knowledge_base_id": scope.KnowledgeBaseID}
+			field := map[string]any{}
 			for key, value := range match {
 				field[key] = value
 			}
+			field["knowledge_base_id"] = scope.KnowledgeBaseID
 			fields = append(fields, field)
 		}
+		candidateRows := structuredRecallRows(result.Data["field_candidates"])
+		row["field_candidate_count"] = len(candidateRows)
+		for _, key := range []string{"field_candidate_count", "field_candidate_scope", "field_candidate_stage", "field_candidate_next_step", "field_candidates_truncated"} {
+			if value, exists := result.Data[key]; exists {
+				row[key] = value
+			}
+		}
+		candidateCount += structuredDirectoryOffset(row["field_candidate_count"])
+		if more, _ := result.Data["field_candidates_truncated"].(bool); more || len(candidateRows) > maxRecallFieldsPerKnowledge {
+			candidatesTruncated = true
+		}
+		if len(candidateRows) > maxRecallFieldsPerKnowledge {
+			candidateRows = candidateRows[:maxRecallFieldsPerKnowledge]
+		}
+		returnedCandidates := 0
+		for _, candidate := range candidateRows {
+			if len(candidates) >= maxRecallFieldsAcrossScopes {
+				candidatesTruncated = true
+				break
+			}
+			field := map[string]any{}
+			for key, value := range candidate {
+				field[key] = value
+			}
+			field["knowledge_base_id"] = scope.KnowledgeBaseID
+			candidates = append(candidates, field)
+			returnedCandidates++
+		}
+		row["field_candidate_returned_count"] = returnedCandidates
 	}
 	data := make(map[string]any, len(directory.Data)+5)
 	for key, value := range directory.Data {
@@ -391,11 +445,16 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 	data["not_queried_knowledge_base_count"] = notQueried
 	data["knowledge_base_catalogs_truncated"] = truncated
 	data["knowledge_base_catalogs"] = catalogs
+	data["datasets_truncated"] = datasetsTruncated || !complete
 	data["literal_fields"] = fields
 	data["literal_field_count"] = len(fields)
 	data["literal_fields_truncated"] = fieldsTruncated || !complete
+	data["field_candidates"] = candidates
+	data["field_candidate_count"] = candidateCount
+	data["field_candidate_returned_count"] = len(candidates)
+	data["field_candidates_truncated"] = candidatesTruncated || !complete
 	data["pdf_tables_truncated"] = pdfTablesTruncated || !complete
-	data["scope_notice"] = "knowledge_base_catalogs 逐库标记实际查询状态：queried 仅表示已取得所列目录；partial 仅取得部分目录族；unavailable 未取得可用结果；not_queried 未发起查询。catalog_complete 仅表示授权库目录请求全部成功且符合目录契约，不表示表、字段、分页或正文证据完整；另核对各项 truncated。source_data_read=false，catalog_data_read 仅记录目录读取。服务成功目录必须含 datasets；pdf_tables 在空 PDF 目录时按服务协议省略，标为 not_listed，不补造表或数量。缺失必需目录字段不能当空数据。knowledge_bases 仍只是授权导航，不能代替已读目录。datasets 仅为 Excel；PDF 表见实际返回的 pdf_tables，空 Excel 目录不表示没有 PDF 数据。PDF reviewed/auto_accepted 均已发布；extraction_verified=false 不表示未入库。literal_fields、标题、列、页来源和目录样例仅为候选证据：按完整问题和对话选择库与表，在顶层传 knowledge_base_id。用 read_pdf_table 核对原值、真实列名/单位与来源，再 query_pdf_table 计算。pdf_tables_truncated=true 时需核实该库 list_pdf_tables 的分页；目录不可用或截断不能证明来源不存在。超时请求可能仍在服务端计算，不自动重放同一请求。人工确认不保证 OCR 正确或整篇覆盖，保留所有质量/覆盖检查。" + CatalogMetadataEvidenceInstructions
+	data["scope_notice"] = "knowledge_base_catalogs 逐库标记实际查询状态：queried 仅表示已取得所列目录；partial 仅取得部分目录族；unavailable 未取得可用结果；not_queried 未发起查询。catalog_complete 仅表示授权库目录请求全部成功且符合目录契约，不表示表、字段、分页或正文证据完整；另核对各项 truncated。source_data_read=false，catalog_data_read 仅记录目录读取。服务成功目录必须含 datasets；pdf_tables 在空 PDF 目录时按服务协议省略，标为 not_listed，不补造表或数量。缺失必需目录字段不能当空数据。knowledge_bases 仍只是授权导航，不能代替已读目录。datasets 仅为 Excel；datasets_truncated 时选择该 knowledge_base_id，沿用 latest_only 和 next_offset 调用 list_datasets 继续，选定真实 dataset_id 后用 list_series 按需展开字段。PDF 表见实际返回的 pdf_tables，空 Excel 目录不表示没有 PDF 数据。PDF reviewed/auto_accepted 均已发布；extraction_verified=false 不表示未入库。literal_fields、field_candidates、标题、列、页来源和目录样例仅为候选证据：按完整问题和对话选择库与表，在顶层传 knowledge_base_id。用 read_pdf_table 核对原值、真实列名/单位与来源，再 query_pdf_table 计算。pdf_tables_truncated=true 时需核实该库 list_pdf_tables 的分页；目录不可用或截断不能证明来源不存在。超时请求可能仍在服务端计算，不自动重放同一请求。人工确认不保证 OCR 正确或整篇覆盖，保留所有质量/覆盖检查。" + CatalogMetadataEvidenceInstructions
 	message := ""
 	if !complete {
 		data["status"], data["code"], data["dataset_catalog_status"] = "partial", "catalog_partial", "partial"
@@ -458,7 +517,9 @@ func fitStructuredRecallDirectory(ctx context.Context, result *types.ToolResult)
 	projected := fitStructuredDirectory(ctx, "list_datasets", &view)
 	copy := *result
 	copy.Output = projected.Output
-	if projected.Data["status"] != "directory_output_budget_exceeded" {
+	var outputView map[string]any
+	_ = json.Unmarshal([]byte(projected.Output), &outputView)
+	if outputView["status"] != "directory_output_budget_exceeded" {
 		return &copy
 	}
 	data := map[string]any{"output_truncated": true, "catalog_detail_omitted": true}

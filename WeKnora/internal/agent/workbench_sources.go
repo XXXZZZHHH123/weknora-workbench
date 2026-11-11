@@ -152,6 +152,13 @@ func compactWorkbenchDiscovery(step types.AgentStep, query string, registered ma
 		var compact map[string]any
 		switch operation {
 		case "list_datasets":
+			// The directory tool already fits its model-facing Output to the
+			// current budget. Data retains the full authorized response for
+			// auditing and cross-library aggregation. Rebuilding from Data here
+			// would undo pagination/projection and flood the first model call.
+			if call.Result.Output != "" {
+				continue
+			}
 			compact = compactDiscoveryCatalogue(call.Result.Data, query)
 		case "describe_tools":
 			compact = compactDiscoverySchemas(call.Result.Data, registered)

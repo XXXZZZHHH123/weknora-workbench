@@ -187,73 +187,21 @@ def create_app(data_dir: str | Path | None = None):
         return await run_in_threadpool(resolver.execute,resolution_id,date)
 
     @mcp.tool()
-    def list_datasets(question: str | None = None) -> dict:
-        """列出已完成的Excel数据集及当前已发布PDF表目录。datasets仅指Excel，pdf_tables才是PDF；Excel为空不表示没有PDF数据。PDF入库状态以当前目录为准，旧文档索引的待审/仅字段说明可能过时。先据完整问题选候选，再read_pdf_table核实列、单位、原值。"""
-        # Historical versions need identity metadata, not repeated full coverage
-        # inventories. Keep the management API's full report unchanged.
-        directory_started = time.perf_counter()
-        logger.info('structured list_datasets directory_start question_supplied=%s', bool(question))
-        datasets=[]
-        try:
-            sources = store.list_datasets()
-        except Exception as exc:
-            logger.warning('structured list_datasets directory_failed elapsed_ms=%d error_type=%s',
-                           round((time.perf_counter()-directory_started)*1000), type(exc).__name__)
-            raise
-        for source in sources:
-            item={k:source[k] for k in ('dataset_id','source_file','sha256','imported_at',
-                'is_latest_for_source','series_count','import_id','use_reviewed_mappings','parent_dataset_id')}
-            if source['is_latest_for_source']:
-                item['sheets']=[s['name'] for s in source['sheets']]
-                item['pending_sheets']=source['pending_sheets']
-                item['pending_sheet_states']=source.get('pending_sheet_states', [])
-                item['empty_sheets']=source['empty_sheets']
-                item['coverage_notice']=source.get('coverage_notice','仅查询已导入范围。')
-            datasets.append(item)
-        latest_count = sum(1 for item in datasets if item['is_latest_for_source'])
-        logger.info('structured list_datasets directory_complete elapsed_ms=%d datasets=%d latest=%d',
-                    round((time.perf_counter()-directory_started)*1000), len(datasets), latest_count)
-        result={"datasets": datasets}
+    def list_datasets(question: str | None = None, search: str = '', limit: int = 8,
+                      offset: int = 0, latest_only: bool = True) -> dict:
+        """分页列出已完成的Excel版本及已发布PDF表。默认每份来源的最新版本，历史用latest_only=false。limit为1..20，next_offset继续文件目录。question保留完整原问题；search为模型生成的字面召回词（空格AND），不决定业务口径。表名预览和field_candidates均有界，候选来自持久的已发布表头索引，无需读取整个Excel。候选不含完整同名来源上下文，选择真实dataset_id后用list_series指定sheet/search并分页核对字段、单位、日期和来源，再提交查询计划或SQL；截断、召回无结果、目录失败都不证明没有数据。datasets仅指Excel，pdf_tables才是PDF，Excel为空不表示没有PDF。"""
+        from .discovery_catalog import list_datasets as discover
+        started = time.perf_counter()
+        result = discover(store, question, search=search, limit=limit,
+                          offset=offset, latest_only=latest_only)
+        logger.info('structured list_datasets directory_complete elapsed_ms=%d datasets=%d total=%d offset=%d',
+                    round((time.perf_counter()-started)*1000), len(result['datasets']),
+                    result['dataset_count'], offset)
         pdf_directory = pdf_store(registry).list_tables(discovery=True, samples=False)
-        pdf_catalog = pdf_directory['tables']
-        if pdf_catalog:
-            result['pdf_tables'] = pdf_catalog
+        if pdf_directory['tables']:
+            result['pdf_tables'] = pdf_directory['tables']
             result['pdf_notice'] = pdf_directory['directory_notice']
             result['pdf_table_count'] = pdf_directory['total_table_count']
-        if question:
-            from .field_index import literal_fields
-            matches=[]
-            for position, dataset in enumerate([d for d in datasets if d['is_latest_for_source']][:8], 1):
-                catalog_started = time.perf_counter()
-                logger.info('structured list_datasets catalog_start position=%d dataset_id=%s',
-                            position, dataset['dataset_id'])
-                try:
-                    catalog = store.catalog(dataset['dataset_id'])
-                except Exception as exc:
-                    logger.warning('structured list_datasets catalog_failed position=%d dataset_id=%s elapsed_ms=%d error_type=%s',
-                                   position, dataset['dataset_id'],
-                                   round((time.perf_counter()-catalog_started)*1000), type(exc).__name__)
-                    raise
-                logger.info('structured list_datasets catalog_complete position=%d dataset_id=%s elapsed_ms=%d fields=%d',
-                            position, dataset['dataset_id'],
-                            round((time.perf_counter()-catalog_started)*1000), len(catalog))
-                literal_started = time.perf_counter()
-                try:
-                    fields = literal_fields(catalog,question)
-                except Exception as exc:
-                    logger.warning('structured list_datasets literal_recall_failed position=%d dataset_id=%s elapsed_ms=%d error_type=%s',
-                                   position, dataset['dataset_id'],
-                                   round((time.perf_counter()-literal_started)*1000), type(exc).__name__)
-                    raise
-                logger.info('structured list_datasets literal_recall position=%d dataset_id=%s elapsed_ms=%d matches=%d',
-                            position, dataset['dataset_id'],
-                            round((time.perf_counter()-literal_started)*1000), len(fields))
-                for field in fields:
-                    matches.append({'dataset_id':dataset['dataset_id'],'source_file':dataset['source_file'],**{k:field.get(k) for k in ('series_id','sheet','metric','unit','dimensions','header_cells','source_context')}})
-            result['literal_fields']=matches[:64]
-            result['literal_field_count']=len(result['literal_fields'])
-            result['literal_fields_truncated']=len(matches)>64 or sum(d['is_latest_for_source'] for d in datasets)>8
-            result['literal_field_notice']='这些是实际原表表头的字面召回证据，不执行取数或决定语义。模型依据完整问题、上下文和真实来源生成绑定计划；程序核验同名来源的全部实际ID及选择依据，不选择第一列。'
         return result
 
     @mcp.tool()

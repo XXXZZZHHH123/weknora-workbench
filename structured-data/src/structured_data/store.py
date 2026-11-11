@@ -392,6 +392,8 @@ class DataStore:
             manifest["source_file"] = source_path.name
             manifest.update(dataset_id=dataset_id, imported_at=dt.datetime.now(dt.timezone.utc).isoformat(), series_count=len(series), observation_count=len(observations), valid_count=sum(s["valid_count"] for s in summaries.values()), issue_count=len(parsed.get("issues", [])))
             dump(work / "manifest.json", manifest)
+            from .discovery_catalog import prepare_index
+            prepare_index(work)
             try:
                 os.rename(work, final)
             except OSError:

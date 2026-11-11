@@ -156,37 +156,7 @@ func fitStructuredDirectory(ctx context.Context, operation string, result *types
 			delete(data, "directory_notice")
 		}
 	} else {
-		catalogs := structuredRecallRows(data["knowledge_base_catalogs"])
-		trimPDF := func(row map[string]any) bool {
-			rows := structuredRecallRows(row["pdf_tables"])
-			if len(rows) == 0 {
-				return false
-			}
-			row["pdf_tables"] = rows[:len(rows)-1]
-			row["pdf_tables_truncated"] = true
-			row["pdf_catalog_next_operation"] = "list_pdf_tables"
-			data["pdf_tables_truncated"] = true
-			return true
-		}
-		if len(catalogs) > 0 {
-			data["knowledge_base_catalogs"] = catalogs
-			for !render() {
-				changed := false
-				// Share the remaining budget across libraries; selection stays with the
-				// model and uses full question/context, never question-token heuristics.
-				for _, row := range catalogs {
-					if !render() && trimPDF(row) {
-						changed = true
-					}
-				}
-				if !changed {
-					break
-				}
-			}
-		} else {
-			for !render() && trimPDF(data) {
-			}
-		}
+		projectStructuredDatasetDirectory(data, render)
 	}
 	if !render() && operation == "query_pdf_table" {
 		// Even pathological metadata must remain an explicit query failure,
@@ -208,6 +178,10 @@ func fitStructuredDirectory(ctx context.Context, operation string, result *types
 	if !render() && operation != "query_pdf_table" {
 		data = map[string]any{"status": "directory_output_budget_exceeded", "output_truncated": true,
 			"next_step": "Use an authorized knowledge_base_id and list_pdf_tables with limit:1; absence has not been established."}
+		if operation == "list_datasets" {
+			data["next_operation"] = "list_datasets"
+			data["next_step"] = "Select an authorized knowledge_base_id and request list_datasets with limit:1; Excel fields use list_series. Directory omission does not establish absence."
+		}
 		if scope, ok := result.Data["source_context"]; ok && contextWasVisible {
 			data["source_context"] = scope
 		}
@@ -221,7 +195,9 @@ func fitStructuredDirectory(ctx context.Context, operation string, result *types
 		data["source_context"] = scope
 	}
 	copy.Output, copy.Data = string(encoded), data
-	if contractBound {
+	if contractBound || operation == "list_datasets" {
+		// Directory output projection must not replace the successfully read
+		// canonical catalog used by cross-library recall and application code.
 		copy.Data = result.Data
 	}
 	if data["status"] == "query_output_budget_exceeded" {

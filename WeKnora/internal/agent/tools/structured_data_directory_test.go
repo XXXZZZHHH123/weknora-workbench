@@ -51,7 +51,9 @@ func TestStructuredMultiScopePDFDirectoryBudgetNeverMeansAbsent(t *testing.T) {
 	result := fitStructuredDirectory(WithOutputBudget(context.Background(), 900), "list_datasets", original)
 	require.LessOrEqual(t, utf8.RuneCountInString(result.Output), 900)
 	require.True(t, json.Valid([]byte(result.Output)))
-	for _, catalog := range structuredRecallRows(result.Data["knowledge_base_catalogs"]) {
+	var view map[string]any
+	require.NoError(t, json.Unmarshal([]byte(result.Output), &view))
+	for _, catalog := range structuredRecallRows(view["knowledge_base_catalogs"]) {
 		require.Equal(t, json.Number("1"), catalog["pdf_table_count"])
 		require.Equal(t, true, catalog["pdf_tables_truncated"])
 		require.Equal(t, "list_pdf_tables", catalog["pdf_catalog_next_operation"])

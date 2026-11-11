@@ -49,7 +49,10 @@ def test_native_queries_preserve_cells_and_use_complete_aggregate(service):
 def test_other_space_cannot_read_or_download_pilot_snapshot(service):
     client,key,dataset=service
     raw,headers=signed(key,body={'operation':'list_datasets','arguments':{}},tenant=10001)
-    assert client.post('/api/tools/read',content=raw,headers=headers).json()=={'datasets':[]}
+    directory = client.post('/api/tools/read',content=raw,headers=headers).json()
+    assert directory['datasets'] == []
+    assert directory['dataset_count'] == directory['total_dataset_count'] == 0
+    assert directory['next_offset'] is None and not directory['datasets_truncated']
     raw,headers=signed(key,body={'dataset_id':dataset,'series_id':'price'},tenant=10001,path='/api/research/export')
     assert client.post('/api/research/export',content=raw,headers=headers).status_code==400
     path='/api/research/source/'+dataset

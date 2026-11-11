@@ -53,7 +53,7 @@ func TestWorkbenchDiscoveryCompactionKeepsAllCandidatesAndImmutableRawEvidence(t
 	dataset := model["datasets"].([]any)[0].(map[string]any)
 	require.Equal(t, catalogue["datasets"], model["datasets"], "all actual source coverage remains visible")
 	require.NotContains(t, dataset, "pending_sheets_omitted_count")
-	require.Contains(t, model["literal_fields_query_hint"], "完整问题与上下文")
+	require.Equal(t, step.ToolCalls[0].Result.Output, compact.ToolCalls[0].Result.Output, "the tool owns its bounded model view")
 	require.Len(t, model["literal_fields"], 4, "every duplicate field remains available")
 	for _, column := range []string{"C", "F", "U", "X"} {
 		require.Contains(t, compact.ToolCalls[0].Result.Output, "actual."+column)
@@ -62,6 +62,22 @@ func TestWorkbenchDiscoveryCompactionKeepsAllCandidatesAndImmutableRawEvidence(t
 		view := compactWorkbenchDiscovery(step, question, nil)
 		require.Equal(t, model["datasets"], view.ToolCalls[0].Result.Data["datasets"], "wording cannot remove available sources")
 	}
+}
+
+func TestWorkbenchDiscoveryPreservesBoundedDirectoryView(t *testing.T) {
+	catalogue := discoveryCompactionFixture(t)
+	call := discoveryTestCall(t, "list_datasets", catalogue)
+	call.Result.Output = `{"datasets":[{"dataset_id":"authorized-version","source_file":"真实业务.xlsx","directory_metadata_truncated":true}],"output_truncated":true,"next_operation":"list_series"}`
+	step := types.AgentStep{ToolCalls: []types.ToolCall{call}}
+	before, err := json.Marshal(step)
+	require.NoError(t, err)
+	compact := compactWorkbenchDiscovery(step, "Find the requested measurement", nil)
+	require.Equal(t, call.Result.Output, compact.ToolCalls[0].Result.Output)
+	require.NotContains(t, compact.ToolCalls[0].Result.Output, "尚未核对的其他业务工作表")
+	require.Equal(t, catalogue, compact.ToolCalls[0].Result.Data, "canonical evidence stays available")
+	after, err := json.Marshal(step)
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after))
 }
 
 func TestWorkbenchDiscoveryNeverCompactsFailedRetrievalOrUnknownCoverageShape(t *testing.T) {
