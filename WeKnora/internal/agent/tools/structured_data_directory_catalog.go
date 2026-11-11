@@ -144,7 +144,7 @@ func projectStructuredDatasetDirectory(data map[string]any, fits func() bool) {
 					row[key] = value
 				}
 			}
-			keep := structuredDirectoryKeys(data, "kind", "status", "code", "reason_code", "stage", "interruption_code", "execution_started", "source_data_read", "catalog_data_read", "catalog_complete", "catalog_completion_scope", "dataset_catalog_status", "knowledge_base_catalogs", "datasets", "dataset_count", "total_dataset_count", "offset", "next_offset", "latest_only", "datasets_truncated", "dataset_catalog_next_operation", "pdf_tables", "pdf_table_count", "pdf_tables_truncated", "pdf_catalog_next_operation", "source_context", "result_contract_ref", "output_view_only")
+			keep := structuredDirectoryKeys(data, "kind", "status", "code", "reason_code", "stage", "interruption_code", "execution_started", "source_data_read", "catalog_data_read", "catalog_complete", "catalog_completion_scope", "dataset_catalog_status", "knowledge_base_catalogs", "datasets", "dataset_count", "total_dataset_count", "offset", "next_offset", "latest_only", "datasets_truncated", "dataset_catalog_next_operation", "pdf_tables", "pdf_table_count", "pdf_tables_truncated", "pdf_catalog_next_operation", "source_context", "result_contract_ref", "output_view_only", "_structured_execution", "manifest_version", "schema_sha256", "protocol_version", "generation")
 			for key := range data {
 				delete(data, key)
 			}
