@@ -309,7 +309,19 @@ class DocReaderServicer(docreader_pb2_grpc.DocReaderServicer):
             _c = to_valid_utf8_text
             parsed_stream = None
             try:
-                if request.url or not callable(
+                from docreader.parser.pptx_figure import FIGURE_GEOMETRY_ENGINE
+                from docreader.parser.source_media_png import SOURCE_MEDIA_PNG_ENGINE
+
+                cfg = request.config
+                parser_engine = cfg.parser_engine if cfg else ""
+                # Selected-source protocols verify one original figure/media
+                # item before returning evidence. They must share the unary
+                # dispatch, not fall back to parsing the complete document.
+                selected_source = parser_engine in (
+                    SOURCE_MEDIA_PNG_ENGINE,
+                    FIGURE_GEOMETRY_ENGINE,
+                )
+                if request.url or selected_source or not callable(
                     getattr(self.parser, "parse_file_stream", None)
                 ):
                     result, source_desc = self._parse_request(request)
@@ -318,8 +330,6 @@ class DocReaderServicer(docreader_pb2_grpc.DocReaderServicer):
                         image_count=len(result.images or {}),
                     )
                 else:
-                    cfg = request.config
-                    parser_engine = cfg.parser_engine if cfg else ""
                     engine_overrides = (
                         dict(cfg.parser_engine_overrides) if cfg else {}
                     )

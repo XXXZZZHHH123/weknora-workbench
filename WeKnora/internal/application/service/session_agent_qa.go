@@ -586,6 +586,7 @@ func (s *sessionService) buildAgentConfig(
 		WorkbenchDefault:              customAgent.WorkbenchDefault,
 		TaskPlanningEnabled:           customAgent.WorkbenchDefault,
 		CandidateAdditionsEnabled:     customAgent.WorkbenchDefault,
+		StructuredResultReviewEnabled: customAgent.WorkbenchDefault && customAgent.Config.AnswerReviewMode == "standard",
 		ThinkingBudgetTokens:          customAgent.Config.ThinkingBudgetTokens,
 		ImageGenerationModelID:        customAgent.Config.ImageGenerationModelID,
 		MCPToolExposureMode:           customAgent.Config.MCPToolExposureMode,

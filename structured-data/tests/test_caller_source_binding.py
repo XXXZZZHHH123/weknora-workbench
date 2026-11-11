@@ -88,6 +88,55 @@ def test_signed_query_executes_validated_caller_plan(duplicate_source, monkeypat
         assert body['status'] == 'plan_mismatch' and 'rows' not in body
 
 
+def test_signed_multifield_lookup_uses_one_complete_binding_without_scalar_queries(duplicate_source, monkeypatch):
+    from fastapi.testclient import TestClient
+    from structured_data.server import create_app
+    from structured_data.field_resolver import FieldResolver
+    from structured_data import source_context
+    from structured_data.store import DataStore
+    from test_scoped_service import signed
+    store, dataset = duplicate_source
+    monkeypatch.setattr(FieldResolver, '__init__', lambda self, data: self.__dict__.update(
+        store=data, model_fn=_never_called))
+    validations = []
+    original_verify = source_context.verify_selection
+
+    def verify(*args, **kwargs):
+        validations.append(list(args[2]))
+        return original_verify(*args, **kwargs)
+
+    def scalar_query(*args, **kwargs):
+        raise AssertionError('multi-field input must not be expanded into scalar queries')
+
+    monkeypatch.setattr(source_context, 'verify_selection', verify)
+    monkeypatch.setattr(DataStore, 'query_series', scalar_query)
+    key = b'multifield-source-binding-guard-1234567890'
+    path = store.root / 'read-key'
+    path.write_bytes(key)
+    monkeypatch.setenv('STRUCTURED_SERVICE_TOKEN_FILE', str(path))
+    monkeypatch.setenv('STRUCTURED_TENANT_ID', '10000')
+    plan = [{'considered_ids': GROUP, 'selected_ids': GROUP,
+             'reason': 'The request compares all actual alternatives on the same date.'}]
+    with TestClient(create_app(store.root)) as client:
+        raw, headers = signed(key, body={'operation': 'analyze_table', 'arguments': {
+            'dataset_id': dataset, 'series_ids': GROUP,
+            'sql': 'SELECT series_id,date,value,source_cell,date_cell FROM data ORDER BY series_id',
+            'start_date': '2023-01-01', 'end_date': '2023-01-01',
+            'source_question': 'Compare all four actual source alternatives on this date.',
+            'source_binding': plan}})
+        response = client.post('/api/tools/read', content=raw, headers=headers)
+        assert response.status_code == 200
+        body = response.json()
+    assert validations == [GROUP]
+    assert body['status'] == 'ok' and body['input_complete'] is True
+    assert body['input_count'] == 4 and body['output_truncated'] is False
+    assert body['rows'] == [[sid, '2023-01-01', value, sid + '3', 'A3']
+                            for sid, value in zip(GROUP, [100, 130, 200, 230])]
+    assert set(body['inputs']) == set(GROUP)
+    assert body['source']['sha256'] == store.manifest(dataset)['sha256']
+    assert body['result_contract']
+
+
 @pytest.mark.parametrize('cfg,expected_off', [
     ({'base_url': 'https://ark.cn-beijing.volces.com/api/v3'}, {'thinking': {'type': 'disabled'}}),
     ({'base_url': 'https://api.deepseek.com'}, {'thinking': {'type': 'disabled'}}),

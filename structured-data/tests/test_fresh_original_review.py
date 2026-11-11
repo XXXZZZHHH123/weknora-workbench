@@ -209,6 +209,11 @@ def test_signed_tool_catalog_keeps_fresh_identity_for_current_and_historical_sna
         raw, headers = signed(key, body=body)
         response = client.post('/api/tools/read', content=raw, headers=headers)
         assert response.status_code == 200, response.text
+        assert {item['dataset_id'] for item in response.json()['datasets']} == {final['dataset_id']}
+        body['arguments']['latest_only'] = False
+        raw, headers = signed(key, body=body)
+        response = client.post('/api/tools/read', content=raw, headers=headers)
+        assert response.status_code == 200, response.text
         catalog = response.json()['datasets']
         assert {item['dataset_id'] for item in catalog} == {first['dataset_id'], final['dataset_id']}
         assert all(item['use_reviewed_mappings'] is False for item in catalog)

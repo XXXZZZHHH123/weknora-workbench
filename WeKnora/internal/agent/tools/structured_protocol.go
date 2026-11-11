@@ -173,7 +173,7 @@ func (r *ToolRegistry) PrepareStructuredProtocol() bool {
 	}
 	if _, err := r.GetTool(ToolStructuredCapabilities); err != nil {
 		r.RegisterTool(&structuredCapabilitiesTool{BaseTool: NewBaseTool(ToolStructuredCapabilities,
-			"查看当前真实结构化工具能力，或 refresh=true 在短预算内重新协商。此入口只读协议，不查询来源、不选业务知识库、不执行数值查询。数据操作只使用当前展示的 structured_ 扁平参数定义；旧 structured_data 嵌套格式仅供历史兼容。缺少能力不表示来源无数据。",
+			"查看当前真实结构化工具能力；首次调用自动恢复可信协议缓存或在短预算内协商，refresh=true 可重新协商。此入口只读协议，不查询来源、不选业务知识库、不执行数值查询。数据操作只使用当前展示的 structured_ 扁平参数定义；旧 structured_data 嵌套格式仅供历史兼容。缺少能力不表示来源无数据。",
 			json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"refresh":{"type":"boolean","default":false}}}`)), registry: r})
 	}
 	return true
@@ -258,12 +258,16 @@ func (r *ToolRegistry) structuredCapabilityResult() *types.ToolResult {
 		"notice": "仅为协议能力。当前 structured_ 工具参数全部扁平；历史 nested structured_data 调用不代表当前格式。工具可用不授予来源权限，旧结果仍须按本轮权限和版本恢复。"}
 	if len(rows) == 0 {
 		data["status"] = "manifest_unavailable"
+		data["code"] = "manifest_unavailable"
+		data["retryable"] = true
+		data["execution_started"] = false
+		data["next_step"] = "使用 structured_capabilities refresh=true 在本轮预算内重试协议协商；当前未取得工具定义，不能据此判断来源无数据。"
 	}
 	if set.lastError != "" {
 		data["last_error_code"] = set.lastError
 	}
 	encoded, _ := json.Marshal(data)
-	return &types.ToolResult{Success: true, Data: data, Output: string(encoded)}
+	return &types.ToolResult{Success: len(rows) > 0, Data: data, Output: string(encoded)}
 }
 
 type structuredCapabilitiesTool struct {
@@ -284,10 +288,19 @@ func (t *structuredCapabilitiesTool) Execute(ctx context.Context, raw json.RawMe
 	if caller.TenantID == 0 || caller.UserID == "" || !caller.Role.IsValid() {
 		return nil, fmt.Errorf("结构化能力读取需要已核验的用户和空间")
 	}
-	if !request.Refresh {
-		return t.registry.structuredCapabilityResult(), nil
-	}
 	set := t.registry.structuredCapabilities
+	if !request.Refresh {
+		// A registry may be created after planning chose another source channel.
+		// Inspecting its capabilities must not report a service outage merely
+		// because the turn has never negotiated. Only this explicit capability
+		// request initializes protocol schemas; it never reads source data.
+		if set.manifest != "" || set.refreshes > 0 {
+			return t.registry.structuredCapabilityResult(), nil
+		}
+		if result, hit := t.registry.restoreStructuredManifest(); hit {
+			return result, nil
+		}
+	}
 	if set.refreshes >= 3 {
 		return structuredProtocolFailure("manifest_refresh_budget_exceeded", "本轮能力协商已达到预算；请使用实际仍可用的能力，或说明本次协议服务未就绪，不能推断无数据", "manifest", false), nil
 	}
@@ -300,7 +313,11 @@ func (t *structuredCapabilitiesTool) Execute(ctx context.Context, raw json.RawMe
 		t.registry.structuredCapabilities.lastError = "manifest_unavailable"
 		return structuredProtocolFailure("manifest_unavailable", "结构化能力协商未完成；其他已授权能力仍可使用，可在预算内 refresh=true 重试。此状态不表示无数据", "manifest", false), nil
 	}
-	return t.registry.InstallStructuredManifest(result.Data)
+	installed, err := t.registry.InstallStructuredManifest(result.Data)
+	if installed != nil && !installed.Success {
+		set.lastError, _ = installed.Data["code"].(string)
+	}
+	return installed, err
 }
 
 // The cache contains only versioned, service-wide protocol schemas, never a
@@ -360,8 +377,16 @@ func (r *ToolRegistry) BeginStructuredProtocolTurn(ctx context.Context) (*types.
 	}
 	set.owned = map[string]*structuredReadOperationTool{}
 	set.base.protocolDescriptors = map[string]StructuredOperationDescriptor{}
-	set.manifest, set.protocol = "", ""
+	set.manifest, set.protocol, set.lastError = "", "", ""
 	set.base.protocolMu.Unlock()
+	return r.restoreStructuredManifest()
+}
+
+// restoreStructuredManifest shares only authenticated service schemas. Caller
+// authentication is checked by both entrypoints before consulting this cache;
+// source permissions and version pins are still checked by every data call.
+func (r *ToolRegistry) restoreStructuredManifest() (*types.ToolResult, bool) {
+	set := r.structuredCapabilities
 	cache := &structuredManifestCache
 	cache.Lock()
 	entry, found := cache.entries[structuredManifestServiceKey(set.base)]

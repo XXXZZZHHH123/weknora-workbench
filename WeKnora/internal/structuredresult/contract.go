@@ -106,9 +106,14 @@ func ValidatePayload(data map[string]any) (*Contract, error) {
 	}
 	allDecoder := json.NewDecoder(bytes.NewReader(whole))
 	allDecoder.UseNumber()
-	if allDecoder.Decode(&data) != nil {
+	// Decode into a fresh map. Decoding into the caller's non-nil map replaces
+	// typed transport witnesses (and RawMessage) with generic JSON values,
+	// changing serialized field order and invalidating immutable source hashes.
+	var normalized map[string]any
+	if allDecoder.Decode(&normalized) != nil {
 		return nil, fmt.Errorf("structured_result_payload_invalid")
 	}
+	data = normalized
 	raw = data["result_contract"]
 	encoded, err := json.Marshal(raw)
 	if err != nil || len(encoded) > 256*1024 {

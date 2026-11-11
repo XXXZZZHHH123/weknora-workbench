@@ -48,7 +48,8 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	// messages. Tool output must retain its role and call ID; never promote it
 	// into user instructions during error recovery or iteration-limit synthesis.
 	messages := append([]chat.Message(nil), conversation...)
-	if e.structuredReviewMode {
+	reviewedDelivery := e.structuredReviewMode
+	if reviewedDelivery {
 		// Exceptional final synthesis uses the same reviewed-answer protocol as
 		// ordinary review rounds. Keep the trusted schema instruction visible to
 		// providers that treat Format as JSON-object mode rather than enforcement.
@@ -104,7 +105,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			PromptCacheKey: sessionID, ToolChoice: "none", Thinking: &disabled,
 			ReasoningEffort: reasoning, ThinkingBudgetTokens: 0,
 		}
-		if e.structuredReviewMode {
+		if reviewedDelivery {
 			// Iteration exhaustion and API recovery retain the same explicit
 			// delivery contract as ordinary review rounds. Otherwise escaped
 			// citations would be decoded inside still-serialized JSON, or the
@@ -203,6 +204,20 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			truncated = false
 			break
 		}
+		if !reviewedDelivery && emptyFinalDelivery(llmResult) {
+			// Compatible endpoints can consume generated tool-call markup while
+			// tools are disabled and report a natural stop with billed tokens but
+			// no message payload. Use the existing answer delivery contract for
+			// the next budgeted repair; decoding still precedes all source checks.
+			// This neither enables thinking nor adds a model call or repair slot.
+			reviewedDelivery = true
+			messages = withReviewedAnswerDeliveryInstruction(messages)
+			common.PipelineInfo(ctx, "Agent", "empty_final_delivery_recovery", map[string]interface{}{
+				"attempt":           attempt + 2,
+				"completion_tokens": llmResult.Usage.CompletionTokens,
+				"delivery":          "reviewed_answer",
+			})
+		}
 		// Keep the actual rejected candidate alongside feedback for targeted repair.
 		messages = append(messages, chat.Message{Role: "assistant", Content: fullAnswer})
 		messages = append(messages, chat.Message{Role: "system", Content: "内部运行时反馈：上次回答残缺或含未通过依据检查的数字。请依据已取得的真实来源，直接简短完整回答原问题；非必要的附加数字直接删除，不为保留它们扩展查询。缺失证据应说明，不能从草稿补造数值。字段名称、规格代码和原公式须完整引用工具原文，不用简称，不省略公式参数或单元格行号；身份代码不能当成统计值。未核验数字：" + strings.Join(unsupported, "、") + e.answerRepairAdvice()})
@@ -217,6 +232,16 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		"answer_len": len(fullAnswer),
 	})
 	return nil
+}
+
+// Distinguish an empty provider payload from a malformed answer, a truncated
+// stream, reasoning-only output, or an actual tool request. Those keep their
+// existing recovery and validation paths.
+func emptyFinalDelivery(result *streamLLMResult) bool {
+	return result != nil && strings.TrimSpace(result.Content) == "" &&
+		strings.TrimSpace(result.ReasoningContent) == "" && result.StreamError == "" &&
+		len(result.ToolCalls) == 0 && isNaturalStopFinishReason(result.FinishReason) &&
+		result.Usage != nil && result.Usage.CompletionTokens > 0
 }
 
 // Measure the same handle-encoded conversation sent by streamLLMToEventBus,

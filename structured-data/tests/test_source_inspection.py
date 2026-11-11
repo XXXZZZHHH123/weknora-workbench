@@ -82,6 +82,107 @@ def test_exact_ranges_and_decimal_calculation_keep_conflicting_source_values(ori
     assert monthly['calculations'][0]['value'] == '777.0080629647059'
 
 
+def _observe_workbook_readers(monkeypatch):
+    opened = []
+    original_load = source_inspection.load_workbook
+
+    def tracked(*args, **kwargs):
+        book = original_load(*args, **kwargs)
+        record = {'data_only': kwargs['data_only'], 'closed': 0}
+        original_close = book.close
+
+        def close():
+            record['closed'] += 1
+            original_close()
+
+        book.close = close
+        opened.append(record)
+        return book
+
+    monkeypatch.setattr(source_inspection, 'load_workbook', tracked)
+    return opened
+
+
+def test_literal_source_ranges_search_and_sums_do_not_load_formula_cache(original, monkeypatch):
+    store, dataset, path = original
+    opened = _observe_workbook_readers(monkeypatch)
+    result = inspect_source(store, dataset, sheet='月度', ranges=['B2:C2'],
+                            sums=[['B3', 'C3']], searches=['日期'],
+                            padding_rows=0, padding_cols=0)
+
+    # D2 is a real formula in the same sheet, but was not requested.
+    assert opened == [{'data_only': False, 'closed': 1}]
+    assert result['hash_verified'] is True
+    assert result['sha256'] == hashlib.sha256((path / 'source.xlsx').read_bytes()).hexdigest()
+    assert [(cell['cell'], cell['value'], cell['formula'], cell['cached_value'])
+            for cell in result['ranges'][0]['cells']] == [
+                ('B2', 650, None, None), ('C2', 127.0080629647059, None, None)]
+    assert result['calculations'][0]['value'] == '11'
+    assert result['matches'][0]['cell'] == 'A1'
+    assert result['matches'][0]['value'] == '日期'
+
+
+def test_mixed_ranges_open_one_cached_reader_and_preserve_formula_states(original, monkeypatch):
+    store, dataset, path = original
+    from openpyxl import load_workbook
+    source = path / 'source.xlsx'
+    book = load_workbook(source)
+    sheet = book['月度']
+    sheet['E2'] = '=1/0'
+    sheet['F2'] = '=B2'
+    sheet['G2'] = '#N/A'
+    sheet['H2'] = True
+    book.save(source)
+    book.close()
+    ns = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+    with zipfile.ZipFile(source) as archive:
+        contents = {name: archive.read(name) for name in archive.namelist()}
+    xml = ET.fromstring(contents['xl/worksheets/sheet1.xml'])
+    xml.find('.//s:c[@r="D2"]/s:v', ns).text = '777.5'
+    error = xml.find('.//s:c[@r="E2"]', ns)
+    error.set('t', 'e')
+    error.find('s:v', ns).text = '#DIV/0!'
+    contents['xl/worksheets/sheet1.xml'] = ET.tostring(xml)
+    with zipfile.ZipFile(source, 'w') as archive:
+        for name, value in contents.items():
+            archive.writestr(name, value)
+    manifest = json.loads((path / 'manifest.json').read_text())
+    manifest['sha256'] = hashlib.sha256(source.read_bytes()).hexdigest()
+    dump(path / 'manifest.json', manifest)
+
+    opened = _observe_workbook_readers(monkeypatch)
+    result = inspect_source(store, dataset, sheet='月度', ranges=['B2', 'D2:E2', 'F2:H2'])
+    cells = {cell['cell']: cell for item in result['ranges'] for cell in item['cells']}
+    assert opened == [{'data_only': False, 'closed': 1}, {'data_only': True, 'closed': 1}]
+    assert result['hash_verified'] is True and result['sha256'] == manifest['sha256']
+    assert cells['D2']['formula'] == cells['D2']['raw_value'] == '=B2+C2'
+    assert cells['D2']['value'] == cells['D2']['cached_value'] == 777.5
+    assert cells['D2']['value_status'] == 'original'
+    assert cells['E2']['value'] == '#DIV/0!' and cells['E2']['value_status'] == 'error'
+    assert cells['F2']['formula'] == '=B2' and cells['F2']['value'] is None
+    assert cells['F2']['value_status'] == 'missing_formula_cache'
+    assert cells['G2']['formula'] is None and cells['G2']['value_status'] == 'error'
+    assert cells['G2']['value'] == '#N/A'
+    assert cells['H2']['value'] is True and cells['H2']['cached_value'] is None
+
+
+def test_lazy_cached_reader_failure_preserves_phase_and_closes_formula_reader(original, monkeypatch):
+    store, dataset, _ = original
+    opened = _observe_workbook_readers(monkeypatch)
+    tracked = source_inspection.load_workbook
+
+    def fail_cached(*args, **kwargs):
+        if kwargs['data_only']:
+            raise OSError('cached workbook unavailable')
+        return tracked(*args, **kwargs)
+
+    monkeypatch.setattr(source_inspection, 'load_workbook', fail_cached)
+    with pytest.raises(SourceInspectionReadError) as caught:
+        inspect_source(store, dataset, sheet='月度', ranges=['B2', 'D2'])
+    assert caught.value.phase == 'workbook_open' and caught.value.exception_type == 'OSError'
+    assert opened == [{'data_only': False, 'closed': 1}]
+
+
 def test_read_window_and_calculation_inputs_are_separate_from_actual_source_extent(tmp_path):
     store = DataStore(tmp_path)
     book = Workbook()

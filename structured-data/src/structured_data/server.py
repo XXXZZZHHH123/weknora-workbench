@@ -187,73 +187,21 @@ def create_app(data_dir: str | Path | None = None):
         return await run_in_threadpool(resolver.execute,resolution_id,date)
 
     @mcp.tool()
-    def list_datasets(question: str | None = None) -> dict:
-        """列出已完成的Excel数据集及当前已发布PDF表目录。datasets仅指Excel，pdf_tables才是PDF；Excel为空不表示没有PDF数据。PDF入库状态以当前目录为准，旧文档索引的待审/仅字段说明可能过时。先据完整问题选候选，再read_pdf_table核实列、单位、原值。"""
-        # Historical versions need identity metadata, not repeated full coverage
-        # inventories. Keep the management API's full report unchanged.
-        directory_started = time.perf_counter()
-        logger.info('structured list_datasets directory_start question_supplied=%s', bool(question))
-        datasets=[]
-        try:
-            sources = store.list_datasets()
-        except Exception as exc:
-            logger.warning('structured list_datasets directory_failed elapsed_ms=%d error_type=%s',
-                           round((time.perf_counter()-directory_started)*1000), type(exc).__name__)
-            raise
-        for source in sources:
-            item={k:source[k] for k in ('dataset_id','source_file','sha256','imported_at',
-                'is_latest_for_source','series_count','import_id','use_reviewed_mappings','parent_dataset_id')}
-            if source['is_latest_for_source']:
-                item['sheets']=[s['name'] for s in source['sheets']]
-                item['pending_sheets']=source['pending_sheets']
-                item['pending_sheet_states']=source.get('pending_sheet_states', [])
-                item['empty_sheets']=source['empty_sheets']
-                item['coverage_notice']=source.get('coverage_notice','仅查询已导入范围。')
-            datasets.append(item)
-        latest_count = sum(1 for item in datasets if item['is_latest_for_source'])
-        logger.info('structured list_datasets directory_complete elapsed_ms=%d datasets=%d latest=%d',
-                    round((time.perf_counter()-directory_started)*1000), len(datasets), latest_count)
-        result={"datasets": datasets}
+    def list_datasets(question: str | None = None, search: str = '', limit: int = 8,
+                      offset: int = 0, latest_only: bool = True) -> dict:
+        """分页列出已完成的Excel版本及已发布PDF表。默认每份来源的最新版本，历史用latest_only=false。limit为1..20，next_offset继续文件目录。question保留完整原问题；search为模型生成的字面召回词（空格AND），不决定业务口径。表名预览和field_candidates均有界，候选来自持久的已发布表头索引，无需读取整个Excel。候选不含完整同名来源上下文，选择真实dataset_id后用list_series指定sheet/search并分页核对字段、单位、日期和来源，再提交查询计划或SQL；截断、召回无结果、目录失败都不证明没有数据。datasets仅指Excel，pdf_tables才是PDF，Excel为空不表示没有PDF。"""
+        from .discovery_catalog import list_datasets as discover
+        started = time.perf_counter()
+        result = discover(store, question, search=search, limit=limit,
+                          offset=offset, latest_only=latest_only)
+        logger.info('structured list_datasets directory_complete elapsed_ms=%d datasets=%d total=%d offset=%d',
+                    round((time.perf_counter()-started)*1000), len(result['datasets']),
+                    result['dataset_count'], offset)
         pdf_directory = pdf_store(registry).list_tables(discovery=True, samples=False)
-        pdf_catalog = pdf_directory['tables']
-        if pdf_catalog:
-            result['pdf_tables'] = pdf_catalog
+        if pdf_directory['tables']:
+            result['pdf_tables'] = pdf_directory['tables']
             result['pdf_notice'] = pdf_directory['directory_notice']
             result['pdf_table_count'] = pdf_directory['total_table_count']
-        if question:
-            from .field_index import literal_fields
-            matches=[]
-            for position, dataset in enumerate([d for d in datasets if d['is_latest_for_source']][:8], 1):
-                catalog_started = time.perf_counter()
-                logger.info('structured list_datasets catalog_start position=%d dataset_id=%s',
-                            position, dataset['dataset_id'])
-                try:
-                    catalog = store.catalog(dataset['dataset_id'])
-                except Exception as exc:
-                    logger.warning('structured list_datasets catalog_failed position=%d dataset_id=%s elapsed_ms=%d error_type=%s',
-                                   position, dataset['dataset_id'],
-                                   round((time.perf_counter()-catalog_started)*1000), type(exc).__name__)
-                    raise
-                logger.info('structured list_datasets catalog_complete position=%d dataset_id=%s elapsed_ms=%d fields=%d',
-                            position, dataset['dataset_id'],
-                            round((time.perf_counter()-catalog_started)*1000), len(catalog))
-                literal_started = time.perf_counter()
-                try:
-                    fields = literal_fields(catalog,question)
-                except Exception as exc:
-                    logger.warning('structured list_datasets literal_recall_failed position=%d dataset_id=%s elapsed_ms=%d error_type=%s',
-                                   position, dataset['dataset_id'],
-                                   round((time.perf_counter()-literal_started)*1000), type(exc).__name__)
-                    raise
-                logger.info('structured list_datasets literal_recall position=%d dataset_id=%s elapsed_ms=%d matches=%d',
-                            position, dataset['dataset_id'],
-                            round((time.perf_counter()-literal_started)*1000), len(fields))
-                for field in fields:
-                    matches.append({'dataset_id':dataset['dataset_id'],'source_file':dataset['source_file'],**{k:field.get(k) for k in ('series_id','sheet','metric','unit','dimensions','header_cells','source_context')}})
-            result['literal_fields']=matches[:64]
-            result['literal_field_count']=len(result['literal_fields'])
-            result['literal_fields_truncated']=len(matches)>64 or sum(d['is_latest_for_source'] for d in datasets)>8
-            result['literal_field_notice']='这些是实际原表表头的字面召回证据，不执行取数或决定语义。模型依据完整问题、上下文和真实来源生成绑定计划；程序核验同名来源的全部实际ID及选择依据，不选择第一列。'
         return result
 
     @mcp.tool()
@@ -314,7 +262,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     def query_series(series_id: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, source_question: str | None = None, source_binding: list[dict] | None = None) -> dict:
-        """source_binding可选：涉及同名来源时，由你依据完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序校验后直接执行，不再另行调用来源模型；不提供时由独立来源核验。确定性查询：dataset_id可省略，只有一个当前文件时自动选择；具体日期用YYYY-MM-DD，起止均包含。date_mode=period时用period精确匹配原标签，不可转为日期；date_mode=none不填时间。不带日期的系列不支持latest；期间统计须指定period。operation=rows/latest/mean/sum/min/max/count。min/max返回aggregate及真正取得极值的rows/extremum_rows，日期只能用其中的date，actual_first_date/actual_last_date仅是范围边界。并列极值的数量看extremum_count，超过limit会truncated。求最高/最低日期不需要用户先给日期；未限定时间则不填日期查询全范围。latest返回最新有效数值；mean为算术平均；count为有效值数。缺失不作零。mean/sum/count的rows仅示例来源，aggregate才是统计值。返回原文件、sheet/cell和公式缓存来源。"""
+        """单字段确定性查询。同一问题需同文件多个字段在相同日期或范围的值时，优先用analyze_table一次提交series_ids和SELECT；不要拆成多次并发query_series，逐列重复来源核验会增加等待。需要原值时选择series_id,date,value,source_cell等真实列，不必聚合。source_binding可选：涉及同名来源时，由你依据完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序校验后直接执行，不再另行调用来源模型；不提供时由独立来源核验。确定性查询：dataset_id可省略，只有一个当前文件时自动选择；具体日期用YYYY-MM-DD，起止均包含。date_mode=period时用period精确匹配原标签，不可转为日期；date_mode=none不填时间。不带日期的系列不支持latest；期间统计须指定period。operation=rows/latest/mean/sum/min/max/count。min/max返回aggregate及真正取得极值的rows/extremum_rows，日期只能用其中的date，actual_first_date/actual_last_date仅是范围边界。并列极值的数量看extremum_count，超过limit会truncated。求最高/最低日期不需要用户先给日期；未限定时间则不填日期查询全范围。latest返回最新有效数值；mean为算术平均；count为有效值数。缺失不作零。mean/sum/count的rows仅示例来源，aggregate才是统计值。返回原文件、sheet/cell和公式缓存来源。"""
         selected=store.select_dataset(dataset_id)
         from .source_context import verify_selection
         ambiguity=verify_selection(store,selected,[series_id],source_question,model_fn=resolver.model_fn,source_binding=source_binding)
@@ -336,7 +284,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     async def get_result_evidence(resolution_id: str) -> dict:
-        """读取上次查询的事实而不重新理解问题：请求范围、各字段实际记录/有效值范围、数值、来源、缺失情况和公式。resolution_id来自真实历史工具结果，亦可填写analyze_table返回的result_id以读取该次分析。日期边界不是极值日期。旧结果没有保存证据时只重新执行原计划，不调用意图模型。"""
+        """读取已保存的字段计划或分析事实而不重新理解问题：请求范围、各字段实际记录/有效值范围、数值、来源、缺失情况和公式。参数名固定为resolution_id，其值只能来自字段计划返回的resolution_id或analyze_table返回的result_id。query_series的result_contract.result_id不是可读取的计划或分析编号；其rows/source_evidence已在查询结果中，可直接核对。日期边界不是极值日期。旧结果没有保存证据时只重新执行原计划，不调用意图模型。"""
         def read():
             import re
             if not isinstance(resolution_id,str) or not re.fullmatch(r'[a-f0-9]{24}',resolution_id):raise ValueError('结果编号无效')
@@ -352,7 +300,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     async def analyze_table(series_ids: list[str], sql: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, limit: int = 200, source_question: str | None = None, source_binding: list[dict] | None = None) -> dict:
-        """DuckDB单条只读SELECT/WITH分析；先取得真实series_id并核验口径。唯一输入表名data，列series_id VARCHAR,date DATE,value DOUBLE，其余source_cell,date_cell,period,value_status,metric,sheet,unit均VARCHAR，缺失value为NULL。SELECT混合普通聚合与非聚合列时，须在同一层用GROUP BY列出分组键（含日期表达式）；窗口聚合遵循自身OVER作用域。表一旦定义别名，只能在该作用域使用该别名；CTE后续层只看见前层实际输出列。CTE/别名避免SQL保留字，必要时使用双引号标识符。分组后再排名或跨组统计时，用CTE分开相应阶段，不把原始date或已离开作用域的别名直接混入聚合。程序不会补分组、替换别名或改写业务SQL；错误时依据真实DuckDB反馈修正。dataset_id可省略，只有一个当前文件时自动选择；多文件先取得真实ID，不猜ID。data仅含指定字段/日期范围的全部记录（最多50000条）。支持四则、GROUP BY、JOIN、窗口/滚动与多阶段分析，无需预定义问题类型。优先用原生聚合、窗口和日期函数，例如date_trunc(part,date)；不要自行拼日历算法，CAST小数到整数会舍入，向下取整用floor。输出columns和rows（按列顺序的二维数组）、SQL及输入覆盖/来源；输出截断不影响完整输入计算。所有聚合必须使用完整输入，按需WHERE value IS NOT NULL，SQL不自动排除零、换算单位或解释年度。输入过大/SQL错误时修正，不让用户选字段。每个输入最多一个文件版本，不允许文件、联网、写入或多条语句。不要混加存量、累计值与当期流量。source_binding可选：涉及同名来源时，按完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序校验后执行；不提供时由独立来源核验。"""
+        """同文件多字段可一次读取原值或分析：series_ids提交1至16个真实字段，用SELECT series_id,date,value,source_cell等列读取同一日期/范围；无需逐字段并发query_series。source_binding可选：模型按完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序逐项验证后执行；不提供时由独立来源核验，不按字段名自动选源。DuckDB单条只读SELECT/WITH；先取得真实series_id并核验口径。唯一输入表名data，列series_id VARCHAR,date DATE,value DOUBLE，其余source_cell,date_cell,period,value_status,metric,sheet,unit均VARCHAR，缺失value为NULL。SELECT混合普通聚合与非聚合列时，须在同一层用GROUP BY列出分组键（含日期表达式）；窗口聚合遵循自身OVER作用域。表一旦定义别名，只能在该作用域使用该别名；CTE后续层只看见前层实际输出列。CTE/别名避免SQL保留字，必要时使用双引号标识符。分组后再排名或跨组统计时，用CTE分开相应阶段，不把原始date或已离开作用域的别名直接混入聚合。程序不会补分组、替换别名或改写业务SQL；错误时依据真实DuckDB反馈修正。dataset_id可省略，只有一个当前文件时自动选择；多文件先取得真实ID，不猜ID。data仅含指定字段/日期范围的全部记录（最多50000条）。支持四则、GROUP BY、JOIN、窗口/滚动与多阶段分析，无需预定义问题类型。优先用原生聚合、窗口和日期函数，例如date_trunc(part,date)；不要自行拼日历算法，CAST小数到整数会舍入，向下取整用floor。输出columns和rows（按列顺序的二维数组）、SQL及输入覆盖/来源；输出截断不影响完整输入计算。所有聚合必须使用完整输入，按需WHERE value IS NOT NULL，SQL不自动排除零、换算单位或解释年度。输入过大/SQL错误时修正，不让用户选字段。每个输入最多一个文件版本，不允许文件、联网、写入或多条语句。不要混加存量、累计值与当期流量。"""
         from .table_analysis import AnalysisSQLError, analyze_table as run_analysis
         try:
             selected=store.select_dataset(dataset_id)

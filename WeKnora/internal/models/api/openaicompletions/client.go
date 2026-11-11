@@ -43,7 +43,31 @@ func (c *Client) send(
 	ctx context.Context, messages []api.Message, opts *api.Options, stream bool,
 ) (*http.Response, []byte, error) {
 	opts = api.WithSessionCacheKey(ctx, opts)
-	body, err := c.BuildRequestBody(messages, opts, stream)
+	body, err := c.buildBody(messages, opts, stream)
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, data, err := c.sendBody(ctx, body, opts, stream)
+	if !isSystemMessageOrderError(err) {
+		return resp, data, err
+	}
+	// Some compatible chat templates accept exactly one leading system turn.
+	// Keep the normal cache-preserving request unless the endpoint explicitly
+	// rejects its instruction order. This retry happens before a stream starts.
+	ordered, changed := leadingSystemMessages(body["messages"].([]wireMessage))
+	if !changed {
+		return resp, data, err
+	}
+	body["messages"] = ordered
+	logger.Warnf(ctx, "[LLM Request] Model %s requires leading system instructions, retrying once",
+		c.cfg.Endpoint.Model)
+	return c.sendBody(ctx, body, opts, stream)
+}
+
+func (c *Client) sendBody(
+	ctx context.Context, body map[string]any, opts *api.Options, stream bool,
+) (*http.Response, []byte, error) {
+	body, err := c.finalizeBody(body, opts)
 	if err != nil {
 		return nil, nil, err
 	}

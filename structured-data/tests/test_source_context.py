@@ -176,9 +176,14 @@ def test_initial_catalog_recalls_all_literal_duplicate_headers(duplicate_source,
         result=client.post('/api/tools/read',content=raw,headers=headers).json()
         assert {f['series_id'] for f in result['literal_fields']}=={'C','E','G','I'}
         assert result['literal_field_count']==4
-        assert all(f['source_context']['formula_source'] for f in result['literal_fields'])
+        assert all('source_context' not in f for f in result['literal_fields'])
+        assert result['field_candidate_stage'] == 'published_headers'
         assert not result['literal_fields_truncated']
         assert 'rows' not in result
+        raw,headers=signed(key,body={'operation':'list_series','arguments':{'dataset_id':dataset,'sheet':'原料'}})
+        schema=client.post('/api/tools/read',content=raw,headers=headers).json()
+        assert all(f['source_context']['formula_source'] for f in schema['series']
+                   if f['series_id'] in {'C','E','G','I'})
 
 
 def test_successful_binding_reuse_keeps_signed_scope_checks_and_queries_live(duplicate_source, monkeypatch):

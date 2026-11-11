@@ -81,7 +81,7 @@ func TestTaskPlanSourceDomainsChooseOnlyRequestedDirectories(t *testing.T) {
 			registry.RegisterTool(knowledge)
 			registry.RegisterTool(newCountingTool(agenttools.ToolWebSearch))
 			registry.RegisterTool(newCountingTool(agenttools.ToolWebFetch))
-			registry.PrepareStructuredProtocol() // local bootstrap only
+			registry.PrepareStructuredProtocol()
 			model := &taskPlannerChat{plan: &types.ChatResponse{Content: sourceDomainPlan(t, tc.mode, tc.domains), FinishReason: "stop"}}
 			engine := newTestEngine(t, model)
 			engine.toolRegistry = registry
@@ -90,11 +90,12 @@ func TestTaskPlanSourceDomainsChooseOnlyRequestedDirectories(t *testing.T) {
 			ctx := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "verified", Role: types.TenantRoleViewer})
 			state := &types.AgentState{}
 			messages := []chat.Message{{Role: "system", Content: "Actual runtime rules."}, {Role: "user", Content: "Do the requested task."}}
-			engine.prepareWorkbenchCapabilities(ctx, state, messages, "Do the requested task.", "s", "m")
+			messages = engine.prepareWorkbenchCapabilities(ctx, state, messages, "Do the requested task.", "s", "m")
 			mu.Lock()
 			beforePlanning := append([]string(nil), operations...)
 			mu.Unlock()
-			require.Empty(t, beforePlanning, "intent planning sees local bootstrap without remote protocol setup")
+			require.Equal(t, []string{"describe_tools"}, beforePlanning, "the planner sees real service schemas before choosing a source channel")
+			require.Zero(t, knowledge.calls, "protocol negotiation must not preselect a source channel")
 			messages = engine.planWorkbenchTask(ctx, state, "Do the requested task.", messages, "s")
 			require.NotNil(t, engine.taskPlan)
 			require.Equal(t, tc.domains, engine.taskPlan.SourceDiscovery.SourceDomains)
@@ -106,20 +107,77 @@ func TestTaskPlanSourceDomainsChooseOnlyRequestedDirectories(t *testing.T) {
 			if tc.structured {
 				require.ElementsMatch(t, []string{"describe_tools", "list_datasets"}, observed)
 			} else {
-				require.Empty(t, observed, "external/none/knowledge/recover must not touch internal structured setup or catalogues")
+				require.Equal(t, []string{"describe_tools"}, observed, "external/none/knowledge/recover may inspect protocol schemas but must not read structured catalogues or data")
 			}
 			var plannerInput map[string]any
 			require.NoError(t, json.Unmarshal([]byte(model.requests[0][1].Content), &plannerInput))
 			names := []string{}
 			for _, capability := range plannerInput["available_tools"].([]any) {
-				names = append(names, capability.(map[string]any)["name"].(string))
+				item := capability.(map[string]any)
+				names = append(names, item["name"].(string))
+				if item["name"] == "structured_list_datasets" {
+					require.Contains(t, item["description"], "List actual authorized source metadata")
+				}
 			}
-			require.Contains(t, names, agenttools.ToolStructuredCapabilities, "deferred protocol must not look like an absent service")
+			require.Contains(t, names, agenttools.ToolStructuredCapabilities)
+			require.Contains(t, names, "structured_list_datasets", "planning must not depend on guessing unnegotiated operation names")
+			require.NotContains(t, names, agenttools.ToolStructuredData, "the legacy envelope is not a second planning interface")
+			require.Empty(t, plannerInput["discovery_results"], "protocol schemas are not source evidence")
+			definition, err := registry.GetTool("structured_list_datasets")
+			require.NoError(t, err)
+			var schema map[string]any
+			require.NoError(t, json.Unmarshal(definition.Parameters(), &schema))
+			properties := schema["properties"].(map[string]any)
+			require.Contains(t, properties, "question")
+			require.NotContains(t, properties, "arguments", "the registered query contract uses the service's flat parameters")
 			if tc.domains == nil || tc.name == "external" || tc.name == "mixed external and knowledge" || tc.name == "recover" {
 				require.Contains(t, listToolNames(engine.buildToolsForLLM()), agenttools.ToolWebSearch, "an external plan keeps actual external source protocols even when coarse tool selection omitted them")
 			} else {
 				require.NotContains(t, listToolNames(engine.buildToolsForLLM()), agenttools.ToolWebSearch)
 			}
+		})
+	}
+}
+
+func TestTaskPlanProtocolDiscoveryRequiresVerifiedCallerAndNativeAdapter(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		caller  types.Caller
+		adapter string
+	}{
+		{"missing caller", types.Caller{}, "native"},
+		{"missing tenant", types.Caller{UserID: "verified", Role: types.TenantRoleViewer}, "native"},
+		{"missing user", types.Caller{TenantID: 7, Role: types.TenantRoleViewer}, "native"},
+		{"missing role", types.Caller{TenantID: 7, UserID: "verified"}, "native"},
+		{"no adapter", types.Caller{TenantID: 7, UserID: "verified", Role: types.TenantRoleViewer}, "none"},
+		{"foreign same-name tool", types.Caller{TenantID: 7, UserID: "verified", Role: types.TenantRoleViewer}, "foreign"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			registry := nativeStructuredRegistry(t, func(w http.ResponseWriter, request *http.Request) {
+				calls.Add(1)
+				_, _ = io.WriteString(w, workbenchDatasetManifest)
+			})
+			if tc.adapter != "native" {
+				registry = agenttools.NewToolRegistry()
+				if tc.adapter == "foreign" {
+					registry.RegisterTool(newCountingTool(agenttools.ToolStructuredData))
+				}
+			}
+			engine := newTestEngine(t, &mockChat{})
+			engine.toolRegistry = registry
+			engine.config.WorkbenchDefault, engine.config.TaskPlanningEnabled = true, true
+			state := &types.AgentState{}
+			messages := []chat.Message{{Role: "system", Content: "Actual rules."}}
+			// Preserve the malformed identity for the boundary check instead of
+			// letting WithCaller normalize its missing role to viewer.
+			ctx := context.WithValue(context.Background(), types.CallerContextKey, tc.caller)
+			observed := engine.prepareWorkbenchCapabilities(ctx, state, messages, "Do the requested task.", "s", "m")
+			require.Equal(t, messages, observed)
+			require.Empty(t, state.RoundSteps)
+			require.Zero(t, calls.Load(), "protocol discovery must not create authority from a missing caller or a borrowed tool name")
+			_, err := registry.GetTool("structured_list_datasets")
+			require.Error(t, err)
 		})
 	}
 }
@@ -136,8 +194,11 @@ func TestTaskPlanSourceDomainsInvalidOrFailedPlanningDoesNotSearchByDefault(t *t
 	} {
 		t.Run(content, func(t *testing.T) {
 			var calls atomic.Int64
-			registry := nativeStructuredRegistry(t, func(w http.ResponseWriter, _ *http.Request) {
+			registry := nativeStructuredRegistry(t, func(w http.ResponseWriter, request *http.Request) {
 				calls.Add(1)
+				var input map[string]any
+				require.NoError(t, json.NewDecoder(request.Body).Decode(&input))
+				require.Equal(t, "describe_tools", input["operation"], "invalid planning must not cause a directory or data read")
 				_, _ = io.WriteString(w, workbenchDatasetManifest)
 			})
 			knowledge := newCountingTool(agenttools.ToolSearchKnowledge)
@@ -154,11 +215,12 @@ func TestTaskPlanSourceDomainsInvalidOrFailedPlanningDoesNotSearchByDefault(t *t
 			engine.prepareTaskPlanning()
 			ctx := types.WithCaller(context.Background(), types.Caller{TenantID: 7, UserID: "verified", Role: types.TenantRoleViewer})
 			state := &types.AgentState{}
-			messages := engine.planWorkbenchTask(ctx, state, "Do the requested task.", []chat.Message{{Role: "system", Content: "Actual rules."}}, "s")
+			messages := engine.prepareWorkbenchCapabilities(ctx, state, []chat.Message{{Role: "system", Content: "Actual rules."}}, "Do the requested task.", "s", "m")
+			messages = engine.planWorkbenchTask(ctx, state, "Do the requested task.", messages, "s")
 			require.Nil(t, engine.taskProjection)
 			engine.discoverWorkbenchSources(ctx, state, messages, "Do the requested task.", "s", "m", engine.plannedSourceDiscoverySelection())
 			require.Zero(t, knowledge.calls)
-			require.Zero(t, calls.Load())
+			require.Equal(t, int64(1), calls.Load(), "only the pre-plan protocol request is permitted")
 			require.Contains(t, listToolNames(engine.buildToolsForLLM()), "actual_connected_reader", "failed planning keeps the execution model's real tools")
 		})
 	}
@@ -187,7 +249,7 @@ func TestTaskPlanSourceDomainsExternalCapabilityCanExpandWithoutGrantingMissingT
 	require.NotContains(t, listToolNames(engine.buildToolsForLLM()), agenttools.ToolWebSearch, "source routing does not enable an unavailable network tool")
 }
 
-func TestTaskPlanSourceDomainsStructuredRouteUsesCurrentCachedManifestAfterPlanning(t *testing.T) {
+func TestTaskPlanSourceDomainsStructuredRouteUsesCurrentCachedManifestBeforePlanning(t *testing.T) {
 	var mu sync.Mutex
 	operations := []string{}
 	manifestHash := strings.Repeat("a", 64)
@@ -225,12 +287,17 @@ func TestTaskPlanSourceDomainsStructuredRouteUsesCurrentCachedManifestAfterPlann
 	engine.config.WorkbenchDefault, engine.config.TaskPlanningEnabled = true, true
 	engine.prepareTaskPlanning()
 	state := &types.AgentState{}
-	messages := engine.planWorkbenchTask(ctx, state, "Do the requested task.", []chat.Message{{Role: "system", Content: "Actual rules."}}, "s")
+	messages := engine.prepareWorkbenchCapabilities(ctx, state, []chat.Message{{Role: "system", Content: "Actual rules."}}, "Do the requested task.", "s", "m")
+	mu.Lock()
+	beforePlanning := append([]string(nil), operations...)
+	mu.Unlock()
+	require.Equal(t, []string{"describe_tools"}, beforePlanning, "a warm schema is restored before planning without another service request")
+	messages = engine.planWorkbenchTask(ctx, state, "Do the requested task.", messages, "s")
 	engine.discoverWorkbenchSources(ctx, state, messages, "Do the requested task.", "s", "m", engine.plannedSourceDiscoverySelection())
 	mu.Lock()
 	observed := append([]string(nil), operations...)
 	mu.Unlock()
-	require.Equal(t, []string{"describe_tools", "list_datasets"}, observed, "post-plan negotiation reuses only the current authenticated service manifest cache")
+	require.Equal(t, []string{"describe_tools", "list_datasets"}, observed, "only model-selected discovery reads data after cached protocol setup")
 	require.Contains(t, listToolNames(engine.buildToolsForLLM()), "structured_list_datasets")
 }
 

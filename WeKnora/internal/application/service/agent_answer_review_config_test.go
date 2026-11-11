@@ -19,6 +19,8 @@ func TestAgentConfigCarriesAnswerReviewModeWithoutDefaultingOrMutatingSource(t *
 			got, err := svc.buildAgentConfig(t.Context(), req, &types.Tenant{ID: 1}, 1)
 			require.NoError(t, err)
 			require.Equal(t, mode, got.AnswerReviewMode, "only the workbench adapter chooses the empty-field default")
+			require.Equal(t, workbench && mode == "standard", got.StructuredResultReviewEnabled,
+				"the workbench explicitly enables only the bounded standard structured-result check")
 			require.Equal(t, original, req.CustomAgent.Config)
 		}
 	}

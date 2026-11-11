@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -150,6 +151,9 @@ func (t *structuredReadOperationTool) Execute(ctx context.Context, args json.Raw
 		}
 		result.Data["_structured_execution"] = executionDescriptor
 		attachStructuredDiagnosticDescriptor(result, executionDescriptor)
+		if t.operation == "list_datasets" {
+			result = fitStructuredNativeDirectory(ctx, result)
+		}
 	}
 	return result, err
 }
@@ -161,6 +165,44 @@ func attachStructuredDiagnosticDescriptor(result *types.ToolResult, descriptor S
 	result.Data["_structured_execution"] = descriptor
 	result.Data["manifest_version"], result.Data["schema_sha256"] = descriptor.ManifestSHA256, descriptor.SchemaSHA256
 	result.Data["protocol_version"], result.Data["generation"] = descriptor.ProtocolVersion, descriptor.Generation
-	encoded, _ := json.Marshal(result.Data)
+	view := result.Data
+	if result.Data["status"] == "scope_selection_required" {
+		// Multi-library discovery already projected the canonical catalogue.
+		// Adding protocol diagnostics must not restore omitted source metadata
+		// and make the registry truncate JSON in the middle of an identity.
+		if projected := structuredOperationOutputObject(result.Output); projected != nil {
+			view = projected
+		}
+	}
+	for _, key := range []string{"_structured_execution", "manifest_version", "schema_sha256", "protocol_version", "generation"} {
+		view[key] = result.Data[key]
+	}
+	encoded, _ := json.Marshal(view)
 	result.Output = string(encoded)
+}
+
+func structuredOperationOutputObject(output string) map[string]any {
+	var view map[string]any
+	decoder := json.NewDecoder(strings.NewReader(output))
+	decoder.UseNumber()
+	if decoder.Decode(&view) != nil || !json.Valid([]byte(output)) {
+		return nil
+	}
+	return view
+}
+
+func fitStructuredNativeDirectory(ctx context.Context, result *types.ToolResult) *types.ToolResult {
+	// Fit the model's existing view after diagnostics are added. Canonical Data
+	// remains complete, including fields and pages already omitted from Output.
+	view := *result
+	if projected := structuredOperationOutputObject(result.Output); projected != nil {
+		view.Data = projected
+	} else {
+		// Empty or malformed views must be rebuilt from the actual result rather
+		// than passing a short but invalid JSON string through the budget check.
+		view.Output = ""
+	}
+	fitted := fitStructuredRecallDirectory(ctx, &view)
+	result.Output = fitted.Output
+	return result
 }

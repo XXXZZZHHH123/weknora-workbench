@@ -12,17 +12,12 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
-// Negotiate source capabilities when the plan requires them. The local
-// bootstrap remains visible before planning, without remote setup IO. The
-// fixed service uses a short protocol budget independent of data requests.
+// Negotiate the authorized service's protocol schemas before planning so the
+// model can choose among real capabilities. This reads no source directory or
+// business data; source_domains still controls subsequent discovery. The fixed
+// service uses a short protocol budget independent of data requests.
 func (e *AgentEngine) prepareWorkbenchCapabilities(ctx context.Context, state *types.AgentState, messages []chat.Message, query, sessionID, messageID string) []chat.Message {
 	if e.toolRegistry == nil || state == nil {
-		return messages
-	}
-	// The local bootstrap descriptor already advertises structured capability.
-	// Negotiate its remote manifest only after the model requests this channel;
-	// neither a missing plan nor external evidence justifies internal setup IO.
-	if e.config != nil && e.config.TaskPlanningEnabled && !shouldPrefetchStructuredSources(e.plannedSourceDiscoverySelection()) {
 		return messages
 	}
 	for _, step := range state.RoundSteps {
@@ -152,6 +147,13 @@ func compactWorkbenchDiscovery(step types.AgentStep, query string, registered ma
 		var compact map[string]any
 		switch operation {
 		case "list_datasets":
+			// The directory tool already fits its model-facing Output to the
+			// current budget. Data retains the full authorized response for
+			// auditing and cross-library aggregation. Rebuilding from Data here
+			// would undo pagination/projection and flood the first model call.
+			if call.Result.Output != "" {
+				continue
+			}
 			compact = compactDiscoveryCatalogue(call.Result.Data, query)
 		case "describe_tools":
 			compact = compactDiscoverySchemas(call.Result.Data, registered)

@@ -36,6 +36,9 @@ func TestGroundingGuidanceSurvivesTemplateSelection(t *testing.T) {
 			require.Contains(t, prompt, "Reading a generator's instructions or successfully running its script does not verify the subject matter")
 			require.Contains(t, prompt, "translation or formatting of supplied content do not require research")
 			require.Contains(t, prompt, "If relevant sources are unavailable or searches leave gaps")
+			require.Contains(t, prompt, "A measured change or correlation alone does not establish its cause")
+			require.Contains(t, prompt, "use a source-bound calculation tool and its executed result")
+			require.Contains(t, prompt, "omit optional calculations instead of triggering extra work")
 			if tc.custom != "" {
 				require.True(t, strings.HasPrefix(prompt, tc.custom))
 			}

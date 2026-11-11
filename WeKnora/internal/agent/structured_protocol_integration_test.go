@@ -126,7 +126,7 @@ func TestStructuredConfirmationNewDirectHumanTurnRetainsClarificationAndRefusal(
 	require.Equal(t, int64(2), calls.Load(), "a new consumption boundary still requires the ordinary pending-result guard")
 }
 
-func TestStructuredCapabilitiesBootstrapPrecedesPlannerWithoutIOForNoSourceTask(t *testing.T) {
+func TestStructuredCapabilitiesBootstrapPrecedesPlannerWithoutDataIOForNoSourceTask(t *testing.T) {
 	var calls atomic.Int64
 	registry := nativeStructuredRegistry(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -146,7 +146,7 @@ func TestStructuredCapabilitiesBootstrapPrecedesPlannerWithoutIOForNoSourceTask(
 	state, err := engine.Execute(ctx, "session", "turn", "回复已收到", nil)
 	require.NoError(t, err)
 	require.Equal(t, "已收到", state.FinalAnswer)
-	require.Zero(t, calls.Load(), "a no-source plan does not need remote protocol setup")
+	require.Equal(t, int64(1), calls.Load(), "only protocol schemas are read before planning; a no-source plan performs no source discovery")
 	require.NotEmpty(t, model.requests)
 	var input map[string]any
 	require.NoError(t, json.Unmarshal([]byte(model.requests[0][1].Content), &input))
@@ -155,8 +155,8 @@ func TestStructuredCapabilitiesBootstrapPrecedesPlannerWithoutIOForNoSourceTask(
 	for _, capability := range capabilities {
 		names = append(names, capability.(map[string]any)["name"].(string))
 	}
-	require.NotContains(t, names, "structured_list_datasets")
-	require.NotContains(t, names, "structured_confirm_fields")
+	require.Contains(t, names, "structured_list_datasets")
+	require.Contains(t, names, "structured_confirm_fields")
 	require.Contains(t, names, agenttools.ToolStructuredCapabilities)
 	require.NotContains(t, names, agenttools.ToolStructuredData)
 	require.Empty(t, input["discovery_results"], "tool definitions are not source observations")

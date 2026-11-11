@@ -110,7 +110,8 @@ func TestWorkbenchTypedPrefetchPreservesLegacyHistoryAndPinnedExecution(t *testi
 		}
 		if message.Role == "tool" && message.Name == catalog.Name {
 			foundCatalog = true
-			require.Contains(t, message.Content, "literal_fields_query_hint", "typed directories retain the existing metadata boundary")
+			require.Equal(t, catalog.Result.Output, message.Content, "typed prefetch preserves the tool's bounded directory view")
+			require.Contains(t, message.Content, "source column", "actual recalled source metadata remains visible")
 		}
 	}
 	require.True(t, foundCatalog)

@@ -41,7 +41,8 @@ const (
 type Options struct {
 	// RuntimeNotice is trusted, request-scoped recovery context. Adapters append
 	// it after the conversation so stable instructions/history retain their cache
-	// prefix. Never populate it with user input or external tool output.
+	// prefix; a protocol rejection may require a leading instruction instead.
+	// Never populate it with user input or external tool output.
 	RuntimeNotice string `json:"-"`
 
 	Temperature float64 `json:"temperature"` // 温度参数
