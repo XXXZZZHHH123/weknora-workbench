@@ -100,11 +100,14 @@ const UnlimitedMaxIterations = -1
 // AgentConfig represents the full agent configuration (used at tenant level and runtime)
 // This includes all configuration parameters for agent execution
 type AgentConfig struct {
-	EvidenceReferencesEnabled bool `json:"-"`                                // Negotiated runtime client protocol, never a saved/custom/model configuration.
-	WorkbenchDefault          bool `json:"-"`                                // scoped ordinary-chat runtime, never a user configurable agent preset
-	TaskPlanningEnabled       bool `json:"-"`                                // internal, per-request tool projection; never changes authorization
-	CandidateAdditionsEnabled bool `json:"-"`                                // internal source-grounded deletion pass, enabled explicitly by the workbench runtime
-	ThinkingBudgetTokens      int  `json:"thinking_budget_tokens,omitempty"` // optional per-call reasoning budget; 0 uses vendor default
+	EvidenceReferencesEnabled bool `json:"-"` // Negotiated runtime client protocol, never a saved/custom/model configuration.
+	WorkbenchDefault          bool `json:"-"` // scoped ordinary-chat runtime, never a user configurable agent preset
+	TaskPlanningEnabled       bool `json:"-"` // internal, per-request tool projection; never changes authorization
+	CandidateAdditionsEnabled bool `json:"-"` // internal source-grounded deletion pass, enabled explicitly by the workbench runtime
+	// One bounded consistency pass over successful structured query results in
+	// standard workbench answers. Never enables the strict source-review loop.
+	StructuredResultReviewEnabled bool `json:"-"`
+	ThinkingBudgetTokens          int  `json:"thinking_budget_tokens,omitempty"` // optional per-call reasoning budget; 0 uses vendor default
 	// AnswerReviewMode selects standard or strict answer review. Empty retains
 	// strict compatibility unless the workbench adapter supplies its default.
 	AnswerReviewMode string `json:"answer_review_mode,omitempty"`

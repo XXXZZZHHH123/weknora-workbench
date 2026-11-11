@@ -27,13 +27,15 @@ const (
 // observations sent to the checker. It is never a reusable boolean approval.
 // Hashes are assigned by the runtime, not supplied by a model.
 type candidateDecision struct {
-	Disposition     candidateDisposition
-	Candidate       string
-	CandidateHash   string
-	TaskHash        string
-	EvidenceHash    string
-	SourceScopeHash string // Runtime scope at the check; never supplied by a model.
-	StandardReview  bool   // Approval cannot survive a change to the runtime review policy.
+	Disposition                  candidateDisposition
+	Candidate                    string
+	CandidateHash                string
+	TaskHash                     string
+	EvidenceHash                 string
+	SourceScopeHash              string // Runtime scope at the check; never supplied by a model.
+	StandardReview               bool   // Approval cannot survive a change to the runtime review policy.
+	StructuredResultReview       bool
+	StructuredResultReviewStatus string // Empty/skipped/unavailable never means semantically checked.
 	// Set only after the numeric guards and immediately before source review.
 	SourceReviewAttempted bool
 	Unsupported           []string
@@ -65,6 +67,7 @@ type turnReviewState struct {
 	UnverifiedDecision         candidateDecision
 	NumericWarningAllowed      bool
 	UnverifiedCitationDelivery *unverifiedCitationDeliveryBinding
+	StructuredResultReview     *structuredResultReviewTurn
 }
 
 // Preserve the existing two numeric and two semantic repair allowances while
@@ -117,12 +120,13 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	e.answerReviewUserNotice = ""
 	e.answerReviewAction = ""
 	decision = candidateDecision{Disposition: candidateAccepted,
-		Candidate:       candidate,
-		CandidateHash:   candidateTextDigest(candidate),
-		TaskHash:        e.candidateTaskDigest(query, conversation),
-		EvidenceHash:    reviewDigest(e.sourceConsistencyMessages(state, conversation)),
-		SourceScopeHash: e.unverifiedSourceScopeDigest(ctx),
-		StandardReview:  e.standardAnswerReview(),
+		Candidate:              candidate,
+		CandidateHash:          candidateTextDigest(candidate),
+		TaskHash:               e.candidateTaskDigest(query, conversation),
+		EvidenceHash:           reviewDigest(e.sourceConsistencyMessages(state, conversation)),
+		SourceScopeHash:        e.unverifiedSourceScopeDigest(ctx),
+		StandardReview:         e.standardAnswerReview(),
+		StructuredResultReview: e.structuredResultReviewEnabled(),
 	}
 	defer func() {
 		e.turnReview.Checks++
@@ -213,9 +217,13 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	if e.standardTextDelivery(state) {
 		// Actual tools have already enforced permissions and source identities;
 		// immutable view, citation and numeric checks above remain mandatory.
-		// Ordinary answers need no second model opinion in this explicit policy.
+		// The explicit structured-result policy adds at most one bounded conflict
+		// check; ordinary answers still bypass the independent source critic.
 		// Action/file delivery retains its existing execution/completeness check.
-		common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{"reason": "standard_text_delivery"})
+		decision = e.checkStructuredResultDelivery(ctx, query, decision, state, conversation)
+		if decision.StructuredResultReviewStatus == "" {
+			common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{"reason": "standard_text_delivery"})
+		}
 		return
 	}
 	// After the bounded numeric repairs, the matcher remains diagnostic. The
@@ -294,6 +302,7 @@ func (e *AgentEngine) candidateDecisionCurrent(d candidateDecision, candidate st
 	}
 	return d.CandidateHash == candidateTextDigest(candidate) &&
 		d.StandardReview == e.standardAnswerReview() &&
+		d.StructuredResultReview == e.structuredResultReviewEnabled() &&
 		d.TaskHash == e.candidateTaskDigest(e.turnReview.Query, taskConversation) &&
 		d.EvidenceHash == reviewDigest(e.sourceConsistencyMessages(state, e.turnReview.Conversation))
 }
