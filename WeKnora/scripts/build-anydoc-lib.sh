@@ -135,7 +135,27 @@ cargo build --release --locked --manifest-path "$crate_dir/Cargo.toml" --target 
 
 dest="$crate_dir/lib/$lib_dir"
 mkdir -p "$dest"
-cp "$crate_dir/target/$target/release/$lib_name" "$dest/$lib_name"
+archive="$crate_dir/target/$target/release/$lib_name"
+case "$target" in
+  *-unknown-linux-*)
+    # Rust's staticlib includes native objects plus optional LLVM bitcode from
+    # the standard library. cgo links the native code, and Go 1.26.11+ rejects
+    # those unused LTO sections. Remove only the bitcode/command sections;
+    # retain native code, symbols and relocations, and keep Go's checks enabled.
+    # Cross-compilers can supply their target-aware objcopy via OBJCOPY.
+    objcopy=${OBJCOPY:-objcopy}
+    if ! command -v "$objcopy" >/dev/null 2>&1; then
+      echo "error: $objcopy not found; install binutils or set OBJCOPY for $target." >&2
+      exit 1
+    fi
+    archive_tmp=$(mktemp "$dest/.anydoc-cgo.XXXXXX")
+    trap 'rm -f "$archive_tmp"' EXIT
+    "$objcopy" --remove-section=.llvmbc --remove-section=.llvmcmd "$archive" "$archive_tmp"
+    mv "$archive_tmp" "$dest/$lib_name"
+    trap - EXIT
+    ;;
+  *) cp "$archive" "$dest/$lib_name" ;;
+esac
 
 echo "Wrote $dest/$lib_name"
 echo "Build WeKnora with the archive: go build -tags anydoc ./cmd/server"

@@ -239,6 +239,12 @@ scripts/build-anydoc-lib.sh                          # host platform
 TARGET=aarch64-unknown-linux-musl scripts/build-anydoc-lib.sh
 ```
 
+Linux builds require binutils `objcopy` (or a target-aware tool selected with
+`OBJCOPY` for cross-compilation). The script removes unused `.llvmbc` and
+`.llvmcmd` sections from the final archive while retaining native code, symbols
+and relocations. This supports Go 1.26.11's cgo linker-input validation without
+disabling it; the original Cargo archive remains unchanged.
+
 Then build WeKnora with the engine linked in:
 
 ```bash
