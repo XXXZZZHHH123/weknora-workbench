@@ -27,6 +27,7 @@ function fixture(scoped: boolean) {
   const output: any = {}
   runInNewContext(compiled + '\nObject.assign(output, { composerModelId, followsDefaultModel, handleModelChange });', {
     props, settingsStore, computed, scopedModelId: ref('research-model'), showModelSelector: ref(true),
+    hasSessionModel: ref(false),
     availableModels: ref(['main-model', 'host-model', 'default-model', 'research-model', 'next-model'].map(id => ({ id }))),
     emit: (...args: unknown[]) => emitted.push(args), output,
     writeLastChatModelID() { throw new Error('an embedded picker must not overwrite the browser model preference') },

@@ -190,3 +190,12 @@ test('missing session state and first-send hydration preserve the current draft 
   assert.equal(JSON.stringify(store.settings), draft)
   assert.equal(store._defaultsSnapshot, null)
 })
+
+test('restoring another conversation never persists its model as the new-chat default', () => {
+  const store = useSettingsStore(createPinia())
+  store.updateConversationModels({ selectedChatModelId: 'new-chat-model' })
+  store.hydrateSessionInputState({ model_id: 'existing-chat-model' })
+  store.toggleWebSearch(true)
+  assert.equal(store.conversationModels.selectedChatModelId, 'new-chat-model')
+  assert.equal(JSON.parse(items.get('WeKnora_settings')!).conversationModels.selectedChatModelId, 'new-chat-model')
+})

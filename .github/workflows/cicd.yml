@@ -122,8 +122,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run type-check
       - run: npm test -- 'src/**/*.test.ts' 'build/**/*.test.ts'
-      - name: Verify shared style and preview contracts
-        run: node --test src/assets/theme/styleGuard.test.mjs src/components/picture-preview.test.mjs
+      - name: Verify shared style, preview and conversation contracts
+        run: node --test src/assets/theme/styleGuard.test.mjs src/components/picture-preview.test.mjs src/components/Input-field.scope.test.mjs
       - name: Build production frontend for preview
         env:
           VITE_FRONTEND_COMMIT: ${{ github.sha }}

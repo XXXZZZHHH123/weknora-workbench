@@ -492,7 +492,8 @@ export const useSettingsStore = defineStore("settings", {
 
     // —— 会话级输入态恢复 —— //
     //
-    // 输入栏的 agent / 模型 / KB / 联网 / MCP 等选择由本 store 持有，跨会话共享。
+    // 输入栏的 agent / KB / 联网 / MCP 等选择由本 store 持有，跨会话共享。
+    // 模型由各会话输入组件独立保存，本 store 仅持有新建聊天的模型默认。
     // 但用户的诉求是：点开旧会话时，能看到当时发起请求的那一套状态。
     // 实现策略：进入会话时把"当前的全局默认"暂存到一个非持久化的 `_defaultsSnapshot`
     // 字段里，然后用 session.last_request_state 覆盖 store；离开会话时从快照还原。
@@ -541,10 +542,9 @@ export const useSettingsStore = defineStore("settings", {
           // 与 selectAgent() 不同，这里**不**重置 KB/文件选择 —— 因为我们紧接着
           // 就要用 state 里的 KB/文件覆盖，不需要先清空再写。
         }
-        if (state.model_id !== undefined) {
-          const current = this.settings.conversationModels || defaultSettings.conversationModels;
-          this.settings.conversationModels = { ...current, selectedChatModelId: state.model_id || "" };
-        }
+        // The conversation composer receives model_id directly and keeps its
+        // own draft. Copying it into shared settings lets unrelated preference
+        // writes persist an old conversation's model as the new-chat default.
         // 后端会用 omitempty 省略空列表，所以缺失值表示“本会话没有 KB 范围”，
         // 而不是“保留上一个会话的选择”。后者会把过期的 @KB 继续发给服务端。
         this.settings.selectedKnowledgeBases = Array.isArray(state.knowledge_base_ids)

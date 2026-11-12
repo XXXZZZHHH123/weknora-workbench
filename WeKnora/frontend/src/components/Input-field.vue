@@ -6,6 +6,8 @@ import { onBeforeRouteUpdate } from 'vue-router';
 import { MessagePlugin } from "tdesign-vue-next";
 import type { SendMessageOptions } from '@/utils/questionOrigin';
 import { useSettingsStore } from '@/stores/settings';
+import { useAuthStore } from '@/stores/auth';
+import { sessionModelDraftKey, readSessionModelDraft, writeSessionModelDraft } from '@/utils/sessionModelDraft';
 import { useBrowserConnectionStore } from '@/stores/browserConnection';
 import { useUIStore } from '@/stores/ui';
 import BrowserIcon from '@/components/icons/BrowserIcon.vue';
@@ -61,6 +63,7 @@ import { supportedLevels, levelLabelKey, levelFromLegacy, clampLevel, type Reaso
 const route = useRoute();
 const router = useRouter();
 const settingsStore = useSettingsStore();
+const authStore = useAuthStore();
 const browserConnection = useBrowserConnectionStore();
 const uiStore = useUIStore();
 const orgStore = useOrganizationStore();
@@ -110,6 +113,7 @@ const props = defineProps({
   // Authenticated research panels reuse this composer while keeping every
   // selection local. An absent scope retains the normal/public-embed contract.
   modelId: { type: String, default: '' },
+  initialSessionModelId: { type: String, default: '' },
   defaultModelId: { type: String, default: '' },
   knowledgeScope: {
     // kbIds lists every authorized source of a multi-source research workbench;
@@ -757,11 +761,23 @@ const getMentionChipClass = (item: MentionItem) => {
   return `mention-chip--${item.type}`;
 };
 
-// 使用 computed 从 store 读取，并通过 setter 同步回 store
+// Existing conversations own their model; the shared settings are only the
+// draft/default for a new conversation. The parent hydrates the remaining
+// input state before mounting this composer.
+const hasSessionModel = computed(() => !!props.sessionId && !props.embeddedMode && !props.knowledgeScope);
+const sessionModelKey = computed(() => hasSessionModel.value
+  ? sessionModelDraftKey(authStore.currentUserId, authStore.effectiveTenantId, props.sessionId || '') : '');
+const sessionModelId = ref('');
+
 const selectedModelId = computed({
-  get: () => props.knowledgeScope ? scopedModelId.value : settingsStore.conversationModels.selectedChatModelId || '',
+  get: () => props.knowledgeScope ? scopedModelId.value
+    : hasSessionModel.value ? sessionModelId.value : settingsStore.conversationModels.selectedChatModelId || '',
   set: (val: string) => {
     if (props.knowledgeScope) scopedModelId.value = val;
+    else if (hasSessionModel.value) {
+      sessionModelId.value = val;
+      writeSessionModelDraft(sessionModelKey.value, val);
+    }
     else settingsStore.updateConversationModels({ selectedChatModelId: val });
   }
 });
@@ -1027,6 +1043,10 @@ const writeLastChatModelID = (id: string) => {
 // into the dropdown, but those fields were removed: per-user last pick
 // belongs in localStorage, agent-level model belongs on the agent.
 const initChatModelSelection = () => {
+  if (hasSessionModel.value) {
+    ensureModelSelection();
+    return;
+  }
   const lastPick = readLastChatModelID();
   const currentSelectedModel = settingsStore.conversationModels.selectedChatModelId;
   const initialSelection = lastPick || currentSelectedModel || '';
@@ -1064,6 +1084,23 @@ const ensureModelSelection = () => {
     }
     return;
   }
+  if (hasSessionModel.value) {
+    if (!chatResources.isLoaded('models')) return;
+    // A shared agent can expose its source workspace's model without placing
+    // it in this workspace's model list. Wait for that agent's metadata.
+    if (settingsStore.selectedAgentSourceTenantId && !selectedSharedAgent.value) return;
+    const valid = (id: string) => availableModels.value.some(model => model.id === id)
+      || (!!settingsStore.selectedAgentSourceTenantId && id === agentModelId.value);
+    if (!valid(selectedModelId.value)) {
+      selectedModelId.value = [props.initialSessionModelId, agentModelId.value, readLastChatModelID(), availableModels.value[0]?.id]
+        .find(id => !!id && valid(id)) || '';
+    } else {
+      // Pin even an inherited initial choice, so a later default change cannot
+      // replace this conversation when it has not sent its first message yet.
+      writeSessionModelDraft(sessionModelKey.value, selectedModelId.value);
+    }
+    return;
+  }
   if (selectedModelId.value) {
     return;
   }
@@ -1077,7 +1114,17 @@ const ensureModelSelection = () => {
   }
 };
 
-// 智能体身份或其数据到位时，把对话模型同步到智能体配置的 model_id。
+watch([sessionModelKey, () => props.sessionId, () => props.initialSessionModelId], () => {
+  if (!hasSessionModel.value) return;
+  sessionModelId.value = readSessionModelDraft(sessionModelKey.value)
+    || props.initialSessionModelId || settingsStore.conversationModels.selectedChatModelId || '';
+  ensureModelSelection();
+}, { immediate: true });
+watch(availableModels, () => {
+  if (hasSessionModel.value) ensureModelSelection();
+});
+
+// 已有聊天只校验自己的模型；新聊天在智能体数据到位时应用默认模型。
 // 修复场景：导航离开再返回时，initChatModelSelection 会用 localStorage 的 lastPick
 // 覆盖共享智能体绑定的源空间 model_id，UI 显示「未配置」——此时需要拉回 agent 模型。
 // 但若用户在本页手动改过模型（lastPick 与 agent 默认不同且当前选中即为 lastPick），
@@ -1086,6 +1133,10 @@ watch(
   [selectedAgentId, () => settingsStore.selectedAgentSourceTenantId, agentModelId],
   ([, sourceTenantId, newModelId]) => {
     if (props.knowledgeScope || props.embeddedMode || !newModelId || newModelId.trim() === '') return;
+    if (hasSessionModel.value) {
+      ensureModelSelection();
+      return;
+    }
 
     const lastPick = readLastChatModelID();
     const isSharedAgent = !!sourceTenantId;
@@ -1127,7 +1178,6 @@ const handleModelChange = (value: string | number | Array<string | number> | und
     return;
   }
   if (val === '__add_model__') {
-    if (!props.embeddedMode) selectedModelId.value = readLastChatModelID();
     handleGoToConversationModels();
     return;
   }
@@ -1138,6 +1188,12 @@ const handleModelChange = (value: string | number | Array<string | number> | und
   }
 
   if (props.knowledgeScope) {
+    if (availableModels.value.some(model => model.id === val)) selectedModelId.value = val;
+    showModelSelector.value = false;
+    return;
+  }
+
+  if (hasSessionModel.value) {
     if (availableModels.value.some(model => model.id === val)) selectedModelId.value = val;
     showModelSelector.value = false;
     return;
@@ -2314,6 +2370,13 @@ const createSession = async (
 
   if (!chatResources.isLoaded('models')) {
     await loadChatModels()
+  }
+  if (hasSessionModel.value) {
+    ensureModelSelection();
+    if (!selectedModelId.value) {
+      MessagePlugin.warning(t('input.noModel'));
+      return;
+    }
   }
 
   // 发送前校验当前选中的智能体（含默认快速问答）是否已配置完成

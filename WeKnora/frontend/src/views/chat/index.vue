@@ -199,6 +199,7 @@
                         :assistantMessageId="currentAssistantMessageId" :embeddedMode="embeddedMode"
                         :knowledge-scope="scopedSession ? { kbId: kbIds.length === 1 ? kbIds[0] : '', kbIds, kbName: scopedKbName, modelId: scopedModelId } : undefined"
                         :model-id="modelId" :default-model-id="defaultModelId"
+                        :initial-session-model-id="currentSession?.last_request_state?.model_id || ''"
                         @update:model-id="(id) => emit('update:modelId', id)"
                         :queuedSteers="steerQueue.filter(item => item.delivery === 'after')" :canSteer="isAgentStreamSession() && !scopedSession">
                         <template v-if="$slots['composer-chips']" #chips>
