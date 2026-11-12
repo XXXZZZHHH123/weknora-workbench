@@ -207,7 +207,9 @@ def test_report_ppt_region_is_collapsed_and_offers_shared_upload_and_list(pages,
         assert panel.xpath('.//*[@id="' + marker + '"]')
     dialog = html.get_element_by_id('ppt-source-dialog')
     assert dialog.tag == 'dialog' and 'open' not in dialog.attrib
-    assert '已授权来源知识库' in dialog.text_content()
+    assert '已授权来源知识库' not in dialog.text_content()
+    assert dialog.xpath('.//input[@id="ppt-source-query"][@type="search"]')
+    assert 'disabled' in dialog.get_element_by_id('ppt-source-create').attrib
     assert all(label in dialog.text_content() for label in ('文件名', '上传时间', '大小', '页数', '上传本地文件'))
     assert 'disabled' in html.get_element_by_id('ppt-upload-fields').attrib
     assert '.pptx' in html.get_element_by_id('ppt-file').get('accept')
