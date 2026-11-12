@@ -21,7 +21,7 @@ def test_market_selector_uses_current_catalog_in_both_workbench_modes(canonical,
     assert tree.xpath('//*[@id="market-core-suggestions-open"]')
     assert 'SHFE.SN.main.settle' not in tree.get_element_by_id('market-core-catalog').text
     assert tree.xpath('//*[@id="market-contract-source"]//a[contains(@href,"shfe.com.cn")]')
-    assert '当前通用字段确认尚未提供这些语义绑定' in tree.get_element_by_id('market-contract-source').text_content()
+    assert not tree.xpath('//*[@id="market-contract-source"]//p | //*[@id="market-contract-source"]//ol')
 
 
 @pytest.mark.parametrize('identifier', [FIRST, SECOND, LEGACY])
@@ -83,7 +83,7 @@ def test_existing_curve_does_not_claim_the_knowledge_base_has_no_contract_semant
     from tin.web.app import templates
     template = templates.get_template('_market_contract_guide.html')
     html = template.render(research_workbench=lambda: True, curve={'rows': [{}]})
-    assert '本交易日已有可核对的具体合约行情' in html
+    assert 'shfe.com.cn/reports/tradedata/' in html
     assert '当前通用字段确认尚未提供' not in html
 
 

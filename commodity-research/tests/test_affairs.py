@@ -181,7 +181,8 @@ def test_affairs_template_has_alerts_and_real_deep_links_without_fake_health_cla
     environment.globals.update(research_url=lambda value: '/wb' + value, research_static_prefix=lambda: '/static',
         static_version=lambda: 'fixture', research_workbench=lambda: scope, research_prefix=lambda: '/wb')
     html = environment.get_template('home.html').render(affairs=result, err=None)
-    assert '事务中心' in html and '已记录预警' in html
+    assert '事务中心' in html and '预警与触发' in html
+    assert '已记录预警' not in html
     assert 'affairs-check' in html and 'period=weekly' in html
     assert '<img src=x' not in html and '&lt;img' in html
     assert '全景数据墙' not in html and '昨夜到今早' not in html

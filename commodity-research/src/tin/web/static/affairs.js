@@ -29,20 +29,19 @@
       arrow.className = 'affairs-row-arrow'; arrow.textContent = '查看 →'; row.append(copy, arrow); rows.push(row);
     }
     if (!rows.length) { const empty = document.createElement('div'); empty.className = 'affairs-empty';
-      empty.textContent = result.checked_rules === 0 ? result.notice || '尚未保存可检查规则。' :
-        result.notice || '本次检查未返回触发预警；仅覆盖当前研判已绑定且有可用数据的规则。'; rows.push(empty); }
+      empty.textContent = result.checked_rules === 0 ? '暂无可检查规则' : '暂无预警记录'; rows.push(empty); }
     list.replaceChildren(...rows);
   }
   async function check() {
     if (busy || button.disabled) return;
-    busy = true; button.disabled = true; button.dataset.busy = 'true'; inform('正在核对当前研判规则与策略引用条件…');
+    busy = true; button.disabled = true; button.dataset.busy = 'true'; inform('检查中…');
     try {
       const response = await researchFetch(prefix + '/api/sn/affairs/check', {method: 'POST'});
       const result = await response.json();
       if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : '检查未完成，原记录已保留。');
       if (!Array.isArray(result.alerts)) throw new Error('检查结果格式不完整，原记录已保留。');
-      render(result.alerts, result); inform([result.notice, result.checked_at ? '检查于 ' + stamp(result.checked_at) : '',
-        result.partial ? '只检查了有界范围，请进入研究判断核对其余规则。' : ''].filter(Boolean).join(' · '));
+      render(result.alerts, result); inform([result.checked_at ? '检查于 ' + stamp(result.checked_at) : '',
+        result.partial ? '部分结果' : ''].filter(Boolean).join(' · '));
     } catch (error) { inform(error.message || '检查未完成，原记录已保留。', true); }
     finally { busy = false; button.disabled = false; button.dataset.busy = 'false'; }
   }

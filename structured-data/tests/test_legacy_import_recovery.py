@@ -187,3 +187,17 @@ def test_recovery_preserves_target_bindings_and_non_recovery_metadata(migration)
     assert restored['native_source_bindings'] == [source, other]
     assert restored['target_only_metadata'] == {'kept': True}
     assert restored['sheets'] == legacy.get(saved['import_id'])['sheets']
+
+
+def test_recovery_persists_snapshot_identity_instead_of_its_presentation_name(migration, monkeypatch):
+    path, legacy, target, source, saved = migration
+    original_manifest = legacy.store.raw_manifest(saved['dataset_id'])
+    monkeypatch.setattr(legacy.store, '_display_native_source', lambda _: 'presentation-only.xlsx')
+    assert legacy.store.manifest(saved['dataset_id'])['source_file'] == 'presentation-only.xlsx'
+
+    result = recover(target, legacy, source, path)
+
+    restored = target.store.raw_manifest(result['dataset_id'])
+    assert restored['source_file'] == original_manifest['source_file']
+    assert restored['sha256'] == original_manifest['sha256']
+    assert restored['import_id'] == original_manifest['import_id']

@@ -122,8 +122,13 @@ class DataStore:
             raise ValueError("数据集不存在或尚未导入完成。")
         return path
 
+    def raw_manifest(self, dataset_id: str) -> dict:
+        """Read the persisted snapshot identity, without native display names."""
+        return json.loads((self._path(dataset_id) / "manifest.json").read_text())
+
     def manifest(self, dataset_id: str) -> dict:
-        manifest = json.loads((self._path(dataset_id) / "manifest.json").read_text())
+        """Present a snapshot using its verified native upload name when available."""
+        manifest = self.raw_manifest(dataset_id)
         manifest['source_file'] = self._display_native_source(manifest)
         return manifest
 
@@ -189,7 +194,7 @@ class DataStore:
         result={'file':manifest['source_file'],'sha256':manifest['sha256'],**metadata}
         # manifest() may already have replaced an internal import filename with
         # the native display name; validate against the stored original record.
-        raw=json.loads((self._path(dataset_id)/'manifest.json').read_text())
+        raw=self.raw_manifest(dataset_id)
         binding=self._native_source_binding(raw,verify_content=True)
         if binding:
             result.update(knowledge_id=binding['source_knowledge_id'],

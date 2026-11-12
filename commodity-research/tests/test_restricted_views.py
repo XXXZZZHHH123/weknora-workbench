@@ -2,9 +2,22 @@
 from datetime import datetime, timezone
 
 import pytest
+from lxml.html import fromstring
 
 from tin.config import SHANGHAI
 from tests.test_knowledge_facts import canonical, api, page, FIRST, SECOND, SERIES, KB, OTHER_KB
+
+
+
+def assert_empty_restricted_market(response):
+    assert response.status_code == 200, response.text
+    document = fromstring(response.text)
+    empty = document.get_element_by_id('market-core-empty')
+    assert 'hidden' not in empty.attrib
+    assert empty.text_content().strip() == '暂无授权指标'
+    assert document.get_element_by_id('market-core-count').text_content().strip() == '0'
+    assert not document.xpath('//*[contains(concat(" ", normalize-space(@class), " "), " restricted-value ")]')
+    assert not document.xpath('//*[@id="market-core-open" or @id="market-core-catalog"]')
 
 
 def delegated(state, modules=('market',)):
@@ -81,7 +94,8 @@ def test_unbound_market_does_not_fetch_catalog_or_any_facts(canonical):
     delegated(state)
     response = client.get(page(FIRST, '/sn'), headers=headers)
     assert response.status_code == 200, response.text
-    assert '尚未配置' in response.text and '17.5' not in response.text
+    assert_empty_restricted_market(response)
+    assert '17.5' not in response.text
     assert not state.get('bounded_requests') and state['pages'] == 0
 
 
@@ -153,7 +167,9 @@ def test_source_readable_editor_saves_verified_core_for_restricted_members(canon
     delegated(state)
     assert client.get(page(FIRST, '/sn'), headers=headers).status_code == 200
     assert state['bounded_requests'][-1]['series_ids'] == [SERIES]
-    assert '尚未配置' in client.get(page(SECOND, '/sn'), headers=headers).text
+    before = len(state.get('bounded_requests', []))
+    assert_empty_restricted_market(client.get(page(SECOND, '/sn'), headers=headers))
+    assert len(state.get('bounded_requests', [])) == before
 
 
 @pytest.mark.parametrize('mode', ['viewer', 'wb_readonly', 'delegated', 'unknown_id', 'duplicate', 'extra'])
@@ -190,7 +206,9 @@ def test_legacy_configuration_and_diagram_do_not_cross_workbench_boundaries(cano
     assert first.status_code == 200 and 'PRIVATE_LAYOUT_SENTINEL' in first.text
     second = client.get(page(SECOND, '/sn/diagram'), headers=headers)
     assert second.status_code == 200 and 'PRIVATE_LAYOUT_SENTINEL' not in second.text and '91234567' not in second.text
-    assert '尚未配置' in client.get(page(SECOND, '/sn'), headers=headers).text
+    before = len(state.get('bounded_requests', []))
+    assert_empty_restricted_market(client.get(page(SECOND, '/sn'), headers=headers))
+    assert len(state.get('bounded_requests', [])) == before
 
 
 def test_legacy_template_edits_in_another_workbench_cannot_change_approved_snapshot(canonical):
@@ -248,7 +266,7 @@ def test_missing_origin_metadata_does_not_probe_any_knowledge_base(canonical):
             confirmed_by='researcher', confirmed_at=datetime.now(timezone.utc)))
         session.commit()
     delegated(state)
-    assert '尚未配置' in client.get(page(FIRST, '/sn'), headers=headers).text
+    assert_empty_restricted_market(client.get(page(FIRST, '/sn'), headers=headers))
     assert not state.get('bounded_requests')
 
 

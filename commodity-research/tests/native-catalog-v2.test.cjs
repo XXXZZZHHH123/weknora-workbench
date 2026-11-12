@@ -343,7 +343,7 @@ test('saving the actual mixed picker writes shared items and account favorites a
   assert.deepEqual(account.items.map(item => item.id), ['existing-chart', sid('b'), 'selected-chart', sid('a')]);
   assert.equal(account.items[1].added_at, '2026-01-01T00:00:00Z');
   assert.equal(f.storage.get(legacyKey), '["browser-only"]');
-  assert.match(f.element('market-core-notice').textContent, /已加入账号自选/);
+  assert.equal(f.element('market-core-notice').textContent, '已保存');
   assert.equal(requests.filter(([, options]) => options.method === 'PUT').length, 1);
   const save = requests.find(([url]) => url.pathname.endsWith('/config'));
   assert.deepEqual(JSON.parse(save[1].body), {items});

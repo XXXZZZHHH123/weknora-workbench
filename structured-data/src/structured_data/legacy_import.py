@@ -75,7 +75,7 @@ def recover(manager, legacy, source, verified_original, *, before_commit=None):
         for item in legacy.store.list_datasets():
             if item['sha256'] != digest:
                 continue
-            manifest = legacy.store.manifest(item['dataset_id'])
+            manifest = legacy.store.raw_manifest(item['dataset_id'])
             if manifest.get('import_id') not in (None, old['import_id']):
                 continue
             manifests.append(manifest)
@@ -96,7 +96,7 @@ def recover(manager, legacy, source, verified_original, *, before_commit=None):
                     target = manager.store.datasets / identifier
                     original = legacy.store._path(identifier)
                     if target.exists():
-                        saved = manager.store.manifest(identifier)
+                        saved = manager.store.raw_manifest(identifier)
                         if saved['sha256'] != digest or saved['rule_version'] != manifest['rule_version']:
                             raise ValueError('目标知识库已有冲突的快照，未覆盖。')
                         continue

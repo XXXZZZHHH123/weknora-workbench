@@ -81,12 +81,12 @@ class ImportManager:
         dataset_id = doc.get('dataset_id')
         if dataset_id:
             try:
-                candidate = self.store.manifest(dataset_id)
+                candidate = self.store.raw_manifest(dataset_id)
                 if (isinstance(candidate, dict) and doc.get('sha256')
                         and candidate.get('dataset_id') == dataset_id
                         and candidate.get('import_id') == doc.get('import_id')
                         and candidate.get('sha256') == doc['sha256']
-                        and candidate.get('source_file') == self.display_source_file(doc)):
+                        and candidate.get('source_file') == doc.get('source_file')):
                     manifest = candidate
             except (ValueError, OSError):
                 pass
@@ -238,7 +238,7 @@ class ImportManager:
                     break
                 if not doc.get('dataset_id'):
                     continue
-                manifest = self.store.manifest(doc['dataset_id'])
+                manifest = self.store.raw_manifest(doc['dataset_id'])
                 if (not doc.get('sha256') or record.parent.name != doc.get('import_id')
                         or any(manifest.get(key) != doc.get(key)
                                for key in ('dataset_id', 'import_id', 'sha256', 'source_file'))):

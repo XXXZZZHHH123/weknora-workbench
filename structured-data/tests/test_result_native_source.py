@@ -23,6 +23,9 @@ def test_result_source_uses_exact_native_binding_and_original_bytes(tmp_path):
     identity=Identity('owner','owner@example.test','owner',7,'owner','kb-one',7,True)
     token=current_identity.set(identity)
     try:
+        assert store.raw_manifest(dataset) == manifest
+        assert store.manifest(dataset)['source_file'] == 'native.xlsx'
+        assert json.loads((path/'manifest.json').read_text()) == manifest
         result=store.result_source(dataset)
         assert result['file']=='native.xlsx' and result['knowledge_id']=='doc-one'
         assert result['knowledge_base_id']=='kb-one' and result['file_hash']==md5

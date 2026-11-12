@@ -193,7 +193,6 @@ defineExpose({ openSources, drawerOpen })
             <t-button size="small" variant="text" :loading="loading" @click="load">刷新来源</t-button>
             <t-button v-if="targetKnowledgeBaseId" size="small" variant="text" data-guide="research-kb-manage" @click="openKnowledgeBase">知识库管理</t-button>
           </div>
-          <p class="isolated-hint">原件保存在绑定知识库。Excel 在知识库确认结构后，指标即可在工作台使用。</p>
           <p v-if="overview" class="isolated-hint">{{ overview.counts.sources }} 份原件 · {{ overview.counts.indicators }} 个指标 · {{ overview.counts.observations }} 条观测</p>
           <p v-if="loading" class="isolated-hint" role="status">正在读取来源…</p>
           <div v-else-if="!sources.length && !error" class="isolated-note">尚无原件，可以先添加文件或文件夹。</div>

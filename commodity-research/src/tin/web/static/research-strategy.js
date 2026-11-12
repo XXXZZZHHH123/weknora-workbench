@@ -197,7 +197,7 @@
     const stamp = localDay(item.updated_at || item.created_at);
     const top = element('div', undefined, 'strategy-card-top'), direction = element('span', item.direction_label || '研究记录', 'strategy-direction');
     if (card?.direction) direction.dataset.direction = card.direction;
-    top.append(direction, element('span', (card?.response_action?.trim() ? '应对策略草稿' : '观察方案 · 待补应对') + (stamp ? ' · 更新于 ' + stamp : '')));
+    top.append(direction, element('span', (card?.response_action?.trim() ? '应对策略草稿' : '观察方案') + (stamp ? ' · 更新于 ' + stamp : '')));
     title.append(top, element('h2', item.title));
     const actions = element('div', undefined, 'strategy-preview-actions');
     if (item.can_edit !== false && editable(key) && card) actions.append(button(drafts.get(key)?.dirty ? '继续编辑草稿' : '编辑',
@@ -215,7 +215,7 @@
           button('预览依据', () => previewReference(ref, line, key)));
         article.append(line);
       }
-      definition(article, [['适用 / 触发', card.trigger, 'trigger'], ['应对措施', card.response_action || '待补应对措施；当前仅作为观察方案保留。', 'response_action'],
+      definition(article, [['适用 / 触发', card.trigger, 'trigger'], ['应对措施', card.response_action || '—', 'response_action'],
         ['暂停 / 撤回', card.invalidation, 'invalidation'], ['复核日期', card.review_date]], card.citations || [], key);
       disclosure(article, '适用范围与目标', card.thesis, card.citations || [], 'thesis', key);
       disclosure(article, '执行前核对', card.watch_for, card.citations || [], 'watch_for', key);
@@ -234,7 +234,6 @@
         mountCardCharts(charts, {references, thumbnail: true});
       }
     } else disclosure(article, '历史研究记录全文', item.legacy_body);
-    article.append(element('small', item.evidence_notice || '', 'strategy-small-note'));
     host.replaceChildren(article);
     if (card && (card.citations || []).some(row => ['indicator', 'judgment_condition', 'chart'].includes(row.kind)))
       loadMonitor(item, article.querySelector('.research-preview-fields'));
@@ -336,7 +335,7 @@
       const data = await request('/research-strategies/' + encodeURIComponent(item.id) + '/monitor' + (query.size ? '?' + query : ''));
       if (own !== selectSequence || !panel.isConnected) return;
       const counts = data.counts || {};
-      head.replaceChildren(element('strong', '条件监测' + (counts.conditions ? ' · 所引条件 ' + counts.conditions + ' 项，' + (counts.triggered ? counts.triggered + ' 项已触发' : '暂无触发') : '')), element('small', data.notice || ''));
+      head.replaceChildren(element('strong', '条件监测' + (counts.conditions ? ' · 所引条件 ' + counts.conditions + ' 项，' + (counts.triggered ? counts.triggered + ' 项已触发' : '暂无触发') : '')));
       const grid = element('div', undefined, 'strategy-monitor-grid');
       for (const row of data.conditions || []) grid.append(monitorItem(row, 'condition'));
       for (const row of data.indicators || []) grid.append(monitorItem(row, 'indicator'));
@@ -762,7 +761,7 @@
     option.dataset.reference = JSON.stringify(ref); field('judgment').append(option); return option;
   }
   async function loadJudgments() {
-    const own = editSequence, choice = field('judgment'); choice.replaceChildren(element('option', '不引用研判 · 临时观察方案'));
+    const own = editSequence, choice = field('judgment'); choice.replaceChildren(element('option', '不引用研判'));
     choice.firstChild.value = '';
     if (judgmentReference) { showJudgmentOption(judgmentReference).selected = true; }
     field('preview-judgment').disabled = !judgmentReference;

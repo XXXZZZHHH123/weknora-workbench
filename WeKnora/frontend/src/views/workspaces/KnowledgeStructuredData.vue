@@ -56,7 +56,7 @@ onBeforeUnmount(() => { generation++ })
         </div>
       </div>
       <nav class="knowledge-structured-actions" aria-label="表格数据操作">
-        <router-link class="knowledge-structured-legacy" to="/platform/structured-data" title="旧 Excel 保留在原空间，尚未自动分配到本库">原空间表格</router-link>
+        <router-link class="knowledge-structured-legacy" to="/platform/structured-data">原空间表格</router-link>
         <router-link :to="`/platform/knowledge-bases/${kbId}`"><t-icon name="folder" aria-hidden="true" />目录</router-link>
         <button type="button" @click="openModelSettings"><t-icon name="setting" aria-hidden="true" />字段模型</button>
         <KnowledgeWorkbenchLink :kb-id="kbId" />

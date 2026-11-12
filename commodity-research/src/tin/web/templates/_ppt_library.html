@@ -2,7 +2,6 @@
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/charts.css?v={{ static_version() }}">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/ppt.css?v={{ static_version() }}">
 <div class="charts-page ppt-page ppt-library" data-ppt-page="list">
-  <p class="charts-muted">从知识库选择以往的日报或周报 PPT，确认图位绑定后，按原版式导出{% if ppt_page.date %}，默认数据截止日为 {{ ppt_page.date }}{% endif %}。</p>
   {% if not ppt_page.enabled %}<p class="charts-notice error" role="alert">{{ ppt_page.reason }}</p>{% else %}
   {% if not ppt_page.can_write %}<p class="charts-notice" id="ppt-write-reason">{{ ppt_page.write_reason }}</p>{% endif %}
   <section class="charts-panel"><h2>我的 PPT 版式</h2>
