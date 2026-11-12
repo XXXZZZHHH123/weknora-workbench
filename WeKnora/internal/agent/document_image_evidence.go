@@ -374,6 +374,14 @@ func reviewFigurePoint(raw any) map[string]any {
 	}
 	interval, _ := point["x_axis_interval"].(map[string]any)
 	fraction, valid := interval["fraction_between_labels"].(float64)
+	// Both ordinary JSON decoding and the immutable review projection reach
+	// this function. Preserve the same interval for json.Number too, so exact
+	// source witnesses do not fail solely because of decoder representation.
+	if number, ok := interval["fraction_between_labels"].(json.Number); ok {
+		var err error
+		fraction, err = number.Float64()
+		valid = err == nil
+	}
 	if valid && fraction >= 0 && fraction <= 1 && interval["left_label"] != nil && interval["right_label"] != nil {
 		delete(view, "x_fraction")
 		delete(view, "x_axis_interval")
