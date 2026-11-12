@@ -20,7 +20,6 @@ import (
 
 // Numeric checking is independent of question vocabulary and supported analyses.
 // It verifies traceability, not the semantic appropriateness of a statistic.
-var evidenceDate = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 var proseNumber = regexp.MustCompile(`[-+−]?\d+(?:,\d{3})*(?:\.\d+)?`)
 
 // A heading identity may contain only its leading list/table number. Source
@@ -416,12 +415,10 @@ func ungroundedStructuredNumbersWithEmptyEvidence(answer string, messages []chat
 				collect(item)
 			}
 		case string:
-			if evidenceDate.MatchString(x) {
-				for _, part := range strings.Split(x, "-") {
-					if v, e := strconv.ParseFloat(part, 64); e == nil {
-						values = append(values, v)
-						percentageValues = append(percentageValues, v, v*100)
-					}
+			if date, ok := numericEvidenceCalendarDate(x); ok {
+				for _, v := range []float64{float64(date.Year()), float64(date.Month()), float64(date.Day())} {
+					values = append(values, v)
+					percentageValues = append(percentageValues, v, v*100)
 				}
 			}
 			// Decimal calculator results arrive as numeric strings. SQL, dates,
@@ -663,6 +660,22 @@ func ungroundedStructuredNumbersWithEmptyEvidence(answer string, messages []chat
 		}
 	}
 	return unsupported
+}
+
+// SQL date_trunc and timestamp columns can serialize as ISO timestamps rather
+// than date-only strings. Their actual calendar components remain evidence for
+// a displayed year/month/day. Parse the entire value: version strings, invalid
+// dates and timestamp prefixes inside arbitrary prose are not observations.
+func numericEvidenceCalendarDate(value string) (time.Time, bool) {
+	if len(value) < len("2006-01-02") || value[4] != '-' || value[7] != '-' {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.DateOnly, time.RFC3339Nano, "2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // Runtime clocks, resource IDs and routing counts are not user-supplied

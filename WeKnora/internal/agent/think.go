@@ -1121,6 +1121,7 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	if e.structuredReviewMode {
 		messages = withReviewedAnswerDeliveryInstruction(messages)
 	}
+	messages = withCurrentToolAvailability(messages, tools)
 	runtimeNotice := strings.Join(runtimeNotices, "\n")
 	budgetMessages := messages
 	if runtimeNotice != "" {

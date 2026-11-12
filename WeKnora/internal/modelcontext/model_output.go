@@ -1105,7 +1105,10 @@ func renderKnowledgeChunks(mode string, chunks []modelChunk, info map[string]int
 const webEvidenceScopeNotice = "  <evidence_scope>Search summaries and fetched excerpts are separate evidence. " +
 	"A successful fetch verifies retrieval, not summary claims absent from the excerpt. " +
 	"Match each fact to its own event/forecast period; publication and retrieval times do not establish that period " +
-	"or prove an update today. Source blocks preserve Markdown layout; parent_offset identifies an enclosing " +
+	"or prove an update today. Compare sources as conflicting only when the entity, measure, unit and period match. " +
+	"An undated navigation or sidebar value does not inherit a date from adjacent news or the page's current-time label. " +
+	"Use an explicit source item's scope over an inference from its search summary; different periods are not a conflict. " +
+	"Source blocks preserve Markdown layout; parent_offset identifies an enclosing " +
 	"heading or list item within this page, not a citation. Keep facts with their own section, not adjacent siblings.</evidence_scope>\n"
 
 func (r *sourceRegistry) modelWebSearchOutput(rows []map[string]interface{}, fallback string) string {

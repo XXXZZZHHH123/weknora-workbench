@@ -39,6 +39,28 @@ func TestStructuredNumbersTreatShortCalendarDatesAsDates(t *testing.T) {
 	require.Equal(t, []string{"27"}, ungroundedStructuredNumbers("共27条，最高17,790。", messages))
 }
 
+func TestStructuredNumbersRecognizeYearsInExecutedTimestamps(t *testing.T) {
+	for _, date := range []string{
+		"2017-02-03", "2017-02-03T00:00:00", "2017-02-03T00:00:00.123456",
+		"2017-02-03T00:00:00Z", "2017-02-03T00:00:00.123456+08:00",
+		"2017-02-03 00:00:00.123456",
+	} {
+		t.Run(date, func(t *testing.T) {
+			data, err := json.Marshal(map[string]any{"kind": "structured_analysis", "status": "ok", "columns": []string{"period", "value"}, "rows": [][]any{{date, 824.0}}})
+			require.NoError(t, err)
+			messages := []chat.Message{{Role: "tool", Name: "structured_analyze_table", Content: string(data)}}
+			require.Empty(t, ungroundedStructuredNumbers("2017 年为824。\n| 年份 | 数值 |\n| 2017 | 824 |", messages))
+			require.Equal(t, []string{"825"}, ungroundedStructuredNumbers("2017 年为825。", messages))
+			require.Equal(t, []string{"2018"}, ungroundedStructuredNumbers("2018 年为824。", messages), "an unobserved year is not authorized by a timestamp")
+		})
+	}
+	for _, invalid := range []string{"2017-02-30T00:00:00", "2017-02-03T25:00:00", "v2017-02-03T00:00:00", "2017-02-03T00:00:00 explanation", "2017.2.3.0"} {
+		data, err := json.Marshal(map[string]any{"rows": [][]any{{invalid, 824.0}}})
+		require.NoError(t, err)
+		require.Equal(t, []string{"2017"}, ungroundedStructuredNumbers("2017 年为824。", []chat.Message{{Role: "tool", Content: string(data)}}))
+	}
+}
+
 func TestStructuredNumbersValidateFullCalendarDatesWithoutMaskingDecimalsOrVersions(t *testing.T) {
 	messages := []chat.Message{{Role: "tool", Content: `{"kind":"structured_analysis","rows":[[54.96,58.32]]}`}}
 	require.Empty(t, ungroundedStructuredNumbers("日期2024.3.31；数值54.96和58.32。", messages))

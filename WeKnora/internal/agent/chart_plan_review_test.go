@@ -97,6 +97,23 @@ func TestChartReviewAllowsActualCategoryComparison(t *testing.T) {
 	require.True(t, verdict.CompleteDelivery)
 }
 
+func TestChartReviewPreservesOutstandingFeedbackForRecovery(t *testing.T) {
+	feedback := "The title claims the entire range, but only the initial observations were read."
+	model := &chartAxisReviewModel{response: chartAxisReviewResponse(t, "numeric", "The axes are valid; the stated range still needs correction.", feedback)}
+	e := newTestEngine(t, model)
+	reviewer := e.chartPlanReviewer("Show the observed readings over their available range.", &types.AgentState{})
+	table := chartAxisReviewTable(t)
+	spec := chart.Spec{Type: "line", X: 0, Y: []int{1}, XType: "numeric"}
+	verdict, err := reviewer(chartContext(t), table, spec)
+	require.Nil(t, verdict, "accepted=true with outstanding corrections cannot authorize delivery")
+	require.ErrorContains(t, err, feedback, "the executing model must receive the actionable correction")
+	model.response = chartAxisReviewResponse(t, "numeric", "The title accurately states the available range.", "")
+	verdict, err = reviewer(chartContext(t), table, spec)
+	require.NoError(t, err)
+	require.NotNil(t, verdict)
+	require.Len(t, model.seen, 2, "a rejected review must not be cached as approval")
+}
+
 func TestChartReviewBudgetAndProtocolBounds(t *testing.T) {
 	model := &chartAxisReviewModel{response: chartAxisReviewResponse(t, "numeric", strings.Repeat("核", chartReviewAssessmentLimit), "")}
 	e := newTestEngine(t, model)
