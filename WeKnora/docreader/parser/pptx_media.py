@@ -453,6 +453,16 @@ def _is_unresolved_image_ref(url: str) -> bool:
     return bool(url) and not url.startswith(("data:", "images/", "http://", "https://"))
 
 
+def _percentage_axis_markdown(result: dict) -> list[str]:
+    if result.get("numeric_representation") != "displayed_percent_values":
+        return []
+    labels = " → ".join(re.sub(r"([\\`*\[\]<>!#_|])", r"\\\1", tick["label"])
+                        for tick in result["axis_tick_labels"])
+    return ["纵轴百分比按原图显示数值给出：10 表示 10%，不是比例 0.1。估值与上下界单位为 %；"
+            "净变动和估读误差宽度单位为百分点，不是相对百分比变化。横轴区间进度的百分比与纵轴数值无关。",
+            "纵轴原文刻度（从上到下）：" + labels]
+
+
 def _geometry_markdown(result: dict, page_number: int, target: str) -> str:
     def escape(value):
         return re.sub(r"([\\`*\[\]<>!#_|])", r"\\\1", str(value))
@@ -469,6 +479,7 @@ def _geometry_markdown(result: dict, page_number: int, target: str) -> str:
         "图例标识应保持原文。若报告确认四位数字是期货YYMM合约代码，YY只表示交割年尾码，MM表示交割月份，"
         "世纪应结合报告日期确认；合约标识或交割年不能自动改写成商品或作物的跨年统计年度。"
         "原图未明确提供产业统计年度时，该口径未被证明。",
+        *_percentage_axis_markdown(result),
         "",
         f"| 原图图例 | 条件性的YYMM读法（仅交割年/月） | 曲线RGB颜色 | 最右端约值（{unit}） | 估读范围（{unit}） | 自身端点估读位置（全图{len(series)}条，从高到低） |",
         "| --- | --- | --- | --- | --- | --- |",
@@ -507,10 +518,13 @@ def _trend_geometry_markdown(result: dict, page_number: int, target: str) -> str
 
     lines = [f"第{page_number}页原图曲线几何证据 · {target}：",
              "由原EMF绘制点、图例颜色和线性纵轴校准；每条曲线保留自己的实际覆盖范围，包含较短曲线。",
-             "数值为图上估读，不是原Excel观测。位置明确绑定相邻横轴刻度，百分比仅在这两个刻度之间从左向右计量，不是整张图或全年的百分比。点尚未到达右刻度时，不能归到该右刻度之后的区间。由模型结合真实横轴标签理解时间，不从报告日期推定曲线末日。不同结束位置不可当作同日截面或排名。",
+             "数值为图上估读，不是原Excel观测。位置明确绑定相邻横轴刻度，横轴位置的区间进度百分比仅在这两个刻度之间从左向右计量，不是整张图或全年的百分比。点尚未到达右刻度时，不能归到该右刻度之后的区间。由模型结合真实横轴标签理解时间，不从报告日期推定曲线末日。不同结束位置不可当作同日截面或排名。",
              "图例标签不自动等于原文未定义的统计年度。只报告完整问题所需的图例、位置、数值、比较与必要口径，不附加未请求的阶段走势；缺少刻度时不补写具体日期。",
              f"纵轴单位：{escape(result['unit'] or '原图未明确')}。横轴原文锚点：" +
              " → ".join(escape(a['label']) for a in result['x_axis_anchors'])]
+    lines.extend(_percentage_axis_markdown(result))
+    change_unit = '变动单位：百分点' if result.get('change_unit') == 'percentage_points' else '单位同纵轴'
+    error_unit = '百分点' if result.get('change_unit') == 'percentage_points' else ''
     if result.get('series_selection'):
         lines.append(f"模型选择的原图图例：{escape(', '.join(result['series_selection']))}；原图共{result['source_series_count']}条，未返回其他曲线的数据点，不能据此做全图比较。")
     comparison = result.get('selected_endpoint_value_order')
@@ -528,7 +542,7 @@ def _trend_geometry_markdown(result: dict, page_number: int, target: str) -> str
         lines.append(f"图例 {escape(item['legend'])}的关键点（横轴从左到右）：" +
                      ' → '.join('/'.join(roles[role] for role in value['roles']) + '：' + point(value)
                                 for value in item['key_points']))
-        lines.append('相邻关键点的纵轴净变动（并非期间内单调变化；单位同纵轴）：' +
+        lines.append(f'相邻关键点的纵轴净变动（并非期间内单调变化；{change_unit}）：' +
                      '；'.join('/'.join(roles[role] for role in value['from_roles']) + '→' +
                               '/'.join(roles[role] for role in value['to_roles']) +
                               f"：{value['approximate_change']:+g}（{value['estimate_low']:g}～{value['estimate_high']:g}），" +
@@ -542,7 +556,7 @@ def _trend_geometry_markdown(result: dict, page_number: int, target: str) -> str
         margin = max(max(value['approximate_value'] - value['estimate_low'],
                          value['estimate_high'] - value['approximate_value'])
                      for value in item['samples'])
-        lines.append(f"图例 {escape(item['legend'])}（{item['color']}）的原图采样（真实横轴区间,约值；按绘制顺序、含全轨迹极值；各点估读误差不超过±{margin:g}）：" +
+        lines.append(f"图例 {escape(item['legend'])}（{item['color']}）的原图采样（真实横轴区间,约值；按绘制顺序、含全轨迹极值；各点估读误差不超过±{margin:g}{error_unit}）：" +
                      "；".join(f"({position(value)},{value['approximate_value']:g})" for value in item['samples']))
     return "\n".join(lines)
 

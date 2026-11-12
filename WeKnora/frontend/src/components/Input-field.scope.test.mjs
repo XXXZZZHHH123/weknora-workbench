@@ -5,6 +5,7 @@ import vm from 'node:vm'
 import ts from 'typescript'
 import { parse, compileScript } from '@vue/compiler-sfc'
 import * as Vue from 'vue'
+import { sessionModelDraftKey } from '../utils/sessionModelDraft.ts'
 
 const source = readFileSync(process.env.SCOPED_INPUT_SOURCE || new URL('./Input-field.vue', import.meta.url), 'utf8')
 const descriptor = parse(source).descriptor
@@ -17,6 +18,8 @@ const code = ts.transpileModule(compiled.content.replaceAll('import.meta.url', "
 // boundaries and child popup rendering are replaced; no completion API is used.
 function mountComposer(overrides = {}, remote = {}) {
   const effects = [], sent = [], requests = []
+  const storage = remote.storage || new Map([['weknora_last_chat_model_id', 'free-a']])
+  const auth = Vue.reactive({ currentUserId: 'user-a', effectiveTenantId: 10000, ...remote.auth })
   const models = remote.models ?? [{ id: 'free-a', name: 'Free A' }, { id: 'free-b', name: 'Free B' }]
   const settings = Vue.reactive({
     selectedAgentId: 'foreign-agent', selectedAgentSourceTenantId: 'foreign-tenant',
@@ -28,12 +31,16 @@ function mountComposer(overrides = {}, remote = {}) {
     addFile(id) { effects.push(['settings-file', id]) },
     selectKnowledgeBases(ids) { effects.push(['settings-kbs', ids]) },
     removeKnowledgeBase(id) { effects.push(['settings-remove', id]) },
+    toggleWebSearch() {},
+    ...remote.settings,
   })
   const resources = Vue.reactive({
     agents: [], disabledOwnAgentIds: [], allModels: models, chatModels: models,
     webSearchProviders: [], validKnowledgeBases: [{ id: 'bound-kb', name: 'Bound KB' }, { id: 'foreign-kb', name: 'Foreign KB' }],
     ensureKnowledgeBases: async () => effects.push(['load-global-kbs']),
     ensureChatModels: async () => {}, isLoaded: () => true,
+    ensureWebSearchProviders: async () => {}, ensureAgents: async () => {},
+    invalidate() {},
     fetchKnowledgeBaseById: async id => ({ id, name: id === 'bound-kb' ? 'Bound KB' : 'Foreign KB', knowledge_count: 2 }),
   })
   const api = {
@@ -73,15 +80,20 @@ function mountComposer(overrides = {}, remote = {}) {
     'tdesign-vue-next': { MessagePlugin: Object.fromEntries(['warning', 'error', 'info', 'success'].map(level => [level, text => effects.push([level, text])])) },
     'vue-i18n': { useI18n: () => ({ t: key => key, locale: Vue.ref('zh-CN') }) },
     '@/stores/settings': { useSettingsStore: () => settings },
+    '@/stores/auth': { useAuthStore: () => auth },
+    '@/utils/sessionModelDraft': { sessionModelDraftKey,
+      readSessionModelDraft: key => key ? storage.get(key) || '' : '',
+      writeSessionModelDraft: (key, id) => { if (key) id ? storage.set(key, id) : storage.delete(key) },
+    },
     '@/stores/browserConnection': { useBrowserConnectionStore: () => ({ watchStatus: () => effects.push(['watch-browser']), unwatchStatus: () => effects.push(['unwatch-browser']) }) },
     '@/stores/ui': { useUIStore: () => ({}) },
-    '@/stores/menu': { useMenuStore: () => ({ consumePrefillQuery() { throw new Error('scope consumed the full-page draft') } }) },
+    '@/stores/menu': { useMenuStore: () => ({ consumePrefillQuery() { if (overrides.embeddedMode === false) return ''; throw new Error('scope consumed the full-page draft') } }) },
     '@/stores/organization': { useOrganizationStore: () => ({ sharedKnowledgeBases: [], sharedAgents: [] }) },
     '@/stores/chatResources': { useChatResourcesStore: () => resources },
     '@/stores/editorResources': { useEditorResourcesStore: () => ({}) },
     '@/stores/deploymentCapabilities': { useDeploymentCapabilitiesStore: () => ({}) },
     '@/api/knowledge-base': api,
-    '@/api/mcp-service': { listMCPServices: async () => { throw new Error('scope loaded tools') } },
+    '@/api/mcp-service': { listMCPServices: async () => { if (overrides.embeddedMode === false) return []; throw new Error('scope loaded tools') } },
     '@/api/chat': { stopSession: async (...args) => { effects.push(['stop', ...args]); if (remote.stopFails) throw new Error('isolated stop unavailable') } },
     '@/api/agent': { BUILTIN_QUICK_ANSWER_ID: 'builtin-quick-answer', BUILTIN_SMART_REASONING_ID: 'builtin-smart-reasoning' },
     '@/utils/chatSubmitShortcut': { chatSubmitShortcut: () => 'after' },
@@ -96,7 +108,7 @@ function mountComposer(overrides = {}, remote = {}) {
     '@/utils/reasoningEffort': { supportedLevels: () => [], levelFromLegacy: () => '', clampLevel: () => '' },
     './MentionSelector.vue': { default: mentionPopup },
     './KnowledgeBaseSelector.vue': { default: silent }, './AgentSelector.vue': { default: silent },
-    './AttachmentUpload.vue': { default: silent }, '@/components/icons/BrowserIcon.vue': { default: silent },
+    './AttachmentUpload.vue': { default: { setup(_props, { expose }) { expose({ clear() {} }); return () => null } } }, '@/components/icons/BrowserIcon.vue': { default: silent },
     './ConversationMemoryToggle.vue': { default: silent },
   }
   const exports = {}
@@ -107,7 +119,7 @@ function mountComposer(overrides = {}, remote = {}) {
     console: { log() {}, error() {}, warn() {} }, navigator: { platform: 'Linux' }, document, URL, setTimeout,
     HTMLTextAreaElement: class {}, HTMLElement: class {}, requestAnimationFrame: callback => setImmediate(callback),
     window: { addEventListener() {}, removeEventListener() {} },
-    localStorage: { getItem: () => 'free-a', setItem: (...args) => storageWrites.push(args), removeItem: (...args) => storageWrites.push(args) },
+    localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => { storageWrites.push([key, value]); storage.set(key, value) }, removeItem: key => { storageWrites.push([key]); storage.delete(key) } },
   })
   function node(type, text = '') { return { type, text, props: {}, children: [], parent: null, getBoundingClientRect: () => ({ top: 500, bottom: 550, left: 30, right: 350, width: 320, height: 50 }), contains: () => false } }
   const body = node('body'), container = node('root')
@@ -136,8 +148,89 @@ function mountComposer(overrides = {}, remote = {}) {
     for (const handler of Array.isArray(inputHandler) ? inputHandler : [inputHandler]) handler({ target: { value: text } })
     await flush()
   }
-  return { app, find, all, effects, sent, requests, settings, storageWrites, flush, props, enter, emitMention: item => emitMention(item) }
+  return { app, find, all, effects, sent, requests, settings, storageWrites, storage, auth, resources, flush, props, enter, emitMention: item => emitMention(item) }
 }
+
+const fullPage = (sessionId, initialSessionModelId = '') => ({ embeddedMode: false, knowledgeScope: undefined, sessionId, initialSessionModelId })
+const mainSettings = { selectedAgentId: 'builtin-quick-answer', selectedAgentSourceTenantId: null,
+  isAgentStreamMode: false, isAgentEnabled: false, isWebSearchEnabled: false,
+  settings: { selectedKnowledgeBases: [], selectedFiles: [], selectedTags: [], selectedFileKbMap: {}, selectedMCPServices: [], selectedSkills: [] } }
+const textOf = n => n.text + n.children.map(textOf).join('')
+async function chooseModel(c, label) {
+  c.find('model-selector-trigger').props.onClick({ stopPropagation() {} })
+  await c.flush()
+  const option = c.all().find(n => String(n.props.class || '').split(' ').includes('model-option') && textOf(n).includes(label))
+  assert.ok(option, `missing model option ${label}`)
+  option.props.onClick()
+  await c.flush()
+}
+
+test('an existing chat keeps its saved model at mount and sends it despite the browser default and delayed agent load', async () => {
+  const c = mountComposer(fullPage('session-b', 'free-b'), { settings: mainSettings })
+  try {
+    await c.flush()
+    assert.equal(c.find('model-selector-trigger').props['aria-label'], 'Free B')
+    c.resources.agents = [{ id: 'builtin-quick-answer', config: { model_id: 'free-a' } }]
+    await c.flush()
+    assert.equal(c.find('model-selector-trigger').props['aria-label'], 'Free B')
+    await c.enter('A complete question')
+    c.find('send-btn').props.onClick()
+    await c.flush()
+    assert.equal(c.sent[0][1], 'free-b')
+    assert.equal(c.storage.get('weknora_last_chat_model_id'), 'free-a')
+  } finally { c.app.unmount() }
+})
+
+test('unsent choices survive A to B to A, remount and refresh without changing the new-chat default', async () => {
+  const storage = new Map([['weknora_last_chat_model_id', 'free-a']])
+  const c = mountComposer(fullPage('session-a', 'free-a'), { settings: mainSettings, storage })
+  try {
+    await c.flush()
+    await chooseModel(c, 'Free B')
+    c.props.sessionId = 'session-b'
+    c.props.initialSessionModelId = 'free-a'
+    await c.flush()
+    assert.equal(c.find('model-selector-trigger').props['aria-label'], 'Free A')
+    c.props.sessionId = 'session-a'
+    await c.flush()
+    assert.equal(c.find('model-selector-trigger').props['aria-label'], 'Free B')
+    assert.equal(c.settings.conversationModels.selectedChatModelId, 'free-a')
+  } finally { c.app.unmount() }
+  const refreshed = mountComposer(fullPage('session-a', 'free-a'), { settings: mainSettings, storage })
+  try { await refreshed.flush(); assert.equal(refreshed.find('model-selector-trigger').props['aria-label'], 'Free B') }
+  finally { refreshed.app.unmount() }
+  const fresh = mountComposer(fullPage(undefined), { settings: mainSettings, storage })
+  try { await fresh.flush(); assert.equal(fresh.find('model-selector-trigger').props['aria-label'], 'Free A') }
+  finally { fresh.app.unmount() }
+})
+
+test('new-chat choices transfer into the created session and remain independent afterward', async () => {
+  const c = mountComposer(fullPage(undefined), { settings: mainSettings })
+  try {
+    await c.flush()
+    await chooseModel(c, 'Free B')
+    assert.equal(c.storage.get('weknora_last_chat_model_id'), 'free-b')
+    c.props.sessionId = 'created-session'
+    await c.flush()
+    assert.equal(c.find('model-selector-trigger').props['aria-label'], 'Free B')
+    await chooseModel(c, 'Free A')
+    assert.equal(c.storage.get('weknora_last_chat_model_id'), 'free-b')
+    assert.equal(c.settings.conversationModels.selectedChatModelId, 'free-b')
+  } finally { c.app.unmount() }
+})
+
+test('drafts do not cross accounts or workspaces, and deleted models fall back to an available saved model', async () => {
+  const storage = new Map([[sessionModelDraftKey('user-a', 10000, 'session-a'), 'free-b']])
+  for (const auth of [{ currentUserId: 'user-b' }, { effectiveTenantId: 20000 }]) {
+    const c = mountComposer(fullPage('session-a', 'free-a'), { settings: mainSettings, storage, auth })
+    try { await c.flush(); assert.equal(c.find('model-selector-trigger').props['aria-label'], 'Free A') }
+    finally { c.app.unmount() }
+  }
+  storage.set(sessionModelDraftKey('user-a', 10000, 'session-a'), 'deleted-model')
+  const c = mountComposer(fullPage('session-a', 'free-a'), { settings: mainSettings, storage })
+  try { await c.flush(); assert.equal(c.find('model-selector-trigger').props['aria-label'], 'Free A') }
+  finally { c.app.unmount() }
+})
 
 test('the real scoped input renders the same inline model, @ and send controls, without global addons', async () => {
   const c = mountComposer()

@@ -41,5 +41,19 @@ def test_actual_manifest_is_full_stable_selected_independent_and_pinned_before_e
         accepted=post('list_datasets',{}, {'X-Structured-Manifest-SHA256':sha})
         assert accepted.status_code==200 and calls==['executed']
         assert accepted.headers['X-Structured-Manifest-SHA256']==sha
+        directory = accepted.json()
+        assert directory['source_data_read'] is False
+        assert directory['catalog_source_types'] == ['registered_spreadsheet_versions', 'published_pdf_tables']
+        assert directory['datasets'] == [] and 'pdf_tables' not in directory
+        assert '不必重复同一空目录' in directory['empty_catalog_notice']
+        pdf_directory = post('list_pdf_tables', {}, {'X-Structured-Manifest-SHA256':sha})
+        assert pdf_directory.status_code == 200
+        assert pdf_directory.json()['source_data_read'] is False
+        assert pdf_directory.json()['catalog_source_types'] == ['published_pdf_tables']
+        assert pdf_directory.json()['tables'] == []
+        for tool in first['tools']:
+            if tool['name'] in ('list_datasets', 'list_pdf_tables'):
+                assert '不检索PPT、文档正文或原图' in tool['description']
+                assert '当前实际可用工具' in tool['description']
         assert post('list_datasets',{}).status_code==200 # legacy compatibility
         assert client.post('/api/tools/read',json={'operation':'describe_tools','arguments':{}},headers={'Host':'localhost:18082'}).status_code==401

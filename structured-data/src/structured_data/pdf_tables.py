@@ -752,7 +752,10 @@ class PDFTableStore:
         more = offset + len(shown) < total
         return dict(tables=shown, total_table_count=total, offset=offset, output_truncated=more,
                     next_offset=offset + len(shown) if more else None,
-                    directory_notice='这是当前授权空间已发布表目录，优先用它核实入库状态；旧文档索引的待审/仅字段说明不是当前发布状态。reviewed/auto_accepted 均已入库，extraction_verified=false 不表示未入库。历史 original_quality_issue_codes 不等于当前 unresolved_quality_issues。样例仅供选表，可能含未设为表头的文字，不是数值证据或完整输入；先 read_pdf_table 核对列、单位、原值和来源，再 query_pdf_table 计算。目录/样例截断须继续读取，不得据此声称无数据。')
+                    source_data_read=False, catalog_source_types=['published_pdf_tables'],
+                    catalog_excludes=['document_body', 'presentation_slides', 'original_figures'],
+                    document_source_next_step='若问题需要文档内容，按本轮实际可用工具在已授权范围检索，并绑定、读取真实文档或原图。文件名或发布日期不能确定正文、图形覆盖期；工具不可用时只说明该限制，不扩展权限。',
+                    directory_notice='这是当前授权范围及source_sha256过滤下的已发布PDF表目录，仅核实这些表的入库状态，不涵盖PPT、文档正文或原图；即使完整为空也不证明授权知识库没有相关内容。旧文档索引的待审/仅字段说明不是当前发布状态。reviewed/auto_accepted 均已入库，extraction_verified=false 不表示未入库。历史 original_quality_issue_codes 不等于当前 unresolved_quality_issues。样例仅供选表，可能含未设为表头的文字，不是数值证据或完整输入；先 read_pdf_table 核对列、单位、原值和来源，再 query_pdf_table 计算。目录/样例截断须继续读取，不得据此声称无数据。')
 
     def read_table(self, table_id, *, offset=0, limit=100):
         if type(offset) is not int or offset < 0 or offset > MAX_ROWS or type(limit) is not int or not 1 <= limit <= 500:

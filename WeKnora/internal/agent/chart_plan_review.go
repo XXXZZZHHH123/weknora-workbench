@@ -248,7 +248,10 @@ func (e *AgentEngine) chartPlanReviewer(query string, state *types.AgentState) c
 			return nil, fmt.Errorf("绘图计划未通过语义核验：%s", taskPlanPrefix(*verdict.Feedback, 1200))
 		}
 		if *verdict.Feedback != "" {
-			return nil, fmt.Errorf("绘图核验仍有未处理修改项，未交付图片")
+			// The caller needs the actual correction to change its plan. Hiding
+			// it behind a generic rejection encourages identical failed retries.
+			// An inconsistent accepted=true never waives outstanding feedback.
+			return nil, fmt.Errorf("绘图核验仍有未处理修改项，未交付图片：%s", taskPlanPrefix(*verdict.Feedback, chartReviewFeedbackLimit))
 		}
 		if err := chartReviewContextFailure(reviewCtx); err != nil {
 			return nil, err

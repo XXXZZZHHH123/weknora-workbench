@@ -15,6 +15,7 @@ import (
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/stretchr/testify/require"
 )
 
@@ -343,4 +344,114 @@ func TestTaskPlanSourceDomainsProjectSchemasAndKeepOtherDomainsExpandable(t *tes
 			require.Contains(t, listToolNames(engine.buildToolsForLLM()), "structured_list_series")
 		})
 	}
+}
+
+func TestInternalDiscoveryKeepsDocumentNavigationWithoutChangingPrefetch(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		domains    []string
+		visible    bool
+	}{
+		{"structured discovery", "discover", []string{"structured"}, true},
+		{"knowledge discovery", "discover", []string{"knowledge"}, true},
+		{"mixed discovery", "discover", []string{"external", "structured"}, true},
+		{"external only", "discover", []string{"external"}, false},
+		{"no evidence", "none", []string{}, false},
+		{"structured recovery", "recover", []string{"structured"}, false},
+		{"knowledge recovery unchanged", "recover", []string{"knowledge"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &taskPlannerChat{plan: &types.ChatResponse{Content: sourceDomainPlan(t, tc.mode, tc.domains), FinishReason: "stop"}}
+			engine := newTestEngine(t, model)
+			engine.config.WorkbenchDefault, engine.config.TaskPlanningEnabled = true, true
+			engine.toolRegistry = agenttools.NewToolRegistry()
+			tools := []*countingTool{}
+			for _, name := range []string{agenttools.ToolSearchKnowledge, agenttools.ToolListDocuments,
+				agenttools.ToolBindDocumentScope, agenttools.ToolReadDocument, agenttools.ToolWebSearch,
+				"structured_list_datasets", documentTableCalculationToolName, "shell_exec"} {
+				tool := newCountingTool(name)
+				tools = append(tools, tool)
+				engine.toolRegistry.RegisterTool(tool)
+			}
+			engine.prepareTaskPlanning()
+			engine.planWorkbenchTask(t.Context(), &types.AgentState{}, "Explain the requested pattern using actual evidence.",
+				[]chat.Message{{Role: "system", Content: "Actual rules."}}, "s")
+			require.NotNil(t, engine.taskPlan)
+			require.Equal(t, tc.domains, engine.taskPlan.SourceDiscovery.SourceDomains)
+			require.Empty(t, engine.taskPlan.ToolNames, "dependencies never rewrite the model's plan")
+			names := listToolNames(engine.buildToolsForLLM())
+			for _, name := range []string{agenttools.ToolSearchKnowledge, agenttools.ToolListDocuments,
+				agenttools.ToolBindDocumentScope, agenttools.ToolReadDocument} {
+				require.Equal(t, tc.visible, containsToolName(names, name), name)
+			}
+			expectedPrefetch := map[string]bool{}
+			if tc.mode == "discover" {
+				for _, domain := range tc.domains {
+					if domain == "knowledge" {
+						expectedPrefetch[agenttools.ToolSearchKnowledge] = true
+					}
+					if domain == "structured" {
+						expectedPrefetch[agenttools.ToolStructuredData] = true
+					}
+				}
+			}
+			require.Equal(t, expectedPrefetch, engine.plannedSourceDiscoverySelection())
+			require.NotContains(t, names, "shell_exec")
+			if tc.name == "structured discovery" {
+				require.NotContains(t, names, agenttools.ToolWebSearch)
+				require.NotContains(t, names, documentTableCalculationToolName)
+			}
+			for _, tool := range tools {
+				require.Zero(t, tool.calls, "advertising a dependency must not execute it")
+			}
+			require.Len(t, model.requests, 1, "no additional planning/review call")
+			require.Contains(t, model.requests[0][0].Content, "在定位并读取来源前，不得预设证据只能是电子表格或时间序列")
+		})
+	}
+}
+
+func containsToolName(names []string, wanted string) bool {
+	for _, name := range names {
+		if name == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func TestInternalDiscoveryNavigationDoesNotRestoreDeferredOrMissingCapabilities(t *testing.T) {
+	model := &taskPlannerChat{plan: &types.ChatResponse{Content: sourceDomainPlan(t, "discover", []string{"structured"}), FinishReason: "stop"}}
+	engine := newTestEngine(t, model)
+	engine.config.WorkbenchDefault, engine.config.TaskPlanningEnabled = true, true
+	engine.toolRegistry = agenttools.NewToolRegistry()
+	engine.toolRegistry.RegisterTool(newCountingTool(agenttools.ToolSearchKnowledge))
+	engine.toolRegistry.RegisterDeferredTool(newCountingTool(agenttools.ToolReadDocument))
+	engine.prepareTaskPlanning()
+	engine.planWorkbenchTask(t.Context(), &types.AgentState{}, "Discover the necessary source.", nil, "s")
+	require.ElementsMatch(t, []string{expandTaskToolsName, agenttools.ToolSearchKnowledge}, listToolNames(engine.buildToolsForLLM()))
+	require.Equal(t, map[string]bool{agenttools.ToolStructuredData: true}, engine.plannedSourceDiscoverySelection())
+}
+
+// The schema-only service is deliberately unusable: measuring definitions
+// must not inspect any document, expand permissions or call a backing service.
+type navigationSchemaKnowledgeService struct{ interfaces.KnowledgeService }
+
+func TestInternalDiscoveryNavigationRealSchemaCost(t *testing.T) {
+	engine := newTestEngine(t, &taskPlannerChat{})
+	engine.toolRegistry = agenttools.NewToolRegistry()
+	service := &navigationSchemaKnowledgeService{}
+	engine.toolRegistry.RegisterTool(agenttools.NewSearchKnowledgeTool(nil, service, nil, nil, nil, nil))
+	engine.toolRegistry.RegisterTool(agenttools.NewListDocumentsTool(service, nil))
+	engine.toolRegistry.RegisterTool(agenttools.NewReadDocumentTool(service, nil, nil))
+	agenttools.PrepareDocumentScope(engine.toolRegistry)
+	engine.taskProjection = &taskToolProjection{selected: map[string]bool{}, requiresSourceEvidence: true}
+	engine.taskPlan = &taskEvidencePlan{SourceDiscovery: &taskSourceDiscovery{Mode: "discover", SourceDomains: []string{"structured"}}}
+	visible := engine.buildToolsForLLM()
+	require.ElementsMatch(t, []string{agenttools.ToolSearchKnowledge, agenttools.ToolListDocuments,
+		agenttools.ToolBindDocumentScope, agenttools.ToolReadDocument}, listToolNames(visible))
+	encoded, err := json.Marshal(visible)
+	require.NoError(t, err)
+	t.Logf("document navigation schema count=%d JSON bytes=%d estimated tokens=%d", len(visible), len(encoded), engine.tokenEstimator.EstimateTools(visible))
+	engine.taskPlan.SourceDiscovery.Mode = "recover"
+	require.Empty(t, engine.buildToolsForLLM(), "recovery does not acquire new discovery dependencies")
 }

@@ -189,7 +189,7 @@ def create_app(data_dir: str | Path | None = None):
     @mcp.tool()
     def list_datasets(question: str | None = None, search: str = '', limit: int = 8,
                       offset: int = 0, latest_only: bool = True) -> dict:
-        """分页列出已完成的Excel版本及已发布PDF表。默认每份来源的最新版本，历史用latest_only=false。limit为1..20，next_offset继续文件目录。question保留完整原问题；search为模型生成的字面召回词（空格AND），不决定业务口径。表名预览和field_candidates均有界，候选来自持久的已发布表头索引，无需读取整个Excel。候选不含完整同名来源上下文，选择真实dataset_id后用list_series指定sheet/search并分页核对字段、单位、日期和来源，再提交查询计划或SQL；截断、召回无结果、目录失败都不证明没有数据。datasets仅指Excel，pdf_tables才是PDF，Excel为空不表示没有PDF。"""
+        """分页列出已完成的Excel版本及已发布PDF表。不检索PPT、文档正文或原图；完整空目录也不证明授权知识库无相关内容，文档证据应按当前实际可用工具在授权范围检索/读取。默认每份来源的最新版本，历史用latest_only=false。limit为1..20，next_offset继续文件目录。question保留完整原问题；search为模型生成的字面召回词（空格AND），不决定业务口径。表名预览和field_candidates均有界，候选来自持久的已发布表头索引，无需读取整个Excel。候选不含完整同名来源上下文，选择真实dataset_id后用list_series指定sheet/search并分页核对字段、单位、日期和来源，再提交查询计划或SQL；截断、召回无结果、目录失败都不证明没有数据。datasets仅指Excel，pdf_tables才是PDF，Excel为空不表示没有PDF。"""
         from .discovery_catalog import list_datasets as discover
         started = time.perf_counter()
         result = discover(store, question, search=search, limit=limit,
@@ -198,6 +198,7 @@ def create_app(data_dir: str | Path | None = None):
                     round((time.perf_counter()-started)*1000), len(result['datasets']),
                     result['dataset_count'], offset)
         pdf_directory = pdf_store(registry).list_tables(discovery=True, samples=False)
+        result['catalog_source_types'].append('published_pdf_tables')
         if pdf_directory['tables']:
             result['pdf_tables'] = pdf_directory['tables']
             result['pdf_notice'] = pdf_directory['directory_notice']
@@ -316,7 +317,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     def list_pdf_tables(source_sha256: str | None = None, offset: int = 0, limit: int = 8) -> dict:
-        """分页列出当前授权空间已发布的PDF表、真实ID、列类型/单位、页来源和前两行导航样例。默认8表，output_truncated=true时按next_offset继续；可用真实source_sha256限定原件。reviewed和auto_accepted均已入库，旧文档待审说明不代表当前状态，extraction_verified=false仅表示非独立OCR验真。历史警告与当前未解决警告分开。样例仅供理解通用列名，不能替代read_pdf_table原值/来源和query_pdf_table计算；不能按相邻页或列数猜测合表、重复累计或跳过覆盖检查。草稿不参与查询。"""
+        """分页列出当前授权空间已发布的PDF表、真实ID、列类型/单位、页来源和前两行导航样例。不检索PPT、文档正文或原图；完整空目录不能证明授权知识库无相关内容，文档证据应按当前实际可用工具在授权范围检索/读取。默认8表，output_truncated=true时按next_offset继续；可用真实source_sha256限定原件。reviewed和auto_accepted均已入库，旧文档待审说明不代表当前状态，extraction_verified=false仅表示非独立OCR验真。历史警告与当前未解决警告分开。样例仅供理解通用列名，不能替代read_pdf_table原值/来源和query_pdf_table计算；不能按相邻页或列数猜测合表、重复累计或跳过覆盖检查。草稿不参与查询。"""
         return {**pdf_store(registry).list_tables(source_sha256, discovery=True, offset=offset, limit=limit), 'source_kind': 'pdf_table', 'kind': 'structured_pdf_tables', 'status': 'ok'}
 
     @mcp.tool()

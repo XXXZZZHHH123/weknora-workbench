@@ -164,15 +164,25 @@ def list_datasets(store, question=None, *, search='', limit=8, offset=0, latest_
     selected = [source for source in sources if not latest_only or source['is_latest_for_source']]
     page = selected[offset:offset + limit]
     result = {'datasets': [_compact_dataset(source, search or question) for source in page],
+        'source_data_read': False,
+        'catalog_source_types': ['registered_spreadsheet_versions'],
+        'catalog_excludes': ['document_body', 'presentation_slides', 'original_figures'],
         'dataset_count': len(selected), 'total_dataset_count': len(sources),
         'offset': offset, 'limit': limit, 'latest_only': latest_only,
         'datasets_truncated': offset + limit < len(selected),
         'next_offset': offset + limit if offset + limit < len(selected) else None,
-        'directory_notice': '分页目录仅召回实际文件、表名与已发布表头；不判断业务口径，不读取观测值。'
-            '默认每份来源的最新版本，历史版本用latest_only=false。表名预览、字段候选或数据集分页未完整展示不表示没有数据。',
+        'directory_notice': 'datasets仅为已注册电子表格版本的文件、表名与已发布表头；不判断业务口径，不读取观测值。'
+            '默认每份来源的最新版本，历史版本用latest_only=false。表名预览、字段候选或数据集分页未完整展示不表示没有数据。'
+            '此目录不检索PPT、文档正文或原图；即使完整为空，也不能据此断言整个授权知识库没有相关内容。',
+        'document_source_next_step': '若问题需要文档内容，按本轮实际可用工具在已授权范围检索，并绑定、读取真实文档或原图。'
+            '文件名或发布日期不能确定正文、图形覆盖期；工具不可用时只说明该限制，不扩展权限。',
         'next_step': '模型依据完整问题生成search字面检索词；用next_offset继续文件目录，或按候选dataset_id调用'
             'list_series指定sheet/search并分页，核对真实字段、单位、日期及同名来源上下文后，再生成查询计划或SQL。'
             '原生图表标题与曲线未在此展开，按需用list_charts查看。'}
+    if not sources:
+        result['empty_catalog_notice'] = ('total_dataset_count=0表示此范围没有已注册电子表格版本；'
+            '更换question/search/latest_only不会变成文档正文检索，不必重复同一空目录。'
+            '文档证据入口见document_source_next_step；PDF表仅以实际pdf_tables或list_pdf_tables结果为准。')
     if question or search:
         candidates, candidate_count = [], 0
         for source in page:

@@ -90,7 +90,10 @@ func TestWorkbenchQAUsesFullContextToSubmitAndVerifySourcePlan(t *testing.T) {
 		foundContext = foundContext || message.Content == history[0].Content
 		if message.Role == "tool" {
 			foundMetadata = foundMetadata || strings.Contains(message.Content, filename)
-			require.NotContains(t, message.Content, "目录匹配正文不可")
+			require.Contains(t, message.Content, "目录匹配正文不可")
+			require.Contains(t, message.Content, `navigation_only="true" requires_read="true"`)
+			require.NotContains(t, message.Content, "<chunk ")
+			require.NotContains(t, message.Content, "<ref ")
 		}
 	}
 	require.True(t, foundQuestion)
@@ -108,7 +111,14 @@ func TestWorkbenchQAUsesFullContextToSubmitAndVerifySourcePlan(t *testing.T) {
 	}
 	require.Contains(t, reviewSystem.String(), "独立复核上下文")
 	require.Contains(t, reviewUser.Content, "实际该页的图例")
-	require.NotContains(t, reviewUser.Content, "目录匹配正文不可")
+	// The review may inspect discovery metadata, but the excerpt must not
+	// become a citable source body or a fetched-document observation.
+	require.Contains(t, reviewUser.Content, `"navigation_only":true`)
+	require.NotContains(t, string(reviewInput["citation_source_evidence"]), "目录匹配正文不可")
+	var companion map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(reviewInput["document_retrieval_companion"], &companion))
+	require.NotContains(t, string(companion["bodies"]), "目录匹配正文不可")
+	require.NotContains(t, string(companion["observations"]), "目录匹配正文不可")
 	var draft string
 	require.NoError(t, json.Unmarshal(reviewInput["unverified_draft"], &draft))
 	require.Contains(t, draft, "类型甲和类型乙")

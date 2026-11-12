@@ -283,7 +283,7 @@ func TestScopePlanRejectsIDOnlyFalseIdentityAndGuessedDate(t *testing.T) {
 	}
 }
 
-func TestUnboundSearchProvidesMetadataOnlyThenExplicitPlanReadsActualPage(t *testing.T) {
+func TestUnboundSearchProvidesNavigationOnlyThenExplicitPlanReadsActualPage(t *testing.T) {
 	read, _ := reportScopeFixture(t, "source20240310.pptx")
 	index := &foreignDocumentIndex{}
 	search := NewSearchKnowledgeTool(index, read.knowledgeService, read.chunkService, read.searchTargets, nil, nil)
@@ -297,7 +297,9 @@ func TestUnboundSearchProvidesMetadataOnlyThenExplicitPlanReadsActualPage(t *tes
 	require.True(t, res.Success)
 	require.Equal(t, "document_info", res.Data["display_type"])
 	require.Equal(t, true, res.Data["requires_source_scope"])
-	require.NotContains(t, res.Output, "红线2301")
+	require.Contains(t, res.Output, "红线2301", "a bounded match explains why this candidate was retrieved")
+	require.Contains(t, res.Output, `"navigation_only":true`)
+	require.NotContains(t, res.Output, "foreign-chart", "discovery does not authorize the matched chunk as evidence")
 	require.NotContains(t, res.Data, "chunks")
 	require.NotContains(t, res.Data, "results")
 	res, err = read.Execute(context.Background(), json.RawMessage(`{"id":"report-a","page":12}`))

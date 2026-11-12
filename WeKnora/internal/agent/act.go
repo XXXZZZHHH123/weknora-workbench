@@ -361,6 +361,7 @@ func (e *AgentEngine) appendToolOutcomes(
 	ctx context.Context, step *types.AgentStep, calls []types.ToolCall, iteration int, sessionID string,
 ) {
 	for _, toolCall := range calls {
+		e.retainTaskSourceProtocol(toolCall)
 		step.ToolCalls = append(step.ToolCalls, toolCall)
 		e.emitToolOutcome(ctx, toolCall, iteration, sessionID)
 	}
@@ -436,6 +437,7 @@ func (e *AgentEngine) executeSingleToolCall(
 		return s
 	}
 	e.recordCall(i, toolCall)
+	e.retainTaskSourceProtocol(toolCall)
 	step.ToolCalls = append(step.ToolCalls, toolCall)
 	e.emitToolOutcome(ctx, toolCall, iteration, sessionID)
 	return nil
