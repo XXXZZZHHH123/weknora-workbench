@@ -151,7 +151,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try { saved = await request('/market/core/config', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({items: plan.core})}); }
     catch (error) { throw new Error('账号自选已保存，共享核心关注未保存：' + error.message); }
     if (JSON.stringify(saved.items) !== JSON.stringify(plan.core)) throw new Error('保存的核心关注范围不一致，请刷新后重试。');
-    selected = plan.core; announce('工作台核心关注与排列已保存；选中的条目已加入账号自选。移出核心关注不会移出自选。'); await loadCards();
+    selected = plan.core; announce('已保存'); await loadCards();
   }
   get('open').addEventListener('click', () => { draft = selected.map(item => ({...item})); get('search').value = ''; get('dialog-error').hidden = true; renderSelected(); void renderCatalog(); dialog.showModal(); get('search').focus(); });
   get('source').addEventListener('change', () => { source = get('source').value; get('search').value = ''; void renderCatalog(); });

@@ -22,7 +22,6 @@
           <label class="charts-field">读取周期数<input id="builder-cycles" type="number" min="1" max="40" value="8"></label>
         </div>
         <p id="builder-template-note" class="charts-muted"></p>
-        <p class="charts-muted">最多选 16 个指标；单张周期对比最多 8 条曲线。相同单位共用轴，第二种单位用右轴；超过两种单位可选起点 = 100。相对起点变化仍保留原单位。</p>
         <div class="charts-toolbar"><h3>曲线 <span id="builder-curve-count"></span></h3><button type="button" id="builder-add-derived" class="charts-button">添加计算序列</button></div>
         <div id="builder-curves"></div>
         <fieldset id="builder-derived" class="charts-panel" hidden>
@@ -31,7 +30,6 @@
             <label class="charts-field">图例名称<input id="builder-derived-label" maxlength="120" placeholder="研究员填写计算序列名称"></label>
           </div><p id="builder-derived-unit" class="charts-muted"></p>
           <label id="builder-unit-confirm-field" hidden><input id="builder-unit-confirm" type="checkbox"> 已核对缺失的单位，确认 A 与 B 可按相同单位相减</label>
-          <p class="charts-muted">只计算双方都有有效观测的相同日期，不插值、不补点；除数为零时该点不可用。保存公式，读取时重新计算。</p>
           <button type="button" id="builder-derived-apply" class="charts-button">加入曲线</button><button type="button" id="builder-derived-cancel" class="charts-button">取消</button>
         </fieldset>
       </section>

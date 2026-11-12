@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/research-strategy.css?v={{ static_version() }}">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/charts.css?v={{ static_version() }}">
 <header class="rw-page-head strategy-workspace-head">
-  <div><h1>策略</h1><p>选择方案查看条件、应对与引用依据，核对后编辑或引用为独立草稿。</p></div>
+  <div><h1>策略</h1></div>
   <div class="rw-tools strategy-workspace-tools">
     {% if not restricted_view and workspace_can_write and research_cards.enabled %}<button type="button" id="strategy-text-open" class="rw-btn" title="用自己的话写方案，由模型整理成方案草稿">文字整理</button>{% endif %}
     {% if not restricted_view and research_cards and research_cards.enabled %}<button type="button" id="strategy-markdown-open" class="rw-btn" title="全部方案导出为 Markdown，修改后导入">md管理</button>{% endif %}
@@ -15,7 +15,7 @@
       <details class="strategy-generation-menu"><summary class="rw-btn">生成交易草稿</summary><div class="strategy-generation-controls">
       {% if platform_models %}<select id="strategy-model" aria-label="策略分析模型" disabled><option value="">正在读取模型…</option></select>{% endif %}
       <button class="button-primary" id="generate-strategies" {% if platform_models %}disabled data-platform-model="true"{% endif %}>生成待审阅草稿</button>
-      <small>使用生效研判与真实合约证据，生成后仍需人工审阅。</small></div></details>
+      </div></details>
       {% if research_cards.enabled %}<button type="button" id="research-card-add" class="rw-btn rw-btn-primary">＋ 新建方案</button>{% endif %}
     {% endif %}
   </div>
@@ -44,7 +44,7 @@
       </div>
     </div>
     <p id="strategy-search-empty" class="strategy-sidebar-empty" hidden>没有匹配的策略</p>
-    {% if research_cards.truncated or strategy_entries|length >= 100 %}<p class="strategy-small-note">这里显示最近100条。记录及历史版本仍保留。</p>{% endif %}
+    {% if research_cards.truncated or strategy_entries|length >= 100 %}<p class="strategy-small-note">最近100条</p>{% endif %}
   </aside>
   <div class="strategy-preview" id="strategy-preview" aria-live="polite">
     <div id="strategy-workspace-status" role="status" class="strategy-small-note"></div>
@@ -53,11 +53,10 @@
       <article class="strategy-preview-article"><div class="strategy-card-top"><span class="status-chip status-{{ s.status }}">{{ status_labels[s.status] }}</span><span>交易计划 · 已保存方案</span></div><h2>{{ human_text(s.title, names|default({})) }}</h2><p class="research-prose">{{ human_text(s.plan.thesis, names|default({})) }}</p>{% include "_strategy_plan_readonly.html" %}<a class="strategy-detail-link" href="{{ research_prefix() }}/sn/strategies/{{ s.id }}">完整计划与成交记录 ↗</a></article>
       {% endif %}
       {% include "_research_strategy_cards.html" %}
-      {% if not workspace_selected %}<div id="strategy-workspace-empty" class="strategy-workspace-empty"><strong>从左侧选择策略</strong><p>记录适用条件与应对措施，核对后形成可审阅的计划。</p></div>{% endif %}
+      {% if not workspace_selected %}<div id="strategy-workspace-empty" class="strategy-workspace-empty"><strong>从左侧选择策略</strong></div>{% endif %}
     </div>
     <section id="strategy-plan-editor" class="strategy-inline-editor" hidden aria-labelledby="strategy-plan-editor-title">
       <header class="strategy-preview-header"><h2 id="strategy-plan-editor-title">交易计划草稿</h2><button type="button" data-plan-edit-close class="button-muted">返回预览</button></header>
-      <p class="strategy-small-note">修订会建立独立草稿，保留原计划。合约、证据及成交记录不会自动改动。</p>
       <form id="strategy-plan-form"><label>名称<input id="plan-edit-title" maxlength="200" required></label><label>研究逻辑<textarea id="plan-edit-thesis" rows="3" required></textarea></label>
       <div class="strategy-plan-bands">{% for key,label in [('entry','入场'),('target','目标'),('stop','止损')] %}<fieldset><legend>{{ label }}区间</legend><div><input id="plan-edit-{{ key }}-low" type="number" step="any" aria-label="{{ label }}下限" required><span>—</span><input id="plan-edit-{{ key }}-high" type="number" step="any" aria-label="{{ label }}上限" required></div><label>依据<input id="plan-edit-{{ key }}-reason" required></label></fieldset>{% endfor %}</div>
       <label>入场条件<textarea id="plan-edit-entry-condition" rows="2" required></textarea></label><label>失效条件<textarea id="plan-edit-invalidation" rows="2" required></textarea></label>

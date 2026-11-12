@@ -261,7 +261,7 @@ def test_empty_workbench_guidance_keeps_sources_without_manual_entry(isolated):
         if suffix == '/sn':
             assert '请在「资料与来源」准备并确认本知识库资料' in response.text
         else:
-            assert '事务中心' in response.text and '不能据此判断当前没有风险' in response.text
+            assert '事务中心' in response.text and 'affairs-check' in response.text
         assert '「数据更新」中立即更新' not in response.text
         assert '/sn/entry' not in response.text
         assert 'research-materials-link' in response.text

@@ -1,11 +1,10 @@
 <div class="charts-page" data-charts-page="library">
-  <header class="charts-header"><div><p class="charts-muted">商品研究 / 共享图表</p><h1>图表库</h1><p class="charts-muted">保存图表定义，随当前来源数据更新。</p></div>
+  <header class="charts-header"><div><h1>图表库</h1></div>
     {% if chart_page.enabled %}<div class="charts-toolbar"><button type="button" class="charts-button primary" data-chart-builder="new">新建图表</button><a class="charts-button" href="{{ research_url('/sn/charts/import') }}">从原表导入</a></div>{% endif %}
   </header>
   {% if not chart_page.enabled %}<p class="charts-notice error" role="alert">{{ chart_page.reason }}</p>{% else %}
   <details id="chart-anomalies" class="charts-panel charts-anomalies" open>
     <summary>本周同期异动 <span id="chart-anomalies-count" class="charts-muted"></span></summary>
-    <p class="charts-muted">按截止日的最新有效观测比较，排名从高到低；仅列示同期位置与排名变化。</p>
     <p id="chart-anomalies-status" role="status" aria-live="polite"></p>
     <div id="chart-anomalies-table" class="charts-table-scroll" hidden><table class="charts-table">
       <thead><tr><th scope="col">图表</th><th scope="col">指标</th><th scope="col">日期</th><th scope="col">当前值</th><th scope="col">同期排名</th><th scope="col">上一观测排名</th><th scope="col">原因</th></tr></thead>

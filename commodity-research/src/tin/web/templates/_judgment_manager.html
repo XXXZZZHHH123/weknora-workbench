@@ -1,5 +1,5 @@
 <dialog id="judgment-manager" class="logic-dialog" aria-labelledby="logic-title" data-prefill="{{ 'true' if logic_input else 'false' }}" data-judgment-id="{{ selected_judgment_id or (j.id if j else '') }}">
-  <header class="logic-header"><div><h2 id="logic-title">管理研究逻辑</h2><p id="logic-version-label">查看当前逻辑，或分析新原文后保存草稿。</p></div><button type="button" data-logic-close aria-label="关闭研究逻辑管理">×</button></header>
+  <header class="logic-header"><div><h2 id="logic-title">管理研究逻辑</h2><p id="logic-version-label"></p></div><button type="button" data-logic-close aria-label="关闭研究逻辑管理">×</button></header>
   <nav class="logic-tabs" aria-label="研究逻辑管理">
     <button type="button" data-logic-tab="current" aria-selected="true">当前研判</button>
     <button type="button" data-logic-tab="analyze" aria-selected="false">导入研判</button>

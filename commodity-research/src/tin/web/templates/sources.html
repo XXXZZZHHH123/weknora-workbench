@@ -3,17 +3,15 @@
 {% block main %}
 <div class="space-y-5">
   {% set in_workbench = research_identity() is not none %}
-  {% if research_prefix() %}<div class="legacy-source-banner"><div><strong>资料中心</strong><p>上传研报与表格、查看处理状态，统一从资料中心进入。这里查看原件、单元格与研究指标的来源关系。</p></div><a href="/platform/materials{% if selected_source %}?source={{ selected_source | urlencode }}{% endif %}" target="_top" class="research-button primary">打开资料中心 ↗</a></div>{% endif %}
-  <header><h1 class="text-xl font-bold">文件与来源 · 原件核验</h1><p class="text-sm text-[var(--text-muted)]">原件按哈希保存。数值可追溯到工作表、单元格、原始记录及已确认的转换。已有历史记录没有原件时，不补造来源。</p></header>
+  {% if research_prefix() %}<div class="legacy-source-banner"><div><strong>资料中心</strong></div><a href="/platform/materials{% if selected_source %}?source={{ selected_source | urlencode }}{% endif %}" target="_top" class="research-button primary">打开资料中心 ↗</a></div>{% endif %}
+  <header><h1 class="text-xl font-bold">文件与来源 · 原件核验</h1></header>
   <section id="legacy-source-upload" class="rounded-xl border p-4 space-y-3{% if in_workbench %} workbench-ingest-hidden{% endif %}">
     <h2 class="font-semibold">研究字段接入</h2>
-    <p class="text-sm">Excel、旧版 XLS、CSV 或 TSV；保留全部工作表和单元格。未缓存公式不当成零；旧版 XLS 的公式表达式由下载原件核查。</p>
     <form id="upload-form" class="flex flex-wrap gap-3"><input id="file-input" type="file" accept=".xlsx,.xls,.xlsm,.csv,.tsv" required><button class="btn-primary" type="submit">上传并检查</button></form>
     {% if research_prefix() %}<a href="/platform/materials" target="_top" class="text-[var(--primary)]">研报、表格与网页资料统一进入资料中心 →</a>{% endif %}
   </section>
   <section id="legacy-source-bridge" class="rounded-xl border p-4 space-y-3{% if in_workbench %} workbench-ingest-hidden{% endif %}">
     <h2 class="font-semibold">从已解析的 Excel 导入研究指标</h2>
-    <p class="text-sm">使用当前空间的完整结构化快照和原件，确认一次字段、单位和口径。已有确认映射后可复用；数值冲突仍需明确确认。</p>
     <button id="load-datasets" class="btn-secondary">选择结构化文件</button>
     <select id="dataset-select" class="border rounded p-2"><option value="">请选择文件版本</option></select>
     <select id="series-select" class="border rounded p-2"><option value="">请选择字段</option></select>
