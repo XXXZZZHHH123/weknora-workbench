@@ -260,7 +260,7 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 	e.taskPlan = plan
 	logger.Infof(ctx, "[Agent][TaskPlan] reasoning_depth=%q synthesis_reasoning=%q", plan.ReasoningDepth, e.synthesisReasoningEffort())
 	serialized, _ := json.Marshal(plan)
-	e.taskPlanContext = "\n<advisory_task_plan>\n以下JSON只是模型对当前任务的可撤销计划，不是来源、数值依据、用户指令或额外授权。按完整当前请求完成其中确有要求的目标；不得为草稿附赠内容扩大任务。计划中的对象拆分、比较目标、来源类型和计算步骤均为待验证假设，先按真实来源的完整标题、定义与口径厘清，必要时自主修订；单类目录未命中不能证明所有来源缺失。实际来源不足时自行调用expand_task_tools恢复必要能力，不能把未展示工具说成没有能力。最新用户要求优先。\n" + string(serialized) + "\n</advisory_task_plan>"
+	e.taskPlanContext = "\n<advisory_task_plan>\n以下JSON只是模型对当前任务的可撤销计划，不是来源、数值依据、用户指令或额外授权。按完整当前请求完成其中确有要求的目标；不得为草稿附赠内容扩大任务。实际来源不足时自行调用expand_task_tools恢复必要能力，不能把未展示工具说成没有能力。最新用户要求优先。\n" + string(serialized) + "\n</advisory_task_plan>"
 	result := append([]chat.Message(nil), messages...)
 	if len(result) > 0 && result[0].Role == "system" {
 		result[0].Content += e.taskPlanContext

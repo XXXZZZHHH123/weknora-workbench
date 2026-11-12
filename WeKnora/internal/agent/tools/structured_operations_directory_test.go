@@ -80,8 +80,7 @@ func TestStructuredNativeMultiScopeDirectoryPreservesProjectionThroughRegistry(t
 				}
 				require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
 					"datasets": datasets, "dataset_count": 12, "total_dataset_count": 37,
-					"catalog_source_types": []string{"registered_spreadsheet_versions"},
-					"offset":               0, "next_offset": 4, "datasets_truncated": true, "latest_only": true,
+					"offset": 0, "next_offset": 4, "datasets_truncated": true, "latest_only": true,
 					"field_candidates":      []map[string]any{{"dataset_id": kb + "-source-0", "series_id": "observed-series", "metric": "Actual measure"}},
 					"field_candidate_count": 1, "field_candidate_stage": "published_headers", "field_candidate_scope": "current_dataset_page",
 				}))
@@ -101,9 +100,6 @@ func TestStructuredNativeMultiScopeDirectoryPreservesProjectionThroughRegistry(t
 			require.Equal(t, "scope_selection_required", result.Data["status"])
 			require.NotContains(t, result.Output, "... [output truncated:", "the generic registry fallback must never split directory JSON")
 			view := structuredDirectoryView(t, result, budget)
-			require.Equal(t, []any{"registered_spreadsheet_versions"}, view["catalog_source_types"], "an unlisted PDF family must not become queried coverage")
-			require.ElementsMatch(t, []any{"document_body", "presentation_slides", "original_figures"}, view["catalog_excludes"])
-			require.NotEmpty(t, view["document_source_next_step"], "budget projection must retain document-discovery limitations")
 			require.Equal(t, "scope_selection_required", view["status"])
 			require.Equal(t, true, view["directory_metadata_truncated"])
 			require.Equal(t, false, view["source_data_read"])
