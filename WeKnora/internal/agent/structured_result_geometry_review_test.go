@@ -232,3 +232,103 @@ func TestGeometryReviewAxisPositionIgnoresJSONDecoderRepresentation(t *testing.T
 		require.NotContains(t, reviewFigurePoint(point(fraction)), "axis_position")
 	}
 }
+
+func TestStructuredGeometryColumnarReviewPreservesValuesAndLegacyObjects(t *testing.T) {
+	e, _, _ := lightGeometryEngine(t)
+	state := lightGeometryFixture()
+	geometry := state.RoundSteps[0].ToolCalls[0].Result.Data["image_geometry_evidence"].([]map[string]any)[0]["evidence"].(map[string]any)["geometry"].(map[string]any)
+	rows := geometry["series"].([]map[string]any)
+	change := map[string]any{"from_roles": []any{"minimum"}, "to_roles": []any{"last"}, "approximate_change": 11,
+		"estimate_low": 10.5, "estimate_high": 11.5, "x_span_fraction": 0.2519,
+		"horizontal_fraction_of_this_trace": 0.376, "absolute_change_fraction_of_this_trace_value_range": 0.7333}
+	rows[0]["key_point_changes"] = []any{change}
+	extendedChange := reviewAsMap(change)
+	extendedChange["future_annotation"] = map[string]any{"preserve": nil}
+	rows[1]["key_point_changes"] = append(rows[1]["key_point_changes"].([]map[string]any), extendedChange)
+	point := rows[0]["key_points"].([]map[string]any)[0]
+	delete(point, "x_axis_interval")
+	point["axis_position"] = map[string]any{"left_source_tick": "Start", "right_source_tick": "Middle",
+		"percent_of_THIS_interval_from_LEFT_tick": 10.25, "relative_band_from_LEFT_tick": "first_third",
+		"containing_interval_starts_at_source_label": "Start", "future_annotation": "preserve"}
+	before := reviewDigest(state.RoundSteps)
+	sources, _ := documentImageConsistencySummariesWithSources(state, e.sourceConsistencyMessages(state, nil))
+	require.Len(t, sources, 1)
+	canonicalBefore := reviewDigest(sources)
+	expected := reviewAsMap(reviewAsMap(sources[0].Content)["original_geometry_evidence"])["geometry"]
+	view, complete := e.currentOriginalGeometryReviewEvidence(state)
+	require.True(t, complete)
+	figures := view["figures"].([]reviewToolEvidence)
+	projected := reviewAsMap(reviewAsMap(reviewAsMap(figures[0].Content)["original_geometry_evidence"])["geometry"])
+	axisColumns := reviewAsSlice(projected["axis_position_columns"])
+	changeColumns := reviewAsSlice(projected["key_point_change_columns"])
+	require.Len(t, axisColumns, 4)
+	require.Len(t, changeColumns, 8)
+	decode := func(value any, columns []any) map[string]any {
+		if object, ok := value.(map[string]any); ok {
+			return object
+		}
+		values, ok := value.([]any)
+		require.True(t, ok)
+		require.Len(t, values, len(columns))
+		object := map[string]any{}
+		for i, column := range columns {
+			object[column.(string)] = values[i]
+		}
+		return object
+	}
+	wantRows := reviewAsSlice(reviewAsMap(expected)["series"])
+	gotRows := reviewAsSlice(projected["series"])
+	require.Len(t, gotRows, len(wantRows))
+	for i, raw := range gotRows {
+		got, want := reviewAsMap(raw), reviewAsMap(wantRows[i])
+		for _, field := range []string{"legend", "color", "source_sample_count"} {
+			require.Equal(t, want[field], got[field])
+		}
+		wantChanges := reviewAsSlice(want["key_point_changes"])
+		gotChanges := reviewAsSlice(got["key_point_changes"])
+		require.Len(t, gotChanges, len(wantChanges))
+		for j, rawChange := range gotChanges {
+			require.Equal(t, wantChanges[j], decode(rawChange, changeColumns))
+		}
+		wantPoints, gotPoints := reviewAsSlice(want["key_points"]), reviewAsSlice(got["key_points"])
+		require.Len(t, gotPoints, len(wantPoints))
+		for j, rawPoint := range gotPoints {
+			gotPoint, wantPoint := reviewAsMap(rawPoint), reviewAsMap(wantPoints[j])
+			if _, columnar := gotPoint["axis_position"].([]any); columnar {
+				position := decode(gotPoint["axis_position"], axisColumns)
+				position["containing_interval_starts_at_source_label"] = position["left_source_tick"]
+				gotPoint["axis_position"] = position
+			}
+			require.Equal(t, wantPoint, gotPoint, "every point's roles, estimates and exact axis values survive")
+		}
+	}
+	first := reviewAsMap(gotRows[0])
+	second := reviewAsMap(gotRows[1])
+	require.IsType(t, []any{}, reviewAsSlice(first["key_point_changes"])[0])
+	require.IsType(t, map[string]any{}, reviewAsSlice(second["key_point_changes"])[0], "legacy fields remain intact")
+	require.IsType(t, map[string]any{}, reviewAsSlice(second["key_point_changes"])[1], "unknown fields remain intact")
+	require.IsType(t, map[string]any{}, reviewAsMap(reviewAsSlice(first["key_points"])[0])["axis_position"], "extended axis retains all named fields")
+	require.Equal(t, before, reviewDigest(state.RoundSteps))
+	sourcesAfter, _ := documentImageConsistencySummariesWithSources(state, e.sourceConsistencyMessages(state, nil))
+	require.Equal(t, canonicalBefore, reviewDigest(sourcesAfter), "canonical/strict source projection is unchanged")
+}
+
+func TestStructuredGeometryColumnValuesPreserveNullEmptyAndExactNumbers(t *testing.T) {
+	columns := []string{"number", "null", "empty_array", "empty_text"}
+	object := map[string]any{"number": json.Number("0.123456789012345678901234567890"), "null": nil, "empty_array": []any{}, "empty_text": ""}
+	before := reviewDigest(object)
+	values, ok := structuredGeometryColumnValues(object, columns)
+	require.True(t, ok)
+	decoded := map[string]any{}
+	for i, column := range columns {
+		decoded[column] = values[i]
+	}
+	require.Equal(t, object, decoded)
+	require.Equal(t, before, reviewDigest(object))
+	delete(object, "null")
+	_, ok = structuredGeometryColumnValues(object, columns)
+	require.False(t, ok, "missing is not null")
+	object["unknown"] = nil
+	_, ok = structuredGeometryColumnValues(object, columns)
+	require.False(t, ok, "a same-size object with different keys must remain intact")
+}
