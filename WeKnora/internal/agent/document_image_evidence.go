@@ -300,7 +300,7 @@ func compactOriginalFigureEvidence(evidence map[string]any) map[string]any {
 		view[key] = evidence[key]
 	}
 	compact := map[string]any{}
-	for _, key := range []string{"method", "unit", "series_count", "source_series_count", "series_selection", "omitted_series", "comparison_basis", "selected_endpoint_value_order"} {
+	for _, key := range []string{"method", "unit", "numeric_representation", "change_unit", "value_interpretation", "axis_tick_labels", "series_count", "source_series_count", "series_selection", "omitted_series", "comparison_basis", "selected_endpoint_value_order"} {
 		compact[key] = geometry[key]
 	}
 	labels := []any{}

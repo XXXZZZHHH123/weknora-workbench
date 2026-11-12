@@ -40,11 +40,12 @@ def text(value, x, y):
 
 
 def chart(*, nonlinear=False, ambiguous_legend=False, secondary_axis=False, unsupported=False,
-          legend_names=None, short_curve=False, horizontal_labels=False, short_points=None):
+          legend_names=None, short_curve=False, horizontal_labels=False, short_points=None,
+          axis_labels=None, unit_text="(kg)"):
     items = [record(22, struct.pack("<I", 24)), pen(1, 0x999999), select(1)]
     for y in (100, 200, 300):
         items.append(polyline([(100, y), (400, y)]))
-    labels = ("1000", "100", "0") if nonlinear else ("100", "50", "0")
+    labels = axis_labels or (("1000", "100", "0") if nonlinear else ("100", "50", "0"))
     for value, y in zip(labels, (106, 206, 306)):
         items.append(text(value, 55, y))
         if secondary_axis:
@@ -66,7 +67,8 @@ def chart(*, nonlinear=False, ambiguous_legend=False, secondary_axis=False, unsu
                   polyline([(100, 390), (130, 390)]), text("Gamma", 135, 396)]
     if horizontal_labels:
         items += [text("Start", 90, 326), text("Middle", 235, 326), text("End", 390, 326)]
-    items.append(text("(kg)", 100, 80))
+    if unit_text:
+        items.append(text(unit_text, 100, 80))
     items.append(record(14, struct.pack("<III", 0, 0, 20)))
     header = bytearray(88)
     struct.pack_into("<II", header, 0, 1, 88)
@@ -77,6 +79,74 @@ def chart(*, nonlinear=False, ambiguous_legend=False, secondary_axis=False, unsu
 
 
 class TestPptxChartGeometry(unittest.TestCase):
+    def test_percentage_axis_preserves_displayed_values_and_original_labels(self):
+        raw = chart(axis_labels=("10%", "0%", "-10%"), unit_text="")
+        for reader in (estimate_emf_line_chart, estimate_emf_chart_trends):
+            with self.subTest(reader=reader.__name__):
+                result = reader(raw)
+                self.assertIsNotNone(result)
+                self.assertEqual(result['unit'], '%')
+                self.assertEqual(result['numeric_representation'], 'displayed_percent_values')
+                self.assertEqual(result['change_unit'], 'percentage_points')
+                self.assertIn('not 0.1', result['value_interpretation'])
+                self.assertEqual(result['axis_tick_min'], -10)
+                self.assertEqual(result['axis_tick_max'], 10)
+                self.assertEqual({tick['label'] for tick in result['axis_tick_labels']}, {'10%', '0%', '-10%'})
+                values = {item['legend']: item['approximate_endpoint'] for item in result['series']}
+                self.assertEqual(values, {'Alpha': 6, 'Beta': -4})
+                if reader is estimate_emf_chart_trends:
+                    series = {item['legend']: item for item in result['series']}
+                    self.assertEqual(series['Alpha']['minimum']['approximate_value'], 5)
+                    self.assertEqual(series['Beta']['minimum']['approximate_value'], -5)
+                    self.assertEqual(series['Alpha']['key_point_changes'][0]['approximate_change'], 1)
+
+    def test_percentage_axis_keeps_unicode_minus_and_explicit_percent_unit(self):
+        result = estimate_emf_chart_trends(chart(axis_labels=("10%", "0%", "−10%"), unit_text="(%)"))
+        self.assertIsNotNone(result)
+        self.assertEqual(result['unit'], '%')
+        self.assertEqual(result['axis_tick_min'], -10)
+        self.assertIn('−10%', [tick['label'] for tick in result['axis_tick_labels']])
+
+    def test_percentage_unit_with_plain_tick_labels_uses_displayed_percent_values(self):
+        result = estimate_emf_chart_trends(chart(axis_labels=("10", "0", "-10"), unit_text="(%)"))
+        self.assertEqual(result['numeric_representation'], 'displayed_percent_values')
+        self.assertEqual(result['series'][0]['approximate_endpoint'], 6)
+        self.assertEqual(result['axis_tick_labels'][0], {'label': '10', 'value': 10})
+
+    def test_percentage_axis_markdown_keeps_values_changes_and_tick_labels_unambiguous(self):
+        from docreader.parser.pptx_media import _geometry_markdown, _trend_geometry_markdown
+        raw = chart(axis_labels=("10%", "0%", "−10%"), unit_text="")
+        for reader, render in ((estimate_emf_line_chart, _geometry_markdown),
+                               (estimate_emf_chart_trends, _trend_geometry_markdown)):
+            with self.subTest(reader=reader.__name__):
+                rendered = render(reader(raw), 1, 'ppt/media/synthetic.emf')
+                self.assertIn('10 表示 10%，不是比例 0.1', rendered)
+                self.assertIn('净变动和估读误差宽度单位为百分点', rendered)
+                self.assertIn('10% → 0% → −10%', rendered)
+                self.assertIn('不是原Excel', rendered)
+                if render is _trend_geometry_markdown:
+                    self.assertIn('变动单位：百分点', rendered)
+                    self.assertNotIn('单位同纵轴', rendered)
+
+    def test_percentage_axis_rejects_mixed_scale_conflicting_units_and_secondary_axis(self):
+        for options in (
+            dict(axis_labels=("10%", "0", "-10%"), unit_text=""),
+            dict(axis_labels=("10%", "0%", "-10%"), unit_text="(kg)"),
+            dict(axis_labels=("10%", "0%", "-10%"), unit_text="", secondary_axis=True),
+        ):
+            with self.subTest(options=options):
+                self.assertIsNone(estimate_emf_chart_trends(chart(**options)))
+                self.assertIsNone(estimate_emf_line_chart(chart(**options)))
+
+    def test_plain_axis_keeps_original_numeric_semantics(self):
+        result = estimate_emf_chart_trends(chart())
+        self.assertEqual(result['unit'], 'kg')
+        self.assertEqual(result['axis_tick_min'], 0)
+        self.assertEqual(result['axis_tick_max'], 100)
+        self.assertNotIn('numeric_representation', result)
+        self.assertNotIn('change_unit', result)
+        self.assertNotIn('axis_tick_labels', result)
+
     def test_estimate_uses_grid_calibration_color_legend_and_actual_last_point(self):
         result = estimate_emf_line_chart(chart())
         self.assertIsNotNone(result)

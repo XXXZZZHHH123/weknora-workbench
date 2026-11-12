@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Tencent/WeKnora/internal/modelcontext"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 
 	"github.com/Tencent/WeKnora/internal/types"
@@ -85,6 +86,47 @@ func TestDocumentGeometryOnlyReviewPreservesSourceEvidenceWithoutVisualAuthority
 	require.NoError(t, reviewWitnessVisible(input, reader, witness), "the real source pointer must remain readable without pixels")
 	witness.JSONPointer = "/data/image_descriptions/0"
 	require.Error(t, reviewWitnessVisible(input, reader, witness), "geometry never grants a visual observation witness")
+}
+
+func TestDocumentPercentageGeometryKeepsUnitsInGenerationAndReview(t *testing.T) {
+	state := boundGeometryOnlyDocumentState()
+	result := state.RoundSteps[0].ToolCalls[0].Result
+	result.Data["display_type"] = "knowledge_chunks_list"
+	evidence := result.Data["image_geometry_evidence"].([]map[string]any)[0]["evidence"].(map[string]any)
+	geometry := evidence["geometry"].(map[string]any)
+	semantics := map[string]any{
+		"unit": "%", "numeric_representation": "displayed_percent_values", "change_unit": "percentage_points",
+		"value_interpretation": "10 means 10%, not 0.1. Differences are percentage points, not relative percent changes.",
+		"axis_tick_labels":     []map[string]any{{"label": "10%", "value": 10}, {"label": "0%", "value": 0}, {"label": "−10%", "value": -10}},
+	}
+	for key, value := range semantics {
+		geometry[key] = value
+	}
+	geometry["series"] = []map[string]any{{"legend": "Alpha", "last": map[string]any{"approximate_value": 6}}}
+	evidence["markdown"] = "Original percent axis: 10% → 0% → −10%. 10 means 10%, not 0.1. Differences are percentage points. Values are geometric estimates, not original observations."
+
+	modelOutput := modelcontext.NewRegistry(true).ModelToolResultForTool("read_document", result)
+	for _, text := range []string{"10 means 10%, not 0.1", "Differences are percentage points", "−10%", "geometric estimates"} {
+		require.Contains(t, modelOutput, text, "generation must retain percent semantics through the actual model projection")
+	}
+	messages := sourceResultMessagesFromSteps(state.RoundSteps)
+	views, scope := documentImageConsistencySummariesWithSources(state, messages)
+	require.True(t, scope.ViewComplete)
+	require.Len(t, views, 1)
+	view := views[0].Content.(map[string]any)
+	require.Equal(t, false, view["original_pixels_verified"])
+	projected := view["original_geometry_evidence"].(map[string]any)["geometry"].(map[string]any)
+	for key, value := range semantics {
+		want, err := json.Marshal(value)
+		require.NoError(t, err)
+		got, err := json.Marshal(projected[key])
+		require.NoError(t, err)
+		require.JSONEq(t, string(want), string(got), "review must preserve source unit field %s", key)
+	}
+	witness := reviewSourceWitness{EvidenceID: views[0].EvidenceID,
+		JSONPointer: "/data/image_geometry_evidence/0/evidence/geometry/change_unit", Quote: "percentage_points", Kind: "source"}
+	input := map[string]any{"source_tool_results": []any{}, "document_image_observations": views}
+	require.NoError(t, reviewWitnessVisible(input, newReviewEvidenceReader(messages), witness))
 }
 
 func TestDocumentGeometryOnlyReviewRejectsFailedOrMismatchedSourceBindings(t *testing.T) {

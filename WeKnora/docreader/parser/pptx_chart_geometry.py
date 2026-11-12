@@ -268,24 +268,30 @@ def _estimate_emf_chart(data: bytes, *, partial_traces: bool) -> dict | None:
         return None
     numeric = []
     for text in texts:
-        if re.fullmatch(r"[-+]?\d+(?:,\d{3})*(?:\.\d+)?", text["text"]):
-            value = float(text["text"].replace(",", ""))
+        match = re.fullmatch(r"[-+−]?\d+(?:,\d{3})*(?:\.\d+)?(?P<percent>%)?", text["text"])
+        if match:
+            percent = bool(match.group("percent"))
+            value = float(text["text"].removesuffix("%").replace(",", "").replace("−", "-"))
             if math.isfinite(value):
                 nearest = min(range(len(ys)), key=lambda i: abs(ys[i]-text["y"]))
                 if abs(ys[nearest]-text["y"]) <= spacing*.4:
-                    numeric.append((text, nearest, value))
+                    numeric.append((text, nearest, value, percent))
     # A second numeric scale on the right is not silently treated as the first.
-    if len({i for text, i, _ in numeric if plot_right < text["x"] < plot_right+width*.3}) >= 3:
+    if len({i for text, i, _, _ in numeric if plot_right < text["x"] < plot_right+width*.3}) >= 3:
         return None
     ticks = {}
+    tick_labels = {}
+    tick_formats = set()
     offsets = []
-    for text, index, value in numeric:
+    for text, index, value, percent in numeric:
         if plot_left-width*.35 < text["x"] and text["end"] < plot_left-3:
             if index in ticks and ticks[index] != value:
                 return None
             ticks[index] = value
+            tick_labels[index] = text["text"]
+            tick_formats.add(percent)
             offsets.append(text["y"]-ys[index])
-    if len(ticks) < max(3, math.ceil(len(ys)*.8)):
+    if len(ticks) < max(3, math.ceil(len(ys)*.8)) or len(tick_formats) != 1:
         return None
     pairs = sorted((ys[i], value) for i, value in ticks.items())
     if pairs[-1][0]-pairs[0][0] < height*.6:
@@ -304,6 +310,23 @@ def _estimate_emf_chart(data: bytes, *, partial_traces: bool) -> dict | None:
     unit_strings = {text["text"][1:-1] for text in texts
                     if re.fullmatch(r"[（(][^()（）]{1,20}[）)]", text["text"])}
     unit = next(iter(unit_strings)) if len(unit_strings) == 1 else ""
+    axis_semantics = {}
+    if True in tick_formats or unit == "%":
+        # Calibrate in the axis's displayed percent values. Converting 10% to
+        # 0.1 here would silently rescale every estimate and uncertainty bound.
+        if unit_strings - {"%"}:
+            return None
+        unit = "%"
+        axis_semantics = {
+            "numeric_representation": "displayed_percent_values",
+            "change_unit": "percentage_points",
+            "value_interpretation": "All vertical values and estimate bounds use displayed percent values: "
+                                    "10 means 10%, not 0.1. Differences and uncertainty widths are in "
+                                    "percentage points, not relative percent changes. Horizontal fractions "
+                                    "remain dimensionless and are independent of the vertical percent scale.",
+            "axis_tick_labels": [{"label": tick_labels[i], "value": ticks[i]} for i in sorted(ticks)],
+        }
+    axis_notice = " " + axis_semantics["value_interpretation"] if axis_semantics else ""
     legend_labels = {}
     legend_positions = []
     for line in lines:
@@ -415,13 +438,13 @@ def _estimate_emf_chart(data: bytes, *, partial_traces: bool) -> dict | None:
                      (trace['maximum']['approximate_value'] - trace['minimum']['approximate_value']), 4)
                      if trace['maximum']['approximate_value'] != trace['minimum']['approximate_value'] else 0}
                 for before, after in zip(key_points, key_points[1:])]
-        return {"method": "original_emf_trace_geometry_v1", "unit": unit,
+        return {"method": "original_emf_trace_geometry_v1", "unit": unit, **axis_semantics,
                 "axis_tick_min": min(values), "axis_tick_max": max(values),
                 "axis_max_fit_residual": round(residual, 6), "x_axis_anchors": anchors,
                 "series_count": len(series), "series": series,
                 "comparison_basis": "Independent actual drawn trace ranges. Positions are fractions of the original plot, "
                                     "not invented dates. Read time labels from x_axis_anchors. No same-date endpoint ranking. "
-                                    "Values are geometric estimates, not original Excel observations."}
+                                    "Values are geometric estimates, not original Excel observations." + axis_notice}
     order = sorted(series, key=lambda item: item["approximate_endpoint"], reverse=True)
     for item in series:
         item["endpoint_rank"] = 1 + sum(other["approximate_endpoint"] > item["approximate_endpoint"] for other in order)
@@ -430,14 +453,14 @@ def _estimate_emf_chart(data: bytes, *, partial_traces: bool) -> dict | None:
             1 + sum(other["estimate_low"] > item["estimate_high"] for other in others),
             1 + sum(other["estimate_high"] >= item["estimate_low"] for other in others),
         ]
-    return {"method": "original_emf_polyline_and_linear_axis", "unit": unit,
+    return {"method": "original_emf_polyline_and_linear_axis", "unit": unit, **axis_semantics,
             "axis_tick_min": min(values), "axis_tick_max": max(values),
             "axis_max_fit_residual": round(residual, 6),
             "series_count": len(series), "other_series_count": len(series)-1,
             "series": series,
             "comparison_basis": "Each curve's own drawn right endpoint; dates may differ. "
                                 "This is not a same-date cross-section or ranking. "
-                                "Values are geometric estimates, not original Excel observations.",
+                                "Values are geometric estimates, not original Excel observations." + axis_notice,
             "legend_interpretation": "Copy original legend identifiers. A possible YYMM code identifies only "
                                      "delivery year/month when confirmed by report context; it does not define "
                                      "a commodity/crop statistical year. Total curves include the selected curve; "
