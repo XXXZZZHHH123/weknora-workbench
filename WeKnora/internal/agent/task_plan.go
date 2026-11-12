@@ -57,6 +57,9 @@ type taskToolProjection struct {
 	mu                     sync.RWMutex
 	selected               map[string]bool
 	requiresSourceEvidence bool
+	// Actual model-chosen source reads can reveal a protocol omitted by the
+	// coarse plan. This retains schemas only, never changes source discovery.
+	structuredSourceRead bool
 }
 
 type taskToolCapability struct {
@@ -470,6 +473,38 @@ func isTaskDocumentNavigationTool(name string) bool {
 	return false
 }
 
+// Observe only completed model tool calls, after the execution barrier. The
+// registry can replace protocol definitions at a capability-refresh barrier,
+// so it must not be inspected from parallel tool-execution goroutines here.
+// Native adapter identity and its current execution descriptor distinguish a
+// real authorized source read from a similarly named integration or metadata
+// discovery. Deferred compatibility tools do not expand the model projection.
+func (e *AgentEngine) retainTaskSourceProtocol(call types.ToolCall) {
+	if e.taskProjection == nil || e.toolRegistry == nil || call.Result == nil || !call.Result.Success {
+		return
+	}
+	executed, ok := call.Result.Data["_structured_execution"].(agenttools.StructuredOperationDescriptor)
+	if !ok || executed.EffectClass != "read" {
+		return
+	}
+	raw, err := json.Marshal(call.Args)
+	if err != nil {
+		return
+	}
+	current, _, native := e.toolRegistry.StructuredInvocation(call.Name, raw)
+	if !native || current != executed {
+		return
+	}
+	for _, definition := range e.toolRegistry.GetModelFunctionDefinitions() {
+		if definition.Name == call.Name {
+			e.taskProjection.mu.Lock()
+			e.taskProjection.structuredSourceRead = true
+			e.taskProjection.mu.Unlock()
+			return
+		}
+	}
+}
+
 func (e *AgentEngine) projectTaskTools(definitions []types.FunctionDefinition) []types.FunctionDefinition {
 	definitions = e.compactWorkbenchToolDefinitions(definitions)
 	if e.taskProjection == nil {
@@ -495,6 +530,12 @@ func (e *AgentEngine) projectTaskTools(definitions []types.FunctionDefinition) [
 		}
 		if internalDiscovery && isTaskDocumentNavigationTool(definition.Name) {
 			protocol = true
+		}
+		if !protocol && e.taskProjection.structuredSourceRead && e.toolRegistry != nil &&
+			taskSourceProtocolDomain(definition.Name) == "structured" {
+			// Intersect with the current native registration, including after
+			// refresh/removal. A same-name external tool is not a dependency.
+			_, _, protocol = e.toolRegistry.StructuredInvocation(definition.Name, json.RawMessage(`{}`))
 		}
 		if protocol || e.taskProjection.selected[definition.Name] {
 			result = append(result, definition)
