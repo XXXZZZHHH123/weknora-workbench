@@ -37,7 +37,10 @@ func TestStructuredExcelBudgetPreservesLatestIdentitiesAndCanonicalCatalog(t *te
 	original := &types.ToolResult{Success: true, Data: map[string]any{
 		"datasets":      []map[string]any{wideStructuredDataset("source-a"), wideStructuredDataset("source-b")},
 		"dataset_count": 2, "total_dataset_count": 37, "offset": 0, "next_offset": nil, "datasets_truncated": false, "latest_only": true,
-		"source_context": map[string]any{"knowledge_base_id": "private-current-scope"},
+		"source_context":            map[string]any{"knowledge_base_id": "private-current-scope"},
+		"catalog_source_types":      []string{"registered_spreadsheet_versions"},
+		"catalog_excludes":          []string{"document_body", "presentation_slides", "original_figures"},
+		"document_source_next_step": "Choose any further discovery using tools actually available within the authorized scope.",
 	}}
 	before, err := json.Marshal(original.Data)
 	require.NoError(t, err)
@@ -46,6 +49,9 @@ func TestStructuredExcelBudgetPreservesLatestIdentitiesAndCanonicalCatalog(t *te
 	require.NotEqual(t, "directory_output_budget_exceeded", view["status"])
 	require.Equal(t, true, view["directory_metadata_truncated"])
 	require.Equal(t, false, view["output_complete"])
+	require.ElementsMatch(t, []any{"document_body", "presentation_slides", "original_figures"}, view["catalog_excludes"])
+	require.Equal(t, []any{"registered_spreadsheet_versions"}, view["catalog_source_types"])
+	require.NotEmpty(t, view["document_source_next_step"])
 	datasets := structuredRecallRows(view["datasets"])
 	require.Len(t, datasets, 2, "large sheet metadata must not hide the second real source")
 	for index, id := range []string{"source-a", "source-b"} {
@@ -111,6 +117,9 @@ func TestStructuredMultiScopeLargeExcelRemainsAvailableWithPDFContinuation(t *te
 	require.Equal(t, true, result.Data["datasets_truncated"])
 	require.Len(t, result.Data["field_candidates"], 2)
 	view := structuredDirectoryView(t, result, 1800)
+	require.ElementsMatch(t, []any{"registered_spreadsheet_versions", "published_pdf_tables"}, view["catalog_source_types"])
+	require.ElementsMatch(t, []any{"document_body", "presentation_slides", "original_figures"}, view["catalog_excludes"])
+	require.NotEmpty(t, view["document_source_next_step"])
 	catalogs := structuredRecallRows(view["knowledge_base_catalogs"])
 	require.Len(t, catalogs, 2)
 	for index, kb := range []string{"kb-a", "kb-b"} {

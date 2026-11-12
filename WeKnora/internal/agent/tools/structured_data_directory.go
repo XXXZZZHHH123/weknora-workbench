@@ -182,8 +182,17 @@ func fitStructuredDirectory(ctx context.Context, operation string, result *types
 			data["next_operation"] = "list_datasets"
 			data["next_step"] = "Select an authorized knowledge_base_id and request list_datasets with limit:1; Excel fields use list_series. Directory omission does not establish absence."
 		}
+		if operation == "list_datasets" || operation == "list_pdf_tables" {
+			structuredCatalogCoverage(data)
+			if families, exists := result.Data["catalog_source_types"]; exists {
+				data["catalog_source_types"] = families
+			}
+		}
 		if scope, ok := result.Data["source_context"]; ok && contextWasVisible {
 			data["source_context"] = scope
+		}
+		if !render() {
+			delete(data, "next_step")
 		}
 		if !render() {
 			data = map[string]any{"status": "directory_output_budget_exceeded", "output_truncated": true}

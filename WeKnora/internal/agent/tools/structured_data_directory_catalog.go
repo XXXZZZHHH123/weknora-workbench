@@ -1,9 +1,17 @@
 package tools
 
+// Coverage describes this operation's catalog families, not the existence of
+// documents or the availability of any particular document tool in a turn.
+func structuredCatalogCoverage(data map[string]any) {
+	data["catalog_excludes"] = []string{"document_body", "presentation_slides", "original_figures"}
+	data["document_source_next_step"] = "目录未命中不代表全库缺失。是否进一步检索/读取文档，由模型按完整问题及本轮实际可用的已授权能力决定。"
+}
+
 // projectStructuredDatasetDirectory changes only the model's discovery view.
 // Dataset IDs, version identities and source cells are never shortened, and
 // omitted navigation is separate from both transport failure and empty data.
 func projectStructuredDatasetDirectory(data map[string]any, fits func() bool) {
+	structuredCatalogCoverage(data)
 	data["output_truncated"], data["output_complete"] = true, false
 	data["directory_metadata_truncated"] = true
 	data["directory_notice"] = "Directory metadata is omitted for the output budget, not evidence of absent data. Select a real dataset_id, then list_series for fields. Follow each scope's next_offset with list_datasets; PDF continuation uses list_pdf_tables."
@@ -144,12 +152,33 @@ func projectStructuredDatasetDirectory(data map[string]any, fits func() bool) {
 					row[key] = value
 				}
 			}
-			keep := structuredDirectoryKeys(data, "kind", "status", "code", "reason_code", "stage", "interruption_code", "execution_started", "source_data_read", "catalog_data_read", "catalog_complete", "catalog_completion_scope", "dataset_catalog_status", "knowledge_base_catalogs", "datasets", "dataset_count", "total_dataset_count", "offset", "next_offset", "latest_only", "datasets_truncated", "dataset_catalog_next_operation", "pdf_tables", "pdf_table_count", "pdf_tables_truncated", "pdf_catalog_next_operation", "source_context", "result_contract_ref", "output_view_only", "_structured_execution", "manifest_version", "schema_sha256", "protocol_version", "generation")
+			keep := structuredDirectoryKeys(data, "kind", "status", "code", "reason_code", "stage", "interruption_code", "execution_started", "source_data_read", "catalog_data_read", "catalog_complete", "catalog_completion_scope", "catalog_source_types", "catalog_excludes", "document_source_next_step", "dataset_catalog_status", "knowledge_base_catalogs", "datasets", "dataset_count", "total_dataset_count", "offset", "next_offset", "latest_only", "datasets_truncated", "dataset_catalog_next_operation", "pdf_tables", "pdf_table_count", "pdf_tables_truncated", "pdf_catalog_next_operation", "source_context", "result_contract_ref", "output_view_only", "_structured_execution", "manifest_version", "schema_sha256", "protocol_version", "generation")
 			for key := range data {
 				delete(data, key)
 			}
 			for key, value := range keep {
 				data[key] = value
+			}
+			if len(catalogs) > 0 {
+				// The status and each scope's catalog state already identify this
+				// view. Remove duplicate navigation labels before a last source;
+				// distinct failure codes and stages remain diagnostic evidence.
+				delete(data, "kind")
+				code, _ := data["code"].(string)
+				if reason, _ := data["reason_code"].(string); code != "" && reason == code {
+					delete(data, "reason_code")
+				}
+				if status, _ := data["status"].(string); code != "" && status == code {
+					delete(data, "code")
+				}
+				if complete, _ := data["catalog_complete"].(bool); complete {
+					// Every queried scope retains its own family status,
+					// truncation flags and continuation. Root summaries merely
+					// repeat those states once all scope requests completed.
+					delete(data, "dataset_catalog_status")
+					delete(data, "datasets_truncated")
+					delete(data, "pdf_tables_truncated")
+				}
 			}
 			data["directory_metadata_truncated"], data["output_truncated"], data["output_complete"] = true, true, false
 			if !fits() {

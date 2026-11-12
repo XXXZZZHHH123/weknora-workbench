@@ -363,6 +363,13 @@ func TestStructuredMetadataContractSurvivesQuestionRecallWithoutReclassifyingSou
 		var visible map[string]any
 		require.NoError(t, json.Unmarshal([]byte(result.Output), &visible))
 		require.Equal(t, result.Data["scope_notice"], visible["scope_notice"], "the contract must be present in actual model-visible output")
+		require.ElementsMatch(t, []any{"document_body", "presentation_slides", "original_figures"}, visible["catalog_excludes"])
+		require.NotEmpty(t, visible["document_source_next_step"])
+		if arguments == `{}` {
+			require.NotContains(t, visible, "catalog_source_types", "unqueried navigation must not claim catalog-family coverage")
+		} else {
+			require.ElementsMatch(t, []any{"registered_spreadsheet_versions", "published_pdf_tables"}, visible["catalog_source_types"])
+		}
 		rows := structuredRecallRows(visible["knowledge_bases"])
 		require.Len(t, rows, 2)
 		require.Equal(t, "Training and calibration material; 913 observations", rows[0]["description"], "metadata stays available for discovery without being rewritten into a document fact")
