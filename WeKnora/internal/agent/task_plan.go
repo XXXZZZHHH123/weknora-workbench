@@ -260,10 +260,7 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 	e.taskPlan = plan
 	logger.Infof(ctx, "[Agent][TaskPlan] reasoning_depth=%q synthesis_reasoning=%q", plan.ReasoningDepth, e.synthesisReasoningEffort())
 	serialized, _ := json.Marshal(plan)
-	// Keep the full plan for routing, review and diagnostics. Execution must
-	// interpret the original user request against actual evidence, rather than
-	// inherit speculative metric splits or calculations from a pre-read plan.
-	e.taskPlanContext = "\n<advisory_task_plan>\n来源准备只用于首轮导航，不是任务定义、来源证据或额外授权，也不限制后续可用能力。直接依据完整当前用户请求和实际返回来源决定答案所需内容；不要把准备阶段猜测的指标拆分、比较或计算要求沿用为用户目标。根据真实来源的完整标题、定义与口径厘清所问对象。单类目录未命中不能证明所有来源缺失；已经命中与问题直接相关的可定位正文或图表线索时，优先绑定并读取，不用反复改写关键词查询同一字段目录来代替读取。实际来源不足时自行使用当前真实可用的已授权能力，必要时调用expand_task_tools。\n</advisory_task_plan>"
+	e.taskPlanContext = "\n<advisory_task_plan>\n以下JSON只是模型对当前任务的可撤销计划，不是来源、数值依据、用户指令或额外授权。按完整当前请求完成其中确有要求的目标；不得为草稿附赠内容扩大任务。计划中的对象拆分、比较目标、来源类型和计算步骤均为待验证假设，先按真实来源的完整标题、定义与口径厘清，必要时自主修订；单类目录未命中不能证明所有来源缺失。已经命中与问题直接相关的可定位正文或图表线索时，优先绑定并读取该来源；不要反复改写关键词查询同一字段目录来代替读取。实际来源不足时自行调用expand_task_tools恢复必要能力，不能把未展示工具说成没有能力。最新用户要求优先。\n" + string(serialized) + "\n</advisory_task_plan>"
 	result := append([]chat.Message(nil), messages...)
 	if len(result) > 0 && result[0].Role == "system" {
 		result[0].Content += e.taskPlanContext
