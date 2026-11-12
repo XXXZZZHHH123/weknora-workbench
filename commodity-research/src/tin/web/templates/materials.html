@@ -4,14 +4,14 @@
 </style>
 <body class="research-body"><main class="legacy-materials-main">
 <div class="legacy-materials-links"><a href="{{ prefix }}/">← 返回研究工作台</a><a href="{{ prefix }}/files{% if request.query_params.get('source') %}?source={{ request.query_params.get('source') | urlencode }}{% endif %}">原件与来源核验</a></div>
-{% if prefix %}<div class="legacy-source-banner" style="margin-top:20px"><div><strong>统一资料中心</strong><p>在资料中心统一管理研报、表格与处理状态。原件与单元格核验可从上方“原件与来源核验”进入。</p></div><a href="/platform/materials{% if request.query_params.get('source') %}?source={{ request.query_params.get('source') | urlencode }}{% endif %}" target="_top" class="research-button primary" style="color:white">打开资料中心 ↗</a></div>{% endif %}
+{% if prefix %}<div class="legacy-source-banner" style="margin-top:20px"><div><strong>统一资料中心</strong></div><a href="/platform/materials{% if request.query_params.get('source') %}?source={{ request.query_params.get('source') | urlencode }}{% endif %}" target="_top" class="research-button primary" style="color:white">打开资料中心 ↗</a></div>{% endif %}
 <h1>{% if identity %}资料与来源{% else %}研究资料关联{% endif %}</h1>
-<p>PDF、Word、文本和图片进入文档知识库；数值表格从文件接入入口导入。普通对话会按需读取这些资料。</p>
+
 <section id="legacy-materials-binding" class="{% if identity %}workbench-ingest-hidden{% endif %}"><h2>资料归属</h2><select id="library"></select><button id="bind">保存知识库绑定</button>
-<p>选择当前空间的文档知识库，沿用其解析和模型配置。还没有知识库时，请先在资料中心创建或选择文档知识库。</p></section>
+</section>
 <section id="legacy-materials-upload" class="{% if identity %}workbench-ingest-hidden{% endif %}"><h2>添加资料</h2><input id="file" type="file" accept=".pdf,.docx,.doc,.txt,.md,.html,.png,.jpg,.jpeg,.webp"><button id="upload">上传并解析</button><br>
 <input id="url" type="url" placeholder="公告或研报网址" style="width:65%"><button id="addUrl">添加网页</button>
-<p>原文件保留。图片及扫描件需要知识库已配置视觉模型；不会把识别出的数字自动当作研究观测。</p></section>
+</section>
 <div id="notice" role="status" class="{% if identity %}workbench-ingest-hidden{% endif %}"></div><section id="legacy-materials-status" class="{% if identity %}workbench-ingest-hidden{% endif %}"><h2>资料与解析状态</h2><button id="refresh">刷新状态</button><table><thead><tr><th>资料</th><th>解析状态</th></tr></thead><tbody id="documents"></tbody></table><button id="previous">上一页</button><span id="pageStatus"></span><button id="next">下一页</button></section>
 <script>
 const prefix={{ prefix|tojson }},identity={{ identity|tojson }},$=id=>document.getElementById(id),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

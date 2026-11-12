@@ -19,7 +19,7 @@
 <div id="indicator-workspace" data-date="{{ d or '' }}" data-catalog-remote="{{ 'true' if catalog_remote and not restricted_view else 'false' }}" data-catalog-total="{{ visible_catalog_total }}" data-catalog-offset="{{ 0 if restricted_view else catalog_offset | default(0) }}"{% if restricted_view %} data-readonly="true"{% endif %} class="indicator-workspace">
   <header id="indicator-top" class="indicator-page-heading">
     <div><div class="indicator-eyebrow">INDICATORS &amp; WATCHLIST</div><h1>指标</h1>
-      <p class="indicator-muted">{% if restricted_view %}本工作台已绑定指标及必要最新值；仅可筛选当前清单，不开放全库查询、历史和下载。{% else %}宏观与产业指标，一处查找。将关心的指标加入自选，先看走势，再查口径。{% endif %}</p></div>
+    </div>
     <a href="#indicator-catalog" data-open-catalog class="indicator-button">浏览 <span data-catalog-total-count>{{ visible_catalog_total }}</span> 项指标 ↓</a>
   </header>
   {% if restricted_view and restricted_data.owner_unavailable %}<p class="indicator-warning" role="status">工作台主人归属尚未核验，暂不展示分享内容。请主人重新保存共享配置后再试。</p>{% endif %}
@@ -34,7 +34,7 @@
   <section id="indicator-panel-favorites" data-indicator-panel="favorites" role="tabpanel" aria-labelledby="indicator-tab-favorites" hidden>
     {% if dedup_enabled %}<div data-dedup-references="favorites"></div>{% endif %}
     <div class="indicator-section-heading"><h2 id="indicator-favorites-title">我的自选</h2>
-      <span class="indicator-muted">按账号保存在当前研究台 · 最多 100 项</span>{% if chart_page is defined and chart_page.enabled %}<button type="button" id="favorites-chart-open" class="charts-button" data-chart-builder="favorites">作图</button>{% endif %}</div>
+      {% if chart_page is defined and chart_page.enabled %}<button type="button" id="favorites-chart-open" class="charts-button" data-chart-builder="favorites">作图</button>{% endif %}</div>
     <div id="indicator-favorites" class="indicator-favorites" aria-live="polite"></div>
     <div id="indicator-favorites-empty" class="indicator-empty" hidden>还没有自选。在指标或图表旁点书签即可加入自选。 <button type="button" id="indicator-favorites-add" class="indicator-button">去指标目录添加</button></div>
     <div id="indicator-favorites-error" class="indicator-warning" role="alert" hidden><span></span> <button type="button" id="indicator-favorites-retry" class="indicator-button">重试</button></div>
