@@ -234,10 +234,10 @@ async function main(){
    checks.push('Failed native XLSX explicitly restarts the authorized native task once and polls its fresh attempt to actual rows');
    await screenshot('10_Excel重新处理完成_1600');
    await failed('native-retry-denied');await click('#retrySourceImport');
-   await wait("d.getElementById('jobState').textContent.includes('没有编辑') && !d.getElementById('upload').disabled");
+   await wait("d.getElementById('jobState').textContent.includes('读取失败') && !d.getElementById('upload').disabled");
    assert.equal(nativeRetries.get('native-retry-denied').posts,0);checks.push('A native reparse permission denial remains visible without an alternate import');
    await failed('native-retry-refailed');await click('#retrySourceImport');
-   await wait("d.getElementById('jobState').textContent.includes('上次处理超时') && d.getElementById('retrySourceImport').textContent==='重新处理' && !d.getElementById('upload').disabled");
+   await wait("d.getElementById('jobState').textContent.includes('处理失败') && d.getElementById('retrySourceImport').textContent==='重新处理' && !d.getElementById('upload').disabled");
    assert.equal(nativeRetries.get('native-retry-refailed').posts,1);assert.equal(await exec("return Boolean(d.querySelector('.sheet-grid td'))"),false);checks.push('A second processing failure shows the new failure instead of an old or fabricated result');
    await failed('native-retry-already-running');await click('#retrySourceImport');
    await wait("d.getElementById('jobState').textContent.includes('已打开工作表处理结果') && !d.getElementById('upload').disabled");
@@ -246,10 +246,10 @@ async function main(){
    await wait("d.getElementById('jobState').textContent.includes('已打开工作表处理结果') && !d.getElementById('upload').disabled");
    assert.equal(nativeRetries.get('native-retry-already-complete').posts,0);checks.push('A task completed elsewhere is opened without starting another attempt');
    await failed('native-retry-superseded');await click('#retrySourceImport');
-   await wait("d.getElementById('jobState').textContent.includes('处理任务已更新') && !d.getElementById('upload').disabled");
+   await wait("d.getElementById('jobState').textContent.includes('读取失败') && !d.getElementById('upload').disabled");
    assert.equal(await exec("return Boolean(d.querySelector('.sheet-grid td'))"),false);checks.push('Polling rejects a superseding attempt instead of displaying its result as the requested retry');
    await failed('native-retry-source-changed');await click('#retrySourceImport');
-   await wait("d.getElementById('jobState').textContent.includes('原件已更新') && !d.getElementById('upload').disabled");
+   await wait("d.getElementById('jobState').textContent.includes('读取失败') && !d.getElementById('upload').disabled");
    assert.equal(await exec("return Boolean(d.querySelector('.sheet-grid td'))"),false);checks.push('A changed original fingerprint stops retry polling without borrowing another source result');
    await failed('native-retry-stale');await click('#retrySourceImport');
    for(let i=0;i<100&&!requests.some(r=>r.path.endsWith('/native-retry-stale/reparse'));i++)await pause(10);
@@ -460,7 +460,7 @@ async function main(){
   await js("window.auth('kb-a','fixture-token','source-reused')");
   await wait("d.getElementById('importSelect').value==='444444444444444444444444' && !d.getElementById('upload').disabled");
   await verify('Knowledge-base Excel reuses its bound scan without a second local file selection',"d.getElementById('file').files.length===0 && d.getElementById('importSelect').selectedOptions[0].textContent.includes('知识库内原件.xlsx') && d.querySelector('.sheet-grid td')!==null");
-  await verify('Native source page explains reuse and hides the unnecessary second file picker',"d.body.classList.contains('native-source') && d.getElementById('directUpload').querySelector('h2').textContent==='文件处理结果' && d.getElementById('directUpload').textContent.includes('无需再次导入') && w.getComputedStyle(d.querySelector('.import-actions')).display==='none' && d.getElementById('jobState').textContent.includes('知识库内原件.xlsx')");
+  await verify('Native source opens the real worksheet without redundant instructions or a second file picker',"d.body.classList.contains('native-source') && d.getElementById('directUpload').querySelector('h2').textContent==='文件处理结果' && !d.getElementById('directUpload').textContent.includes('无需再次导入') && d.getElementById('uploadHint').hidden && w.getComputedStyle(d.querySelector('.import-actions')).display==='none' && d.getElementById('jobState').textContent.includes('知识库内原件.xlsx')");
   assert.equal(requests.filter(r=>r.path==='/structured/api/knowledge-results/source-reused').length,1);
   await js("window.auth('kb-a','fixture-token','source-reused')");await pause(100);
   assert.equal(requests.filter(r=>r.path==='/structured/api/knowledge-results/source-reused').length,1);
@@ -475,9 +475,9 @@ async function main(){
   assert.equal(await exec("return d.getElementById('importSelect').value"),'444444444444444444444444');
   checks.push('PDF/Excel existing results share read-only opening; a late response from another KB is ignored');
   await js("window.auth('kb-b','fixture-token','source-denied')");
-  await wait("d.getElementById('jobState').textContent.includes('无读取权限') && !d.getElementById('upload').disabled");
-  await verify('Read permission failures show a recoverable source error',"d.querySelector('#sheetDetail [role=alert]')!==null && !d.getElementById('retrySourceImport').classList.contains('hidden')");
-  await js("window.auth('kb-b','fixture-token','source-retry')");await wait("d.getElementById('jobState').textContent.includes('无读取权限') && !d.getElementById('upload').disabled");
+  await wait("d.getElementById('jobState').textContent.includes('读取失败') && !d.getElementById('upload').disabled");
+  await verify('Read permission failures show one concise recoverable error without repeating internal details',"d.getElementById('jobState').getAttribute('role')==='alert' && d.getElementById('sheetDetail').textContent==='' && !d.body.innerText.includes('原件准备未完成') && !d.body.innerText.includes('隔离夹具：当前知识库原件无读取权限') && !d.getElementById('retrySourceImport').classList.contains('hidden')");
+  await js("window.auth('kb-b','fixture-token','source-retry')");await wait("d.getElementById('jobState').textContent.includes('读取失败') && !d.getElementById('upload').disabled");
   await click('#retrySourceImport');await wait("d.getElementById('importSelect').value==='444444444444444444444444'");
   checks.push('Retry reads the authorized result after the temporary access failure is resolved');
   assert.equal(requests.filter(r=>r.path.endsWith('/import-knowledge')&&r.method==='POST').length,0);

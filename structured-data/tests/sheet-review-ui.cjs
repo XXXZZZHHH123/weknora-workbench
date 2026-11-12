@@ -306,7 +306,7 @@ const server=http.createServer(async(req,res)=>{
     assert.equal(await page.locator('#previewBlockSample').innerText(),'查看记录');
     await page.locator('.sheet-processing-details>summary').click();
     assert.match(await page.locator('.sheet-processing-details').innerText(),/规则复用.*可调整/);
-    assert.match(await page.locator('.source-click-hint').innerText(),/左侧原表.*高亮/);
+    assert.equal(await page.locator('.source-click-hint').count(),0);
     assert.equal(await page.locator('.mapping-block.selected [data-column-field="metric"]').first().isEnabled(),true);
     assert.equal(await page.locator('#confirmMapping').isDisabled(),true,'Unchanged verified mappings do not need republishing');
     assert.equal(await page.locator('#addMappingBlock').isEnabled(),true);
