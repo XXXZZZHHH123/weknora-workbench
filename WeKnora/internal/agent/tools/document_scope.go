@@ -408,22 +408,85 @@ func PrepareDocumentScope(registry *ToolRegistry, userMessages ...string) {
 }
 
 func (t *SearchKnowledgeTool) documentCandidates(ctx context.Context, results []*searchResultWithMeta, query string) *types.ToolResult {
-	seen := map[string]bool{}
+	seen := map[string]map[string]any{}
+	sourceHashes := map[string]string{}
 	documents := []map[string]any{}
+	navigationBudget := 6000
 	for _, result := range results {
-		if seen[result.KnowledgeID] {
+		if result == nil || result.SearchResult == nil {
 			continue
 		}
-		seen[result.KnowledgeID] = true
-		knowledge, err := authorizeKnowledgeInSearchTargets(ctx, t.searchTargets, result.KnowledgeID, t.knowledgeService)
-		if err != nil || documentIsRetired(knowledge) {
+		document, exists := seen[result.KnowledgeID]
+		if !exists {
+			knowledge, err := authorizeKnowledgeInSearchTargets(ctx, t.searchTargets, result.KnowledgeID, t.knowledgeService)
+			if err != nil || documentIsRetired(knowledge) {
+				continue
+			}
+			document = documentScopeMetadata(knowledge)
+			seen[result.KnowledgeID] = document
+			sourceHashes[result.KnowledgeID] = knowledge.FileHash
+			documents = append(documents, document)
+		}
+		// Keep why a ranked candidate matched. A report's publication date
+		// cannot describe all historical data or figures inside it. These
+		// bounded previews are navigation only: no chunk IDs or citation grant.
+		matches, _ := document["navigation_matches"].([]map[string]any)
+		if len(matches) >= 2 {
 			continue
 		}
-		documents = append(documents, documentScopeMetadata(knowledge))
+		stale := false
+		for _, locator := range result.SourceLocators {
+			if locator.SourceHash != "" && sourceHashes[result.KnowledgeID] != "" && locator.SourceHash != sourceHashes[result.KnowledgeID] {
+				stale = true
+				break
+			}
+		}
+		if stale {
+			continue
+		}
+		heading := documentNavigationText(result.ContextHeader, 80)
+		excerpt := documentNavigationText(result.Content, 500-utf8.RuneCountInString(heading))
+		if heading == "" && excerpt == "" {
+			continue
+		}
+		match := map[string]any{"navigation_only": true, "excerpt": excerpt}
+		if heading != "" {
+			match["heading"] = heading
+		}
+		for _, locator := range result.SourceLocators {
+			if locator.Mapping != "exact" {
+				continue
+			}
+			if locator.Type == types.SourceLocatorSlide && locator.Slide > 0 {
+				match["slide_hint"] = locator.Slide
+				break
+			}
+			if locator.Type == types.SourceLocatorPDF && locator.Page > 0 {
+				match["page_hint"] = locator.Page
+				break
+			}
+		}
+		encoded, err := json.Marshal(match)
+		// Include JSON field/list punctuation as well as the previews in the
+		// global budget. The model projection separately budgets XML escaping.
+		cost := utf8.RuneCount(encoded) + len(`,"navigation_matches":[],`)
+		if err != nil || cost > navigationBudget {
+			continue
+		}
+		navigationBudget -= cost
+		document["navigation_matches"] = append(matches, match)
 	}
-	data := map[string]any{"display_type": "document_info", "documents": documents, "query": query, "requires_source_scope": true, "notice": "这些是实际授权文档候选元数据，不是内容证据。根据完整问题和上下文选择真实来源，歧义时澄清。可直接用 read_document 读取明确选择的文档ID，首次读取在同一调用核对真实文件身份和权限；已有来源计划不可被读取目标覆盖。比较或显式日期、用户页码限制使用 source_scope 或 bind_document_scope 声明完整范围，不得用其他报告的同名图替代。"}
+	data := map[string]any{"display_type": "document_info", "documents": documents, "query": query, "requires_source_scope": true, "notice": "这些是实际授权文档候选元数据，不是已核内容证据。navigation_matches 仅为真实检索命中的有界导航摘录，不可直接引用、计算或认定图表数值；请据此选择来源并 read_document 核对正文或原图。文件名/发布日期不等于内容的数据覆盖期，未读正文不能据此断言历史数据不存在。根据完整问题和上下文选择真实来源，歧义时澄清。可直接用 read_document 读取明确选择的文档ID，首次读取在同一调用核对真实文件身份和权限；已有来源计划不可被读取目标覆盖。比较或显式日期、用户页码限制使用 source_scope 或 bind_document_scope 声明完整范围，不得用其他报告的同名图替代。"}
 	encoded, _ := json.Marshal(data)
 	return &types.ToolResult{Success: true, Data: data, Output: string(encoded)}
+}
+
+func documentNavigationText(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if utf8.RuneCountInString(text) <= limit {
+		return text
+	}
+	return string([]rune(text)[:limit])
 }
 func documentIsRetired(k *types.Knowledge) bool {
 	if k == nil || k.DeletedAt.Valid {

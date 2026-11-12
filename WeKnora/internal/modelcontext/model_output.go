@@ -25,13 +25,17 @@ func (r *sourceRegistry) ModelOutput(result *types.ToolResult) string {
 	}
 	// Legacy-format output from a current source tool is evidence too. Replay
 	// registration alone must never grant this eligibility.
-	if result.Success {
+	displayType := stringValue(result.Data, "display_type")
+	// Discovery previews can themselves quote citation-shaped text. They do
+	// not become current source evidence until an authorized reader verifies
+	// the selected document, even when the catalog call succeeded.
+	navigationOnly := displayType == "document_info" && boolValue(result.Data, "requires_source_scope")
+	if result.Success && !navigationOnly {
 		r.registerLegacyToolReferences(result.Output, true)
 		copyResult := *result
 		copyResult.Output = r.CompactPublicCitations(result.Output, true)
 		result = &copyResult
 	}
-	displayType := stringValue(result.Data, "display_type")
 	if displayType == "web_fetch_results" {
 		return r.modelWebFetchOutput(mapsValue(result.Data["results"]), result.Output)
 	}
@@ -192,6 +196,7 @@ func (r *sourceRegistry) modelDocumentInfoOutput(data map[string]interface{}, fa
 	}
 	b.WriteString(">\n")
 	count := 0
+	navigationBudget := 6000
 	for _, row := range rows {
 		knowledgeID := stringValue(row, "knowledge_id")
 		docHandle := r.RegisterDocument(knowledgeID)
@@ -258,6 +263,9 @@ func (r *sourceRegistry) modelDocumentInfoOutput(data map[string]interface{}, fa
 		if description := stringValue(row, "description"); description != "" {
 			fmt.Fprintf(&b, "    <description>%s</description>\n", escapeText(description))
 		}
+		if boolValue(data, "requires_source_scope") {
+			b.WriteString(modelDocumentNavigationOutput(row, &navigationBudget))
+		}
 		b.WriteString("  </document>\n")
 		count++
 	}
@@ -267,6 +275,42 @@ func (r *sourceRegistry) modelDocumentInfoOutput(data map[string]interface{}, fa
 	b.WriteString("</documents>")
 	if count == 0 {
 		return r.CompactKnownText(fallback)
+	}
+	return b.String()
+}
+
+func modelDocumentNavigationOutput(row map[string]interface{}, remaining *int) string {
+	var b strings.Builder
+	for index, match := range mapsValue(row["navigation_matches"]) {
+		if index >= 2 || !boolValue(match, "navigation_only") {
+			break
+		}
+		heading, _ := truncateModelEvidence(stringValue(match, "heading"), 80)
+		excerpt, _ := truncateModelEvidence(stringValue(match, "excerpt"), 500-len([]rune(heading)))
+		if heading == "" && excerpt == "" {
+			continue
+		}
+		var item strings.Builder
+		item.WriteString("    <navigation_match navigation_only=\"true\" requires_read=\"true\"")
+		for _, key := range []string{"page_hint", "slide_hint"} {
+			if value := intValue(match, key); value > 0 {
+				fmt.Fprintf(&item, " %s=\"%d\"", key, value)
+			}
+		}
+		item.WriteString(">\n")
+		if heading != "" {
+			fmt.Fprintf(&item, "      <heading>%s</heading>\n", escapeText(heading))
+		}
+		fmt.Fprintf(&item, "      <excerpt>%s</excerpt>\n", escapeText(excerpt))
+		item.WriteString("    </navigation_match>\n")
+		// Budget the final escaped representation, including all attributes
+		// and tags, across documents rather than once per document.
+		cost := len([]rune(item.String()))
+		if cost > *remaining {
+			continue
+		}
+		*remaining -= cost
+		b.WriteString(item.String())
 	}
 	return b.String()
 }
