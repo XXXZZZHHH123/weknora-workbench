@@ -454,3 +454,28 @@ func TestTaskPlanSourceViewExcludesDuplicateCapabilitySchemas(t *testing.T) {
 	require.Contains(t, model.requests[0][1].Content, "actual-selected-source.pdf")
 	require.NotContains(t, model.requests[0][1].Content, "schema detail")
 }
+
+func TestTaskPlanDoesNotPromotePreReadAssumptionsIntoExecution(t *testing.T) {
+	var plan taskEvidencePlan
+	require.NoError(t, json.Unmarshal([]byte(validTaskPlan(t, "structured_list_series")), &plan))
+	plan.Goals = []string{"Compare an unrequested counterpart."}
+	plan.Evidence = []string{"Recompute a speculative decomposition."}
+	plan.CompletionCriteria = []string{"Deliver an invented comparison."}
+	plan.SourceDiscovery = &taskSourceDiscovery{Mode: "discover", Query: "Find the reported measure.", SourceDomains: []string{"structured"}}
+	raw, err := json.Marshal(plan)
+	require.NoError(t, err)
+	model := &taskPlannerChat{plan: &types.ChatResponse{Content: string(raw), FinishReason: "stop"}}
+	engine, state, messages := taskPlanFixture(t, model)
+	planned := engine.planWorkbenchTask(t.Context(), state, "Current complete request.", messages, "session")
+	require.Equal(t, plan.Goals, engine.taskPlan.Goals, "retain the model plan for routing and diagnostics")
+	require.Equal(t, plan.SourceDiscovery, engine.taskPlan.SourceDiscovery)
+	require.NotContains(t, planned[0].Content, plan.SourceDiscovery.Query, "preparation queries are navigation hints, not system-level task definitions")
+	for _, assumptions := range [][]string{plan.Goals, plan.Evidence, plan.CompletionCriteria} {
+		for _, assumption := range assumptions {
+			require.NotContains(t, planned[0].Content, assumption, "execution must interpret the user request using actual evidence")
+		}
+	}
+	require.Equal(t, messages[len(messages)-1], planned[len(planned)-1], "preserve the complete user request")
+	require.Len(t, model.requests, 1, "no additional planning or review call")
+	require.Len(t, state.RoundSteps, 1, "planning does not execute sources")
+}
