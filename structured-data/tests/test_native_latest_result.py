@@ -144,3 +144,57 @@ def test_original_result_route_does_not_open_another_library(native):
     response = client.get('/api/knowledge-results/source-a', headers=headers(kb='other-library'))
     assert response.status_code == 403, response.text
     assert not any(path.endswith('/download') for path, _ in state['calls'])
+
+
+@pytest.fixture
+def renamed_native(native):
+    client, _, state, root = native
+    kb_id = 'a4ea06f5-37c0-4213-96fb-54cfb6a76424'
+    state['document'].update(knowledge_base_id=kb_id, file_name='current-upload.xlsx')
+    path = root / 'first-upload.xlsx'
+    path.write_bytes(state['contents'])
+    manager = ImportManager(root / 'knowledge-bases' / kb_id)
+    source = {'source_knowledge_id': state['document']['id'], **{key: state['document'][key]
+              for key in ('file_name', 'file_size', 'file_hash', 'knowledge_base_id', 'tenant_id')}}
+    first_source = {**source, 'source_knowledge_id': 'earlier-source', 'file_name': path.name}
+    old, fresh = records(manager, path, first_source)
+    for saved in (old, fresh):
+        manager.bind_native_source(saved['import_id'], source)
+    return client, state, manager, source, fresh
+
+
+def test_real_result_route_keeps_stored_identity_when_verified_native_display_name_changes(renamed_native):
+    client, state, manager, source, fresh = renamed_native
+    manifest_path = manager.store._path(fresh['dataset_id']) / 'manifest.json'
+    assert json.loads(manifest_path.read_text())['source_file'] == 'first-upload.xlsx'
+    assert manager.store.manifest(fresh['dataset_id'])['source_file'] == source['file_name']
+    before = {str(p): p.read_bytes() for p in manager.root.rglob('*') if p.is_file()}
+
+    response = client.get('/api/knowledge-results/source-a', headers=headers(kb=source['knowledge_base_id']))
+
+    assert response.status_code == 200, response.text
+    assert response.json()['import_result']['dataset_id'] == fresh['dataset_id']
+    assert response.json()['import_result']['source_file'] == source['file_name']
+    assert before == {str(p): p.read_bytes() for p in manager.root.rglob('*') if p.is_file()}
+    assert not any(path.endswith('/download') for path, _ in state['calls'])
+
+
+def test_publication_view_does_not_accept_a_tampered_stored_name_matching_the_display_name(renamed_native):
+    _, _, manager, source, fresh = renamed_native
+    doc = manager.get(fresh['import_id'])
+    assert any(sheet['published_in_dataset'] for sheet in manager.publication_view(doc)['sheets'])
+    rewrite(manager.store._path(fresh['dataset_id']) / 'manifest.json', source_file=source['file_name'])
+
+    assert all(not sheet['published_in_dataset'] for sheet in manager.publication_view(doc)['sheets'])
+
+
+@pytest.mark.parametrize('field,value', [('dataset_id', 'f' * 24), ('import_id', 'e' * 24),
+                                       ('sha256', '0' * 64), ('source_file', 'current-upload.xlsx')])
+def test_renamed_native_result_route_still_rejects_changed_persisted_identity(renamed_native, field, value):
+    client, _, manager, source, fresh = renamed_native
+    rewrite(manager.store._path(fresh['dataset_id']) / 'manifest.json', **{field: value})
+
+    response = client.get('/api/knowledge-results/source-a', headers=headers(kb=source['knowledge_base_id']))
+
+    assert response.status_code == 400, response.text
+    assert '不一致' in response.json()['detail']
