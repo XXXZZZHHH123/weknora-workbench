@@ -114,7 +114,7 @@ func (r *sourceRegistry) withDocumentImageEvidence(output string, data map[strin
 		figures = append(figures, item)
 		if markdown, ok := evidence["markdown"].(string); ok && markdown != "" {
 			fmt.Fprintf(&figureText, "\n<original_figure_geometry reference=\"%s\" chunk_id=\"%s\">\n%s\n</original_figure_geometry>\n",
-				escapeAttr(stringValue(figure, "reference")), escapeAttr(stringValue(figure, "chunk_id")), escapeText(markdown))
+				escapeAttr(stringValue(figure, "reference")), escapeAttr(stringValue(figure, "chunk_id")), escapeText(originalFigureRoleOverview(evidence)+markdown))
 		}
 	}
 	if len(figures) > 0 {
