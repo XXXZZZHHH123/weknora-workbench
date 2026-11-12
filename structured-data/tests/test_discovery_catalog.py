@@ -76,6 +76,27 @@ def test_explicit_search_only_recalls_real_metadata_and_does_not_hide_files(tmp_
     assert '不表示没有数据' in missing['directory_notice']
 
 
+def test_empty_catalog_scope_is_not_document_absence_or_another_search_retry(tmp_path):
+    store = DataStore(tmp_path)
+    for arguments in ({}, {'question': 'A different request', 'search': 'arbitrary field'},
+                      {'latest_only': False}):
+        result = discovery.list_datasets(store, **arguments)
+        assert result['datasets'] == []
+        assert result['dataset_count'] == result['total_dataset_count'] == 0
+        assert result['next_offset'] is None and not result['datasets_truncated']
+        assert result['source_data_read'] is False
+        assert result['catalog_source_types'] == ['registered_spreadsheet_versions']
+        assert set(result['catalog_excludes']) == {'document_body', 'presentation_slides', 'original_figures'}
+        assert '不必重复同一空目录' in result['empty_catalog_notice']
+        assert '本轮实际可用工具' in result['document_source_next_step']
+        assert '已授权范围' in result['document_source_next_step']
+    dataset = publish(store)
+    page = discovery.list_datasets(store, offset=100)
+    assert page['datasets'] == [] and page['total_dataset_count'] == 1
+    assert 'empty_catalog_notice' not in page  # Empty page is not an empty inventory.
+    assert discovery.list_datasets(store)['datasets'][0]['dataset_id'] == dataset
+
+
 def test_persistent_index_reused_without_parsing_series_or_scanning_data(tmp_path, monkeypatch):
     store = DataStore(tmp_path)
     dataset = publish(store, count=40)

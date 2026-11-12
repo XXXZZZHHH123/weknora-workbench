@@ -8,9 +8,60 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/Tencent/WeKnora/internal/modelcontext"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 )
+
+func TestStructuredSingleScopeShortDirectoryKeepsServiceCoverageInModelView(t *testing.T) {
+	for _, operation := range []string{"list_datasets", "list_pdf_tables"} {
+		t.Run(operation, func(t *testing.T) {
+			calls := 0
+			serviceData := map[string]any{
+				"source_data_read": false, "catalog_source_types": []string{"published_pdf_tables"},
+				"catalog_excludes":          []string{"document_body", "presentation_slides", "original_figures"},
+				"directory_notice":          "An empty structured catalog does not establish document absence.",
+				"document_source_next_step": "Use currently available document tools within the authorized scope; filenames do not establish content coverage.",
+				"tables":                    []any{}, "total_table_count": 0, "next_offset": nil, "output_truncated": false,
+			}
+			if operation == "list_datasets" {
+				delete(serviceData, "tables")
+				delete(serviceData, "total_table_count")
+				serviceData["datasets"], serviceData["dataset_count"], serviceData["total_dataset_count"] = []any{}, 0, 0
+				serviceData["catalog_source_types"] = []string{"registered_spreadsheet_versions", "published_pdf_tables"}
+				serviceData["empty_catalog_notice"] = "Changing question/search/latest_only does not turn this complete empty inventory into document retrieval."
+			}
+			base := nativeReadTestTool(t, func(w http.ResponseWriter, request *http.Request) {
+				calls++
+				require.Equal(t, "allowed-kb", decodeStructuredScopeIdentity(t, request)["knowledge_base_id"])
+				require.NoError(t, json.NewEncoder(w).Encode(serviceData))
+			}).WithSearchTargets(types.SearchTargets{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "allowed-kb", TenantID: 7}})
+			registry := NewToolRegistry()
+			directory := map[string]any{"tools": []any{map[string]any{"name": operation, "description": "Structured catalog only", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}}}}
+			for _, tool := range NewStructuredReadOperationTools(base, directory) {
+				registry.RegisterTool(tool)
+			}
+			result, err := registry.ExecuteTool(structuredScopeContext(), "structured_"+operation, json.RawMessage(`{}`))
+			require.NoError(t, err)
+			require.True(t, result.Success)
+			require.Equal(t, 1, calls, "coverage advice performs no retrieval or retry")
+			require.NotContains(t, result.Output, "output truncated")
+			visible := modelcontext.NewRegistry(true).ModelToolResultForTool("structured_"+operation, result)
+			var view map[string]any
+			require.NoError(t, json.Unmarshal([]byte(visible), &view))
+			for _, key := range []string{"source_data_read", "catalog_source_types", "catalog_excludes", "directory_notice", "document_source_next_step", "empty_catalog_notice"} {
+				if expected, exists := serviceData[key]; exists {
+					want, err := json.Marshal(expected)
+					require.NoError(t, err)
+					got, err := json.Marshal(view[key])
+					require.NoError(t, err)
+					require.JSONEq(t, string(want), string(got), key)
+				}
+			}
+			require.NotContains(t, visible, "source_context", "authenticated transport scope stays private")
+		})
+	}
+}
 
 func TestStructuredNativeMultiScopeDirectoryPreservesProjectionThroughRegistry(t *testing.T) {
 	for _, budget := range []int{3000, DefaultMaxToolOutput} {

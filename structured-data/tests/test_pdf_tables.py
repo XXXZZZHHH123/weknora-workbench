@@ -709,6 +709,26 @@ def test_discovery_directory_pagination_keeps_all_published_identities(tmp_path)
             store.list_tables(discovery=True, **args)
 
 
+def test_pdf_directory_scope_excludes_document_content_even_when_empty(tmp_path):
+    store, draft, plan = setup(tmp_path)
+    before = store.read_draft(draft['draft_id'])
+    empty = store.list_tables(discovery=True)
+    assert empty['tables'] == [] and empty['total_table_count'] == 0
+    published = publish(store, draft, plan)
+    for result in (empty, store.list_tables(discovery=True),
+                   store.list_tables('b' * 64, discovery=True)):
+        assert result['source_data_read'] is False
+        assert result['catalog_source_types'] == ['published_pdf_tables']
+        assert set(result['catalog_excludes']) == {'document_body', 'presentation_slides', 'original_figures'}
+        assert 'source_sha256过滤' in result['directory_notice']
+        assert '即使完整为空也不证明' in result['directory_notice']
+        assert '本轮实际可用工具' in result['document_source_next_step']
+        assert '不扩展权限' in result['document_source_next_step']
+    assert store.read_draft(draft['draft_id'])['bundle'] == before['bundle']
+    assert store.read_table(published['table_id'])['record_sha256'] == published['record_sha256']
+    assert 'source_data_read' not in store.list_tables()  # Browser inventory remains unchanged.
+
+
 def test_discovery_navigation_omits_unselected_scope_notes_without_mutating_sources(tmp_path):
     raw = bundle([['Item', 'Amount'], ['A', '17']], [['Item', 'Amount'], ['B', '23']])
     for index, fragment in enumerate(raw['fragments']):
