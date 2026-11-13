@@ -892,6 +892,10 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 		now,
 	)
 
+	if err := setPPTXMediaProcessingMetadata(knowledge, options.Metadata); err != nil {
+		logger.Warnf(ctx, "Invalid PPTX preview receipt for %s: %v", knowledge.ID, err)
+	}
+
 	if err := s.updateKnowledgeUnlessSourceReplaced(ctx, knowledge); err != nil {
 		logger.GetLogger(ctx).WithField("error", err).Errorf("processChunks update knowledge failed")
 	}

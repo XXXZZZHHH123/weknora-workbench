@@ -82,6 +82,40 @@ func (r *sourceRegistry) ModelOutput(result *types.ToolResult) string {
 	}
 }
 
+// Keep protocol observations visible after every actual source projection,
+// including structured tools whose numeric output remains opaque.
+func (r *sourceRegistry) appendDiscoveryObservations(toolName, output string, result *types.ToolResult) string {
+	if result == nil {
+		return output
+	}
+	var key string
+	switch toolName {
+	case "read_document":
+		key = "location_recovery"
+	case "structured_data", "structured_list_series", "structured_list_datasets", "structured_list_pdf_tables", "structured_list_charts":
+		key = "discovery_coverage"
+	default:
+		return output
+	}
+	if value, ok := result.Data[key]; ok {
+		if encoded, err := json.Marshal(value); err == nil {
+			encoded = []byte(r.CompactKnownText(string(encoded)))
+			if key == "discovery_coverage" {
+				// Catalogs retain their JSON wire shape and raw numeric tokens.
+				var payload map[string]json.RawMessage
+				if json.Unmarshal([]byte(output), &payload) == nil && payload != nil {
+					payload[key] = json.RawMessage(encoded)
+					if rendered, err := json.Marshal(payload); err == nil {
+						return string(rendered)
+					}
+				}
+			}
+			output += "\n<" + key + ">" + escapeText(string(encoded)) + "</" + key + ">"
+		}
+	}
+	return output
+}
+
 // The source codec rebuilds document replies from structured rows, so new
 // image evidence must survive here as well as in the canonical raw Output.
 // Preserve actual selection metadata and original geometry; do not turn the

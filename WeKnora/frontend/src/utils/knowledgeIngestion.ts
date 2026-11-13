@@ -56,6 +56,14 @@ export function knowledgeCoverageSummary(metadata: unknown, parseStatus?: string
     : undefined
   const imageCount = count(metadataRecord?.image_count) ?? count(metadataRecord?.images_found)
   if (imageCount !== undefined) parts.push(`图片 ${imageCount}`)
+  const media = metadataRecord?.pptx_media_processing_v1
+  if (media && typeof media === 'object' && !Array.isArray(media)) {
+    const preview = media as Record<string, unknown>
+    const deferred = count(preview.deferred_vector_previews)
+    const unavailable = count(preview.unavailable_vector_parts)
+    if (deferred !== undefined && deferred > 0 && deferred <= 4096) parts.push(`预览待生成 ${deferred}`)
+    if (unavailable !== undefined && unavailable > 0 && unavailable <= 4096) parts.push(`原图不可用 ${unavailable}`)
+  }
   const chunkCount = count(metadataRecord?.chunk_count)
   if (chunkCount !== undefined) parts.push(`分块 ${chunkCount}`)
   if (receipt.attentionCount > 0) parts.push(`待处理 ${receipt.attentionCount}`)

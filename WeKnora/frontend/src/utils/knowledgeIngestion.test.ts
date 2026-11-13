@@ -38,3 +38,12 @@ test('current native receipt keeps nested unresolved groups visible', () => {
   } }, 'completed'), ['处理流程已结束', '自动入库 6 张表', '待处理 21'])
   assert.deepEqual(knowledgeCoverageSummary({}, 'completed'), ['处理流程已结束'])
 })
+
+test('completed document keeps deferred preview and unavailable originals visible', () => {
+  assert.deepEqual(knowledgeCoverageSummary({ pptx_media_processing_v1: {
+    deferred_vector_previews: 3, unavailable_vector_parts: 1,
+  } }, 'completed'), ['处理流程已结束', '预览待生成 3', '原图不可用 1'])
+  assert.deepEqual(knowledgeCoverageSummary({ pptx_media_processing_v1: {
+    deferred_vector_previews: -1, unavailable_vector_parts: Infinity,
+  } }, 'completed'), ['处理流程已结束'])
+})

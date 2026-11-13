@@ -36,6 +36,8 @@ func TestStandardAnswerGuidanceReachesPlannerAndExecutionWithoutChangingUserScop
 			for _, prompt := range []string{model.requests[0][0].Content, model.calls[0][0].Content} {
 				if mode == "standard" {
 					require.Equal(t, 1, strings.Count(prompt, standardAnswerGuidance), "planner and executor share exactly the same practical policy")
+					require.Contains(t, prompt, "文件名措辞、上传顺序或数值接近程度不能证明权威或替代关系")
+					require.Contains(t, prompt, "并列呈现有依据的差异并明确无法确定哪版优先")
 				} else {
 					require.NotContains(t, prompt, "<standard_answer_policy>", "strict and legacy prompts preserve their prior policy")
 				}

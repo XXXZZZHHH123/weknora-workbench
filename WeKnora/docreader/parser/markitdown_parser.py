@@ -139,9 +139,12 @@ class StdMarkitdownParser(BaseParser):
             text = result.text_content
             images: dict[str, str] = {}
             image_sources: list[dict] = []
+            media_stats: dict = {}
             if pptx_bytes is not None:
-                text, images = attach_pptx_media_to_markdown(text, pptx_bytes, image_sources=image_sources)
+                text, images = attach_pptx_media_to_markdown(text, pptx_bytes, image_sources=image_sources, processing_stats=media_stats)
         metadata = {}
+        if media_stats:
+            metadata["pptx_media_processing_v1"] = json.dumps(media_stats)
         if image_sources:
             metadata["pptx_image_sources_v1"] = json.dumps(image_sources, ensure_ascii=False)
         return Document(content=text, images=images, metadata=metadata)

@@ -129,11 +129,11 @@ def attach_result_contract(result, *, source_snapshot, execution, columns,
     return result
 
 
-def source_column(name, index, logical_type, *, unit=None, dependency=None, display_name=None):
+def source_column(name, index, logical_type, *, unit=None, dependency=None, display_name=None, operation=None):
     if dependency and dependency['kind']=='constant_label':
         unit=unknown_unit('Literal output labels have no source measurement unit')
     return dict(index=index, name=name, display_name=display_name or name,
-                logical_type=logical_type, dependency=dependency or dict(
+                logical_type=logical_type, **({'operation':deepcopy(operation)} if operation is not None else {}), dependency=dependency or dict(
                     kind='source_value', source_columns=[name],
                     source_row_dependency=False, technical_metadata=False),
                 unit=deepcopy(unit or unknown_unit()))

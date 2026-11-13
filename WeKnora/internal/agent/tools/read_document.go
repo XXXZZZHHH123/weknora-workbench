@@ -213,7 +213,7 @@ type chunkContentSegment struct {
 }
 
 // Execute resolves the id, then dispatches to page, chunk or query reading.
-func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*types.ToolResult, error) {
+func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (finalResult *types.ToolResult, finalErr error) {
 	var input ReadDocumentInput
 	if err := json.Unmarshal(args, &input); err != nil {
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("Failed to parse args: %v", err)}, err
@@ -297,6 +297,11 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error()}, err
 	}
+	defer func() {
+		if finalErr == nil {
+			annotatePDFLocationRecovery(knowledge, finalResult)
+		}
+	}()
 	if len(pages) > 0 {
 		if query != "" && (input.ContentLimit > 0 || input.ContentOffset > 0) {
 			return &types.ToolResult{Success: false, Error: "query and chunk content segmentation are separate read modes"}, nil

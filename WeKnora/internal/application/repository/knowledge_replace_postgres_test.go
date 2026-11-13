@@ -40,7 +40,8 @@ func TestReplaceKnowledgePostgresRollbackAndCommit(t *testing.T) {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
-	require.NoError(t, db.AutoMigrate(&types.Knowledge{}, &types.KnowledgeTagRelation{}))
+	require.NoError(t, db.AutoMigrate(&types.KnowledgeBase{}, &types.Knowledge{}, &types.KnowledgeTagRelation{}))
+	require.NoError(t, db.Create(&types.KnowledgeBase{ID: "kb", TenantID: 7, Name: "replacement fixture"}).Error)
 	ctx := context.Background()
 	repo := NewKnowledgeRepository(db)
 	old := &types.Knowledge{ID: "old", TenantID: 7, KnowledgeBaseID: "kb", Type: "file"}

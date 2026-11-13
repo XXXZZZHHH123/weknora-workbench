@@ -40,7 +40,7 @@ for (const mode of ['normal', 'embedded', 'after', 'inject']) {
       props: { isReplying: ['after', 'inject'].includes(mode), canSteer: true, embeddedMode: mode === 'embedded' },
       uploadedAttachments: { value: [] }, uploadedImages: { value: [] },
       allSelectedItems: { value: [] }, selectedModelId: { value: 'model' },
-      composerModelId: { value: 'host-model' },
+      composerModelId: { value: 'host-model' }, hasSessionModel: { value: false },
       selectedAgent: { value: { config: {} } }, draftMemoryDisabled: { value: false },
       settingsStore: {}, chatResources: { isLoaded: () => true },
       collectAgentNotReadyReasons: () => ({ keys: [], labels: [] }),

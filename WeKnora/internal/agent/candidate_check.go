@@ -27,6 +27,9 @@ const (
 // observations sent to the checker. It is never a reusable boolean approval.
 // Hashes are assigned by the runtime, not supplied by a model.
 type candidateDecision struct {
+	ReasonCode                   string
+	CitationIssueCounts          map[string]int
+	RepeatedUnsupported          []string
 	Disposition                  candidateDisposition
 	Candidate                    string
 	CandidateHash                string
@@ -140,11 +143,16 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 			"disposition": decision.Disposition, "candidate_hash": decision.CandidateHash,
 			"task_revision": decision.TaskHash, "evidence_revision": decision.EvidenceHash,
 			"checks": e.turnReview.Checks, "repairs": e.turnReview.Repairs,
+			"reason_code": decision.ReasonCode, "source_review_attempted": decision.SourceReviewAttempted,
+			"citation_issue_counts": decision.CitationIssueCounts, "unsupported_count": len(decision.Unsupported),
+			"repeated_unsupported_count": len(decision.RepeatedUnsupported),
+			"feedback_hash":              candidateTextDigest(e.answerReviewFeedback),
 		})
 	}()
 	if ctx.Err() != nil {
 		decision.Disposition = candidateProtocolFailure
 		decision.Err = ctx.Err()
+		decision.ReasonCode = "context_cancelled"
 		return
 	}
 	// A runtime view reference is a compact presentation request, never a
@@ -154,6 +162,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	if expansionErr != nil {
 		decision.Candidate, decision.CandidateHash = "", candidateTextDigest("")
 		decision.Disposition, decision.Err = candidateProtocolFailure, expansionErr
+		decision.ReasonCode = "document_view_binding_invalid"
 		e.answerReviewFeedback = "表格视图引用未通过本轮真实执行、来源版本或范围校验。请根据当前完整要求重新读取并选择实际表格，不要重抄或猜测视图内容。"
 		e.answerReviewAction = reviewCollectEvidence
 		return
@@ -166,12 +175,14 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		})
 	}
 	if !e.candidateEvidenceBudgetFits(candidate, state) {
+		decision.ReasonCode = "evidence_storage_budget"
 		e.answerReviewFeedback = "所选证据超出单条消息存储预算。使用同一次真实返回结果的聚合引用，保留必要原格和计算依据；不能丢弃引用后把未保存证据宣布为已完成。"
 		e.answerReviewAction = reviewReviseAnswer
 		decision.Disposition = candidateRevise
 		return
 	}
 	if strings.TrimSpace(candidate) == "" {
+		decision.ReasonCode = "empty_candidate"
 		decision.Disposition = candidateRevise
 		return
 	}
@@ -198,9 +209,16 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		invalid := len(uniqueCandidateCitationIDs(candidate)) != len(e.currentCandidateKnowledgeReferences(candidate, state, conversation)) ||
 			len(uniqueCandidateEvidenceIDs(candidate)) != len(e.currentCandidateEvidenceReferences(candidate, state))
 		if invalid || (!e.config.CitationsEnabled() && len(uniqueCandidateCitationIDs(candidate))+len(uniqueCandidateEvidenceIDs(candidate)) > 0) {
-			e.answerReviewFeedback = "答复使用了本轮无法核实的来源引用。仅保留真实已读、身份和版本一致的来源句柄；缺少支持时准确说明该部分的缺口，不猜测或借用其他来源。"
+			decision.ReasonCode = "citation_identity_invalid"
+			feedback, counts, needsRead := e.candidateCitationRecovery(candidate, state, conversation)
+			decision.CitationIssueCounts = counts
+			e.answerReviewFeedback = feedback
 			e.answerReviewAction = reviewReviseAnswer
 			decision.Disposition = candidateRevise
+			if needsRead {
+				e.answerReviewAction = reviewCollectEvidence
+				decision.Disposition = candidateNeedSource
+			}
 			return
 		}
 	}
@@ -208,8 +226,10 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		evidence := answerNumericEvidence(candidate, state.RoundSteps, conversation)
 		decision.Unsupported = ungroundedStructuredNumbers(candidate, evidence, state.RoundSteps)
 		decision.NumericFeedback = buildNumericValidationFeedback(candidate, decision.Unsupported)
+		decision.RepeatedUnsupported = repeatedUnsupportedTokens(decision.Unsupported, e.turnReview.Last.Unsupported)
 		if len(decision.Unsupported) > 0 && (e.standardAnswerReview() || !e.turnReview.NumericWarningAllowed && e.turnReview.Repairs < maxTurnCandidateRepairs) {
 			decision.Disposition = candidateNumericFailure
+			decision.ReasonCode = "numeric_tokens_unmatched"
 			return
 		}
 		ctx = withNumericValidationFeedback(ctx, decision.NumericFeedback)
@@ -251,7 +271,9 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	}
 	if decision.Err != nil {
 		decision.Disposition = candidateProtocolFailure
+		decision.ReasonCode = "source_review_protocol_failure"
 	} else if repair {
+		decision.ReasonCode = "source_review_revision"
 		decision.Disposition = candidateRevise
 		if e.answerReviewAction == reviewCollectEvidence {
 			decision.Disposition = candidateNeedSource

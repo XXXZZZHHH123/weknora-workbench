@@ -3,7 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	websearch "github.com/Tencent/WeKnora/internal/infrastructure/web_search"
 	"net/url"
 	"strings"
 	"sync"
@@ -266,10 +268,16 @@ func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (*typ
 	webResults, err := t.webSearchService.Search(ctx, resolvedProviderID, searchConfig, query)
 	if err != nil {
 		logger.Errorf(ctx, "[Tool][WebSearch] Web search failed: %v", err)
-		return &types.ToolResult{
-			Success: false,
-			Error:   fmt.Sprintf("web search failed: %v", err),
-		}, fmt.Errorf("web search failed: %w", err)
+		var failure *websearch.RequestFailure
+		if errors.As(err, &failure) {
+			data := map[string]any{"kind": "web_search_failure", "reason_code": failure.Code,
+				"attempts": failure.Attempts, "retryable": failure.Retryable,
+				"retry_after_ms": failure.RetryAfter.Milliseconds(), "coverage_established": false,
+				"notice": "Search transport did not establish source coverage. Bounded retries are already exhausted or unavailable. Do not repeatedly issue equivalent searches to overcome this failure. Use an already known relevant public URL with web_fetch if available, or explain the unavailable evidence; do not invent URLs, facts, or silently change configured providers/filters."}
+			output, _ := json.Marshal(data)
+			return &types.ToolResult{Success: false, Error: failure.Error(), Data: data, Output: string(output)}, nil
+		}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("web search failed: %v", err)}, fmt.Errorf("web search failed: %w", err)
 	}
 
 	logger.Infof(ctx, "[Tool][WebSearch] Web search returned %d results", len(webResults))

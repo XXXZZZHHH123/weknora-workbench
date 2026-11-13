@@ -132,7 +132,7 @@ func (t *ReadDocumentTool) readPhysicalPage(ctx context.Context, knowledge *type
 
 func (t *ReadDocumentTool) renderPhysicalPage(ctx context.Context, knowledge *types.Knowledge, requested, offset, limit int, segment *chunkContentSegment, selected []*types.Chunk, views map[string]*types.ChunkContentView, total int64) (*types.ToolResult, error) {
 	if len(selected) == 0 {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("指定文档第 %d 页未找到可读取的页码标记或内容。需要补齐该文档的页码解析；不能把第 %d 个分块当作第 %d 页，也不能引用其他报告的同名图。", requested, requested, requested), Data: map[string]interface{}{"knowledge_id": knowledge.ID, "requested_page": requested}}, nil
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("指定文档第 %d 页未找到可读取的页码标记或内容。正文页码映射尚未建立；可按返回的location_recovery发现同一授权原件的其他定位证据。不能把第 %d 个分块当作第 %d 页，也不能引用其他报告的同名图。", requested, requested, requested), Data: map[string]interface{}{"knowledge_id": knowledge.ID, "requested_page": requested}}, nil
 	}
 	pageTotal := len(selected)
 	if segment != nil {

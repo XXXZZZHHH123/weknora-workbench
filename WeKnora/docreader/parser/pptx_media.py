@@ -6,11 +6,13 @@ workbook must never be opened or refreshed while indexing.
 from __future__ import annotations
 
 import base64
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import contextvars
 from contextvars import ContextVar
 import io
+import hashlib
 import logging
 import os
 import posixpath
@@ -20,6 +22,7 @@ import signal
 import struct
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -38,10 +41,16 @@ _MAX_MEDIA_BYTES = 16 * 1024 * 1024
 _MAX_XML_BYTES = 8 * 1024 * 1024
 _MAX_PNG_BYTES = 32 * 1024 * 1024
 _MAX_PIXELS = 40_000_000
-# Parsing runs in the background under a 30-minute reader timeout. Rendering
-# every vector chart here lets previews serve stored PNGs instead of converting
-# them one by one on demand (a 279-chart weekly report needs ~5 single-core minutes).
-_MEDIA_BUDGET_SECONDS = 600
+# Eager previews are optional: retain exact vector bytes and page bindings when
+# this budget expires. Authorized source-media reads render selected figures.
+# This is not background completion and does not change OCR requirements.
+_MEDIA_BUDGET_SECONDS = 60
+_RENDER_CACHE_VERSION = "office-png-2048x2896-trim-v1"
+_RENDER_CACHE_MAX_BYTES = 64 * 1024 * 1024
+_RENDER_CACHE_MAX_ITEMS = 128
+_RENDER_CACHE = OrderedDict()
+_RENDER_CACHE_BYTES = 0
+_RENDER_CACHE_LOCK = threading.Lock()
 _OFFICE_PNG_FILTER = (
     'png:draw_png_Export:{"PixelWidth":{"type":"long","value":"2048"},'
     '"PixelHeight":{"type":"long","value":"2896"}}'
@@ -84,17 +93,17 @@ def _run_conversion(command: list[str], timeout: float) -> bool:
     deadline = time.monotonic() + max(0.1, timeout)
     try:
         if _CONVERSION_CANCELLED.get() is None:
-            return proc.wait(timeout=max(0.1, timeout)) == 0
+            return _conversion_exit_ok(proc.wait(timeout=max(0.1, timeout)))
         while not _conversion_is_cancelled():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(command, timeout)
             try:
-                return proc.wait(timeout=min(0.1, remaining)) == 0
+                return _conversion_exit_ok(proc.wait(timeout=min(0.1, remaining)))
             except subprocess.TimeoutExpired:
                 continue
     except subprocess.TimeoutExpired:
-        logger.warning("PPT image conversion timed out")
+        logger.warning("PPT image conversion status=timeout budget_seconds=%.3f", timeout)
     # A cancelled RPC must release its renderer capacity as soon as its last
     # shared waiter leaves, rather than consuming the entire conversion budget.
     try:
@@ -103,6 +112,42 @@ def _run_conversion(command: list[str], timeout: float) -> bool:
         pass
     proc.wait()
     return False
+
+
+def _conversion_exit_ok(code: int) -> bool:
+    if code:
+        logger.warning("PPT image conversion status=%s exit_code=%s",
+                       "resource_or_signal" if code < 0 else "converter_failed", code)
+    return code == 0
+
+
+def _render_key(name: str, data: bytes) -> str:
+    # Exact bytes and format, never filename/page alone. Cache only converted
+    # bytes; authorization and slide relationship checks remain at the caller.
+    return hashlib.sha256((_RENDER_CACHE_VERSION + _OFFICE_PNG_FILTER +
+                           posixpath.splitext(name)[1].lower()).encode() + data).hexdigest()
+
+
+def _cached_png(key: str) -> bytes | None:
+    with _RENDER_CACHE_LOCK:
+        png = _RENDER_CACHE.get(key)
+        if png is not None:
+            _RENDER_CACHE.move_to_end(key)
+        return png
+
+
+def _cache_png(key: str, png: bytes):
+    global _RENDER_CACHE_BYTES
+    if not png or len(png) > _MAX_PNG_BYTES:
+        return
+    with _RENDER_CACHE_LOCK:
+        previous = _RENDER_CACHE.pop(key, None)
+        _RENDER_CACHE_BYTES -= len(previous) if previous else 0
+        _RENDER_CACHE[key] = png
+        _RENDER_CACHE_BYTES += len(png)
+        while len(_RENDER_CACHE) > _RENDER_CACHE_MAX_ITEMS or _RENDER_CACHE_BYTES > _RENDER_CACHE_MAX_BYTES:
+            _, removed = _RENDER_CACHE.popitem(last=False)
+            _RENDER_CACHE_BYTES -= len(removed)
 
 
 def _rasterize_with_pillow(data: bytes, *, trim_canvas: bool = False) -> bytes | None:
@@ -174,6 +219,18 @@ def _rasterize_with_libreoffice(data: bytes, suffix: str, timeout: float = 30) -
 
 
 def rasterize_media_bytes(name: str, data: bytes, *, timeout: float = 30) -> bytes | None:
+    if _conversion_is_cancelled() or not data or len(data) > _MAX_MEDIA_BYTES:
+        return None
+    key = _render_key(name, data)
+    png = _cached_png(key)
+    if png is None:
+        png = _rasterize_media_uncached(name, data, timeout=timeout)
+        if png:
+            _cache_png(key, png)
+    return png
+
+
+def _rasterize_media_uncached(name: str, data: bytes, *, timeout: float = 30) -> bytes | None:
     ext = posixpath.splitext(name)[1].lower()
     if _conversion_is_cancelled():
         return None
@@ -386,66 +443,117 @@ def extract_emf_labels(data: bytes) -> list[str]:
     return labels
 
 
+def _cpu_capacity() -> float:
+    limits = [float(os.cpu_count() or 1)]
+    try:
+        limits.append(float(len(os.sched_getaffinity(0))))
+    except (AttributeError, OSError):
+        pass
+    # Support both cgroup layouts used by development and deployed containers.
+    try:
+        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()
+        if quota != "max" and float(period) > 0:
+            limits.append(float(quota) / float(period))
+    except (OSError, ValueError):
+        try:
+            quota = float(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text())
+            period = float(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text())
+            if quota > 0 and period > 0:
+                limits.append(quota / period)
+        except (OSError, ValueError):
+            pass
+    return max(.01, min(limits))
+
+
 def _vector_render_workers() -> int:
     try:
-        return max(1, min(4, int(os.environ.get("DOCREADER_VECTOR_RENDER_WORKERS", "3"))))
+        requested = int(os.environ.get("DOCREADER_VECTOR_RENDER_WORKERS", "3"))
     except ValueError:
-        return 3
+        requested = 3
+    return max(1, min(4, requested, int(_cpu_capacity())))
+
+
+def _media_budget_seconds() -> float:
+    try:
+        value = float(os.environ.get("DOCREADER_PPTX_PREVIEW_BUDGET_SECONDS", str(_MEDIA_BUDGET_SECONDS)))
+        return max(0, min(600, value))
+    except ValueError:
+        return _MEDIA_BUDGET_SECONDS
 
 
 def _rasterize_vector_batches(archive: zipfile.ZipFile, targets: list[str], deadline: float) -> dict[str, bytes]:
-    """Avoid one LibreOffice startup per chart in image-heavy reports.
+    """Convert unique referenced caches once, bounded by CPU and wall time.
 
-    Eight standalone caches per isolated process keeps temporary disk/input
-    bounded and still validates each output separately. Only referenced image
-    parts are converted, never OLE workbooks or presentation links. Batches run
-    in a few independent LibreOffice processes (own profile and directory);
-    members are read here first because ZipFile is not safe across threads.
+    Partial output from a timed-out batch remains usable after PNG validation.
+    Missing outputs retain their original vectors; ingestion does not immediately
+    repeat the same converter for every failed item. Explicit source-media reads
+    can retry later under their own authorized request and cancellation budget.
     """
+    started = time.monotonic()
+    results = {}
+    unique = {}
+    aliases = {}
+    cache_hits = 0
+    for target in targets:
+        try:
+            raw = _read_member(archive, target, _MAX_MEDIA_BYTES)
+        except (KeyError, ValueError) as exc:
+            logger.warning("PPT cached image status=invalid_source: %s", exc)
+            continue
+        key = _render_key(target, raw)
+        aliases.setdefault(key, []).append(target)
+        png = _cached_png(key)
+        if png is not None:
+            results[target] = png
+            cache_hits += 1
+        else:
+            unique.setdefault(key, (target, raw))
     soffice = find_soffice()
     if not soffice:
-        return {}
-    batches = []
-    for offset in range(0, len(targets), 8):
-        batch = []
-        for target in targets[offset:offset + 8]:
-            try:
-                batch.append((target, _read_member(archive, target, _MAX_MEDIA_BYTES)))
-            except (KeyError, ValueError) as exc:
-                logger.warning("PPT cached image unavailable: %s", exc)
-        if batch:
-            batches.append(batch)
+        logger.info("PPT preview batch status=converter_unavailable targets=%d", len(targets))
+        return results
+    workers = _vector_render_workers()
+    # A three-process pool on a 0.35 CPU container made every 8-image batch
+    # time out. Small batches leave room for startup and completed-output reads.
+    batch_size = max(1, min(8, int(8 * min(1, _cpu_capacity() / workers))))
+    pending = list(unique.items())
+    batches = [pending[offset:offset + batch_size] for offset in range(0, len(pending), batch_size)]
 
     def convert(batch):
         remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        if remaining <= 0 or _conversion_is_cancelled():
             return {}
         rendered = {}
         with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as profile:
             inputs = []
-            for target, raw in batch:
+            for _, (target, raw) in batch:
                 src = os.path.join(temp_dir, f"asset{len(inputs)}" + posixpath.splitext(target)[1])
                 Path(src).write_bytes(raw)
                 inputs.append(src)
             try:
-                _run_conversion([soffice, "-env:UserInstallation=" + Path(profile).as_uri(),
-                                 "--headless", "--convert-to", _OFFICE_PNG_FILTER, "--outdir", temp_dir] + inputs,
-                                min(30, remaining))
-                for (target, _), src in zip(batch, inputs):
+                ok = _run_conversion([soffice, "-env:UserInstallation=" + Path(profile).as_uri(),
+                                      "--headless", "--convert-to", _OFFICE_PNG_FILTER, "--outdir", temp_dir] + inputs,
+                                     min(30, remaining))
+                for (key, _), src in zip(batch, inputs):
                     png = _read_png(os.path.splitext(src)[0] + ".png", trim_canvas=True)
                     if png:
-                        rendered[target] = png
+                        _cache_png(key, png)
+                        for target in aliases[key]:
+                            rendered[target] = png
+                if len(rendered) < sum(len(aliases[key]) for key, _ in batch):
+                    logger.info("PPT preview batch status=%s input_count=%d output_count=%d",
+                                "missing_output" if ok else "incomplete_conversion", len(batch), len(rendered))
             except OSError as exc:
-                logger.warning("PPT cached image batch conversion failed: %s", exc)
+                logger.warning("PPT preview batch status=start_failed: %s", exc)
         return rendered
 
-    results = {}
-    workers = min(_vector_render_workers(), len(batches)) or 1
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        # Each worker keeps the caller's cancellation context.
         futures = [pool.submit(contextvars.copy_context().run, convert, batch) for batch in batches]
         for future in futures:
             results.update(future.result())
+    logger.info("PPT preview stage seconds=%.3f targets=%d unique_uncached=%d cache_hits=%d rendered=%d deferred=%d workers=%d batch_size=%d",
+                time.monotonic() - started, len(targets), len(unique), cache_hits,
+                len(results), len(targets) - len(results), workers, batch_size)
     return results
 
 
@@ -561,7 +669,7 @@ def _trend_geometry_markdown(result: dict, page_number: int, target: str) -> str
     return "\n".join(lines)
 
 
-def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes, *, image_sources: list | None = None) -> Tuple[str, Dict[str, str]]:
+def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes, *, image_sources: list | None = None, processing_stats: dict | None = None) -> Tuple[str, Dict[str, str]]:
     """Add page headings and pictures resolved by the owning slide relationships.
 
     Replace MarkItDown picture placeholders/data URIs per slide so no asset can
@@ -572,7 +680,8 @@ def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes, *, image_sou
     images: Dict[str, str] = {}
     sections = [markdown[:markers[0].start()]] if markers and markers[0].start() else []
     cache: dict[str, str | None] = {}
-    deadline = time.monotonic() + _MEDIA_BUDGET_SECONDS
+    started = time.monotonic()
+    deadline = started + _media_budget_seconds()
     with zipfile.ZipFile(io.BytesIO(pptx_bytes)) as archive:
         parts = _slide_parts(archive)
         if len(markers) != len(parts) or [int(m.group(1)) for m in markers] != list(range(1, len(parts) + 1)):
@@ -581,7 +690,10 @@ def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes, *, image_sou
         vector_targets = list(dict.fromkeys(target for pictures in pictures_by_page
                                            for _, target, _ in pictures
                                            if posixpath.splitext(target)[1].lower() in {".emf", ".wmf"}))
+        discovery_seconds = time.monotonic() - started
         vector_images = _rasterize_vector_batches(archive, vector_targets, deadline)
+        preview_seconds = time.monotonic() - started - discovery_seconds
+        vector_previews = len(vector_images)
         for index, (marker, part) in enumerate(zip(markers, parts), 1):
             end = markers[index].start() if index < len(markers) else len(markdown)
             body = markdown[marker.end():end].strip()
@@ -609,7 +721,7 @@ def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes, *, image_sou
                     # The budget limits expensive vector rendering. An earlier
                     # failed vector must not hide already embedded raster logos.
                     native_raster = posixpath.splitext(target)[1].lower() in _RASTER_EXT
-                    if png is None and (remaining > 0 or native_raster):
+                    if png is None and target not in vector_targets and (remaining > 0 or native_raster):
                         try:
                             png = rasterize_media_bytes(target, _read_member(archive, target, _MAX_MEDIA_BYTES),
                                                         timeout=max(0.1, min(30, remaining)))
@@ -654,6 +766,20 @@ def attach_pptx_media_to_markdown(markdown: str, pptx_bytes: bytes, *, image_sou
             if notes:
                 page.append(notes)
             sections.append("\n\n".join(item for item in page if item))
+    deferred = sum(bool(cache.get(target)) and cache[target].endswith((".emf", ".wmf")) for target in vector_targets)
+    unavailable = sum(not cache.get(target) for target in vector_targets)
+    stats = {"slides": len(parts), "vector_parts": len(vector_targets),
+             "vector_previews": vector_previews,
+             "deferred_vector_previews": deferred,
+             "unavailable_vector_parts": unavailable,
+             "preview_status": "unavailable" if unavailable else "deferred" if deferred else "ready",
+             "preview_completion": "authorized_on_demand",
+             "discovery_seconds": round(discovery_seconds, 3),
+             "preview_seconds": round(preview_seconds, 3),
+             "attachment_seconds": round(time.monotonic() - started - discovery_seconds - preview_seconds, 3)}
+    if processing_stats is not None:
+        processing_stats.update(stats)
+    logger.info("PPT media processing %s", stats)
     return "\n\n".join(sections), images
 
 

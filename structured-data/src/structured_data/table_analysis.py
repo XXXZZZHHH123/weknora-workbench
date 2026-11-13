@@ -101,6 +101,8 @@ def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=
             source_units={name:unknown_unit() for name in source_columns}
             source_units['value']=excel_value_unit(series,manifest['sha256'])
             units=infer_sql_units(con,sql,source_units,len(columns))
+            from .sql_result_operations import describe_sql_operations
+            operations=describe_sql_operations(con,sql,len(columns))
             dependencies,dependency_verified=describe_excel_dependencies(con,sql,source_columns,len(columns))
         except duckdb.Error as exc:
             raise AnalysisSQLError(exc, 'execute') from None
@@ -130,7 +132,7 @@ def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=
         dataset_id=dataset_id,scope='loaded_inputs_before_user_sql',input_data=encode(data),
         versions={'manifest_sha256':typed_sha256(manifest)}),
         execution=sql_execution(sql,duckdb.__version__,'DuckDB DOUBLE source values; DECIMAL result values encoded as strings'),
-        columns=[source_column(name,i,logical_types[i],unit=units[i],dependency=dependencies[i])
+        columns=[source_column(name,i,logical_types[i],unit=units[i],dependency=dependencies[i],operation=operations[i])
                  for i,name in enumerate(columns)],dependency_verified=dependency_verified)
     directory=store.root/'analysis-results';directory.mkdir(exist_ok=True)
     fd,temporary=tempfile.mkstemp(prefix='.result-',dir=directory)

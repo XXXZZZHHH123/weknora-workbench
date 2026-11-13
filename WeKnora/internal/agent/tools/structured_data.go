@@ -78,7 +78,7 @@ func (t *StructuredDataTool) BindSourceConversation(question string, messages []
 	t.BindSourceQuestion(string(payload))
 }
 
-func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) (*types.ToolResult, error) {
+func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) (result *types.ToolResult, resultErr error) {
 	caller := types.CallerFromContext(ctx)
 	if caller.TenantID == 0 || caller.UserID == "" || !caller.Role.IsValid() {
 		return nil, fmt.Errorf("结构化表格读取需要已核验的用户和空间")
@@ -131,6 +131,11 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	if err = t.authorizeStructuredAPIKeyScope(ctx, scope, directory != nil); err != nil {
 		return t.structuredScopeFailure(ctx, &structuredScopeError{"scope_not_authorized", err.Error(), false}), err
 	}
+	defer func() {
+		if resultErr == nil {
+			result = t.annotateDiscoveryCoverage(ctx, operation, arguments, scope, result)
+		}
+	}()
 	if directory != nil {
 		if operation == "list_datasets" {
 			if recalled, recallErr := t.recallAcrossKnowledgeBases(ctx, arguments, directory); recalled != nil {

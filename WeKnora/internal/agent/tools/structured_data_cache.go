@@ -25,13 +25,14 @@ var immutableStructuredDatasetID = regexp.MustCompile(`^[a-f0-9]{24}$`)
 // available turn identifiers. Rebinding (even to the same question) invalidates
 // the generation and prevents an older in-flight query publishing into it.
 type structuredReadCache struct {
-	mu                   sync.Mutex
-	generation           uint64
-	entries              map[string]structuredReadCacheEntry
-	order                []string
-	bytes                int
-	inflight             map[string]chan struct{}
-	confirmationAttempts map[string]bool
+	mu                    sync.Mutex
+	generation            uint64
+	entries               map[string]structuredReadCacheEntry
+	order                 []string
+	bytes                 int
+	inflight              map[string]chan struct{}
+	confirmationAttempts  map[string]bool
+	discoveryObservations map[string]int
 }
 
 type structuredReadCacheEntry struct {
@@ -61,6 +62,7 @@ func (t *StructuredDataTool) bindStructuredSourceQuestion(question string) {
 	c.generation++
 	c.entries, c.order, c.inflight, c.bytes = nil, nil, nil, 0
 	c.confirmationAttempts = nil
+	c.discoveryObservations = nil
 }
 
 func (t *StructuredDataTool) structuredSourceQuestion() (string, uint64) {
