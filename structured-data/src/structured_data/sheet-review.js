@@ -307,8 +307,10 @@
         body.insertAdjacentHTML('beforeend','<h4 class="fields-heading">字段核对 <small>来源、名称和单位一起核对</small></h4>');body.append(columns);
         columns.querySelector('th').textContent='列 / 来源';
         columns.querySelectorAll('tr[data-column]').forEach((row,ci)=>{
+          const dimensions=dimensionsText(b.columns[ci]?.dimensions,['block','data_region']);
+          if(dimensions){const label=document.createElement('small');label.className='field-dimensions';label.textContent=dimensions;row.querySelector('td.metric')?.append(label);}
           const evidence=document.createElement('tr');evidence.className='field-evidence-row';
-          evidence.innerHTML=`<td colspan="${row.children.length}"><div class="field-evidence"><span>来源：</span><span class="field-origin" data-field-origin="${ci}"></span><small class="field-raw" data-field-raw="${ci}"></small></div>${!ui.editable&&b.columns[ci]?.dimensions?`<small class="field-dimensions">${esc(dimensionsText(b.columns[ci].dimensions))}</small>`:''}</td>`;row.after(evidence);
+          evidence.innerHTML=`<td colspan="${row.children.length}"><div class="field-evidence"><span>来源：</span><span class="field-origin" data-field-origin="${ci}"></span><small class="field-raw" data-field-raw="${ci}"></small></div></td>`;row.after(evidence);
           const remove=row.querySelector('[data-map-action="remove-column"]');if(remove){remove.textContent='×';remove.title='移除此数值列';remove.setAttribute('aria-label',`移除第 ${ci+1} 个数值列`);}
         });
       }
