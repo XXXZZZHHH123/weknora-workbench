@@ -110,7 +110,22 @@ func TestWorkbenchTypedPrefetchPreservesLegacyHistoryAndPinnedExecution(t *testi
 		}
 		if message.Role == "tool" && message.Name == catalog.Name {
 			foundCatalog = true
-			require.Equal(t, catalog.Result.Output, message.Content, "typed prefetch preserves the tool's bounded directory view")
+			var projected map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal([]byte(message.Content), &projected), "typed directory remains valid JSON")
+			var coverage map[string]any
+			require.NoError(t, json.Unmarshal(projected["discovery_coverage"], &coverage))
+			require.Equal(t, "list_datasets", coverage["operation"])
+			require.Equal(t, "structured_dataset_catalog", coverage["representation"])
+			require.Equal(t, false, coverage["document_body_searched_by_this_operation"])
+			require.Equal(t, false, coverage["document_images_read_by_this_operation"])
+			require.Equal(t, false, coverage["semantic_absence_established"])
+			require.NotEmpty(t, coverage["knowledge_base_id"])
+			require.Equal(t, "granted-library", catalog.Result.Data["discovery_coverage"].(map[string]any)["knowledge_base_id"])
+			delete(projected, "discovery_coverage")
+			originalView, err := json.Marshal(projected)
+			require.NoError(t, err)
+			require.JSONEq(t, catalog.Result.Output, string(originalView), "all original bounded directory fields survive alongside coverage metadata")
+			require.JSONEq(t, `{"datasets":[],"literal_fields":[{"actual_field":"source column"}]}`, catalog.Result.Output, "navigation metadata does not rewrite the canonical executed output")
 			require.Contains(t, message.Content, "source column", "actual recalled source metadata remains visible")
 		}
 	}

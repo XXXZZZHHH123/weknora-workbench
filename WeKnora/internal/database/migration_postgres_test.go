@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/golang-migrate/migrate/v4"
+	migratepostgres "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/stretchr/testify/require"
 )
 
@@ -45,10 +46,23 @@ func TestPostgresMigrationsServeAgentHistory(t *testing.T) {
 	require.False(t, dirty)
 	requirePostgresIndexValid(t, db)
 
-	// Down and up again: DROP/CREATE INDEX CONCURRENTLY through golang-migrate.
-	m, err := migrate.New("file://migrations/versioned", dsn)
+	// Exercise precisely migration 106, independently of later migrations. A
+	// separate migration ledger leaves the full schema version untouched.
+	indexSource := t.TempDir()
+	for _, direction := range []string{"up", "down"} {
+		name := "000106_messages_session_created_index." + direction + ".sql"
+		body, readErr := os.ReadFile(filepath.Join("migrations/versioned", name))
+		require.NoError(t, readErr)
+		require.NoError(t, os.WriteFile(filepath.Join(indexSource, name), body, 0600))
+	}
+	indexDB, err := sql.Open("postgres", dsn)
+	require.NoError(t, err)
+	driver, err := migratepostgres.WithInstance(indexDB, &migratepostgres.Config{MigrationsTable: "agent_history_index_test"})
+	require.NoError(t, err)
+	m, err := migrate.NewWithDatabaseInstance("file://"+indexSource, "postgres", driver)
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = m.Close() })
+	require.NoError(t, m.Force(106)) // The full migration above already created this index.
 	require.NoError(t, m.Steps(-1))
 	var indexes int
 	require.NoError(t, db.QueryRow(

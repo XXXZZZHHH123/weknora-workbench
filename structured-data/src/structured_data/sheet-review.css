@@ -228,7 +228,7 @@ dialog p{font-size:13px;line-height:1.7;margin:0 0 10px}
 .field-evidence .field-source{white-space:nowrap;border:1px solid #d7e4db;background:#f2f7f3!important;text-decoration:none;min-height:22px}
 #blockEditor .field-evidence-row td{padding:0 3px 9px}
 .field-evidence .field-raw{margin:0 0 0 auto}
-.field-dimensions{display:block;font-size:10px;color:#71857b;padding-top:3px}
+.field-dimensions{display:block;margin:4px 2px 0;font-size:11px;line-height:1.5;color:#526b5c;overflow-wrap:anywhere}
 #blockEditor input:disabled,#blockEditor select:disabled{color:#526273;background:#f6f8fa;opacity:1}
 #blockEditor .review-invalid{border:2px solid #d43838!important;background:#fff0f0!important;border-radius:4px}
 .sheet-grid td.review-error-cell{background:#ffe1e1!important;box-shadow:inset 0 0 0 2px #d43838!important;color:#a62020!important}

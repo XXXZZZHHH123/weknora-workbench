@@ -1094,7 +1094,7 @@ func (e *AgentEngine) appendToolResultsWithReplayPrefix(messages []chat.Message,
 		messages = e.appendCollaborationDeliveryBoundary(messages, step.Thought)
 	}
 
-	return messages
+	return e.appendSourceNavigationProgress(messages, step, replayPrefix)
 }
 
 // countTotalToolCalls counts total tool calls across all steps

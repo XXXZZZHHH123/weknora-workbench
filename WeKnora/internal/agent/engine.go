@@ -661,6 +661,7 @@ func (e *AgentEngine) withinIterationBudget(round int) bool {
 // making progress. The counters cover empty answers, repeated answers,
 // completion-token cutoffs, identical failed calls and repeated tool feedback.
 type loopGuards struct {
+	sourceProgressStartStep   int
 	incompleteAnswerRetries   int
 	evidenceRecoveryAttempts  int
 	structuredAnswerReviewed  bool
@@ -1134,7 +1135,7 @@ func (e *AgentEngine) runReActIteration(
 	if e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID) > 0 {
 		e.clearTaskToolProjection(messagesPtr)
 		e.taskPlan = nil // The user supplied new requirements.
-		e.resetDocumentTurnProgress(guards, query)
+		e.resetDocumentTurnProgress(guards, query, state)
 		tools = e.buildToolsForLLM()
 	}
 	if e.collaboration != nil {
@@ -1578,7 +1579,7 @@ func (e *AgentEngine) runReActIteration(
 					e.taskPlan = nil
 					guards.toolProgress = toolProgressGuard{}
 					if humanInjected > 0 {
-						e.resetDocumentTurnProgress(guards, query)
+						e.resetDocumentTurnProgress(guards, query, state)
 					}
 					*messagesPtr = e.appendCollaborationDeliveryBoundary(*messagesPtr, verdict.finalAnswer)
 					verdict.step.IntermediateAnswer = true
@@ -1724,6 +1725,7 @@ func (e *AgentEngine) runReActIteration(
 	state.RoundSteps = append(state.RoundSteps, step)
 	*messagesPtr = e.appendToolResults(*messagesPtr, step)
 	*messagesPtr = e.appendToolImages(ctx, *messagesPtr, step)
+	e.reviewSourceProgress(ctx, query, state, messagesPtr, guards, sessionID)
 	if failedToolName != "" {
 		logger.Warnf(ctx, "[Agent][Round-%d] Repeated failed call to %q (%d attempts); "+
 			"asking the model to change strategy", round, failedToolName, failedToolAttempts)
@@ -1755,7 +1757,7 @@ func (e *AgentEngine) runReActIteration(
 			if e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID) > 0 {
 				e.clearTaskToolProjection(messagesPtr)
 				e.taskPlan = nil
-				e.resetDocumentTurnProgress(guards, query)
+				e.resetDocumentTurnProgress(guards, query, state)
 				return iterOutcomeNext, nil
 			}
 			if e.collaborationOwnsFailure(ctx) {

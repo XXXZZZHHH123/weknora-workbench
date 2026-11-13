@@ -65,7 +65,17 @@ func documentImageConsistencySummariesWithSources(state *types.AgentState, sourc
 			}
 			chunks := fetchedDocumentChunks(call)
 			for _, read := range data.Reads {
-				if _, valid := types.ParseResourcePath(read.Reference); !valid || !read.Success || read.Index == nil ||
+				_, storedResource := types.ParseResourcePath(read.Reference)
+				identity := map[string]any{"reference": read.Reference, "knowledge_id": read.KnowledgeID, "chunk_id": read.ChunkID, "page": read.Page}
+				if !storedResource {
+					// The native source reader already checked current original bytes
+					// and page relationships before returning raster pixels. Their
+					// digest below is distinct from the selector's source-media hash.
+					if _, valid := reviewOriginalMediaCatalogReference(rawData, identity, read.Reference); !valid || read.Version != "document-original-image-v1" {
+						continue
+					}
+				}
+				if !read.Success || read.Index == nil ||
 					*read.Index < 0 || *read.Index >= len(result.Images) || data.KnowledgeID == "" || read.KnowledgeID != data.KnowledgeID {
 					continue
 				}
@@ -104,6 +114,12 @@ func documentImageConsistencySummariesWithSources(state *types.AgentState, sourc
 					for geometryIndex, figure := range data.Geometry {
 						if figure.Reference != read.Reference || figure.ChunkID != read.ChunkID || figure.KnowledgeID != read.KnowledgeID || figure.Page != read.Page {
 							continue
+						}
+						if !storedResource {
+							rawFigures := reviewAsSlice(rawData["image_geometry_evidence"])
+							if geometryIndex >= len(rawFigures) || !reviewOriginalMediaGeometryReference(rawData, reviewAsMap(rawFigures[geometryIndex]), figure.Evidence, read.Reference) {
+								continue
+							}
 						}
 						compacted := compactOriginalFigureEvidence(figure.Evidence)
 						if compacted == nil {
@@ -253,10 +269,11 @@ func reviewGeometryProjectionBoundToSource(data, figure, projection map[string]a
 		return false
 	}
 	reference, _ := figure["reference"].(string)
-	if _, valid := types.ParseResourcePath(reference); !valid {
+	evidence := reviewAsMap(figure["evidence"])
+	_, storedResource := types.ParseResourcePath(reference)
+	if !storedResource && !reviewOriginalMediaGeometryReference(data, figure, evidence, reference) {
 		return false
 	}
-	evidence := reviewAsMap(figure["evidence"])
 	part, _ := figure["source_part"].(string)
 	if part == "" || projection["source_part"] != part || evidence["source_part"] != part || !reviewJSONValuesEqual(evidence["source_page"], figure["page"]) ||
 		compactOriginalFigureEvidence(evidence) == nil {
@@ -284,6 +301,50 @@ func reviewGeometryProjectionBoundToSource(data, figure, projection map[string]a
 		}
 	}
 	return readBound && catalogBound && chunkBound
+}
+
+// A canonical selector is only a locator. Accept it here only when the native
+// successful read's independently verified current geometry, physical page,
+// document/KB and original catalog agree on every selector component. The
+// caller still requires matching read/catalog/chunk witnesses and the current
+// document binding; this never turns a navigation URL into source evidence.
+func reviewOriginalMediaGeometryReference(data, figure, evidence map[string]any, reference string) bool {
+	selector, valid := reviewOriginalMediaCatalogReference(data, figure, reference)
+	if !valid ||
+		selector.Part != figure["source_part"] || selector.Part != evidence["source_part"] ||
+		selector.SourceSHA256 != evidence["source_file_sha256"] || selector.MediaSHA256 != evidence["source_media_sha256"] ||
+		selector.Page != reviewInt(evidence["source_page"]) {
+		return false
+	}
+	return true
+}
+
+func reviewOriginalMediaCatalogReference(data, image map[string]any, reference string) (types.OriginalMediaReference, bool) {
+	selector, err := types.ParseOriginalMediaReference(reference)
+	if err != nil || !validFigureDigest(selector.SourceSHA256) || !validFigureDigest(selector.MediaSHA256) ||
+		selector.KnowledgeID != data["knowledge_id"] || selector.KnowledgeID != image["knowledge_id"] ||
+		selector.KnowledgeBaseID != data["knowledge_base_id"] || selector.Page != reviewInt(image["page"]) ||
+		data["original_image_catalog_status"] != "verified_page_relationships" {
+		return selector, false
+	}
+	scope := reviewAsMap(data["document_scope"])
+	if scope["matched"] != true || scope["plan_validated"] != true || scope["knowledge_id"] != selector.KnowledgeID {
+		return selector, false
+	}
+	pageBound := reviewInt(scope["page"]) == selector.Page
+	for _, page := range reviewAsSlice(scope["pages"]) {
+		pageBound = pageBound || reviewInt(page) == selector.Page
+	}
+	if !pageBound {
+		return selector, false
+	}
+	for _, raw := range reviewAsSlice(data["image_catalog"]) {
+		catalog := reviewAsMap(raw)
+		if reviewImageIdentityMatches(image, catalog) && catalog["source_part"] == selector.Part && catalog["page_verified"] == true {
+			return selector, true
+		}
+	}
+	return selector, false
 }
 
 // Preserve every trace returned by the validated source plan and its actual

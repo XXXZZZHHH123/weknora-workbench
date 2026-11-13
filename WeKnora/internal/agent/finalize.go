@@ -220,7 +220,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		}
 		// Keep the actual rejected candidate alongside feedback for targeted repair.
 		messages = append(messages, chat.Message{Role: "assistant", Content: fullAnswer})
-		messages = append(messages, chat.Message{Role: "system", Content: "内部运行时反馈：上次回答残缺或含未通过依据检查的数字。请依据已取得的真实来源，直接简短完整回答原问题；非必要的附加数字直接删除，不为保留它们扩展查询。缺失证据应说明，不能从草稿补造数值。字段名称、规格代码和原公式须完整引用工具原文，不用简称，不省略公式参数或单元格行号；身份代码不能当成统计值。未核验数字：" + strings.Join(unsupported, "、") + e.answerRepairAdvice()})
+		messages = append(messages, chat.Message{Role: "system", Content: "内部运行时反馈：上次回答残缺或含未通过依据检查的数字。请依据已取得的真实来源，直接简短完整回答原问题；非必要的附加数字直接删除，不为保留它们扩展查询。缺失证据应说明，不能从草稿补造数值。字段名称、规格代码和原公式须完整引用工具原文，不用简称，不省略公式参数或单元格行号；身份代码不能当成统计值。未核验数字：" + strings.Join(unsupported, "、") + e.repeatedNumericRepairAdvice() + e.answerRepairAdvice()})
 	}
 	if outcome != "answer" && e.collaboration != nil && e.collaboration.Child != nil {
 		return fmt.Errorf("delegated final answer could not be verified")

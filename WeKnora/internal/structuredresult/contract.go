@@ -49,12 +49,13 @@ type Execution struct {
 }
 
 type Column struct {
-	Index       int        `json:"index"`
-	Name        string     `json:"name"`
-	DisplayName string     `json:"display_name"`
-	LogicalType string     `json:"logical_type"`
-	Dependency  Dependency `json:"dependency"`
-	Unit        Unit       `json:"unit"`
+	Index       int            `json:"index"`
+	Name        string         `json:"name"`
+	DisplayName string         `json:"display_name"`
+	LogicalType string         `json:"logical_type"`
+	Operation   map[string]any `json:"operation,omitempty"`
+	Dependency  Dependency     `json:"dependency"`
+	Unit        Unit           `json:"unit"`
 }
 
 type Dependency struct {

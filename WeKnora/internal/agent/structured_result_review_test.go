@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -56,7 +57,7 @@ func TestStructuredResultReviewCorrectsOnceAndKeepsApprovalBound(t *testing.T) {
 	require.Equal(t, "none", model.opts[0].ToolChoice)
 	require.Empty(t, model.opts[0].Tools)
 	require.False(t, *model.opts[0].Thinking)
-	require.Equal(t, structuredResultReviewTokens, model.opts[0].MaxCompletionTokens)
+	require.Equal(t, structuredResultReviewInitialTokens, model.opts[0].MaxCompletionTokens)
 	require.Nil(t, e.taskPlan, "planner availability is not a prerequisite")
 	deadline := e.turnReview.StructuredResultReview.Deadline
 	for _, candidate := range []string{original, corrected} {
@@ -303,18 +304,18 @@ func TestStructuredResultReviewExactPatchBoundsAndRejections(t *testing.T) {
 	}
 }
 
-func TestStructuredResultReviewInvalidPatchNeverRequestsAnotherCheck(t *testing.T) {
+func TestStructuredResultReviewInvalidPatchHasOnlyOneProtocolRepair(t *testing.T) {
 	for _, edits := range [][]structuredResultEdit{
 		{{"missing", "replacement"}},
 		{{"The observation", "Observed"}, {"observation is", "value is"}},
 	} {
-		e, state, model := lightStructuredFixture(t, lightReviewEdits(edits...))
+		e, state, model := lightStructuredFixture(t, lightReviewEdits(edits...), lightReviewEdits(edits...))
 		const core = "The observation is 12.500 kg."
 		decision := e.checkCandidate(t.Context(), "Report the observation.", core, "", state, nil, false)
 		require.Equal(t, core, decision.Candidate)
 		require.Equal(t, "not_checked_invalid_correction", decision.StructuredResultReviewStatus)
 		e.checkCandidate(t.Context(), "Report the observation.", core, "", state, nil, true)
-		require.Len(t, model.calls, 1)
+		require.Len(t, model.calls, 2)
 		require.Equal(t, 0, e.turnReview.Repairs)
 	}
 }
@@ -442,4 +443,44 @@ func TestStructuredResultReviewTypedWitnessProjectionStillRejectsChangedValues(t
 	require.True(t, changed)
 	require.Nil(t, structuredQueryRowReviewEvidence(state, messages, structuredQueryRowReviewBudget), "field ordering may differ, but changed evidence values never qualify")
 	require.Equal(t, before, reviewDigest(state.RoundSteps))
+}
+
+func TestStructuredResultReviewPopulationChangeKeepsOriginalFindingsAndHumanScope(t *testing.T) {
+	const original = "The observed value is 12.500 kg. Filtered summary: 12.500 kg after dropping high observations."
+	const optional = " Filtered summary: 12.500 kg after dropping high observations."
+	for _, requested := range []bool{false, true} {
+		t.Run(map[bool]string{false: "not_requested", true: "requested"}[requested], func(t *testing.T) {
+			reply := lightReviewEdits(structuredResultEdit{optional, ""})
+			question := "Describe the original observations."
+			if requested {
+				reply = lightReviewReply("keep", "")
+				question = "Describe the observations and additionally summarize the subset below the specified upper bound."
+			}
+			e, state, model := lightStructuredFixture(t, reply)
+			data := state.RoundSteps[0].ToolCalls[0].Result.Data
+			data["sql"] = "SELECT value FROM data WHERE value < 80"
+			contract := data["result_contract"].(map[string]any)
+			keys := append(contract["hash_input_keys"].([]any), "sql")
+			sort.Slice(keys, func(i, j int) bool { return keys[i].(string) < keys[j].(string) })
+			contract["hash_input_keys"] = keys
+			rehashLightFixture(t, data)
+			before := reviewDigest(state.RoundSteps)
+			d := e.checkCandidate(t.Context(), question, original, "", state, nil, false)
+			require.Equal(t, candidateAccepted, d.Disposition)
+			require.Contains(t, d.Candidate, "The observed value is 12.500 kg.")
+			if requested {
+				require.Equal(t, original, d.Candidate)
+			} else {
+				require.NotContains(t, d.Candidate, "Filtered summary")
+			}
+			require.Equal(t, before, reviewDigest(state.RoundSteps), "the editor never changes the executed filter or raw source")
+			require.Len(t, model.calls, 1)
+			require.Contains(t, model.calls[0][1].Content, question)
+			require.Contains(t, model.calls[0][1].Content, "SELECT value FROM data WHERE value")
+			require.Contains(t, model.calls[0][0].Content, "disclosing such cleaning does not authorize")
+			require.Contains(t, model.calls[0][0].Content, "genuine null/parse-error records")
+			require.Contains(t, model.calls[0][0].Content, "source-verified invalid-record handling")
+			require.Contains(t, model.calls[0][0].Content, "Never remove only the cleaning disclosure")
+		})
+	}
 }

@@ -33,13 +33,20 @@ func (s *knowledgeService) ReadDocumentFigureEvidence(ctx context.Context, knowl
 	if page < 1 || !originalFigurePart.MatchString(part) || s.documentReader == nil {
 		return nil, errors.New("original figure extraction is unavailable")
 	}
-	images, ok := s.kbService.(interface {
-		ReadDocumentImage(context.Context, *types.Knowledge, string) ([]byte, error)
-	})
-	if !ok {
-		return nil, errors.New("original figure binding verifier unavailable")
+	var media []byte
+	var err error
+	originalSelection := strings.HasPrefix(reference, types.OriginalMediaPrefix)
+	if originalSelection {
+		media, _, err = s.readOriginalMediaSelection(ctx, knowledge, reference, page, part)
+	} else {
+		images, ok := s.kbService.(interface {
+			ReadDocumentImage(context.Context, *types.Knowledge, string) ([]byte, error)
+		})
+		if !ok {
+			return nil, errors.New("original figure binding verifier unavailable")
+		}
+		media, err = images.ReadDocumentImage(ctx, knowledge, reference)
 	}
-	media, err := images.ReadDocumentImage(ctx, knowledge, reference)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +63,7 @@ func (s *knowledgeService) ReadDocumentFigureEvidence(ctx context.Context, knowl
 		ctx, cancel = context.WithTimeout(ctx, 50*time.Second)
 		defer cancel()
 	}
-	if derivedPreview && !s.figureSourceCurrent(ctx, knowledge) {
+	if (derivedPreview || originalSelection) && !s.figureSourceCurrent(ctx, knowledge) {
 		return nil, errors.New("original figure source changed or is no longer readable")
 	}
 	kb, err := s.kbService.GetKnowledgeBaseByID(ctx, knowledge.KnowledgeBaseID)
@@ -137,7 +144,7 @@ func (s *knowledgeService) ReadDocumentFigureEvidence(ctx context.Context, knowl
 		result.Metadata["source_page"] != strconv.Itoa(page) || result.Metadata["source_part"] != part {
 		return nil, errors.New("original figure extraction did not verify its source")
 	}
-	if derivedPreview && !s.figureSourceCurrent(ctx, knowledge) {
+	if (derivedPreview || originalSelection) && !s.figureSourceCurrent(ctx, knowledge) {
 		return nil, errors.New("original figure source changed during extraction")
 	}
 	if result.Metadata["evidence_version"] == "source_figure_selection_options_v1" {

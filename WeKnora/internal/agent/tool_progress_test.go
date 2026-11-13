@@ -244,7 +244,7 @@ func TestAcceptedHumanTaskResetsSourceProgressAccounting(t *testing.T) {
 		guards.toolProgress.observe([]types.ToolCall{{Name: "read_document", Result: &types.ToolResult{Error: "Not available"}}})
 	}
 	require.Equal(t, toolProgressStopRounds, guards.toolProgress.stale)
-	engine.resetDocumentTurnProgress(guards, "An actual new user requirement")
+	engine.resetDocumentTurnProgress(guards, "An actual new user requirement", nil)
 	require.Zero(t, guards.toolProgress.stale)
 	require.False(t, guards.toolProgress.warned)
 }

@@ -251,3 +251,13 @@ docker logs WeKnora-docreader
 - 容器名称：WeKnora-docreader
 - 网络：WeKnora-network
 - 重启策略：unless-stopped
+
+## PPTX 预览预算与原图读取
+
+PPTX 正文、表格、备注及图片的页关系正常解析。EMF/WMF 的提前预览转换默认最多使用 60 秒，可通过 `DOCREADER_PPTX_PREVIEW_BUDGET_SECONDS` 配置为 0～600 秒。该预算只限制可选预览，不关闭 OCR。转换并发同时受 `DOCREADER_VECTOR_RENDER_WORKERS`（默认 3，最大 4）和进程可用 CPU 配额限制；低于一个 CPU 的容器使用一个转换进程及更小批次，避免多个 LibreOffice 进程争抢配额导致整批超时。
+
+批量失败后不会在同次入库中逐图重新启动同一个转换器。已经完整输出的 PNG 通过校验后保留；未转换的原始矢量图按原字节保存，保留物理页及 `source_part`，正文明确注明尚未生成预览。授权的 `source_media_png_v1` 入口可以随后读取选定原图；原图几何读取也不依赖提前生成 PNG。这里没有后台预览任务，未生成预览不表示图片不存在或已经被模型观察。
+
+解析 metadata 的 `pptx_media_processing_v1` 记录页数、矢量图数量、成功预览、保留原图待按需预览、不可用来源数量，以及发现、预览和关联阶段耗时。`preview_status` 区分 `ready`、`deferred`、`unavailable`，与整份文档正文解析状态分开。日志区分超时、进程信号退出、转换器失败、缺失输出和无转换器，诊断时应先对照容器 CPU 配额及分阶段计时。
+
+成功转换在当前进程内以图片原字节哈希、格式及转换协议版本缓存，上限 128 项 / 64 MiB；转换失败不会缓存为永久缺图。缓存不会跨进程重启保留，也不替代每次来源读取的权限、原文件和页关系检查。

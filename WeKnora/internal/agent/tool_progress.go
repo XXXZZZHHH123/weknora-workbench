@@ -395,8 +395,12 @@ func documentScopeUserTexts(query string, messages []chat.Message) []string {
 	return texts
 }
 
-func (e *AgentEngine) resetDocumentTurnProgress(guards *loopGuards, query string) {
+func (e *AgentEngine) resetDocumentTurnProgress(guards *loopGuards, query string, state *types.AgentState) {
 	guards.toolProgress = toolProgressGuard{}
+	guards.sourceProgressStartStep = 0
+	if state != nil {
+		guards.sourceProgressStartStep = len(state.RoundSteps)
+	}
 	if e.config != nil && e.config.WorkbenchDefault && e.toolRegistry != nil {
 		agenttools.PrepareDocumentScope(e.toolRegistry, documentScopeUserTexts(query, e.reviewConversation)...)
 	}

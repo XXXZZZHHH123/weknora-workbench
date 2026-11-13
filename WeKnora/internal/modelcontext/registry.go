@@ -355,6 +355,7 @@ func (r *Registry) ModelToolResultForTool(toolName string, result *types.ToolRes
 	if result.Success && (toolName == "call_mcp_tool" || strings.HasPrefix(toolName, "mcp_")) {
 		modelOutput += r.mcpSourceCandidates(result.Output)
 	}
+	modelOutput = r.sources.appendDiscoveryObservations(toolName, modelOutput, result)
 	return r.resources.EncodeText(modelOutput) + outputFilesPrompt(result)
 }
 

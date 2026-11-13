@@ -1,7 +1,6 @@
 package web_search
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -83,32 +82,16 @@ func (p *KeenableProvider) Search(
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Keenable-Title", keenableTitle)
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Accept", "application/json")
+	headers.Set("X-Keenable-Title", keenableTitle)
 	if p.apiKey != "" {
-		req.Header.Set("X-API-Key", p.apiKey)
+		headers.Set("X-API-Key", p.apiKey)
 	}
-
-	resp, err := p.client.Do(req)
+	respBody, err := boundedSearchRequest(ctx, p.client, endpoint, headers, bodyBytes, defaultKeenableTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		preview := readErrorPreview(resp.Body)
-		logger.Warnf(ctx, "[WebSearch][Keenable] API returned status %d: %s", resp.StatusCode, preview)
-		return nil, fmt.Errorf("keenable API returned status %d: %s", resp.StatusCode, preview)
-	}
-
-	respBody, err := readCapped(resp.Body, 0)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return nil, err
 	}
 
 	var respData keenableSearchResponse

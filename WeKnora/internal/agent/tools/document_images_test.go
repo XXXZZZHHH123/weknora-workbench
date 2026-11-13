@@ -215,10 +215,11 @@ func TestReadDocumentGeometryUsesOnlyUnambiguousParserSourceLocator(t *testing.T
 			result, err := tool.Execute(t.Context(), input)
 			require.NoError(t, err)
 			if variant == "invalid-selection" {
-				require.False(t, result.Success)
-				require.Empty(t, result.Images)
-				require.Contains(t, result.Error, `["Alpha","Beta"]`)
-				require.NotContains(t, result.Data, "image_geometry_evidence")
+				require.True(t, result.Success)
+				require.Len(t, result.Images, 1)
+				require.Contains(t, result.Output, `["Alpha","Beta"]`)
+				require.Empty(t, result.Data["image_geometry_evidence"])
+				require.Equal(t, "selection_required", result.Data["image_evidence"].([]map[string]interface{})[0]["geometry_status"])
 				return
 			}
 			require.True(t, result.Success)

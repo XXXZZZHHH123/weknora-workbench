@@ -40,16 +40,17 @@ var documentFigureSource = regexp.MustCompile(`(?m)^来源：第([1-9][0-9]*)页
 var documentFigurePart = regexp.MustCompile(`(?i)^ppt/media/[A-Za-z0-9_.-]+\.(emf|wmf)$`)
 
 type documentImage struct {
-	Reference    string            `json:"reference"`
-	KnowledgeID  string            `json:"knowledge_id"`
-	ChunkID      string            `json:"chunk_id"`
-	Page         int               `json:"page,omitempty"`
-	PageHint     int               `json:"page_hint,omitempty"`
-	PageVerified bool              `json:"page_verified"`
-	Label        string            `json:"label"`
-	Context      string            `json:"source_context"`
-	SourcePart   string            `json:"source_part,omitempty"`
-	ReadArgs     ReadDocumentInput `json:"read_args"`
+	Reference      string            `json:"reference"`
+	KnowledgeID    string            `json:"knowledge_id"`
+	ChunkID        string            `json:"chunk_id"`
+	Page           int               `json:"page,omitempty"`
+	PageHint       int               `json:"page_hint,omitempty"`
+	PageVerified   bool              `json:"page_verified"`
+	Label          string            `json:"label"`
+	LabelTruncated bool              `json:"label_truncated,omitempty"`
+	Context        string            `json:"source_context"`
+	SourcePart     string            `json:"source_part,omitempty"`
+	ReadArgs       ReadDocumentInput `json:"read_args"`
 }
 
 func documentImageCatalog(result *types.ToolResult, knowledgeID, sourceHash string) []documentImage {
@@ -152,11 +153,12 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 		return result, err
 	}
 	catalog := documentImageCatalog(result, knowledge.ID, knowledge.FileHash)
+	catalog = t.appendOriginalImageCatalog(ctx, knowledge, input, result, catalog)
 	result.Data["image_catalog"] = catalog
 	if len(catalog) > 0 {
 		encoded, _ := json.Marshal(catalog)
 		result.Output += "\n<document_image_catalog untrusted_source_metadata=\"true\">" + string(encoded) + "</document_image_catalog>\n" +
-			"These are stored originals, not yet viewed. Select the relevant reference using the full question and actual source context; " +
+			"These are stored originals or verified original-media selectors, not yet viewed. original-media:// is a read-only source selector, not a saved resource. Select the relevant reference using the full question and actual source context; " +
 			"use that entry's read_args with its exact owning chunk, then add focus for the full question. Do not replace its page or move the reference to another range. " +
 			"page_hint is only an unverified label; page_verified=false means no physical page was established. The default image_mode=pixels reads pixels. For supported vector-chart traces, " +
 			"explicitly select image_mode=geometry and exact image_series legend identifiers to read original geometry without PNG conversion or visual inspection. " +
@@ -240,10 +242,19 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 			if geometryErr != nil {
 				entry["geometry_error"] = "原图几何证据不可用，不能据此生成数值"
 			} else if geometry != nil && geometry["version"] == "source_figure_selection_options_v1" {
-				options, _ := json.Marshal(geometry["available_series"])
-				return &types.ToolResult{Success: false,
-					Error: "image_series must explicitly select exact original legend identifiers, not the chart title or metric. Available original legend identifiers: " + string(options) + ". Choose the relevant identifiers from the full question and retry read_document; no numeric or visual evidence was delivered for this missing/invalid selection.",
-					Data:  map[string]any{"knowledge_id": knowledge.ID, "image_catalog": catalog, "image_selection_options": geometry}}, nil
+				// Pixels have already passed the original ownership/storage checks.
+				// The optional geometry companion must not revoke that independent
+				// evidence merely because it still requires a model-selected legend.
+				// Keep only navigation; selection options are never numeric evidence.
+				entry["geometry_read_success"] = false
+				entry["geometry_status"] = "selection_required"
+				if len(input.ImageSeries) == 0 {
+					entry["geometry_status"] = "not_requested"
+				}
+				entry["geometry_selection_options"] = map[string]any{
+					"available_series": geometry["available_series"],
+					"notice":           "Original pixels were returned. This pixel call did not return optional geometry values and selected no series automatically. This call's geometry status does not invalidate earlier successful geometry reads of the same authorized source version. Reuse that evidence if it already covers the task. Only if additional geometry is needed, explicitly choose exact image_series legend identifiers from the full question and use image_mode=geometry. These legend options are navigation, not observations.",
+				}
 			} else if geometry != nil {
 				geometryEvidence = append(geometryEvidence, map[string]any{"reference": item.Reference,
 					"knowledge_id": knowledge.ID, "chunk_id": item.ChunkID, "page": item.Page,

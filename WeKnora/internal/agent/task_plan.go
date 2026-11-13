@@ -38,6 +38,9 @@ type taskDeliveryRequirement struct {
 }
 
 type taskEvidencePlan struct {
+	// Runtime observation state survives capability expansion, but not a new
+	// human task/turn. It is neither planner output nor source evidence.
+	navigation           *sourceNavigationProgress
 	Goals                []string                  `json:"goals"`
 	Evidence             []string                  `json:"evidence"`
 	SourceDiscovery      *taskSourceDiscovery      `json:"source_discovery,omitempty"`
@@ -224,6 +227,10 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 	planMessages[0].Content += "\n每次都给出至少一条delivery_requirements，逐项列出当前用户实际要求的交付kind及criteria；纯文字任务也须给出一条text要求：文字为text，可读图表为chart，可下载文档/表格为file，其他图像为image。criteria保留必要的变量、维度、范围、单位和用户明确的图形要求，不凭工具可用或执行失败降低为文字/表格。绘图必须让真实来源中的观测值对应真实维度和指标；若二维原表方向与绘图所需记录不同，在evidence中规划按真实行列整形与来源查询，不把内部行ID或默认列编号当成已确定的业务维度，不把观测值手抄为SQL常量。原文已直接披露所问结果时，不能为工具调用自行附加换算或计算。"
 	planMessages[0].Content += "\n需要来源时给出1至3条coverage_targets，逐条关联goals的零起算goal_index；request_basis必须逐字引用当前问题或近期用户消息中的必要要求，criteria描述所需结果的维度、完整性及允许的缺口，source_scope说明用户实际要求的来源和范围（未限定时明确未限定），不编造ID、页码、数量，不把模型自己的读取选择变成用户约束。不需来源时可省略或使用[]。覆盖目标是可撤销计划，不包含completed状态；是否满足必须根据实际返回证据和独立最终核验判断。"
 	planMessages[0].Content += "\nsource_discovery每次都明确source_domains数组，根据完整问题与对话判断所需证据渠道：knowledge为知识库文档，structured为结构化数据原表，external为公开网页、实时外部信息或其他已连接来源。只选择完成实际任务必要的渠道，允许组合。需要外部证据不等于需要查询内部资料；没有用户要求或相关性，不因知识库或数据服务可用而选它们。稳定通用知识、闲聊及转换已提供材料可用mode=none、source_domains=[]、evidence=[]；需要当前事实时不能以旧通用知识代替。外部能力是否实际可用以available_tools和工具发现为准，不得把没有内部资料说成没有外部来源。未选择内部渠道时不预取其目录；缺少必要外部能力应说明真实能力缺口，不用无关内部搜索代替。structured_capabilities是可发现真实结构化能力的入口，未协商具体操作不代表结构化服务不存在；需要它时选择该真实入口，不猜未提供的具名操作。计划只是建议，执行中发现实际缺口可用expand_task_tools恢复已授权能力。"
+	planMessages[0].Content += "\n时间比较的判定条件、观察时点、预期所指时点应在evidence和completion_criteria中明确区分；不能把将来预期提前当成已发生事实。先按同一判定口径比较实际来源，再形成首尾一致的结论；口径存在歧义时分别说明，不能在同一结论中切换口径。用户明确要求的页码、位置、来源版本也是交付目标，保留在coverage_targets和delivery_requirements；没有定位元数据不等于页码不存在，应按真实工具能力发现同一授权原件的其他表示，例如已发布PDF表的source_cells。物理页与印刷页不同，禁止以分块序号、记录序号猜页码。结构化字段目录只覆盖它实际扫描的目录，不覆盖文档正文和原图；目录中没找到不等于知识库没有证据。根据覆盖元数据与完整任务判断是否需要其他渠道及expand_task_tools，不要求每题都查多个渠道。"
+	planMessages[0].Content += "\n字段或图题中的并列词可能定义一个合并口径，未读到真实源定义前，不把一个用户指标自行拆为多个序列或新增比较目标。某种表示待字段映射只限制该表示的取数，不证明授权正文、原图或其他表示不能支持任务；按用户实际精度和来源限制判断是否恢复其他表示，不默认要求用户先映射入库，不绕过映射审核。"
+	planMessages[0].Content += "\n多候选不自动意味着需要用户澄清：用户未要求唯一解释且各候选可明确标注并列回答原问题时，可规划分别绑定真实字段并交普通来源校验，不能擅选默认候选或混合口径；确需唯一选择而无法确定时再澄清。保留原始有效数值与样本，不因源值看似异常自行剔除、缩尾、补值或改变范围；清洗需用户明确要求或适用于该记录的可信来源质量依据，并保留原口径结果及处理说明。"
+	planMessages[0].Content += "\n根据原问题判断实际候选的覆盖价值；已发现相关页或原图导航时，不因另一结构化目录有相似文字而忽略其正文，也不把某表示待映射当作所有来源失效。所需单位必须绑定当前字段或曲线原证据，不能以行业惯例、邻字段、同分块其他数字或附带保留语的猜测补全；未知单位保持未知。"
 	if e.chartWriter != nil {
 		planMessages[0].Content += "\n" + dataChartInstructions
 	}
@@ -546,6 +553,9 @@ func (e *AgentEngine) projectTaskTools(definitions []types.FunctionDefinition) [
 
 func (e *AgentEngine) clearTaskToolProjection(messages *[]chat.Message) {
 	e.taskProjection = nil
+	if messages != nil {
+		*messages = withoutSourceNavigationProgress(*messages)
+	}
 	// Recovering source capabilities does not change the human task. Keep its
 	// advisory goals for review; new turns and human steering invalidate them.
 	if e.taskPlanContext != "" && messages != nil {

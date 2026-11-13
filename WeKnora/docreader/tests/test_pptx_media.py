@@ -72,6 +72,10 @@ MARKDOWN = ("<!-- Slide number: 1 -->\n# First title\nFirst text\n"
 
 
 class TestPptxMedia(unittest.TestCase):
+    def setUp(self):
+        media._RENDER_CACHE.clear()
+        media._RENDER_CACHE_BYTES = 0
+
     def test_trim_applies_only_to_converted_canvas_and_preserves_alpha(self):
         from PIL import Image, ImageDraw
         canvas = Image.new("RGB", (100, 120), "white")
@@ -151,7 +155,8 @@ class TestPptxMedia(unittest.TestCase):
             calls.append((name, data))
             return b"png:" + data
         with patch.object(media, "rasterize_media_bytes", side_effect=raster), \
-                patch.object(media, "_rasterize_vector_batches", return_value={}):
+                patch.object(media, "_rasterize_vector_batches", return_value={
+                    "ppt/media/chart-a.emf": b"png:chart-a", "ppt/media/chart-b.emf": b"png:chart-b"}):
             text, images = media.attach_pptx_media_to_markdown(MARKDOWN, fixture())
         first, second = text.split("<!-- Slide number: 2 -->")
         self.assertIn("# 第1页", first)
@@ -168,7 +173,7 @@ class TestPptxMedia(unittest.TestCase):
         self.assertNotIn("C:/private", text)
         self.assertNotIn("https://", text)
         self.assertIn("未能解析", second)  # Explicit external image unavailability.
-        self.assertEqual([data for _, data in calls], [b"logo", b"chart-a", b"chart-b"])
+        self.assertEqual([data for _, data in calls], [b"logo"])
         self.assertEqual({base64.b64decode(v) for v in images.values()},
                          {b"png:logo", b"png:chart-a", b"png:chart-b"})
 
