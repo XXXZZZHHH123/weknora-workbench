@@ -125,10 +125,7 @@ func (e *AgentEngine) resumeNumericValidationRepair(ctx context.Context, state *
 		encodedFeedback = []byte(`{"status":"feedback_encoding_failed"}`)
 	}
 	feedbackMessage := numericValidationRepairInstructions + "\n数值校验记录：" + string(encodedFeedback)
-	if repeated := e.turnReview.Last.RepeatedUnsupported; len(repeated) > 0 {
-		encodedRepeated, _ := json.Marshal(repeated[:min(len(repeated), numericValidationFeedbackIssueLimit)])
-		feedbackMessage += "\n上次修订后仍未匹配的数字：" + string(encodedRepeated) + "。这些数字仍出现在当前候选，上一轮改写没有解决它们。逐项定位当前上下文并修正对应断言；其他已核实内容和用户要求的简析、图件必须保留。不得原样保留未获依据的区间端点或自行整圆数值。"
-	}
+	feedbackMessage += e.repeatedNumericRepairAdvice()
 	if guards.structuredEvidenceRepairs >= 2 {
 		feedbackMessage += "\n" + finalNumericRepairInstructions
 	}
@@ -146,4 +143,15 @@ func (e *AgentEngine) resumeNumericValidationRepair(ctx context.Context, state *
 		"iteration": state.CurrentRound, "attempt": guards.structuredEvidenceRepairs,
 		"phase": "numeric_candidate_repair", "original_transcript_restored": restoredOriginal,
 	})
+}
+
+// Shared by ordinary recovery and final synthesis; this changes feedback only,
+// never the existing numeric verdict, source evidence, or candidate repair budget.
+func (e *AgentEngine) repeatedNumericRepairAdvice() string {
+	repeated := e.turnReview.Last.RepeatedUnsupported
+	if len(repeated) == 0 {
+		return ""
+	}
+	encoded, _ := json.Marshal(repeated[:min(len(repeated), numericValidationFeedbackIssueLimit)])
+	return "\n上次修订后仍未匹配的数字：" + string(encoded) + "。这些数字仍出现在当前候选，上一轮改写没有解决它们。逐项定位当前上下文并修正对应断言；其他已核实内容和用户要求的简析、图件必须保留。不得原样保留未获依据的区间端点或自行整圆数值。"
 }

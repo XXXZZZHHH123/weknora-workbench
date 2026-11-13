@@ -57,7 +57,7 @@ func TestStructuredResultReviewCorrectsOnceAndKeepsApprovalBound(t *testing.T) {
 	require.Equal(t, "none", model.opts[0].ToolChoice)
 	require.Empty(t, model.opts[0].Tools)
 	require.False(t, *model.opts[0].Thinking)
-	require.Equal(t, structuredResultReviewTokens, model.opts[0].MaxCompletionTokens)
+	require.Equal(t, structuredResultReviewInitialTokens, model.opts[0].MaxCompletionTokens)
 	require.Nil(t, e.taskPlan, "planner availability is not a prerequisite")
 	deadline := e.turnReview.StructuredResultReview.Deadline
 	for _, candidate := range []string{original, corrected} {
@@ -304,18 +304,18 @@ func TestStructuredResultReviewExactPatchBoundsAndRejections(t *testing.T) {
 	}
 }
 
-func TestStructuredResultReviewInvalidPatchNeverRequestsAnotherCheck(t *testing.T) {
+func TestStructuredResultReviewInvalidPatchHasOnlyOneProtocolRepair(t *testing.T) {
 	for _, edits := range [][]structuredResultEdit{
 		{{"missing", "replacement"}},
 		{{"The observation", "Observed"}, {"observation is", "value is"}},
 	} {
-		e, state, model := lightStructuredFixture(t, lightReviewEdits(edits...))
+		e, state, model := lightStructuredFixture(t, lightReviewEdits(edits...), lightReviewEdits(edits...))
 		const core = "The observation is 12.500 kg."
 		decision := e.checkCandidate(t.Context(), "Report the observation.", core, "", state, nil, false)
 		require.Equal(t, core, decision.Candidate)
 		require.Equal(t, "not_checked_invalid_correction", decision.StructuredResultReviewStatus)
 		e.checkCandidate(t.Context(), "Report the observation.", core, "", state, nil, true)
-		require.Len(t, model.calls, 1)
+		require.Len(t, model.calls, 2)
 		require.Equal(t, 0, e.turnReview.Repairs)
 	}
 }

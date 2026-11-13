@@ -38,6 +38,9 @@ type taskDeliveryRequirement struct {
 }
 
 type taskEvidencePlan struct {
+	// Runtime observation state survives capability expansion, but not a new
+	// human task/turn. It is neither planner output nor source evidence.
+	navigation           *sourceNavigationProgress
 	Goals                []string                  `json:"goals"`
 	Evidence             []string                  `json:"evidence"`
 	SourceDiscovery      *taskSourceDiscovery      `json:"source_discovery,omitempty"`
@@ -227,6 +230,7 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 	planMessages[0].Content += "\n时间比较的判定条件、观察时点、预期所指时点应在evidence和completion_criteria中明确区分；不能把将来预期提前当成已发生事实。先按同一判定口径比较实际来源，再形成首尾一致的结论；口径存在歧义时分别说明，不能在同一结论中切换口径。用户明确要求的页码、位置、来源版本也是交付目标，保留在coverage_targets和delivery_requirements；没有定位元数据不等于页码不存在，应按真实工具能力发现同一授权原件的其他表示，例如已发布PDF表的source_cells。物理页与印刷页不同，禁止以分块序号、记录序号猜页码。结构化字段目录只覆盖它实际扫描的目录，不覆盖文档正文和原图；目录中没找到不等于知识库没有证据。根据覆盖元数据与完整任务判断是否需要其他渠道及expand_task_tools，不要求每题都查多个渠道。"
 	planMessages[0].Content += "\n字段或图题中的并列词可能定义一个合并口径，未读到真实源定义前，不把一个用户指标自行拆为多个序列或新增比较目标。某种表示待字段映射只限制该表示的取数，不证明授权正文、原图或其他表示不能支持任务；按用户实际精度和来源限制判断是否恢复其他表示，不默认要求用户先映射入库，不绕过映射审核。"
 	planMessages[0].Content += "\n多候选不自动意味着需要用户澄清：用户未要求唯一解释且各候选可明确标注并列回答原问题时，可规划分别绑定真实字段并交普通来源校验，不能擅选默认候选或混合口径；确需唯一选择而无法确定时再澄清。保留原始有效数值与样本，不因源值看似异常自行剔除、缩尾、补值或改变范围；清洗需用户明确要求或适用于该记录的可信来源质量依据，并保留原口径结果及处理说明。"
+	planMessages[0].Content += "\n根据原问题判断实际候选的覆盖价值；已发现相关页或原图导航时，不因另一结构化目录有相似文字而忽略其正文，也不把某表示待映射当作所有来源失效。所需单位必须绑定当前字段或曲线原证据，不能以行业惯例、邻字段、同分块其他数字或附带保留语的猜测补全；未知单位保持未知。"
 	if e.chartWriter != nil {
 		planMessages[0].Content += "\n" + dataChartInstructions
 	}
@@ -549,6 +553,9 @@ func (e *AgentEngine) projectTaskTools(definitions []types.FunctionDefinition) [
 
 func (e *AgentEngine) clearTaskToolProjection(messages *[]chat.Message) {
 	e.taskProjection = nil
+	if messages != nil {
+		*messages = withoutSourceNavigationProgress(*messages)
+	}
 	// Recovering source capabilities does not change the human task. Keep its
 	// advisory goals for review; new turns and human steering invalidate them.
 	if e.taskPlanContext != "" && messages != nil {
