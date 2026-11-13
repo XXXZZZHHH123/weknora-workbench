@@ -634,7 +634,17 @@ def _trend_geometry_markdown(result: dict, page_number: int, target: str) -> str
     change_unit = '变动单位：百分点' if result.get('change_unit') == 'percentage_points' else '单位同纵轴'
     error_unit = '百分点' if result.get('change_unit') == 'percentage_points' else ''
     if result.get('series_selection'):
-        lines.append(f"模型选择的原图图例：{escape(', '.join(result['series_selection']))}；原图共{result['source_series_count']}条，未返回其他曲线的数据点，不能据此做全图比较。")
+        returned_legends = {item['legend'] for item in result['series']}
+        all_legends_returned = (
+            result.get('omitted_series') == []
+            and len(result['series']) == len(returned_legends) == result['source_series_count']
+            and returned_legends == set(result['series_selection'])
+        )
+        selection_scope = f"模型选择的原图图例：{escape(', '.join(result['series_selection']))}；原图共{result['source_series_count']}条，"
+        if all_legends_returned:
+            lines.append(selection_scope + "本次已返回全部图例的曲线关键点，可在这些实际曲线的范围内比较。每条曲线仍仅代表自身实际绘制范围；关键点和有界采样不等于完整逐月序列，不能补造未覆盖时段。")
+        else:
+            lines.append(selection_scope + "未返回其他曲线的数据点，不能据此做全图比较。")
     comparison = result.get('selected_endpoint_value_order')
     if comparison:
         lines.extend([

@@ -39,6 +39,51 @@ type discoveryDeliveryReviewTurn struct {
 	FailureCode, InitialFailureCode                        string
 	SchemaFailure, InitialSchemaFailure                    string
 	ProtocolRepairAttempted                                bool
+	budget                                                 *discoveryDeliveryReviewBudget
+	sourceObservations                                     map[string]bool
+}
+
+// Progress and delivery share a single bounded allowance. Only time spent in
+// the reviewer is charged; execution between the phases is not review time.
+type discoveryDeliveryReviewBudget struct {
+	generation         reviewGenerationBudget
+	elapsed            time.Duration
+	protocolRepairUsed bool
+}
+
+// Fingerprint actual successful native source results, excluding drafts,
+// conversation prose, call IDs and timestamps. Repeating identical observations
+// cannot buy another review, nor can changing image attachment presentation.
+func (e *AgentEngine) discoverySourceObservations(state *types.AgentState) map[string]bool {
+	observations := map[string]bool{}
+	if state == nil {
+		return observations
+	}
+	for _, step := range state.RoundSteps {
+		for _, call := range step.ToolCalls {
+			if call.Result == nil || !call.Result.Success {
+				continue
+			}
+			if _, native := e.sourceProgressOperation(call); !native {
+				continue
+			}
+			observations[reviewDigest(map[string]any{
+				"operation": call.ExecutionName(), "arguments": call.ExecutionArgs(),
+				"data": call.Result.Data, "output": call.Result.Output,
+				"images": call.Result.Images, "image_descriptions": call.Result.ImageDescriptions,
+			})] = true
+		}
+	}
+	return observations
+}
+
+func discoveryHasNewSourceObservations(previous, current map[string]bool) bool {
+	for hash := range current {
+		if !previous[hash] {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *AgentEngine) applyDiscoveryRecovery(decision candidateDecision, feedback string) candidateDecision {
@@ -132,11 +177,25 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 	if !e.standardAnswerReview() || !e.config.WorkbenchDefault || e.chatModel == nil || e.toolRegistry == nil {
 		return decision
 	}
-	if previous := e.turnReview.DiscoveryReview; previous != nil {
-		if previous.Phase == "progress" {
-			common.PipelineInfo(ctx, "Agent", "discovery_delivery_review", map[string]any{"phase": phase, "status": "not_checked_shared_progress_budget", "candidate_hash": decision.CandidateHash})
+	previous := e.turnReview.DiscoveryReview
+	sourceObservations := e.discoverySourceObservations(state)
+	var sharedBudget *discoveryDeliveryReviewBudget
+	if previous != nil && previous.Phase == "progress" {
+		// A progress keep/error is never a verdict on a later candidate. Only
+		// genuinely new native source observations permit a delivery review,
+		// under the SAME allowance, task and permission scope.
+		status := "not_checked_no_new_source_evidence"
+		if phase != "delivery" || previous.TaskHash != decision.TaskHash || previous.SourceScopeHash != decision.SourceScopeHash {
+			status = "not_checked_progress_binding_changed"
+		} else if decision.EvidenceHash != "" && decision.EvidenceHash != previous.EvidenceHash && discoveryHasNewSourceObservations(previous.sourceObservations, sourceObservations) {
+			sharedBudget = previous.budget
+			status = "not_checked_shared_review_budget"
+		}
+		if sharedBudget == nil || sharedBudget.generation.remaining() == 0 || sharedBudget.elapsed >= discoveryReviewTimeout {
+			common.PipelineInfo(ctx, "Agent", "discovery_delivery_review", map[string]any{"phase": phase, "status": status, "candidate_hash": decision.CandidateHash, "candidate_scope_checked": false})
 			return decision
 		}
+	} else if previous != nil {
 		// A spent call budget is not permission to accept the unchanged answer
 		// already judged incomplete. Reuse its private binding before checking
 		// the shared repair allowance; the executor owns exhaustion behavior.
@@ -184,20 +243,25 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 		})
 		return decision
 	}
-	receipt := &discoveryDeliveryReviewTurn{Phase: phase, CandidateHash: decision.CandidateHash, TaskHash: decision.TaskHash, EvidenceHash: decision.EvidenceHash, SourceScopeHash: decision.SourceScopeHash}
+	if sharedBudget == nil {
+		sharedBudget = &discoveryDeliveryReviewBudget{generation: reviewGenerationBudget{purpose: "discovery_delivery", completionLimit: discoveryReviewTokens}}
+	}
+	receipt := &discoveryDeliveryReviewTurn{Phase: phase, CandidateHash: decision.CandidateHash, TaskHash: decision.TaskHash, EvidenceHash: decision.EvidenceHash, SourceScopeHash: decision.SourceScopeHash, budget: sharedBudget, sourceObservations: sourceObservations}
 	e.turnReview.DiscoveryReview = receipt
 	status := "not_checked_response"
 	started := time.Now()
 	defer func() {
+		sharedBudget.elapsed += time.Since(started)
 		common.PipelineInfo(ctx, "Agent", "discovery_delivery_review", map[string]any{
 			"phase": phase, "status": status, "candidate_hash": decision.CandidateHash, "input_bytes": len(input), "elapsed_ms": time.Since(started).Milliseconds(),
 			"failure_code": receipt.FailureCode, "initial_failure_code": receipt.InitialFailureCode, "protocol_repair_attempted": receipt.ProtocolRepairAttempted,
 			"schema_failure": receipt.SchemaFailure, "initial_schema_failure": receipt.InitialSchemaFailure,
+			"shared_elapsed_ms": sharedBudget.elapsed.Milliseconds(), "shared_tokens_used": sharedBudget.generation.completionUsed, "shared_tokens_remaining": sharedBudget.generation.remaining(), "shared_protocol_repair_used": sharedBudget.protocolRepairUsed,
 		})
 	}()
-	checkCtx, cancel := context.WithTimeout(ctx, discoveryReviewTimeout)
+	checkCtx, cancel := context.WithTimeout(ctx, discoveryReviewTimeout-sharedBudget.elapsed)
 	defer cancel()
-	generationBudget := &reviewGenerationBudget{purpose: "discovery_delivery", completionLimit: discoveryReviewTokens}
+	generationBudget := &sharedBudget.generation
 	checkCtx = context.WithValue(checkCtx, reviewGenerationBudgetKey{}, generationBudget)
 	disabled := false
 	instructions := discoveryDeliveryReviewInstructions
@@ -213,7 +277,7 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 			receipt.FailureCode = discoveryReviewResponseFailure(checkCtx, nil, nil)
 			return decision
 		}
-		limit := discoveryReviewInitialTokens
+		limit := min(discoveryReviewInitialTokens, generationBudget.remaining())
 		if attempt > 0 {
 			limit = generationBudget.remaining()
 		}
@@ -224,6 +288,7 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 		}
 		if attempt > 0 {
 			receipt.ProtocolRepairAttempted = true
+			sharedBudget.protocolRepairUsed = true
 		}
 		result, callErr := e.streamLLMToEventBusWithModel(checkCtx, e.chatModel, messages, opts, nil)
 		if result != nil && result.Usage != nil {
@@ -251,7 +316,7 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 			return decision
 		}
 		receipt.FailureCode = "schema"
-		if attempt > 0 {
+		if attempt > 0 || sharedBudget.protocolRepairUsed {
 			return decision
 		}
 		receipt.InitialFailureCode = "schema"

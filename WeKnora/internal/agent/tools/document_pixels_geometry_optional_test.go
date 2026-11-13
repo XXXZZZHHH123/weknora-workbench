@@ -108,7 +108,11 @@ func TestReadDocumentPixelsKeepOptionalGeometrySelectionSeparate(t *testing.T) {
 				require.Equal(t, types.ImageDetailFull, result.ImageDetail)
 				require.Equal(t, true, evidence[0]["read_success"])
 				require.Equal(t, false, evidence[0]["geometry_read_success"])
-				require.Equal(t, "selection_required", evidence[0]["geometry_status"])
+				if mode == "pixels-invalid-series" {
+					require.Equal(t, "selection_required", evidence[0]["geometry_status"])
+				} else {
+					require.Equal(t, "not_requested", evidence[0]["geometry_status"])
+				}
 				options := evidence[0]["geometry_selection_options"].(map[string]any)
 				require.Equal(t, []string{"Alpha", "Beta"}, options["available_series"])
 				require.Contains(t, result.Output, "Original pixels were returned")

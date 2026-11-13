@@ -248,9 +248,12 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 				// Keep only navigation; selection options are never numeric evidence.
 				entry["geometry_read_success"] = false
 				entry["geometry_status"] = "selection_required"
+				if len(input.ImageSeries) == 0 {
+					entry["geometry_status"] = "not_requested"
+				}
 				entry["geometry_selection_options"] = map[string]any{
 					"available_series": geometry["available_series"],
-					"notice":           "Original pixels were returned. Optional geometry was not read: explicitly choose exact image_series legend identifiers from the full question and retry image_mode=geometry if needed. No geometry values were delivered and no series was selected automatically.",
+					"notice":           "Original pixels were returned. This pixel call did not return optional geometry values and selected no series automatically. This call's geometry status does not invalidate earlier successful geometry reads of the same authorized source version. Reuse that evidence if it already covers the task. Only if additional geometry is needed, explicitly choose exact image_series legend identifiers from the full question and use image_mode=geometry. These legend options are navigation, not observations.",
 				}
 			} else if geometry != nil {
 				geometryEvidence = append(geometryEvidence, map[string]any{"reference": item.Reference,

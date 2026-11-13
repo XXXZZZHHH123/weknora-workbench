@@ -145,3 +145,37 @@ func TestDiscoveryReadImageProjectionKeepsRuntimeTypedCatalogAndActualStatus(t *
 	require.Equal(t, 7, oversized["omitted_rows"])
 	require.Equal(t, true, sourceNavigationRows(oversized["samples"])[0]["reference_omitted"])
 }
+
+func TestDiscoveryReadProjectionRetainsLatestReadAfterLargeCatalogs(t *testing.T) {
+	for _, count := range []int{3, 12} {
+		e, state, _ := discoveryReadFixture(t, "keep", "")
+		for i := 0; i < count; i++ {
+			call := navigationCall(agenttools.ToolReadDocument, map[string]any{
+				"knowledge_id": "old-navigation", "fetched_chunks": 4,
+				"chunks": []map[string]any{
+					{"content": strings.Repeat("a", 1000)}, {"content": strings.Repeat("b", 1000)},
+					{"content": strings.Repeat("c", 1000)}, {"content": strings.Repeat("d", 1000)},
+				},
+			})
+			state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{call}})
+		}
+		latest := navigationCall(agenttools.ToolReadDocument, map[string]any{
+			"knowledge_id": "latest-authorized-source", "fetched_chunks": 1,
+			"chunks":         []map[string]any{{"chunk_id": "latest-part", "content": "Source figure"}},
+			"image_evidence": []map[string]any{{"reference": "resource://actual-read", "read_success": false, "geometry_read_success": true}},
+		})
+		state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{latest}})
+		view := e.discoveryReadObservations(state)
+		raw, err := json.Marshal(view)
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(raw), 12*1024)
+		require.Positive(t, view["omitted_observations"].(int))
+		observations := view["observations"].([]map[string]any)
+		last := observations[len(observations)-1]
+		require.Equal(t, "latest-authorized-source", last["knowledge_id"])
+		status := last["actual_image_read_status"].(map[string]any)["samples"].([]map[string]any)
+		require.Equal(t, true, status[0]["geometry_read_success"])
+		require.Equal(t, false, status[0]["read_success"])
+		require.False(t, view["task_coverage_established"].(bool))
+	}
+}

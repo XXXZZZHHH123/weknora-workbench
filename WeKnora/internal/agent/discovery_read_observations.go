@@ -77,10 +77,11 @@ func (e *AgentEngine) discoveryReadObservations(state *types.AgentState) map[str
 				}
 				summary["tool_name"] = call.ExecutionName()
 			}
-			// Retain chronological execution order with explicit loss reporting.
+			// Retain the most recent execution status in chronological order.
+			// Earlier catalogs must not crowd out the actual read they led to.
 			if len(observations) >= 8 {
 				omitted++
-				continue
+				observations = observations[1:]
 			}
 			observations = append(observations, summary)
 		}
@@ -97,7 +98,7 @@ func (e *AgentEngine) discoveryReadObservations(state *types.AgentState) map[str
 		if len(observations) == 0 {
 			return nil
 		}
-		observations = observations[:len(observations)-1]
+		observations = observations[1:]
 		omitted++
 	}
 }

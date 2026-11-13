@@ -19,6 +19,39 @@ def original_deck():
 
 
 class TestOriginalFigure(unittest.TestCase):
+    def test_all_selected_legends_report_full_legend_scope_not_full_time_series(self):
+        source = original_deck()
+        # A short trace is still a complete selected legend, not a full-period
+        # observation. Selection order and duplicate input never change this.
+        result = read_original_figure(source, 'pptx', {
+            'source_page': '1', 'source_part': 'ppt/media/chart-a.emf',
+            'series_json': '["Gamma","Alpha","Beta","Gamma"]',
+        })
+        geometry = json.loads(result.metadata['geometry_json'])
+        self.assertEqual(geometry['omitted_series'], [])
+        self.assertEqual(geometry['source_series_count'], 3)
+        self.assertEqual({row['legend'] for row in geometry['series']}, {'Alpha', 'Beta', 'Gamma'})
+        short = next(row for row in geometry['series'] if row['legend'] == 'Gamma')
+        self.assertLess(short['last']['x_fraction'], 0.5)
+        self.assertIn('本次已返回全部图例的曲线关键点', result.content)
+        self.assertIn('每条曲线仍仅代表自身实际绘制范围', result.content)
+        self.assertIn('关键点和有界采样不等于完整逐月序列', result.content)
+        self.assertNotIn('未返回其他曲线的数据点', result.content)
+        self.assertNotIn('不能据此做全图比较', result.content)
+
+    def test_subset_scope_cannot_be_promoted_to_all_source_legends(self):
+        result = read_original_figure(original_deck(), 'pptx', {
+            'source_page': '1', 'source_part': 'ppt/media/chart-a.emf',
+            'series_json': '["Alpha","Gamma"]',
+        })
+        geometry = json.loads(result.metadata['geometry_json'])
+        self.assertEqual(geometry['source_series_count'], 3)
+        self.assertEqual(geometry['series_count'], 2)
+        self.assertEqual(geometry['omitted_series'], ['Beta'])
+        self.assertEqual({row['legend'] for row in geometry['series']}, {'Alpha', 'Gamma'})
+        self.assertIn('未返回其他曲线的数据点，不能据此做全图比较', result.content)
+        self.assertNotIn('本次已返回全部图例', result.content)
+
     def test_explicit_figure_uses_display_order_relationships_and_original_hashes(self):
         source = original_deck()
         result = read_original_figure(source, "pptx", {"source_page": "1", "source_part": "ppt/media/chart-a.emf", "series_json": '["Alpha","Beta","Gamma"]'})
