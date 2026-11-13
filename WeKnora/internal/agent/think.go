@@ -905,7 +905,7 @@ func (e *AgentEngine) streamLLMToEventBusWithModel(
 	// escapes). Decode the explicit answer value after JSON parsing, rather
 	// than stripping escaped tags or injecting unescaped canonical tags into
 	// the still-serialized envelope. Tool arguments are decoded as usual.
-	bufferReviewedAnswer := opts != nil && (isReviewedAnswerFormat(opts.Format) || isStructuredResultReviewFormat(opts.Format))
+	bufferReviewedAnswer := opts != nil && (isReviewedAnswerFormat(opts.Format) || isStructuredResultReviewFormat(opts.Format) || isDiscoveryDeliveryReviewFormat(opts.Format))
 
 	for chunk := range stream {
 		lastChunkAt.Store(time.Now().UnixNano())
