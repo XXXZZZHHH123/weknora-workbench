@@ -242,10 +242,16 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 			if geometryErr != nil {
 				entry["geometry_error"] = "原图几何证据不可用，不能据此生成数值"
 			} else if geometry != nil && geometry["version"] == "source_figure_selection_options_v1" {
-				options, _ := json.Marshal(geometry["available_series"])
-				return &types.ToolResult{Success: false,
-					Error: "image_series must explicitly select exact original legend identifiers, not the chart title or metric. Available original legend identifiers: " + string(options) + ". Choose the relevant identifiers from the full question and retry read_document; no numeric or visual evidence was delivered for this missing/invalid selection.",
-					Data:  map[string]any{"knowledge_id": knowledge.ID, "image_catalog": catalog, "image_selection_options": geometry}}, nil
+				// Pixels have already passed the original ownership/storage checks.
+				// The optional geometry companion must not revoke that independent
+				// evidence merely because it still requires a model-selected legend.
+				// Keep only navigation; selection options are never numeric evidence.
+				entry["geometry_read_success"] = false
+				entry["geometry_status"] = "selection_required"
+				entry["geometry_selection_options"] = map[string]any{
+					"available_series": geometry["available_series"],
+					"notice":           "Original pixels were returned. Optional geometry was not read: explicitly choose exact image_series legend identifiers from the full question and retry image_mode=geometry if needed. No geometry values were delivered and no series was selected automatically.",
+				}
 			} else if geometry != nil {
 				geometryEvidence = append(geometryEvidence, map[string]any{"reference": item.Reference,
 					"knowledge_id": knowledge.ID, "chunk_id": item.ChunkID, "page": item.Page,

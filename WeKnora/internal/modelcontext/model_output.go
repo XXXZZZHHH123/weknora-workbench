@@ -122,7 +122,9 @@ func (r *sourceRegistry) appendDiscoveryObservations(toolName, output string, re
 // longer raw JSON sample array into a second copy of the readable evidence.
 func (r *sourceRegistry) withDocumentImageEvidence(output string, data map[string]any) string {
 	view := map[string]any{}
-	for _, key := range []string{"image_mode", "image_catalog", "image_evidence", "image_read_error"} {
+	for _, key := range []string{"image_mode", "image_catalog", "image_evidence", "image_read_error",
+		"original_image_catalog_status", "original_image_catalog_pages", "original_image_catalog_complete",
+		"original_image_catalog_total", "original_image_catalog_limit", "original_image_catalog_truncated", "original_image_catalog_error"} {
 		if value, ok := data[key]; ok {
 			encoded, err := json.Marshal(value)
 			if err == nil && string(encoded) != "[]" && string(encoded) != "null" && string(encoded) != `""` {
@@ -165,6 +167,12 @@ func (r *sourceRegistry) withDocumentImageEvidence(output string, data map[strin
 		"Original geometry uses verified drawing points and calibrated axes; reconcile the actual legend, units and drawn range with any fallible vision observation. " +
 		"A catalog alone supplies no visual facts. Explicit geometry mode does not request pixels: read_success=false with pixel_status=not_requested is not a failed geometry read. " +
 		"Use only successfully verified geometry; geometry supplies no pixel inspection or model vision observation. Failed geometry reads supply no numeric geometry evidence.\n"
+	for key := range view {
+		if strings.HasPrefix(key, "original_image_catalog_") {
+			footer += "original_image_catalog_complete=true means only the physical pages listed in original_image_catalog_pages have a complete original-image catalog; it does not complete the body text or view any image. Choose a figure from the full question and actual source context, then use its read_args directly; further body offsets are not required to complete those pages' image catalog. A catalog error or truncation leaves that scope incomplete and never proves that missing figures do not exist. Catalog completeness supplies neither pixel-read success nor numeric geometry evidence.\n"
+			break
+		}
+	}
 	footer = r.CompactKnownText(footer)
 	if strings.HasSuffix(output, "</retrieval>") {
 		return strings.TrimSuffix(output, "</retrieval>") + footer + "</retrieval>"

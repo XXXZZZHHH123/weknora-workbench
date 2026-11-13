@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -84,14 +85,24 @@ func (t *ReadDocumentTool) appendOriginalImageCatalog(ctx context.Context, k *ty
 	for _, item := range catalog {
 		seen[item.Reference] = true
 	}
+	complete := true
 	for _, item := range images {
 		sel, e := types.ParseOriginalMediaReference(item.Reference)
-		if e != nil || sel.KnowledgeID != k.ID || sel.KnowledgeBaseID != k.KnowledgeBaseID || sel.Page != item.Page || sel.Part != item.Part || owners[item.Page] == "" || seen[item.Reference] {
+		if e != nil || sel.KnowledgeID != k.ID || sel.KnowledgeBaseID != k.KnowledgeBaseID || sel.Page != item.Page || sel.Part != item.Part || owners[item.Page] == "" {
+			complete = false
+			continue
+		}
+		if seen[item.Reference] {
 			continue
 		}
 		seen[item.Reference] = true
 		catalog = append(catalog, documentImage{Reference: item.Reference, KnowledgeID: k.ID, ChunkID: owners[item.Page], Page: item.Page, PageVerified: true, Label: item.Label, LabelTruncated: item.LabelTruncated, Context: contexts[item.Page], SourcePart: item.Part, ReadArgs: ReadDocumentInput{ID: k.ID, Page: item.Page, Images: []string{item.Reference}, ImageMode: "pixels", Detail: types.ImageDetailFull}})
 	}
-	result.Data["original_image_catalog_status"] = "verified_page_relationships"
+	if complete {
+		result.Data["original_image_catalog_status"] = "verified_page_relationships"
+		result.Data["original_image_catalog_pages"] = pages
+		result.Data["original_image_catalog_complete"] = true
+		result.Output += fmt.Sprintf("\nOriginal-media image catalog is complete only for verified physical pages %v; body text may still be paginated. No images have been viewed by listing this catalog. Choose the relevant figure from the full question and actual source context, then use its read_args directly; further text offsets are not required to complete these pages' original-image catalog. Catalog metadata is not numeric or visual evidence.\n", pages)
+	}
 	return catalog
 }
