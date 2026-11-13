@@ -58,6 +58,17 @@ def test_singleton_requires_complete_model_binding_for_aliases_and_negation(dupl
     assert mismatch['status']=='plan_mismatch' and 'rows' not in mismatch
 
 
+def test_model_can_bind_separately_labelled_sources_without_defaulting_to_one(duplicate_source):
+    store, dataset = duplicate_source
+    binding = {'considered_ids': ['C', 'E', 'G', 'I'], 'selected_ids': ['C', 'G'],
+               'reason': '分别报告两组真实来源，不将两组定义合并或认定等价'}
+    model = lambda payload: {'decision': 'resolved', 'bindings': [binding]}
+    assert verify_selection(store, dataset, ['C', 'G'], '分别列出两组来源的记录', model) is None
+    mismatch = verify_selection(store, dataset, ['C', 'E'], '分别列出两组来源的记录', model)
+    assert mismatch['status'] == 'plan_mismatch' and 'rows' not in mismatch
+    assert mismatch['bindings'][0]['selected_ids'] == ['C', 'G']
+
+
 def test_resolver_repairs_source_plan_in_model_instead_of_fixed_clarification(duplicate_source):
     store,dataset=duplicate_source;calls=[]
     def model(payload):

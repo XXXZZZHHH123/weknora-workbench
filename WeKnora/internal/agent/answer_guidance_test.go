@@ -38,6 +38,10 @@ func TestStandardAnswerGuidanceReachesPlannerAndExecutionWithoutChangingUserScop
 					require.Equal(t, 1, strings.Count(prompt, standardAnswerGuidance), "planner and executor share exactly the same practical policy")
 					require.Contains(t, prompt, "文件名措辞、上传顺序或数值接近程度不能证明权威或替代关系")
 					require.Contains(t, prompt, "并列呈现有依据的差异并明确无法确定哪版优先")
+					require.Contains(t, prompt, "字段或图题中的并列词可能是一个合并口径")
+					require.Contains(t, prompt, "用户明确只用某表、某文件或已发布结构化数据时必须遵守")
+					require.Contains(t, prompt, "不自行选择默认候选，也不因多候选就一律要求用户再选")
+					require.Contains(t, prompt, "保留原始有效数值与样本")
 				} else {
 					require.NotContains(t, prompt, "<standard_answer_policy>", "strict and legacy prompts preserve their prior policy")
 				}

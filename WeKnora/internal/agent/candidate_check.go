@@ -71,6 +71,7 @@ type turnReviewState struct {
 	NumericWarningAllowed      bool
 	UnverifiedCitationDelivery *unverifiedCitationDeliveryBinding
 	StructuredResultReview     *structuredResultReviewTurn
+	DiscoveryReview            *discoveryDeliveryReviewTurn
 }
 
 // Preserve the existing two numeric and two semantic repair allowances while
@@ -235,6 +236,10 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		ctx = withNumericValidationFeedback(ctx, decision.NumericFeedback)
 	}
 	if e.standardTextDelivery(state) {
+		decision = e.checkDiscoveryOnlyDelivery(ctx, query, decision, state, conversation)
+		if decision.Disposition != candidateAccepted {
+			return decision
+		}
 		// Actual tools have already enforced permissions and source identities;
 		// immutable view, citation and numeric checks above remain mandatory.
 		// The explicit structured-result policy adds at most one bounded conflict
