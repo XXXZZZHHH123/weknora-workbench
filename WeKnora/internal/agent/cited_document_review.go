@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/Tencent/WeKnora/internal/models/chat"
@@ -194,4 +195,48 @@ func compactCurrentReadDocuments(views []map[string]any) []map[string]any {
 		group["shared_fields"] = shared
 	}
 	return groups
+}
+
+// Budget recovery changes only the editor representation. Every source view
+// remains independently bound; only byte-identical complete content strings
+// share a body. Neither version qualification nor citation validation uses this
+// projection. Locator quotes remain in the original tool evidence.
+func compactDocumentReviewBodies(views []map[string]any) ([]map[string]any, map[string]string, bool) {
+	prepared := make([]map[string]any, 0, len(views))
+	counts := map[string]int{}
+	for _, original := range views {
+		body, ok := original["content"].(string)
+		if !ok {
+			return nil, nil, false
+		}
+		view := map[string]any{}
+		for field, value := range original {
+			view[field] = value
+		}
+		locators, ok := readReviewLocatorPositions(original["source_locators"])
+		if !ok {
+			return nil, nil, false
+		}
+		view["source_locators"], view["locator_quotes_omitted"] = locators, true
+		counts[body]++
+		prepared = append(prepared, view)
+	}
+	groups := compactCurrentReadDocuments(prepared)
+	pooled, refs := map[string]string{}, map[string]string{}
+	for _, group := range groups {
+		for _, view := range group["views"].([]map[string]any) {
+			body := view["content"].(string)
+			if counts[body] < 2 {
+				continue
+			}
+			ref := refs[body]
+			if ref == "" {
+				ref = "body_" + strconv.Itoa(len(pooled)+1)
+				refs[body], pooled[ref] = ref, body
+			}
+			view["content_ref"] = ref
+			delete(view, "content")
+		}
+	}
+	return groups, pooled, true
 }

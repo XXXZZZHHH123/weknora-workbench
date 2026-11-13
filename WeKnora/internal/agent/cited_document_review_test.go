@@ -201,3 +201,141 @@ func TestReadDocumentReviewRetainsDifferentAuthorizedViewsWithoutExpandingScope(
 		require.JSONEq(t, string(want), string(got))
 	}
 }
+
+func TestReadDocumentReviewOmitsOnlyLocatorQuotesAndSharesMetadataLosslessly(t *testing.T) {
+	model := &mockChat{}
+	e, state, _ := directCitationReadFixture(t, model, true)
+	row := state.RoundSteps[0].ToolCalls[0].Result.Data["chunks"].([]map[string]any)[1]
+	row["source_locators"] = []map[string]any{{"type": "pdf", "page": 8, "source_hash": strings.Repeat("b", 64), "partial": true,
+		"bbox": []float64{0.1, 0.2, 0.7, 0.8}, "quote": "A locator overlap, possibly outside this bounded body.", "future_position": "preserved"}}
+	before := reviewDigest(state.RoundSteps)
+	views, complete := e.currentReadDocumentReviewEvidence(state, nil)
+	require.True(t, complete)
+	require.Len(t, views, 2)
+	locators := views[1]["source_locators"].([]map[string]any)
+	require.Len(t, locators, 1)
+	require.NotContains(t, locators[0], "quote")
+	require.Equal(t, true, views[1]["locator_quotes_omitted"])
+	require.Equal(t, "preserved", locators[0]["future_position"])
+	require.Equal(t, float64(8), locators[0]["page"])
+	require.Equal(t, row["content"], views[1]["content"])
+	require.Equal(t, before, reviewDigest(state.RoundSteps), "source validators retain original locator quotes and all metadata")
+	views[0]["nullable"] = nil
+	groups := compactCurrentReadDocuments(views)
+	require.Len(t, groups, 1)
+	shared := groups[0]["shared_fields"].(map[string]any)
+	require.NotContains(t, shared, "nullable", "missing is not explicit null")
+	decoded := []map[string]any{}
+	for _, raw := range groups[0]["views"].([]map[string]any) {
+		view := map[string]any{}
+		for field, value := range shared {
+			view[field] = value
+		}
+		for field, value := range raw {
+			view[field] = value
+		}
+		decoded = append(decoded, view)
+	}
+	require.Equal(t, views, decoded, "metadata factoring is lossless for every retained body, identity and scope")
+	require.Equal(t, before, reviewDigest(state.RoundSteps))
+	require.Contains(t, structuredResultReviewInstructions, "never refute a claim merely because a locator snippet is not shown")
+}
+
+func TestDocumentBodyPoolPreservesIndependentSourcesAndEveryByte(t *testing.T) {
+	body := "The same source text.\n汉字🙂\n"
+	views := []map[string]any{
+		{"content": body, "citation_handle": "first", "knowledge_id": "document-a", "content_revision": 2, "source_view": map[string]any{"content_offset": 0, "content_complete": true}, "source_locators": []map[string]any{{"page": 4, "quote": body}}},
+		{"content": body, "citation_handle": "second", "knowledge_id": "document-b", "content_revision": 7, "source_view": map[string]any{"content_offset": 6, "content_complete": false}, "source_locators": []map[string]any{{"page": 9, "quote": body}}},
+		{"content": body + " ", "citation_handle": "third", "knowledge_id": "document-b", "content_revision": 8, "source_view": map[string]any{"content_offset": 6, "content_complete": false}, "source_locators": []map[string]any{{"page": 9}}},
+	}
+	before := reviewDigest(views)
+	groups, bodies, complete := compactDocumentReviewBodies(views)
+	require.True(t, complete)
+	require.Len(t, bodies, 1)
+	require.Equal(t, body, bodies["body_1"])
+	decoded := map[string]map[string]any{}
+	for _, group := range groups {
+		for _, raw := range group["views"].([]map[string]any) {
+			view := map[string]any{}
+			for field, value := range group["shared_fields"].(map[string]any) {
+				view[field] = value
+			}
+			for field, value := range raw {
+				view[field] = value
+			}
+			if ref, ok := view["content_ref"].(string); ok {
+				content, exists := bodies[ref]
+				require.True(t, exists, "every body reference must resolve")
+				view["content"] = content
+				delete(view, "content_ref")
+			}
+			decoded[view["citation_handle"].(string)] = view
+		}
+	}
+	require.Len(t, decoded, len(views), "equal content never merges source entries")
+	for _, original := range views {
+		want := map[string]any{}
+		for field, value := range original {
+			want[field] = value
+		}
+		locators, ok := readReviewLocatorPositions(original["source_locators"])
+		require.True(t, ok)
+		want["source_locators"], want["locator_quotes_omitted"] = locators, true
+		require.Equal(t, want, decoded[original["citation_handle"].(string)], "body, source, revision and scope survive without reinterpretation")
+	}
+	require.Equal(t, before, reviewDigest(views))
+}
+
+func TestCitedDocumentReviewRecoversBudgetOnlyWithCompleteEvidence(t *testing.T) {
+	for _, repeated := range []bool{true, false} {
+		t.Run(map[bool]string{true: "identical", false: "different"}[repeated], func(t *testing.T) {
+			model := &mockChat{responses: []mockResponse{lightReviewReply("keep", "")}}
+			e, state, _ := directCitationReadFixture(t, model, true)
+			e.config.AnswerReviewMode, e.config.StructuredResultReviewEnabled = "standard", true
+			rows := state.RoundSteps[0].ToolCalls[0].Result.Data["chunks"].([]map[string]any)
+			body := strings.Repeat("A source observation. ", 750)
+			rows[0]["content"], rows[1]["content"] = body, body
+			if !repeated {
+				rows[1]["content"] = body + " "
+			}
+			e.appendToolResults(emptyMessages(), state.RoundSteps[0])
+			candidate := `Both source passages were read.<kb chunk_id="contract-neighbor" /><kb chunk_id="contract-supporting" />`
+			before := reviewDigest(state.RoundSteps)
+			d := e.checkStructuredResultDelivery(t.Context(), "Compare the sources.", candidateDecision{Disposition: candidateAccepted, Candidate: candidate}, state, nil)
+			require.Equal(t, before, reviewDigest(state.RoundSteps))
+			if !repeated {
+				require.Equal(t, "not_checked_input_budget", d.StructuredResultReviewStatus)
+				require.Empty(t, model.calls, "different full bodies cannot be sampled or normalized to fit")
+				return
+			}
+			require.Equal(t, "kept", d.StructuredResultReviewStatus)
+			require.Len(t, model.calls, 1)
+			var input map[string]any
+			require.NoError(t, json.Unmarshal([]byte(model.calls[0][1].Content), &input))
+			require.Equal(t, body, input["shared_content_bodies"].(map[string]any)["body_1"])
+			groups := input["actual_current_cited_documents"].([]any)
+			require.Len(t, groups, 1)
+			group := groups[0].(map[string]any)
+			require.Len(t, group["views"], 2)
+			require.Equal(t, true, group["shared_fields"].(map[string]any)["locator_quotes_omitted"])
+			require.Contains(t, model.calls[0][0].Content, "every reference must be resolved")
+		})
+	}
+}
+
+func TestCitedDocumentBodyPoolCannotResolveConflictingVersions(t *testing.T) {
+	model := &mockChat{}
+	e, state, candidate := directCitationReadFixture(t, model, true)
+	e.config.AnswerReviewMode, e.config.StructuredResultReviewEnabled = "standard", true
+	call := state.RoundSteps[0].ToolCalls[0]
+	raw, err := json.Marshal(call.Result)
+	require.NoError(t, err)
+	call.Result = &types.ToolResult{}
+	require.NoError(t, json.Unmarshal(raw, call.Result))
+	call.ID = "different-version-same-text"
+	call.Result.Data["chunks"].([]any)[1].(map[string]any)["content_revision"] = 99
+	state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{call}})
+	d := e.checkStructuredResultDelivery(t.Context(), "Describe the indicator.", candidateDecision{Disposition: candidateAccepted, Candidate: candidate}, state, nil)
+	require.Equal(t, "not_checked_document_omission", d.StructuredResultReviewStatus)
+	require.Empty(t, model.calls, "identical text cannot qualify a conflicting source version")
+}

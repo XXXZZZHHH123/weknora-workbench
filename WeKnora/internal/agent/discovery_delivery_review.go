@@ -23,6 +23,7 @@ Return keep if the task is sufficiently answered by directory facts/general know
 var discoveryDeliveryReviewSchema = json.RawMessage(`{"type":"object","additionalProperties":false,"required":["action","feedback"],"properties":{"action":{"type":"string","enum":["keep","recover"]},"feedback":{"type":"string","maxLength":1200}}}`)
 
 type discoveryDeliveryReviewTurn struct {
+	Phase                                                  string
 	CandidateHash, TaskHash, EvidenceHash, SourceScopeHash string
 	Action, Feedback                                       string
 }
@@ -111,10 +112,18 @@ func discoveryOnlyObservations(state *types.AgentState) []map[string]any {
 // execute tools. The normal executor handles any suggested recovery under the
 // unchanged permissions, source checks and shared candidate repair allowance.
 func (e *AgentEngine) checkDiscoveryOnlyDelivery(ctx context.Context, query string, decision candidateDecision, state *types.AgentState, conversation []chat.Message) candidateDecision {
+	return e.checkDiscoveryDeliveryPhase(ctx, query, decision, state, conversation, "delivery", nil)
+}
+
+func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query string, decision candidateDecision, state *types.AgentState, conversation []chat.Message, phase string, progress map[string]any) candidateDecision {
 	if !e.standardAnswerReview() || !e.config.WorkbenchDefault || e.chatModel == nil || e.toolRegistry == nil {
 		return decision
 	}
 	if previous := e.turnReview.DiscoveryReview; previous != nil {
+		if previous.Phase == "progress" {
+			common.PipelineInfo(ctx, "Agent", "discovery_delivery_review", map[string]any{"phase": phase, "status": "not_checked_shared_progress_budget", "candidate_hash": decision.CandidateHash})
+			return decision
+		}
 		// A spent call budget is not permission to accept the unchanged answer
 		// already judged incomplete. Reuse its private binding before checking
 		// the shared repair allowance; the executor owns exhaustion behavior.
@@ -129,7 +138,7 @@ func (e *AgentEngine) checkDiscoveryOnlyDelivery(ctx context.Context, query stri
 	}
 	observations := discoveryOnlyObservations(state)
 	readObservations := e.discoveryReadObservations(state)
-	if len(observations) == 0 && readObservations == nil {
+	if len(observations) == 0 && readObservations == nil && progress == nil {
 		return decision
 	}
 	runtimeScope := e.RenderUserTurnContent("", "")
@@ -148,6 +157,7 @@ func (e *AgentEngine) checkDiscoveryOnlyDelivery(ctx context.Context, query stri
 	}
 	humanConversation, omitted := reviewConversationView(e.semanticReviewConversation(conversation), 4096, 8)
 	input, err := json.Marshal(map[string]any{
+		"phase": phase, "actual_execution_progress": progress,
 		"question": query, "conversation": humanConversation, "omitted_conversation_messages": omitted,
 		"candidate_answer": decision.Candidate, "actual_discovery_or_binding_observations": observations,
 		"actual_source_read_progress":              readObservations,
@@ -157,25 +167,29 @@ func (e *AgentEngine) checkDiscoveryOnlyDelivery(ctx context.Context, query stri
 	})
 	if err != nil || len(input) > 32*1024 || len(decision.Candidate) > 8192 || ctx.Err() != nil {
 		common.PipelineInfo(ctx, "Agent", "discovery_delivery_review", map[string]any{
-			"status": "not_checked_input_budget_or_cancelled", "candidate_hash": decision.CandidateHash, "input_bytes": len(input),
+			"phase": phase, "status": "not_checked_input_budget_or_cancelled", "candidate_hash": decision.CandidateHash, "input_bytes": len(input),
 		})
 		return decision
 	}
-	receipt := &discoveryDeliveryReviewTurn{CandidateHash: decision.CandidateHash, TaskHash: decision.TaskHash, EvidenceHash: decision.EvidenceHash, SourceScopeHash: decision.SourceScopeHash}
+	receipt := &discoveryDeliveryReviewTurn{Phase: phase, CandidateHash: decision.CandidateHash, TaskHash: decision.TaskHash, EvidenceHash: decision.EvidenceHash, SourceScopeHash: decision.SourceScopeHash}
 	e.turnReview.DiscoveryReview = receipt
 	status := "not_checked_response"
 	started := time.Now()
 	defer func() {
 		common.PipelineInfo(ctx, "Agent", "discovery_delivery_review", map[string]any{
-			"status": status, "candidate_hash": decision.CandidateHash, "input_bytes": len(input), "elapsed_ms": time.Since(started).Milliseconds(),
+			"phase": phase, "status": status, "candidate_hash": decision.CandidateHash, "input_bytes": len(input), "elapsed_ms": time.Since(started).Milliseconds(),
 		})
 	}()
 	checkCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 	checkCtx = context.WithValue(checkCtx, reviewGenerationBudgetKey{}, &reviewGenerationBudget{purpose: "discovery_delivery", completionLimit: 768})
 	disabled := false
+	instructions := discoveryDeliveryReviewInstructions
+	if phase == "progress" {
+		instructions += "\nPROGRESS PHASE: there is no candidate answer yet. Review whether the current investigation is making useful progress toward the ORIGINAL human task. The runtime cadence is not proof of failure or a requirement to change tools. Keep an appropriate structured-only investigation, including exact statistics actually requested, even if it needs several calls. Recover only a concrete observed scope/representation obstacle, repeated unproductive source discovery, or a planner-added precision requirement when a meaningful authorized alternative is available. Consider current execution diagnostics and all actually available source capabilities; successful directory/status calls do not by themselves prove task progress. Do not demand a draft merely because several batches elapsed, terminate the task, force another channel, select a file, or supply source values. Feedback is a plan-reassessment suggestion to the executing model, not a mandatory tool sequence. A keep here approves neither a future candidate nor source facts; ordinary numeric, citation and answer checks remain mandatory."
+	}
 	result, err := e.streamLLMToEventBusWithModel(checkCtx, e.chatModel, []chat.Message{
-		{Role: "system", Content: discoveryDeliveryReviewInstructions + "\n" + string(discoveryDeliveryReviewSchema)},
+		{Role: "system", Content: instructions + "\n" + string(discoveryDeliveryReviewSchema)},
 		{Role: "user", Content: string(input)},
 	}, &chat.ChatOptions{Temperature: 0, MaxCompletionTokens: 768, Format: discoveryDeliveryReviewSchema, ToolChoice: "none", Thinking: &disabled, ReasoningEffort: chat.ReasoningEffort("off")}, nil)
 	if result != nil && result.Usage != nil {
