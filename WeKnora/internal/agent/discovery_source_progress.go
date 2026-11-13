@@ -75,15 +75,21 @@ func (e *AgentEngine) sourceExecutionProgress(state *types.AgentState) (int, map
 // a final draft that might never arrive. This spends the SAME once-turn review
 // receipt as candidate delivery. Keep/error never grants candidate approval.
 func (e *AgentEngine) reviewSourceProgress(ctx context.Context, query string, state *types.AgentState, messages *[]chat.Message, guards *loopGuards, sessionID string) {
-	if ctx.Err() != nil || state == nil || messages == nil || guards == nil || e.taskPlan == nil || !e.standardTextDelivery(state) || e.turnReview.DiscoveryReview != nil || e.turnReview.Repairs >= maxTurnCandidateRepairs || guards.evidenceRecoveryAttempts >= maxEvidenceRecoveryAttempts {
+	if ctx.Err() != nil || state == nil || messages == nil || guards == nil || !e.standardTextDelivery(state) || e.turnReview.DiscoveryReview != nil || e.turnReview.Repairs >= maxTurnCandidateRepairs || guards.evidenceRecoveryAttempts >= maxEvidenceRecoveryAttempts {
 		return
 	}
-	batches, progress := e.sourceExecutionProgress(state)
+	// Planning is advisory and may fail protocol validation. Actual source
+	// execution still needs review in that fallback. A new human requirement
+	// has an explicit execution boundary; a nil plan is not that boundary.
+	current := *state
+	current.RoundSteps = state.RoundSteps[min(guards.sourceProgressStartStep, len(state.RoundSteps)):]
+	batches, progress := e.sourceExecutionProgress(&current)
 	if batches < sourceProgressReviewBatches {
 		return
 	}
 	decision := candidateDecision{Disposition: candidateAccepted, TaskHash: e.candidateTaskDigest(query, *messages), EvidenceHash: reviewDigest(e.sourceConsistencyMessages(state, *messages)), SourceScopeHash: e.unverifiedSourceScopeDigest(ctx)}
-	decision = e.checkDiscoveryDeliveryPhase(ctx, query, decision, state, *messages, "progress", progress)
+	decision = e.checkDiscoveryDeliveryPhase(ctx, query, decision, &current, *messages, "progress", progress)
+	state.TurnUsage = current.TurnUsage
 	if decision.Disposition != candidateNeedSource || ctx.Err() != nil || !e.spendCandidateRepair() {
 		return
 	}

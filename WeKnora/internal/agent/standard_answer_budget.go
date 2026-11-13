@@ -230,7 +230,7 @@ func (e *AgentEngine) finishStandardAnswerBudget(
 	if injected > 0 {
 		e.clearTaskToolProjection(messages)
 		e.taskPlan = nil
-		e.resetDocumentTurnProgress(guards, query)
+		e.resetDocumentTurnProgress(guards, query, state)
 		return false, nil
 	}
 	if err := e.executionLeaseError(ctx); err != nil {

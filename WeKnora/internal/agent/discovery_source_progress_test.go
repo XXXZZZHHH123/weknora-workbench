@@ -55,7 +55,7 @@ func TestSourceProgressReviewRecoversBeforeCandidateWithoutResettingIterations(t
 	require.Contains(t, model.calls[0][1].Content, "search_knowledge")
 	require.NotContains(t, model.calls[0][1].Content, "forbidden_unregistered_tool")
 	require.Contains(t, model.calls[0][0].Content, "there is no candidate answer yet")
-	require.Equal(t, 768, model.opts[0].MaxCompletionTokens)
+	require.Equal(t, 512, model.opts[0].MaxCompletionTokens)
 	require.Empty(t, model.opts[0].Tools)
 	e.reviewSourceProgress(t.Context(), query, state, &messages, guards, "session")
 	require.Len(t, model.calls, 1)
@@ -142,6 +142,7 @@ func TestSourceProgressReviewRequiresNativeBatchesAndRemainingBudget(t *testing.
 				e.turnReview.DiscoveryReview = &discoveryDeliveryReviewTurn{Phase: "delivery", Action: "keep"}
 			case "new_human_task":
 				e.taskPlan = nil
+				e.resetDocumentTurnProgress(guards, "A new actual requirement", state)
 			case "strict":
 				e.config.AnswerReviewMode = "strict"
 			}
@@ -191,4 +192,53 @@ func TestSourceProgressSummaryIsBoundedAndPreservesActualDiagnostics(t *testing.
 	require.NoError(t, err)
 	require.Contains(t, string(raw), "needs_mapping")
 	require.Contains(t, string(raw), "cadence_is_not_failure")
+}
+
+func TestSourceProgressReviewSurvivesUnavailableAdvisoryPlan(t *testing.T) {
+	for _, action := range []string{"recover", "keep"} {
+		t.Run(action, func(t *testing.T) {
+			e, state, model, messages, guards := sourceProgressFixture(t, action)
+			// This is the documented planning fallback: no fabricated plan and
+			// the real registered capabilities remain available.
+			e.taskPlan = nil
+			e.taskProjection = nil
+			e.config.KnowledgeIDs = []string{"only-file"}
+			e.selectedDocs = []*SelectedDocumentInfo{{KnowledgeID: "only-file", Title: "Only permitted source"}}
+			before := reviewDigest(state.RoundSteps)
+			e.reviewSourceProgress(t.Context(), "Explain the observed pattern using only the selected source.", state, &messages, guards, "session")
+			require.Len(t, model.calls, 1)
+			require.Contains(t, model.calls[0][1].Content, `"advisory_plan":null`)
+			require.Contains(t, model.calls[0][1].Content, "Only permitted source")
+			require.Equal(t, action, e.turnReview.DiscoveryReview.Action)
+			require.Nil(t, e.taskPlan, "the review cannot invent an advisory plan")
+			require.Equal(t, before, reviewDigest(state.RoundSteps))
+			if action == "recover" {
+				require.Equal(t, 1, guards.evidenceRecoveryAttempts)
+				require.Equal(t, 1, e.turnReview.Repairs)
+			} else {
+				require.Zero(t, guards.evidenceRecoveryAttempts)
+				require.Zero(t, e.turnReview.Repairs)
+			}
+			e.reviewSourceProgress(t.Context(), "Explain the observed pattern using only the selected source.", state, &messages, guards, "session")
+			require.Len(t, model.calls, 1)
+		})
+	}
+}
+
+func TestSourceProgressNewHumanBoundaryUsesOnlyNewExecutions(t *testing.T) {
+	e, state, model, messages, guards := sourceProgressFixture(t, "keep")
+	e.taskPlan = nil
+	oldStep := state.RoundSteps[0]
+	e.resetDocumentTurnProgress(guards, "New actual request", state)
+	e.reviewSourceProgress(t.Context(), "New actual request", state, &messages, guards, "session")
+	require.Empty(t, model.calls, "old executions cannot trigger the new task's cadence")
+	state.RoundSteps = append(state.RoundSteps, oldStep, oldStep)
+	e.reviewSourceProgress(t.Context(), "New actual request", state, &messages, guards, "session")
+	require.Empty(t, model.calls)
+	state.RoundSteps = append(state.RoundSteps, oldStep)
+	e.reviewSourceProgress(t.Context(), "New actual request", state, &messages, guards, "session")
+	require.Len(t, model.calls, 1)
+	require.Contains(t, model.calls[0][1].Content, `"source_batches":3`)
+	require.NotContains(t, model.calls[0][1].Content, `"source_batches":6`)
+	require.Equal(t, 12, state.TurnUsage.CompletionTokens, "usage from the current execution view is retained")
 }

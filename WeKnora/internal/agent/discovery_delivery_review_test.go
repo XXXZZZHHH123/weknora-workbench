@@ -193,13 +193,16 @@ func TestDiscoveryDeliveryReviewDoesNotTriggerFromQuestionOrReadEvidence(t *test
 func TestDiscoveryDeliveryReviewFailureIsBoundedAndNeverClaimsReview(t *testing.T) {
 	for _, response := range []string{"bad-json", `{"action":"recover","feedback":""}`, `{"action":"keep","feedback":"expand scope"}`, `{"action":"keep","feedback":"","extra":true}`, `{"action":"keep","feedback":""} {}`} {
 		t.Run(response, func(t *testing.T) {
-			e, state, model := discoveryReviewFixture(t, deliveryReply(response, "stop", types.TokenUsage{}))
+			e, state, model := discoveryReviewFixture(t, deliveryReply(response, "stop", types.TokenUsage{}), deliveryReply(response, "stop", types.TokenUsage{}))
 			original := candidateDecision{Disposition: candidateAccepted, Candidate: "Actual mapping status."}
 			require.Equal(t, original, e.checkDiscoveryOnlyDelivery(t.Context(), "Report the status.", original, state, nil))
 			require.NotNil(t, e.turnReview.DiscoveryReview)
 			require.Empty(t, e.answerReviewFeedback)
 			e.checkDiscoveryOnlyDelivery(t.Context(), "Report the status.", original, state, nil)
-			require.Len(t, model.calls, 1)
+			require.Len(t, model.calls, 2, "only invalid schema gets one bounded protocol repair")
+			require.Equal(t, "schema", e.turnReview.DiscoveryReview.FailureCode)
+			require.Empty(t, e.turnReview.DiscoveryReview.Action)
+			require.True(t, e.turnReview.DiscoveryReview.ProtocolRepairAttempted)
 		})
 	}
 	e, state, model := discoveryReviewFixture(t)
