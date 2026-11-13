@@ -32,7 +32,7 @@ var readDocumentTool = BaseTool{
 		"chunk; set context to include neighbouring chunks on each side).\n" +
 		"Use pages (at most 8) to batch model-selected physical pages in one authorized read; each page has its own completion and continuation metadata. For a single physical page or PPT slide, use page (1-based). It reads only that page's explicit parser markers; offset is never a physical page number. Missing page markers are reported, never guessed.\n" +
 		"Printed page labels and table-of-contents ranges are not physical PDF pages or proof that a listed section is present in this file. Verify physical pages with parser source_locators or page reads; chunk counts and the largest observed locator do not establish total pages.\n" +
-		"The result includes an image_catalog of actual stored figures, even for older text-only imports. " +
+		"The result includes an image_catalog of stored figures and relationship-verified original PPTX media on explicitly read physical pages, even for older text-only imports. " +
 		"To inspect a figure, use that catalog entry's read_args (its actual owning chunk and any verified physical page), then add focus describing the complete user request. " +
 		"Do not move an image reference to another page, chunk, document or pagination range. page_hint is an unverified source label, not physical-page proof; no page should be guessed when page_verified=false. " +
 		"Choose the figure from its actual source labels/context; text labels and image URLs alone do not reveal curves or their colors. " +
@@ -154,14 +154,15 @@ type ReadDocumentInput struct {
 // handle, or by an in-document text search.
 type ReadDocumentTool struct {
 	BaseTool
-	knowledgeService   interfaces.KnowledgeService
-	chunkService       interfaces.ChunkService
-	searchTargets      types.SearchTargets
-	documentConstraint *RequestedDocumentConstraint
-	imageReader        DocumentImageReader
-	sourceImageReader  DocumentSourceImageReader
-	figureReader       DocumentFigureReader
-	wikiPageService    interfaces.WikiPageService
+	knowledgeService     interfaces.KnowledgeService
+	chunkService         interfaces.ChunkService
+	searchTargets        types.SearchTargets
+	documentConstraint   *RequestedDocumentConstraint
+	imageReader          DocumentImageReader
+	sourceImageReader    DocumentSourceImageReader
+	figureReader         DocumentFigureReader
+	originalImageCatalog DocumentOriginalImageCatalog
+	wikiPageService      interfaces.WikiPageService
 }
 
 // WithImageReader wires the existing authorized document-image storage reader.

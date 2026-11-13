@@ -19,6 +19,18 @@ func (s *knowledgeService) ReadDocumentSourceImage(ctx context.Context, knowledg
 	if knowledge == nil {
 		return nil, errors.New("document source unavailable")
 	}
+	if strings.HasPrefix(reference, types.OriginalMediaPrefix) {
+		data, sourceSHA, err := s.readOriginalMediaSelection(ctx, knowledge, reference, page, part)
+		if err != nil {
+			return nil, err
+		}
+		switch http.DetectContentType(data) {
+		case "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp":
+			return data, nil
+		}
+		mediaSHA := sha256.Sum256(data)
+		return s.renderKnowledgeSourceMedia(types.WithExecutionTenant(ctx, knowledge.TenantID), knowledge, page, part, sourceSHA, hex.EncodeToString(mediaSHA[:]))
+	}
 	images, ok := s.kbService.(interface {
 		ReadDocumentImage(context.Context, *types.Knowledge, string) ([]byte, error)
 	})

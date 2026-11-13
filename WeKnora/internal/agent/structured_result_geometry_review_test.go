@@ -58,7 +58,7 @@ func lightGeometryFixture() *types.AgentState {
 func TestStructuredGeometryReviewCorrectsGroupMembershipOnce(t *testing.T) {
 	const original = "Both Alpha and Beta have their minimum between Start and Middle. Their later endpoints rebound."
 	const corrected = "Alpha has its minimum between Start and Middle; Beta between Middle and End. Their later endpoints rebound."
-	e, _, model := lightGeometryEngine(t, lightReviewEdits(structuredResultEdit{
+	e, _, model := lightGeometryEngine(t, discoveryReply("keep", ""), lightReviewEdits(structuredResultEdit{
 		"Both Alpha and Beta have their minimum between Start and Middle.",
 		"Alpha has its minimum between Start and Middle; Beta between Middle and End.",
 	}))
@@ -75,17 +75,18 @@ func TestStructuredGeometryReviewCorrectsGroupMembershipOnce(t *testing.T) {
 	require.Equal(t, corrected, decision.Candidate)
 	require.Equal(t, "corrected", decision.StructuredResultReviewStatus)
 	require.False(t, decision.SourceReviewAttempted)
-	require.Len(t, model.calls, 1)
+	require.Contains(t, model.calls[0][1].Content, "candidate_answer", "the separate task-scope review kept the candidate")
+	require.Len(t, model.calls, 2)
 	require.True(t, e.candidateApprovalCurrent(corrected, state))
 	require.Equal(t, before, reviewDigest(state.RoundSteps), "source geometry and its approval fingerprint are immutable")
-	input := model.calls[0][1].Content
+	input := model.calls[1][1].Content
 	for _, text := range []string{"actual_original_geometry", "Alpha", "Beta", "key_points", "minimum", "maximum", "first", "last", "axis_position", "percentage_points", "10%", "source_samples_omitted"} {
 		require.Contains(t, input, text)
 	}
 	require.NotContains(t, input, `"source_samples":[`)
 	require.LessOrEqual(t, len(input), structuredResultReviewInputBytes)
 	e.checkCandidate(t.Context(), "Describe the grouped low points and later direction.", original, "", state, nil, true)
-	require.Len(t, model.calls, 1, "geometry shares the existing once-per-turn allowance")
+	require.Len(t, model.calls, 2, "geometry shares the existing once-per-turn allowance")
 }
 
 func TestStructuredGeometryReviewRejectsUnboundAndNonGeometrySources(t *testing.T) {
@@ -145,17 +146,17 @@ func TestStructuredGeometryReviewRejectsUnboundAndNonGeometrySources(t *testing.
 }
 
 func TestStructuredGeometryAndSQLShareSingleReview(t *testing.T) {
-	e, state, model := lightGeometryEngine(t, lightReviewReply("keep", ""))
+	e, state, model := lightGeometryEngine(t, discoveryReply("keep", ""), lightReviewReply("keep", ""))
 	state.RoundSteps = append(state.RoundSteps, lightGeometryFixture().RoundSteps...)
 	decision := e.checkCandidate(t.Context(), "Describe both sources.", "Both current sources were read.", "", state, nil, false)
 	require.Equal(t, "kept", decision.StructuredResultReviewStatus)
-	require.Len(t, model.calls, 1)
-	require.Contains(t, model.calls[0][1].Content, "actual_structured_results")
-	require.Contains(t, model.calls[0][1].Content, "actual_original_geometry")
-	require.Contains(t, model.calls[0][1].Content, "Alpha")
-	require.Contains(t, model.calls[0][1].Content, "12.500")
+	require.Len(t, model.calls, 2)
+	require.Contains(t, model.calls[1][1].Content, "actual_structured_results")
+	require.Contains(t, model.calls[1][1].Content, "actual_original_geometry")
+	require.Contains(t, model.calls[1][1].Content, "Alpha")
+	require.Contains(t, model.calls[1][1].Content, "12.500")
 	e.checkCandidate(t.Context(), "Describe both sources.", "A revised answer.", "", state, nil, true)
-	require.Len(t, model.calls, 1)
+	require.Len(t, model.calls, 2)
 }
 
 func TestStructuredGeometryReviewSkipsIncompleteOrOversizedProjection(t *testing.T) {
@@ -186,7 +187,7 @@ func TestStructuredGeometryReviewSkipsIncompleteOrOversizedProjection(t *testing
 }
 
 func TestStructuredGeometryReviewKeepsSelectedAndShortCurves(t *testing.T) {
-	e, _, model := lightGeometryEngine(t, lightReviewReply("keep", ""))
+	e, _, model := lightGeometryEngine(t, discoveryReply("keep", ""), lightReviewReply("keep", ""))
 	state := lightGeometryFixture()
 	data := state.RoundSteps[0].ToolCalls[0].Result.Data
 	geometry := data["image_geometry_evidence"].([]map[string]any)[0]["evidence"].(map[string]any)["geometry"].(map[string]any)
@@ -198,8 +199,8 @@ func TestStructuredGeometryReviewKeepsSelectedAndShortCurves(t *testing.T) {
 	before := reviewDigest(state.RoundSteps)
 	decision := e.checkCandidate(t.Context(), "Describe the selected curves.", "The short Beta curve covers only part of the plotted range.", "", state, nil, false)
 	require.Equal(t, "kept", decision.StructuredResultReviewStatus)
-	require.Len(t, model.calls, 1)
-	input := model.calls[0][1].Content
+	require.Len(t, model.calls, 2)
+	input := model.calls[1][1].Content
 	for _, field := range []string{"source_series_count", "series_selection", "omitted_series", "Gamma", "Alpha", "Beta", "source_samples_omitted"} {
 		require.Contains(t, input, field)
 	}

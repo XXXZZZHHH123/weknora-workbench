@@ -1,12 +1,38 @@
 package modelcontext
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 )
+
+func TestOriginalMediaSelectorRoundTripPreservesVersionAndToolArguments(t *testing.T) {
+	r := newResourceRegistry()
+	s := types.OriginalMediaReference{KnowledgeID: "document-a", KnowledgeBaseID: "library-a", SourceSHA256: strings.Repeat("a", 64), Page: 2, Part: "ppt/media/image1.emf", MediaSHA256: strings.Repeat("b", 64)}
+	first := s.Reference()
+	s.SourceSHA256 = strings.Repeat("c", 64)
+	second := s.Reference()
+	args := `{"images":["` + first + `","` + second + `"]}`
+	encoded := r.EncodeText(args)
+	require.Equal(t, `{"images":["res://0001","res://0002"]}`, encoded)
+	calls := []types.LLMToolCall{{}}
+	calls[0].Function.Arguments = encoded
+	r.DecodeToolCalls(calls)
+	require.Equal(t, args, calls[0].Function.Arguments)
+	require.Equal(t, "res://0001", r.EncodeText(first))
+	require.Equal(t, []string{"res://0999"}, r.OrphanHandles(r.DecodeText("res://0999")))
+}
+
+func TestOriginalMediaMalformedSelectorIsNotRegistered(t *testing.T) {
+	r := newResourceRegistry()
+	for _, value := range []string{"original-media://invalid", "original-media://e30", "original-media://" + strings.Repeat("a", 4097)} {
+		require.Equal(t, value, r.EncodeText(value))
+	}
+	require.Equal(t, []string{"res://0001"}, r.OrphanHandles("res://0001"))
+}
 
 func TestRegistryRoundTripAndDeduplicate(t *testing.T) {
 	r := newResourceRegistry()

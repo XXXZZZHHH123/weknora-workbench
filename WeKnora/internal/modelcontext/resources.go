@@ -1,5 +1,5 @@
 // resources.go is the durable-resource half of the model-context registry:
-// it assigns request-local res://NNNN handles to stored resource references
+// it assigns request-local res://NNNN handles to resource references and source selectors
 // and restores them before application code consumes model output.
 package modelcontext
 
@@ -30,6 +30,7 @@ import (
 // and semantically meaningful, so they are deliberately left untouched.
 var storedRefRE = regexp.MustCompile(
 	`resource://[0-9A-Za-z_-]{22}|` +
+		`original-media://[0-9A-Za-z_-]+|` +
 		`(?:storage://[0-9A-Za-z_-]+/)?` +
 		`(?:local|minio|cos|tos|s3|oss|ks3|obs)://[^\s)\]>"']+|` +
 		`summary/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`,
@@ -61,6 +62,13 @@ func (r *resourceRegistry) EncodeText(value string) string {
 		return value
 	}
 	return storedRefRE.ReplaceAllStringFunc(value, func(ref string) string {
+		// This only shortens a canonical selector. Authorization and current
+		// source/page/hash validation remain the responsibility of its reader.
+		if strings.HasPrefix(ref, types.OriginalMediaPrefix) {
+			if _, err := types.ParseOriginalMediaReference(ref); err != nil {
+				return ref
+			}
+		}
 		return r.table.register(ref, ref, struct{}{}, nil)
 	})
 }

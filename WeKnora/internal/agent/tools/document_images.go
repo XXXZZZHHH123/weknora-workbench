@@ -40,16 +40,17 @@ var documentFigureSource = regexp.MustCompile(`(?m)^来源：第([1-9][0-9]*)页
 var documentFigurePart = regexp.MustCompile(`(?i)^ppt/media/[A-Za-z0-9_.-]+\.(emf|wmf)$`)
 
 type documentImage struct {
-	Reference    string            `json:"reference"`
-	KnowledgeID  string            `json:"knowledge_id"`
-	ChunkID      string            `json:"chunk_id"`
-	Page         int               `json:"page,omitempty"`
-	PageHint     int               `json:"page_hint,omitempty"`
-	PageVerified bool              `json:"page_verified"`
-	Label        string            `json:"label"`
-	Context      string            `json:"source_context"`
-	SourcePart   string            `json:"source_part,omitempty"`
-	ReadArgs     ReadDocumentInput `json:"read_args"`
+	Reference      string            `json:"reference"`
+	KnowledgeID    string            `json:"knowledge_id"`
+	ChunkID        string            `json:"chunk_id"`
+	Page           int               `json:"page,omitempty"`
+	PageHint       int               `json:"page_hint,omitempty"`
+	PageVerified   bool              `json:"page_verified"`
+	Label          string            `json:"label"`
+	LabelTruncated bool              `json:"label_truncated,omitempty"`
+	Context        string            `json:"source_context"`
+	SourcePart     string            `json:"source_part,omitempty"`
+	ReadArgs       ReadDocumentInput `json:"read_args"`
 }
 
 func documentImageCatalog(result *types.ToolResult, knowledgeID, sourceHash string) []documentImage {
@@ -152,11 +153,12 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 		return result, err
 	}
 	catalog := documentImageCatalog(result, knowledge.ID, knowledge.FileHash)
+	catalog = t.appendOriginalImageCatalog(ctx, knowledge, input, result, catalog)
 	result.Data["image_catalog"] = catalog
 	if len(catalog) > 0 {
 		encoded, _ := json.Marshal(catalog)
 		result.Output += "\n<document_image_catalog untrusted_source_metadata=\"true\">" + string(encoded) + "</document_image_catalog>\n" +
-			"These are stored originals, not yet viewed. Select the relevant reference using the full question and actual source context; " +
+			"These are stored originals or verified original-media selectors, not yet viewed. original-media:// is a read-only source selector, not a saved resource. Select the relevant reference using the full question and actual source context; " +
 			"use that entry's read_args with its exact owning chunk, then add focus for the full question. Do not replace its page or move the reference to another range. " +
 			"page_hint is only an unverified label; page_verified=false means no physical page was established. The default image_mode=pixels reads pixels. For supported vector-chart traces, " +
 			"explicitly select image_mode=geometry and exact image_series legend identifiers to read original geometry without PNG conversion or visual inspection. " +
