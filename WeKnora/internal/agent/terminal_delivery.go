@@ -50,6 +50,7 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	}
 	e.turnReview.Committed = true
 	markedNumbers := 0
+	markedCitations := 0
 	if delivery, ok := e.numericWarningDelivery(answer, state); ok {
 		answer, outcome = delivery, "numeric_warning"
 	} else if (outcome == "answer" || outcome == "partial") && e.needsSourceConsistencyCheck(state) &&
@@ -62,7 +63,13 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	// Review failure or exhausted revisions: deliver the latest numerically
 	// grounded candidate with a notice rather than a bare failure message.
 	if terminalCandidateFallback(answer) {
-		if delivery, ok := e.numericWarningDelivery(e.turnReview.UnverifiedCandidate, state); ok {
+		if delivery, citations, numbers, ok := e.currentCitationUnverifiedDelivery(ctx, state); ok {
+			answer, outcome, markedCitations, markedNumbers = delivery, "citation_unverified", citations, numbers
+			if numbers > 0 {
+				outcome = "citation_numeric_unverified"
+			}
+			existingID, truncated = "", false
+		} else if delivery, ok := e.numericWarningDelivery(e.turnReview.UnverifiedCandidate, state); ok {
 			answer, outcome = delivery, "numeric_warning"
 			existingID, truncated = "", false
 		} else if delivery, ok := e.currentUnverifiedDelivery(ctx, state); ok {
@@ -81,5 +88,5 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	e.closeAnswerStream(ctx, sessionID, id, truncated)
 	state.FinalAnswer = answer
 	state.IsComplete = true
-	common.PipelineInfo(ctx, "Agent", "terminal_commit", map[string]interface{}{"outcome": outcome, "candidate_hash": candidateTextDigest(answer), "repairs": e.turnReview.Repairs, "checks": e.turnReview.Checks, "marked_numeric_count": markedNumbers})
+	common.PipelineInfo(ctx, "Agent", "terminal_commit", map[string]interface{}{"outcome": outcome, "candidate_hash": candidateTextDigest(answer), "repairs": e.turnReview.Repairs, "checks": e.turnReview.Checks, "marked_numeric_count": markedNumbers, "marked_citation_count": markedCitations})
 }

@@ -85,6 +85,13 @@ const MessageKindCompactionSummary MessageKind = "compaction_summary"
 // MessageKindReviewEvidence carries runtime source excerpts, never human intent.
 const MessageKindReviewEvidence MessageKind = "review_evidence_handoff"
 
+// NumericObservations carries validator-only runtime observations. It is not
+// a tool-result protocol and cannot be restored from model output or history.
+type NumericObservations struct {
+	Values   []float64
+	Percents []float64
+}
+
 // Message 表示聊天消息
 type Message struct {
 	Role         string               `json:"role"`                    // 角色：system, user, assistant, tool
@@ -119,6 +126,9 @@ type Message struct {
 	// exactly on a stored turn, the only kind it can persist for later turns.
 	// Engine-internal like Kind, and kept off the wire for the same reason.
 	TurnID string `json:"-"`
+	// NumericObservations is created only for an in-memory verification pass.
+	// It must never be sent to providers or persisted as factual tool output.
+	NumericObservations *NumericObservations `json:"-"`
 }
 
 // ToolCall represents a tool call in a message

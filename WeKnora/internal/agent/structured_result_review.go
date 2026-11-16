@@ -704,7 +704,7 @@ func (e *AgentEngine) structuredResultCorrectionFailure(query, answer string, st
 		return "citation_identity"
 	}
 	if needsStructuredAnswerReviewForQuery(query, state.RoundSteps, conversation, answer) {
-		evidence := answerNumericEvidence(answer, state.RoundSteps, conversation)
+		evidence := e.answerNumericEvidence(answer, state.RoundSteps, conversation)
 		if len(ungroundedStructuredNumbers(answer, evidence, state.RoundSteps)) > 0 {
 			return "numeric_support"
 		}

@@ -139,6 +139,36 @@ func IsCurrentDocumentRead(registry *ToolRegistry, result *types.ToolResult) boo
 	return true
 }
 
+// Multi-document searches carry actual row identities and document_ids rather
+// than one document_scope. Reuse each row only while its real document remains
+// selected. User page restrictions still require the reader's explicit page
+// witness; locators or an inferred page cannot manufacture that witness.
+func IsCurrentDocumentSearchChunk(registry *ToolRegistry, result *types.ToolResult, knowledgeID string) bool {
+	if registry == nil || result == nil || !result.Success || knowledgeID == "" {
+		return false
+	}
+	tool, err := registry.GetTool(ToolBindDocumentScope)
+	if err != nil {
+		return true
+	}
+	binder, ok := tool.(*bindDocumentScopeTool)
+	if !ok || binder.state == nil {
+		return false
+	}
+	selection, err := binder.state.selection(knowledgeID)
+	if err != nil {
+		return false
+	}
+	if selection.UserPages == nil {
+		return true
+	}
+	encoded, err := json.Marshal(result.Data["document_scope"])
+	var scope struct {
+		KnowledgeID string `json:"knowledge_id"`
+	}
+	return err == nil && json.Unmarshal(encoded, &scope) == nil && scope.KnowledgeID == knowledgeID && IsCurrentDocumentRead(registry, result)
+}
+
 func (r *RequestedDocumentConstraint) selection(id string) (DocumentSourceSelection, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

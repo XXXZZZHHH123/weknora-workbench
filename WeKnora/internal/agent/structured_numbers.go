@@ -307,6 +307,7 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 	// replayed tool messages omit Name, without classifying arbitrary payloads.
 	nonEvidenceToolCalls := map[string]bool{}
 	toolNames := map[string]string{}
+	canonicalDocumentTools := map[string]string{}
 	canonicalTableAnalyses := map[string]types.ToolCall{}
 	canonicalPDFResults := map[string]types.ToolCall{}
 	markNonEvidence := func(id, name, operation string) {
@@ -325,7 +326,14 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 		for _, step := range steps {
 			for _, call := range step.ToolCalls {
 				operation, _ := call.Args["operation"].(string)
-				markNonEvidence(call.ID, call.Name, operation)
+				name := call.Name
+				if executed := call.ExecutionName(); executed == "read_document" || executed == "search_knowledge" {
+					name = executed
+					if call.ID != "" {
+						canonicalDocumentTools[call.ID] = executed
+					}
+				}
+				markNonEvidence(call.ID, name, operation)
 				if call.ID != "" && call.Name == documentTableAnalysisToolName {
 					canonicalTableAnalyses[call.ID] = call
 				}
@@ -359,7 +367,7 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 			percentageValues = append(percentageValues, x, x*100)
 		case map[string]any:
 			switch x["kind"] {
-			case "task_tool_capabilities", "document_table_analysis", "document_table_view", "document_table_catalog", "source_calculation_catalog":
+			case "task_tool_capabilities", "document_table_analysis", "document_table_view", "document_table_catalog", "source_calculation_catalog", "current_document_numeric_observations":
 				// Schemas, plans and presentation snapshots are not numeric
 				// observations. Analysis executions are interpreted only at the
 				// actual executor boundary below; selected source cells still
@@ -515,8 +523,20 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 	}
 	for _, msg := range messages {
 		if msg.Role == "tool" {
+			if observed := msg.NumericObservations; observed != nil {
+				// This field is private to the live validation call and omitted
+				// from JSON. Payload kind strings cannot grant this authority.
+				// Printed percentages are already percentages; plain prose does
+				// not acquire a percent conversion simply by appending a sign.
+				values = append(values, observed.Values...)
+				percentageValues = append(percentageValues, observed.Percents...)
+			}
 			name := msg.Name
-			if name == "" {
+			if executed := canonicalDocumentTools[msg.ToolCallID]; executed != "" {
+				// Runtime execution identity wins over a proxy display name,
+				// even for failed calls or incorrectly named transcript copies.
+				name = executed
+			} else if name == "" {
 				name = toolNames[msg.ToolCallID]
 			}
 			if name == expandTaskToolsName || nonEvidenceToolCalls[msg.ToolCallID] {

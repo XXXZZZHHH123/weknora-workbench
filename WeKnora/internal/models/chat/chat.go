@@ -26,17 +26,18 @@ import (
 //
 //nolint:revive // ChatOptions is the historical name every caller uses.
 type (
-	Message            = api.Message
-	MessageContentPart = api.MessageContentPart
-	ImageURL           = api.ImageURL
-	MessageKind        = api.MessageKind
-	ToolCall           = api.ToolCall
-	FunctionCall       = api.FunctionCall
-	Tool               = api.Tool
-	FunctionDef        = api.FunctionDef
-	ChatOptions        = api.Options
-	CacheRetention     = api.CacheRetention
-	ReasoningEffort    = api.ReasoningEffort
+	Message             = api.Message
+	MessageContentPart  = api.MessageContentPart
+	ImageURL            = api.ImageURL
+	MessageKind         = api.MessageKind
+	NumericObservations = api.NumericObservations
+	ToolCall            = api.ToolCall
+	FunctionCall        = api.FunctionCall
+	Tool                = api.Tool
+	FunctionDef         = api.FunctionDef
+	ChatOptions         = api.Options
+	CacheRetention      = api.CacheRetention
+	ReasoningEffort     = api.ReasoningEffort
 )
 
 // Re-exported constants of the request model.

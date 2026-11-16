@@ -20,21 +20,22 @@ const citationReviewEvidenceBudget = 12 * 1024
 const citationReviewMinimumBudget = 512
 
 type citationReviewChunk struct {
-	tool                   string
-	toolCallID             string
-	evidenceID             string
-	jsonPointer            string
-	chunk                  map[string]any
-	document               map[string]any
-	sourceScope            map[string]any
-	chunkID                string
-	knowledgeID            string
-	content                string
-	contentKnown           bool
-	sourceView             citationSourceView
-	additionalObservations []citationReviewChunk
-	observationsOmitted    int
-	fullBodyViewsVerified  bool
+	tool                    string
+	toolCallID              string
+	evidenceID              string
+	jsonPointer             string
+	chunk                   map[string]any
+	document                map[string]any
+	sourceScope             map[string]any
+	chunkID                 string
+	knowledgeID             string
+	content                 string
+	contentKnown            bool
+	sourceView              citationSourceView
+	additionalObservations  []citationReviewChunk
+	observationsOmitted     int
+	fullBodyViewsVerified   bool
+	identityViewsReconciled int
 }
 
 // citedSourceEvidenceFromSteps gives the source critic a citation-first view
@@ -459,7 +460,12 @@ func citationChunksFromMessages(messages []chat.Message) (map[string]citationRev
 		for index, item := range observed {
 			views[index] = item.sourceView
 		}
-		index, verified := canonicalCitationFullView(views)
+		if citationViewsExplicitIdentityConflict(views) {
+			delete(records, id)
+			conflicts[id] = true
+			continue
+		}
+		index, verified := canonicalCitationWitnessView(views)
 		if !verified {
 			if citationViewsRequireProofValidation(views) {
 				delete(records, id)
@@ -468,10 +474,18 @@ func citationChunksFromMessages(messages []chat.Message) (map[string]citationRev
 			continue
 		}
 		canonical := observed[index]
-		canonical.fullBodyViewsVerified = true
+		canonical.fullBodyViewsVerified = citationViewIsFull(views[index])
+		canonical.identityViewsReconciled = citationIncompleteIdentityViewCount(views)
 		for i, item := range observed {
 			if i == index {
 				continue
+			}
+			if !canonical.fullBodyViewsVerified {
+				if _, known := citationViewIdentity(item.sourceView); !known {
+					// A legacy full body proved this actual page's projection. Do
+					// not expose its additional bytes as current citation evidence.
+					continue
+				}
 			}
 			if len(canonical.additionalObservations) < 7 {
 				canonical.additionalObservations = append(canonical.additionalObservations, item)
@@ -663,6 +677,10 @@ func citationReviewItem(record citationReviewChunk, prefixRunes int, reviewHandl
 	if record.fullBodyViewsVerified {
 		item["presentation_ranges_verified_against_full_body"] = true
 		item["presentation_notice"] = "Canonical content is an actual full current chunk. Each additional content_source_view was checked rune by rune against that same body, revision and locators before model handle encoding. Ranges count original repository runes; encoded resource handles may change displayed positions. Each page/range and reader pointer remains separate. This validates source identity only: judge adjacent claims against the exact source and explicitly bound images, never another chunk or an unrelated page."
+	}
+	if record.identityViewsReconciled > 0 {
+		item["identity_incomplete_views_reconciled"] = record.identityViewsReconciled
+		item["identity_reconciliation_notice"] = "An older observation omitted identity fields. Its explicitly supplied fields and exact content were checked against this complete current source witness; omitted metadata was not invented."
 	}
 	if complete, ok := record.chunk["content_complete"]; ok {
 		item["source_content_complete"] = complete

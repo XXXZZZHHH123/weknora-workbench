@@ -188,6 +188,9 @@ func (e *AgentEngine) currentUnverifiedCitationReferences(ctx context.Context, s
 }
 
 func (e *AgentEngine) publishUnverifiedCitationReferences(ctx context.Context, state *types.AgentState) bool {
+	if e.turnReview.CitationUnverifiedDelivery != nil {
+		return e.publishCitationUnverifiedReferences(ctx, state)
+	}
 	if e.turnReview.NumericUnverifiedDelivery != nil {
 		return e.publishNumericUnverifiedReferences(ctx, state)
 	}

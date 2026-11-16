@@ -51,7 +51,7 @@ func (e *AgentEngine) rememberNumericUnverifiedCandidate(ctx context.Context, de
 		// Transfer escapes and JSON attributes are not the visible answer.
 		// Preserve the original checked hash while validating the exact decoded
 		// body independently; an empty diagnostic does not qualify here.
-		evidence := answerNumericEvidence(base, state.RoundSteps, e.turnReview.Conversation)
+		evidence := e.answerNumericEvidence(base, state.RoundSteps, e.turnReview.Conversation)
 		decision.Unsupported = ungroundedStructuredNumbers(base, evidence, state.RoundSteps)
 	}
 	if len(decision.Unsupported) == 0 || !e.candidateEvidenceBudgetFits(base, state) ||
@@ -78,7 +78,7 @@ func (e *AgentEngine) numericUnverifiedPresentation(ctx context.Context, state *
 	// Re-run the unchanged matcher on the decoded presentation. JSON escape
 	// offsets never become offsets in visible prose, and a changed diagnostic
 	// cannot inherit the earlier candidate's terminal warning.
-	evidence := answerNumericEvidence(base, state.RoundSteps, e.turnReview.Conversation)
+	evidence := e.answerNumericEvidence(base, state.RoundSteps, e.turnReview.Conversation)
 	if reviewDigest(ungroundedStructuredNumbers(base, evidence, state.RoundSteps)) != reviewDigest(d.Unsupported) {
 		return "", 0, nil, nil, false
 	}

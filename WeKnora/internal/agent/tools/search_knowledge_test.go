@@ -226,6 +226,8 @@ func TestFormatOutputRowsCarryHandlesAndSnippets(t *testing.T) {
 				ID: "chunk-1", KnowledgeID: "doc-1", ChunkIndex: 3, KnowledgeTitle: "Guide <v2>",
 				Content: "Install the engine, then configure psionic drive parameters.", Score: 0.91,
 				KnowledgeCustomMetadata: "region: EU",
+				KnowledgeBaseID:         "kb-1", SourceChunk: &types.Chunk{ID: "chunk-1", KnowledgeID: "doc-1", KnowledgeBaseID: "kb-1", ChunkIndex: 3,
+					Content: "Install the engine, then configure psionic drive parameters."},
 			},
 			SourceQuery: "psionic drive", QueryType: SearchModeHybrid, KnowledgeBaseID: "kb-1",
 		},
