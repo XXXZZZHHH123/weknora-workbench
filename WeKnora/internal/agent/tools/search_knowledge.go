@@ -1312,6 +1312,7 @@ func (t *SearchKnowledgeTool) formatOutput(
 			row["content_offset"] = 0
 			row["content_offset_space"] = "chunk_unicode_runes"
 			row["content_complete"] = true
+			appendSearchChunkProjection(row, result.SearchResult)
 		}
 		formattedResults = append(formattedResults, row)
 	}
@@ -1324,6 +1325,32 @@ func (t *SearchKnowledgeTool) formatOutput(
 	data["count"] = len(formattedResults)
 	data["kb_counts"] = kbCounts
 	return &types.ToolResult{Success: true, Output: ob.String(), Data: data}
+}
+
+// Main identity metadata comes directly from the retrieval result. An optional
+// hydrated original body only qualifies a changed presentation as an exact
+// excerpt; it never supplies a second source identity or a missing revision.
+func appendSearchChunkProjection(row map[string]any, result *types.SearchResult) {
+	chunk := result.SourceChunk
+	if chunk == nil || chunk.ID != result.ID || chunk.KnowledgeID != result.KnowledgeID ||
+		chunk.KnowledgeBaseID != result.KnowledgeBaseID || chunk.ContentRevision != result.ContentRevision ||
+		result.Content == chunk.Content {
+		return
+	}
+	row["content_complete"] = false
+	if result.ContentRewritten || result.Content == "" {
+		return
+	}
+	// A contiguous excerpt can prove its exact original range. Arbitrary
+	// rewritten content has no source-view proof and remains incomplete.
+	start := strings.Index(chunk.Content, result.Content)
+	if start < 0 || strings.LastIndex(chunk.Content, result.Content) != start {
+		row["content_rewritten"] = true
+		return
+	}
+	offset := utf8.RuneCountInString(chunk.Content[:start])
+	row["content_offset"] = offset
+	row["content_source_view"] = chunkContentView(chunk, []types.ChunkRuneRange{{Start: offset, End: offset + utf8.RuneCountInString(result.Content)}})
 }
 
 func (t *SearchKnowledgeTool) resolveWikiSearchPage(ctx context.Context, result *searchResultWithMeta) (*types.WikiPage, bool) {

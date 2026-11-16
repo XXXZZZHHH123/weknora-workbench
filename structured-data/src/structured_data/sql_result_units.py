@@ -36,7 +36,10 @@ def _unknown(reason='SQL shape has no supported deterministic unit rule', values
 
 def _derived(value, operation):
     if value.unit['status'] not in ('declared', 'derived'):
-        return _unknown(values=[value])
+        result = _unknown(values=[value])
+        if result.unit['status'] == 'mixed':
+            result.unit['expression'] = operation
+        return result
     unit = deepcopy(value.unit)
     unit.update(status='derived', evidence_level='deterministic_expression',
                 expression=operation)
@@ -49,8 +52,10 @@ def _same(values, *, operation='alternatives'):
         return _unknown()
     symbols = {v.unit['symbol'] for v in values if v.unit['status'] in ('declared', 'derived')}
     if any(v.unit['status'] == 'mixed' for v in values) or len(symbols) > 1:
-        return _Value(mixed_unit([v.unit for v in values],
-                                'Expression alternatives retain different explicit units'))
+        unit = mixed_unit([v.unit for v in values],
+                          'Expression alternatives retain different explicit units')
+        unit['expression'] = operation
+        return _Value(unit)
     if any(v.unit['status'] not in ('declared', 'derived') for v in values):
         return _unknown('An expression branch has no bound unit declaration')
     unit = _derived(values[0], operation).unit
@@ -154,6 +159,9 @@ class _Units:
             if node.get('else_expr'):
                 branches.append(self.expression(node['else_expr'], scope, ctes))
             return _same(branches, operation='case_alternatives')
+        if kind == 'OPERATOR' and node.get('type') == 'OPERATOR_COALESCE':
+            return _same([self.expression(child, scope, ctes) for child in node.get('children', [])],
+                         operation='coalesce_alternatives')
         if kind in ('FUNCTION', 'WINDOW'):
             name = node.get('function_name', '').casefold()
             values = [self.expression(child, scope, ctes) for child in node.get('children', [])]

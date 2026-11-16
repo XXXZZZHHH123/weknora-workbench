@@ -766,7 +766,7 @@ func (e *AgentEngine) selectCandidateAdditions(ctx context.Context, query, candi
 	// directory observations nor conversation/candidate numbers can authorize
 	// an optional reference fact. The model still decides which spans are
 	// required by the complete task; no unmatched token is deleted by code.
-	bodyNumbers := ungroundedStructuredNumbersWithEmptyEvidence(candidate, answerNumericEvidence(candidate, sources.RoundSteps), true, sources.RoundSteps)
+	bodyNumbers := ungroundedStructuredNumbersWithEmptyEvidence(candidate, e.answerNumericEvidence(candidate, sources.RoundSteps), true, sources.RoundSteps)
 	input["actual_body_numeric_diagnostic"] = buildNumericValidationFeedback(candidate, bodyNumbers)
 	visibleActivities := activities
 	if len(visibleActivities) > 32 {

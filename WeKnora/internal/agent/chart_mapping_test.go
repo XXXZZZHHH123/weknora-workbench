@@ -312,7 +312,7 @@ func (m *chartReviewModel) Chat(_ context.Context, messages []chat.Message, _ *c
 
 func TestChartPlanReviewBeforeSaveAndPrivateReceiptBinding(t *testing.T) {
 	ctx := chartContext(t)
-	model := &chartReviewModel{response: `{"accepted":true,"complete_delivery":true,"required_x_type":"time","assessment":"The actual dates and measured values match the requested source and scope.","feedback":""}`}
+	model := &chartReviewModel{response: `{"required_x_type":"time","assessment":"The actual dates and measured values match the requested source and scope.","chart_issues":[],"pending_deliverables":[]}`}
 	e := newTestEngine(t, model)
 	e.toolRegistry = agenttools.NewToolRegistry()
 	e.config.WorkbenchDefault = true
@@ -357,7 +357,7 @@ func TestChartRejectedSemanticPlanDoesNotSaveOrCreateReceipt(t *testing.T) {
 }
 
 func TestChartReviewOmittedImagesCannotAuthorizeFastDelivery(t *testing.T) {
-	model := &chartReviewModel{response: `{"accepted":true,"complete_delivery":true,"required_x_type":"time","assessment":"The text task matches this selected data.","feedback":""}`}
+	model := &chartReviewModel{response: `{"required_x_type":"time","assessment":"The text task matches this selected data.","chart_issues":[],"pending_deliverables":[]}`}
 	e := newTestEngine(t, model)
 	e.reviewConversationReady = true
 	e.reviewConversation = []chat.Message{{Role: "user", Content: "Draw using this reference.", Images: []string{"https://example.invalid/reference.png"}}}
@@ -368,7 +368,7 @@ func TestChartReviewOmittedImagesCannotAuthorizeFastDelivery(t *testing.T) {
 }
 
 func TestChartSemanticApprovalCannotOverrideRequiredAxisType(t *testing.T) {
-	model := &chartReviewModel{response: `{"accepted":true,"complete_delivery":true,"required_x_type":"time","assessment":"The user requires actual time intervals.","feedback":""}`}
+	model := &chartReviewModel{response: `{"required_x_type":"time","assessment":"The user requires actual time intervals.","chart_issues":[],"pending_deliverables":[]}`}
 	e := newTestEngine(t, model)
 	tables, _ := chartSources([]types.AgentStep{{ToolCalls: []types.ToolCall{queryChartFixture()}}})
 	_, err := e.chartPlanReviewer("Preserve actual date intervals.", &types.AgentState{})(chartContext(t), tables[0], chart.Spec{Type: "line", X: 0, Y: []int{2}, XType: "category"})

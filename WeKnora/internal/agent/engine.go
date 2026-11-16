@@ -817,6 +817,8 @@ func (e *AgentEngine) finishStalledTurnWithGuards(
 		if decision.Err != nil {
 			answer = answerReviewUnavailableFallback
 			answerStreamed = false
+		} else if decision.Disposition == candidateNumericFailure {
+			answer, answerStreamed = numericFailureFallback, false
 		} else if decision.Disposition != candidateAccepted && decision.Disposition != candidateNumericWarning {
 			answer = ""
 		} else if decision.Disposition == candidateNumericWarning {
@@ -1731,11 +1733,12 @@ func (e *AgentEngine) runReActIteration(
 			"asking the model to change strategy", round, failedToolName, failedToolAttempts)
 		*messagesPtr = append(*messagesPtr, chat.Message{Role: "user", Content: failedToolGuidance})
 	}
-	if e.config.WorkbenchDefault {
+	if e.config.WorkbenchDefault || guards.toolProgress.resultWorkflow || stepHasStructuredChartCalls(step) {
 		observation := guards.toolProgress.observe(step.ToolCalls)
 		common.PipelineInfo(ctx, "Agent", "tool_progress", map[string]interface{}{
 			"round": round, "new_evidence": observation.NewEvidence,
 			"stale_rounds": observation.StaleRounds, "replan": observation.Replan, "stopped": observation.Stop,
+			"render_limit": observation.RenderLimit, "render_failures": guards.toolProgress.renderFailures,
 		})
 		if observation.Replan {
 			*messagesPtr = append(*messagesPtr, chat.Message{Role: "system", Content: toolProgressReplanNotice})
@@ -1751,7 +1754,7 @@ func (e *AgentEngine) runReActIteration(
 				})
 			}
 		}
-		if observation.Stop {
+		if observation.Stop || observation.RenderLimit {
 			// A newly accepted user correction changes the task. Drain it before
 			// settling the old task's stall, just as for a natural final answer.
 			if e.drainSteerMessages(ctx, state, messagesPtr, sessionID, assistantMessageID) > 0 {
@@ -1764,7 +1767,11 @@ func (e *AgentEngine) runReActIteration(
 				return iterOutcomeBreak, fmt.Errorf("source collection stopped after repeated rounds without new evidence")
 			}
 			if observation.ResultWorkflow {
-				finished, err := e.finishResultWorkflowStall(ctx, state, query, sessionID, restoreForFinalAnswer(*messagesPtr, guards))
+				reason := "Recent tool rounds returned only failures or previously observed content; repeated tool execution has stopped."
+				if observation.RenderLimit {
+					reason = "The per-turn chart render failure limit has been reached. Rendering has stopped; use successful real results to complete the written answer and explain the actual chart failures."
+				}
+				finished, err := e.finishResultWorkflowStall(ctx, state, query, sessionID, restoreForFinalAnswer(*messagesPtr, guards), reason)
 				if finished {
 					return iterOutcomeBreak, err
 				}
@@ -1785,6 +1792,15 @@ func (e *AgentEngine) runReActIteration(
 		return iterOutcomeBreak, err
 	}
 	return iterOutcomeNext, nil
+}
+
+func stepHasStructuredChartCalls(step types.AgentStep) bool {
+	for _, call := range step.ToolCalls {
+		if _, structured := structuredProgressOperation(call); call.ExecutionName() == renderChartToolName || structured {
+			return true
+		}
+	}
+	return false
 }
 
 func usageHasCounts(usage types.TokenUsage) bool {
@@ -2004,7 +2020,7 @@ func (e *AgentEngine) beginCandidateRevision(ctx context.Context, state *types.A
 	guards.structuredReviewEvidence = append([]chat.Message(nil), (*messagesPtr)...)
 	unsupported := []string{}
 	if needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, candidate) {
-		unsupported = ungroundedStructuredNumbers(candidate, answerNumericEvidence(candidate, state.RoundSteps, *messagesPtr), state.RoundSteps)
+		unsupported = ungroundedStructuredNumbers(candidate, e.answerNumericEvidence(candidate, state.RoundSteps, *messagesPtr), state.RoundSteps)
 	}
 	common.PipelineInfo(ctx, "Agent", "candidate_revision_start", map[string]interface{}{"iteration": state.CurrentRound, "unmatched_numbers": unsupported})
 	catalogMessages := documentCatalogMessagesFromSteps(state.RoundSteps)

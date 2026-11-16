@@ -231,10 +231,14 @@ func (e *AgentEngine) validateCitationCheck(check *sourceCitationCheck, candidat
 	refs := e.currentCandidateKnowledgeReferences(candidate, state, conversation)
 	evidenceIDs := uniqueCandidateEvidenceIDs(candidate)
 	evidenceRefs := e.currentCandidateEvidenceReferences(candidate, state)
-	invalid := len(ids) != len(refs) || len(evidenceIDs) != len(evidenceRefs)
+	invalid := e.candidateCitationsInvalid(candidate, state, conversation)
 	missing := check.Requirement == "required" && len(refs)+len(evidenceRefs) == 0
 	if accepted && (invalid || missing || (!e.config.CitationsEnabled() && len(ids)+len(evidenceIDs) != 0)) {
 		e.answerReviewFeedback = "请按审核判定补齐本轮事实的可点击引用：使用真实已读且支持相邻断言的chunk或evidence结果句柄。原值引用实际原格，计算引用实际结果与范围；不借同页索引片段或其他图片补证。保留原答案范围，不编造来源。"
+		if invalid {
+			diagnostic, _, _ := e.candidateCitationRecovery(candidate, state, conversation)
+			e.answerReviewFeedback += "\n" + diagnostic
+		}
 		e.answerReviewAction = reviewReviseAnswer
 		return true, nil
 	}
@@ -308,6 +312,10 @@ func currentCitationReferenceRows(state *types.AgentState) (map[string]*types.Se
 		views := make([]citationSourceView, len(observed))
 		for index, item := range observed {
 			views[index] = item.view
+		}
+		if citationViewsExplicitIdentityConflict(views) {
+			conflicts[id] = true
+			continue
 		}
 		if index, verified := canonicalCitationFullView(views); verified {
 			rows[id] = observed[index].ref

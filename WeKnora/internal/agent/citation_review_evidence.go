@@ -459,6 +459,11 @@ func citationChunksFromMessages(messages []chat.Message) (map[string]citationRev
 		for index, item := range observed {
 			views[index] = item.sourceView
 		}
+		if citationViewsExplicitIdentityConflict(views) {
+			delete(records, id)
+			conflicts[id] = true
+			continue
+		}
 		index, verified := canonicalCitationFullView(views)
 		if !verified {
 			if citationViewsRequireProofValidation(views) {

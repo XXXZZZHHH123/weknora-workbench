@@ -15,7 +15,10 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
-type finalAnswerOptions struct{ preliminary bool }
+type finalAnswerOptions struct {
+	preliminary bool
+	stopReason  string
+}
 
 // streamFinalAnswerToEventBus streams the final answer generation through EventBus
 func (e *AgentEngine) streamFinalAnswerToEventBus(
@@ -63,6 +66,10 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		"language and format. Do not claim that an unperformed action " +
 		"succeeded.\"}</runtime_event>"
 	preliminary := len(options) > 0 && options[0].preliminary
+	if len(options) > 0 && options[0].stopReason != "" {
+		runtimeNotice += "\n<tool_execution_stopped>" + options[0].stopReason +
+			" Tools are disabled. Give a useful written answer based on successful results already obtained, retaining the exact source labels and units. Explain the actual unresolved chart or source error using the tool diagnostics; distinguish saved charts from failed renders. Missing delivery is a limitation to report, not a reason to withhold supported text. Never invent observations, labels, units, calculations, citations or a successful chart.</tool_execution_stopped>"
+	}
 	if preliminary {
 		runtimeNotice += "\n" + standardAnswerBudgetNotice
 	}
@@ -305,20 +312,7 @@ func (e *AgentEngine) handleMaxIterations(
 		"max":        e.config.MaxIterations,
 	})
 
-	// Stream final answer generation through EventBus
-	if err := e.streamFinalAnswerToEventBus(ctx, query, state, sessionID, messages); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		logger.Errorf(ctx, "Failed to synthesize final answer: %v", err)
-		common.PipelineError(ctx, "Agent", "final_answer_failed", map[string]interface{}{
-			"error": err.Error(),
-		})
-		e.commitTerminalResult(ctx, state, sessionID, "Sorry, I was unable to generate a complete answer.", "", "failed", false)
-		return fmt.Errorf("failed to synthesize final answer after max iterations: %w", err)
-	}
-	state.IsComplete = true
-	return nil
+	return e.finishBoundedResultAnswer(ctx, query, state, sessionID, messages, "The iteration budget has been exhausted.", toolStopSynthesisBudget, answerReviewUnavailableFallback)
 }
 
 // emitCompletionEvent emits the EventAgentComplete event with execution summary.

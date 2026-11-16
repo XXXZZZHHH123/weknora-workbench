@@ -89,11 +89,53 @@ func TestResultWorkflowStallDoesNotSynthesizeWithoutExecutedEvidence(t *testing.
 	require.Empty(t, model.calls)
 }
 
-func TestResultWorkflowStallCannotPublishUnsupportedMeasurements(t *testing.T) {
+func TestResultWorkflowStallMarksUnsupportedMeasurementsAfterRepairs(t *testing.T) {
 	const unsupported = "The observation is 987654.321 kg."
 	e, state, _ := lightStructuredFixture(t, chatAnswer(unsupported), chatAnswer(unsupported), chatAnswer(unsupported))
 	finished, _ := e.finishResultWorkflowStall(t.Context(), state, "Report the observation.", "s", nil)
 	require.True(t, finished)
-	require.NotContains(t, state.FinalAnswer, "987654.321")
+	require.Contains(t, state.FinalAnswer, "987654.321〔未核验〕")
+	require.False(t, e.candidateApprovalCurrent(state.FinalAnswer, state))
 	require.False(t, e.candidateApprovalCurrent(unsupported, state))
+}
+
+func TestResultWorkflowStallCancellationDoesNotSynthesize(t *testing.T) {
+	e, state, model := lightStructuredFixture(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	finished, err := e.finishResultWorkflowStall(ctx, state, "Report the observation.", "s", nil)
+	require.True(t, finished)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Empty(t, model.calls)
+	require.Empty(t, state.FinalAnswer)
+}
+
+func TestResultWorkflowLoopDoesNotSynthesizeWithoutExecutedResults(t *testing.T) {
+	for _, directory := range []bool{false, true} {
+		t.Run(fmt.Sprint(directory), func(t *testing.T) {
+			name, args := renderChartToolName, `{"operation":"render"}`
+			expectedCalls := maxChartRenderFailures
+			var tool types.Tool
+			if directory {
+				name, args = "structured_list_series", `{}`
+				expectedCalls = 1 + toolProgressStopRounds
+				tool = &repeatedSourceProgressTool{BaseTool: agenttools.NewBaseTool(name, "real directory only", json.RawMessage(`{"type":"object"}`)), data: map[string]any{
+					"dataset_id": "fixture-source", "series": []any{map[string]any{"series_id": "fixture-series", "unit": "kg"}}, "total": 1,
+				}}
+			} else {
+				tool = &failedProgressChartTool{BaseTool: agenttools.NewBaseTool(name, "render without data", json.RawMessage(`{"type":"object"}`))}
+			}
+			model := &mockChat{}
+			for i := 0; i < expectedCalls; i++ {
+				model.responses = append(model.responses, mockResponse{chunks: []types.StreamResponse{{Done: true, FinishReason: "tool_calls", ToolCalls: []types.LLMToolCall{{ID: fmt.Sprint(i), Type: "function", Function: types.FunctionCall{Name: name, Arguments: args}}}}}})
+			}
+			e := newTestEngine(t, model, withMaxIterations(50))
+			e.toolRegistry = agenttools.NewToolRegistry()
+			e.toolRegistry.RegisterTool(tool)
+			state, err := e.executeLoop(t.Context(), &types.AgentState{}, "Summarize the actual available results.", emptyMessages(), nil, "s", "m")
+			require.NoError(t, err)
+			require.Len(t, model.calls, expectedCalls, "neither pure directories nor failed renders justify an extra synthesis")
+			require.Equal(t, sourceProgressStalledFallback, state.FinalAnswer)
+		})
+	}
 }

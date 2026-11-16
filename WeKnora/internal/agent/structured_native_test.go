@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/models/chat"
@@ -12,7 +14,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -21,7 +22,11 @@ func nativeStructuredRegistry(t *testing.T, handler http.HandlerFunc) *agenttool
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	file := filepath.Join(t.TempDir(), "key")
-	require.NoError(t, os.WriteFile(file, []byte(strings.Repeat("k", 48)), 0600))
+	// Closed mock servers can reuse an ephemeral port later in a full suite.
+	// Give each mock service its own signing identity so its versioned manifest
+	// cache cannot be mistaken for another fixture at that recycled address.
+	key := sha256.Sum256([]byte(file))
+	require.NoError(t, os.WriteFile(file, []byte(hex.EncodeToString(key[:])), 0600))
 	t.Setenv("STRUCTURED_DATA_URL", server.URL)
 	t.Setenv("COMMODITY_RESEARCH_TOKEN_FILE", file)
 	registry := agenttools.NewToolRegistry()

@@ -341,6 +341,7 @@ func (s *knowledgeBaseService) buildSearchResult(chunk *types.Chunk,
 	matchedContent string,
 ) *types.SearchResult {
 	return &types.SearchResult{
+		SourceChunk:             chunk,
 		ID:                      chunk.ID,
 		Content:                 chunk.Content,
 		ContentRevision:         chunk.ContentRevision,

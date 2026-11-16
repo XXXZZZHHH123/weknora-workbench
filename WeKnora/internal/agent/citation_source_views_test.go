@@ -257,12 +257,17 @@ func (service *citationFullReadLookup) GetChunkByIDOnly(_ context.Context, id st
 
 type citationFullReadIndex struct {
 	*sourceDiscoveryKnowledgeService
-	chunk *types.Chunk
+	chunk   *types.Chunk
+	excerpt string
 }
 
 func (index *citationFullReadIndex) HybridSearch(context.Context, string, types.SearchParams) ([]*types.SearchResult, error) {
+	content := index.chunk.Content
+	if index.excerpt != "" {
+		content = index.excerpt
+	}
 	return []*types.SearchResult{{ID: index.chunk.ID, KnowledgeID: index.chunk.KnowledgeID,
-		KnowledgeBaseID: index.chunk.KnowledgeBaseID, ChunkType: index.chunk.ChunkType, Content: index.chunk.Content,
+		KnowledgeBaseID: index.chunk.KnowledgeBaseID, ChunkType: index.chunk.ChunkType, Content: content, SourceChunk: index.chunk,
 		ContentRevision: index.chunk.ContentRevision, SourceLocators: index.chunk.SourceLocators,
 		StartAt: index.chunk.StartAt, EndAt: index.chunk.EndAt, ParentChunkID: index.chunk.ParentChunkID,
 		ChunkIndex: index.chunk.ChunkIndex, Score: 0.99}}, nil
@@ -332,7 +337,8 @@ func TestCitationRealSearchThenUncutReadKeepsCanonicalReference(t *testing.T) {
 			document := &types.Knowledge{ID: "contract-document", KnowledgeBaseID: "contract-library", TenantID: 7,
 				Title: "Measurement notes", FileName: "measurement-notes.txt", FileType: "txt", ParseStatus: types.ParseStatusCompleted}
 			chunk := &types.Chunk{ID: "plain-current-chunk", KnowledgeID: document.ID, KnowledgeBaseID: document.KnowledgeBaseID,
-				TenantID: 7, ChunkType: types.ChunkTypeText, IsEnabled: true, Content: "# Page 7\nThe measurement describes area.\n# Page 7\nA second original line."}
+				TenantID: 7, ChunkType: types.ChunkTypeText, IsEnabled: true, ContentRevision: 4,
+				Content: "# Page 7\nThe measurement describes area.\n# Page 7\nA second original line."}
 			repository := &citationContractChunkRepository{rows: []*types.Chunk{chunk}}
 			chunks := &citationFullReadLookup{&citationContractChunkService{repo: repository}}
 			knowledge := &plannedDocumentKnowledge{document: document}
@@ -367,6 +373,9 @@ func TestCitationRealSearchThenUncutReadKeepsCanonicalReference(t *testing.T) {
 			readRow := fetched.Data["chunks"].([]map[string]any)[0]
 			require.Equal(t, chunk.ID, readRow["chunk_id"])
 			require.Equal(t, chunk.Content, readRow["content"])
+			for _, field := range []string{"content_revision", "chunk_index", "chunk_type", "start_at", "end_at", "parent_chunk_id", "content_offset", "content_complete"} {
+				require.Equal(t, searchRow[field], readRow[field], field)
+			}
 			require.NotContains(t, readRow, "content_source_view", "an uncut full read needs no partial-view proof or new version reconciliation")
 			state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{{ID: "actual-plain-full-read", Name: agenttools.ToolReadDocument, Result: fetched}}})
 			messages = e.appendToolResults(messages, state.RoundSteps[1])
@@ -390,4 +399,135 @@ func TestCitationRealSearchThenUncutReadKeepsCanonicalReference(t *testing.T) {
 			require.Empty(t, e.currentCandidateKnowledgeReferences(candidate, state, nil), "a true version change remains a conflict; missing search metadata was never promoted to a verified origin version")
 		})
 	}
+}
+
+func TestCitationIncompleteLegacyViewCannotBorrowCurrentIdentity(t *testing.T) {
+	for _, projected := range []bool{false, true} {
+		t.Run(fmt.Sprintf("projected_%t", projected), func(t *testing.T) {
+			full, page, _ := realCitationViewResults(t)
+			source := full
+			if projected {
+				source = page
+			}
+			encoded, err := json.Marshal(source.Data["chunks"])
+			require.NoError(t, err)
+			var batch []map[string]any
+			require.NoError(t, json.Unmarshal(encoded, &batch))
+			for _, field := range []string{"content_revision", "knowledge_base", "source_locators", "chunk_index", "chunk_type", "start_at", "end_at", "parent_chunk_id"} {
+				delete(batch[0], field)
+			}
+			legacy := &types.ToolResult{Success: true, Data: map[string]any{"results": batch}}
+			state := citationViewState(legacy, full, page)
+			state.RoundSteps[0].ToolCalls[0].Name = agenttools.ToolSearchKnowledge
+			e := sourceConsistencyEngine(t, &mockChat{})
+			for _, step := range state.RoundSteps {
+				e.appendToolResults(emptyMessages(), step)
+			}
+			views := currentCitationSourceViews(state)["view-shared"]
+			_, valid := canonicalCitationFullView(views)
+			require.False(t, valid, "a current full witness cannot manufacture missing identity fields")
+			_, conflicts := citationChunksFromMessages(e.sourceConsistencyMessages(state, nil))
+			require.True(t, conflicts["view-shared"])
+			_, rowConflicts := currentCitationReferenceRows(state)
+			require.True(t, rowConflicts["view-shared"])
+			require.Empty(t, e.currentCandidateKnowledgeReferences(`<kb chunk_id="view-shared" />`, state, nil))
+		})
+	}
+}
+
+func TestCitationEqualBodiesStillRejectExplicitIdentityConflicts(t *testing.T) {
+	for _, test := range []struct {
+		field string
+		value any
+	}{
+		{"content_revision", 9}, {"knowledge_base_id", "another-library"},
+		{"knowledge_id", "another-document"}, {"content", "Different full source body."},
+	} {
+		t.Run(test.field, func(t *testing.T) {
+			full, _, _ := realCitationViewResults(t)
+			encoded, err := json.Marshal(full.Data["chunks"])
+			require.NoError(t, err)
+			var batch []map[string]any
+			require.NoError(t, json.Unmarshal(encoded, &batch))
+			batch[0][test.field] = test.value
+			other := &types.ToolResult{Success: true, Data: map[string]any{"results": batch}}
+			state := citationViewState(full, other)
+			e := sourceConsistencyEngine(t, &mockChat{})
+			for _, step := range state.RoundSteps {
+				e.appendToolResults(emptyMessages(), step)
+			}
+			_, conflicts := citationChunksFromMessages(e.sourceConsistencyMessages(state, nil))
+			require.True(t, conflicts["view-shared"])
+			_, rowConflicts := currentCitationReferenceRows(state)
+			require.True(t, rowConflicts["view-shared"])
+			require.Empty(t, e.currentCandidateKnowledgeReferences(`<kb chunk_id="view-shared" />`, state, nil))
+		})
+	}
+}
+
+func TestCitationLegacyFullBodyCannotWitnessCurrentPartialRange(t *testing.T) {
+	for _, tamper := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tamper_%t", tamper), func(t *testing.T) {
+			full, page, _ := realCitationViewResults(t)
+			raw, err := json.Marshal(full.Data["chunks"])
+			require.NoError(t, err)
+			var legacyRows []map[string]any
+			require.NoError(t, json.Unmarshal(raw, &legacyRows))
+			delete(legacyRows[0], "content_revision")
+			if tamper {
+				legacyRows[0]["content"] = legacyRows[0]["content"].(string) + "Unobserved extra body."
+			}
+			legacy := &types.ToolResult{Success: true, Data: map[string]any{"results": legacyRows}}
+			state := citationViewState(legacy, page)
+			state.RoundSteps[0].ToolCalls[0].Name = agenttools.ToolSearchKnowledge
+			e := sourceConsistencyEngine(t, &mockChat{})
+			for _, step := range state.RoundSteps {
+				e.appendToolResults(emptyMessages(), step)
+			}
+			_, conflicts := citationChunksFromMessages(e.sourceConsistencyMessages(state, nil))
+			_, rowConflicts := currentCitationReferenceRows(state)
+			require.True(t, conflicts["view-shared"], "origin hashes do not restore an unobserved source revision")
+			require.True(t, rowConflicts["view-shared"])
+			require.Empty(t, e.currentCandidateKnowledgeReferences(`<kb chunk_id="view-shared" />`, state, nil))
+		})
+	}
+}
+
+func TestCitationRealSearchExcerptUsesOnlyReturnedBodyUntilFullRead(t *testing.T) {
+	document := &types.Knowledge{ID: "contract-document", KnowledgeBaseID: "contract-library", TenantID: 7,
+		Title: "Measurement handbook", FileName: "measurement-handbook.pdf", FileType: "pdf", ParseStatus: types.ParseStatusCompleted}
+	const excerpt = "Observed value 46.2."
+	chunk := &types.Chunk{ID: "view-shared", KnowledgeID: document.ID, KnowledgeBaseID: document.KnowledgeBaseID,
+		TenantID: 7, ChunkType: types.ChunkTypeText, IsEnabled: true, Content: "Earlier🙂. " + excerpt + " Later value 78.9.",
+		ContentRevision: 4, StartAt: 31, EndAt: 99, ChunkIndex: 3, ParentChunkID: "source-parent"}
+	knowledge := &plannedDocumentKnowledge{document: document}
+	targets := types.SearchTargets{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: document.KnowledgeBaseID, TenantID: 7}}
+	ctx := types.WithCaller(t.Context(), types.Caller{TenantID: 7, UserID: "authorized-reader", Role: types.TenantRoleViewer})
+	search := agenttools.NewSearchKnowledgeTool(&citationFullReadIndex{sourceDiscoveryKnowledgeService: &sourceDiscoveryKnowledgeService{}, chunk: chunk, excerpt: excerpt}, knowledge, nil, targets, nil, nil)
+	searched, err := search.Execute(ctx, json.RawMessage(`{"query":"Observed value","mode":"keyword"}`))
+	require.NoError(t, err)
+	require.True(t, searched.Success, searched.Error)
+	row := searched.Data["results"].([]map[string]any)[0]
+	require.Contains(t, row, "content_source_view")
+	state := citationViewState(searched)
+	state.RoundSteps[0].ToolCalls[0].Name = agenttools.ToolSearchKnowledge
+	e := sourceConsistencyEngine(t, &mockChat{})
+	e.appendToolResults(emptyMessages(), state.RoundSteps[0])
+	candidate := `Observed value 46.2.<kb chunk_id="view-shared" />`
+	require.Empty(t, currentDocumentNumberCheck(candidate, state.RoundSteps))
+	require.Contains(t, currentDocumentNumberCheck("Later value 78.9.", state.RoundSteps), "78.9", "the original body witness is not an additional read")
+	refs := e.currentCandidateKnowledgeReferences(candidate, state, nil)
+	require.Len(t, refs, 1)
+	require.Equal(t, excerpt, refs[0].Content)
+	chunks := &citationFullReadLookup{&citationContractChunkService{repo: &citationContractChunkRepository{rows: []*types.Chunk{chunk}}}}
+	read := agenttools.NewReadDocumentTool(knowledge, chunks, targets)
+	full, err := read.Execute(ctx, json.RawMessage(`{"id":"view-shared","content_offset":0}`))
+	require.NoError(t, err)
+	require.True(t, full.Success, full.Error)
+	state.RoundSteps = append(state.RoundSteps, citationViewState(full).RoundSteps...)
+	e.appendToolResults(emptyMessages(), state.RoundSteps[1])
+	refs = e.currentCandidateKnowledgeReferences(candidate, state, nil)
+	require.Len(t, refs, 1, "the explicit excerpt projection reconciles through main's exact identity checks")
+	require.Equal(t, chunk.Content, refs[0].Content)
+	require.Empty(t, currentDocumentNumberCheck("Later value 78.9.", state.RoundSteps), "the later actual full read exposes the rest of the source")
 }

@@ -280,3 +280,15 @@ func chartProgressRoot(provenance string) (any, bool) {
 	}
 	return nil, false
 }
+
+// A saved chart is a runtime receipt; validate it independently of progress
+// deduplication so an unchanged successful chart does not consume a failure.
+func savedChartProgress(call types.ToolCall) bool {
+	if call.Result == nil || !call.Result.Success || call.Result.Data["kind"] != "data_chart" || call.Result.Data["status"] != "ok" {
+		return false
+	}
+	artifact := reviewAsMap(call.Result.Data["artifact"])
+	handle, _ := artifact["handle"].(string)
+	_, valid := types.ParseResourcePath(handle)
+	return valid
+}

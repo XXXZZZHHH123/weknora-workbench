@@ -70,6 +70,9 @@ type turnReviewState struct {
 	UnverifiedDecision         candidateDecision
 	NumericWarningAllowed      bool
 	UnverifiedCitationDelivery *unverifiedCitationDeliveryBinding
+	NumericUnverifiedDecision  candidateDecision
+	NumericUnverifiedDelivery  *numericUnverifiedDeliveryBinding
+	CitationUnverifiedDelivery *citationUnverifiedDeliveryBinding
 	StructuredResultReview     *structuredResultReviewTurn
 	DiscoveryReview            *discoveryDeliveryReviewTurn
 }
@@ -135,6 +138,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	defer func() {
 		e.turnReview.Checks++
 		e.turnReview.Last = decision
+		e.rememberNumericUnverifiedCandidate(ctx, decision, state)
 		if e.needsSourceConsistencyCheck(state) && !suspectAnswerFragment(candidate, reasoning) {
 			// Only candidates judged by the source critic qualify; completeness
 			// checks of fragments or non-sourced replies never become deliveries.
@@ -203,28 +207,12 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	}
 	candidate = e.selectCandidateAdditions(ctx, query, candidate, state, conversation)
 	decision.Candidate, decision.CandidateHash = candidate, candidateTextDigest(candidate)
-	if e.standardAnswerReview() {
-		// This checks every model-selected identity against the same current
-		// actual observations used at persistence. It does not guess which source
-		// supports a claim or require another model to classify citation intent.
-		invalid := len(uniqueCandidateCitationIDs(candidate)) != len(e.currentCandidateKnowledgeReferences(candidate, state, conversation)) ||
-			len(uniqueCandidateEvidenceIDs(candidate)) != len(e.currentCandidateEvidenceReferences(candidate, state))
-		if invalid || (!e.config.CitationsEnabled() && len(uniqueCandidateCitationIDs(candidate))+len(uniqueCandidateEvidenceIDs(candidate)) > 0) {
-			decision.ReasonCode = "citation_identity_invalid"
-			feedback, counts, needsRead := e.candidateCitationRecovery(candidate, state, conversation)
-			decision.CitationIssueCounts = counts
-			e.answerReviewFeedback = feedback
-			e.answerReviewAction = reviewReviseAnswer
-			decision.Disposition = candidateRevise
-			if needsRead {
-				e.answerReviewAction = reviewCollectEvidence
-				decision.Disposition = candidateNeedSource
-			}
-			return
-		}
+	if e.standardAnswerReview() && e.candidateCitationsInvalid(candidate, state, conversation) {
+		decision = e.citationIdentityFailure(decision, state, conversation)
+		return
 	}
 	if needsStructuredAnswerReviewForQuery(query, state.RoundSteps, conversation, candidate) {
-		evidence := answerNumericEvidence(candidate, state.RoundSteps, conversation)
+		evidence := e.answerNumericEvidence(candidate, state.RoundSteps, conversation)
 		decision.Unsupported = ungroundedStructuredNumbers(candidate, evidence, state.RoundSteps)
 		decision.NumericFeedback = buildNumericValidationFeedback(candidate, decision.Unsupported)
 		decision.RepeatedUnsupported = repeatedUnsupportedTokens(decision.Unsupported, e.turnReview.Last.Unsupported)
@@ -258,6 +246,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	warning := len(decision.Unsupported) > 0
 	if warning && !e.needsSourceConsistencyCheck(state) {
 		decision.Disposition = candidateNumericFailure
+		decision.ReasonCode = "numeric_tokens_unmatched"
 		return
 	}
 	if warning {
@@ -277,11 +266,21 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	if decision.Err != nil {
 		decision.Disposition = candidateProtocolFailure
 		decision.ReasonCode = "source_review_protocol_failure"
+		if e.needsSourceConsistencyCheck(state) && e.candidateCitationsInvalid(candidate, state, conversation) {
+			// An unavailable critic cannot convert an invalid identity into the
+			// older general semantic fallback either.
+			decision.ReasonCode = "citation_identity_invalid"
+		}
 	} else if repair {
 		decision.ReasonCode = "source_review_revision"
 		decision.Disposition = candidateRevise
 		if e.answerReviewAction == reviewCollectEvidence {
 			decision.Disposition = candidateNeedSource
+		}
+		// Preserve strict review's semantic/coverage check and its existing
+		// budget, then make an identity rejection actionable at the same outlet.
+		if e.needsSourceConsistencyCheck(state) && e.candidateCitationsInvalid(candidate, state, conversation) {
+			decision = e.citationIdentityFailure(decision, state, conversation)
 		}
 	} else if warning && e.needsSourceConsistencyCheck(state) {
 		decision.Disposition = candidateNumericWarning
@@ -338,7 +337,7 @@ func (e *AgentEngine) candidateDecisionCurrent(d candidateDecision, candidate st
 // review and was not approved, or one approved only for numeric-warning
 // delivery. Rejected numeric candidates and empty candidates are never kept.
 func (e *AgentEngine) rememberUnverifiedCandidate(candidate string, decision candidateDecision) {
-	if !decision.SourceReviewAttempted || strings.TrimSpace(candidate) == "" || (len(decision.Unsupported) > 0 && decision.Disposition != candidateNumericWarning) {
+	if decision.ReasonCode == "citation_identity_invalid" || !decision.SourceReviewAttempted || strings.TrimSpace(candidate) == "" || (len(decision.Unsupported) > 0 && decision.Disposition != candidateNumericWarning) {
 		return
 	}
 	switch decision.Disposition {
@@ -360,7 +359,7 @@ func (e *AgentEngine) rememberUnverifiedCandidate(candidate string, decision can
 
 type numericWarningNoticeKey struct{}
 
-func numericWarningNotice(tokens []string) string {
+func visibleNumericWarningTokens(tokens []string) []string {
 	visible := []string{}
 	for _, token := range tokens {
 		if len(visible) == 4 {
@@ -370,6 +369,11 @@ func numericWarningNotice(tokens []string) string {
 			visible = append(visible, token)
 		}
 	}
+	return visible
+}
+
+func numericWarningNotice(tokens []string) string {
+	visible := visibleNumericWarningTokens(tokens)
 	if len(visible) == 0 {
 		return "部分数字尚未完全核实，请结合引用的原始资料使用。"
 	}
@@ -401,6 +405,9 @@ func (e *AgentEngine) invalidateCandidateTask() {
 	e.turnReview.UnverifiedUserNotice = ""
 	e.turnReview.UnverifiedDecision = candidateDecision{}
 	e.turnReview.UnverifiedCitationDelivery = nil
+	e.turnReview.NumericUnverifiedDecision = candidateDecision{}
+	e.turnReview.NumericUnverifiedDelivery = nil
+	e.turnReview.CitationUnverifiedDelivery = nil
 }
 
 // A warning permits delivery after review failure, never reuse of another

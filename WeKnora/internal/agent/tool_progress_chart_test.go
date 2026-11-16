@@ -1,13 +1,18 @@
 package agent
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/chart"
+	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 )
@@ -234,4 +239,124 @@ func TestToolProgressSuccessfulChartOutputCountsOnceWithoutMutatingReceipt(t *te
 	invalid := toolProgressCopy(first.Data)
 	invalid["artifact"] = map[string]any{"handle": "not-a-persisted-resource"}
 	require.Zero(t, guard.observe([]types.ToolCall{progressChartCall(&types.ToolResult{Success: true, Data: invalid})}).NewEvidence)
+}
+
+type failedProgressChartTool struct {
+	agenttools.BaseTool
+	calls int
+}
+
+func (tool *failedProgressChartTool) Execute(context.Context, json.RawMessage) (*types.ToolResult, error) {
+	tool.calls++
+	return &types.ToolResult{Error: "The actual selected columns have different declared units."}, nil
+}
+
+func TestChartRenderLimitEntersCheckedTextSynthesisForEveryEntry(t *testing.T) {
+	for _, workbench := range []bool{true, false} {
+		t.Run(fmt.Sprint(workbench), func(t *testing.T) {
+			var replies []mockResponse
+			for round := 0; round < maxChartRenderFailures; round++ {
+				replies = append(replies, mockResponse{chunks: []types.StreamResponse{{Done: true, FinishReason: "tool_calls", ToolCalls: []types.LLMToolCall{{
+					ID: fmt.Sprintf("chart-%d", round), Type: "function", Function: types.FunctionCall{Name: renderChartToolName, Arguments: `{"operation":"render"}`},
+				}}}}})
+			}
+			const answer = "The observation is 12.500 kg. The chart could not be generated because the selected columns have different declared units."
+			verdict := sourceAcceptedVerdict()
+			if !workbench {
+				verdict = completenessVerdict(true)
+			}
+			replies = append(replies, chatAnswer(answer), verdict)
+			e, state, model := lightStructuredFixture(t, replies...)
+			e.config.WorkbenchDefault, e.config.MaxIterations = workbench, 50
+			tool := &failedProgressChartTool{BaseTool: agenttools.NewBaseTool(renderChartToolName, "isolated render failure", json.RawMessage(`{"type":"object"}`))}
+			e.toolRegistry = agenttools.NewToolRegistry()
+			e.toolRegistry.RegisterTool(tool)
+			_, err := e.executeLoop(t.Context(), state, "Report the observation and chart outcome.", emptyMessages(), nil, "session", "message")
+			require.NoError(t, err)
+			require.Equal(t, maxChartRenderFailures, tool.calls)
+			require.Equal(t, answer, state.FinalAnswer)
+			require.Equal(t, "none", model.opts[maxChartRenderFailures].ToolChoice)
+			require.Empty(t, model.opts[maxChartRenderFailures].Tools)
+			require.Contains(t, model.opts[maxChartRenderFailures].RuntimeNotice, "chart render failure limit")
+			require.True(t, e.candidateApprovalCurrent(answer, state))
+		})
+	}
+}
+
+// A provider is allowed to close the channel asynchronously. The engine must
+// still respect the final phase deadline without waiting for that close.
+type openFinalStreamChat struct{ mockChat }
+
+func (model *openFinalStreamChat) ChatStream(context.Context, []chat.Message, *chat.ChatOptions) (<-chan types.StreamResponse, error) {
+	return make(chan types.StreamResponse), nil
+}
+
+func TestToolStopSynthesisDeadlineCommitsBodyOnLiveParent(t *testing.T) {
+	e := newTestEngine(t, &openFinalStreamChat{})
+	state := &types.AgentState{}
+	ctx := context.WithValue(t.Context(), toolStopSynthesisDeadlineKey{}, time.Now().Add(40*time.Millisecond))
+	err := e.handleMaxIterations(ctx, "Summarize successful observations.", state, "session", emptyMessages())
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.NoError(t, ctx.Err())
+	require.True(t, state.IsComplete)
+	require.NotEmpty(t, state.FinalAnswer)
+	require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer)
+}
+
+type continuousFinalStreamChat struct {
+	mockChat
+	stop chan struct{}
+}
+
+func (model *continuousFinalStreamChat) ChatStream(_ context.Context, _ []chat.Message, _ *chat.ChatOptions) (<-chan types.StreamResponse, error) {
+	stream := make(chan types.StreamResponse, 256)
+	go func() {
+		defer close(stream)
+		for {
+			select {
+			case stream <- types.StreamResponse{ResponseType: types.ResponseTypeThinking, Content: "tick"}:
+			case <-model.stop:
+				return
+			}
+		}
+	}()
+	return stream, nil // Intentionally ignores context until test cleanup.
+}
+
+func TestFinalSynthesisDeadlineDoesNotDrainUnboundedProviderOutput(t *testing.T) {
+	model := &continuousFinalStreamChat{stop: make(chan struct{})}
+	t.Cleanup(func() { close(model.stop) })
+	e := newTestEngine(t, model)
+	state := &types.AgentState{}
+	ctx := context.WithValue(t.Context(), toolStopSynthesisDeadlineKey{}, time.Now().Add(20*time.Millisecond))
+	start := time.Now()
+	err := e.handleMaxIterations(ctx, "Deliver the actual findings.", state, "session", emptyMessages())
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), time.Second)
+	require.NotEmpty(t, state.FinalAnswer)
+}
+
+func TestToolProgressRenderFailureLimitSurvivesEvidenceSaturation(t *testing.T) {
+	guard := toolProgressGuard{saturated: true}
+	for i := 0; i < maxChartRenderFailures; i++ {
+		result := guard.observe([]types.ToolCall{{Name: renderChartToolName, Args: map[string]any{"operation": "render"}, Result: &types.ToolResult{Error: "invalid actual columns"}}})
+		require.False(t, result.Stop, "accounting saturation is not a stall")
+		require.Equal(t, i+1 >= maxChartRenderFailures, result.RenderLimit)
+	}
+}
+
+func TestToolProgressSuccessfulRenderDoesNotConsumeFailureAllowance(t *testing.T) {
+	ctx := chartContext(t)
+	steps := []types.AgentStep{{ToolCalls: []types.ToolCall{v2ChartFixture(t)}}}
+	tool := newRenderChartTool(ctx, func() []types.AgentStep { return steps }, &chartWriterFixture{}, "session", "message")
+	sources, _ := chartSources(steps)
+	saved := chartRun(t, tool, ctx, map[string]any{"operation": "render", "source_id": sources[0].ID, "chart_type": "line", "x_type": "category", "x_column": 0, "y_columns": []int{1}})
+	require.True(t, saved.Success, saved.Error)
+	guard := toolProgressGuard{renderFailures: maxChartRenderFailures - 1}
+	call := progressChartCall(saved)
+	call.Args = map[string]any{"operation": "render"}
+	require.False(t, guard.observe([]types.ToolCall{call}).RenderLimit)
+	failed := progressChartCall(&types.ToolResult{Error: "different invalid selection"})
+	failed.Args = call.Args
+	require.True(t, guard.observe([]types.ToolCall{failed}).RenderLimit, "a saved chart does not replenish the cumulative failure allowance")
 }

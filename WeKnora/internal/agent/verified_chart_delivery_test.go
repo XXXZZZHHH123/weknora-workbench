@@ -49,7 +49,11 @@ func (w *secondVerifiedChartWriter) SaveChart(ctx context.Context, request chart
 func newVerifiedChartCandidateFixture(t *testing.T, options verifiedChartFixtureOptions) *verifiedChartCandidateFixture {
 	t.Helper()
 	ctx := chartContext(t)
-	verdict := map[string]any{"accepted": true, "complete_delivery": !options.incomplete, "required_x_type": "time", "assessment": "The actual dates, measured readings, missing observation and source scope satisfy the complete chart-only task.", "feedback": ""}
+	pending := []string{}
+	if options.incomplete {
+		pending = append(pending, "Complete the remaining requested deliverable.")
+	}
+	verdict := map[string]any{"chart_issues": []string{}, "pending_deliverables": pending, "required_x_type": "time", "assessment": "The actual dates, measured readings, missing observation and source scope satisfy the complete chart-only task."}
 	encoded, err := json.Marshal(verdict)
 	require.NoError(t, err)
 	model := &chartReviewModel{response: string(encoded)}

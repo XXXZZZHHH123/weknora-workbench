@@ -106,6 +106,12 @@ func compactChartMappingLayer(layer map[string]any, depth int) (map[string]any, 
 		}
 		view["source_provenance"] = string(encoded)
 	}
+	// Exact long-table projection coordinates cannot be replaced by a digest.
+	for _, key := range []string{"series_row_indexes", "series_labels"} {
+		if value, exists := layer[key]; exists {
+			view[key] = value
+		}
+	}
 	// Earlier compact layers may already have bound an omitted full witness.
 	for _, key := range []string{"complete_metadata_sha256", "complete_metadata_bytes"} {
 		if value, ok := layer[key]; ok {
@@ -200,11 +206,39 @@ func chartOriginalProjectionCoordinates(sourceID, provenance, originalID string,
 		SourceColumns    int                `json:"source_columns"`
 		Applied          bool               `json:"projection_applied_by_runtime"`
 		OutputRows       int                `json:"projection_output_rows"`
+		SeriesRows       [][]int            `json:"series_row_indexes"`
 	}
-	if json.Unmarshal([]byte(provenance), &projection) != nil || projection.Kind != "source_cell_projection" || !projection.Applied || projection.SourceID == "" || projection.Mapping.XIndex == nil || projection.SourceRows <= 0 || projection.SourceColumns <= 0 || projection.OutputRows != len(projection.Mapping.ValueIndexes) {
+	if json.Unmarshal([]byte(provenance), &projection) != nil || projection.Kind != "source_cell_projection" || !projection.Applied || projection.SourceID == "" || projection.Mapping.XIndex == nil || projection.SourceRows <= 0 || projection.SourceColumns <= 0 {
 		return nil, false
 	}
 	mapping := projection.Mapping
+	if mapping.SeriesColumn != nil {
+		if mapping.Orientation != "columns" || len(mapping.YIndexes) != 1 || len(projection.SeriesRows) != projection.OutputRows {
+			return nil, false
+		}
+		transformed := []chartProjectionCoordinate{}
+		for _, cell := range coordinates {
+			if cell.row < 0 || cell.row >= len(projection.SeriesRows) || cell.column < 0 || cell.column >= len(projection.SeriesRows[cell.row]) {
+				return nil, false
+			}
+			row := projection.SeriesRows[cell.row][cell.column]
+			if row == -1 && cell.column > 0 { // A real missing series observation.
+				continue
+			}
+			column := *mapping.XIndex
+			if cell.column > 0 {
+				column = mapping.YIndexes[0]
+			}
+			if row < 0 || row >= projection.SourceRows || column < 0 || column >= projection.SourceColumns {
+				return nil, false
+			}
+			transformed = append(transformed, chartProjectionCoordinate{row, column})
+		}
+		return chartOriginalProjectionCoordinates(projection.SourceID, projection.SourceProvenance, originalID, transformed, depth+1)
+	}
+	if projection.OutputRows != len(mapping.ValueIndexes) {
+		return nil, false
+	}
 	indices := append([]int{*mapping.XIndex}, mapping.YIndexes...)
 	if mapping.Orientation != "rows" && mapping.Orientation != "columns" || len(indices) < 2 || len(indices) > 7 || len(mapping.ValueIndexes) > chart.MaxRows {
 		return nil, false

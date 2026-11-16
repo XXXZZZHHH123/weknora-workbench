@@ -21,6 +21,8 @@ type chartSourceMapping struct {
 	ValueIndexes []int  `json:"value_indexes"`
 	LabelIndex   *int   `json:"label_index,omitempty"`
 	UnitIndex    *int   `json:"unit_index,omitempty"`
+	SeriesColumn *int   `json:"series_column,omitempty"`
+	UnitColumn   *int   `json:"unit_column,omitempty"`
 }
 
 type mappedChartSource struct {
@@ -153,6 +155,12 @@ func isStructuredPDFSourceRead(call types.ToolCall) bool {
 }
 
 func mapChartSource(source chart.Table, mapping chartSourceMapping) (chart.Table, error) {
+	if mapping.SeriesColumn != nil {
+		return mapChartSeries(source, mapping)
+	}
+	if mapping.UnitColumn != nil {
+		return chart.Table{}, fmt.Errorf("unit_column需要同时选择真实series_column")
+	}
 	if mapping.XIndex == nil || len(mapping.YIndexes) < 1 || len(mapping.YIndexes) > 6 || len(mapping.ValueIndexes) < 1 || len(mapping.ValueIndexes) > chart.MaxRows {
 		return chart.Table{}, fmt.Errorf("map需要真实x_index、1至6个y_indexes及value_indexes；不能提交观测值")
 	}
@@ -259,6 +267,11 @@ func mapChartSource(source chart.Table, mapping chartSourceMapping) (chart.Table
 						}
 					}
 					columns[i].UnitMetadata = &copy
+				}
+			}
+			if i > 0 {
+				if conflict := projectedChartUnit(originalColumns); conflict != nil {
+					columns[i].Unit, columns[i].UnitMetadata = "", conflict
 				}
 			}
 		}

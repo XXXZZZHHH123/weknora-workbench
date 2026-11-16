@@ -184,7 +184,7 @@ func TestStandardPreliminaryDeliveryPreservesExactAndLegacyFormats(t *testing.T)
 	}
 }
 
-func TestStandardAnswerBudgetFinalSynthesisStillRejectsUnsupportedNumbersAndReferences(t *testing.T) {
+func TestStandardAnswerBudgetFinalSynthesisMarksUnmatchedNumbersAndRejectsInvalidReferences(t *testing.T) {
 	t.Run("numbers", func(t *testing.T) {
 		bad := "The measured value is 138.67 and an unsupported total is 999."
 		model := &mockChat{responses: []mockResponse{chatAnswer(bad), chatAnswer(bad), chatAnswer(bad)}}
@@ -193,8 +193,8 @@ func TestStandardAnswerBudgetFinalSynthesisStillRejectsUnsupportedNumbersAndRefe
 		e.taskPlan = explicitTextDeliveryPlan()
 		state, messages, query := numericRecoveryFixture()
 		require.NoError(t, e.streamFinalAnswerToEventBus(t.Context(), query, state, "s", messages, finalAnswerOptions{preliminary: true}))
-		require.NotContains(t, state.FinalAnswer, "999")
-		require.Equal(t, finalNumericFailureFallback, state.FinalAnswer)
+		require.Contains(t, state.FinalAnswer, "999〔未核验〕")
+		require.Contains(t, state.FinalAnswer, "请以引用的原表、原文或数据为准")
 	})
 	t.Run("references", func(t *testing.T) {
 		bad := `A source claim.<kb chunk_id="invented-source" />`

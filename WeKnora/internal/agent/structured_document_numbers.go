@@ -19,6 +19,7 @@ type fetchedDocumentChunk struct {
 	ID          string `json:"chunk_id"`
 	KnowledgeID string `json:"knowledge_id"`
 	Content     string `json:"content"`
+	body        string // Exact returned body, before attached captions/OCR.
 	Images      []struct {
 		URL     string `json:"url"`
 		Caption string `json:"caption"`
@@ -27,7 +28,10 @@ type fetchedDocumentChunk struct {
 }
 
 func fetchedDocumentChunks(call types.ToolCall) []fetchedDocumentChunk {
-	if (call.Name != "search_knowledge" && call.Name != "read_document") || call.Result == nil || !call.Result.Success {
+	if (call.ExecutionName() != "search_knowledge" && call.ExecutionName() != "read_document") || call.Result == nil || !call.Result.Success {
+		return nil
+	}
+	if status, _ := call.Result.Data["status"].(string); status != "" && status != "ok" {
 		return nil
 	}
 	var chunks []fetchedDocumentChunk
@@ -39,6 +43,7 @@ func fetchedDocumentChunks(call types.ToolCall) []fetchedDocumentChunk {
 		var batch []fetchedDocumentChunk
 		if json.Unmarshal(encoded, &batch) == nil {
 			for index := range batch {
+				batch[index].body = batch[index].Content
 				// The modelcontext renderer shows these image captions and OCR
 				// passages alongside the parent chunk body. Keep exactly those
 				// fetched passages attached to the same citation for verification;
@@ -61,9 +66,12 @@ func fetchedDocumentChunks(call types.ToolCall) []fetchedDocumentChunk {
 // become document evidence. A citation alone, a tool name inside user text,
 // metadata and unreferenced neighbouring chunks cannot authorize a new number.
 func scopedCitedDocumentNumbers(answer string, steps []types.AgentStep) []float64 {
+	canonical, conflicts := currentCitationReferenceRows(&types.AgentState{RoundSteps: steps})
 	cited := map[string]bool{}
 	for _, match := range documentAnswerCitation.FindAllStringSubmatch(answer, -1) {
-		cited[match[1]] = true
+		if !conflicts[match[1]] {
+			cited[match[1]] = true
+		}
 	}
 	if len(cited) == 0 {
 		return nil
@@ -72,12 +80,18 @@ func scopedCitedDocumentNumbers(answer string, steps []types.AgentStep) []float6
 	var values []float64
 	for _, step := range steps {
 		for _, call := range step.ToolCalls {
-			if (call.Name != "search_knowledge" && call.Name != "read_document") || call.Result == nil || !call.Result.Success {
+			if (call.ExecutionName() != "search_knowledge" && call.ExecutionName() != "read_document") || call.Result == nil || !call.Result.Success {
 				continue
 			}
 			texts := []string{}
 			for _, chunk := range fetchedDocumentChunks(call) {
-				if chunk.ID == "" || !cited[chunk.ID] || strings.TrimSpace(chunk.Content) == "" {
+				if chunk.ID == "" || !cited[chunk.ID] || conflicts[chunk.ID] || strings.TrimSpace(chunk.Content) == "" {
+					continue
+				}
+				if ref := canonical[chunk.ID]; ref != nil && ref.Content != chunk.body {
+					// A legacy full body can prove the hash/ranges of a current
+					// partial view without acquiring that view's source identity.
+					// Only the canonical returned range supplies numeric facts.
 					continue
 				}
 				texts = append(texts, chunk.Content)

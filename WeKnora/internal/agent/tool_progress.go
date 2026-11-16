@@ -13,6 +13,7 @@ import (
 const (
 	toolProgressReplanRounds = 3
 	toolProgressStopRounds   = 6
+	maxChartRenderFailures   = 4
 	maxToolProgressKeys      = 4096
 
 	sourceProgressStalledFallback = "本轮工具执行和纠错未取得新证据，已停止重复尝试，尚未完成回答。"
@@ -28,6 +29,7 @@ type toolProgressGuard struct {
 	warned         bool
 	saturated      bool
 	resultWorkflow bool
+	renderFailures int
 }
 
 type toolProgressObservation struct {
@@ -35,6 +37,7 @@ type toolProgressObservation struct {
 	StaleRounds int
 	Replan      bool
 	Stop        bool
+	RenderLimit bool
 	// An actual data/chart operation occurred in this turn. Directories and
 	// model intent alone cannot select the result-workflow settlement path.
 	ResultWorkflow bool
@@ -42,7 +45,7 @@ type toolProgressObservation struct {
 
 func (g *toolProgressGuard) observe(calls []types.ToolCall) toolProgressObservation {
 	var out toolProgressObservation
-	if len(calls) == 0 || g.saturated {
+	if len(calls) == 0 {
 		return out
 	}
 	if g.seen == nil {
@@ -50,6 +53,13 @@ func (g *toolProgressGuard) observe(calls []types.ToolCall) toolProgressObservat
 	}
 	otherProgress, sourceAttempt := false, false
 	for _, call := range calls {
+		if call.ExecutionName() == renderChartToolName && call.ExecutionArgs()["operation"] == "render" && !savedChartProgress(call) {
+			g.renderFailures++
+		}
+		if call.Result != nil && call.Result.Data["terminal_reason"] == "chart_render_failure_limit" {
+			g.renderFailures = max(g.renderFailures, maxChartRenderFailures)
+		}
+		out.RenderLimit = g.renderFailures >= maxChartRenderFailures
 		operation, structured := structuredProgressOperation(call)
 		tracked := toolProgressOperation(call.ExecutionName()) || structured
 		g.resultWorkflow = g.resultWorkflow || call.ExecutionName() == "render_chart" || structuredProgressHasResults(operation)
@@ -66,6 +76,9 @@ func (g *toolProgressGuard) observe(calls []types.ToolCall) toolProgressObservat
 			continue
 		}
 		for _, key := range keys {
+			if g.saturated {
+				continue
+			}
 			if _, exists := g.seen[key]; exists {
 				continue
 			}
@@ -74,13 +87,16 @@ func (g *toolProgressGuard) observe(calls []types.ToolCall) toolProgressObservat
 				// a stall in a legitimately large task.
 				g.saturated = true
 				g.stale, g.warned = 0, false
-				return out
+				break
 			}
 			g.seen[key] = struct{}{}
 			out.NewEvidence++
 		}
 	}
 	out.ResultWorkflow = g.resultWorkflow
+	if g.saturated {
+		return out
+	}
 	if !sourceAttempt && !otherProgress {
 		// Failures of external jobs, writes or other workflows remain under
 		// their own retry guards; they are not evidence of a document stall.

@@ -91,14 +91,21 @@ def declared_unit(symbol, evidence, *, level):
 
 
 def mixed_unit(units, reason):
-    """Retain conflicting declarations without claiming a resolved output unit."""
-    evidence = []
+    """Keep incompatible declarations and their evidence visible to consumers."""
+    evidence, symbols, reasons = [], [], []
     for unit in units:
         for entry in unit.get('evidence', []):
             if entry not in evidence:
                 evidence.append(deepcopy(entry))
+        for symbol in [*unit.get('source_units', []), unit.get('symbol')]:
+            if symbol and symbol not in symbols:
+                symbols.append(symbol)
+        for entry in [*unit.get('source_reasons', []), unit.get('reason')]:
+            if entry and entry != reason and entry not in reasons:
+                reasons.append(entry)
     return dict(status='mixed', evidence_level='none', binding_scope='result_column',
-                evidence=evidence, reason=reason)
+                evidence=evidence, source_units=symbols, reason=reason,
+                **({'source_reasons': reasons} if reasons else {}))
 
 
 def snapshot(source, *, kind, versions=None, input_data=None, **identities):

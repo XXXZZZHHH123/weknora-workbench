@@ -29,6 +29,9 @@ type renderChartTool struct {
 	mapped                  map[string]mappedChartSource
 	reviewPlan              chartPlanReviewer
 	receipts                map[string]verifiedChartReceipt
+	renderReceipts          map[string]verifiedChartReceipt // Real saved images, including incomplete overall deliveries.
+	renderFailures          int
+	lastRenderFailure       string
 	mu                      sync.Mutex
 }
 
@@ -39,7 +42,7 @@ func (e *AgentEngine) SetChartWriter(writer chart.Writer) {
 }
 func newRenderChartTool(ctx context.Context, steps func() []types.AgentStep, writer chart.Writer, session, message string) *renderChartTool {
 	return &renderChartTool{BaseTool: agenttools.NewBaseTool(renderChartToolName,
-		"从本轮真实来源确定性绘图。先inspect查看sources及input_sources；input_sources是本轮已读PDF二维单元格，须先map；sources是实际查询/读取结果，可直接render，也可按真实行列map整形。两类都只使用inspect返回的source_id，表ID/result_id不是绘图句柄。前轮文字或表格不能替代本轮来源，目录为空时先重新read_pdf_table或执行引用真实源列的query_pdf_table。由模型根据完整任务理解行列，不能把横向维度行和指标行混成观测。map提交mapping:{orientation:rows|columns,x_index,y_indexes,value_indexes,label_index?,unit_index?}：rows表示X/Y分别取真实行、value_indexes取跨列观测；columns表示X/Y取列、value_indexes取观测行。label_index从来源标签格取名；unit_index只显式复制真实列元数据中的单位。技术行ID及常量测量列不能通过转置变成观测。map返回可直接render的真实source_id。也可query_pdf_table引用真实源字段整形，不能用重抄数值的SQL常量冒充原表观测。render选择真实source_id、x_column、y_columns(最多6)、chart_type(line/bar/scatter)、x_type(category/numeric/time)、title。依据完整任务选择业务维度，内部行ID不能充当业务轴。不得提交任意观测值、代码或URL，缺失留空，不补值，未知单位保持未知。保存前核验图的指标、维度、单位、范围与完整请求是否一致；明确的语义不匹配反馈后修正真实映射。核验临时未完成或协议无效时，保留同一source_id、mapping及全部render参数重试，不要为通过核验改变x_type；连续时间或数值变化应保留实际间隔，真正的离散类别比较允许category。delivery_mode默认chart_only，只交付返回的图片Markdown；明确还要文字分析时用chart_with_analysis。保存失败不能声称交付。用户要求分析结论且未要求绘图时，绘图只是可选步骤，不要反复重画而不交付已有证据支持的结论。类别图每个X类别须唯一；长表含多个业务系列时，先依据真实维度透视为独立Y列或按用户要求明确聚合。Excel分析关系已提供真实metric/unit字段，应优先引用实际字段，不用CASE技术ID手写来源标签；同一图只选择单位可比较的真实系列。",
+		"从本轮真实来源确定性绘图。先inspect查看sources及input_sources；input_sources是本轮已读PDF二维单元格，须先map；sources是实际查询/读取结果，可直接render，也可按真实行列map整形。两类都只使用inspect返回的source_id，表ID/result_id不是绘图句柄。前轮文字或表格不能替代本轮来源，目录为空时先重新read_pdf_table或执行引用真实源列的query_pdf_table。由模型根据完整任务理解行列，不能把横向维度行和指标行混成观测。map提交mapping:{orientation:rows|columns,x_index,y_indexes,value_indexes,label_index?,unit_index?}：rows表示X/Y分别取真实行、value_indexes取跨列观测；columns表示X/Y取列、value_indexes取观测行。label_index从来源标签格取名；unit_index只显式复制真实列元数据中的单位。技术行ID及常量测量列不能通过转置变成观测。map返回可直接render的真实source_id。也可query_pdf_table引用真实源字段整形，不能用重抄数值的SQL常量冒充原表观测。render选择真实source_id、x_column、y_columns(最多6)、chart_type(line/bar/scatter)、x_type(category/numeric/time)、title。长表可同时选择series_column真实标签列（例如查询实际返回的metric列）和可选unit_column真实单位列，单个Y列按标签真实值拆成最多6条系列；也可在columns映射中传这两个索引。不得用CASE技术ID或手写常量代替真实标签。依据完整任务选择业务维度，内部行ID不能充当业务轴。不得提交任意观测值、代码或URL，缺失留空，不补值，未知单位保持未知。保存前核验图的指标、维度、单位、范围与完整请求是否一致；明确的语义不匹配反馈后修正真实映射。核验临时未完成或协议无效时，保留同一source_id、mapping及全部render参数重试，不要为通过核验改变x_type；连续时间或数值变化应保留实际间隔，真正的离散类别比较允许category。delivery_mode默认chart_only，只交付返回的图片Markdown；明确还要文字分析时用chart_with_analysis。保存失败不能声称交付。用户要求分析结论且未要求绘图时，绘图只是可选步骤，不要反复重画而不交付已有证据支持的结论。类别图每个X类别须唯一；长表含多个业务系列时，可选择真实series_column拆分、依据真实维度透视为独立Y列或按用户要求明确聚合。Excel分析关系已提供真实metric/unit字段，应优先引用实际字段，不用CASE技术ID手写来源标签；同一图只选择单位可比较的真实系列。",
 		json.RawMessage(`{
   "type":"object","additionalProperties":false,"required":["operation"],
   "properties":{
@@ -54,19 +57,23 @@ func newRenderChartTool(ctx context.Context, steps func() []types.AgentStep, wri
         "y_indexes":{"type":"array","minItems":1,"maxItems":6,"items":{"type":"integer","minimum":0},"description":"选择指标系列而非观测点。与x_index同一坐标空间：rows选指标所在原行，columns选指标所在原列，不得与X重复。"},
         "value_indexes":{"type":"array","minItems":1,"maxItems":2000,"items":{"type":"integer","minimum":0},"description":"观测沿另一方向排列：rows时选择原列索引；columns时选择原行索引。顺序原样保留，不含标签坐标。"},
         "label_index":{"type":"integer","minimum":0,"description":"rows必填，指定真实行标签所在原列，不包含在value_indexes；columns的轴名直接复制原列名。"},
+        "series_column":{"type":"integer","minimum":0,"description":"columns映射可选的真实系列标签列；单个Y按该列真实值拆分，最多6条，不接收手写标签。"},
+        "unit_column":{"type":"integer","minimum":0,"description":"与series_column配合，逐系列复制真实单位列，不猜测或覆盖已知混合单位。"},
         "unit_index":{"type":"integer","minimum":0,"description":"rows时可选，仅从该原列的已声明元数据复制Y单位；全部所选观测列须声明相同单位。未知时省略，不根据标题猜测。"}
       }
     },
     "chart_type":{"type":"string","enum":["line","bar","scatter"]},
     "x_column":{"type":"integer","minimum":0,"description":"render选择的来源结果列；map输出中X固定为0，不再填原表坐标。"},
     "y_columns":{"type":"array","minItems":1,"maxItems":6,"items":{"type":"integer","minimum":0},"description":"render选择的来源结果列；map输出中Y依次为1至输出列数减1，不再填原表坐标。"},
+    "series_column":{"type":"integer","minimum":0,"description":"长表真实标签列的索引；选择单个Y，按真实值拆成最多6条系列，图例逐字保留。"},
+    "unit_column":{"type":"integer","minimum":0,"description":"与series_column配合的真实单位列索引；仅复制实际字段，不接受模型填写单位。"},
     "x_type":{"type":"string","enum":["category","numeric","time"]},
     "title":{"type":"string","maxLength":512},
     "delivery_mode":{"type":"string","enum":["chart_only","chart_with_analysis"]}
   }
 }`)), steps: steps, writer: writer, tenant: types.CallerFromContext(ctx).TenantID, owner: types.SessionOwnerIDFromContext(ctx), session: session, message: message}
 }
-func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*types.ToolResult, error) {
+func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (result *types.ToolResult, executionErr error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	fail := func(message string) (*types.ToolResult, error) {
@@ -79,6 +86,29 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 	if len(raw) > 8192 || t.steps == nil {
 		return fail("绘图计划或真实工具记录无效")
 	}
+	// Count authenticated render attempts even when their strict arguments fail.
+	var operationHeader struct {
+		Operation string `json:"operation"`
+	}
+	_ = json.Unmarshal(raw, &operationHeader)
+	if operationHeader.Operation == "render" {
+		if t.renderFailures >= maxChartRenderFailures {
+			return chartRenderLimitFailure(t.lastRenderFailure), nil
+		}
+		defer func() {
+			if executionErr != nil || result == nil || !result.Success {
+				t.renderFailures++
+				if result != nil {
+					t.lastRenderFailure = result.Error
+				} else if executionErr != nil {
+					t.lastRenderFailure = executionErr.Error()
+				}
+				if t.renderFailures >= maxChartRenderFailures {
+					result, executionErr = chartRenderLimitFailure(t.lastRenderFailure), nil
+				}
+			}
+		}()
+	}
 	var input struct {
 		Operation    string              `json:"operation"`
 		SourceID     string              `json:"source_id"`
@@ -89,6 +119,8 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 		Title        string              `json:"title"`
 		DeliveryMode string              `json:"delivery_mode"`
 		Mapping      *chartSourceMapping `json:"mapping"`
+		SeriesColumn *int                `json:"series_column"`
+		UnitColumn   *int                `json:"unit_column"`
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.DisallowUnknownFields()
@@ -111,7 +143,13 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 	for _, source := range append(append([]chart.Table{}, tables...), inputs...) {
 		parents[source.ID] = true
 	}
-	for _, mapped := range t.mapped {
+	mappedIDs := make([]string, 0, len(t.mapped))
+	for id := range t.mapped {
+		mappedIDs = append(mappedIDs, id)
+	}
+	sort.Strings(mappedIDs)
+	for _, id := range mappedIDs {
+		mapped := t.mapped[id]
 		if parents[mapped.ParentID] {
 			tables = append(tables, mapped.Table)
 		}
@@ -121,7 +159,7 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 		diagnostics, _ := json.Marshal(rejected)
 		views := []any{}
 		for _, table := range tables {
-			views = append(views, map[string]any{"source_id": table.ID, "columns": table.Columns, "row_count": len(table.Rows), "matrix_shape": map[string]int{"rows": len(table.Rows), "columns": len(table.Columns)}, "sample_rows": table.Rows[:min(5, len(table.Rows))], "mapping_supported": true, "render_supported": true, "source_truncated": table.Truncated, "provenance": table.Provenance, "notice": table.Notice})
+			views = append(views, map[string]any{"source_id": table.ID, "columns": table.Columns, "row_count": len(table.Rows), "matrix_shape": map[string]int{"rows": len(table.Rows), "columns": len(table.Columns)}, "sample_rows": table.Rows[:min(5, len(table.Rows))], "mapping_supported": true, "render_supported": true, "series_column_supported": true, "source_truncated": table.Truncated, "provenance": table.Provenance, "notice": table.Notice})
 		}
 		for len(views) > 0 {
 			encoded, _ := json.Marshal(views)
@@ -141,7 +179,7 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 			}
 			inputViews = append(inputViews, view)
 		}
-		data := map[string]any{"kind": "chart_source_catalog", "sources": views, "input_sources": inputViews, "omitted_source_count": omitted, "rejected_source_count": rejectedCount, "source_rejections": rejected, "source_rejections_truncated": rejectedCount > len(rejected), "notice": "先根据完整问题理解真实行列。input_sources须map后绘图；sources可直接render，也可map选择/整形其真实结果坐标。map/render均用本目录source_id。全部索引0起算，sample_rows仅展示样例，真实句柄绑定全部已返回行。表ID、result_id不是绘图句柄。无来源时先本轮read_pdf_table恢复真实单元格，或执行引用真实源列的query_pdf_table，不猜ID、不重抄常量。"}
+		data := map[string]any{"kind": "chart_source_catalog", "sources": views, "input_sources": inputViews, "omitted_source_count": omitted, "rejected_source_count": rejectedCount, "source_rejections": rejected, "source_rejections_truncated": rejectedCount > len(rejected), "notice": "先根据完整问题理解真实行列。input_sources须map后绘图；sources可直接render，也可map选择/整形其真实结果坐标。map/render均用本目录source_id。全部索引0起算，sample_rows仅展示样例，真实句柄绑定全部已返回行。表ID、result_id不是绘图句柄。无来源时先本轮read_pdf_table恢复真实单元格，或执行引用真实源列的query_pdf_table，不猜ID、不重抄常量。长表可用真实metric或其他维度列作series_column，unit列作unit_column，单个Y按真实值拆为最多6条系列。"}
 		body, _ := json.Marshal(data)
 		return &types.ToolResult{Success: true, Data: data, Output: string(body)}, nil
 	}
@@ -161,7 +199,7 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 			if t.mapped == nil {
 				t.mapped = map[string]mappedChartSource{}
 			}
-			if len(t.mapped) >= chart.MaxSources {
+			if _, exists := t.mapped[mapped.ID]; !exists && len(t.mapped) >= chart.MaxSources {
 				return fail("本轮映射数量已达上限")
 			}
 			parentID := source.ID
@@ -171,7 +209,7 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 				parentID = previous.ParentID
 			}
 			t.mapped[mapped.ID] = mappedChartSource{Table: mapped, ParentID: parentID, Mapping: *input.Mapping}
-			data := map[string]any{"kind": "chart_source_mapping", "source_id": mapped.ID, "columns": mapped.Columns, "rows": mapped.Rows, "mapping": input.Mapping, "source_truncated": mapped.Truncated, "provenance": mapped.Provenance, "notice": "已按真实坐标复制。核对输出columns/rows是否满足完整任务；满足时下一步直接render此source_id，X列为0，Y列依次为1至输出列数减1，无需再生成等价映射。"}
+			data := map[string]any{"kind": "chart_source_mapping", "source_id": mapped.ID, "parent_source_id": source.ID, "columns": mapped.Columns, "rows": mapped.Rows, "mapping": input.Mapping, "source_truncated": mapped.Truncated, "provenance": mapped.Provenance, "notice": "已按真实坐标复制。核对输出columns/rows是否满足完整任务；满足时下一步直接render此source_id，X列为0，Y列依次为1至输出列数减1，无需再生成等价映射。"}
 			body, _ := json.Marshal(data)
 			return &types.ToolResult{Success: true, Data: data, Output: string(body)}, nil
 		}
@@ -211,13 +249,45 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 		title = "数据图表"
 	}
 	spec := chart.Spec{Type: input.Type, X: *input.X, Y: input.Y, XType: input.XType, Title: title}
+	if input.SeriesColumn != nil {
+		indexes := make([]int, len(source.Rows))
+		for i := range indexes {
+			indexes[i] = i
+		}
+		mapping := chartSourceMapping{Orientation: "columns", XIndex: input.X, YIndexes: input.Y, ValueIndexes: indexes, SeriesColumn: input.SeriesColumn, UnitColumn: input.UnitColumn}
+		mapped, err := mapChartSeries(*source, mapping)
+		if err != nil {
+			return t.sourceFailureDiagnostics(err.Error(), *source, steps), nil
+		}
+		if t.mapped == nil {
+			t.mapped = map[string]mappedChartSource{}
+		}
+		if _, exists := t.mapped[mapped.ID]; !exists && len(t.mapped) >= chart.MaxSources {
+			return fail("本轮映射数量已达上限，请复用已有真实映射")
+		}
+		parentID := source.ID
+		if previous, exists := t.mapped[source.ID]; exists {
+			parentID = previous.ParentID
+		}
+		t.mapped[mapped.ID] = mappedChartSource{Table: mapped, ParentID: parentID, Mapping: mapping}
+		source = &mapped
+		spec.X, spec.Y = 0, make([]int, len(mapped.Columns)-1)
+		for i := range spec.Y {
+			spec.Y[i] = i + 1
+		}
+	} else if input.UnitColumn != nil {
+		return fail("unit_column需要同时选择真实series_column")
+	}
 	if spec.XType == "" {
 		spec.XType = "category"
 	}
 	if err := validateChartSourceColumns(*source, spec); err != nil {
 		return t.sourceFailureDiagnostics(err.Error(), *source, steps), nil
 	}
-	png, err := chart.Render(*source, spec)
+	if err := validateChartUnits(*source, spec); err != nil {
+		return t.sourceFailureDiagnostics(err.Error(), *source, steps), nil
+	}
+	png, err := chart.Render(chartUnitPresentation(*source, spec), spec)
 	if err != nil {
 		return t.sourceFailureDiagnostics(err.Error(), *source, steps), nil
 	}
@@ -246,6 +316,15 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 	output := fmt.Sprintf("![图表](%s)", delivered.Handle)
 	if validation != nil {
 		data["semantic_validation"] = validation
+		if len(validation.PendingDeliverables) > 0 {
+			notice := "图片已交付，剩余内容请在最终回答中完成：" + strings.Join(validation.PendingDeliverables, "；")
+			data["delivery_notice"] = notice
+			output += "\n\n" + notice
+		}
+		if t.renderReceipts == nil {
+			t.renderReceipts = map[string]verifiedChartReceipt{}
+		}
+		t.renderReceipts[delivered.Handle] = verifiedChartReceipt{CallID: meta.ToolCallID, TaskHash: validation.TaskHash, DataHash: reviewDigest(data), Output: output, Mode: input.DeliveryMode}
 	}
 	if validation != nil && validation.FullTaskView && validation.CompleteDelivery {
 		if t.receipts == nil {
@@ -433,7 +512,7 @@ func checkedStructuredChartTable(call types.ToolCall) (chart.Table, error) {
 		if !analysis && name == "value" {
 			cols[i].Unit, _ = series["unit"].(string)
 		}
-		if name == "_row_id" {
+		if name == "_row_id" || !analysis && (name == "series_id" || name == "source_cell" || name == "date_cell" || name == "sheet") {
 			cols[i].Role = "source_row_identifier"
 		}
 	}
@@ -604,4 +683,13 @@ func chartAuditMetadata(meta map[string]any) (string, bool, error) {
 	return string(encoded), true, nil
 }
 
-const dataChartInstructions = `render_chart从已授权且本轮真正读取的数值行或原文表格生成PNG。inspect同时提供可render的sources及须先map的input_sources；已读PDF二维表可直接用map按模型明确的行/列坐标整形，不必绕行原页或SQL，不重抄数值。横向表的维度行和指标行要配对成逐观测记录，内部_row_id是技术身份，不能作为业务轴。SQL替代路径必须引用真实源值，常量数组不是源表取数。inspect/map返回真实source_id，不能猜表ID。最多6个Y系列；更多观测点应由正确行列整形得到，不应通过删除所需数据点来满足系列上限。按完整请求核验变量、维度、单位、范围和图型，渲染前会独立检查。保持原值、真实日期与缺失，不平滑补数，不用generate_image编造数据。图内只需标题、图形、坐标、图例和必要范围标注。只需图时delivery_mode默认chart_only，最终仅输出本轮成功返回的图片Markdown；明确同时要求分析时用chart_with_analysis。失败时保留真实未交付说明，不能以表格代替所要求的图。`
+const dataChartInstructions = `render_chart从已授权且本轮真正读取的数值行或原文表格生成PNG。inspect同时提供可render的sources及须先map的input_sources；已读PDF二维表可直接用map按模型明确的行/列坐标整形，不必绕行原页或SQL，不重抄数值。横向表的维度行和指标行要配对成逐观测记录，内部_row_id是技术身份，不能作为业务轴。SQL替代路径必须引用真实源值，常量数组不是源表取数。inspect/map返回真实source_id，不能猜表ID。长表用series_column选择真实metric或其他业务维度，unit_column复制真实单位列，图例取真实字段值而非CASE技术ID或手写常量；已知mixed单位必须筛选真实来源或拆图，unknown可用原值绘图但图片与回答不能声称单位。最多6个Y系列；更多观测点应由正确行列整形得到，不应通过删除所需数据点来满足系列上限。按完整请求核验变量、维度、单位、范围和图型，渲染前会独立检查。保持原值、真实日期与缺失，不平滑补数，不用generate_image编造数据。图内只需标题、图形、坐标、图例和必要范围标注。只需图时delivery_mode默认chart_only，最终仅输出本轮成功返回的图片Markdown；明确同时要求分析时用chart_with_analysis。失败时保留真实未交付说明，不能以表格代替所要求的图。`
+
+// Terminal tool feedback reports the actual last failure, never an invented
+// business answer. The engine performs the no-tool final synthesis separately.
+func chartRenderLimitFailure(reason string) *types.ToolResult {
+	message := fmt.Sprintf("本轮绘图已达到%d次未交付上限，停止render。请立即基于本轮已成功取得的真实数据完成文字回答，保留数字与引用核验，并说明图未生成的真实原因：%s", maxChartRenderFailures, reason)
+	data := map[string]any{"kind": "data_chart", "status": "error", "terminal_reason": "chart_render_failure_limit", "final_answer_required": true, "render_failure_count": maxChartRenderFailures, "last_render_failure": reason}
+	body, _ := json.Marshal(data)
+	return &types.ToolResult{Success: false, Error: message, Data: data, Output: string(body)}
+}

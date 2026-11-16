@@ -54,7 +54,7 @@ func TestChartReviewReceivesOnlyMechanicallyEligibleAxisTypes(t *testing.T) {
 			}
 			require.NoError(t, json.Unmarshal(model.options[0].Format, &schema))
 			require.Equal(t, test.eligible, schema.Properties["required_x_type"].Enum)
-			require.Contains(t, model.seen[0][0].Content, "所有合法类型均无法满足任务，accepted=false")
+			require.Contains(t, model.seen[0][0].Content, "所有合法类型均无法满足任务，在chart_issues说明")
 		})
 	}
 }
@@ -95,7 +95,7 @@ func TestChartIneligibleReviewAxisIsProtocolFailureAndDoesNotChangeSourceOrSave(
 }
 
 func TestEligibleAxesCannotAuthorizeSemanticallyWrongData(t *testing.T) {
-	model := &chartAxisReviewModel{response: &types.ChatResponse{Content: `{"accepted":false,"complete_delivery":false,"required_x_type":"category","assessment":"The selected source dimension does not answer the requested comparison.","feedback":"Choose the actual requested dimension from the authorized source."}`, FinishReason: "stop"}}
+	model := &chartAxisReviewModel{response: &types.ChatResponse{Content: `{"required_x_type":"category","assessment":"The selected source dimension does not answer the requested comparison.","chart_issues":["Choose the actual requested dimension from the authorized source."],"pending_deliverables":[]}`, FinishReason: "stop"}}
 	e := newTestEngine(t, model)
 	verdict, err := e.chartPlanReviewer("Compare the requested original source dimension.", &types.AgentState{})(chartContext(t), chartAxisReviewTable(t), chart.Spec{Type: "bar", X: 0, Y: []int{1}, XType: "category"})
 	require.Nil(t, verdict)
@@ -117,7 +117,7 @@ func TestChartSemanticRejectionPreservesSourceFeedbackAcrossEligibleAxisMismatch
 				required = "category"
 			}
 			feedback := "Select the requested source measure; changing the axis cannot repair this evidence mismatch."
-			payload, err := json.Marshal(map[string]any{"accepted": false, "complete_delivery": false, "required_x_type": required, "assessment": "Both encodings are representable, but the selected measure does not satisfy the task.", "feedback": feedback})
+			payload, err := json.Marshal(map[string]any{"chart_issues": []string{feedback}, "pending_deliverables": []string{}, "required_x_type": required, "assessment": "Both encodings are representable, but the selected measure does not satisfy the task."})
 			require.NoError(t, err)
 			model := &chartAxisReviewModel{response: &types.ChatResponse{Content: string(payload), FinishReason: "stop"}}
 			e := newTestEngine(t, model)

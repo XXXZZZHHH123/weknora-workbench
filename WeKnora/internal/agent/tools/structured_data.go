@@ -45,10 +45,12 @@ type StructuredDataTool struct {
 	protocolDescriptors map[string]StructuredOperationDescriptor
 }
 
+const structuredChartLabelInstructions = " SQL输入关系若实际提供metric、unit等字段，可直接SELECT这些真实字段作为业务标签和单位；绘图用series_column选择真实metric或其他维度列，unit_column选择真实单位列，单个value按标签拆系列（最多6条）。先核对实际schema，不猜字段；不得用CASE series_id或手写常量替代真实业务标签，技术来源ID保护不变。"
+
 func NewStructuredDataTool() *StructuredDataTool {
 	key, _ := os.ReadFile(os.Getenv("COMMODITY_RESEARCH_TOKEN_FILE"))
 	return &StructuredDataTool{BaseTool: NewBaseTool(ToolStructuredData,
-		"只读查询本轮授权范围的Excel、已发布PDF表及原单元格证据。单库自动限定，多库先读取真实目录，再按完整问题和上下文选knowledge_base_id。list_datasets的datasets仅指Excel，pdf_tables才是PDF；旧文档索引的待审/仅字段说明可能过时，断言PDF未入库或无数值前须核实当前目录。reviewed/auto_accepted均已入库，extraction_verified=false不表示未入库；历史警告不等于当前未解决警告。list_pdf_tables分页列出列/单位/前两行导航样例，output_truncated时按next_offset继续，通用列名可通过样例理解；样例不能作数值证据。read_pdf_table核对原值/来源，query_pdf_table用真实列名只读计算。PDF草稿不可计算，人工确认不保证OCR正确，仍须检查单位、跨页覆盖。只交付问题所需且绑定实际表/单元格的事实；缺乏绑定证据的附加统计范围或原件版面断言应省略。Excel可analyze_table，inspect_source检查未解析原件；resolve_fields处理语义歧义，confirm_fields须真实用户选择。按需describe_tools获取schema，不会修改原表。",
+		"只读查询本轮授权范围的Excel、已发布PDF表及原单元格证据。单库自动限定，多库先读取真实目录，再按完整问题和上下文选knowledge_base_id。list_datasets的datasets仅指Excel，pdf_tables才是PDF；旧文档索引的待审/仅字段说明可能过时，断言PDF未入库或无数值前须核实当前目录。reviewed/auto_accepted均已入库，extraction_verified=false不表示未入库；历史警告不等于当前未解决警告。list_pdf_tables分页列出列/单位/前两行导航样例，output_truncated时按next_offset继续，通用列名可通过样例理解；样例不能作数值证据。read_pdf_table核对原值/来源，query_pdf_table用真实列名只读计算。PDF草稿不可计算，人工确认不保证OCR正确，仍须检查单位、跨页覆盖。只交付问题所需且绑定实际表/单元格的事实；缺乏绑定证据的附加统计范围或原件版面断言应省略。Excel可analyze_table，inspect_source检查未解析原件；resolve_fields处理语义歧义，confirm_fields须真实用户选择。按需describe_tools获取schema，不会修改原表。"+structuredChartLabelInstructions,
 		json.RawMessage(`{"type":"object","additionalProperties":false,"required":["operation","arguments"],"properties":{"knowledge_base_id":{"type":"string","description":"可选的真实知识库ID，必须在本轮已授权的知识库目录中；单库时默认使用该库，多库时先读取返回目录再根据完整问题选择"},"operation":{"type":"string","enum":["describe_tools","inspect_source","list_datasets","list_series","list_charts","query_series","compare_series","convert_price","resolve_fields","confirm_fields","execute_field_plan","get_result_evidence","analyze_table","list_pdf_tables","read_pdf_table","query_pdf_table"]},"arguments":{"type":"object","description":"先describe_tools {operations:[目标操作]}获取参数schema；其余参数沿用操作schema，不接受账号、空间、URL或凭据"}}}`)),
 		endpoint: strings.TrimRight(os.Getenv("STRUCTURED_DATA_URL"), "/"),
 		key:      bytes.TrimSpace(key), client: &http.Client{Timeout: 30 * time.Second,
@@ -346,6 +348,12 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 			"knowledge_base_id":        scope.KnowledgeBaseID,
 			"knowledge_base_tenant_id": scope.TenantID,
 		}
+	}
+	if operation == "query_series" || operation == "analyze_table" || operation == "query_pdf_table" {
+		// Execution audit only. The model receives the same guidance in the
+		// registered tool description; preserve the service's visible bytes and
+		// never serialize private source_context into that output projection.
+		data["chart_label_notice"] = structuredChartLabelInstructions
 	}
 	cacheResult = &types.ToolResult{Success: true, Output: string(body), Data: data}
 	return fitStructuredDirectory(ctx, operation, cacheResult), nil

@@ -79,6 +79,9 @@ func citationViewIdentity(view citationSourceView) (string, bool) {
 	if library == "" {
 		library = citationString(view.row["knowledge_base"])
 	}
+	if alias := citationString(view.row["knowledge_base"]); library != "" && alias != "" && alias != library {
+		return "", false
+	}
 	if citationString(view.data["knowledge_id"]) == document {
 		parentLibrary := citationString(view.data["knowledge_base_id"])
 		if library != "" && parentLibrary != "" && library != parentLibrary {
@@ -133,4 +136,44 @@ func citationViewMatchesFull(full, observed citationSourceView) bool {
 		end = span.End
 	}
 	return expected.String() == content
+}
+
+// Even two unprojected equal bodies can be from different revisions or
+// libraries. Compare explicitly supplied fields before selecting any witness.
+func citationViewsExplicitIdentityConflict(views []citationSourceView) bool {
+	known := map[string]string{}
+	for _, view := range views {
+		for _, field := range []string{"chunk_id", "knowledge_id", "content_revision", "chunk_type", "parent_chunk_id", "chunk_index", "start_at", "end_at", "source_locators"} {
+			value, present := view.row[field]
+			if !present || value == nil {
+				continue
+			}
+			if field == "content_revision" {
+				revision, valid := citationViewRevision(value)
+				if !valid {
+					return true
+				}
+				value = revision
+			}
+			digest := reviewDigest(value)
+			if prior, exists := known[field]; exists && prior != digest {
+				return true
+			}
+			known[field] = digest
+		}
+		libraries := []string{citationString(view.row["knowledge_base_id"]), citationString(view.row["knowledge_base"])}
+		if citationString(view.data["knowledge_id"]) == citationString(view.row["knowledge_id"]) {
+			libraries = append(libraries, citationString(view.data["knowledge_base_id"]))
+		}
+		for _, library := range libraries {
+			if library == "" {
+				continue
+			}
+			if prior, exists := known["library"]; exists && prior != library {
+				return true
+			}
+			known["library"] = library
+		}
+	}
+	return false
 }
