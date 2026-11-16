@@ -47,8 +47,25 @@ func fitStructuredItemDirectory(ctx context.Context, operation string, result *t
 			}
 		}
 		if operation == "list_charts" {
+			brief["curve_summary_complete"] = false
 			if curves, ok := item["curves"].([]any); ok {
 				brief["curve_count"] = len(curves)
+				summary := make([]map[string]any, 0, len(curves))
+				complete := true
+				for _, value := range curves {
+					curve, valid := value.(map[string]any)
+					complete = complete && valid
+					entry := map[string]any{}
+					// Keep every returned series, including repeated labels and
+					// unknown units. These are graph metadata, never data points.
+					for _, field := range []string{"label", "chart_type", "axis", "unit"} {
+						if value, exists := curve[field]; exists {
+							entry[field] = value
+						}
+					}
+					summary = append(summary, entry)
+				}
+				brief["curve_summary"], brief["curve_summary_complete"] = summary, complete
 			}
 		}
 		rows = append(rows, brief)
@@ -71,6 +88,9 @@ func fitStructuredItemDirectory(ctx context.Context, operation string, result *t
 	view["source_data_read"], view["output_truncated"] = false, true
 	view["next_operation"] = operation
 	view["next_step"] = "Brief entries preserve source identities, labels and coverage; item details and directory summaries are omitted. For complete metadata repeat this operation with the same dataset and sheet/search filters, offset=catalog_offset, limit=1. If that page is still brief, use the actual sheet/header cells with inspect_source or the real series_id with query_series; do not repeat unchanged pages. Omission is not absence and directory metadata is not an observation read."
+	if operation == "list_charts" {
+		projection["curve_summary_scope"] = "All returned curve metadata for each displayed chart, not observations or verified units. A source-cell selection may cover fewer series than this chart catalog."
+	}
 	render := func() bool {
 		view[key] = rows
 		projection["shown_entry_count"], projection["omitted_entry_count"] = len(rows), len(original)-len(rows)

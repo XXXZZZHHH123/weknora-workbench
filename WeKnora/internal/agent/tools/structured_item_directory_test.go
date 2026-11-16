@@ -170,3 +170,63 @@ func TestStructuredItemDirectoryCannotCutAnOversizedIdentity(t *testing.T) {
 	after, _ := json.Marshal(projected.Data)
 	require.Equal(t, before, after)
 }
+
+func TestStructuredChartBriefPreservesEveryCurveOfCompositeFigures(t *testing.T) {
+	original := wideItemCatalog(t, "list_charts", 10, 0, 10)
+	curves := []map[string]any{}
+	for index := 0; index < 8; index++ {
+		curves = append(curves, map[string]any{"label": fmt.Sprintf("Printed legend %d", index), "chart_type": "lineChart", "axis": "primary", "unit": "kg", "values": []int{17, 23}, "reason": strings.Repeat("Original detail ", 100)})
+	}
+	// A duplicate printed label is still a separate series on its actual axis.
+	curves = append(curves, map[string]any{"label": "Printed legend 0", "chart_type": "barChart", "axis": "secondary", "unit": nil, "values": []int{2, 4}})
+	for _, row := range original.Data["charts"].([]map[string]any) {
+		row["curves"] = curves
+	}
+	before, _ := json.Marshal(original.Data)
+	original.Output = string(before)
+	for _, budget := range []int{DefaultMaxToolOutput, 4000} {
+		t.Run(fmt.Sprint(budget), func(t *testing.T) {
+			projected := fitStructuredDirectory(WithOutputBudget(t.Context(), budget), "list_charts", original)
+			view := structuredDirectoryView(t, projected, budget)
+			charts := structuredRecallRows(view["charts"])
+			require.NotEmpty(t, charts)
+			if budget == DefaultMaxToolOutput {
+				require.Len(t, charts, 10, "the last of ten composite charts retains its whole series overview")
+				require.Equal(t, "figure-009", charts[9]["chart_id"])
+				require.Equal(t, false, view["truncated"])
+			} else {
+				require.Less(t, len(charts), 10)
+				require.Equal(t, float64(len(charts)), view["next_offset"], "omit entire charts, never part of a chart's series")
+				require.Equal(t, true, view["truncated"])
+			}
+			for _, row := range charts {
+				require.Equal(t, json.Number("9"), row["curve_count"])
+				require.Equal(t, true, row["curve_summary_complete"])
+				summary := structuredRecallRows(row["curve_summary"])
+				require.Len(t, summary, len(curves))
+				for index, curve := range summary {
+					for _, field := range []string{"label", "chart_type", "axis", "unit"} {
+						require.Equal(t, curves[index][field], curve[field])
+					}
+					require.NotContains(t, curve, "values", "catalog summaries cannot turn into source observations")
+					require.NotContains(t, curve, "reason")
+				}
+			}
+			require.Equal(t, false, view["source_data_read"])
+			require.Contains(t, view["directory_projection"].(map[string]any)["curve_summary_scope"], "not observations")
+			after, _ := json.Marshal(projected.Data)
+			require.Equal(t, before, after)
+		})
+	}
+}
+
+func TestStructuredChartBriefDoesNotClaimUnknownCurveListsAreComplete(t *testing.T) {
+	for _, curves := range []any{nil, "unavailable", []any{nil}} {
+		original := wideItemCatalog(t, "list_charts", 1, 0, 1)
+		original.Data["charts"].([]map[string]any)[0]["curves"] = curves
+		projected := fitStructuredDirectory(WithOutputBudget(t.Context(), 2000), "list_charts", original)
+		view := structuredDirectoryView(t, projected, 2000)
+		row := structuredRecallRows(view["charts"])[0]
+		require.Equal(t, false, row["curve_summary_complete"])
+	}
+}
