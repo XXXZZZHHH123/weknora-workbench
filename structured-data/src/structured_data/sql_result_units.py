@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import json
 import duckdb
 
-from .result_contract import unknown_unit
+from .result_contract import mixed_unit, unknown_unit
 
 
 @dataclass
@@ -28,6 +28,12 @@ def _unknown(reason='SQL shape has no supported deterministic unit rule'):
 
 
 def _derived(value, operation):
+    if value.unit['status'] == 'mixed':
+        # Unit-preserving operations cannot resolve incompatible declarations.
+        # Keep the original reason/evidence, without advertising a single unit.
+        unit = deepcopy(value.unit)
+        unit['expression'] = operation
+        return _Value(unit)
     if value.unit['status'] not in ('declared', 'derived'):
         return _unknown()
     unit = deepcopy(value.unit)
@@ -40,13 +46,19 @@ def _same(values, *, operation='alternatives'):
     values = [v for v in values if not v.null]
     if not values:
         return _unknown()
+    if any(v.unit['status'] == 'mixed' for v in values):
+        unit = mixed_unit([v.unit for v in values],
+                          'An expression branch contains incompatible explicit units')
+        unit['expression'] = operation
+        return _Value(unit)
     symbols = {v.unit.get('symbol') for v in values}
     if any(v.unit['status'] not in ('declared', 'derived') for v in values):
         return _unknown('An expression branch has no bound unit declaration')
     if len(symbols) != 1:
-        return _Value(dict(status='mixed', evidence_level='none',
-                           binding_scope='result_column', evidence=[],
-                           reason='Expression alternatives have different explicit units'))
+        unit = mixed_unit([v.unit for v in values],
+                          'Expression alternatives have different explicit units')
+        unit['expression'] = operation
+        return _Value(unit)
     unit = _derived(values[0], operation).unit
     unit['evidence'] = []
     for value in values:
@@ -136,6 +148,8 @@ class _Units:
         if kind == 'CAST':
             value = self.expression(node['child'], scope, ctes)
             target = node.get('cast_type', {}).get('id', '')
+            if value.unit['status'] == 'mixed':
+                return _derived(value, 'cast_of_mixed_unit_input')
             if target in ('DECIMAL', 'DOUBLE', 'FLOAT', 'TINYINT', 'SMALLINT', 'INTEGER',
                           'BIGINT', 'HUGEINT', 'UTINYINT', 'USMALLINT', 'UINTEGER', 'UBIGINT', 'UHUGEINT'):
                 return _Value(_derived(value, 'numeric_cast_no_unit_conversion').unit, scalar=value.scalar, null=value.null)
@@ -145,6 +159,9 @@ class _Units:
             if node.get('else_expr'):
                 branches.append(self.expression(node['else_expr'], scope, ctes))
             return _same(branches, operation='case_alternatives')
+        if kind == 'OPERATOR' and node.get('type') == 'OPERATOR_COALESCE':
+            return _same([self.expression(child, scope, ctes) for child in node.get('children', [])],
+                         operation='coalesce_alternatives')
         if kind in ('FUNCTION', 'WINDOW'):
             name = node.get('function_name', '').casefold()
             values = [self.expression(child, scope, ctes) for child in node.get('children', [])]
@@ -172,6 +189,8 @@ class _Units:
                     unit = both.unit
                     unit.update(symbol='1', expression='ratio_of_same_explicit_unit', quantity='ratio')
                     return _Value(unit)
+                if both.unit['status'] == 'mixed':
+                    return both
             if name in ('coalesce', 'ifnull', 'greatest', 'least'):
                 return _same(values, operation=name + '_alternatives')
             return _unknown()

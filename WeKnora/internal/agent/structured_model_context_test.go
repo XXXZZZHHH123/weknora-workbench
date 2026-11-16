@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -119,7 +120,9 @@ func TestModelHandleFlowsThroughNativeSelectorScopeAndSignedHTTP(t *testing.T) {
 		require.Equal(t, float64(7), identity["tenant_id"])
 		require.NotContains(t, request["arguments"], "knowledge_base_id")
 		bodyHash := sha256.Sum256(body)
-		mac := hmac.New(sha256.New, []byte(strings.Repeat("k", 48)))
+		key, err := os.ReadFile(os.Getenv("COMMODITY_RESEARCH_TOKEN_FILE"))
+		require.NoError(t, err)
+		mac := hmac.New(sha256.New, key)
 		_, _ = mac.Write([]byte(strings.Join([]string{r.Header.Get("X-Research-Timestamp"), "POST", "/api/tools/read", encoded, hex.EncodeToString(bodyHash[:])}, "\n")))
 		require.Equal(t, hex.EncodeToString(mac.Sum(nil)), r.Header.Get("X-Research-Signature"))
 		require.Equal(t, strings.Repeat("c", 64), r.Header.Get("X-Structured-Manifest-SHA256"))

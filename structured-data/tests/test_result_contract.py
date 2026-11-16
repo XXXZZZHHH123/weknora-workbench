@@ -119,7 +119,18 @@ def test_excel_sql_keeps_input_scope_separate_from_aggregate_members(snapshot):
 def test_excel_mixed_units_unknown_functions_and_constant_results_stay_honest(snapshot):
     store,ds,_=snapshot
     out=analyze_table(store,ds,['price','stock'],'SELECT value FROM data')
-    assert assert_binding(out)['column_metadata'][0]['unit']['status']=='mixed'
+    mixed=assert_binding(out)['column_metadata'][0]['unit']
+    assert mixed['status']=='mixed'
+    assert len(mixed['source_units'])==2
+    assert len(mixed['evidence'])==2
+    for expression in ('SUM(value)', 'AVG(value)', 'CAST(value AS DOUBLE)',
+                       'ROUND(value * 2 / 3, 2)', '-value'):
+        aggregated=analyze_table(store,ds,['price','stock'],'SELECT '+expression+' AS total FROM data')
+        unit=assert_binding(aggregated)['column_metadata'][0]['unit']
+        assert unit['status']=='mixed'
+        assert unit['source_units']==mixed['source_units']
+        assert unit['evidence']==mixed['evidence']
+        assert unit['reason']==mixed['reason']
     out=analyze_table(store,ds,['price'],'SELECT 9 AS invented,value,source_cell FROM data')
     c=assert_binding(out)
     assert [x['dependency']['kind'] for x in c['column_metadata']][:2]==['constant_label','source_value']

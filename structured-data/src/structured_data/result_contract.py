@@ -139,6 +139,24 @@ def source_column(name, index, logical_type, *, unit=None, dependency=None, disp
                 unit=deepcopy(unit or unknown_unit()))
 
 
+def mixed_unit(units, reason):
+    """Keep incompatible declarations and their evidence visible to consumers."""
+    evidence, symbols, reasons = [], [], []
+    for unit in units:
+        for entry in unit.get('evidence', []):
+            if entry not in evidence:
+                evidence.append(deepcopy(entry))
+        for symbol in [*unit.get('source_units', []), unit.get('symbol')]:
+            if symbol and symbol not in symbols:
+                symbols.append(symbol)
+        for entry in [*unit.get('source_reasons', []), unit.get('reason')]:
+            if entry and entry != reason and entry not in reasons:
+                reasons.append(entry)
+    return dict(status='mixed', evidence_level='none', binding_scope='result_column',
+                evidence=evidence, source_units=symbols, reason=reason,
+                **({'source_reasons': reasons} if reasons else {}))
+
+
 def sql_execution(sql, engine_version, numeric_semantics):
     return dict(kind='sql', engine='duckdb', engine_version=engine_version,
                 numeric_semantics=numeric_semantics,
@@ -162,11 +180,11 @@ def excel_value_unit(series, source_sha256):
         sheet=s.get('sheet'), header_cells=s.get('header_cells', []),
         binding_scope='imported_series_declaration', original_annotation_verified=False)],
         level='imported_series_metadata') for sid, s in series.items()]
+    symbols = {u['symbol'] for u in units if u['status'] in ('declared', 'derived')}
+    if len(symbols) > 1:
+        return mixed_unit(units, 'Loaded value column contains different series units; SQL predicates are not unit bindings')
     if not units or any(u['status'] == 'unknown' for u in units):
         return unknown_unit('At least one loaded series has no unit declaration')
-    if len({u['symbol'] for u in units}) != 1:
-        return dict(status='mixed', evidence_level='none', binding_scope='result_column',
-                    evidence=[], reason='Loaded value column contains different series units; SQL predicates are not unit bindings')
     result = deepcopy(units[0])
     result['evidence'] = [e for u in units for e in u['evidence']]
     return result

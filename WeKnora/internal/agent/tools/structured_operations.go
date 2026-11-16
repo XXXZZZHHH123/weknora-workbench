@@ -79,6 +79,9 @@ func NewStructuredReadOperationTools(base *StructuredDataTool, data map[string]a
 		if len(description) > 4096 {
 			description = description[:4096]
 		}
+		if name == "query_series" || name == "analyze_table" || name == "query_pdf_table" {
+			description += structuredChartLabelInstructions
+		}
 		keys := make(map[string]bool, len(properties))
 		for key := range properties {
 			keys[key] = true

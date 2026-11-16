@@ -13,6 +13,7 @@ import (
 const (
 	toolProgressReplanRounds = 3
 	toolProgressStopRounds   = 6
+	maxChartRenderFailures   = 4
 	maxToolProgressKeys      = 4096
 
 	sourceProgressStalledFallback = "本轮读取和纠错未取得新证据，已停止重复尝试，尚未完成回答。"
@@ -23,10 +24,12 @@ const (
 // completeness classifier. Only actual source content/metadata and technical
 // tool outcomes participate; a model's claim of progress never resets it.
 type toolProgressGuard struct {
-	seen      map[[sha256.Size]byte]struct{}
-	stale     int
-	warned    bool
-	saturated bool
+	seen             map[[sha256.Size]byte]struct{}
+	stale            int
+	warned           bool
+	saturated        bool
+	renderFailures   int
+	structuredCharts bool
 }
 
 type toolProgressObservation struct {
@@ -34,11 +37,12 @@ type toolProgressObservation struct {
 	StaleRounds int
 	Replan      bool
 	Stop        bool
+	RenderLimit bool
 }
 
 func (g *toolProgressGuard) observe(calls []types.ToolCall) toolProgressObservation {
 	var out toolProgressObservation
-	if len(calls) == 0 || g.saturated {
+	if len(calls) == 0 {
 		return out
 	}
 	if g.seen == nil {
@@ -46,7 +50,17 @@ func (g *toolProgressGuard) observe(calls []types.ToolCall) toolProgressObservat
 	}
 	otherProgress, sourceAttempt := false, false
 	for _, call := range calls {
-		tracked := toolProgressOperation(call.ExecutionName())
+		g.structuredCharts = g.structuredCharts || call.ExecutionName() == renderChartToolName || structuredProgressOperation(call)
+		if call.ExecutionName() == "render_chart" && call.ExecutionArgs()["operation"] == "render" {
+			if !savedChartProgress(call) {
+				g.renderFailures++
+			}
+		}
+		if call.Result != nil && call.Result.Data["terminal_reason"] == "chart_render_failure_limit" {
+			g.renderFailures = max(g.renderFailures, maxChartRenderFailures)
+		}
+		out.RenderLimit = g.renderFailures >= maxChartRenderFailures
+		tracked := toolProgressOperation(call.ExecutionName()) || structuredProgressOperation(call)
 		sourceAttempt = sourceAttempt || tracked
 		if call.Result == nil || !call.Result.Success {
 			continue
@@ -60,6 +74,9 @@ func (g *toolProgressGuard) observe(calls []types.ToolCall) toolProgressObservat
 			continue
 		}
 		for _, key := range keys {
+			if g.saturated {
+				continue
+			}
 			if _, exists := g.seen[key]; exists {
 				continue
 			}
@@ -68,11 +85,14 @@ func (g *toolProgressGuard) observe(calls []types.ToolCall) toolProgressObservat
 				// a stall in a legitimately large task.
 				g.saturated = true
 				g.stale, g.warned = 0, false
-				return out
+				break
 			}
 			g.seen[key] = struct{}{}
 			out.NewEvidence++
 		}
+	}
+	if g.saturated {
+		return out
 	}
 	if !sourceAttempt && !otherProgress {
 		// Failures of external jobs, writes or other workflows remain under
@@ -95,7 +115,7 @@ func (g *toolProgressGuard) observe(calls []types.ToolCall) toolProgressObservat
 func toolProgressOperation(name string) bool {
 	switch name {
 	case "read_document", "search_knowledge", "bind_document_scope", "list_documents", expandTaskToolsName,
-		"calculate_document_table", "calculate_source_values", "analyze_document_tables":
+		"calculate_document_table", "calculate_source_values", "analyze_document_tables", "render_chart":
 		return true
 	default:
 		return false
@@ -104,7 +124,12 @@ func toolProgressOperation(name string) bool {
 
 func toolProgressEvidence(call types.ToolCall) ([][sha256.Size]byte, bool) {
 	name := call.ExecutionName()
+	if structuredProgressOperation(call) {
+		return structuredProgressKeys(call), true
+	}
 	switch name {
+	case "render_chart":
+		return chartProgressKeys(call), true
 	case "read_document", "search_knowledge":
 		var keys [][sha256.Size]byte
 		for _, field := range []string{"chunks", "results"} {

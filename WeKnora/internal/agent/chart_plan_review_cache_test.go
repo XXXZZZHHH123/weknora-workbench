@@ -267,23 +267,30 @@ func TestChartReviewCachedDecisionStillRequiresCurrentMappedSourceAndPrivateDeli
 	require.Empty(t, tool.receipts)
 	require.Len(t, model.seen, 1)
 	args["x_type"] = "time"
+	// Each independent security probe has its own render failure budget; the
+	// original tool retains the cached decision and its real failure count.
+	securityAttempt := func(probeCtx context.Context, probeArgs map[string]any) *types.ToolResult {
+		probe := newRenderChartTool(ctx, func() []types.AgentStep { return state.RoundSteps }, writer, "session", "message")
+		probe.reviewPlan, probe.mapped = tool.reviewPlan, tool.mapped
+		return chartRun(t, probe, probeCtx, probeArgs)
+	}
 	// None of these execution failures can borrow the valid axis decision.
 	args["source_id"] = "chart-source-forged"
-	require.False(t, chartRun(t, tool, ctx, args).Success)
+	require.False(t, securityAttempt(ctx, args).Success)
 	args["source_id"] = id
 	originalSteps := state.RoundSteps
 	state.RoundSteps = nil
-	require.False(t, chartRun(t, tool, ctx, args).Success)
+	require.False(t, securityAttempt(ctx, args).Success)
 	state.RoundSteps = originalSteps
 	data := state.RoundSteps[0].ToolCalls[0].Result.Data
 	record := data["record_sha256"]
 	data["record_sha256"] = strings.Repeat("ef", 32)
-	require.False(t, chartRun(t, tool, ctx, args).Success)
+	require.False(t, securityAttempt(ctx, args).Success)
 	data["record_sha256"] = record
 	otherOwner := context.WithValue(ctx, types.UserIDContextKey, "another-user")
 	otherOwner = types.WithPrincipal(otherOwner, types.Principal{Type: types.PrincipalWebUser, ID: "another-user"})
 	require.NotEqual(t, types.SessionOwnerIDFromContext(ctx), types.SessionOwnerIDFromContext(otherOwner))
-	require.False(t, chartRun(t, tool, otherOwner, args).Success)
+	require.False(t, securityAttempt(otherOwner, args).Success)
 	args["x_type"] = "numeric"
 	require.False(t, chartRun(t, tool, ctx, args).Success, "the renderer must still reject an ineligible encoding before consulting the cached decision")
 	args["x_type"] = "time"

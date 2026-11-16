@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -15,7 +16,15 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
-type finalAnswerOptions struct{ preliminary bool }
+type finalAnswerOptions struct {
+	preliminary bool
+	stopReason  string
+}
+
+const toolStopSynthesisBudget = 60 * time.Second
+
+type toolStopSynthesisDeadlineKey struct{}
+type toolStopReasonKey struct{}
 
 // streamFinalAnswerToEventBus streams the final answer generation through EventBus
 func (e *AgentEngine) streamFinalAnswerToEventBus(
@@ -63,6 +72,10 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		"language and format. Do not claim that an unperformed action " +
 		"succeeded.\"}</runtime_event>"
 	preliminary := len(options) > 0 && options[0].preliminary
+	if len(options) > 0 && options[0].stopReason != "" {
+		runtimeNotice += "\n<tool_execution_stopped>" + options[0].stopReason +
+			" Tools are disabled. Give a useful written answer based on successful results already obtained, retaining the exact source labels and units. Explain the actual unresolved chart or source error using the tool diagnostics; distinguish saved charts from failed renders. Missing delivery is a limitation to report, not a reason to withhold supported text. Never invent observations, labels, units, calculations, citations or a successful chart.</tool_execution_stopped>"
+	}
 	if preliminary {
 		runtimeNotice += "\n" + standardAnswerBudgetNotice
 	}
@@ -305,8 +318,38 @@ func (e *AgentEngine) handleMaxIterations(
 		"max":        e.config.MaxIterations,
 	})
 
-	// Stream final answer generation through EventBus
-	if err := e.streamFinalAnswerToEventBus(ctx, query, state, sessionID, messages); err != nil {
+	return e.finishToolStoppedAnswer(ctx, query, state, sessionID, messages, "The iteration budget has been exhausted.")
+}
+
+// Every completed tool resource boundary enters the same no-tool synthesis and
+// existing candidate checks. A chart task does not qualify for the ordinary
+// text-only deadline, so give this exceptional phase its own shared ceiling.
+// Commit timeout/error fallbacks using the still-live parent context; the
+// phase's expired child context cannot publish an answer.
+func (e *AgentEngine) finishToolStoppedAnswer(
+	ctx context.Context, query string, state *types.AgentState, sessionID string, messages []chat.Message, reason string,
+) error {
+	if e.collaboration != nil && e.collaboration.Child == nil && e.collaborationOwnsFailure(ctx) {
+		if err := e.executionLeaseError(ctx); err != nil {
+			return err // An expired/replaced owner may not generate or publish.
+		}
+		status, err := e.interruptDelegatesForFinalSynthesis(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				e.commitTerminalResult(ctx, state, sessionID, answerReviewUnavailableFallback, "", "failed", false)
+			}
+			return err
+		}
+		reason += " Remaining child executions were interrupted; their unfinished work is not a completed result. Actual child states: " + status
+	}
+	ctx = context.WithValue(ctx, toolStopReasonKey{}, reason)
+	deadline, ok := ctx.Value(toolStopSynthesisDeadlineKey{}).(time.Time)
+	if !ok {
+		deadline = time.Now().Add(toolStopSynthesisBudget)
+	}
+	finalCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	if err := e.streamFinalAnswerToEventBus(finalCtx, query, state, sessionID, messages, finalAnswerOptions{stopReason: reason}); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -315,10 +358,54 @@ func (e *AgentEngine) handleMaxIterations(
 			"error": err.Error(),
 		})
 		e.commitTerminalResult(ctx, state, sessionID, answerReviewUnavailableFallback, "", "failed", false)
-		return fmt.Errorf("failed to synthesize final answer after max iterations: %w", err)
+		return fmt.Errorf("failed to synthesize final answer after tool execution stopped: %w", err)
+	}
+	if strings.TrimSpace(state.FinalAnswer) == "" {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// The child deadline may expire between the last candidate check and
+		// terminal commit. It must not leave an apparently complete empty turn.
+		e.commitTerminalResult(ctx, state, sessionID, answerReviewUnavailableFallback, "", "failed", false)
+		return fmt.Errorf("final synthesis ended without a committed answer")
 	}
 	state.IsComplete = true
 	return nil
+}
+
+// Interrupt each owned child while retaining the parent's active execution
+// lease for the no-tool final answer. Cancelling the whole group here would
+// cancel that lease and reproduce the empty-parent-answer failure. End still
+// owns group cleanup after terminal publication.
+func (e *AgentEngine) interruptDelegatesForFinalSynthesis(ctx context.Context) (string, error) {
+	b := e.collaboration
+	members, err := b.List(b.Context(ctx), "")
+	if err != nil {
+		return "", fmt.Errorf("cannot inspect delegated work before final synthesis: %w", err)
+	}
+	for _, member := range members {
+		if member.PreviousTurn {
+			continue
+		}
+		switch member.Status {
+		case "queued", "running", "waiting":
+			if err := b.Runtime.Interrupt(b.Context(ctx), b.Scope, member.ID, member.RunID); err != nil {
+				return "", fmt.Errorf("cannot interrupt unfinished delegated work: %w", err)
+			}
+		}
+	}
+	members, err = b.List(b.Context(ctx), "")
+	if err != nil {
+		return "", fmt.Errorf("cannot inspect interrupted delegated work: %w", err)
+	}
+	status := []map[string]any{}
+	for _, member := range members {
+		if !member.PreviousTurn {
+			status = append(status, map[string]any{"task": member.Name, "state": member.Status, "cancel_requested": member.CancelRequested})
+		}
+	}
+	encoded, err := json.Marshal(status)
+	return string(encoded), err
 }
 
 // emitCompletionEvent emits the EventAgentComplete event with execution summary.

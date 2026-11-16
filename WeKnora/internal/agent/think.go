@@ -211,6 +211,9 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 	hasImageObservations := false
 	var evidenceReader *reviewEvidenceReader
 	inputData := map[string]any{"current_user_question": query, "candidate_answer": content, "recent_conversation": contextRows, "omitted_conversation_messages": omittedConversation, "conversation_notice": "Conversation resolves user intent and references; prior assistant claims are not source facts.", "execution_evidence": execution}
+	if reason, ok := ctx.Value(toolStopReasonKey{}).(string); ok {
+		inputData["runtime_tool_execution_stop"] = map[string]any{"reason": reason, "tools_disabled": true, "notice": "This records an actual runtime boundary, not new source evidence or completion. A supported written answer may state the truthful bounded blocker; claims, numbers, source identity and requested delivery still require their ordinary checks."}
+	}
 	if coverage := e.taskCoverageReview(state); coverage != nil {
 		inputData["task_coverage"] = coverage
 	}
@@ -921,8 +924,58 @@ func (e *AgentEngine) streamLLMToEventBusWithModel(
 	// than stripping escaped tags or injecting unescaped canonical tags into
 	// the still-serialized envelope. Tool arguments are decoded as usual.
 	bufferReviewedAnswer := opts != nil && (isReviewedAnswerFormat(opts.Format) || isStructuredResultReviewFormat(opts.Format) || isDiscoveryDeliveryReviewFormat(opts.Format))
+	receivedTerminal := false
+	cancelledDrainChunks := 0
 
-	for chunk := range stream {
+	// Do not depend on a provider closing its channel after cancellation. A
+	// final synthesis deadline (or the stream watchdog) must also bound a
+	// provider which keeps the channel open without sending a terminal chunk.
+streamLoop:
+	for {
+		var chunk types.StreamResponse
+		select {
+		case <-llmCtx.Done():
+			// A response can arrive in the same boundary as cancellation. Drain
+			// already-delivered chunks before returning so usage, completed tool
+			// arguments and their undelivered trace survive that race. Do not
+			// wait for a provider to close an otherwise silent open channel.
+			if cancelledDrainChunks >= 64 {
+				if receivedTerminal {
+					break streamLoop
+				}
+				return result, llmCtx.Err()
+			}
+			select {
+			case next, open := <-stream:
+				if !open {
+					break streamLoop
+				}
+				chunk = next
+			default:
+				if receivedTerminal {
+					break streamLoop
+				}
+				if stalled.Load() && ctx.Err() == nil {
+					return result, fmt.Errorf("LLM stream stalled: no output for %s", stallTimeout)
+				}
+				return result, llmCtx.Err()
+			}
+		case next, open := <-stream:
+			if !open {
+				break streamLoop
+			}
+			chunk = next
+		}
+		if llmCtx.Err() != nil {
+			cancelledDrainChunks++
+			if cancelledDrainChunks > 64 {
+				if receivedTerminal {
+					break streamLoop
+				}
+				return result, llmCtx.Err()
+			}
+		}
+		receivedTerminal = receivedTerminal || chunk.Done
 		lastChunkAt.Store(time.Now().UnixNano())
 		chunkCount++
 		if chunkCount == 1 {

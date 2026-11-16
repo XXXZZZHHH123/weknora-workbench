@@ -271,15 +271,17 @@ func (tool *repeatedDocumentProgressTool) Execute(context.Context, json.RawMessa
 	return progressDocumentCall("chunk-a", "Original evidence body", 0).Result, nil
 }
 
-func TestExecuteLoopBoundsSourceStallWithoutAnotherSynthesis(t *testing.T) {
+func TestExecuteLoopBoundsSourceStallWithCheckedNoToolSynthesis(t *testing.T) {
 	var responses []mockResponse
-	for index := 0; index < 25; index++ {
+	for index := 0; index < 1+toolProgressStopRounds; index++ {
 		responses = append(responses, mockResponse{chunks: []types.StreamResponse{{
 			ResponseType: types.ResponseTypeAnswer, Done: true, FinishReason: "tool_calls",
 			ToolCalls: []types.LLMToolCall{{ID: fmt.Sprintf("call-%d", index), Type: "function",
 				Function: types.FunctionCall{Name: "read_document", Arguments: `{}`}}},
 		}}})
 	}
+	const answer = "The available evidence is limited to the supplied source; the remaining scope has not been read."
+	responses = append(responses, chatAnswer(answer), completenessVerdict(true))
 	model := &mockChat{responses: responses}
 	engine := newTestEngine(t, model, func(config *types.AgentConfig) {
 		config.WorkbenchDefault, config.MaxIterations = true, 50
@@ -290,9 +292,11 @@ func TestExecuteLoopBoundsSourceStallWithoutAnotherSynthesis(t *testing.T) {
 	state, err := engine.executeLoop(context.Background(), &types.AgentState{}, "Read the supplied source", emptyMessages(), emptyTools(), "session", "message")
 	require.NoError(t, err)
 	require.True(t, state.IsComplete, "the execution settled, not semantic success")
-	require.Equal(t, sourceProgressStalledFallback, state.FinalAnswer)
+	require.Equal(t, answer, state.FinalAnswer)
 	require.Equal(t, 1+toolProgressStopRounds, tool.calls)
-	require.Len(t, model.calls, tool.calls, "stall must not open another long synthesis")
+	require.Len(t, model.calls, tool.calls+2, "stall starts one synthesis phase and the existing source check")
+	require.Equal(t, "none", model.opts[tool.calls].ToolChoice)
+	require.Empty(t, model.opts[tool.calls].Tools)
 	require.Contains(t, state.RoundSteps[toolProgressReplanRounds].Progress, "正在调整取证计划")
 	var replanned bool
 	for _, message := range model.calls[toolProgressReplanRounds+1] {
