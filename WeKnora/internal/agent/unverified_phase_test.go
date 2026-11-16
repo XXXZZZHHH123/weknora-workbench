@@ -9,12 +9,13 @@ import (
 )
 
 func TestUnverifiedCandidateEarlyReturnsCannotReplaceGroundedDraft(t *testing.T) {
+	const uncheckedClaim = "An unchecked extra number is 999."
 	for _, reason := range []string{"budget", "cancelled", "empty"} {
 		t.Run(reason, func(t *testing.T) {
 			e, state, id := unverifiedRawCitationFixture(t)
 			prior := e.turnReview.UnverifiedCandidate
 			ctx := t.Context()
-			candidate := "An unchecked extra number is 999."
+			candidate := uncheckedClaim
 			switch reason {
 			case "budget":
 				candidate += strings.Repeat(`<evidence evidence_id="`+id+`" />`, 2000)
@@ -34,7 +35,8 @@ func TestUnverifiedCandidateEarlyReturnsCannotReplaceGroundedDraft(t *testing.T)
 				e.commitTerminalResult(t.Context(), state, "session", answerReviewUnavailableFallback, "", "failed", false)
 				e.publishFinalKnowledgeReferences(t.Context(), state, "session")
 				require.True(t, strings.HasPrefix(state.FinalAnswer, prior))
-				require.NotContains(t, state.FinalAnswer, "999")
+				// Evidence IDs may contain arbitrary digit sequences; reject the unchecked claim itself.
+				require.NotContains(t, state.FinalAnswer, uncheckedClaim)
 				require.Contains(t, state.FinalAnswer, "未能完成自动核验")
 				require.Len(t, state.EvidenceRefs, 1, "the earlier real checked observation retains its private binding")
 			}
