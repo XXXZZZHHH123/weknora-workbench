@@ -126,14 +126,14 @@ func (t *structuredReadOperationTool) Execute(ctx context.Context, args json.Raw
 	}
 	var input map[string]json.RawMessage
 	if len(args) > 16384 || json.Unmarshal(args, &input) != nil || input == nil {
-		return nil, fmt.Errorf("结构化表格参数需要符合工具schema的对象")
+		return rejectToolPreflight(fmt.Errorf("结构化表格参数需要符合工具schema的对象"))
 	}
 	for key := range input {
 		if key == "knowledge_base_id" && t.base.scopeConfigured {
 			continue
 		}
 		if !t.argumentKeys[key] {
-			return nil, fmt.Errorf("结构化表格不接受未声明参数 %q", key)
+			return rejectToolPreflight(fmt.Errorf("结构化表格不接受未声明参数 %q", key))
 		}
 	}
 	// query_series has its own aggregation argument named operation. It stays
@@ -145,7 +145,7 @@ func (t *structuredReadOperationTool) Execute(ctx context.Context, args json.Raw
 	}
 	wrapped, err := json.Marshal(envelope)
 	if err != nil {
-		return nil, fmt.Errorf("结构化表格参数格式无效")
+		return rejectToolPreflight(fmt.Errorf("结构化表格参数格式无效"))
 	}
 	result, err := t.base.Execute(withStructuredInvocation(ctx, executionDescriptor), wrapped)
 	if result != nil {

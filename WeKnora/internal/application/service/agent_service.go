@@ -1493,7 +1493,8 @@ func (s *agentService) registerTools(
 			).WithContextImages(config.ChatModelSupportsVision).WithWikiPageService(s.wikiPageService)
 		case tools.ToolReadDocument:
 			reader := tools.NewReadDocumentTool(s.knowledgeService, s.chunkService, config.SearchTargets).
-				WithWikiPageService(s.wikiPageService)
+				WithWikiPageService(s.wikiPageService).
+				WithDocumentSearch(tools.NewSearchKnowledgeTool(s.knowledgeBaseService, s.knowledgeService, s.chunkService, config.SearchTargets, rerankModel, s.cfg))
 			if images, ok := s.knowledgeBaseService.(interface {
 				ReadDocumentImage(context.Context, *types.Knowledge, string) ([]byte, error)
 			}); ok {

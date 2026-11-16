@@ -391,11 +391,11 @@ type bindDocumentScopeTool struct {
 func (t *bindDocumentScopeTool) Execute(ctx context.Context, args json.RawMessage) (*types.ToolResult, error) {
 	var plan DocumentScopePlan
 	if json.Unmarshal(args, &plan) != nil {
-		return &types.ToolResult{Success: false, Error: "来源计划格式无效"}, nil
+		return &types.ToolResult{PreflightRejected: true, Success: false, Error: "来源计划格式无效"}, nil
 	}
 	metadata, err := t.state.bind(ctx, plan, t.service, t.targets)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error()}, nil
+		return &types.ToolResult{PreflightRejected: true, Success: false, Error: err.Error()}, nil
 	}
 	data := map[string]any{"display_type": "document_info", "documents": metadata, "source_plan_validated": true, "notice": "已核验实际文件身份及声明的日期证据；这是来源选择，不是图表内容。page/pages 是可调整的读取计划；仅 user_page_constraint 是已验证用户页码限制。请读取实际证据，不混用其他报告。"}
 	encoded, _ := json.Marshal(data)

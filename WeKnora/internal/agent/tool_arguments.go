@@ -41,6 +41,6 @@ func toolArgumentFailure(tc types.LLMToolCall, err error) types.ToolCall {
 	encoded, _ := json.Marshal(data)
 	return types.ToolCall{
 		ID: tc.ID, Name: tc.Function.Name, Args: map[string]any{"_raw": tc.ModelArguments}, ProviderMetadata: tc.ProviderMetadata,
-		Result: &types.ToolResult{Success: false, Error: err.Error(), Output: string(encoded), Data: data},
+		Result: &types.ToolResult{PreflightRejected: true, Success: false, Error: err.Error(), Output: string(encoded), Data: data},
 	}
 }

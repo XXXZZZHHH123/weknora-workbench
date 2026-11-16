@@ -282,3 +282,21 @@ Go 测试仅使 go.mod 中 sqlite3 移除 indirect 标记，go.sum 未改，留�
 还原。未运行 application/service 的既有环境问题测试，未执行 Git 写操作或
 服务操作；Git 索引仍待交接人暂存冲突解决并完成合并。私有项目记忆目录
 当前不存在，未同步该目录的 PROGRESS.md。
+
+### 2026-11-16 文档零命中、取证轮数与覆盖补读的增量边界
+
+字面零命中后的召回仅复用模型原 query，限定同一已授权文档及当前绑定范围，使用现有搜索身份链路返回真实原始分块；未按问题词、商品、文件、日期、列号或答案扩展查询。字面结果与语义召回分别标识，召回不可用及未覆盖状态保留，未将召回当作完整性判定。真实分块版本、正文哈希及字符投影沿用读取与检索统一身份，未知、越界或缺原始见证不能伪造成正常读取。
+
+工具轮数按本地执行协议区分前置拒绝与实际业务执行，未知旧结果保守计入；时间、停滞与迭代限制仍有效。覆盖恢复由审核模型识别缺口，再由一次仅限读取的模型轮选择真实来源位置，程序只核验本轮已发现文档、四次上限、不可重新绑定及共享收尾时间。来源选择不从审核反馈文字抽取关键词或ID，不由固定业务规则决定；没有放宽授权、页范围、来源身份、引用或数值门禁，也不增加候选修复额度。
+
+本节仅限定此次增量；隔离构造测试、私有旧轨迹定位、真实模型验收及部署状态分别记录，不能据此宣称历史整条链路已完全符合约束。本次不做 Git 写操作，不启动或重启服务，不操作开发及生产端口。私有项目记忆目录不存在，未更新该目录的 PROGRESS.md。
+
+此次离线验证（使用任务指定 Go 环境，源码基线 eab13900 + fix/qa-coverage-recovery 未提交改动）：
+
+- `go test -json -tags sqlite_fts5 -p 1 -count=1 ./internal/agent/... ./internal/modelcontext/... ./internal/types/...` 最终 exit 0：13 包通过，6,472 个测试项（含子测试）通过、9 项跳过。8 项为未启用的真实模型或私有夹具验收，另 1 项为缺少 uv 的 Python 包恢复环境分支。
+- 首次沙箱执行因既有 httptest 临时 socket 权限不足失败；自动审批首次超时，重试获准。首次放开临时 socket 的全量复验中，两项旧测试仍要求前置拒绝返回 nil，已改为检查显式失败标记，并保留/加强空正文、无来源元数据、无后端执行及修正后可执行的断言，随后重新跑上述全量命令通过。
+- `go test -tags sqlite_fts5 -p 1 -count=1 ./internal/agent/tools -run 'TestReadDocument(ZeroLiteral|Recall)'` 通过：同文档召回、最多五块、版本/定位/正文投影、不可用（含适配器 panic）、授权/绑定/租户反例及续读。agent 的 `TestFinalCoverage|TestFinalSynthesisCoverage` 聚焦通过，最终全量也覆盖拒绝超限批次、未知文档、改绑、实际截止不足、重复补读、真实正文登记和强制无工具收尾。
+- `go test -tags sqlite_fts5 -p 1 -count=1 ./internal/application/service ./internal/mcpserver -run '^$'` 编译通过；service 的 `TestRegisterTools(DefaultSurface|MapsRetiredRetrievalToolsToSuccessors|KeepsDocumentReadersForWikiOnlyScope)` 三项和 MCP 的 `TestMCPReadDocument` 四项聚焦通过。未运行 service 全包的已知 SSRF 假 IP 与历史消息分页环境失败项。
+- gofmt 和 `git diff --check` 通过。指定 `-mod=mod` 仅使 go.mod 中 sqlite3 移除 indirect 标记，go.sum 未改，未还原该差异。没有新增 docs 文件；未执行 Git 写操作、真实模型业务题复现、服务构建或部署，也未操作 18190/18090。
+
+保守边界：整文档召回只用于完整字面零命中，正则、分页后缀和物理页内查询不跨页扩展；补读模型轮只接受已发现的文档 ID，不开放图片或重新绑定。未显式标记的旧工具失败仍计取证轮，避免把不明失败当成免费重试。两项预算保护的改动不代表必定补齐所有内容或保证业务模型回答正确，真实模型验收仍未执行。

@@ -12,7 +12,9 @@ import (
 )
 
 func TestDiscoveryCoverageExecutionScopeAndRepeatIsolation(t *testing.T) {
+	requests := 0
 	base := nativeReadTestTool(t, func(w http.ResponseWriter, r *http.Request) {
+		requests++
 		_, _ = io.WriteString(w, `{"dataset_id":"aaaaaaaaaaaaaaaaaaaaaaaa","series":[],"offset":0,"next_offset":null,"truncated":false,"total":0}`)
 	})
 	base.BindSourceQuestion("Explain the report's trend using available sources")
@@ -38,9 +40,18 @@ func TestDiscoveryCoverageExecutionScopeAndRepeatIsolation(t *testing.T) {
 	}
 	base.BindSourceQuestion("New turn")
 	require.Equal(t, false, query("temperature", 0).Data["discovery_coverage"].(map[string]any)["unchanged_repeat"])
+	beforeDenied := requests
 	denied, err := base.Execute(context.Background(), json.RawMessage(`{"operation":"list_series","arguments":{}}`))
 	require.Error(t, err)
-	require.Nil(t, denied, "unauthenticated requests cannot receive source metadata")
+	require.NotNil(t, denied)
+	require.False(t, denied.Success)
+	require.True(t, denied.PreflightRejected)
+	require.EqualError(t, err, denied.Error)
+	require.Nil(t, denied.Data, "unauthenticated requests cannot receive source or protocol metadata")
+	require.Empty(t, denied.Output)
+	require.Empty(t, denied.Images)
+	require.Empty(t, denied.OutputFiles)
+	require.Equal(t, beforeDenied, requests, "unauthenticated requests must never reach the backend")
 }
 
 func TestPDFLocationRecoveryRequiresAuthorizedReadAndNeverInventsPage(t *testing.T) {

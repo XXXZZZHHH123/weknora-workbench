@@ -414,6 +414,11 @@ type Cleanable interface {
 
 // ToolResult represents the result of a tool execution
 type ToolResult struct {
+	// PreflightRejected is set only by trusted local validation when no source
+	// operation ran (invalid arguments, authorization or source-plan refusal).
+	// Unknown/legacy outcomes remain false and conservatively consume a round.
+	PreflightRejected bool `json:"preflight_rejected,omitempty"`
+
 	// OutputFiles holds sandbox references for this live result only. History
 	// uses the final answer's persistent resource references instead.
 	// A non-nil empty slice means output inspection found no eligible changes;

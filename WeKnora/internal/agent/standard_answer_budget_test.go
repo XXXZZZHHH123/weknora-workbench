@@ -206,3 +206,45 @@ func TestStandardAnswerBudgetFinalSynthesisMarksUnmatchedNumbersAndRejectsInvali
 		require.Empty(t, e.finalAnswerKnowledgeReferences(state))
 	})
 }
+
+func TestStandardAnswerBudgetCountsExecutedBatchesAndPreservesRefusalLimits(t *testing.T) {
+	e, state := standardBudgetFixture(t)
+	state.RoundSteps = state.RoundSteps[:standardAnswerToolRounds-1]
+	refused := types.ToolCall{Name: agenttools.ToolReadDocument, Result: &types.ToolResult{
+		PreflightRejected: true, Success: false, Error: "synthetic source-plan refusal",
+	}}
+	var progress toolProgressGuard
+	for i := 0; i < toolProgressStopRounds; i++ {
+		state.RoundSteps = append(state.RoundSteps, types.AgentStep{Iteration: len(state.RoundSteps), ToolCalls: []types.ToolCall{refused, refused}})
+		state.CurrentRound = len(state.RoundSteps) - 1
+		observation := progress.observe([]types.ToolCall{refused, refused})
+		require.Equal(t, i+1, observation.StaleRounds, "refusals remain visible to the unchanged stagnation guard")
+		require.Equal(t, i+1 >= toolProgressStopRounds, observation.Stop)
+		require.Empty(t, e.standardAnswerBudgetReason(t.Context(), state, time.Now()), "wholly refused parallel batches do not consume evidence rounds")
+	}
+	require.Equal(t, "active_time", e.standardAnswerBudgetReason(t.Context(), state, time.Now().Add(-61*time.Second)))
+	ctx := context.WithValue(t.Context(), agentExecutionStartKey{}, time.Now().Add(-61*time.Second))
+	_, cancel, err := e.standardAnswerModelContext(ctx, state)
+	defer cancel()
+	require.ErrorIs(t, err, errStandardAnswerModelBudget, "refused batches do not replenish model active time")
+
+	for _, success := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mixed_batch_success_%t", success), func(t *testing.T) {
+			mixed := *state
+			mixed.RoundSteps = append(append([]types.AgentStep{}, state.RoundSteps...), types.AgentStep{Iteration: len(state.RoundSteps), ToolCalls: []types.ToolCall{
+				refused, {Name: agenttools.ToolReadDocument, Result: &types.ToolResult{Success: success, Error: "synthetic business result"}},
+			}})
+			mixed.CurrentRound = len(mixed.RoundSteps) - 1
+			require.Equal(t, "tool_rounds", e.standardAnswerBudgetReason(t.Context(), &mixed, time.Now()), "a success or business failure counts the mixed batch exactly once")
+		})
+	}
+}
+
+func TestStandardAnswerBudgetEntirelyRefusedStillHasActiveTimeBoundary(t *testing.T) {
+	e, state := standardBudgetFixture(t)
+	state.RoundSteps = state.RoundSteps[:1]
+	state.CurrentRound = 0
+	state.RoundSteps[0].ToolCalls[0].Result = &types.ToolResult{PreflightRejected: true, Error: "synthetic parameter refusal"}
+	require.Empty(t, e.standardAnswerBudgetReason(t.Context(), state, time.Now()))
+	require.Equal(t, "active_time", e.standardAnswerBudgetReason(t.Context(), state, time.Now().Add(-61*time.Second)), "zero evidence rounds still consume active time")
+}

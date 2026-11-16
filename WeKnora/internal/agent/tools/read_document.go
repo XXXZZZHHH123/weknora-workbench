@@ -39,9 +39,10 @@ var readDocumentTool = BaseTool{
 		"Choose the figure from its actual source labels/context; text labels and image URLs alone do not reveal curves or their colors. " +
 		"Returned originals are delivered to a vision model or the configured separate image reader; report estimates and unclear overlaps honestly.\n" +
 		"For numeric traces in supported original vector charts, explicitly select image_mode=geometry with images and exact image_series legend identifiers. This verifies original source geometry without rasterizing or visually inspecting pixels; use image_mode=pixels (the default) when visual inspection is required.\n" +
-		"query finds passages inside the document: matching chunks come back with one chunk of context on each " +
+		"query is a literal text filter, not topic retrieval: matching chunks come back with one chunk of context on each " +
 		"side. By default query is case-insensitive and split on whitespace: a chunk matches when it contains " +
 		"every word, in any order. Set regex=true to match query as one POSIX regular expression instead. " +
+		"For topic or paraphrase lookup, prefer search_knowledge with document_ids or read physical pages. A complete literal scan with zero matches may return a few semantic neighbours from the same authorized document; these are not literal matches or proof of coverage. " +
 		"When a query result is truncated, repeat it with offset=next_offset to get the following matches.\n" +
 		"Page through long documents with offset and limit: offset counts chunks in reading order from 0 and is " +
 		"not a chunk index, so continue with the returned next_offset, and use id=chunk://N with context to read around " +
@@ -92,7 +93,7 @@ var readDocumentTool = BaseTool{
     },
     "query": {
       "type": "string",
-      "description": "Words a chunk must all contain; returns matching chunks with context instead of a page"
+      "description": "Literal, case-insensitive words a chunk must all contain; not topic retrieval. Prefer search_knowledge(document_ids=...) or physical pages for topics. A complete zero-match scan may return same-document semantic neighbours, without implying coverage."
     },
     "regex": {
       "type": "boolean",
@@ -164,6 +165,7 @@ type ReadDocumentTool struct {
 	figureReader         DocumentFigureReader
 	originalImageCatalog DocumentOriginalImageCatalog
 	wikiPageService      interfaces.WikiPageService
+	documentSearch       *SearchKnowledgeTool
 }
 
 // WithImageReader wires the existing authorized document-image storage reader.
@@ -179,6 +181,12 @@ func (t *ReadDocumentTool) WithDocumentConstraint(constraint *RequestedDocumentC
 
 func (t *ReadDocumentTool) WithWikiPageService(service interfaces.WikiPageService) *ReadDocumentTool {
 	t.wikiPageService = service
+	return t
+}
+
+// WithDocumentSearch enables zero-match recovery through the shared authorized search pipeline.
+func (t *ReadDocumentTool) WithDocumentSearch(search *SearchKnowledgeTool) *ReadDocumentTool {
+	t.documentSearch = search
 	return t
 }
 
@@ -218,19 +226,20 @@ type chunkContentSegment struct {
 func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (finalResult *types.ToolResult, finalErr error) {
 	var input ReadDocumentInput
 	if err := json.Unmarshal(args, &input); err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("Failed to parse args: %v", err)}, err
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: fmt.Sprintf("Failed to parse args: %v", err)}, err
 	}
 	if input.ImageMode != "" && input.ImageMode != "pixels" && input.ImageMode != "geometry" {
-		return &types.ToolResult{Success: false, Error: "image_mode must be pixels or geometry"}, nil
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: "image_mode must be pixels or geometry"}, nil
 	}
 	if input.ImageMode == "geometry" && len(input.Images) == 0 {
-		return &types.ToolResult{Success: false, Error: "geometry mode requires explicit images from the actual image_catalog"}, nil
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: "geometry mode requires explicit images from the actual image_catalog"}, nil
 	}
 	id := strings.TrimSpace(input.ID)
 	if id == "" {
 		return &types.ToolResult{
-			Success: false,
-			Error:   "id is required (a doc://N document handle or a chunk://N chunk handle)",
+			Success:           false,
+			PreflightRejected: true,
+			Error:             "id is required (a doc://N document handle or a chunk://N chunk handle)",
 		}, fmt.Errorf("missing id")
 	}
 	if t.knowledgeService == nil || t.chunkService == nil {
@@ -258,46 +267,46 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (f
 	}
 	query := strings.TrimSpace(input.Query)
 	if input.ContentOffset < 0 || input.ContentLimit < 0 {
-		return &types.ToolResult{Success: false, Error: "content_offset and content_limit must not be negative"}, nil
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: "content_offset and content_limit must not be negative"}, nil
 	}
 
 	knowledge, chunk, err := t.resolveTarget(ctx, id)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error()}, err
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: err.Error()}, err
 	}
 	if documentIsRetired(knowledge) {
-		return &types.ToolResult{Success: false, Error: "指定文档已删除、正在删除或已归档，不能作为查询来源"}, nil
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: "指定文档已删除、正在删除或已归档，不能作为查询来源"}, nil
 	}
 	if tenant := t.searchTargets.GetTenantIDForKB(knowledge.KnowledgeBaseID); tenant != 0 && knowledge.TenantID != 0 && tenant != knowledge.TenantID {
-		return &types.ToolResult{Success: false, Error: "document tenant does not match the authorized knowledge base scope"}, nil
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: "document tenant does not match the authorized knowledge base scope"}, nil
 	}
 	// Reject malformed navigation before a direct read can establish a source
 	// binding. The selected user-page constraint is checked again below.
 	if _, err := resolveReadPages(input, DocumentSourceSelection{}, chunk != nil); err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error()}, nil
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: err.Error()}, nil
 	}
 	if input.SourceScope != nil {
 		if t.documentConstraint == nil {
 			t.documentConstraint = NewDocumentScopeState()
 		}
 		if _, err := t.documentConstraint.bind(ctx, *input.SourceScope, t.knowledgeService, t.searchTargets); err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error()}, nil
+			return &types.ToolResult{Success: false, PreflightRejected: true, Error: err.Error()}, nil
 		}
 	}
 	selection := DocumentSourceSelection{}
 	if constraint := t.documentConstraint; constraint != nil {
 		selection, err = constraint.selectionForRead(knowledge)
 		if err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error()}, nil
+			return &types.ToolResult{Success: false, PreflightRejected: true, Error: err.Error()}, nil
 		}
 	}
 	pages, err := resolveReadPages(input, selection, chunk != nil)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error()}, nil
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: err.Error()}, nil
 	}
 	matchers, err := documentQueryMatchers(query, input.Regex)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error()}, err
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: err.Error()}, err
 	}
 	defer func() {
 		if finalErr == nil {
@@ -306,7 +315,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (f
 	}()
 	if len(pages) > 0 {
 		if query != "" && (input.ContentLimit > 0 || input.ContentOffset > 0) {
-			return &types.ToolResult{Success: false, Error: "query and chunk content segmentation are separate read modes"}, nil
+			return &types.ToolResult{Success: false, PreflightRejected: true, Error: "query and chunk content segmentation are separate read modes"}, nil
 		}
 		var segment *chunkContentSegment
 		// Every chunk+page read must select that real chunk, even when the
@@ -314,7 +323,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (f
 		if chunk != nil && query == "" {
 			segment = &chunkContentSegment{chunkID: chunk.ID, offset: input.ContentOffset, limit: input.ContentLimit}
 		} else if input.ContentLimit > 0 || input.ContentOffset > 0 {
-			return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
+			return &types.ToolResult{Success: false, PreflightRejected: true, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
 		}
 		result, readErr := t.readPhysicalPages(ctx, knowledge, pages, offset, limit, segment, query, matchers, input.Regex)
 		if result != nil && result.Success && selection.UserPages != nil && result.Data != nil {
@@ -327,7 +336,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (f
 
 	if input.ContentLimit > 0 || input.ContentOffset > 0 {
 		if chunk == nil {
-			return &types.ToolResult{Success: false, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
+			return &types.ToolResult{Success: false, PreflightRejected: true, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
 		}
 		result, err := t.readChunkContent(ctx, knowledge, chunk, input.ContentOffset, input.ContentLimit)
 		return t.finishImageRead(ctx, knowledge, input, result, err)
@@ -813,9 +822,12 @@ scan:
 		page++
 	}
 
-	data := t.buildData(knowledge, total, rows)
+	fallbackScope := map[string]any{}
+	if !regexMode && offset == 0 && !truncated && matchCount == 0 {
+		rows, fallbackScope = t.recallWithinDocument(ctx, knowledge, query)
+	}
 	rows = boundChunkRowsContent(ctx, rows)
-	data = t.buildData(knowledge, total, rows)
+	data := t.buildData(knowledge, total, rows)
 	annotateContentPagination(data, rows)
 	data["query"] = query
 	mode := "literal_all_terms_in_one_chunk"
@@ -825,6 +837,9 @@ scan:
 		scope["mode"] = "regular_expression_in_one_chunk"
 	} else {
 		scope["literal_terms"] = strings.Fields(query)
+	}
+	for key, value := range fallbackScope {
+		scope[key] = value
 	}
 	data["query_scope"] = scope
 	data["match_count"] = matchCount

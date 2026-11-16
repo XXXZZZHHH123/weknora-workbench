@@ -83,3 +83,10 @@ func FormatMatchType(mt types.MatchType) string {
 		return fmt.Sprintf("Unknown Type(%d)", mt)
 	}
 }
+
+// rejectToolPreflight records a local protocol/authority refusal before a
+// source operation starts. Service, transport and business failures keep the
+// default outcome and therefore still consume an evidence round.
+func rejectToolPreflight(err error) (*types.ToolResult, error) {
+	return &types.ToolResult{PreflightRejected: true, Success: false, Error: err.Error()}, err
+}

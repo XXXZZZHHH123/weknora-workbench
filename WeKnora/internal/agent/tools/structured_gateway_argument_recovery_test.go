@@ -24,7 +24,13 @@ func TestStructuredGatewayRejectsMisplacedOperationArgumentAndAllowsExplicitCorr
 		_, _ = io.WriteString(w, `{"kind":"structured_analysis","source_kind":"pdf_table","status":"ok","columns":["quantity"],"rows":[["7"]]}`)
 	}).WithSearchTargets(types.SearchTargets{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "kb-a", TenantID: 7}})
 	result, err := base.Execute(structuredScopeContext(), json.RawMessage(`{"operation":"query_pdf_table","knowledge_base_id":"kb-a","table_id":"pdft-fixture","arguments":{"sql":"SELECT quantity FROM data"}}`))
-	require.Nil(t, result)
+	require.NotNil(t, result)
+	require.False(t, result.Success)
+	require.True(t, result.PreflightRejected)
+	require.Nil(t, result.Data, "a rejected invocation must not return source or protocol metadata")
+	require.Empty(t, result.Output)
+	require.Empty(t, result.Images)
+	require.Empty(t, result.OutputFiles)
 	require.ErrorContains(t, err, `"table_id"`)
 	require.ErrorContains(t, err, "operation、arguments、knowledge_base_id")
 	require.ErrorContains(t, err, "schema")
@@ -39,8 +45,16 @@ func TestStructuredGatewayRejectsMisplacedOperationArgumentAndAllowsExplicitCorr
 		`{"operation":"query_pdf_table","knowledge_base_id":"kb-a","arguments":{"tenant_id":7}}`,
 	} {
 		result, err = base.Execute(structuredScopeContext(), json.RawMessage(raw))
-		require.Nil(t, result)
 		require.Error(t, err)
+		require.NotNil(t, result)
+		require.False(t, result.Success)
+		require.True(t, result.PreflightRejected)
+		require.EqualError(t, err, result.Error)
+		require.Nil(t, result.Data, "forbidden identity arguments must not expose source or protocol metadata")
+		require.Empty(t, result.Output)
+		require.Empty(t, result.Images)
+		require.Empty(t, result.OutputFiles)
+		require.Equal(t, 1, calls, "forbidden identity arguments cannot execute backend requests")
 	}
 	require.Equal(t, 1, calls)
 }

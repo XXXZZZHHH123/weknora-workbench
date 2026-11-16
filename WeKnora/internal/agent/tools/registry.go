@@ -215,7 +215,7 @@ func (r *ToolRegistry) ExecuteTool(
 	args json.RawMessage,
 ) (*types.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error()}, err
+		return &types.ToolResult{PreflightRejected: true, Success: false, Error: err.Error()}, err
 	}
 	common.PipelineInfo(ctx, "AgentTool", "execute_start", map[string]interface{}{
 		"tool": name,
@@ -228,7 +228,7 @@ func (r *ToolRegistry) ExecuteTool(
 				"tool":  name,
 				"error": msg,
 			})
-			return &types.ToolResult{Success: false, Error: msg}, nil
+			return &types.ToolResult{PreflightRejected: true, Success: false, Error: msg}, nil
 		}
 		common.PipelineError(ctx, "AgentTool", "execute_failed", map[string]interface{}{
 			"tool":  name,
@@ -245,11 +245,13 @@ func (r *ToolRegistry) ExecuteTool(
 			failed.Data["available_tools"], failed.Data["tool_directory_complete"] = names, len(names) == len(r.GetModelFunctionDefinitions())
 			encoded, _ := json.Marshal(failed.Data)
 			failed.Output = string(encoded)
+			failed.PreflightRejected = true
 			return failed, nil
 		}
 		return &types.ToolResult{
-			Success: false,
-			Error:   err.Error(),
+			PreflightRejected: true,
+			Success:           false,
+			Error:             err.Error(),
 		}, err
 	}
 
@@ -257,7 +259,9 @@ func (r *ToolRegistry) ExecuteTool(
 		// Authorization precedes schema validation: even parameter-error details
 		// must not expose another engine principal's registered tool definition.
 		if err := direct.catalog.authorize(ctx); err != nil {
-			return mcpDiscoveryFailure(err, "unavailable")
+			failed, failureErr := mcpDiscoveryFailure(err, "unavailable")
+			failed.PreflightRejected = true
+			return failed, failureErr
 		}
 	}
 	return r.execute(ctx, tool, args)
@@ -268,11 +272,11 @@ func (r *ToolRegistry) ExecuteTool(
 // validate its outer arguments or bypass the execution pipeline.
 func (r *ToolRegistry) execute(ctx context.Context, tool types.Tool, args json.RawMessage) (*types.ToolResult, error) {
 	if err := ctx.Err(); err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error()}, err
+		return &types.ToolResult{PreflightRejected: true, Success: false, Error: err.Error()}, err
 	}
 	if r.executionGuard != nil {
 		if err := r.executionGuard(ctx, tool); err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error()}, err
+			return &types.ToolResult{PreflightRejected: true, Success: false, Error: err.Error()}, err
 		}
 	}
 	name := tool.Name()
@@ -310,11 +314,13 @@ func (r *ToolRegistry) execute(ctx context.Context, tool types.Tool, args json.R
 			failed.Data["manifest_version"], failed.Data["schema_sha256"] = native.descriptor.ManifestSHA256, native.descriptor.SchemaSHA256
 			encoded, _ := json.Marshal(failed.Data)
 			failed.Output = string(encoded)
+			failed.PreflightRejected = true
 			return failed, nil
 		}
 		return &types.ToolResult{
-			Success: false,
-			Error:   errMsg,
+			PreflightRejected: true,
+			Success:           false,
+			Error:             errMsg,
 		}, nil
 	}
 
