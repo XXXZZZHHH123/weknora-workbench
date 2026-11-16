@@ -407,5 +407,8 @@ func (r *ToolRegistry) restoreStructuredManifest() (*types.ToolResult, bool) {
 func structuredProtocolFailure(code, message, stage string, started bool) *types.ToolResult {
 	data := map[string]any{"kind": "structured_protocol_error", "status": "error", "code": code, "reason_code": code, "stage": stage, "retryable": code == "manifest_unavailable" || code == "manifest_changed", "execution_started": started, "manifest_version": ""}
 	encoded, _ := json.Marshal(data)
-	return &types.ToolResult{Success: false, Error: message, Data: data, Output: string(encoded)}
+	// These are fixed protocol states that explicitly confirm execution did
+	// not start; negotiation/configuration failures remain counted attempts.
+	rejected := !started && (stage == "scope" || stage == "schema" || stage == "dispatch" || code == "manifest_changed" || code == "confirmation_already_attempted")
+	return &types.ToolResult{PreflightRejected: rejected, Success: false, Error: message, Data: data, Output: string(encoded)}
 }

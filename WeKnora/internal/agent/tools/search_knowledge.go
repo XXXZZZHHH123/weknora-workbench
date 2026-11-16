@@ -216,18 +216,24 @@ func clampSearchLimit(limit int) int {
 
 // Execute executes the search.
 func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage) (*types.ToolResult, error) {
+	return t.execute(ctx, args, nil)
+}
+
+// observe receives the authorized, scoped retrieval rows before rendering. It is
+// execution-only so callers can reuse their original hydrated chunk identities.
+func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage, observe func([]*searchResultWithMeta)) (*types.ToolResult, error) {
 	var input SearchKnowledgeInput
 	if err := json.Unmarshal(args, &input); err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("Failed to parse args: %v", err)}, err
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: fmt.Sprintf("Failed to parse args: %v", err)}, err
 	}
 
 	query := strings.TrimSpace(input.Query)
 	if query == "" {
-		return &types.ToolResult{Success: false, Error: "query is required"}, fmt.Errorf("no query provided")
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: "query is required"}, fmt.Errorf("no query provided")
 	}
 	mode, err := normalizeSearchMode(input.Mode)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error()}, err
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: err.Error()}, err
 	}
 	limit := clampSearchLimit(input.Limit)
 
@@ -235,7 +241,7 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 	searchTargets := t.searchTargets
 	if len(input.KnowledgeBaseIDs) > 0 {
 		if err := validateKnowledgeBaseIDsInSearchTargets(t.searchTargets, input.KnowledgeBaseIDs); err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error()}, err
+			return &types.ToolResult{Success: false, PreflightRejected: true, Error: err.Error()}, err
 		}
 		wanted := make(map[string]bool, len(input.KnowledgeBaseIDs))
 		for _, kbID := range input.KnowledgeBaseIDs {
@@ -251,25 +257,26 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 	}
 	if len(searchTargets) == 0 {
 		return &types.ToolResult{
-			Success: false,
-			Error:   "no knowledge base is in scope for this search",
+			Success:           false,
+			PreflightRejected: true,
+			Error:             "no knowledge base is in scope for this search",
 		}, fmt.Errorf("no search targets available")
 	}
 	if len(input.DocumentIDs) > 10 || input.Page < 0 {
-		return &types.ToolResult{Success: false, Error: "document_ids accepts at most 10 documents; page must be positive"}, nil
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: "document_ids accepts at most 10 documents; page must be positive"}, nil
 	}
 	if input.SourceScope != nil {
 		if t.documentConstraint == nil {
 			t.documentConstraint = NewDocumentScopeState()
 		}
 		if _, err := t.documentConstraint.bind(ctx, *input.SourceScope, t.knowledgeService, t.searchTargets); err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error()}, nil
+			return &types.ToolResult{Success: false, PreflightRejected: true, Error: err.Error()}, nil
 		}
 	}
 	if constraint := t.documentConstraint; constraint != nil {
 		bound := constraint.selectedIDs()
 		if len(bound) == 0 && (len(input.DocumentIDs) > 0 || input.Page > 0) {
-			return &types.ToolResult{Success: false, Error: "读取文档内容前需要明确的来源计划；请提交 source_scope 或 bind_document_scope"}, nil
+			return &types.ToolResult{Success: false, PreflightRejected: true, Error: "读取文档内容前需要明确的来源计划；请提交 source_scope 或 bind_document_scope"}, nil
 		}
 		if len(bound) > 0 {
 			if len(input.DocumentIDs) == 0 {
@@ -277,7 +284,7 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 			}
 			for _, id := range input.DocumentIDs {
 				if _, err := constraint.selection(id); err != nil {
-					return &types.ToolResult{Success: false, Error: err.Error()}, nil
+					return &types.ToolResult{Success: false, PreflightRejected: true, Error: err.Error()}, nil
 				}
 			}
 			// Model-selected page hints do not constrain later searches.
@@ -289,7 +296,7 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 					continue
 				}
 				if len(input.DocumentIDs) != 1 {
-					return &types.ToolResult{Success: false, Error: "多文档计划包含用户指定物理页；请分别读取各文档页证据后再比较"}, nil
+					return &types.ToolResult{Success: false, PreflightRejected: true, Error: "多文档计划包含用户指定物理页；请分别读取各文档页证据后再比较"}, nil
 				}
 				args, _ := json.Marshal(ReadDocumentInput{ID: id, Page: input.Page, Query: input.Query, Limit: limit})
 				return NewReadDocumentTool(t.knowledgeService, t.chunkService, searchTargets).
@@ -300,12 +307,12 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 	if len(input.DocumentIDs) > 0 {
 		searchTargets, err = restrictDocumentTargets(ctx, searchTargets, t.knowledgeService, input.DocumentIDs)
 		if err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error()}, err
+			return &types.ToolResult{Success: false, PreflightRejected: true, Error: err.Error()}, err
 		}
 	}
 	if input.Page > 0 {
 		if len(input.DocumentIDs) != 1 {
-			return &types.ToolResult{Success: false, Error: "精确页码读取需要指定唯一 document_ids；不能在多个报告之间混用页码"}, nil
+			return &types.ToolResult{Success: false, PreflightRejected: true, Error: "精确页码读取需要指定唯一 document_ids；不能在多个报告之间混用页码"}, nil
 		}
 		args, _ := json.Marshal(ReadDocumentInput{ID: input.DocumentIDs[0], Page: input.Page, Query: input.Query, Limit: limit})
 		return NewReadDocumentTool(t.knowledgeService, t.chunkService, searchTargets).
@@ -439,6 +446,9 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 		}
 	}
 
+	if observe != nil {
+		observe(final)
+	}
 	result, omitted := t.formatWithinBudget(ctx, final, kbIDs, query, mode)
 	if withheldWikiChunks > 0 {
 		result.Data["withheld_retracted_or_unverified_wiki_chunks"] = withheldWikiChunks

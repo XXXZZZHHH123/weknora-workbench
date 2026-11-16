@@ -83,7 +83,7 @@ func (t *StructuredDataTool) BindSourceConversation(question string, messages []
 func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) (result *types.ToolResult, resultErr error) {
 	caller := types.CallerFromContext(ctx)
 	if caller.TenantID == 0 || caller.UserID == "" || !caller.Role.IsValid() {
-		return nil, fmt.Errorf("结构化表格读取需要已核验的用户和空间")
+		return rejectToolPreflight(fmt.Errorf("结构化表格读取需要已核验的用户和空间"))
 	}
 	if len(t.key) < 32 || t.endpoint == "" {
 		return nil, fmt.Errorf("结构化表格服务尚未配置")
@@ -95,20 +95,20 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	}
 	var input map[string]json.RawMessage
 	if len(args) > 16384 || json.Unmarshal(args, &input) != nil || input == nil {
-		return nil, fmt.Errorf("结构化表格参数格式无效")
+		return rejectToolPreflight(fmt.Errorf("结构化表格参数格式无效"))
 	}
 	for field := range input {
 		if field != "operation" && field != "arguments" && field != "knowledge_base_id" {
-			return nil, fmt.Errorf("结构化表格不接受未声明的顶层参数 %q；顶层只允许 operation、arguments、knowledge_base_id。操作参数须按真实工具schema放在 arguments 内，或直接使用已注册的 structured_ 操作工具；不要提交账号、权限或服务配置", field)
+			return rejectToolPreflight(fmt.Errorf("结构化表格不接受未声明的顶层参数 %q；顶层只允许 operation、arguments、knowledge_base_id。操作参数须按真实工具schema放在 arguments 内，或直接使用已注册的 structured_ 操作工具；不要提交账号、权限或服务配置", field))
 		}
 	}
 	var operation string
 	var arguments map[string]json.RawMessage
 	if json.Unmarshal(input["operation"], &operation) != nil || json.Unmarshal(input["arguments"], &arguments) != nil || arguments == nil {
-		return nil, fmt.Errorf("结构化表格需要合法 operation 和 arguments 对象")
+		return rejectToolPreflight(fmt.Errorf("结构化表格需要合法 operation 和 arguments 对象"))
 	}
 	if _, supported := structuredOperationContracts[operation]; !supported {
-		return nil, fmt.Errorf("结构化表格不支持此操作")
+		return rejectToolPreflight(fmt.Errorf("结构化表格不支持此操作"))
 	}
 	if _, pinned := ctx.Value(structuredInvocationKey{}).(StructuredOperationDescriptor); !pinned && operation != "describe_tools" {
 		t.protocolMu.RLock()
@@ -121,9 +121,9 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	for _, field := range []string{"tenant_id", "user_id", "role", "token", "api_key", "url", "endpoint", "data_dir", "knowledge_base_id", "knowledge_base_tenant_id", "knowledge_base_can_write"} {
 		if _, exists := arguments[field]; exists {
 			if field == "knowledge_base_id" {
-				return nil, fmt.Errorf("knowledge_base_id 必须放在顶层，与 operation、arguments 同级，不能放在 arguments 内；请从本轮已授权目录选择真实ID")
+				return rejectToolPreflight(fmt.Errorf("knowledge_base_id 必须放在顶层，与 operation、arguments 同级，不能放在 arguments 内；请从本轮已授权目录选择真实ID"))
 			}
-			return nil, fmt.Errorf("结构化表格参数不接受身份、凭据或服务配置")
+			return rejectToolPreflight(fmt.Errorf("结构化表格参数不接受身份、凭据或服务配置"))
 		}
 	}
 	scope, directory, err := t.resolveStructuredKnowledgeScope(input["knowledge_base_id"])
@@ -173,7 +173,7 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	// Scope is a signed identity field, never a service operation parameter.
 	args, err = json.Marshal(map[string]any{"operation": operation, "arguments": arguments})
 	if err != nil {
-		return nil, fmt.Errorf("结构化来源口径参数无效")
+		return rejectToolPreflight(fmt.Errorf("结构化来源口径参数无效"))
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err

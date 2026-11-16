@@ -387,7 +387,8 @@ func (s *Server) handleReadDocument(ctx context.Context, req mcp.CallToolRequest
 	}
 	tool := tools.NewReadDocumentTool(
 		s.knowledgeService, s.chunkService, searchTargetsFor([]*types.KnowledgeBase{kb}),
-	).WithWikiPageService(s.wikiService)
+	).WithWikiPageService(s.wikiService).
+		WithDocumentSearch(tools.NewSearchKnowledgeTool(s.kbService, s.knowledgeService, s.chunkService, searchTargetsFor([]*types.KnowledgeBase{kb}), nil, s.cfg))
 	callArgs := map[string]any{
 		"id":     k.ID,
 		"limit":  limit,

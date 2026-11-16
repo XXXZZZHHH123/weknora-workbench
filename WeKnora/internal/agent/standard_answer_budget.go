@@ -137,13 +137,22 @@ func (e *AgentEngine) standardAnswerBudgetReason(ctx context.Context, state *typ
 	if !e.standardAnswerBudgetEligible(ctx, state) || !e.withinIterationBudget(state.CurrentRound+1) {
 		return ""
 	}
-	rounds := 0
+	rounds, toolBarrier := 0, false
 	for _, step := range state.RoundSteps {
-		if step.Iteration >= 0 && len(step.ToolCalls) > 0 {
-			rounds++
+		if step.Iteration < 0 || len(step.ToolCalls) == 0 {
+			continue
+		}
+		toolBarrier = true
+		for _, call := range step.ToolCalls {
+			if call.Result != nil && (!call.Result.PreflightRejected || call.Result.Success) {
+				rounds++
+				break
+			}
 		}
 	}
-	if rounds == 0 || rounds < standardAnswerToolRounds && time.Since(started) < standardAnswerActiveBudget {
+	// Even an entirely refused batch spent active time. Excluding it from
+	// evidence rounds must not exclude the wall-clock or ordinary stall guards.
+	if !toolBarrier || rounds < standardAnswerToolRounds && time.Since(started) < standardAnswerActiveBudget {
 		return ""
 	}
 	if rounds >= standardAnswerToolRounds {
@@ -243,6 +252,6 @@ func (e *AgentEngine) finishStandardAnswerBudget(
 		_ = e.eventBus.Emit(ctx, event.Event{ID: generateEventID("preliminary"), Type: event.EventAgentProgress, SessionID: sessionID,
 			Data: event.AgentProgressData{Content: standardPreliminaryAnswerNotice(ctx), Iteration: state.CurrentRound}})
 	}
-	err := e.streamFinalAnswerToEventBus(ctx, query, state, sessionID, restoreForFinalAnswer(*messages, guards), finalAnswerOptions{preliminary: true})
+	err := e.streamFinalAnswerToEventBus(ctx, query, state, sessionID, restoreForFinalAnswer(*messages, guards), finalAnswerOptions{preliminary: true, assistantMessageID: messageID})
 	return true, err
 }

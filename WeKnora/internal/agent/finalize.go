@@ -16,8 +16,9 @@ import (
 )
 
 type finalAnswerOptions struct {
-	preliminary bool
-	stopReason  string
+	preliminary        bool
+	stopReason         string
+	assistantMessageID string
 }
 
 // streamFinalAnswerToEventBus streams the final answer generation through EventBus
@@ -164,6 +165,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		// progress text as the final answer, or silently drop requested calls.
 		invalid := strings.TrimSpace(fullAnswer) == "" || llmResult.StreamError != "" || len(llmResult.ToolCalls) > 0 || !isNaturalStopFinishReason(llmResult.FinishReason)
 		unsupported := []string{}
+		var checked candidateDecision
 		if !invalid {
 			if preliminary && e.standardPreliminaryProse() {
 				// The runtime knows it stopped at a source budget. Keep that
@@ -175,6 +177,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 				e.turnReview.NumericWarningAllowed = true
 			}
 			decision := e.checkCandidate(ctx, query, fullAnswer, llmResult.ReasoningContent, state, conversation, true)
+			checked = decision
 			fullAnswer = decision.Candidate
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -224,6 +227,19 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 				"completion_tokens": llmResult.Usage.CompletionTokens,
 				"delivery":          "reviewed_answer",
 			})
+		}
+		if preliminary {
+			var readStep *types.AgentStep
+			readStep, err = e.finalCoverageRead(ctx, query, state, sessionID, options[0].assistantMessageID, messages, checked)
+			if err != nil {
+				return err
+			}
+			if readStep != nil {
+				messages = e.appendToolResults(messages, *readStep)
+				// Keep actual execution in the source-check transcript too, without
+				// promoting the advisory recovery feedback into task or evidence.
+				conversation = e.appendToolResults(conversation, *readStep)
+			}
 		}
 		// Keep the actual rejected candidate alongside feedback for targeted repair.
 		messages = append(messages, chat.Message{Role: "assistant", Content: fullAnswer})

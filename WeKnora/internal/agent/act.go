@@ -286,7 +286,7 @@ func (e *AgentEngine) failTruncatedToolCalls(
 			Name:             tc.Function.Name,
 			Args:             map[string]any{"_raw": tc.Function.Arguments},
 			ProviderMetadata: tc.ProviderMetadata,
-			Result:           &types.ToolResult{Success: false, Error: truncatedArgumentsError},
+			Result:           &types.ToolResult{PreflightRejected: true, Success: false, Error: truncatedArgumentsError},
 		}
 		step.ToolCalls = append(step.ToolCalls, toolCall)
 		e.emitToolOutcome(ctx, toolCall, iteration, sessionID)
@@ -480,7 +480,8 @@ func (e *AgentEngine) runToolCallAnswered(
 				Args:             map[string]any{"_raw": argsStr},
 				ProviderMetadata: tc.ProviderMetadata,
 				Result: &types.ToolResult{
-					Success: false,
+					PreflightRejected: true,
+					Success:           false,
 					Error: fmt.Sprintf(
 						"Failed to parse tool arguments: %v", err,
 					) + "\n\nIf the JSON looks cut off, the previous round likely hit the output token cap. " +
@@ -503,7 +504,7 @@ func (e *AgentEngine) runToolCallAnswered(
 				Name:             tc.Function.Name,
 				Args:             map[string]any{"_raw": argsStr},
 				ProviderMetadata: tc.ProviderMetadata,
-				Result:           &types.ToolResult{Success: false, Error: truncatedArgumentsError},
+				Result:           &types.ToolResult{PreflightRejected: true, Success: false, Error: truncatedArgumentsError},
 			}
 		}
 		logger.Warnf(ctx, "%s Repaired malformed JSON arguments", toolTag)
@@ -526,8 +527,9 @@ func (e *AgentEngine) runToolCallAnswered(
 				Args:             map[string]any{"_raw": tc.Function.Arguments},
 				ProviderMetadata: tc.ProviderMetadata,
 				Result: &types.ToolResult{
-					Success: false,
-					Error:   fmt.Sprintf("Failed to parse repaired tool arguments: %v", err),
+					PreflightRejected: true,
+					Success:           false,
+					Error:             fmt.Sprintf("Failed to parse repaired tool arguments: %v", err),
 				},
 			}
 		}
@@ -582,12 +584,12 @@ func (e *AgentEngine) runToolCallAnswered(
 		target = &types.ToolCallTarget{Name: tc.Function.Name, Args: args, ServiceName: "structured_data", ToolName: structuredDescriptor.Operation}
 	}
 	if err := guardFieldConfirmation(ctx, confirmationName, executionArgs); err != nil {
-		return types.ToolCall{ID: tc.ID, Name: tc.Function.Name, Target: target, Args: replayArgs, ProviderMetadata: tc.ProviderMetadata, Result: &types.ToolResult{Success: false, Error: err.Error()}}
+		return types.ToolCall{ID: tc.ID, Name: tc.Function.Name, Target: target, Args: replayArgs, ProviderMetadata: tc.ProviderMetadata, Result: &types.ToolResult{PreflightRejected: true, Success: false, Error: err.Error()}}
 	}
 	if nativeStructured && structuredDescriptor.Operation == "confirm_fields" {
 		if turn, ok := ctx.Value(fieldConfirmationTurnKey{}).(*fieldConfirmationTurn); ok && turn.pendingKB != "" && executionArgs["resolution_id"] == turn.pendingID {
 			if selected, _ := args["knowledge_base_id"].(string); selected != "" && selected != turn.pendingKB {
-				return types.ToolCall{ID: tc.ID, Name: tc.Function.Name, Target: target, Args: replayArgs, ProviderMetadata: tc.ProviderMetadata, Result: &types.ToolResult{Success: false, Error: "字段确认的知识库与真实待选方案不一致；不会跨库确认"}}
+				return types.ToolCall{ID: tc.ID, Name: tc.Function.Name, Target: target, Args: replayArgs, ProviderMetadata: tc.ProviderMetadata, Result: &types.ToolResult{PreflightRejected: true, Success: false, Error: "字段确认的知识库与真实待选方案不一致；不会跨库确认"}}
 			}
 			// Restore transport scope from the actual pending tool outcome, not
 			// from a business-name guess. Normal authorization still runs below.
@@ -708,6 +710,7 @@ func (e *AgentEngine) runToolCallAnswered(
 		// execution so a hallucinated/stale kb://, doc://, chunk://, url://, iN or res:// token can
 		// never reach persistence, an external service, or a routing decision.
 		err = fmt.Errorf("tool arguments contain unresolved model handles: %v", tc.UnresolvedHandles)
+		result = &types.ToolResult{PreflightRejected: true, Success: false, Error: err.Error()}
 	} else {
 		execCtx, toolCancel := context.WithTimeout(toolExecCtx, execTimeout)
 		result, err = e.toolRegistry.ExecuteTool(

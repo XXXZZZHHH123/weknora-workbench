@@ -75,6 +75,7 @@ type turnReviewState struct {
 	CitationUnverifiedDelivery *citationUnverifiedDeliveryBinding
 	StructuredResultReview     *structuredResultReviewTurn
 	DiscoveryReview            *discoveryDeliveryReviewTurn
+	FinalCoverageReadAttempted bool
 }
 
 // Preserve the existing two numeric and two semantic repair allowances while
