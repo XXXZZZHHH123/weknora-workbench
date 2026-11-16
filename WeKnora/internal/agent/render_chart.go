@@ -42,7 +42,7 @@ func (e *AgentEngine) SetChartWriter(writer chart.Writer) {
 }
 func newRenderChartTool(ctx context.Context, steps func() []types.AgentStep, writer chart.Writer, session, message string) *renderChartTool {
 	return &renderChartTool{BaseTool: agenttools.NewBaseTool(renderChartToolName,
-		"从本轮真实来源确定性绘图。先inspect查看sources及input_sources；input_sources是本轮已读PDF二维单元格，须先map；sources是实际查询/读取结果，可直接render，也可按真实行列map整形。两类都只使用inspect返回的source_id，表ID/result_id不是绘图句柄。前轮文字或表格不能替代本轮来源，目录为空时先重新read_pdf_table或执行引用真实源列的query_pdf_table。由模型根据完整任务理解行列，不能把横向维度行和指标行混成观测。map提交mapping:{orientation:rows|columns,x_index,y_indexes,value_indexes,label_index?,unit_index?}：rows表示X/Y分别取真实行、value_indexes取跨列观测；columns表示X/Y取列、value_indexes取观测行。label_index从来源标签格取名；unit_index只显式复制真实列元数据中的单位。技术行ID及常量测量列不能通过转置变成观测。map返回可直接render的真实source_id。也可query_pdf_table引用真实源字段整形，不能用重抄数值的SQL常量冒充原表观测。render选择真实source_id、x_column、y_columns(最多6)、chart_type(line/bar/scatter)、x_type(category/numeric/time)、title。长表可同时选择series_column真实标签列（例如查询实际返回的metric列）和可选unit_column真实单位列，单个Y列按标签真实值拆成最多6条系列；也可在columns映射中传这两个索引。不得用CASE技术ID或手写常量代替真实标签。依据完整任务选择业务维度，内部行ID不能充当业务轴。不得提交任意观测值、代码或URL，缺失留空，不补值，未知单位保持未知。保存前核验图的指标、维度、单位、范围与完整请求是否一致；明确的语义不匹配反馈后修正真实映射。核验临时未完成或协议无效时，保留同一source_id、mapping及全部render参数重试，不要为通过核验改变x_type；连续时间或数值变化应保留实际间隔，真正的离散类别比较允许category。delivery_mode默认chart_only，只交付返回的图片Markdown；明确还要文字分析时用chart_with_analysis。保存失败不能声称交付。",
+		"从本轮真实来源确定性绘图。先inspect查看sources及input_sources；input_sources是本轮已读PDF二维单元格，须先map；sources是实际查询/读取结果，可直接render，也可按真实行列map整形。两类都只使用inspect返回的source_id，表ID/result_id不是绘图句柄。前轮文字或表格不能替代本轮来源，目录为空时先重新read_pdf_table或执行引用真实源列的query_pdf_table。由模型根据完整任务理解行列，不能把横向维度行和指标行混成观测。map提交mapping:{orientation:rows|columns,x_index,y_indexes,value_indexes,label_index?,unit_index?}：rows表示X/Y分别取真实行、value_indexes取跨列观测；columns表示X/Y取列、value_indexes取观测行。label_index从来源标签格取名；unit_index只显式复制真实列元数据中的单位。技术行ID及常量测量列不能通过转置变成观测。map返回可直接render的真实source_id。也可query_pdf_table引用真实源字段整形，不能用重抄数值的SQL常量冒充原表观测。render选择真实source_id、x_column、y_columns(最多6)、chart_type(line/bar/scatter)、x_type(category/numeric/time)、title。长表可同时选择series_column真实标签列（例如查询实际返回的metric列）和可选unit_column真实单位列，单个Y列按标签真实值拆成最多6条系列；也可在columns映射中传这两个索引。不得用CASE技术ID或手写常量代替真实标签。依据完整任务选择业务维度，内部行ID不能充当业务轴。不得提交任意观测值、代码或URL，缺失留空，不补值，未知单位保持未知。保存前核验图的指标、维度、单位、范围与完整请求是否一致；明确的语义不匹配反馈后修正真实映射。核验临时未完成或协议无效时，保留同一source_id、mapping及全部render参数重试，不要为通过核验改变x_type；连续时间或数值变化应保留实际间隔，真正的离散类别比较允许category。delivery_mode默认chart_only，只交付返回的图片Markdown；明确还要文字分析时用chart_with_analysis。保存失败不能声称交付。用户要求分析结论且未要求绘图时，绘图只是可选步骤，不要反复重画而不交付已有证据支持的结论。类别图每个X类别须唯一；长表含多个业务系列时，可选择真实series_column拆分、依据真实维度透视为独立Y列或按用户要求明确聚合。Excel分析关系已提供真实metric/unit字段，应优先引用实际字段，不用CASE技术ID手写来源标签；同一图只选择单位可比较的真实系列。",
 		json.RawMessage(`{
   "type":"object","additionalProperties":false,"required":["operation"],
   "properties":{
@@ -257,7 +257,7 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (res
 		mapping := chartSourceMapping{Orientation: "columns", XIndex: input.X, YIndexes: input.Y, ValueIndexes: indexes, SeriesColumn: input.SeriesColumn, UnitColumn: input.UnitColumn}
 		mapped, err := mapChartSeries(*source, mapping)
 		if err != nil {
-			return fail(err.Error())
+			return t.sourceFailureDiagnostics(err.Error(), *source, steps), nil
 		}
 		if t.mapped == nil {
 			t.mapped = map[string]mappedChartSource{}
@@ -282,14 +282,14 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (res
 		spec.XType = "category"
 	}
 	if err := validateChartSourceColumns(*source, spec); err != nil {
-		return fail(err.Error())
+		return t.sourceFailureDiagnostics(err.Error(), *source, steps), nil
 	}
 	if err := validateChartUnits(*source, spec); err != nil {
-		return fail(err.Error())
+		return t.sourceFailureDiagnostics(err.Error(), *source, steps), nil
 	}
 	png, err := chart.Render(chartUnitPresentation(*source, spec), spec)
 	if err != nil {
-		return fail(err.Error())
+		return t.sourceFailureDiagnostics(err.Error(), *source, steps), nil
 	}
 	var validation *chartSemanticValidation
 	if t.reviewPlan != nil {

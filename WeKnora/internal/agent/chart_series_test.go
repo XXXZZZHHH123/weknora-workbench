@@ -83,6 +83,34 @@ func TestChartSeriesRejectsMixedAxisUnitsBeforeReviewAndPersistence(t *testing.T
 	require.Empty(t, writer.requests)
 }
 
+func TestCategoryChartCanRecoverBySplittingRealSeries(t *testing.T) {
+	ctx := chartContext(t)
+	steps := []types.AgentStep{{ToolCalls: []types.ToolCall{chartLongFixture()}}}
+	writer := &chartWriterFixture{}
+	tool := newRenderChartTool(ctx, func() []types.AgentStep { return steps }, writer, "session", "message")
+	sources, _ := chartSources(steps)
+	reviews := 0
+	tool.reviewPlan = func(_ context.Context, source chart.Table, spec chart.Spec) (*chartSemanticValidation, error) {
+		reviews++
+		require.Equal(t, "category", spec.XType)
+		require.Equal(t, [][]string{{"2025-01-01", "2", "3"}, {"2025-01-02", "", "5"}}, source.Rows)
+		return &chartSemanticValidation{EvidenceHash: reviewDigest(source)}, nil
+	}
+	args := map[string]any{"operation": "render", "source_id": sources[0].ID, "x_column": 0, "y_columns": []int{3}, "chart_type": "bar", "x_type": "category"}
+	rejected := chartRun(t, tool, ctx, args)
+	require.False(t, rejected.Success)
+	require.Contains(t, rejected.Error, "repeated X categories")
+	require.Contains(t, rejected.Output, "source_diagnostics")
+	require.Zero(t, reviews)
+	require.Empty(t, writer.requests)
+	args["series_column"], args["unit_column"] = 1, 2
+	rendered := chartRun(t, tool, ctx, args)
+	require.True(t, rendered.Success, rendered.Error)
+	require.Equal(t, 1, reviews)
+	require.Len(t, writer.requests, 1)
+	require.Equal(t, 1, tool.renderFailures)
+}
+
 func TestChartSeriesBoundsDuplicatesAndTechnicalLabelsRemainGuarded(t *testing.T) {
 	zero, one, two := 0, 1, 2
 	base := chart.Table{Columns: []chart.Column{{Name: "x"}, {Name: "dimension"}, {Name: "measure"}}, Rows: [][]string{{"A", "label", "1"}}}

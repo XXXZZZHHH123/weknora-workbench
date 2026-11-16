@@ -1293,8 +1293,27 @@ func (t *SearchKnowledgeTool) formatOutput(
 		} else {
 			row["chunk_id"] = result.ID
 			row["chunk_index"] = result.ChunkIndex
+			// Preserve the retrieved chunk identity exactly as read_document does.
+			// A page projection must be checked against this actual revision and
+			// source span, rather than treating omitted metadata as revision zero.
+			row["content_revision"] = result.ContentRevision
+			row["start_at"] = result.StartAt
+			row["end_at"] = result.EndAt
+			row["parent_chunk_id"] = result.ParentChunkID
+			if len(result.SourceLocators) > 0 {
+				row["source_locators"] = result.SourceLocators
+			}
+			if result.ContentRewritten {
+				row["content_rewritten"] = true
+			}
+			// SearchResult.Content is the complete indexed chunk body (not the
+			// match snippet). Make that exact source span explicit so later
+			// citation review can reconcile it with read_document(offset=0).
+			row["content_offset"] = 0
+			row["content_offset_space"] = "chunk_unicode_runes"
+			row["content_complete"] = true
+			appendSearchChunkProjection(row, result.SearchResult)
 		}
-		appendSearchChunkIdentity(row, result.SearchResult)
 		formattedResults = append(formattedResults, row)
 	}
 	ob.WriteString("</search_results>")
@@ -1308,50 +1327,29 @@ func (t *SearchKnowledgeTool) formatOutput(
 	return &types.ToolResult{Success: true, Output: ob.String(), Data: data}
 }
 
-// Retrieval already batch-hydrates real chunk rows. Carry that witness instead
-// of doing an additional lookup per result or treating a default revision as
-// known. The match snippet is navigation; the content field has its own span.
-func appendSearchChunkIdentity(row map[string]any, result *types.SearchResult) {
+// Main identity metadata comes directly from the retrieval result. An optional
+// hydrated original body only qualifies a changed presentation as an exact
+// excerpt; it never supplies a second source identity or a missing revision.
+func appendSearchChunkProjection(row map[string]any, result *types.SearchResult) {
 	chunk := result.SourceChunk
 	if chunk == nil || chunk.ID != result.ID || chunk.KnowledgeID != result.KnowledgeID ||
-		chunk.KnowledgeBaseID != result.KnowledgeBaseID {
+		chunk.KnowledgeBaseID != result.KnowledgeBaseID || chunk.ContentRevision != result.ContentRevision ||
+		result.Content == chunk.Content {
 		return
-	}
-	row["content_revision"] = chunk.ContentRevision
-	row["knowledge_base_id"] = chunk.KnowledgeBaseID
-	row["chunk_index"] = chunk.ChunkIndex
-	row["chunk_type"] = chunk.ChunkType
-	row["parent_chunk_id"] = chunk.ParentChunkID
-	row["start_at"], row["end_at"] = chunk.StartAt, chunk.EndAt
-	if len(chunk.SourceLocators) > 0 {
-		row["source_locators"] = chunk.SourceLocators
 	}
 	row["content_complete"] = false
-	if result.ContentRewritten {
-		row["content_rewritten"] = true
-		return
-	}
-	if result.Content == chunk.Content {
-		row["content_offset"] = 0
-		row["content_offset_space"] = "chunk_unicode_runes"
-		row["content_complete"] = true
+	if result.ContentRewritten || result.Content == "" {
 		return
 	}
 	// A contiguous excerpt can prove its exact original range. Arbitrary
 	// rewritten content has no source-view proof and remains incomplete.
-	if result.Content == "" {
-		return
-	}
 	start := strings.Index(chunk.Content, result.Content)
 	if start < 0 || strings.LastIndex(chunk.Content, result.Content) != start {
-		// Without an unambiguous original span, do not invent a page/range
-		// identity for an excerpt or a rewritten presentation.
 		row["content_rewritten"] = true
 		return
 	}
 	offset := utf8.RuneCountInString(chunk.Content[:start])
 	row["content_offset"] = offset
-	row["content_offset_space"] = "chunk_unicode_runes"
 	row["content_source_view"] = chunkContentView(chunk, []types.ChunkRuneRange{{Start: offset, End: offset + utf8.RuneCountInString(result.Content)}})
 }
 

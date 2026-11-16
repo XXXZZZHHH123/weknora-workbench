@@ -158,8 +158,8 @@ type MatchedImage struct {
 // SearchResult represents the search result
 type SearchResult struct {
 	// SourceChunk is the actual authorized row hydrated by retrieval. It is an
-	// execution-only witness for identity and exact content projections; legacy
-	// or synthetic results without a row must not invent a revision from zero.
+	// execution-only original-body witness for exact excerpt projections.
+	// Source identity metadata continues to come from this SearchResult.
 	SourceChunk *Chunk `json:"-" gorm:"-"`
 	// CitationSources retains independently citeable bodies after context expansion.
 	CitationSources []*SearchResult `json:"-" gorm:"-"`

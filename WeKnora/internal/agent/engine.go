@@ -993,6 +993,9 @@ loop:
 	// A suspended run has not finished either; it resumes once the user
 	// answers, so no answer is synthesized for it.
 	if !state.IsComplete && ctx.Err() == nil && state.Suspended == nil {
+		if e.collaboration != nil && e.collaboration.Child == nil && e.collaborationOwnsFailure(ctx) {
+			return state, fmt.Errorf("parent iteration budget exhausted; remaining delegated work was cancelled")
+		}
 		if err := e.handleMaxIterations(ctx, query, state, sessionID, restoreForFinalAnswer(messages, guards)); err != nil {
 			return state, err
 		}
@@ -1730,7 +1733,7 @@ func (e *AgentEngine) runReActIteration(
 			"asking the model to change strategy", round, failedToolName, failedToolAttempts)
 		*messagesPtr = append(*messagesPtr, chat.Message{Role: "user", Content: failedToolGuidance})
 	}
-	if e.config.WorkbenchDefault || guards.toolProgress.structuredCharts || stepHasStructuredChartCalls(step) {
+	if e.config.WorkbenchDefault || guards.toolProgress.resultWorkflow || stepHasStructuredChartCalls(step) {
 		observation := guards.toolProgress.observe(step.ToolCalls)
 		common.PipelineInfo(ctx, "Agent", "tool_progress", map[string]interface{}{
 			"round": round, "new_evidence": observation.NewEvidence,
@@ -1760,15 +1763,23 @@ func (e *AgentEngine) runReActIteration(
 				e.resetDocumentTurnProgress(guards, query, state)
 				return iterOutcomeNext, nil
 			}
-			if e.collaboration != nil && e.collaboration.Child != nil && e.collaborationOwnsFailure(ctx) {
+			if e.collaborationOwnsFailure(ctx) {
 				return iterOutcomeBreak, fmt.Errorf("source collection stopped after repeated rounds without new evidence")
 			}
-			reason := "Recent tool rounds returned only failures or previously observed content; repeated tool execution has stopped."
-			if observation.RenderLimit {
-				reason = "The per-turn chart render failure limit has been reached. Rendering has stopped; use the successful real results to complete the written answer and explain the actual chart failures."
+			if observation.ResultWorkflow {
+				reason := "Recent tool rounds returned only failures or previously observed content; repeated tool execution has stopped."
+				if observation.RenderLimit {
+					reason = "The per-turn chart render failure limit has been reached. Rendering has stopped; use successful real results to complete the written answer and explain the actual chart failures."
+				}
+				finished, err := e.finishResultWorkflowStall(ctx, state, query, sessionID, restoreForFinalAnswer(*messagesPtr, guards), reason)
+				if finished {
+					return iterOutcomeBreak, err
+				}
 			}
-			return iterOutcomeBreak, e.finishToolStoppedAnswer(ctx, query, state, sessionID,
-				restoreForFinalAnswer(*messagesPtr, guards), reason)
+			// Reaching a resource bound is a runtime failure, never semantic
+			// completion. No unchecked draft or extra synthesis is published.
+			e.commitTerminalResult(ctx, state, sessionID, sourceProgressStalledFallback, "", "stalled", false)
+			return iterOutcomeBreak, nil
 		}
 	}
 	common.PipelineInfo(ctx, "Agent", "round_end", map[string]interface{}{
@@ -1785,7 +1796,7 @@ func (e *AgentEngine) runReActIteration(
 
 func stepHasStructuredChartCalls(step types.AgentStep) bool {
 	for _, call := range step.ToolCalls {
-		if call.ExecutionName() == renderChartToolName || structuredProgressOperation(call) {
+		if _, structured := structuredProgressOperation(call); call.ExecutionName() == renderChartToolName || structured {
 			return true
 		}
 	}

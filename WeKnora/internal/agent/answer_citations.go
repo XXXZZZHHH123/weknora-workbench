@@ -317,7 +317,7 @@ func currentCitationReferenceRows(state *types.AgentState) (map[string]*types.Se
 			conflicts[id] = true
 			continue
 		}
-		if index, verified := canonicalCitationWitnessView(views); verified {
+		if index, verified := canonicalCitationFullView(views); verified {
 			rows[id] = observed[index].ref
 			delete(conflicts, id)
 		} else if citationViewsRequireProofValidation(views) {

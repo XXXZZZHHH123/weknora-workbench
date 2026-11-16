@@ -130,7 +130,7 @@ def test_excel_mixed_units_unknown_functions_and_constant_results_stay_honest(sn
         assert unit['status']=='mixed'
         assert unit['source_units']==mixed['source_units']
         assert unit['evidence']==mixed['evidence']
-        assert unit['reason']==mixed['reason']
+        assert mixed['reason'] in unit['source_reasons']
     out=analyze_table(store,ds,['price'],'SELECT 9 AS invented,value,source_cell FROM data')
     c=assert_binding(out)
     assert [x['dependency']['kind'] for x in c['column_metadata']][:2]==['constant_label','source_value']

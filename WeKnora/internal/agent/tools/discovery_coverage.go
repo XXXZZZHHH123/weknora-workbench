@@ -45,6 +45,17 @@ func (t *StructuredDataTool) annotateDiscoveryCoverage(ctx context.Context, oper
 			coverage[key] = value
 		}
 	}
+	if view := structuredOperationOutputObject(result.Output); view != nil && (view["directory_projection"] != nil || view["status"] == "directory_output_budget_exceeded") {
+		// The executed catalog may be complete while its model view is not.
+		// Preserve both scopes; never overwrite a display cursor with the
+		// service's later cursor or its untruncated flag.
+		coverage["source_pagination"] = map[string]any{"offset": result.Data["offset"], "next_offset": result.Data["next_offset"], "truncated": result.Data["truncated"]}
+		for _, key := range []string{"offset", "next_offset", "truncated", "output_truncated", "directory_projection"} {
+			if value, exists := view[key]; exists {
+				coverage[key] = value
+			}
+		}
+	}
 	// Only immutable, authenticated, same-turn reads are compared. A changed
 	// query, page, protocol generation or result is not a repeated read.
 	question, generation := t.structuredSourceQuestion()

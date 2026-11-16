@@ -115,7 +115,7 @@ func TestCurrentDocumentNumbersPartialViewUsesOnlyReturnedBody(t *testing.T) {
 	legacy := currentNumericDocumentStep("search_knowledge", "results", original)
 	delete(legacy.ToolCalls[0].Result.Data["results"].([]map[string]any)[0], "content_revision")
 	steps = append([]types.AgentStep{legacy}, steps...)
-	require.Empty(t, currentDocumentNumberCheck(`数量46.2。<kb chunk_id="observed-chunk"/>`, steps))
+	require.Contains(t, currentDocumentNumberCheck(`数量46.2。<kb chunk_id="observed-chunk"/>`, steps), "46.2", "missing source revision remains blocked even beside a current partial read")
 	require.Contains(t, currentDocumentNumberCheck(`数量78.9。<kb chunk_id="observed-chunk"/>`, steps), "78.9", "a legacy full witness does not authorize text outside the current identified partial range")
 }
 

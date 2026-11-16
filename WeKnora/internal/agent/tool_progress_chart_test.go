@@ -2,123 +2,243 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
+	"github.com/Tencent/WeKnora/internal/chart"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 )
 
-func progressChartCall(operation string, data map[string]any) types.ToolCall {
-	return types.ToolCall{Name: "render_chart", Args: map[string]any{"operation": operation, "source_id": "real-source"},
-		Result: &types.ToolResult{Success: true, Data: data}}
+func progressChartCall(result *types.ToolResult) types.ToolCall {
+	return types.ToolCall{Name: "render_chart", Result: result}
 }
 
-func TestToolProgressDeduplicatesChartInspectAndMapping(t *testing.T) {
-	for _, call := range []types.ToolCall{
-		progressChartCall("inspect", map[string]any{"kind": "chart_source_catalog", "sources": []any{map[string]any{"source_id": "real-source", "row_count": 12}}}),
-		progressChartCall("map", map[string]any{"kind": "chart_source_mapping", "source_id": "mapped-source", "parent_source_id": "real-source", "mapping": map[string]any{"orientation": "columns", "x_index": 0, "y_indexes": []int{1}}}),
-	} {
-		var guard toolProgressGuard
-		require.Equal(t, 1, guard.observe([]types.ToolCall{call}).NewEvidence)
-		for round := 1; round <= toolProgressStopRounds; round++ {
-			call.ID = fmt.Sprintf("changed-call-%d", round)
-			call.Result.Data["notice"] = fmt.Sprintf("navigation %d", round)
-			if call.ExecutionArgs()["operation"] == "map" {
-				call.Result.Data["source_id"] = fmt.Sprintf("transport-map-%d", round)
+func TestToolProgressBoundsChartAndStructuredFailuresByActualOutcome(t *testing.T) {
+	for _, name := range []string{"render_chart", "structured_analyze_table", "structured_query_series", "structured_query_pdf_table"} {
+		t.Run(name, func(t *testing.T) {
+			var guard toolProgressGuard
+			for round := 1; round <= toolProgressStopRounds; round++ {
+				// Changing validation/transient diagnostics and parameters does
+				// not establish progress. The existing grace window permits a
+				// repaired operation or an unchanged transient retry to succeed.
+				call := types.ToolCall{Name: name, ID: fmt.Sprint(round), Args: map[string]any{"title": fmt.Sprint(round)}, Result: &types.ToolResult{
+					Success: round%2 == 0, Error: fmt.Sprintf("diagnostic %d", round),
+					Data: map[string]any{"status": "error", "retryable": true, "reason_code": fmt.Sprint(round)},
+				}}
+				result := guard.observe([]types.ToolCall{call})
+				require.Zero(t, result.NewEvidence)
+				require.Equal(t, round, result.StaleRounds)
+				require.Equal(t, round == toolProgressReplanRounds, result.Replan)
+				require.Equal(t, round == toolProgressStopRounds, result.Stop)
+				require.True(t, result.ResultWorkflow)
 			}
-			observation := guard.observe([]types.ToolCall{call})
-			require.Zero(t, observation.NewEvidence)
-			require.Equal(t, round, observation.StaleRounds)
-			require.Equal(t, round == toolProgressReplanRounds, observation.Replan)
-			require.Equal(t, round == toolProgressStopRounds, observation.Stop)
-		}
+		})
 	}
 }
 
-func TestToolProgressDeduplicatesStructuredResultsAcrossSQLAndExecutionIDs(t *testing.T) {
-	call := types.ToolCall{Name: "structured_analyze_table", Result: &types.ToolResult{Success: true, Data: map[string]any{
-		"kind": "structured_analysis", "status": "ok", "sql": "SELECT value FROM data", "result_id": "execution-a",
-		"columns": []any{"value"}, "rows": []any{[]any{5}}, "source": map[string]any{"sha256": "actual-file-hash"},
-		"result_contract": map[string]any{"result_id": "a", "result_hash": "hash-a", "execution": map[string]any{"sql_sha256": "a"}},
-	}}}
+func TestToolProgressActualChartInspectAndEquivalentMapCannotHideFailureLoop(t *testing.T) {
+	ctx := chartContext(t)
+	steps := []types.AgentStep{{ToolCalls: []types.ToolCall{v2ChartFixture(t)}}}
+	tool := newRenderChartTool(ctx, func() []types.AgentStep { return steps }, &chartWriterFixture{}, "session", "message")
+	sources, _ := chartSources(steps)
+	require.Len(t, sources, 1)
+	inspect := chartRun(t, tool, ctx, map[string]any{"operation": "inspect"})
+	mapping := chartRun(t, tool, ctx, map[string]any{"operation": "map", "source_id": sources[0].ID,
+		"mapping": map[string]any{"orientation": "columns", "x_index": 0, "y_indexes": []int{1}, "value_indexes": []int{0, 1}}})
+	require.True(t, mapping.Success, mapping.Error)
 	var guard toolProgressGuard
-	require.Equal(t, 1, guard.observe([]types.ToolCall{call}).NewEvidence)
-	call.Result.Data["sql"], call.Result.Data["result_id"] = "SELECT value FROM data WHERE TRUE", "execution-b"
-	call.Result.Data["result_contract"] = map[string]any{"result_id": "b", "result_hash": "hash-b", "execution": map[string]any{"sql_sha256": "b"}}
-	require.Equal(t, 1, guard.observe([]types.ToolCall{call}).StaleRounds)
-	call.Result.Data["rows"] = []any{[]any{6}}
-	require.Equal(t, 1, guard.observe([]types.ToolCall{call}).NewEvidence)
+	require.Positive(t, guard.observe([]types.ToolCall{progressChartCall(inspect)}).NewEvidence)
+	require.Positive(t, guard.observe([]types.ToolCall{progressChartCall(mapping)}).NewEvidence)
+	// This full-width map exposes exactly the original cells in the directory;
+	// the new mapped handle must not make that catalog entry new again.
+	inspect = chartRun(t, tool, ctx, map[string]any{"operation": "inspect"})
+	repeatedCatalog := guard.observe([]types.ToolCall{progressChartCall(inspect)})
+	require.Zero(t, repeatedCatalog.NewEvidence)
+	require.Equal(t, 1, repeatedCatalog.StaleRounds)
+	before := reviewDigest([]any{inspect.Data, mapping.Data})
+	for round := 2; round <= toolProgressStopRounds; round++ {
+		failed := progressChartCall(&types.ToolResult{Error: "The corrected plan has not succeeded", Data: map[string]any{"status": "error"}})
+		result := guard.observe([]types.ToolCall{failed, progressChartCall(inspect), progressChartCall(mapping)})
+		require.Zero(t, result.NewEvidence)
+		require.Equal(t, round, result.StaleRounds)
+		require.Equal(t, round == toolProgressStopRounds, result.Stop)
+	}
+	require.Equal(t, before, reviewDigest([]any{inspect.Data, mapping.Data}), "progress must preserve chart receipts and source identities")
+	changed := chartRun(t, tool, ctx, map[string]any{"operation": "map", "source_id": sources[0].ID,
+		"mapping": map[string]any{"orientation": "columns", "x_index": 0, "y_indexes": []int{1}, "value_indexes": []int{1}}})
+	require.True(t, changed.Success, changed.Error)
+	recovered := guard.observe([]types.ToolCall{progressChartCall(changed)})
+	require.Positive(t, recovered.NewEvidence, "a genuinely new executed source selection remains progress")
+	require.Zero(t, recovered.StaleRounds)
+	require.False(t, recovered.Stop)
 }
 
-func TestToolProgressRepeatedStructuredCapabilityRefreshIsStale(t *testing.T) {
-	call := types.ToolCall{Name: agenttools.ToolStructuredCapabilities, Result: &types.ToolResult{Success: true, Data: map[string]any{
-		"kind": "structured_capabilities", "generation": 1, "observed_manifest_sha256": "manifest-a", "ttl_seconds": 30,
-		"tools": []any{map[string]any{"tool_name": "structured_query_series", "schema_sha256": "schema-a", "generation": 1, "manifest_sha256": "manifest-a"}},
-	}}}
+func TestToolProgressNewExecutionHandlesAndEquivalentMappingChainsAreNotNewCells(t *testing.T) {
+	ctx := chartContext(t)
+	call := v2ChartFixture(t)
+	steps := []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}
+	tool := newRenderChartTool(ctx, func() []types.AgentStep { return steps }, &chartWriterFixture{}, "session", "message")
+	sources, _ := chartSources(steps)
+	mapSource := func(id string) *types.ToolResult {
+		result := chartRun(t, tool, ctx, map[string]any{"operation": "map", "source_id": id,
+			"mapping": map[string]any{"orientation": "columns", "x_index": 0, "y_indexes": []int{1}, "value_indexes": []int{0, 1}}})
+		require.True(t, result.Success, result.Error)
+		return result
+	}
+	first := mapSource(sources[0].ID)
 	var guard toolProgressGuard
-	require.Equal(t, 1, guard.observe([]types.ToolCall{call}).NewEvidence)
-	call.Result.Data["generation"], call.Result.Data["ttl_seconds"], call.Result.Data["observed_manifest_sha256"] = 2, 29, "manifest-b"
-	call.Result.Data["tools"] = []any{map[string]any{"tool_name": "structured_query_series", "schema_sha256": "schema-a", "generation": 2, "manifest_sha256": "manifest-b"}}
-	require.Equal(t, 1, guard.observe([]types.ToolCall{call}).StaleRounds)
-	call.Result.Data["tools"] = []any{map[string]any{"tool_name": "structured_query_series", "schema_sha256": "schema-b", "generation": 3}}
-	require.Equal(t, 1, guard.observe([]types.ToolCall{call}).NewEvidence, "a changed actual schema can support replanning")
+	require.Positive(t, guard.observe([]types.ToolCall{progressChartCall(first)}).NewEvidence)
+	repeated := mapSource(first.Data["source_id"].(string))
+	require.NotEqual(t, first.Data["source_id"], repeated.Data["source_id"])
+	require.Zero(t, guard.observe([]types.ToolCall{progressChartCall(repeated)}).NewEvidence)
+	steps[0].ToolCalls[0].ID = "another-read-of-the-same-source"
+	newSources, _ := chartSources(steps)
+	require.NotEqual(t, sources[0].ID, newSources[0].ID)
+	again := mapSource(newSources[0].ID)
+	require.Zero(t, guard.observe([]types.ToolCall{progressChartCall(again)}).NewEvidence)
+	// An otherwise equal table from a new original file revision is distinct.
+	changed := toolProgressCopy(again.Data)
+	// Test the genuine root snapshot separately without assuming fixture hashes.
+	changed["provenance"] = `{"source":{"sha256":"` + strings.Repeat("e", 64) + `","file":"source.pdf"}}`
+	require.Positive(t, guard.observe([]types.ToolCall{progressChartCall(&types.ToolResult{Success: true, Data: changed})}).NewEvidence)
 }
 
-func TestToolProgressChartCatalogIgnoresReexecutedSourceHandlesAndOrder(t *testing.T) {
-	entry := func(id, sql string) map[string]any {
-		provenance, err := json.Marshal(map[string]any{"source": map[string]any{"sha256": "real-source-version", "file": "fixture.xlsx"}, "sql": sql,
-			"result_id": id, "result_contract": map[string]any{"result_hash": id, "execution": map[string]any{"sql_sha256": id}}})
+func TestToolProgressStructuredContractsIgnoreSQLSpellingButKeepRealValuesAndUnits(t *testing.T) {
+	first := v2ChartFixture(t)
+	first.Name = "structured_analyze_table"
+	var guard toolProgressGuard
+	before := reviewDigest(first.Result.Data)
+	require.Positive(t, guard.observe([]types.ToolCall{first}).NewEvidence)
+	require.Equal(t, before, reviewDigest(first.Result.Data))
+	second := v2ChartFixture(t)
+	second.Name, second.ID = first.Name, "another-execution"
+	data := second.Result.Data
+	data["sql"] = data["sql"].(string) + "\n "
+	contract := data["result_contract"].(map[string]any)
+	contract["result_id"] = strings.Repeat("b", 24)
+	data["result_id"] = contract["result_id"]
+	hash := sha256.Sum256([]byte(data["sql"].(string)))
+	contract["execution"].(map[string]any)["sql_sha256"] = hex.EncodeToString(hash[:])
+	rehashLightFixture(t, data)
+	require.NotEqual(t, first.Result.Data["result_contract"], contract)
+	require.Zero(t, guard.observe([]types.ToolCall{second}).NewEvidence, "reissued equivalent SQL is not a new source result")
+	gateway := second
+	gateway.Name, gateway.Args = "structured_data", map[string]any{"operation": "analyze_table"}
+	require.Zero(t, guard.observe([]types.ToolCall{gateway}).NewEvidence, "native legacy and flat executions share accounting")
+	for round := 1; round < toolProgressStopRounds; round++ {
+		guard.observe([]types.ToolCall{{Name: "render_chart", Result: &types.ToolResult{Error: "Not yet rendered"}}})
+	}
+	data["rows"].([]any)[0].([]any)[1] = "17.250"
+	// An altered payload without its witness is not successful new evidence.
+	require.Zero(t, guard.observe([]types.ToolCall{second}).NewEvidence)
+	rehashLightFixture(t, data)
+	recovered := guard.observe([]types.ToolCall{second})
+	require.Positive(t, recovered.NewEvidence)
+	require.Zero(t, recovered.StaleRounds)
+	contract["column_metadata"].([]any)[1].(map[string]any)["unit"].(map[string]any)["reason"] = "Actual revised unit limitation"
+	rehashLightFixture(t, data)
+	require.Positive(t, guard.observe([]types.ToolCall{second}).NewEvidence)
+	for i := 0; i < toolProgressStopRounds+2; i++ {
+		data["rows"].([]any)[0].([]any)[1] = fmt.Sprintf("%d.250", 20+i)
+		rehashLightFixture(t, data)
+		result := guard.observe([]types.ToolCall{second})
+		require.Positive(t, result.NewEvidence)
+		require.False(t, result.Stop, "a long valid analysis with new actual results remains allowed")
+	}
+}
+
+func TestToolProgressEqualValuesFromDifferentOriginalMapCellsRemainNew(t *testing.T) {
+	source := chart.Table{Columns: []chart.Column{{Name: "category"}, {Name: "amount", Unit: "kg"}},
+		Rows: [][]string{{"A", "7"}, {"A", "7"}}, Provenance: `{"source":{"file":"source.csv","sha256":"` + strings.Repeat("a", 64) + `"}}`}
+	require.NoError(t, source.Seal("original-read"))
+	x := 0
+	var guard toolProgressGuard
+	for _, row := range []int{0, 1, 0} {
+		mapped, err := mapChartSource(source, chartSourceMapping{Orientation: "columns", XIndex: &x, YIndexes: []int{1}, ValueIndexes: []int{row}})
 		require.NoError(t, err)
-		return map[string]any{"source_id": id, "columns": []any{map[string]any{"name": "observed", "unit": "declared-unit"}},
-			"row_count": 1, "sample_rows": []any{[]any{5}}, "provenance": string(provenance)}
-	}
-	var guard toolProgressGuard
-	first := progressChartCall("inspect", map[string]any{"kind": "chart_source_catalog", "sources": []any{entry("call-a-source", "SELECT observed FROM data")}})
-	require.Equal(t, 1, guard.observe([]types.ToolCall{first}).NewEvidence)
-	second := progressChartCall("inspect", map[string]any{"kind": "chart_source_catalog", "sources": []any{
-		entry("call-b-source", "SELECT observed FROM data WHERE TRUE"), entry("call-a-source", "SELECT observed FROM data"),
-	}})
-	require.Equal(t, 1, guard.observe([]types.ToolCall{second}).StaleRounds, "an expanded catalog of equivalent executions is still the same directory evidence")
-	second.Result.Data["sources"] = []any{entry("call-c-source", "SELECT observed FROM data /* same result */")}
-	require.Equal(t, 2, guard.observe([]types.ToolCall{second}).StaleRounds)
-}
-
-func TestToolProgressNewSavedChartResetsStallButNotFailureAllowance(t *testing.T) {
-	failed := progressChartCall("render", nil)
-	failed.Result = &types.ToolResult{Error: "source column is out of range"}
-	var guard toolProgressGuard
-	for round := 1; round <= toolProgressReplanRounds; round++ {
-		observation := guard.observe([]types.ToolCall{failed})
-		require.Equal(t, round, observation.StaleRounds)
-		require.Equal(t, round == toolProgressReplanRounds, observation.Replan)
-	}
-	saved := progressChartCall("render", map[string]any{"kind": "data_chart", "status": "ok", "artifact": map[string]any{"handle": "resource://abcdefghijklmnopqrstuv"}})
-	observation := guard.observe([]types.ToolCall{saved})
-	require.Equal(t, 1, observation.NewEvidence)
-	require.Zero(t, guard.stale)
-	require.Equal(t, 1, guard.observe([]types.ToolCall{saved}).StaleRounds, "same saved attachment is not another delivery")
-	saved.Result.Data["artifact"] = map[string]any{"handle": "resource://bcdefghijklmnopqrstuvw"}
-	require.Equal(t, 1, guard.observe([]types.ToolCall{saved}).NewEvidence)
-	observation = guard.observe([]types.ToolCall{failed})
-	require.True(t, observation.RenderLimit, "successful charts cannot replenish the turn's cumulative failure allowance")
-}
-
-func TestToolProgressChartAndStructuredFailuresReachStop(t *testing.T) {
-	var guard toolProgressGuard
-	for round := 1; round <= toolProgressStopRounds; round++ {
-		name := "render_chart"
-		if round%2 == 0 {
-			name = "structured_query_pdf_table"
+		call := progressChartCall(&types.ToolResult{Success: true, Data: map[string]any{"kind": "chart_source_mapping", "source_id": mapped.ID,
+			"columns": mapped.Columns, "rows": mapped.Rows, "source_truncated": mapped.Truncated, "provenance": mapped.Provenance}})
+		observation := guard.observe([]types.ToolCall{call})
+		if len(guard.seen) < 2 || row == 1 {
+			require.Positive(t, observation.NewEvidence)
+		} else {
+			require.Zero(t, observation.NewEvidence, "revisiting the first equal-valued cell is still a repeat")
 		}
-		observation := guard.observe([]types.ToolCall{{Name: name, Args: map[string]any{"operation": "map"}, Result: &types.ToolResult{Error: "invalid actual coordinates"}}})
-		require.Equal(t, round, observation.StaleRounds)
-		require.Equal(t, round == toolProgressStopRounds, observation.Stop)
 	}
+}
+
+func TestToolProgressStructuredRowsDoNotLoseFieldsNamedLikeTransport(t *testing.T) {
+	call := types.ToolCall{Name: "structured_analyze_table", Result: &types.ToolResult{Success: true, Data: map[string]any{
+		"status": "ok", "columns": []string{"notice", "result_id"}, "rows": []any{map[string]any{"notice": "original", "result_id": "real-source-value"}},
+	}}}
+	var guard toolProgressGuard
+	require.Positive(t, guard.observe([]types.ToolCall{call}).NewEvidence)
+	call.Result.Data["notice"] = "Changed only runtime advice"
+	require.Zero(t, guard.observe([]types.ToolCall{call}).NewEvidence)
+	call.Result.Data["rows"].([]any)[0].(map[string]any)["notice"] = "changed actual cell"
+	require.Positive(t, guard.observe([]types.ToolCall{call}).NewEvidence)
+}
+
+func TestToolProgressCatalogOrderAndTransientHandlesDoNotCreateProgress(t *testing.T) {
+	call := types.ToolCall{Name: "structured_list_series", Result: &types.ToolResult{Success: true, Data: map[string]any{
+		"dataset_id": "actual-source", "series": []any{map[string]any{"series_id": "A", "unit": "kg"}, map[string]any{"series_id": "B", "unit": "m"}},
+		"total": 2, "offset": 0, "next_offset": nil,
+	}}}
+	var guard toolProgressGuard
+	first := guard.observe([]types.ToolCall{call})
+	require.Positive(t, first.NewEvidence)
+	require.False(t, first.ResultWorkflow, "metadata alone is not a result workflow")
+	rows := call.Result.Data["series"].([]any)
+	rows[0], rows[1] = rows[1], rows[0]
+	call.Result.Data["search"], call.Result.Data["notice"] = "different words", "another message"
+	call.Result.Data["_structured_execution"] = map[string]any{"generation": 99}
+	require.Zero(t, guard.observe([]types.ToolCall{call}).NewEvidence)
+	rows[0].(map[string]any)["unit"] = "cm"
+	require.Positive(t, guard.observe([]types.ToolCall{call}).NewEvidence)
+}
+
+func TestToolProgressDoesNotClaimAsyncWorkOrConfirmationIsAStalledSourceRead(t *testing.T) {
+	for _, name := range []string{"external_job", "structured_confirm_fields", "structured_execute_field_plan", "structured_custom_job"} {
+		var guard toolProgressGuard
+		for i := 0; i < 2*toolProgressStopRounds; i++ {
+			observation := guard.observe([]types.ToolCall{{Name: name, Result: &types.ToolResult{Success: true,
+				Data: map[string]any{"status": "running", "job_id": "actual-job", "progress": i}}}})
+			require.False(t, observation.Stop)
+			require.False(t, observation.ResultWorkflow)
+			require.Zero(t, observation.StaleRounds)
+		}
+	}
+}
+
+func TestToolProgressSuccessfulChartOutputCountsOnceWithoutMutatingReceipt(t *testing.T) {
+	ctx := chartContext(t)
+	steps := []types.AgentStep{{ToolCalls: []types.ToolCall{v2ChartFixture(t)}}}
+	tool := newRenderChartTool(ctx, func() []types.AgentStep { return steps }, &chartWriterFixture{}, "session", "message")
+	sources, _ := chartSources(steps)
+	render := func(title string) *types.ToolResult {
+		result := chartRun(t, tool, ctx, map[string]any{"operation": "render", "source_id": sources[0].ID,
+			"chart_type": "line", "x_type": "category", "x_column": 0, "y_columns": []int{1}, "title": title})
+		require.True(t, result.Success, result.Error)
+		return result
+	}
+	first := render("First title")
+	before := reviewDigest(first.Data)
+	var guard toolProgressGuard
+	require.Positive(t, guard.observe([]types.ToolCall{progressChartCall(first)}).NewEvidence)
+	require.Equal(t, before, reviewDigest(first.Data))
+	repeated := render("Different wording for exactly the same plotted data")
+	require.Zero(t, guard.observe([]types.ToolCall{progressChartCall(repeated)}).NewEvidence)
+	invalid := toolProgressCopy(first.Data)
+	invalid["artifact"] = map[string]any{"handle": "not-a-persisted-resource"}
+	require.Zero(t, guard.observe([]types.ToolCall{progressChartCall(&types.ToolResult{Success: true, Data: invalid})}).NewEvidence)
 }
 
 type failedProgressChartTool struct {
@@ -134,35 +254,30 @@ func (tool *failedProgressChartTool) Execute(context.Context, json.RawMessage) (
 func TestChartRenderLimitEntersCheckedTextSynthesisForEveryEntry(t *testing.T) {
 	for _, workbench := range []bool{true, false} {
 		t.Run(fmt.Sprint(workbench), func(t *testing.T) {
-			model := &mockChat{}
+			var replies []mockResponse
 			for round := 0; round < maxChartRenderFailures; round++ {
-				model.responses = append(model.responses, mockResponse{chunks: []types.StreamResponse{{Done: true, FinishReason: "tool_calls", ToolCalls: []types.LLMToolCall{{
-					ID: fmt.Sprintf("chart-%d", round), Type: "function", Function: types.FunctionCall{Name: "render_chart", Arguments: `{"operation":"render"}`},
+				replies = append(replies, mockResponse{chunks: []types.StreamResponse{{Done: true, FinishReason: "tool_calls", ToolCalls: []types.LLMToolCall{{
+					ID: fmt.Sprintf("chart-%d", round), Type: "function", Function: types.FunctionCall{Name: renderChartToolName, Arguments: `{"operation":"render"}`},
 				}}}}})
 			}
-			const answer = "The available source describes covered area. The chart could not be generated because the selected columns have different declared units."
-			verdict := deliveryVerdict("blocked")
+			const answer = "The observation is 12.500 kg. The chart could not be generated because the selected columns have different declared units."
+			verdict := sourceAcceptedVerdict()
 			if !workbench {
-				verdict = sourceConsistencyVerdict(`{"complete":true,"delivery_check":{"status":"blocked","assessment":"The candidate states the actual chart failure and offers supported text without claiming a saved image."}}`)
+				verdict = completenessVerdict(true)
 			}
-			model.responses = append(model.responses, chatAnswer(answer), verdict)
-			e := sourceConsistencyEngine(t, model)
+			replies = append(replies, chatAnswer(answer), verdict)
+			e, state, model := lightStructuredFixture(t, replies...)
 			e.config.WorkbenchDefault, e.config.MaxIterations = workbench, 50
-			e.taskPlan = chartDeliveryPlan()
-			e.taskPlan.DeliveryRequirements = append(e.taskPlan.DeliveryRequirements, taskDeliveryRequirement{Kind: "text", Format: "prose", Criteria: "Explain the actual observed measure and limitations."})
-			tool := &failedProgressChartTool{BaseTool: agenttools.NewBaseTool("render_chart", "synthetic chart", json.RawMessage(`{"type":"object"}`))}
+			tool := &failedProgressChartTool{BaseTool: agenttools.NewBaseTool(renderChartToolName, "isolated render failure", json.RawMessage(`{"type":"object"}`))}
 			e.toolRegistry = agenttools.NewToolRegistry()
 			e.toolRegistry.RegisterTool(tool)
-			state := sourceConsistencyState()
-			messages := e.appendToolResults(emptyMessages(), state.RoundSteps[0])
-			_, err := e.executeLoop(t.Context(), state, "Analyze the actual source.", messages, nil, "session", "message")
+			_, err := e.executeLoop(t.Context(), state, "Report the observation and chart outcome.", emptyMessages(), nil, "session", "message")
 			require.NoError(t, err)
 			require.Equal(t, maxChartRenderFailures, tool.calls)
 			require.Equal(t, answer, state.FinalAnswer)
 			require.Equal(t, "none", model.opts[maxChartRenderFailures].ToolChoice)
 			require.Empty(t, model.opts[maxChartRenderFailures].Tools)
 			require.Contains(t, model.opts[maxChartRenderFailures].RuntimeNotice, "chart render failure limit")
-			require.Equal(t, 1, e.turnReview.Checks, "final prose still goes through the real candidate validator")
 			require.True(t, e.candidateApprovalCurrent(answer, state))
 		})
 	}
@@ -180,76 +295,12 @@ func TestToolStopSynthesisDeadlineCommitsBodyOnLiveParent(t *testing.T) {
 	e := newTestEngine(t, &openFinalStreamChat{})
 	state := &types.AgentState{}
 	ctx := context.WithValue(t.Context(), toolStopSynthesisDeadlineKey{}, time.Now().Add(40*time.Millisecond))
-	err := e.finishToolStoppedAnswer(ctx, "Summarize successful observations.", state, "session", emptyMessages(), "Tools stopped after repeated failures.")
+	err := e.handleMaxIterations(ctx, "Summarize successful observations.", state, "session", emptyMessages())
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.NoError(t, ctx.Err())
 	require.True(t, state.IsComplete)
 	require.NotEmpty(t, state.FinalAnswer)
 	require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer)
-}
-
-type repeatedSourceProgressTool struct {
-	agenttools.BaseTool
-	data  map[string]any
-	calls int
-}
-
-func (tool *repeatedSourceProgressTool) Execute(context.Context, json.RawMessage) (*types.ToolResult, error) {
-	tool.calls++
-	body, _ := json.Marshal(tool.data)
-	return &types.ToolResult{Success: true, Data: tool.data, Output: string(body)}, nil
-}
-
-func TestNonWorkbenchChartAndStructuredStallsSynthesizeText(t *testing.T) {
-	for _, operation := range []string{"inspect", "map", "structured"} {
-		t.Run(operation, func(t *testing.T) {
-			name, args := renderChartToolName, `{"operation":"`+operation+`"}`
-			data := map[string]any{"kind": "chart_source_catalog", "sources": []any{map[string]any{"source_id": "same-source", "row_count": 1}}}
-			if operation == "map" {
-				data = map[string]any{"kind": "chart_source_mapping", "source_id": "mapped-source", "parent_source_id": "same-parent", "mapping": map[string]any{"orientation": "columns", "x_index": 0, "y_indexes": []int{1}}}
-			} else if operation == "structured" {
-				name, args = "structured_analyze_table", `{}`
-				data = chartLongFixture().Result.Data
-			}
-			model := &mockChat{}
-			for i := 0; i < 1+toolProgressStopRounds; i++ {
-				model.responses = append(model.responses, mockResponse{chunks: []types.StreamResponse{{Done: true, FinishReason: "tool_calls", ToolCalls: []types.LLMToolCall{{ID: fmt.Sprintf("call-%d", i), Type: "function", Function: types.FunctionCall{Name: name, Arguments: args}}}}}})
-			}
-			const answer = "The available observations cover the returned source only; the remaining work is unresolved."
-			model.responses = append(model.responses, chatAnswer(answer), completenessVerdict(true))
-			e := newTestEngine(t, model, withMaxIterations(50))
-			e.toolRegistry = agenttools.NewToolRegistry()
-			tool := &repeatedSourceProgressTool{BaseTool: agenttools.NewBaseTool(name, "synthetic actual source", json.RawMessage(`{"type":"object"}`)), data: data}
-			e.toolRegistry.RegisterTool(tool)
-			state, err := e.executeLoop(t.Context(), &types.AgentState{}, "Summarize the returned source.", emptyMessages(), nil, "session", "message")
-			require.NoError(t, err)
-			require.False(t, e.config.WorkbenchDefault)
-			require.Equal(t, 1+toolProgressStopRounds, tool.calls)
-			require.Equal(t, answer, state.FinalAnswer)
-			require.Equal(t, "none", model.opts[tool.calls].ToolChoice)
-		})
-	}
-}
-
-func TestToolProgressMappedEquivalentExecutionsAndBusinessRecordFields(t *testing.T) {
-	makeMap := func(id, sql string) types.ToolCall {
-		provenance, err := json.Marshal(map[string]any{"kind": "source_cell_projection", "source_id": id,
-			"source_provenance": `{"source":{"sha256":"real-version"},"sql":"` + sql + `","result_id":"` + id + `"}`})
-		require.NoError(t, err)
-		return progressChartCall("map", map[string]any{"kind": "chart_source_mapping", "parent_source_id": id, "source_id": id,
-			"mapping": map[string]any{"orientation": "columns", "x_index": 0, "y_indexes": []int{1}},
-			"columns": []any{"x", "measure"}, "rows": []any{[]any{"A", 5}}, "provenance": string(provenance)})
-	}
-	var guard toolProgressGuard
-	require.Equal(t, 1, guard.observe([]types.ToolCall{makeMap("chart-source-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "SELECT measure FROM data")}).NewEvidence)
-	require.Equal(t, 1, guard.observe([]types.ToolCall{makeMap("chart-source-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "SELECT measure FROM data WHERE TRUE")}).StaleRounds)
-	for _, field := range []string{"query", "question", "sql", "notice", "created_at"} {
-		var records toolProgressGuard
-		call := types.ToolCall{Name: "structured_query_series", Result: &types.ToolResult{Success: true, Data: map[string]any{"rows": []any{map[string]any{field: "first observed value", "value": 5}}}}}
-		require.Equal(t, 1, records.observe([]types.ToolCall{call}).NewEvidence)
-		call.Result.Data["rows"] = []any{map[string]any{field: "changed observed value", "value": 5}}
-		require.Equal(t, 1, records.observe([]types.ToolCall{call}).NewEvidence, "business field %s is source data", field)
-	}
 }
 
 type continuousFinalStreamChat struct {
@@ -279,8 +330,33 @@ func TestFinalSynthesisDeadlineDoesNotDrainUnboundedProviderOutput(t *testing.T)
 	state := &types.AgentState{}
 	ctx := context.WithValue(t.Context(), toolStopSynthesisDeadlineKey{}, time.Now().Add(20*time.Millisecond))
 	start := time.Now()
-	err := e.finishToolStoppedAnswer(ctx, "Deliver the actual findings.", state, "session", emptyMessages(), "The tool budget was exhausted.")
+	err := e.handleMaxIterations(ctx, "Deliver the actual findings.", state, "session", emptyMessages())
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Less(t, time.Since(start), time.Second)
 	require.NotEmpty(t, state.FinalAnswer)
+}
+
+func TestToolProgressRenderFailureLimitSurvivesEvidenceSaturation(t *testing.T) {
+	guard := toolProgressGuard{saturated: true}
+	for i := 0; i < maxChartRenderFailures; i++ {
+		result := guard.observe([]types.ToolCall{{Name: renderChartToolName, Args: map[string]any{"operation": "render"}, Result: &types.ToolResult{Error: "invalid actual columns"}}})
+		require.False(t, result.Stop, "accounting saturation is not a stall")
+		require.Equal(t, i+1 >= maxChartRenderFailures, result.RenderLimit)
+	}
+}
+
+func TestToolProgressSuccessfulRenderDoesNotConsumeFailureAllowance(t *testing.T) {
+	ctx := chartContext(t)
+	steps := []types.AgentStep{{ToolCalls: []types.ToolCall{v2ChartFixture(t)}}}
+	tool := newRenderChartTool(ctx, func() []types.AgentStep { return steps }, &chartWriterFixture{}, "session", "message")
+	sources, _ := chartSources(steps)
+	saved := chartRun(t, tool, ctx, map[string]any{"operation": "render", "source_id": sources[0].ID, "chart_type": "line", "x_type": "category", "x_column": 0, "y_columns": []int{1}})
+	require.True(t, saved.Success, saved.Error)
+	guard := toolProgressGuard{renderFailures: maxChartRenderFailures - 1}
+	call := progressChartCall(saved)
+	call.Args = map[string]any{"operation": "render"}
+	require.False(t, guard.observe([]types.ToolCall{call}).RenderLimit)
+	failed := progressChartCall(&types.ToolResult{Error: "different invalid selection"})
+	failed.Args = call.Args
+	require.True(t, guard.observe([]types.ToolCall{failed}).RenderLimit, "a saved chart does not replenish the cumulative failure allowance")
 }

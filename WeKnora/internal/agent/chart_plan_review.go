@@ -255,6 +255,7 @@ func (e *AgentEngine) chartPlanReviewer(query string, state *types.AgentState) c
 		messages[0].Content += "\neligible_x_types仅说明程序用渲染器同一解析器验证每个真实selected X后可表示的类型，不是业务轴选择。required_x_type必须在此集合内，再按完整任务独立判断；数字字符串可以保留真实数值间隔，不必补成某一天。不得为满足time构造原文没有的日期或重抄数值。若所有合法类型均无法满足任务，在chart_issues说明真实来源或语义缺口；不能仅为选到合法类型而放行。集合外的类型属于核验协议错误，程序不会要求模型据此改源或制造日期。"
 		messages[0].Content += "\nunit_metadata.status=mixed表示已知来源单位冲突，必须拆图或按真实单位分开，不能当unknown放行。unknown只表示尚无单位证据，不阻止原值展示，但图与最终文字均不得宣称单位。即使单位相同或未知，也要检查是否混合了不同业务度量、是否丢失用户需要区分的真实维度；这类问题写入chart_issues。只有汇总图例而无真实维度区分不证明已完成分类对比；应依据实际来源字段和值判断，不能仅凭图例文本、标题或SQL别名接受。长表分系列时核对来源中的真实标签列、每个标签值与单位列及观测的对应关系，不能让模型手写常量替代原字段标签。"
 		messages[0].Content += fmt.Sprintf("\n只给精简JSON，不输出推理过程或重复来源全文；assessment最多%d字符，chart_issues与pending_deliverables各最多%d项、各合计最多%d字符，没有项目时输出空数组。", chartReviewAssessmentLimit, chartReviewIssueLimit, chartReviewFeedbackLimit)
+		messages[0].Content += "\n类别图须明确区分X类别与业务系列；同一X含多个业务系列时，按真实维度透视为独立Y列、选择真实series_column，或按用户要求明确聚合。缺失的品类、混合单位或错误范围必须进入chart_issues；用户所需文字分析或其他图仅进入pending_deliverables，不能因此拒绝当前正确图片。不得用标题推断单位或业务分组。"
 		messages = e.modelContext.EncodeMessages(messages)
 		reviewCtx, cancel := context.WithTimeout(ctx, 18*time.Second)
 		defer cancel()
