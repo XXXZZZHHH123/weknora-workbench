@@ -29,6 +29,7 @@ type renderChartTool struct {
 	mapped                  map[string]mappedChartSource
 	reviewPlan              chartPlanReviewer
 	receipts                map[string]verifiedChartReceipt
+	renderReceipts          map[string]verifiedChartReceipt // Real saved images, including incomplete overall deliveries.
 	mu                      sync.Mutex
 }
 
@@ -246,6 +247,15 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (*ty
 	output := fmt.Sprintf("![图表](%s)", delivered.Handle)
 	if validation != nil {
 		data["semantic_validation"] = validation
+		if len(validation.PendingDeliverables) > 0 {
+			notice := "图片已交付，剩余内容请在最终回答中完成：" + strings.Join(validation.PendingDeliverables, "；")
+			data["delivery_notice"] = notice
+			output += "\n\n" + notice
+		}
+		if t.renderReceipts == nil {
+			t.renderReceipts = map[string]verifiedChartReceipt{}
+		}
+		t.renderReceipts[delivered.Handle] = verifiedChartReceipt{CallID: meta.ToolCallID, TaskHash: validation.TaskHash, DataHash: reviewDigest(data), Output: output, Mode: input.DeliveryMode}
 	}
 	if validation != nil && validation.FullTaskView && validation.CompleteDelivery {
 		if t.receipts == nil {

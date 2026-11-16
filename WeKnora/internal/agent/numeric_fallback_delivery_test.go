@@ -9,7 +9,8 @@ import (
 )
 
 func TestNumericFailureFallbackDeliversEarlierGroundedCandidate(t *testing.T) {
-	for _, fallback := range []string{numericFailureFallback, finalNumericFailureFallback} {
+	for _, fallback := range []string{numericFailureFallback, finalNumericFailureFallback, incompleteAnswerFallback,
+		answerReviewUnavailableFallback, sourceProgressStalledFallback, stalledAnswerFallback, truncatedAnswerFallback} {
 		engine := sourceConsistencyEngine(t, &mockChat{})
 		state := sourceConsistencyState()
 		// An earlier candidate passed numeric grounding and reached review; a

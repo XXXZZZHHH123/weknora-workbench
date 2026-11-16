@@ -314,7 +314,7 @@ func (e *AgentEngine) handleMaxIterations(
 		common.PipelineError(ctx, "Agent", "final_answer_failed", map[string]interface{}{
 			"error": err.Error(),
 		})
-		e.commitTerminalResult(ctx, state, sessionID, "Sorry, I was unable to generate a complete answer.", "", "failed", false)
+		e.commitTerminalResult(ctx, state, sessionID, answerReviewUnavailableFallback, "", "failed", false)
 		return fmt.Errorf("failed to synthesize final answer after max iterations: %w", err)
 	}
 	state.IsComplete = true

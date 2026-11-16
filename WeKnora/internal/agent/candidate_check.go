@@ -70,6 +70,8 @@ type turnReviewState struct {
 	UnverifiedDecision         candidateDecision
 	NumericWarningAllowed      bool
 	UnverifiedCitationDelivery *unverifiedCitationDeliveryBinding
+	NumericUnverifiedDecision  candidateDecision
+	NumericUnverifiedDelivery  *numericUnverifiedDeliveryBinding
 	StructuredResultReview     *structuredResultReviewTurn
 	DiscoveryReview            *discoveryDeliveryReviewTurn
 }
@@ -135,6 +137,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	defer func() {
 		e.turnReview.Checks++
 		e.turnReview.Last = decision
+		e.rememberNumericUnverifiedCandidate(ctx, decision, state)
 		if e.needsSourceConsistencyCheck(state) && !suspectAnswerFragment(candidate, reasoning) {
 			// Only candidates judged by the source critic qualify; completeness
 			// checks of fragments or non-sourced replies never become deliveries.
@@ -258,6 +261,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	warning := len(decision.Unsupported) > 0
 	if warning && !e.needsSourceConsistencyCheck(state) {
 		decision.Disposition = candidateNumericFailure
+		decision.ReasonCode = "numeric_tokens_unmatched"
 		return
 	}
 	if warning {
@@ -360,7 +364,7 @@ func (e *AgentEngine) rememberUnverifiedCandidate(candidate string, decision can
 
 type numericWarningNoticeKey struct{}
 
-func numericWarningNotice(tokens []string) string {
+func visibleNumericWarningTokens(tokens []string) []string {
 	visible := []string{}
 	for _, token := range tokens {
 		if len(visible) == 4 {
@@ -370,6 +374,11 @@ func numericWarningNotice(tokens []string) string {
 			visible = append(visible, token)
 		}
 	}
+	return visible
+}
+
+func numericWarningNotice(tokens []string) string {
+	visible := visibleNumericWarningTokens(tokens)
 	if len(visible) == 0 {
 		return "部分数字尚未完全核实，请结合引用的原始资料使用。"
 	}
@@ -401,6 +410,8 @@ func (e *AgentEngine) invalidateCandidateTask() {
 	e.turnReview.UnverifiedUserNotice = ""
 	e.turnReview.UnverifiedDecision = candidateDecision{}
 	e.turnReview.UnverifiedCitationDelivery = nil
+	e.turnReview.NumericUnverifiedDecision = candidateDecision{}
+	e.turnReview.NumericUnverifiedDelivery = nil
 }
 
 // A warning permits delivery after review failure, never reuse of another

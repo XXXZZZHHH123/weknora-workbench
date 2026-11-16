@@ -172,7 +172,7 @@ func maskInspectedMarkdownRows(answer string, rows map[string]bool) string {
 		if column >= 0 && column < len(cells) {
 			row := strings.Trim(strings.TrimSpace(cells[column]), "*`")
 			if rows[row] {
-				cells[column] = " "
+				cells[column] = numericMask(cells[column])
 				lines[index] = strings.Join(cells, "|")
 			}
 		}
@@ -270,6 +270,29 @@ func ungroundedStructuredNumbers(answer string, messages []chat.Message, rawStep
 // source activity: no observed numeric values means unknown claims, rather than
 // the ordinary conversation skip. It never adds a fact or changes delivery policy.
 func ungroundedStructuredNumbersWithEmptyEvidence(answer string, messages []chat.Message, checkEmptyEvidence bool, rawSteps ...[]types.AgentStep) []string {
+	occurrences := ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer, messages, checkEmptyEvidence, rawSteps...)
+	if occurrences == nil {
+		return nil
+	}
+	unsupported := []string{}
+	seen := map[string]bool{}
+	for _, occurrence := range occurrences {
+		if !seen[occurrence.Token] {
+			unsupported = append(unsupported, occurrence.Token)
+			seen[occurrence.Token] = true
+		}
+	}
+	return unsupported
+}
+
+// The same matcher supplies the original byte positions as well as the legacy
+// diagnostic token list. Every provenance mask below preserves byte length;
+// matching never has to guess which repeated token in the answer failed.
+func ungroundedStructuredNumberOccurrences(answer string, messages []chat.Message, rawSteps ...[]types.AgentStep) []numericOccurrence {
+	return ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer, messages, false, rawSteps...)
+}
+
+func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messages []chat.Message, checkEmptyEvidence bool, rawSteps ...[]types.AgentStep) []numericOccurrence {
 	values := []float64{}
 	percentageValues := []float64{}
 	filenames := []string{}
@@ -567,7 +590,7 @@ func ungroundedStructuredNumbersWithEmptyEvidence(answer string, messages []chat
 	} // No numeric evidence; ordinary conversation.
 	answer = maskCurrentChartImageDestinations(answer, rawSteps...)
 	for _, file := range filenames {
-		answer = strings.ReplaceAll(answer, file, "")
+		answer = strings.ReplaceAll(answer, file, numericMask(file))
 	}
 	for _, label := range labels {
 		answer = maskExactSourceIdentity(answer, label)
@@ -576,7 +599,7 @@ func ungroundedStructuredNumbersWithEmptyEvidence(answer string, messages []chat
 	// visible to the checker; removing a known prefix must not hide a forged ID.
 	answer = sourceOpaqueToken.ReplaceAllStringFunc(answer, func(id string) string {
 		if identifiers[id] {
-			return ""
+			return numericMask(id)
 		}
 		return id
 	})
@@ -591,42 +614,41 @@ func ungroundedStructuredNumbersWithEmptyEvidence(answer string, messages []chat
 			}
 		}
 		if matches == 1 {
-			return ""
+			return numericMask(token)
 		}
 		return token
 	})
 	for id := range identifiers {
 		if sourceSeriesID.MatchString(id) && !opaqueSourceID(id) {
 			pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(id) + `\b`)
-			answer = pattern.ReplaceAllString(answer, "")
+			answer = pattern.ReplaceAllStringFunc(answer, numericMask)
 		}
 	}
 	if hasDigest {
-		answer = sourceDigestLabel.ReplaceAllString(answer, "")
+		answer = sourceDigestLabel.ReplaceAllStringFunc(answer, numericMask)
 	}
 	answer = maskInspectedMarkdownRows(answer, inspectedRows)
 	answer = regexp.MustCompile(`\b([1-9][0-9]{0,6})\s*[–—~～-]\s*([1-9][0-9]{0,6})\s*行`).ReplaceAllStringFunc(answer, func(token string) string {
 		parts := regexp.MustCompile(`[1-9][0-9]{0,6}`).FindAllString(token, -1)
 		if len(parts) == 2 && inspectedRows[parts[0]] && inspectedRows[parts[1]] {
-			return " "
+			return numericMask(token)
 		}
 		return token
 	})
 	for row := range inspectedRows {
-		answer = regexp.MustCompile(`(?:第\s*)?\b`+regexp.QuoteMeta(row)+`\s*行`).ReplaceAllString(answer, " ")
+		answer = regexp.MustCompile(`(?:第\s*)?\b`+regexp.QuoteMeta(row)+`\s*行`).ReplaceAllStringFunc(answer, numericMask)
 	}
 	// Citation attributes contain opaque chunk/KB IDs and source URLs, not
 	// numeric claims. Keep checking every number in the surrounding prose.
-	text := sourceCitationTag.ReplaceAllString(answer, "")
+	text := sourceCitationTag.ReplaceAllStringFunc(answer, numericMask)
 	text = maskValidatedCalendarDates(text)
-	text = cellOrListMarker.ReplaceAllString(text, "")
-	unsupported := []string{}
-	seen := map[string]bool{}
-	for _, id := range sourceOpaqueToken.FindAllString(text, -1) {
+	text = cellOrListMarker.ReplaceAllStringFunc(text, numericMask)
+	unsupported := []numericOccurrence{}
+	for _, span := range sourceOpaqueToken.FindAllStringIndex(text, -1) {
+		id := text[span[0]:span[1]]
 		// An opaque token containing letters cannot be a decimal calculation.
-		if strings.ContainsAny(id, "abcdefABCDEF") && !identifiers[id] && !seen[id] {
-			unsupported = append(unsupported, id)
-			seen[id] = true
+		if strings.ContainsAny(id, "abcdefABCDEF") && !identifiers[id] {
+			unsupported = append(unsupported, numericOccurrence{Token: id, Start: span[0], End: span[1]})
 		}
 	}
 	for _, span := range proseNumber.FindAllStringIndex(text, -1) {
@@ -654,9 +676,8 @@ func ungroundedStructuredNumbersWithEmptyEvidence(answer string, messages []chat
 				break
 			}
 		}
-		if !supported && !seen[token] {
-			unsupported = append(unsupported, token)
-			seen[token] = true
+		if !supported {
+			unsupported = append(unsupported, numericOccurrence{Token: token, Start: span[0], End: span[1]})
 		}
 	}
 	return unsupported
@@ -708,7 +729,7 @@ func maskCurrentChartImageDestinations(answer string, rounds ...[]types.AgentSte
 	for _, steps := range rounds {
 		for _, step := range steps {
 			for _, call := range step.ToolCalls {
-				if call.Name != renderChartToolName || call.Result == nil || !call.Result.Success || call.Result.Data["kind"] != "data_chart" || call.Result.Data["status"] != "ok" {
+				if call.ExecutionName() != renderChartToolName || call.Result == nil || !call.Result.Success || call.Result.Data["kind"] != "data_chart" || call.Result.Data["status"] != "ok" {
 					continue
 				}
 				// Live deliveries use a typed value; persisted steps decode maps.
@@ -1301,7 +1322,7 @@ func maskExactSourceIdentity(answer, label string) string {
 		bounded := !(index > 0 && asciiWord(answer[index-1])) && !(end < len(answer) && asciiWord(answer[end]))
 		out.WriteString(answer[:index])
 		if bounded {
-			out.WriteByte(' ')
+			out.WriteString(numericMask(label))
 		} else {
 			out.WriteString(label)
 		}

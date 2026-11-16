@@ -28,9 +28,13 @@ func (m *chartAxisReviewModel) Chat(_ context.Context, messages []chat.Message, 
 	return m.response, m.err
 }
 
-func chartAxisReviewResponse(t *testing.T, axis, assessment, feedback string) *types.ChatResponse {
+func chartAxisReviewResponse(t *testing.T, axis, assessment, issue string) *types.ChatResponse {
 	t.Helper()
-	content, err := json.Marshal(map[string]any{"accepted": true, "complete_delivery": true, "required_x_type": axis, "assessment": assessment, "feedback": feedback})
+	issues := []string{}
+	if issue != "" {
+		issues = append(issues, issue)
+	}
+	content, err := json.Marshal(map[string]any{"chart_issues": issues, "pending_deliverables": []string{}, "required_x_type": axis, "assessment": assessment})
 	require.NoError(t, err)
 	return &types.ChatResponse{Content: string(content), FinishReason: "stop"}
 }
@@ -97,7 +101,7 @@ func TestChartReviewAllowsActualCategoryComparison(t *testing.T) {
 	require.True(t, verdict.CompleteDelivery)
 }
 
-func TestChartReviewPreservesOutstandingFeedbackForRecovery(t *testing.T) {
+func TestChartReviewPreservesChartIssuesForRecovery(t *testing.T) {
 	feedback := "The title claims the entire range, but only the initial observations were read."
 	model := &chartAxisReviewModel{response: chartAxisReviewResponse(t, "numeric", "The axes are valid; the stated range still needs correction.", feedback)}
 	e := newTestEngine(t, model)
@@ -105,13 +109,64 @@ func TestChartReviewPreservesOutstandingFeedbackForRecovery(t *testing.T) {
 	table := chartAxisReviewTable(t)
 	spec := chart.Spec{Type: "line", X: 0, Y: []int{1}, XType: "numeric"}
 	verdict, err := reviewer(chartContext(t), table, spec)
-	require.Nil(t, verdict, "accepted=true with outstanding corrections cannot authorize delivery")
+	require.Nil(t, verdict, "outstanding chart corrections cannot authorize delivery")
 	require.ErrorContains(t, err, feedback, "the executing model must receive the actionable correction")
 	model.response = chartAxisReviewResponse(t, "numeric", "The title accurately states the available range.", "")
 	verdict, err = reviewer(chartContext(t), table, spec)
 	require.NoError(t, err)
 	require.NotNil(t, verdict)
 	require.Len(t, model.seen, 2, "a rejected review must not be cached as approval")
+}
+
+func TestChartReviewPendingAnalysisCannotWaiveChartIssues(t *testing.T) {
+	ctx := chartContext(t)
+	issue := "The selected series uses the wrong source unit."
+	content, err := json.Marshal(map[string]any{
+		"required_x_type": "time", "assessment": "The image still needs a source mapping correction.",
+		"chart_issues": []string{issue}, "pending_deliverables": []string{"Explain the trend in the final answer."},
+	})
+	require.NoError(t, err)
+	model := &chartAxisReviewModel{response: &types.ChatResponse{Content: string(content), FinishReason: "stop"}}
+	e := newTestEngine(t, model)
+	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{queryChartFixture()}}}}
+	writer := &chartWriterFixture{}
+	tool := newRenderChartTool(ctx, func() []types.AgentStep { return state.RoundSteps }, writer, "session", "message")
+	tool.reviewPlan = e.chartPlanReviewer("Draw the requested observations and explain the trend.", state)
+	sources, _ := chartSources(state.RoundSteps)
+	result := chartRun(t, tool, ctx, map[string]any{"operation": "render", "source_id": sources[0].ID, "chart_type": "line", "x_type": "time", "x_column": 0, "y_columns": []int{2}})
+	require.False(t, result.Success)
+	require.Contains(t, result.Error, issue)
+	require.NotContains(t, result.Error, "Explain the trend")
+	require.Empty(t, writer.requests)
+	require.Empty(t, tool.receipts)
+	require.Empty(t, tool.renderReceipts)
+}
+
+func TestChartReviewRequiresBoundedSeparateIssueLists(t *testing.T) {
+	for _, field := range []string{"chart_issues", "pending_deliverables"} {
+		for _, test := range []struct {
+			name  string
+			items any
+		}{
+			{"null", nil},
+			{"blank-item", []string{" "}},
+			{"too-many-items", []string{"a", "b", "c", "d", "e"}},
+			{"aggregate-length", []string{strings.Repeat("核", chartReviewFeedbackLimit), "改"}},
+			{"wrong-type", "Not an array"},
+		} {
+			t.Run(field+"/"+test.name, func(t *testing.T) {
+				payload := map[string]any{"chart_issues": []string{}, "pending_deliverables": []string{}, "required_x_type": "numeric", "assessment": "Checked the actual source observations."}
+				payload[field] = test.items
+				content, err := json.Marshal(payload)
+				require.NoError(t, err)
+				model := &chartAxisReviewModel{response: &types.ChatResponse{Content: string(content), FinishReason: "stop"}}
+				e := newTestEngine(t, model)
+				validation, err := e.chartPlanReviewer("Draw actual observations.", &types.AgentState{})(chartContext(t), chartAxisReviewTable(t), chart.Spec{Type: "line", X: 0, Y: []int{1}, XType: "numeric"})
+				require.Nil(t, validation)
+				require.ErrorContains(t, err, "chart_review_invalid_protocol")
+			})
+		}
+	}
 }
 
 func TestChartReviewBudgetAndProtocolBounds(t *testing.T) {
@@ -129,7 +184,14 @@ func TestChartReviewBudgetAndProtocolBounds(t *testing.T) {
 	require.NoError(t, json.Unmarshal(model.options[0].Format, &schema))
 	properties := schema["properties"].(map[string]any)
 	require.Equal(t, float64(chartReviewAssessmentLimit), properties["assessment"].(map[string]any)["maxLength"])
-	require.Equal(t, float64(chartReviewFeedbackLimit), properties["feedback"].(map[string]any)["maxLength"])
+	for _, name := range []string{"chart_issues", "pending_deliverables"} {
+		list := properties[name].(map[string]any)
+		require.Equal(t, float64(chartReviewIssueLimit), list["maxItems"])
+		require.Equal(t, float64(chartReviewFeedbackLimit), list["items"].(map[string]any)["maxLength"])
+	}
+	require.NotContains(t, properties, "accepted")
+	require.NotContains(t, properties, "complete_delivery")
+	require.NotContains(t, properties, "feedback")
 	for _, test := range []struct {
 		name, axis, assessment, feedback, reason string
 	}{

@@ -109,7 +109,7 @@ func TestChartSourceEngineAcceptanceWiring(t *testing.T) {
 					chatAnswer("已观测的前段上升、后段下降；缺失区间无法判断连续走势。\n\n![图表](res://0001)"))
 			}
 			responses = append(responses, sourceAcceptedVerdict())
-			model := &taskPlannerChat{plan: &types.ChatResponse{Content: string(plan), FinishReason: "stop"}, chartPlan: &types.ChatResponse{Content: `{"accepted":true,"complete_delivery":false,"required_x_type":"time","assessment":"Synthetic chart wiring fixture with real selected dates, missing values and observations.","feedback":""}`, FinishReason: "stop"}, mockChat: mockChat{responses: responses}}
+			model := &taskPlannerChat{plan: &types.ChatResponse{Content: string(plan), FinishReason: "stop"}, chartPlan: &types.ChatResponse{Content: `{"required_x_type":"time","assessment":"Synthetic chart wiring fixture with real selected dates, missing values and observations.","chart_issues":[],"pending_deliverables":["Complete the remaining requested analysis."]}`, FinishReason: "stop"}, mockChat: mockChat{responses: responses}}
 			writer := &chartSourceAcceptanceWriter{}
 			e := chartSourceAcceptanceEngine(t, model, writer)
 			snapshot := chartSourceObserveTerminalTask(e)

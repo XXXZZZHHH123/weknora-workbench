@@ -817,6 +817,8 @@ func (e *AgentEngine) finishStalledTurnWithGuards(
 		if decision.Err != nil {
 			answer = answerReviewUnavailableFallback
 			answerStreamed = false
+		} else if decision.Disposition == candidateNumericFailure {
+			answer, answerStreamed = numericFailureFallback, false
 		} else if decision.Disposition != candidateAccepted && decision.Disposition != candidateNumericWarning {
 			answer = ""
 		} else if decision.Disposition == candidateNumericWarning {

@@ -119,10 +119,10 @@ func TestChartReviewDecisionDoesNotCacheRejectedOrIncompleteResponses(t *testing
 		response *types.ChatResponse
 		err      error
 	}{
-		{"rejected", &types.ChatResponse{Content: `{"accepted":false,"complete_delivery":false,"required_x_type":"numeric","assessment":"The selected measure is not the requested one.","feedback":"Select the requested source measure."}`, FinishReason: "stop"}, nil},
+		{"rejected", &types.ChatResponse{Content: `{"required_x_type":"numeric","assessment":"The selected measure is not the requested one.","chart_issues":["Select the requested source measure."],"pending_deliverables":[]}`, FinishReason: "stop"}, nil},
 		{"feedback-not-cleared", chartAxisReviewResponse(t, "numeric", "The source still needs a revision.", "Retain the actual missing-data gap."), nil},
 		{"invalid-json", &types.ChatResponse{Content: `{"accepted":true`, FinishReason: "stop"}, nil},
-		{"missing-complete-delivery", &types.ChatResponse{Content: `{"accepted":true,"required_x_type":"numeric","assessment":"Actual measurements.","feedback":""}`, FinishReason: "stop"}, nil},
+		{"missing-pending-deliverables", &types.ChatResponse{Content: `{"required_x_type":"numeric","assessment":"Actual measurements.","chart_issues":[]}`, FinishReason: "stop"}, nil},
 		{"ineligible-axis", chartAxisReviewResponse(t, "time", "The actual source has numeric positions.", ""), nil},
 		{"output-limit", &types.ChatResponse{Content: valid.Content, FinishReason: "length"}, nil},
 		{"model-error", valid, errors.New("isolated model failure")},
@@ -195,7 +195,7 @@ func TestChartReviewDecisionRejectsCanceledCacheHitsAndEvictsChangedInput(t *tes
 	require.Len(t, model.seen, 1)
 	changed := table
 	changed.Notice += " Changed actual source limitation."
-	model.response = &types.ChatResponse{Content: `{"accepted":false,"complete_delivery":false,"required_x_type":"numeric","assessment":"The changed scope is insufficient.","feedback":"Resolve the actual scope limitation."}`, FinishReason: "stop"}
+	model.response = &types.ChatResponse{Content: `{"required_x_type":"numeric","assessment":"The changed scope is insufficient.","chart_issues":["Resolve the actual scope limitation."],"pending_deliverables":[]}`, FinishReason: "stop"}
 	_, err = reviewer(chartContext(t), changed, spec)
 	require.Error(t, err)
 	model.response = chartAxisReviewResponse(t, "numeric", "The restored actual source matches.", "")
@@ -206,7 +206,7 @@ func TestChartReviewDecisionRejectsCanceledCacheHitsAndEvictsChangedInput(t *tes
 
 func TestChartReviewCachedAxisDoesNotPromoteIncompleteDelivery(t *testing.T) {
 	ctx := chartContext(t)
-	model := &chartAxisReviewModel{response: &types.ChatResponse{Content: `{"accepted":true,"complete_delivery":false,"required_x_type":"time","assessment":"These actual dates and readings are valid, but another requested deliverable is still needed.","feedback":""}`, FinishReason: "stop"}}
+	model := &chartAxisReviewModel{response: &types.ChatResponse{Content: `{"required_x_type":"time","assessment":"These actual dates and readings are valid, but another requested deliverable is still needed.","chart_issues":[],"pending_deliverables":["Complete the remaining requested analysis."]}`, FinishReason: "stop"}}
 	e := newTestEngine(t, model)
 	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{queryChartFixture()}}}}
 	writer := &chartWriterFixture{}
@@ -221,8 +221,22 @@ func TestChartReviewCachedAxisDoesNotPromoteIncompleteDelivery(t *testing.T) {
 	require.True(t, result.Success, result.Error)
 	require.Len(t, model.seen, 1)
 	require.Len(t, writer.requests, 1)
-	require.False(t, result.Data["semantic_validation"].(*chartSemanticValidation).CompleteDelivery)
+	validation := result.Data["semantic_validation"].(*chartSemanticValidation)
+	require.False(t, validation.CompleteDelivery)
+	require.Equal(t, []string{"Complete the remaining requested analysis."}, validation.PendingDeliverables)
+	require.Contains(t, result.Output, "![图表](")
+	require.Contains(t, result.Output, "图片已交付，剩余内容请在最终回答中完成")
+	require.Contains(t, result.Output, validation.PendingDeliverables[0])
+	require.Equal(t, "图片已交付，剩余内容请在最终回答中完成："+validation.PendingDeliverables[0], result.Data["delivery_notice"])
 	require.Empty(t, tool.receipts, "an accepted axis decision cannot certify the missing deliverable")
+	require.Len(t, tool.renderReceipts, 1, "the successfully saved image still has its own exact execution binding")
+	validation.PendingDeliverables[0] = "Cannot mutate the cached decision."
+	// The cached decision owns its list; changing a caller's presentation
+	// cannot clear or alter the remaining task on a subsequent binding.
+	validation, err := tool.reviewPlan(ctx, sources[0], result.Data["chart_spec"].(chart.Spec))
+	require.NoError(t, err)
+	require.Equal(t, []string{"Complete the remaining requested analysis."}, validation.PendingDeliverables)
+	require.Len(t, model.seen, 1)
 }
 
 func TestChartReviewCachedDecisionStillRequiresCurrentMappedSourceAndPrivateDelivery(t *testing.T) {
