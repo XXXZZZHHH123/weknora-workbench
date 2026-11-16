@@ -1763,6 +1763,12 @@ func (e *AgentEngine) runReActIteration(
 			if e.collaborationOwnsFailure(ctx) {
 				return iterOutcomeBreak, fmt.Errorf("source collection stopped after repeated rounds without new evidence")
 			}
+			if observation.ResultWorkflow {
+				finished, err := e.finishResultWorkflowStall(ctx, state, query, sessionID, restoreForFinalAnswer(*messagesPtr, guards))
+				if finished {
+					return iterOutcomeBreak, err
+				}
+			}
 			// Reaching a resource bound is a runtime failure, never semantic
 			// completion. No unchecked draft or extra synthesis is published.
 			e.commitTerminalResult(ctx, state, sessionID, sourceProgressStalledFallback, "", "stalled", false)

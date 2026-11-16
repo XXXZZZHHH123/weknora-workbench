@@ -16,8 +16,17 @@ const chartRecoveryCallBudget = 256
 // receive this diagnostic. It does not execute a read, choose axes, or repair
 // SQL values. Failed tool Data is not model-visible unless encoded in Output.
 func (t *renderChartTool) sourceFailureDiagnostics(message string, source chart.Table, steps []types.AgentStep) *types.ToolResult {
+	columns := make([]map[string]any, 0, len(source.Columns))
+	for index, column := range source.Columns {
+		view := map[string]any{"index": index, "name": column.Name, "display_name": column.Label(), "unit": column.Unit, "role": column.Role}
+		if column.UnitMetadata != nil {
+			view["unit_status"] = column.UnitMetadata.Status
+		}
+		columns = append(columns, view)
+	}
 	diagnostic := map[string]any{
 		"source_id":    source.ID,
+		"columns":      columns,
 		"matrix_shape": map[string]int{"rows": len(source.Rows), "columns": len(source.Columns)},
 		"mapping_coordinates": map[string]string{
 			"rows":    "x_index/y_indexes取原行；value_indexes取原列，排除label_index指定的标签列；unit_index仅复制原列已声明单位。",

@@ -60,11 +60,22 @@ func Render(table Table, spec Spec) ([]byte, error) {
 		}
 	}
 	xValues := make([]string, len(table.Rows))
+	categories := map[string]bool{}
 	for i, row := range table.Rows {
 		if len(row) != len(table.Columns) || strings.TrimSpace(row[spec.X]) == "" {
 			return nil, fmt.Errorf("missing X or inconsistent source row at %d", i)
 		}
 		xValues[i] = row[spec.X]
+		// Category charts need one observation per category and Y series.
+		// Long results must explicitly group or pivot business dimensions;
+		// otherwise their observations share an indistinguishable legend.
+		// Scatter plots retain repeated samples.
+		if spec.XType == "category" && spec.Type != "scatter" {
+			if categories[row[spec.X]] {
+				return nil, fmt.Errorf("repeated X categories require explicit grouping or aggregation of real source dimensions into distinct Y series; no rows were dropped")
+			}
+			categories[row[spec.X]] = true
+		}
 	}
 	xs, xmin, xmax, err := xAxisCoordinates(xValues, spec.XType)
 	if err != nil {

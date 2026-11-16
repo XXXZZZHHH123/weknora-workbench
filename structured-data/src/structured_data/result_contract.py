@@ -90,6 +90,17 @@ def declared_unit(symbol, evidence, *, level):
                 binding_scope='result_column', evidence=deepcopy(evidence))
 
 
+def mixed_unit(units, reason):
+    """Retain conflicting declarations without claiming a resolved output unit."""
+    evidence = []
+    for unit in units:
+        for entry in unit.get('evidence', []):
+            if entry not in evidence:
+                evidence.append(deepcopy(entry))
+    return dict(status='mixed', evidence_level='none', binding_scope='result_column',
+                evidence=evidence, reason=reason)
+
+
 def snapshot(source, *, kind, versions=None, input_data=None, **identities):
     from .workspaces import current_identity
     identity=current_identity.get()
@@ -162,11 +173,11 @@ def excel_value_unit(series, source_sha256):
         sheet=s.get('sheet'), header_cells=s.get('header_cells', []),
         binding_scope='imported_series_declaration', original_annotation_verified=False)],
         level='imported_series_metadata') for sid, s in series.items()]
+    # An additional missing declaration cannot erase a known conflict.
+    if len({u['symbol'] for u in units if u['status'] == 'declared'}) > 1:
+        return mixed_unit(units, 'Loaded value column contains different series units; SQL predicates are not unit bindings')
     if not units or any(u['status'] == 'unknown' for u in units):
         return unknown_unit('At least one loaded series has no unit declaration')
-    if len({u['symbol'] for u in units}) != 1:
-        return dict(status='mixed', evidence_level='none', binding_scope='result_column',
-                    evidence=[], reason='Loaded value column contains different series units; SQL predicates are not unit bindings')
     result = deepcopy(units[0])
     result['evidence'] = [e for u in units for e in u['evidence']]
     return result

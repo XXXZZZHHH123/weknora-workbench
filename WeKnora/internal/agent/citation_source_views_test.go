@@ -263,7 +263,67 @@ type citationFullReadIndex struct {
 func (index *citationFullReadIndex) HybridSearch(context.Context, string, types.SearchParams) ([]*types.SearchResult, error) {
 	return []*types.SearchResult{{ID: index.chunk.ID, KnowledgeID: index.chunk.KnowledgeID,
 		KnowledgeBaseID: index.chunk.KnowledgeBaseID, ChunkType: index.chunk.ChunkType, Content: index.chunk.Content,
-		ContentRevision: index.chunk.ContentRevision, Score: 0.99}}, nil
+		ContentRevision: index.chunk.ContentRevision, SourceLocators: index.chunk.SourceLocators,
+		StartAt: index.chunk.StartAt, EndAt: index.chunk.EndAt, ParentChunkID: index.chunk.ParentChunkID,
+		ChunkIndex: index.chunk.ChunkIndex, Score: 0.99}}, nil
+}
+
+func TestCitationRealSearchPageProjectionUsesExactSourceIdentity(t *testing.T) {
+	for _, pageFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("page_first_%t", pageFirst), func(t *testing.T) {
+			document := &types.Knowledge{ID: "contract-document", KnowledgeBaseID: "contract-library", TenantID: 7,
+				Title: "Measurement handbook", FileName: "measurement-handbook.pdf", FileType: "pdf", ParseStatus: types.ParseStatusCompleted}
+			chunk := &types.Chunk{ID: "view-shared", KnowledgeID: document.ID, KnowledgeBaseID: document.KnowledgeBaseID,
+				TenantID: 7, ChunkType: types.ChunkTypeText, IsEnabled: true, Content: citationViewOriginalBody,
+				ContentRevision: 4, StartAt: 31, EndAt: 31 + len(citationViewOriginalBody), ChunkIndex: 3, ParentChunkID: "source-parent",
+				SourceLocators: types.SourceLocators{{Type: types.SourceLocatorPDF, Page: 7, SourceHash: strings.Repeat("c", 64)}, {Type: types.SourceLocatorPDF, Page: 8, SourceHash: strings.Repeat("c", 64)}}}
+			repository := &citationContractChunkRepository{rows: []*types.Chunk{chunk}}
+			chunks := &citationFullReadLookup{&citationContractChunkService{repo: repository}}
+			knowledge := &plannedDocumentKnowledge{document: document}
+			targets := types.SearchTargets{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: document.KnowledgeBaseID, TenantID: 7}}
+			ctx := types.WithCaller(t.Context(), types.Caller{TenantID: 7, UserID: "authorized-reader", Role: types.TenantRoleViewer})
+			search := agenttools.NewSearchKnowledgeTool(&citationFullReadIndex{sourceDiscoveryKnowledgeService: &sourceDiscoveryKnowledgeService{}, chunk: chunk}, knowledge, nil, targets, nil, nil)
+			searched, err := search.Execute(ctx, json.RawMessage(`{"query":"measurement","mode":"keyword"}`))
+			require.NoError(t, err)
+			require.True(t, searched.Success, searched.Error)
+			read := agenttools.NewReadDocumentTool(knowledge, chunks, targets)
+			page, err := read.Execute(ctx, json.RawMessage(`{"id":"contract-document","page":7}`))
+			require.NoError(t, err)
+			require.True(t, page.Success, page.Error)
+			require.Contains(t, page.Data["chunks"].([]map[string]any)[0], "content_source_view")
+			state := citationViewState(searched, page)
+			state.RoundSteps[0].ToolCalls[0].Name = agenttools.ToolSearchKnowledge
+			if pageFirst {
+				state.RoundSteps[0], state.RoundSteps[1] = state.RoundSteps[1], state.RoundSteps[0]
+			}
+			model := &mockChat{}
+			e := sourceConsistencyEngine(t, model)
+			e.config.AnswerReviewMode = "standard"
+			for _, step := range state.RoundSteps {
+				e.appendToolResults(emptyMessages(), step)
+			}
+			candidate := `面积🙂用量。<kb chunk_id="view-shared" />`
+			require.Equal(t, candidateAccepted, e.checkCandidate(ctx, "说明该页的指标含义。", candidate, "", state, nil, false).Disposition)
+			refs := e.currentCandidateKnowledgeReferences(candidate, state, nil)
+			require.Len(t, refs, 1)
+			require.Equal(t, chunk.Content, refs[0].Content)
+			require.Equal(t, chunk.ContentRevision, refs[0].ContentRevision)
+			require.Equal(t, chunk.SourceLocators, refs[0].SourceLocators)
+			require.Empty(t, model.calls)
+			// A full search witness must still prove the exact origin revision,
+			// body and source location. A later read cannot erase real conflict.
+			row := searched.Data["results"].([]map[string]any)[0]
+			for _, mutation := range []struct {
+				field string
+				value any
+			}{{"content_revision", 5}, {"content_revision", nil}, {"content", chunk.Content + "changed"}, {"start_at", 99}, {"parent_chunk_id", "another-parent"}, {"knowledge_base_id", "another-library"}} {
+				previous := row[mutation.field]
+				row[mutation.field] = mutation.value
+				require.Empty(t, e.currentCandidateKnowledgeReferences(candidate, state, nil), "conflicting %s must remain blocked", mutation.field)
+				row[mutation.field] = previous
+			}
+		})
+	}
 }
 
 func TestCitationRealSearchThenUncutReadKeepsCanonicalReference(t *testing.T) {
@@ -283,7 +343,7 @@ func TestCitationRealSearchThenUncutReadKeepsCanonicalReference(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, searched.Success, searched.Error)
 			searchRow := searched.Data["results"].([]map[string]any)[0]
-			require.NotContains(t, searchRow, "content_revision", "exercise the real search format without inventing a missing version")
+			require.Equal(t, chunk.ContentRevision, searchRow["content_revision"], "search carries the actual source revision, including zero")
 			require.NotContains(t, searchRow, "source_locators")
 			model := &mockChat{}
 			e := sourceConsistencyEngine(t, model)

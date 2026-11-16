@@ -16,6 +16,9 @@ import (
 // directories and complete result-row prefixes are projected; cell values and
 // source references are never shortened or rewritten.
 func fitStructuredDirectory(ctx context.Context, operation string, result *types.ToolResult) *types.ToolResult {
+	if operation == "list_charts" || operation == "list_series" {
+		return fitStructuredItemDirectory(ctx, operation, result)
+	}
 	if result == nil || !result.Success || result.Data == nil || (operation != "list_datasets" && operation != "list_pdf_tables" && operation != "read_pdf_table" && operation != "query_pdf_table") {
 		return result
 	}
