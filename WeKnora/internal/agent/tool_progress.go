@@ -15,7 +15,7 @@ const (
 	toolProgressStopRounds   = 6
 	maxToolProgressKeys      = 4096
 
-	sourceProgressStalledFallback = "本轮读取和纠错未取得新证据，已停止重复尝试，尚未完成回答。"
+	sourceProgressStalledFallback = "本轮工具执行和纠错未取得新证据，已停止重复尝试，尚未完成回答。"
 	toolProgressReplanNotice      = "Runtime diagnostic: recent tool rounds have returned only failures or already-observed source content. Reassess the COMPLETE human request, current source scope, actual tool schemas and returned diagnostics. Produce a corrected evidence/reading plan before continuing. Do not repeat reads merely by changing query wording or add optional calculations. A genuinely new authorized read or corrected operation remains available. If the required evidence cannot be obtained, state the actual bounded gap using only verified results; do not claim the task is complete or weaken source, permission, unit or numeric checks."
 )
 
@@ -23,10 +23,11 @@ const (
 // completeness classifier. Only actual source content/metadata and technical
 // tool outcomes participate; a model's claim of progress never resets it.
 type toolProgressGuard struct {
-	seen      map[[sha256.Size]byte]struct{}
-	stale     int
-	warned    bool
-	saturated bool
+	seen           map[[sha256.Size]byte]struct{}
+	stale          int
+	warned         bool
+	saturated      bool
+	resultWorkflow bool
 }
 
 type toolProgressObservation struct {
@@ -34,6 +35,9 @@ type toolProgressObservation struct {
 	StaleRounds int
 	Replan      bool
 	Stop        bool
+	// An actual data/chart operation occurred in this turn. Directories and
+	// model intent alone cannot select the result-workflow settlement path.
+	ResultWorkflow bool
 }
 
 func (g *toolProgressGuard) observe(calls []types.ToolCall) toolProgressObservation {
@@ -46,7 +50,9 @@ func (g *toolProgressGuard) observe(calls []types.ToolCall) toolProgressObservat
 	}
 	otherProgress, sourceAttempt := false, false
 	for _, call := range calls {
-		tracked := toolProgressOperation(call.ExecutionName())
+		operation, structured := structuredProgressOperation(call)
+		tracked := toolProgressOperation(call.ExecutionName()) || structured
+		g.resultWorkflow = g.resultWorkflow || call.ExecutionName() == "render_chart" || structuredProgressHasResults(operation)
 		sourceAttempt = sourceAttempt || tracked
 		if call.Result == nil || !call.Result.Success {
 			continue
@@ -74,6 +80,7 @@ func (g *toolProgressGuard) observe(calls []types.ToolCall) toolProgressObservat
 			out.NewEvidence++
 		}
 	}
+	out.ResultWorkflow = g.resultWorkflow
 	if !sourceAttempt && !otherProgress {
 		// Failures of external jobs, writes or other workflows remain under
 		// their own retry guards; they are not evidence of a document stall.
@@ -95,7 +102,7 @@ func (g *toolProgressGuard) observe(calls []types.ToolCall) toolProgressObservat
 func toolProgressOperation(name string) bool {
 	switch name {
 	case "read_document", "search_knowledge", "bind_document_scope", "list_documents", expandTaskToolsName,
-		"calculate_document_table", "calculate_source_values", "analyze_document_tables":
+		"calculate_document_table", "calculate_source_values", "analyze_document_tables", "render_chart":
 		return true
 	default:
 		return false
@@ -104,7 +111,12 @@ func toolProgressOperation(name string) bool {
 
 func toolProgressEvidence(call types.ToolCall) ([][sha256.Size]byte, bool) {
 	name := call.ExecutionName()
+	if operation, tracked := structuredProgressOperation(call); tracked {
+		return structuredToolProgressEvidence(operation, call.Result.Data), true
+	}
 	switch name {
+	case "render_chart":
+		return chartToolProgressEvidence(call.Result.Data), true
 	case "read_document", "search_knowledge":
 		var keys [][sha256.Size]byte
 		for _, field := range []string{"chunks", "results"} {

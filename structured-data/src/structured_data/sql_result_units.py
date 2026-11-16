@@ -1,7 +1,8 @@
 """Conservative unit propagation over DuckDB's AST, never SQL rewriting.
 
 Unknown syntax remains executable by the existing isolated SQL engine, but has
-unknown units. A declaration is not an independently verified page annotation.
+unknown units unless its operands already carry a known unit conflict.
+A declaration is not an independently verified page annotation.
 No unit is inferred from question/alias/value magnitude or a same-page note.
 """
 from __future__ import annotations
@@ -11,7 +12,7 @@ from dataclasses import dataclass
 import json
 import duckdb
 
-from .result_contract import unknown_unit
+from .result_contract import mixed_unit, unknown_unit
 
 
 @dataclass
@@ -23,13 +24,18 @@ class _Value:
     null: bool = False
 
 
-def _unknown(reason='SQL shape has no supported deterministic unit rule'):
+def _unknown(reason='SQL shape has no supported deterministic unit rule', values=()):
+    # Lack of an operation rule is not evidence that a known conflict vanished.
+    # This only preserves a hazard; it never supplies a unit to unknown SQL.
+    if any(v.unit['status'] == 'mixed' for v in values):
+        return _Value(mixed_unit([v.unit for v in values],
+                                'SQL expression retains a known mixed-unit input; no common output unit is proven'))
     return _Value(unknown_unit(reason))
 
 
 def _derived(value, operation):
     if value.unit['status'] not in ('declared', 'derived'):
-        return _unknown()
+        return _unknown(values=[value])
     unit = deepcopy(value.unit)
     unit.update(status='derived', evidence_level='deterministic_expression',
                 expression=operation)
@@ -40,13 +46,12 @@ def _same(values, *, operation='alternatives'):
     values = [v for v in values if not v.null]
     if not values:
         return _unknown()
-    symbols = {v.unit.get('symbol') for v in values}
+    symbols = {v.unit['symbol'] for v in values if v.unit['status'] in ('declared', 'derived')}
+    if any(v.unit['status'] == 'mixed' for v in values) or len(symbols) > 1:
+        return _Value(mixed_unit([v.unit for v in values],
+                                'Expression alternatives retain different explicit units'))
     if any(v.unit['status'] not in ('declared', 'derived') for v in values):
         return _unknown('An expression branch has no bound unit declaration')
-    if len(symbols) != 1:
-        return _Value(dict(status='mixed', evidence_level='none',
-                           binding_scope='result_column', evidence=[],
-                           reason='Expression alternatives have different explicit units'))
     unit = _derived(values[0], operation).unit
     unit['evidence'] = []
     for value in values:
@@ -133,13 +138,16 @@ class _Units:
                               'TINYINT', 'SMALLINT', 'INTEGER', 'BIGINT', 'HUGEINT', 'UTINYINT',
                               'USMALLINT', 'UINTEGER', 'UBIGINT', 'UHUGEINT', 'DECIMAL', 'FLOAT', 'DOUBLE'),
                           null=value.get('is_null', False))
+        if kind == 'SUBQUERY' and node.get('subquery_type') == 'SCALAR':
+            values = self.query(node['subquery']['node'], ctes)
+            return values[0] if len(values) == 1 else _unknown()
         if kind == 'CAST':
             value = self.expression(node['child'], scope, ctes)
             target = node.get('cast_type', {}).get('id', '')
             if target in ('DECIMAL', 'DOUBLE', 'FLOAT', 'TINYINT', 'SMALLINT', 'INTEGER',
                           'BIGINT', 'HUGEINT', 'UTINYINT', 'USMALLINT', 'UINTEGER', 'UBIGINT', 'UHUGEINT'):
                 return _Value(_derived(value, 'numeric_cast_no_unit_conversion').unit, scalar=value.scalar, null=value.null)
-            return _unknown('Cast target has no supported numeric unit rule')
+            return _unknown('Cast target has no supported numeric unit rule', [value])
         if kind == 'CASE':
             branches = [self.expression(x['then_expr'], scope, ctes) for x in node.get('case_checks', [])]
             if node.get('else_expr'):
@@ -174,8 +182,25 @@ class _Units:
                     return _Value(unit)
             if name in ('coalesce', 'ifnull', 'greatest', 'least'):
                 return _same(values, operation=name + '_alternatives')
-            return _unknown()
-        return _unknown()
+            return _unknown(values=values)
+        # DuckDB also represents operations such as COALESCE as OPERATOR nodes.
+        # Unhandled operations may retain conflicts, but cannot derive units.
+        return _unknown(values=list(self.children(node, scope, ctes)))
+
+    def children(self, node, scope, ctes):
+        for value in node.values():
+            if isinstance(value, dict):
+                if 'class' in value:
+                    yield self.expression(value, scope, ctes)
+                else:
+                    yield from self.children(value, scope, ctes)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        if 'class' in item:
+                            yield self.expression(item, scope, ctes)
+                        else:
+                            yield from self.children(item, scope, ctes)
 
     def query(self, node, ctes=None):
         self.visit()
@@ -217,6 +242,40 @@ class _Units:
         return result
 
 
+def _bound_output_columns(node, source_columns):
+    """Reuse the scope binder without changing its source/label guarantees."""
+    from .pdf_sql_provenance import _Binder, _Column, _Dependency, _Relation
+    binder = _Binder([])
+    binder.source = _Relation([_Column(name, _Dependency(frozenset({name})), 'data')
+                               for name in source_columns], True)
+    return binder.query(node).columns
+
+
+def _retain_mixed_dependencies(units, node, source_units):
+    """Unknown unit syntax cannot erase an independently bound source conflict.
+
+    This fallback never certifies a measurement unit or an unverified SQL scope.
+    Supported count/ratio rules keep their dimensionless result. Unsupported
+    relations remain unverified by the same binder used for result provenance.
+    """
+    mixed = {name: unit for name, unit in source_units.items() if unit['status'] == 'mixed'}
+    if not mixed or not any(unit['status'] == 'unknown' for unit in units):
+        return units
+    try:
+        columns = _bound_output_columns(node, source_units)
+        if len(columns) != len(units):
+            return units
+        retained = []
+        for unit, column in zip(units, columns):
+            conflicts = [mixed[name] for name in sorted(column.dependency.columns) if name in mixed]
+            if unit['status'] == 'unknown' and conflicts:
+                unit = mixed_unit(conflicts, 'SQL output depends on known mixed-unit source values; no common output unit is proven')
+            retained.append(unit)
+        return retained
+    except (KeyError, TypeError, ValueError, RecursionError):
+        return units
+
+
 def infer_sql_units(connection, sql, source_units, output_count):
     """Never changes/reexecutes SQL and never rejects safe SQL for unit limits."""
     try:
@@ -224,9 +283,11 @@ def infer_sql_units(connection, sql, source_units, output_count):
             'SELECT json_serialize_sql(?, skip_empty := true, skip_null := true)', [sql]).fetchone()[0])
         if parsed.get('error') or len(parsed.get('statements', [])) != 1:
             return [unknown_unit() for _ in range(output_count)]
-        values = _Units(source_units).query(parsed['statements'][0]['node'])
-        if len(values) == output_count:
-            return [v.unit for v in values]
+        node = parsed['statements'][0]['node']
+        values = _Units(source_units).query(node)
+        units = ([v.unit for v in values] if len(values) == output_count else
+                 [unknown_unit('Unit analysis is incomplete for this SQL shape') for _ in range(output_count)])
+        return _retain_mixed_dependencies(units, node, source_units)
     except (KeyError, TypeError, ValueError, RecursionError, duckdb.Error):
         pass
     return [unknown_unit('Unit analysis is incomplete for this SQL shape') for _ in range(output_count)]
@@ -238,16 +299,12 @@ def describe_excel_dependencies(connection, sql, source_columns, output_count):
     This does not authorize SQL or change Excel's existing execution contract.
     Physical coordinate/identity columns remain technical even through aliases.
     """
-    from .pdf_sql_provenance import _Binder, _Column, _Dependency, _Relation
     try:
         parsed = json.loads(connection.execute(
             'SELECT json_serialize_sql(?, skip_empty := true, skip_null := true)', [sql]).fetchone()[0])
         if parsed.get('error') or len(parsed.get('statements', [])) != 1:
             raise ValueError('Unparsed SQL')
-        binder = _Binder([])
-        binder.source = _Relation([_Column(name, _Dependency(frozenset({name})), 'data')
-                                   for name in source_columns], True)
-        outputs = binder.query(parsed['statements'][0]['node']).columns
+        outputs = _bound_output_columns(parsed['statements'][0]['node'], source_columns)
         if len(outputs) != output_count:
             raise ValueError('Dependency shape differs')
         technical = {'series_id', 'source_cell', 'date_cell', 'sheet'}

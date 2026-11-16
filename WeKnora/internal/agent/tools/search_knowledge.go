@@ -1293,6 +1293,19 @@ func (t *SearchKnowledgeTool) formatOutput(
 		} else {
 			row["chunk_id"] = result.ID
 			row["chunk_index"] = result.ChunkIndex
+			// Preserve the retrieved chunk identity exactly as read_document does.
+			// A page projection must be checked against this actual revision and
+			// source span, rather than treating omitted metadata as revision zero.
+			row["content_revision"] = result.ContentRevision
+			row["start_at"] = result.StartAt
+			row["end_at"] = result.EndAt
+			row["parent_chunk_id"] = result.ParentChunkID
+			if len(result.SourceLocators) > 0 {
+				row["source_locators"] = result.SourceLocators
+			}
+			if result.ContentRewritten {
+				row["content_rewritten"] = true
+			}
 			// SearchResult.Content is the complete indexed chunk body (not the
 			// match snippet). Make that exact source span explicit so later
 			// citation review can reconcile it with read_document(offset=0).
