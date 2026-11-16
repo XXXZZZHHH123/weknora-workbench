@@ -13,6 +13,7 @@ import json
 import duckdb
 
 from .result_contract import mixed_unit, unknown_unit
+from .pdf_sql_provenance import _Binder, _Column, _Dependency, _Relation, _alternatives
 
 
 @dataclass
@@ -242,10 +243,34 @@ class _Units:
         return result
 
 
-def _bound_output_columns(node, source_columns):
+class _ValueRoleBinder(_Binder):
+    """Bind output values separately from selectors, without replacing provenance.
+
+    The ordinary binder still validates every condition and keeps all source
+    dependencies. This view is used only to distinguish a technical value from
+    a real measurement selected by a technical ID. Literal CASE branches cannot
+    gain a sourced value from their predicate, including through CTE aliases.
+    """
+    def expression(self, node, scope, ctes):
+        if node.get('class') == 'CASE':
+            self._visit()
+            branches = [self.expression(branch['then_expr'], scope, ctes)
+                        for branch in node.get('case_checks', [])]
+            if node.get('else_expr'):
+                branches.append(self.expression(node['else_expr'], scope, ctes))
+            return _alternatives(branches)
+        if node.get('class') in ('FUNCTION', 'WINDOW'):
+            # These DuckDB AST fields control row/element selection, not the
+            # returned value. Arguments and window defaults remain value inputs.
+            node = {key: value for key, value in node.items() if key not in (
+                'filter', 'order_bys', 'partitions', 'orders',
+                'start_expr', 'end_expr', 'offset_expr')}
+        return super().expression(node, scope, ctes)
+
+
+def _bound_output_columns(node, source_columns, *, value_roles=False):
     """Reuse the scope binder without changing its source/label guarantees."""
-    from .pdf_sql_provenance import _Binder, _Column, _Dependency, _Relation
-    binder = _Binder([])
+    binder = _ValueRoleBinder([]) if value_roles else _Binder([])
     binder.source = _Relation([_Column(name, _Dependency(frozenset({name})), 'data')
                                for name in source_columns], True)
     return binder.query(node).columns
@@ -297,21 +322,37 @@ def describe_excel_dependencies(connection, sql, source_columns, output_count):
     """Share the tested column-scope binder; unsupported SQL stays unverified.
 
     This does not authorize SQL or change Excel's existing execution contract.
-    Physical coordinate/identity columns remain technical even through aliases.
+    Physical coordinates/identities remain technical when projected as values,
+    including through aliases. Selecting real values by an ID does not turn
+    those values into IDs; full selector dependencies are retained separately.
     """
     try:
         parsed = json.loads(connection.execute(
             'SELECT json_serialize_sql(?, skip_empty := true, skip_null := true)', [sql]).fetchone()[0])
         if parsed.get('error') or len(parsed.get('statements', [])) != 1:
             raise ValueError('Unparsed SQL')
-        outputs = _bound_output_columns(parsed['statements'][0]['node'], source_columns)
+        node = parsed['statements'][0]['node']
+        outputs = _bound_output_columns(node, source_columns)
         if len(outputs) != output_count:
             raise ValueError('Dependency shape differs')
+        roles = None
+        try:
+            candidates = _bound_output_columns(node, source_columns, value_roles=True)
+            if len(candidates) == len(outputs) and all(a.name == b.name for a, b in zip(outputs, candidates)):
+                roles = candidates
+        except (KeyError, TypeError, ValueError, RecursionError):
+            # A role-analysis limit cannot weaken the existing technical gate.
+            pass
         technical = {'series_id', 'source_cell', 'date_cell', 'sheet'}
         dependencies = []
-        for value in outputs:
+        for index, value in enumerate(outputs):
             dep = value.dependency
             metadata = bool(dep.columns & technical)
+            if metadata and roles is not None:
+                payload = roles[index].dependency
+                if (dep.kind == 'source_value' and payload.kind == 'source_value'
+                        and payload.columns and not payload.columns & technical):
+                    metadata = False
             dependencies.append(dict(kind=dep.kind, source_columns=sorted(dep.columns),
                                      source_row_dependency=dep.cardinality,
                                      technical_metadata=metadata))
