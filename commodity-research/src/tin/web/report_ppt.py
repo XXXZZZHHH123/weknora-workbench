@@ -3,12 +3,13 @@ from copy import deepcopy
 from datetime import datetime
 from io import BytesIO
 import json
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr, ValidationError, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
@@ -34,7 +35,8 @@ class Sections(_Input):
 
 
 class PptOptions(_Input):
-    sections: Sections
+    mode: Literal['one_page', 'evidence', 'full'] | None = None
+    sections: Sections | None = None
     figures_per_slide: StrictInt = 2
 
     @field_validator('figures_per_slide')
@@ -43,6 +45,14 @@ class PptOptions(_Input):
         if value not in (1, 2, 4):
             raise ValueError('每页图数只能为1、2或4')
         return value
+
+    @model_validator(mode='after')
+    def valid_mode_layout(self):
+        if self.mode is not None and self.sections is not None:
+            raise ValueError('导出模式与旧分节选项不能同时使用')
+        if (self.mode is not None or self.sections is None) and self.figures_per_slide not in (1, 2):
+            raise ValueError('证据附录每页图数只能为1或2')
+        return self
 
 
 class Failure(_Input):
@@ -62,6 +72,7 @@ def read_report_view(scope, day, period):
 
     through = validate_period(day, period)
     frozen, names, catalog = False, {}, {}
+    dimensions = None
     # Archives are immutable source text. Do not resolve chart pins or read
     # observations for them, including when building their PPT chart pages.
     if not settings.weknora_api_url and period == 'daily':
@@ -77,9 +88,10 @@ def read_report_view(scope, day, period):
             payload = build_period(session, research_variety(session), through, period)
             names = dict(session.execute(select(Indicator.series_id, Indicator.name)).all())
             catalog = deepcopy(session.info.get('knowledge_facts_catalog') or {})
+            dimensions = web._report_dimensions(session)
         if (payload.get('manual_report') or {}).get('unavailable_references'):
             raise HTTPException(409, '报告引用已不可读，请先在报告中调整引用再导出')
-    view = present_snapshot(payload, names)
+    view = present_snapshot(payload, names, dimensions=dimensions)
     observations = {row['series_id']: row for row in view.get('observations') or []}
     for figure in view.get('report_figures') or []:
         pin = figure.get('reference') or {}
@@ -220,13 +232,20 @@ async def export_report_ppt(day: str, period: str, request: Request):
                 raise HTTPException(422, '报告草稿版本无效')
             if revision != (view.get('manual_report') or {}).get('revision'):
                 raise HTTPException(409, CHANGED)
-            selected = options.sections.model_dump()
+            # Old clients may still post section switches without a mode. New
+            # clients choose a mode and inherit the report's visible sections.
+            selected = (options.sections.model_dump() if options.sections is not None else {
+                key: (view.get('panels', {}).get(key) or {}).get('visible', True)
+                for key in ('summary', 'research', 'dashboard', 'watch')})
             for key, enabled in selected.items():
                 if enabled and not view['panels'][key]['visible']:
                     raise HTTPException(409, CHANGED)
             # Options choose text sections; the chart collection always remains
             # the complete collection shown in the saved report, in its order.
-            expected = [row['key'] for row in figures] if selected['dashboard'] else []
+            charts_enabled = selected['dashboard'] and options.mode != 'one_page'
+            if options.mode is None and options.sections is None:
+                charts_enabled = False
+            expected = [row['key'] for row in figures] if charts_enabled else []
             keys = _json_field(form, 'keys')
             if not isinstance(keys, list) or keys != expected:
                 raise HTTPException(409, CHANGED)
@@ -246,7 +265,7 @@ async def export_report_ppt(day: str, period: str, request: Request):
             images, upload_index = {}, 0
             view = deepcopy(view)
             if not view.get('frozen'):
-                if selected['dashboard']:
+                if charts_enabled:
                     await run_in_threadpool(revalidate_figures, scope, view.get('report_figures') or [])
                 for figure in view.get('report_figures') or []:
                     if figure['key'] not in expected:

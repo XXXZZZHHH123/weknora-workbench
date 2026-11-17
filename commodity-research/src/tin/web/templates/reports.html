@@ -24,28 +24,34 @@
 {% if scope and not scope.restricted and 'reports' in (scope.view_modules | default(['reports'])) %}{% include '_report_ppt.html' %}{% endif %}
 <div id="report-readable" class="report-content">
 {% set panels = report.panels %}
-{% if panels.summary.visible %}{% include '_report_lead.html' %}{% endif %}
-{% set numbers = namespace(next=1) %}
-{% if panels.research.visible %}<section class="report-section" id="report-research"><div class="report-section-heading"><h3><span class="report-section-number">{{ '%02d'|format(numbers.next) }}</span>研判</h3><small>沿用已保存研判 · 当前版本</small></div>{% set numbers.next = numbers.next + 1 %}
-{{ note(panels.research, '研究员按语') }}{{ references(panels.research) }}
-{% include '_report_judgment.html' %}
-</section>{% endif %}
-{% if panels.dashboard.visible %}<section class="report-section" id="report-dashboard"><div class="report-section-heading"><h3><span class="report-section-number">{{ '%02d'|format(numbers.next) }}</span>图表</h3><small>研判与策略引用图 · 另加指标图</small></div>{% set numbers.next = numbers.next + 1 %}
-{{ note(panels.dashboard, '研究员按语') }}
+{% if panels.summary.visible %}{% include '_report_overview.html' %}{% endif %}
+{% if panels.research.visible or panels.watch.visible %}{% include '_report_logic_strategy.html' %}{% endif %}
+{% if panels.dashboard.visible %}<section class="report-section" id="report-dashboard"><div class="report-section-heading"><h3><span class="report-section-number">03</span>证据图</h3><small>按研究维度归组 · 一句结论与真实图表</small></div>
 {% include '_report_figures.html' %}
 </section>{% endif %}
-{% if panels.watch.visible %}<section class="report-section" id="report-strategy"><div class="report-section-heading"><h3><span class="report-section-number">{{ '%02d'|format(numbers.next) }}</span>策略</h3><small>当前保存的策略方案与交易计划 · 条件状态截至 {{ selected.date }}</small></div>
-{{ note(panels.watch, '研究员按语') }}{{ references(panels.watch) }}
-{% include '_report_strategy.html' %}
+<details class="report-full-record" id="report-full-record"><summary>完整记录 <small>研判、策略原文与原有按语</small></summary>
+{% if panels.summary.visible %}{% include '_report_lead.html' %}{{ references(panels.summary) }}{% endif %}
+{% if panels.research.visible %}<section class="report-section" id="report-research"><div class="report-section-heading"><h3>研判完整记录</h3><small>沿用已保存研判 · 当前版本</small></div>
+{{ note(panels.research, '研究员按语') }}{{ references(panels.research) }}{% include '_report_judgment.html' %}
 </section>{% endif %}
-</div><footer class="report-footer"><details><summary>来源、资料缺口与完整记录</summary>{% if report.manual_report and report.manual_report.unavailable_references %}<p>部分引用的版本或权限已改变，请调整后再导出。</p>{% endif %}{% include '_report_saved_sources.html' %}<p>文字复用已保存研判或人工编辑，不代表新的模型分析；条件触发不等于成交。研判与策略引用的图自动纳入；另加指标图最多6条，日报90点/周报120点，是观测点数而非自然天数。</p><details><summary>原始 JSON · 来源、输入与完整记录</summary><pre>{{ preview }}</pre><a href="{{ research_prefix() }}/sn/reports/{{ selected.date }}{{ '/weekly' if weekly else '' }}.json" class="report-button">下载 JSON</a></details></details></footer></div>
+{% if panels.dashboard.visible %}{{ note(panels.dashboard, '图表按语') }}{{ references(panels.dashboard) }}{% endif %}
+{% if panels.watch.visible %}<section class="report-section" id="report-strategy"><div class="report-section-heading"><h3>策略完整记录</h3><small>条件状态截至 {{ selected.date }}</small></div>
+{{ note(panels.watch, '研究员按语') }}{{ references(panels.watch) }}{% include '_report_strategy.html' %}
+</section>{% endif %}
+</details>
+</div><footer class="report-footer"><details><summary>来源与资料缺口</summary>{% if report.manual_report and report.manual_report.unavailable_references %}<p>部分引用的版本或权限已改变，请调整后再导出。</p>{% endif %}{% include '_report_saved_sources.html' %}<p>文字复用已保存研判或人工编辑，不代表新的模型分析；条件触发不等于成交。研判与策略引用的图自动纳入；另加指标图最多6条，日报90点/周报120点，是观测点数而非自然天数。</p><details><summary>原始 JSON · 来源、输入与完整记录</summary><pre>{{ preview }}</pre><a href="{{ research_prefix() }}/sn/reports/{{ selected.date }}{{ '/weekly' if weekly else '' }}.json" class="report-button">下载 JSON</a></details></details></footer></div>
 <script type="application/json" id="report-figure-data">{{ report.report_figures | tojson }}</script>
 {% if can_edit %}
-<script type="application/json" id="report-editor-data">{{ {'draft': report.editable_draft, 'default_title': ((scope.metadata.name if scope and scope.metadata.name else '研究') ~ (' 周报' if weekly else ' 日报')), 'id': report.manual_report.id if report.is_manual_report else none, 'revision': report.manual_report.revision if report.is_manual_report else none, 'figure_options': report.figure_options, 'all_figure_options': report.all_figure_options or report.figure_options, 'automatic_figures': report.automatic_figures, 'all_automatic_figures': report.all_automatic_figures or report.automatic_figures} | tojson }}</script>
-<dialog id="report-editor" class="report-editor"><form id="report-editor-form"><header class="report-editor-heading"><div><strong>编辑{{ '周报' if weekly else '日报' }}</strong><small>报告由已保存研判与策略组成；这里写的是附加按语，可留空或隐藏对应部分。</small></div><button type="button" id="report-edit-close" class="report-icon-button" aria-label="关闭">×</button></header>
-<div class="report-editor-body"><label class="report-title-field">标题<input id="report-edit-title" maxlength="120" required></label><div class="report-editor-tabs" role="tablist" aria-label="报告段落">{% for key, label in [('summary','导语'),('research','研判'),('dashboard','图表'),('watch','策略')] %}<button type="button" data-report-section="{{ key }}" role="tab" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ label }}</button>{% endfor %}</div><div class="report-edit-section"><label class="report-check"><input id="report-edit-visible" type="checkbox">显示本节</label><textarea id="report-edit-text" rows="6" maxlength="4000" placeholder="可以留空；按语显示在已保存内容旁边，不改写研判、策略或指标事实。" aria-label="按语正文"></textarea></div>
+<script type="application/json" id="report-editor-data">{{ {'draft': report.editable_draft, 'default_title': ((scope.metadata.name if scope and scope.metadata.name else '研究') ~ (' 周报' if weekly else ' 日报')), 'id': report.manual_report.id if report.is_manual_report else none, 'revision': report.manual_report.revision if report.is_manual_report else none, 'figure_options': report.figure_options, 'all_figure_options': report.all_figure_options or report.figure_options, 'automatic_figures': report.automatic_figures, 'all_automatic_figures': report.all_automatic_figures or report.automatic_figures, 'dimensions': report.editable_dimensions | default(report.dimension_overview | default([])), 'report_figures': report.report_figures, 'date': selected.date, 'period': period_kind} | tojson }}</script>
+<dialog id="report-editor" class="report-editor"><form id="report-editor-form"><header class="report-editor-heading"><div><strong>编辑{{ '周报' if weekly else '日报' }}</strong><small>按维度写一句本期变化与含义，并确认影响。模型草稿仅填入编辑框，保存后才生效。</small></div><button type="button" id="report-edit-close" class="report-icon-button" aria-label="关闭">×</button></header>
+<div class="report-editor-body"><label class="report-title-field">标题<input id="report-edit-title" maxlength="120" required></label>
+<div class="report-draft-model"><label for="report-draft-model">起草模型</label><select id="report-draft-model"><option value="">选择模型</option></select><button type="button" class="report-button" id="report-draft-generate">让模型起草</button></div>
+<p class="report-muted">仅使用各维度本期事实、该维度研判依据和已写内容；数字或来源核对未通过的句子不会填入。</p>
+<div id="report-dimension-editors" class="report-dimension-editors"></div>
+<details class="report-editor-tools" id="report-legacy-editor"><summary>原有按语与完整记录显示设置</summary>
+<div class="report-editor-tabs" role="tablist" aria-label="报告段落">{% for key, label in [('summary','导语'),('research','研判'),('dashboard','图表'),('watch','策略')] %}<button type="button" data-report-section="{{ key }}" role="tab" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ label }}</button>{% endfor %}</div><div class="report-edit-section"><label class="report-check"><input id="report-edit-visible" type="checkbox">显示本节</label><textarea id="report-edit-text" rows="4" maxlength="4000" placeholder="保留原有按语，显示在完整记录中。" aria-label="按语正文"></textarea></div></details>
 <details class="report-editor-tools"><summary>引用已有研判或策略</summary><div class="report-reference-picker"><select id="report-ref-kind" aria-label="引用类型"><option value="judgment">研判</option><option value="strategy">策略</option></select><select id="report-ref-record" aria-label="选择已有记录"><option value="">选择记录与版本</option></select><button type="button" id="report-ref-add" class="report-button">引用</button></div><div id="report-ref-list"></div></details>
-<details class="report-editor-tools"><summary>选图与图说</summary><p class="report-muted">研判和策略引用的图会自动放进报告</p><div id="report-automatic-figures" aria-label="自动纳入的引用图"></div><h4>另加指标图（最多 6 条）</h4><p id="report-figure-count" class="report-muted" role="status" aria-live="polite"></p><div id="report-figure-options"></div></details><p class="report-muted">手工文字与引用保留版本；数值、单位、日期和来源仍由系统读取。清空后不会重新填回默认内容。</p><p id="report-edit-status" class="report-edit-status" role="status" aria-live="polite"></p></div><footer class="report-editor-footer"><button type="button" id="report-edit-cancel" class="report-button">取消</button><button type="submit" id="report-edit-save" class="report-button report-button-primary">保存草稿</button></footer></form></dialog>
+<details class="report-editor-tools"><summary>选图与图说</summary><div id="report-figure-conclusions"></div><p class="report-muted">研判和策略引用的图会自动放进报告</p><div id="report-automatic-figures" aria-label="自动纳入的引用图"></div><h4>另加指标图（最多 6 条）</h4><p id="report-figure-count" class="report-muted" role="status" aria-live="polite"></p><div id="report-figure-options"></div></details><p class="report-muted">手工文字与引用保留版本；数值、单位、日期和来源仍由系统读取。清空后不会重新填回默认内容。</p><p id="report-edit-status" class="report-edit-status" role="status" aria-live="polite"></p></div><footer class="report-editor-footer"><button type="button" id="report-edit-cancel" class="report-button">取消</button><button type="submit" id="report-edit-save" class="report-button report-button-primary">保存草稿</button></footer></form></dialog>
 {% endif %}
 {% endif %}
 

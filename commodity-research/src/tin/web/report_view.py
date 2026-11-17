@@ -279,6 +279,8 @@ def present_snapshot(payload, names=None, *, dimensions=None):
     result['strategy_overview'] = _strategy_overview(result)
     result['conclusion'] = _conclusion(result)
     result.update(_workflow_view(result, payload, names))
+    from tin.web.report_one_page import present_one_page
+    result.update(present_one_page(payload, result, dimensions))
     return result
 
 
@@ -325,6 +327,8 @@ def _workflow_view(view, payload, names):
             'date': period.get('end') or payload.get('as_of'), 'title': '研究周报' if period.get('kind') == 'weekly' else '研究日报',
             'sections': {key: {'visible': row['visible'], 'text': row['text'][:4000]} for key, row in panels.items()},
             'figures': figures, 'references': []}
+    for key in ('dimension_notes', 'figure_conclusions'):
+        draft[key] = deepcopy((saved or {}).get(key) or {})
     from tin.web.report_charts import collect_figures
     figures_manifest = deepcopy(payload.get('report_figures')) if isinstance(payload.get('report_figures'), list) else collect_figures(payload)
     automatic = [row for row in figures_manifest if row['kind'] == 'chart']
@@ -478,7 +482,7 @@ def _strategy_lines(view):
 
 
 def readable_markdown(payload, *, title='研究报告', names=None, dimensions=None):
-    """The same collection as the HTML page: saved 研判, then saved 策略, with notes and charts as aids."""
+    """One-page overview and evidence, followed by the preserved full records."""
     view = present_snapshot(payload, names, dimensions=dimensions)
     manual = view['manual_report']
     if manual and manual.get('unavailable_references'):
@@ -492,6 +496,8 @@ def readable_markdown(payload, *, title='研究报告', names=None, dimensions=N
              '> 报告期：' + str(period.get('start')) + ' — ' + str(period.get('end')),
              '> 依据当前已确认来源回放；研究逻辑和策略为当前保存版本，不代表当时已形成的判断。'
              + ('按语为个人报告 v' + str(manual['revision']) + ' 的人工内容，原始指标事实保持只读。' if manual else ''), '']
+    lines += _one_page_lines(view)
+    lines += ['<details><summary>完整记录</summary>', '']
     if panels['summary']['visible']:
         lines += ['## 导语', '']
         lines += _md_lines(panels['summary']['text']) + ([''] if panels['summary']['text'] else [])
@@ -515,7 +521,7 @@ def readable_markdown(payload, *, title='研究报告', names=None, dimensions=N
         lines += ['### ' + ('本周主要变化' if weekly else '主要变化'), ''] + _changes_table(view) + ['']
     if panels['watch']['visible']:
         lines += ['## 策略', ''] + _note_lines(panels['watch'], '研究员按语') + _strategy_lines(view)
-    lines += ['<details><summary>数据缺口与来源</summary>', '', '## 数据缺口与来源', '']
+    lines += ['', '</details>', '', '<details><summary>数据缺口与来源</summary>', '', '## 数据缺口与来源', '']
     if manual:
         lines += ['- 个人报告记录：`' + _md(manual.get('id')) + '` · v' + str(manual.get('revision')),
                   '- 来源版本：`' + _md(saved.get('source_revision')) + '`']
@@ -528,3 +534,43 @@ def readable_markdown(payload, *, title='研究报告', names=None, dimensions=N
                      + _md(item.get('as_of')) + ' · ' + _md(item.get('source')))
     lines += ['', '</details>', '']
     return '\n'.join(lines)
+
+
+def _one_page_lines(view):
+    panels = view['panels']
+    lines = []
+    if panels['summary']['visible']:
+        lines += ['## 本期综述', '', '| 维度 | 本期变化 | 研究员一句话 | 影响 | 研判依据 |',
+                  '| --- | --- | --- | --- | --- |']
+        for row in view['dimension_overview']:
+            lines.append('| ' + ' | '.join(_md(value) for value in (
+                row['label'], '；'.join(fact['text'] for fact in row['facts']) or '暂无可用本期指标',
+                row['sentence'], row['impact_label'], f"支持 {row['support_count']} / 反对 {row['oppose_count']}")) + ' |')
+        lines.append('')
+        for row in view['dimension_overview']:
+            if row['review_needed']:
+                lines += ['- ' + _md(row['label']) + '：与当前研判在该维度的依据方向不一致，建议复核研判。', '']
+            for evidence in row['evidence']:
+                lines.append('- [' + _md(row['label']) + ' · ' + ('支持' if evidence['side'] == 'bull' else '反对') + '] ' + _md(evidence['text']))
+        lines.append('')
+    logic = view['logic_strategy']
+    if panels['research']['visible'] or panels['watch']['visible']:
+        lines += ['## 逻辑与策略', '']
+        if logic['contradiction']:
+            lines += ['- 主要矛盾：' + _md(logic['contradiction'])]
+        if logic['tone']:
+            lines += ['- 基调：' + _md(logic['tone'])]
+        for condition in logic['conditions']:
+            lines += ['- [' + _md(condition['dimension_label']) + '] ' + _md(condition['name']) + '：'
+                      + _md(condition['condition']) + ' · ' + _md(condition['state'])]
+        for strategy in logic['strategies']:
+            lines += ['- ' + _md(strategy['title']) + '：' + _md(strategy['text'])]
+        lines.append('')
+    if panels['dashboard']['visible']:
+        lines += ['## 证据图', '']
+        for group in view['evidence_groups']:
+            lines += ['### ' + _md(group['label']), '']
+            for figure in group['figures']:
+                lines += ['#### ' + _md(figure['title']), '', _md(figure['conclusion']) or '尚未填写一句结论',
+                          '', '- ' + _md(figure.get('caption')), '- 数据截至日：' + _md(figure.get('as_of')), '']
+    return lines

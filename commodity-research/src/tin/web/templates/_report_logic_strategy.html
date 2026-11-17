@@ -1,0 +1,9 @@
+<section class="report-section" id="report-logic-strategy">
+<div class="report-section-heading"><h3><span class="report-section-number">02</span>逻辑与策略</h3><small>来自生效研判与已保存策略</small></div>
+{% set logic = report.logic_strategy | default({}) %}
+{% if panels.research.visible %}<div class="report-logic-lead">{% if logic.contradiction %}<p><strong>主要矛盾</strong>{{ logic.contradiction }}</p>{% endif %}{% if logic.tone %}<p><strong>基调</strong>{{ logic.tone }}</p>{% endif %}{% if not logic.contradiction and not logic.tone %}<p class="report-muted">暂无生效研判的主要矛盾与基调。</p>{% endif %}</div>
+{% if logic.conditions %}<h4 class="report-subheading">关键区间与关注点</h4><div class="report-logic-conditions">{% for condition in logic.conditions %}<p data-state="{{ condition.state }}"><span class="report-badge">{{ condition.dimension_label }}</span><strong>{{ condition.name }}</strong> {{ condition.condition }} <span class="report-state">{{ condition.state }}</span>{% if condition.current_value_text %}<small>当前 {{ condition.current_value_text }}</small>{% endif %}</p>{% endfor %}</div>{% endif %}
+{% endif %}
+{% if panels.watch.visible %}<h4 class="report-subheading">策略方案</h4>{% for strategy in logic.strategies | default([]) %}<p class="report-strategy-sentence">{% if strategy.title %}<strong>{{ strategy.title }}</strong>：{% endif %}{{ strategy.text }}</p>{% else %}<p class="report-muted">暂无已保存策略方案。</p>{% endfor %}
+{% endif %}
+</section>

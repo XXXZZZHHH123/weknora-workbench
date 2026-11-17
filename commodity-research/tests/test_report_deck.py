@@ -55,6 +55,8 @@ def view():
 
 
 def load(view, images=None, options=None):
+    # Preserve coverage of the legacy section-only export contract.
+    options = {'sections': dict.fromkeys(('summary', 'research', 'dashboard', 'watch'), True), **(options or {})}
     return Presentation(BytesIO(build_report_deck(view, images or {}, options)))
 
 
@@ -228,3 +230,110 @@ def test_iso_timestamps_display_as_dates_without_changing_other_text():
 def test_wrapped_table_cells_never_split_a_raw_timestamp():
     from tin.ppt.report_deck import _s
     assert _s('2023-08-31T00:00:00+08:00') == '2023-08-31'
+
+
+def one_page_view(view):
+    view['dimension_overview'] = [
+        {'id': 'custom-' + str(index), 'label': '自定义维度' + str(index),
+         'facts': [{'text': '样本指标 12.34 吨（较 04-01 +1.23，近 5 年同期第 2 高）'}],
+         'sentence': '研究员确认的本期含义', 'impact': 'neutral', 'impact_label': '中性',
+         'support_count': 2, 'oppose_count': 1}
+        for index in range(6)]
+    view['logic_strategy'] = {'contradiction': '本期主要矛盾', 'tone': '中性',
+        'conditions': [{'dimension_label': '自定义维度0', 'name': '关注阈值', 'condition': '>=12.34', 'state': '未触发'}],
+        'strategies': [{'text': '观察：研究员核心逻辑；条件出现时复核'}]}
+    for row in view['report_figures']:
+        row['conclusion'] = '该图研究员确认的一句结论'
+    view['evidence_groups'] = [
+        {'label': '自定义维度0', 'figures': view['report_figures'][:2]},
+        {'label': '其他', 'figures': view['report_figures'][2:]}]
+    return view
+
+
+def new_deck(view, mode='one_page', images=None, **options):
+    return Presentation(BytesIO(build_report_deck(view, images, {'mode': mode, **options})))
+
+
+def test_default_one_page_has_table_logo_and_exact_report_numbers(view):
+    one_page_view(view)
+    deck = Presentation(BytesIO(build_report_deck(view)))
+    assert len(deck.slides) == 1
+    body = text(deck.slides[0])
+    for value in ('本期综述', '逻辑与策略', '12.34', '04-01', '近 5 年', '研究员确认', '本期主要矛盾', '未触发'):
+        assert value in body
+    assert sum(shape.has_table for shape in deck.slides[0].shapes) == 1
+    assert len([shape for shape in deck.slides[0].shapes if shape.name == 'Chisage logo']) == 1
+    assert THEME_RED in deck.slides[0]._element.xml and 'F2F2F2' in deck.slides[0]._element.xml
+    assert not chart_pictures(deck)
+
+
+def test_one_page_long_content_is_two_pages_at_most_and_notes_keep_full_text(view):
+    one_page_view(view)
+    view['dimension_overview'] *= 2
+    for row in view['dimension_overview']:
+        row['sentence'] = '研究员长文字' * 60 + '保留全文末尾'
+        row['facts'] *= 4
+    deck = new_deck(view)
+    assert len(deck.slides) == 2
+    assert '…' in ''.join(text(slide) for slide in deck.slides)
+    assert all('保留全文末尾' in slide.notes_slide.notes_text_frame.text for slide in deck.slides)
+    for slide in deck.slides:
+        for shape in slide.shapes:
+            assert shape.top + shape.height <= Inches(6.96) or shape.top >= Inches(7)
+
+
+def test_evidence_mode_groups_one_or_two_charts_per_slide(view):
+    one_page_view(view)
+    images = {row['key']: png() for row in view['report_figures']}
+    for per_page, expected in [(1, 3), (2, 2)]:
+        deck = new_deck(view, 'evidence', images, figures_per_slide=per_page)
+        pages = [slide for slide in deck.slides if title(slide).startswith('证据 · ')]
+        assert len(pages) == expected
+        assert len(chart_pictures(deck)) == 3
+        assert '自定义维度0' in title(pages[0]) and '其他' in title(pages[-1])
+        assert all('该图研究员确认的一句结论' in text(slide) for slide in pages)
+    full = new_deck(view, 'full', images)
+    assert len(full.slides) > len(new_deck(view, 'evidence', images).slides)
+    assert '已保存核心逻辑' in ''.join(text(slide) for slide in full.slides)
+
+
+def test_frozen_new_modes_never_embed_images_or_mutate_view(view):
+    one_page_view(view)
+    view['frozen'] = True
+    before = deepcopy(view)
+    deck = new_deck(view, 'evidence', {row['key']: png() for row in view['report_figures']})
+    assert not chart_pictures(deck)
+    assert '历史归档不重新绘图' in '\n'.join(text(slide) for slide in deck.slides)
+    assert view == before
+
+
+def test_new_modes_respect_hidden_panels_and_never_reopen_empty_logic(view):
+    one_page_view(view)
+    view['logic_strategy'] = {'contradiction': '', 'tone': '', 'conditions': [], 'strategies': []}
+    view['judgment']['contradiction'] = '草稿研判绝不能回退'
+    view['judgment']['status'] = '草稿'
+    for mode in ('one_page', 'evidence', 'full'):
+        copy = deepcopy(view)
+        copy['panels']['summary']['visible'] = False
+        copy['panels']['research']['visible'] = False
+        copy['panels']['watch']['visible'] = False
+        deck = new_deck(copy, mode)
+        combined = '\n'.join(text(slide) + slide.notes_slide.notes_text_frame.text for slide in deck.slides)
+        assert '草稿研判绝不能回退' not in combined
+        assert '研究员确认的本期含义' not in combined
+        assert '已保存核心逻辑' not in combined
+        assert not any(shape.has_table for slide in deck.slides for shape in slide.shapes)
+    projected = text(new_deck(view).slides[0])
+    assert '草稿研判绝不能回退' not in projected
+    with pytest.raises(ValueError, match='不能同时'):
+        new_deck(view, sections={'summary': False})
+
+
+def test_short_overview_keeps_all_facts_when_they_fit(view):
+    one_page_view(view)
+    view['dimension_overview'] = view['dimension_overview'][:1]
+    view['dimension_overview'][0]['facts'] = [{'text': f'指标{index} 值 {index + 10} 吨'} for index in range(4)]
+    deck = new_deck(view)
+    assert len(deck.slides) == 1
+    for index in range(4):
+        assert f'指标{index} 值 {index + 10} 吨' in text(deck.slides[0])

@@ -1,12 +1,15 @@
-{% if report.report_figures %}
-<div id="report-figures" class="report-figures" data-url="{{ research_prefix() }}/api/sn/reports/figures" data-day="{{ selected.date }}" data-period="{{ period_kind }}" data-revision="{{ report.manual_report.revision if report.is_manual_report else '' }}" data-live="{{ 'true' if live_report else 'false' }}">
-{% for figure in report.report_figures %}
+{% macro evidence_figure(figure) %}
 <figure class="report-figure" data-report-figure="{{ figure.key }}">
 <header><h4>{{ figure.title }}</h4><small data-figure-metadata>单位：{{ figure.unit or '未注明或暂不可核验' }} · 数据截至 {{ figure.as_of or selected.date }}</small></header>
+{% if figure.conclusion %}<p class="report-figure-conclusion">{{ figure.conclusion }}</p>{% endif %}
 {% if live_report %}<div data-figure-plot><p class="report-figure-state" role="status">进入视口后读取图表</p></div>{% endif %}
 <figcaption>{% if figure.caption %}<strong>{{ figure.caption }}</strong>{% endif %}<span data-figure-notice>{{ figure.notice or '' }}</span></figcaption>
 </figure>
-{% endfor %}
+{% endmacro %}
+{% if report.report_figures %}
+<div id="report-figures" class="report-figures{% if report.evidence_groups %} report-figures-grouped{% endif %}" data-url="{{ research_prefix() }}/api/sn/reports/figures" data-day="{{ selected.date }}" data-period="{{ period_kind }}" data-revision="{{ report.manual_report.revision if report.is_manual_report else '' }}" data-live="{{ 'true' if live_report else 'false' }}">
+{% if report.evidence_groups %}{% for group in report.evidence_groups %}<section class="report-evidence-group" data-evidence-dimension="{{ group.id }}"><h4>{{ group.label }}</h4><div class="report-figure-grid">{% for figure in group.figures %}{{ evidence_figure(figure) }}{% endfor %}</div></section>{% endfor %}
+{% else %}{% for figure in report.report_figures %}{{ evidence_figure(figure) }}{% endfor %}{% endif %}
 </div>
 {% elif live_report %}<p class="report-muted" id="report-no-figures">未选择报告图表，可在编辑报告中选择已有绑定指标。</p>{% endif %}
 {% if not live_report %}<p class="report-muted">历史冻结归档沿用保存时的数据，不重新加载当前图表；引用图仅列标题与引用处。</p>{% endif %}

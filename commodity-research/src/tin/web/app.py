@@ -269,6 +269,8 @@ from tin.web.report_figures import router as report_figures_router
 app.include_router(report_figures_router)
 from tin.web.report_ppt import router as report_ppt_router
 app.include_router(report_ppt_router)
+from tin.web.report_dimension_drafts import router as report_dimension_drafts_router
+app.include_router(report_dimension_drafts_router)
 from tin.web.affairs import router as affairs_router
 app.include_router(affairs_router)
 from tin.web.market import build_market_router, market_catalog as market_catalog_data, saved_core_cards
@@ -995,7 +997,8 @@ def reports_page(request: Request, date: str | None = None, period: str = 'daily
                 preview = json.dumps(report, ensure_ascii=False, indent=2)
         return templates.TemplateResponse(request, "reports.html", _shell(
             s, "reports", None, files=files, selected=selected, preview=preview,
-            report=present_snapshot(report, names, dimensions=_report_dimensions(s)) if report is not None else None,
+            report=present_snapshot(report, names, dimensions=_report_dimensions(s)
+                                    if settings.weknora_api_url or period == 'weekly' else None) if report is not None else None,
             report_generated_at=(report or {}).get('generated_at'), period_kind=period,
             report_start=period_start(chosen, period).isoformat() if chosen else None,
             live_report=bool(settings.weknora_api_url) or period == 'weekly'))
@@ -1013,7 +1016,11 @@ def report_file(day: str):
     path = settings.exports_dir / V / f"{day}.json"
     if not path.exists():
         raise HTTPException(404, "该日没有归档快照")
-    return FileResponse(path, media_type="application/json", filename=f"{V}_{day}.json")
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    from tin.web.report_one_page import dimension_overview
+    payload['dimension_overview'] = dimension_overview(payload)
+    return JSONResponse(payload, headers={
+        'Content-Disposition': f'attachment; filename="{V}_{day}.json"'})
 
 
 def _report_dimensions(session):
@@ -1034,7 +1041,8 @@ def _period_download(day, period, markdown=False):
     with _page_session('reports', day=cutoff, points_per_series=8 if period == 'weekly' else 2) as s:
         variety = research_variety(s)
         archive = settings.exports_dir / variety / f'{day}.json'
-        if markdown and period == 'daily' and not settings.weknora_api_url and archive.exists():
+        frozen = markdown and period == 'daily' and not settings.weknora_api_url and archive.exists()
+        if frozen:
             payload = json.loads(archive.read_text(encoding='utf-8'))
         else:
             payload = build_period(s, variety, cutoff, period)
@@ -1042,7 +1050,7 @@ def _period_download(day, period, markdown=False):
             scope = current_workbench.get()
             title = (scope.metadata.get('name') if scope else None) or '研究工作台'
             body = readable_markdown(payload, title=title + (' 周报' if period == 'weekly' else ' 日报'),
-                                     dimensions=_report_dimensions(s))
+                                     dimensions=None if frozen else _report_dimensions(s))
             return StreamingResponse(iter([body.encode('utf-8')]), media_type='text/markdown', headers={
                 'Content-Disposition': f'attachment; filename="research_{period}_{day}.md"'})
         return JSONResponse(payload, headers={

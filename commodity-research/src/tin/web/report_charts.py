@@ -39,7 +39,24 @@ def record_chart_references(record):
     pins = ((contradiction.get('chart_references') or []) if isinstance(contradiction, dict) else [])
     pins = [*pins, *(record.get('chart_references') or []),
             *(row for row in record.get('citations') or [] if row.get('kind') == 'chart')]
-    return [{**deepcopy(pin), 'report_target_text': pin.get('report_target_text') or target_text(pin, record)} for pin in pins]
+    return [{**deepcopy(pin), 'report_target_text': pin.get('report_target_text') or target_text(pin, record),
+             **({'dimension': target_dimension(pin, record)} if target_dimension(pin, record) else {})} for pin in pins]
+
+
+def target_dimension(reference, record):
+    """Only the explicitly tagged item at the saved citation target supplies a dimension."""
+    target = reference.get('target') or {}
+    kind = target.get('kind')
+    if kind == 'evidence':
+        contradiction = record.get('contradiction') or {}
+        rows = ((contradiction.get(target.get('side')) or {}).get('evidence') or []) if isinstance(contradiction, dict) else []
+        index = target.get('index')
+        if type(index) is int and 0 <= index < len(rows):
+            return rows[index].get('dimension')
+    elif kind in {'threshold', 'falsifier'}:
+        rows = record.get('thresholds' if kind == 'threshold' else 'falsifiers') or []
+        return next((row.get('dimension') for row in rows if row.get('id') == target.get('id')), None)
+    return reference.get('dimension')
 
 
 def _sections(payload):
@@ -76,6 +93,8 @@ def collect_figures(payload, *, restricted=False):
                           'chart_revision': pin['revision'], 'chart_title': pin.get('title') or '引用图表',
                           'single_series_id': curves[0].get('series_id') if len(curves) == 1 else None,
                           'target_text': target, 'text': location + ('（' + target + '）' if target else '')}
+            if pin.get('dimension'):
+                occurrence['dimension'] = pin['dimension']
             if record.get('kind') in {'judgment', 'strategy'} and record.get('id') is not None:
                 occurrence['report_reference'] = {key: record.get(key) for key in ('kind', 'id', 'revision')}
             if identifier not in charts:

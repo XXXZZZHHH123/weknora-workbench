@@ -239,4 +239,10 @@ def build_period(session, variety, end: date, kind='daily', *, source=None, prev
         if scope is not None and not scope.restricted:
             result['report_figure_selection'] = bound_series(session, scope)[:6]
     from tin.web.report_charts import attach_figures
-    return attach_figures(result, current_workbench.get(), metadata=live_rules and figure_metadata)
+    result = attach_figures(result, current_workbench.get(), metadata=live_rules and figure_metadata)
+    if live_rules and include_analysis:
+        from tin.web.report_one_page import attach_dimension_data
+        result = attach_dimension_data(session, result, current_workbench.get())
+    from tin.web.report_one_page import dimension_overview
+    result['dimension_overview'] = dimension_overview(result)
+    return result

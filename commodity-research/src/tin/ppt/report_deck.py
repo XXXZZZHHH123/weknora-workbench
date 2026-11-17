@@ -432,7 +432,215 @@ def _strategy(deck, view):
                             for row in view.get('strategy_events') or []])
 
 
+def _clip(value, width, lines=2, size=12):
+    wrapped = _wrap(value, width, size)
+    return '\n'.join(wrapped[:lines - 1] + [wrapped[lines - 1].rstrip() + '…']) if len(wrapped) > lines else '\n'.join(wrapped)
+
+
+def _logic_lines(view):
+    panels = view.get('panels') or {}
+    research_visible = (panels.get('research') or {}).get('visible', True)
+    watch_visible = (panels.get('watch') or {}).get('visible', True)
+    judgment = view.get('judgment') or {}
+    judgment = judgment if judgment.get('status') == '生效' else {}
+    # The shared projection can intentionally clear inactive/hidden research.
+    # An empty projected value must never reopen the underlying saved record.
+    logic = view.get('logic_strategy')
+    if not isinstance(logic, dict):
+        logic = {'contradiction': judgment.get('contradiction'), 'tone': judgment.get('tone'),
+                 'conditions': [*(judgment.get('thresholds') or []), *(judgment.get('falsifiers') or [])]}
+    rows = []
+    if research_visible and (logic.get('contradiction') or logic.get('tone')):
+        rows.append(_join('主要矛盾：' + _s(logic.get('contradiction')), '基调：' + _s(logic.get('tone'))))
+    conditions = logic.get('conditions') or [] if research_visible else []
+    for item in conditions:
+        rows.append('关注：' + _join(item.get('dimension_label'), item.get('name'), item.get('condition'),
+                                   item.get('state'), item.get('current_value_text'), item.get('stale_note')))
+    strategies = logic.get('strategies') if watch_visible else []
+    if strategies is None:
+        strategies = [{'text': _join(row.get('title'), row.get('direction_label'), row.get('thesis'),
+                                    row.get('trigger'), row.get('response_action'))}
+                      for row in [*(view.get('research_cards') or []), *(view.get('strategies') or [])]]
+    for item in strategies:
+        rows.append('策略：' + _join(item.get('title'), item.get('text')))
+    return [row for row in rows if row]
+
+
+def _overview_rows(view):
+    if not (view.get('panels', {}).get('summary') or {}).get('visible', True):
+        return []
+    return [[_s(row.get('label')),
+             '\n'.join(_s(fact.get('text')) for fact in row.get('facts') or []),
+             _s(row.get('sentence')),
+             _join(row.get('impact_label') or {'bullish': '偏多', 'bearish': '偏空',
+                 'neutral': '中性', 'undecided': '未判断'}.get(row.get('impact'), '未判断'),
+                 f"支持 {row.get('support_count', 0)} / 反对 {row.get('oppose_count', 0)}")]
+            for row in view.get('dimension_overview') or []]
+
+
+def _table_records(rows, line_limit=2):
+    widths = [1.2, 5.0, 4.55, 1.783]
+    records = []
+    for row in rows:
+        values = [(_clip(value, width - .14, line_limit) if line_limit else '\n'.join(_wrap(value, width - .14, 12)))
+                  for value, width in zip(row, widths)]
+        height = max(.46, max(len(value.split('\n')) for value in values) * .205 + .12)
+        records.append((values, height))
+    return records
+
+
+def _overview_table(slide, rows, y=1.7, line_limit=2):
+    widths = [1.2, 5.0, 4.55, 1.783]
+    headings = ['维度', '本期变化', '研究员一句话', '影响 / 依据']
+    records = _table_records(rows, line_limit)
+    table = slide.shapes.add_table(len(records) + 1, 4, Inches(.4), Inches(y), Inches(BODY_W),
+                                   Inches(.34 + sum(height for _, height in records))).table
+    for index, width in enumerate(widths):
+        table.columns[index].width = Inches(width)
+    for rindex, (values, height) in enumerate([(headings, .34), *records]):
+        table.rows[rindex].height = Inches(height)
+        for cindex, value in enumerate(values):
+            cell = table.cell(rindex, cindex)
+            cell.margin_left = cell.margin_right = Inches(.055)
+            cell.margin_top = cell.margin_bottom = Inches(.035)
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = RGBColor.from_string('F2F2F2' if rindex == 0 else 'FFFFFF')
+            cell.text_frame.clear()
+            cell.text_frame.word_wrap = False
+            for index, line in enumerate(value.split('\n')):
+                paragraph = cell.text_frame.paragraphs[0] if index == 0 else cell.text_frame.add_paragraph()
+                paragraph.space_before = paragraph.space_after = Pt(0)
+                paragraph.line_spacing = 1.0
+                run = paragraph.add_run()
+                run.text = line
+                _font(run, 12, bold=rindex == 0, color=THEME_RED if rindex == 0 else TEXT)
+    return y + .34 + sum(height for _, height in records)
+
+
+def _one_page(deck, view):
+    """Keep the reading copy to one or two slides; full text lives in notes.
+
+    Text is shortened only for layout. The exact server-rendered facts and
+    researcher text are retained in the notes and visible appendix modes.
+    """
+    rows = _overview_rows(view)
+    compact = []
+    for row, source in zip(rows, view.get('dimension_overview') or []):
+        compact.append([row[0], '\n'.join(_s(fact.get('text')) for fact in (source.get('facts') or [])[:2]), row[2], row[3]])
+    logic = _logic_lines(view)
+    full_height = .34 + sum(height for _, height in _table_records(rows, None))
+    full_fits = full_height + len(_wrap('\n'.join(logic), BODY_W, 12)) * .215 + .42 <= 4.97
+    if full_fits:
+        compact = rows
+    # Six ordinary rows leave a readable lower block. More dimensions need a
+    # second page, still preserving the workbench's explicit order.
+    split = len(compact) > 7
+    pivot = (len(compact) + 1) // 2
+    groups = [compact[:pivot], compact[pivot:]] if split else [compact]
+    full = ['本期综述（全文附录）'] + ['\n'.join(row) for row in rows] + ['逻辑与策略'] + logic
+    full_text = '\n\n'.join(full)
+    shortened = compact != rows
+    summary_visible = (view.get('panels', {}).get('summary') or {}).get('visible', True)
+    for index, group in enumerate(groups):
+        slide = deck.slide((_s(view.get('report_title')) or '本期报告') + ('（续）' if index else ''))
+        if summary_visible:
+            _text(slide, '本期综述', .4, 1.45, 12.5, .25, size=14, bold=True, color=THEME_RED)
+        y = _overview_table(slide, group, line_limit=None if full_fits else 2) if group else 2.05 if summary_visible else 1.45
+        if summary_visible and not group:
+            _text(slide, '本期暂无维度综述。', .4, 1.8, 12.5, .3, size=12, color=MUTED)
+        y += .12
+        _text(slide, '逻辑与策略', .4, y, 12.5, .27, size=14, bold=True, color=THEME_RED)
+        y += .3
+        available = max(1, int((6.67 - y) / .215))
+        body = '\n'.join(logic)
+        shortened = shortened or len(_wrap(body, BODY_W, 12)) > available
+        shortened = shortened or not full_fits and any(len(_wrap(value, width - .14, 12)) > 2 for row in group
+            for value, width in zip(row, [1.2, 5.0, 4.55, 1.783]))
+        _text(slide, _clip(body, BODY_W, available), .4, y, BODY_W, max(.23, 6.67 - y), size=12)
+        _text(slide, '省略文字见本页备注中的全文附录。条件触发不等于成交。', .4, 6.74, 12.5, .21,
+              size=11, color=MUTED)
+        slide.notes_slide.notes_text_frame.text = full_text
+    return rows, logic, shortened
+
+
+def _evidence(deck, view, images, per_page):
+    # Group membership is already computed from real dimension bindings by the
+    # shared report projection. Reuse the validated canonical figure objects so
+    # a revoked source cannot leave an old bitmap in a group copy.
+    if not (view.get('panels', {}).get('dashboard') or {}).get('visible', True):
+        return
+    canonical = {row['key']: row for row in view.get('report_figures') or []}
+    groups = view.get('evidence_groups') or [{'label': '其他', 'figures': list(canonical.values())}]
+    for group in groups:
+        figures = [canonical[row['key']] for row in group.get('figures') or [] if row.get('key') in canonical]
+        if not figures:
+            continue
+        label = _s(group.get('label')) or '其他'
+        if view.get('frozen'):
+            deck.flow('证据 · ' + label, ['历史归档不重新绘图'] + [
+                _join(row.get('title'), row.get('conclusion'), row.get('caption')) for row in figures])
+            continue
+        for offset in range(0, len(figures), per_page):
+            part = figures[offset:offset + per_page]
+            slide = deck.slide('证据 · ' + label + f'（{offset // per_page + 1}/{(len(figures) + per_page - 1) // per_page}）')
+            for figure, (x, y, width, height) in zip(part, chart_slots(per_page)):
+                conclusion = figure.get('conclusion') or '尚未填写图表结论'
+                _text(slide, _clip(conclusion, width, 1, 14), x, y - .35, width, .31, size=14, bold=True)
+                metadata = _join(figure.get('title'), figure.get('caption'),
+                    '单位：' + _s(figure.get('unit') or '未注明'), '数据截至 ' + _s(figure.get('as_of') or '未注明'),
+                    '来源：' + _s(figure.get('source') or '沿用报告所引资料'))
+                _text(slide, _clip(metadata, width, 3, 11), x, y + height + .06, width, .7, size=11, color=MUTED)
+                raw = images.get(figure['key'])
+                if raw:
+                    shape = slide.shapes.add_picture(BytesIO(raw), Inches(x), Inches(y), width=Inches(width), height=Inches(height))
+                    shape.name = 'Report chart ' + figure['key']
+                else:
+                    _rect(slide, x, y, width, height, 'F0F0F0')
+                    _text(slide, _clip('图表读取失败：' + _s(figure.get('notice') or '未能取得可用图片'), width - .4, 6, 14),
+                          x + .2, y + .2, width - .4, height - .4, size=14, color=MUTED, name='Unavailable chart')
+            slide.notes_slide.notes_text_frame.text = '\n\n'.join(_join(row.get('title'), row.get('conclusion'), row.get('caption'), row.get('source')) for row in part)
+
+
 def build_report_deck(view, images=None, options=None):
+    """Build the default one-page report or append evidence and full records.
+
+    Legacy section-only options retain the old interface for existing clients.
+    New modes always rebuild from the same server-owned view as the report page.
+    """
+    options, images = options or {}, images or {}
+    mode = options.get('mode')
+    if mode is not None and options.get('sections') is not None:
+        raise ValueError('导出模式与旧分节选项不能同时使用')
+    if mode is None and options.get('sections') is not None:
+        return _legacy_report_deck(view, images, options)
+    mode = mode or 'one_page'
+    if mode not in {'one_page', 'evidence', 'full'}:
+        raise ValueError('导出模式无效')
+    per_page = options.get('figures_per_slide', 2)
+    if per_page not in (1, 2):
+        raise ValueError('证据附录每页图数应为 1 或 2')
+    deck = _Deck(view)
+    rows, logic, shortened = _one_page(deck, view)
+    if mode in {'evidence', 'full'}:
+        _evidence(deck, view, images, per_page)
+        if shortened:
+            deck.flow('综述全文附录', ['\n'.join(row) for row in rows] + ['逻辑与策略'] + logic)
+    if mode == 'full':
+        panels = view.get('panels') or {}
+        if (panels.get('summary') or {}).get('visible', True):
+            deck.flow('完整记录 · 原导语', _notes(view, 'summary'))
+        if (panels.get('research') or {}).get('visible', True):
+            _judgment(deck, view)
+        if (panels.get('dashboard') or {}).get('visible', True):
+            deck.flow('完整记录 · 原图表按语', _notes(view, 'dashboard'))
+        if (panels.get('watch') or {}).get('visible', True):
+            _strategy(deck, view)
+    buffer = BytesIO()
+    deck.prs.save(buffer)
+    return buffer.getvalue()
+
+
+def _legacy_report_deck(view, images=None, options=None):
     """Return pptx bytes. Inputs are server-owned data; no files or model calls.
 
     The caller enforces upload ACL, exact manifest/revision and PNG bounds. This

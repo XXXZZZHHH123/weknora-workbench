@@ -345,3 +345,40 @@ def test_actual_archive_loader_does_not_reopen_chart_sources(ppt_client, monkeyp
     text = slide_text(Presentation(BytesIO(response.content)))
     assert '历史保存的主要矛盾' in text and '历史冻结图表' in text
     assert '历史归档不重新绘图' in text and '引用于：研判' in text
+
+
+def test_new_one_page_mode_needs_no_bitmaps_and_is_default(ppt_client):
+    client, state = ppt_client
+    for options in ({'mode': 'one_page'}, {'figures_per_slide': 2}):
+        response = export(client, state, options=options, keys=[], images=[])
+        assert response.status_code == 200, response.text
+        deck = Presentation(BytesIO(response.content))
+        assert 1 <= len(deck.slides) <= 2
+        # The fixture judgment is still a draft; only effective judgments may
+        # enter the new main copy, while full mode retains the saved record.
+        assert '服务端保存的主要矛盾' not in slide_text(deck)
+        assert '本期综述' in slide_text(deck) and '逻辑与策略' in slide_text(deck)
+        assert not any(shape.name.startswith('Report chart ') for slide in deck.slides for shape in slide.shapes)
+    wrong = export(client, state, options={'mode': 'one_page'})
+    assert wrong.status_code == 409
+
+
+def test_new_evidence_and_full_modes_keep_exact_manifest_and_reader_acl(ppt_client):
+    client, state = ppt_client
+    decks = {}
+    for mode in ('evidence', 'full'):
+        response = export(client, state, options={'mode': mode}, headers={'x-role': 'viewer', 'x-can-edit': 'false'})
+        assert response.status_code == 200, response.text
+        decks[mode] = Presentation(BytesIO(response.content))
+        pictures = [shape for slide in decks[mode].slides for shape in slide.shapes if shape.name.startswith('Report chart ')]
+        assert len(pictures) == len(state.ppt_keys)
+        assert export(client, state, options={'mode': mode}, keys=list(reversed(state.ppt_keys))).status_code == 409
+        assert export(client, state, options={'mode': mode}, headers={'x-restricted': 'true'}).status_code == 403
+    assert len(decks['full'].slides) > len(decks['evidence'].slides)
+
+
+@pytest.mark.parametrize('options', [{'mode': 'unknown'}, {'mode': 'evidence', 'figures_per_slide': 4},
+                                     {'mode': 'one_page', 'sections': SECTIONS}])
+def test_new_mode_options_are_strict(ppt_client, options):
+    client, state = ppt_client
+    assert export(client, state, options=options).status_code == 422

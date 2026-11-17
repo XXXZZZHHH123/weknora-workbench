@@ -123,7 +123,8 @@ def test_saved_judgment_strategy_and_manual_selection_flow_through_report_and_re
     page = client.get('/sn/reports?date=2023-01-03&period=weekly')
     assert page.status_code == 200, page.text
     main = page.text.split('原始 JSON', 1)[0]
-    assert main.index('id="report-research"') < main.index('id="report-dashboard"') < main.index('id="report-strategy"')
+    order = ['id="report-overview"', 'id="report-logic-strategy"', 'id="report-dashboard"', 'id="report-full-record"', 'id="report-research"', 'id="report-strategy"']
+    assert [main.index(marker) for marker in order] == sorted(main.index(marker) for marker in order)
     assert '策略引用修订图' in main and '引用于：研判' in main and '保存的图表按语' in main
     assert 'data-report-figure="indicator:' + SID not in main
     markdown = client.get('/sn/reports/2023-01-03/weekly.md')

@@ -127,6 +127,21 @@ def _chart_definition(scope, item):
         return definition, '已有新修订，仍显示绑定修订' if row.revision != item['revision'] else ''
 
 
+def _operand_summaries(identifiers, fields, series, effective_day, day, period):
+    result = []
+    for identifier in identifiers:
+        try:
+            result.append(indicator_data(identifier, fields[identifier], series[(identifier, effective_day)], day, period))
+        except HTTPException as error:
+            if _fatal(error):
+                raise
+            # A chart can contain a curve with no observation. Its other real
+            # curves remain useful; the empty operand never becomes a zero.
+            result.append({'kind': 'indicator', 'id': identifier, 'series_id': identifier,
+                           'status': 'unavailable', 'reason': _reason(error)})
+    return result
+
+
 @chart_read_scope()
 def dimension_data(scope, dimensions, day=None, period='weekly'):
     """Return ordered card data; successful reads share at most 20,000 points.
@@ -259,7 +274,8 @@ def dimension_data(scope, dimensions, day=None, period='weekly'):
                                 'frequency': ' / '.join(dict.fromkeys(source['frequency'] for source in sources if source['frequency'])),
                                 'source': ' / '.join(dict.fromkeys(source['source'] for source in sources if source['source'])),
                                 'sources': sources, 'definition': definition.model_dump(mode='json'),
-                                'payload': payload, 'notice': notice}
+                                'payload': payload, 'notice': notice, 'as_of': actual_day.isoformat(),
+                                'indicators': _operand_summaries(ids, fields, series, effective_day, actual_day, period)}
                     cards.append(card)
                 except Exception as error:
                     if isinstance(error, HTTPException) and error.status_code in {401, 403}:

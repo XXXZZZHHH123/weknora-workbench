@@ -54,6 +54,11 @@ class ReportReference(_Input):
     section: Literal['summary', 'research', 'dashboard', 'watch'] = 'research'
 
 
+class DimensionNote(_Input):
+    text: str = Field(default='', max_length=200)
+    impact: Literal['bullish', 'bearish', 'neutral', 'undecided'] = 'undecided'
+
+
 class ReportDraft(_Input):
     format: Literal['research-report-draft.v1'] = FORMAT
     period: Literal['daily', 'weekly']
@@ -62,6 +67,25 @@ class ReportDraft(_Input):
     sections: ReportSections = Field(default_factory=ReportSections)
     figures: list[ReportFigure] = Field(default_factory=list, max_length=6)
     references: list[ReportReference] = Field(default_factory=list, max_length=8)
+    dimension_notes: dict[str, DimensionNote] = Field(default_factory=dict, max_length=36)
+    figure_conclusions: dict[str, str] = Field(default_factory=dict, max_length=100)
+
+    @field_validator('dimension_notes')
+    @classmethod
+    def dimension_keys(cls, value):
+        # Keep historical stable ids too: a removed dimension never silently
+        # acquires another dimension's note when a draft is opened again.
+        from tin.web.research_dimensions import DIMENSION_ID
+        if any(not DIMENSION_ID.fullmatch(key) for key in value):
+            raise ValueError('Dimension notes need stable dimension ids')
+        return value
+
+    @field_validator('figure_conclusions')
+    @classmethod
+    def conclusion_limits(cls, value):
+        if any(not 1 <= len(key) <= 300 or len(text) > 200 for key, text in value.items()):
+            raise ValueError('Figure conclusions need a key and at most 200 characters')
+        return value
 
     @field_validator('date')
     @classmethod
@@ -142,6 +166,20 @@ def bound_series(session, scope, references=()):
     values = saved_bound_series(session, scope)
     for item in references:
         values.extend(item.get('series_ids') or [])
+    from tin.web.research_dimensions import read_dimensions
+    from tin.web.dimension_data import pinned_definition
+    from tin.web.chart_data import definition_series_ids
+    for dimension in read_dimensions(session):
+        for section in dimension.get('sections') or []:
+            for item in section.get('items') or []:
+                if item.get('kind') == 'indicator':
+                    values.append(item['id'])
+                elif item.get('kind') == 'chart':
+                    try:
+                        values.extend(definition_series_ids(pinned_definition(session, item)))
+                    except HTTPException as exc:
+                        if exc.status_code not in {404, 409}:
+                            raise
     return list(dict.fromkeys(values))
 
 
@@ -157,7 +195,7 @@ def current_source_version(scope, identifiers, day):
 def _stored(row):
     try:
         data = json.loads(row.body)
-        user = ReportDraft.model_validate({key: data[key] for key in ReportDraft.model_fields})
+        user = ReportDraft.model_validate({key: data[key] for key in ReportDraft.model_fields if key in data})
         if not isinstance(data.get('reference_snapshots'), list):
             raise ValueError
         version = data.get('source_revision')

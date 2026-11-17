@@ -7,6 +7,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const dialog = $("report-ppt-dialog"), form = $("report-ppt-form"), fields = $("report-ppt-fields");
   const status = $("report-ppt-status"), progress = $("report-ppt-progress"), generate = $("report-ppt-generate");
   let job = null;
+  form.addEventListener("change", () => {
+    $("report-ppt-density-field").hidden = form.elements.mode.value === "one_page";
+  });
   function aborted(signal) { if (signal.aborted) throw new DOMException("生成已取消", "AbortError"); }
   function controls(busy) {
     fields.disabled = busy; generate.disabled = busy;
@@ -86,9 +89,9 @@ document.addEventListener("DOMContentLoaded", () => {
     event.preventDefault(); if (job) return;
     const controller = new AbortController(); job = controller; controls(true);
     const signal = controller.signal, density = Number($("report-ppt-density").value);
-    const sections = Object.fromEntries(Object.keys(config.sections).map(key => [key, config.sections[key] === true && form.elements[key].checked]));
-    const figures = sections.dashboard ? manifest : [], body = new FormData(), warnings = [];
-    body.append("options", JSON.stringify({sections, figures_per_slide: density}));
+    const mode = form.elements.mode.value;
+    const figures = mode !== "one_page" && config.sections.dashboard ? manifest : [], body = new FormData(), warnings = [];
+    body.append("options", JSON.stringify({mode, figures_per_slide: density}));
     body.append("revision", JSON.stringify(config.revision)); body.append("keys", JSON.stringify(figures.map(figure => figure.key)));
     progress.max = Math.max(1, figures.length); progress.value = 0; progress.hidden = false;
     try {

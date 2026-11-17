@@ -13,13 +13,14 @@ function report({visible = true} = {}) {
       figures: [{series_id: 'manual-duplicate', caption: '旧草稿重复手选'}, {series_id: 'manual-extra', caption: '研究员图说'}],
       sections: Object.fromEntries(Object.entries(panels).map(([key,panel]) => [key,{visible: panel.visible,text: panel.text}]))}};
 }
-const html = (live = true, visible = true, value = null) => render('reports.html', {}, {report: value || report({visible}), live_report: live, files: [], selected: {date: '2029-09-15'}, period_kind: 'weekly', report_start: '2029-09-10', preview: '{}'}).replace('</head>', '<style>#report-research{min-height:1100px}</style></head>');
+const html = (live = true, visible = true, value = null) => render('reports.html', {}, {report: value || report({visible}), live_report: live, files: [], selected: {date: '2029-09-15'}, period_kind: 'weekly', report_start: '2029-09-10', preview: '{}'}).replace('</head>', '<style>#report-logic-strategy{min-height:1100px}</style></head>');
 (async () => {
   const browser = await launch();
   try {
     let active = 0, maximum = 0, saved;
     const fixture = await open(browser, prefix + '/sn/reports', html(), async ({path, url, body, reply}) => {
       if (path === '/research-references') return reply({items: []});
+      if (path === '/judgment/models') return reply({models: []});
       if (path === '/report-drafts') { saved = body; return reply({detail: '合成保存完成，保留页面供断言'}, 409); }
       if (path.startsWith('/reports/figures/')) {
         active++; maximum = Math.max(maximum, active);
@@ -34,9 +35,9 @@ const html = (live = true, visible = true, value = null) => render('reports.html
       return false;
     });
     const p = fixture.page;
-    assert.deepEqual(await p.locator('#report-readable > section').evaluateAll(nodes => nodes.map(node => node.id)), ['report-summary','report-research','report-dashboard','report-strategy']);
+    assert.deepEqual(await p.locator('#report-readable > section').evaluateAll(nodes => nodes.map(node => node.id)), ['report-overview','report-logic-strategy','report-dashboard']);
     assert.equal(await p.locator('#report-figures > figure').count(), 9, '引用图不受6张手选上限影响');
-    assert.match(await p.locator('#report-dashboard').innerText(), /已保存图表按语/);
+    assert.match(await p.locator('#report-full-record').textContent(), /已保存图表按语/);
     assert.equal(fixture.calls.filter(call => call.path.startsWith('/reports/figures/')).length, 0, '图表未入视口时不读数据');
     await p.locator('[data-report-figure="chart:chart-1"]').scrollIntoViewIfNeeded();
     await p.getByText('合成来源已撤回，请核对权限', {exact: false}).waitFor();
@@ -53,6 +54,7 @@ const html = (live = true, visible = true, value = null) => render('reports.html
     assert.match(await p.locator('#report-figure-options').innerText(), /额外指标/);
     assert.equal(await p.getByLabel('额外指标的图说').inputValue(), '研究员图说');
     assert.match(await p.locator('#report-figure-count').innerText(), /已选 2 条，其中 1 条与引用图重复并合并展示/);
+    await p.locator('#report-legacy-editor > summary').click();
     await p.locator('[data-report-section="research"]').click();
     await p.locator('#report-edit-visible').uncheck();
     assert.equal(await p.locator('#report-automatic-figures .report-automatic-figure').count(), 0, '隐藏研判后去掉该节引用图');
@@ -71,7 +73,7 @@ const html = (live = true, visible = true, value = null) => render('reports.html
     assert.equal(await frozen.page.locator('#report-figures > figure').count(), 9);
     assert.match(await frozen.page.locator('#report-dashboard').innerText(), /引用于：研判/);
     assert.equal(frozen.calls.length, 0); await frozen.close();
-    const hidden = await open(browser, prefix + '/sn/reports', html(true, false), ({path,reply}) => path === '/research-references' ? reply({items: []}) : false);
+    const hidden = await open(browser, prefix + '/sn/reports', html(true, false), ({path,reply}) => path === '/research-references' ? reply({items: []}) : path === '/judgment/models' ? reply({models: []}) : false);
     assert.equal(await hidden.page.locator('#report-dashboard').count(), 0); assert.equal(hidden.calls.length, 0); await hidden.close();
     const cappedReport = report();
     for (let index = 0; index < 4; index++) {
@@ -80,7 +82,7 @@ const html = (live = true, visible = true, value = null) => render('reports.html
       cappedReport.figure_options.push({series_id, name: '保留指标' + index});
     }
     cappedReport.figure_options.push({series_id: 'cap-candidate', name: '新增候选'});
-    const capped = await open(browser, prefix + '/sn/reports', html(true, false, cappedReport), ({path,reply}) => path === '/research-references' ? reply({items: []}) : false);
+    const capped = await open(browser, prefix + '/sn/reports', html(true, false, cappedReport), ({path,reply}) => path === '/research-references' ? reply({items: []}) : path === '/judgment/models' ? reply({models: []}) : false);
     await capped.page.locator('#report-edit-open').click();
     await capped.page.locator('#report-editor details').filter({hasText: '选图与图说'}).locator('summary').click();
     assert.match(await capped.page.locator('#report-figure-count').innerText(), /已选 6 条，其中 1 条与引用图重复并合并展示/);
@@ -98,12 +100,13 @@ const html = (live = true, visible = true, value = null) => render('reports.html
     revisions.report_figures = [];
     revisions.figure_options.push({series_id: 'new-direct', name: '新版曲线指标'});
     revisions.all_figure_options = revisions.figure_options;
-    const versioned = await open(browser, prefix + '/sn/reports', html(true, false, revisions), ({path,reply}) => path === '/research-references' ? reply({items: []}) : false);
+    const versioned = await open(browser, prefix + '/sn/reports', html(true, false, revisions), ({path,reply}) => path === '/research-references' ? reply({items: []}) : path === '/judgment/models' ? reply({models: []}) : false);
     await versioned.page.locator('#report-edit-open').click();
     await versioned.page.locator('#report-editor details').filter({hasText: '选图与图说'}).locator('summary').click();
     assert.equal(await versioned.page.locator('#report-automatic-figures strong').innerText(), '策略较新图');
     assert.match(await versioned.page.locator('#report-figure-options').innerText(), /重复指标/);
     assert.equal(await versioned.page.getByLabel('新版曲线指标', {exact:true}).count(), 0);
+    await versioned.page.locator('#report-legacy-editor > summary').click();
     await versioned.page.locator('[data-report-section="watch"]').click();
     await versioned.page.locator('#report-edit-visible').uncheck();
     assert.equal(await versioned.page.locator('#report-automatic-figures strong').innerText(), '研判原图', '隐藏策略后引用图回退到仍显示的研判修订');
