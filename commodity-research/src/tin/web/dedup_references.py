@@ -15,12 +15,12 @@ from tin.integration.page_facts import SERIES
 from tin.integration.workbench_scope import artifact_session
 from tin.models import SourceMapping
 from tin.models.workbench import WorkbenchArtifact, WorkbenchArtifactRevision
-from tin.web import charts, favorites, ppt, restricted_views
+from tin.web import charts, favorites, restricted_views
 from tin.web.chart_data import catalog_fields, definition_series_ids
 from tin.web.workbench_artifacts import record_revision
 
 router = APIRouter(prefix='/api/sn/indicator-dedup/references')
-ReferenceKind = Literal['favorites', 'core', 'chart', 'ppt', 'judgment', 'strategy']
+ReferenceKind = Literal['favorites', 'core', 'chart', 'judgment', 'strategy']
 
 
 class RewriteInput(BaseModel):
@@ -77,12 +77,6 @@ def _load(session, scope, kind, identifier):
         row = charts.load_artifact(session, identifier)
         definition = charts.decode_definition(row)
         return row, definition.model_dump(mode='json'), definition_series_ids(definition), row.revision
-    if kind == 'ppt':
-        row = ppt.load_template(session, scope, identifier)
-        value = ppt.contents(row)
-        ids = [binding['series_id'] for binding in value['bindings'].values()
-               if isinstance(binding, dict) and binding.get('kind') == 'series']
-        return row, value, ids, row.revision
     from tin.web.research_references import resolve_reference
     if not identifier:
         raise HTTPException(422, '请明确选择研究记录')
@@ -113,9 +107,7 @@ def _related_charts(session, kind, value):
                 result.append((SimpleNamespace(id=row.id, title=snapshot.title),
                     definition_series_ids(charts.decode_definition(snapshot))))
         return result
-    ids = ([item['id'] for item in value['items'] if item['kind'] == 'chart'] if kind in {'favorites', 'core'} else
-           [binding['chart_id'] for binding in value['bindings'].values()
-            if isinstance(binding, dict) and binding.get('kind') == 'chart'] if kind == 'ppt' else [])
+    ids = [item['id'] for item in value['items'] if item['kind'] == 'chart'] if kind in {'favorites', 'core'} else []
     result = []
     for identifier in dict.fromkeys(ids):
         try:
@@ -130,8 +122,6 @@ def _related_charts(session, kind, value):
 
 @router.get('')
 def reference_notices(kind: ReferenceKind, id: str = ''):
-    if kind == 'ppt':
-        ppt.require_enabled()
     scope = charts.require_scope()
     with artifact_session(scope) as session:
         _, value, identifiers, revision = _load(session, scope, kind, id)
@@ -147,7 +137,7 @@ def reference_notices(kind: ReferenceKind, id: str = ''):
              for sid in identifiers if sid in replacements and replacements[sid] in fields]
     can_write = scope.identity.can_write if kind == 'favorites' else scope.can_edit
     return {'kind': kind, 'id': id, 'revision': revision, 'sources_revision': scope.sources_revision,
-            'items': items, 'can_rewrite': bool(can_write and kind in {'favorites', 'core', 'chart', 'ppt'}),
+            'items': items, 'can_rewrite': bool(can_write and kind in {'favorites', 'core', 'chart'}),
             'reason': ('研判与策略仅提示，请进入原记录核对后编辑' if kind in {'judgment', 'strategy'} else
                        '' if can_write else '当前账号没有此项内容的编辑权限'),
             'related_charts': [{'id': row.id, 'title': row.title, 'url': research_url('/sn/charts/' + row.id)}
@@ -193,14 +183,12 @@ def _core_history(session, scope, value, revision):
 
 @router.post('/rewrite')
 def rewrite_references(body: RewriteInput):
-    if body.kind == 'ppt':
-        ppt.require_enabled()
     scope = charts.require_scope()
     if body.confirmed is not True:
         raise HTTPException(422, '改写引用需要研究员明确确认')
     if body.sources_revision != scope.sources_revision:
         raise HTTPException(409, '研究台来源已更新，请重新核对对应关系')
-    if body.kind not in {'favorites', 'core', 'chart', 'ppt'}:
+    if body.kind not in {'favorites', 'core', 'chart'}:
         raise HTTPException(422, '研判与策略暂只提供提示，不支持自动改写')
     if body.kind == 'favorites':
         if not scope.identity.can_write:
@@ -234,12 +222,6 @@ def rewrite_references(body: RewriteInput):
                     curve['derived'][key] = replacements.get(curve['derived'][key], curve['derived'][key])
         from tin.schemas.chart import ChartUpdate
         result = charts.update_chart(body.id, ChartUpdate.model_validate({'revision': revision, 'curves': curves}))
-    elif body.kind == 'ppt':
-        from tin.schemas.ppt import BindingsUpdate
-        slots = [{'slot_id': slot, 'binding': {**binding, 'series_id': replacements[binding['series_id']]}}
-                 for slot, binding in value['bindings'].items()
-                 if isinstance(binding, dict) and binding.get('kind') == 'series' and binding['series_id'] in replacements]
-        result = ppt.patch_bindings(body.id, BindingsUpdate.model_validate({'revision': revision, 'slots': slots}))
     else:
         updated = _replace_items(value['items'], replacements)
         with artifact_session(scope) as session:

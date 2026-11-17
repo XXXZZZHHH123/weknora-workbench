@@ -54,7 +54,28 @@ def binding_ids(value):
     return ([primary] if primary else []) + list(related)
 
 
-class Evidence(_Bindings):
+class _DimensionBindings(_Bindings):
+    dimension: Annotated[str, Field(strict=True)] | None = None
+
+    @field_validator('dimension')
+    @classmethod
+    def _dimension_id(cls, value):
+        from tin.web.research_dimensions import DIMENSION_ID
+        if value is not None and not DIMENSION_ID.fullmatch(value):
+            raise ValueError('研究维度编号格式无效')
+        return value
+
+    @model_serializer(mode='wrap')
+    def _without_empty_dimension(self, handler):
+        value = handler(self)
+        if value.get('dimension') is None:
+            value.pop('dimension', None)
+        if not value.get('related_series_ids'):
+            value.pop('related_series_ids', None)
+        return value
+
+
+class Evidence(_DimensionBindings):
     desc: str
     series_id: str | None = None
     value: float | None = None
@@ -146,7 +167,7 @@ class CaliberConfirmation(_Model):
         return value.strip()
 
 
-class _Rule(_Bindings):
+class _Rule(_DimensionBindings):
     @model_serializer(mode='wrap')
     def _without_empty_caliber(self, handler):
         value = handler(self)
@@ -154,6 +175,8 @@ class _Rule(_Bindings):
             value.pop('caliber_confirmation', None)
         if not value.get('related_series_ids'):
             value.pop('related_series_ids', None)
+        if value.get('dimension') is None:
+            value.pop('dimension', None)
         return value
 
 

@@ -39,10 +39,10 @@ function diagram(palette,custom){
   assert.match(svg.innerHTML,/stroke="#ED7D31"[^>]*stroke-width="2\.4"/,'The shared history modal uses the same primary series color');
   assert.match(svg.innerHTML,/id="series-chart-cross-point"[^>]*stroke="#ED7D31"/,'Hover markers match their series');
   class Element{constructor(){this.children=[];this.dataset={};this.innerHTML='';this.textContent='';}append(...children){this.children.push(...children);}replaceChildren(...children){this.children=children;}setAttribute(){}addEventListener(){}}
-  const host=new Element();host.dataset={seriesCount:'1',url:'/fixture',day:'2030-01-02',period:'daily'};
-  const report={window:{ChartPalette:palette},location:{origin:'http://fixture'},URL,Intl,document:{addEventListener:(_,callback)=>callback(),getElementById:()=>host,createElement:()=>new Element(),createElementNS:()=>new Element(),createTextNode:value=>({textContent:value})},fetch:async()=>({ok:true,json:async()=>({points_per_series:90,series:[{name:'Synthetic report figure',unit:'kg',path:'M0 0L1 1',min:2,max:8,points:[{x:52,y:128,date:'2030-01-01',value:2},{x:484,y:16,date:'2030-01-02',value:8}]}]})})};
-  vm.runInNewContext(fs.readFileSync(path.join(root,'report-figures.js'),'utf8'),report);await new Promise(resolve=>setImmediate(resolve));
-  const figure=host.children[0]?.children.find(node=>node.innerHTML);
+  const plot=new Element(),report={window:{ChartPalette:palette},host:{dataset:{period:'daily'}},plot,esc:String,fmt:String,el:()=>new Element(),document:{createElementNS:()=>new Element()}};
+  vm.createContext(report);vm.runInContext(extract('report-figures.js','renderIndicator','  '),report);
+  report.renderIndicator(plot,{name:'Synthetic report figure',unit:'kg',path:'M0 0L1 1',min:2,max:8,points:[{x:52,y:128,date:'2030-01-01',value:2},{x:484,y:16,date:'2030-01-02',value:8}]});
+  const figure=plot.children.find(node=>node.innerHTML);
   assert.match(figure?.innerHTML||'',/<polyline[^>]*stroke="#ED7D31"/,'Report series use the shared primary orange');
   assert.match(figure.innerHTML,/<circle[^>]*fill="#ED7D31"/,'Report point markers match their data line');
   const styleValues=new Map(),browser={ChartPaletteColors:canonical,document:{documentElement:{style:{setProperty:(name,value)=>styleValues.set(name,value)}}}};

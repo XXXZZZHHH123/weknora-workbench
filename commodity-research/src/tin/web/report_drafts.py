@@ -21,7 +21,7 @@ FORMAT = 'research-report-draft.v1'
 # Stored keys stay stable for saved drafts; the report itself is a collection of
 # 研判 and 策略. Text written here is a researcher note shown beside the saved
 # records, never a replacement for them.
-SECTION_LABELS = {'summary': '导语', 'research': '研判', 'dashboard': '图表说明', 'watch': '策略'}
+SECTION_LABELS = {'summary': '导语', 'research': '研判', 'dashboard': '图表', 'watch': '策略'}
 MAX_BYTES = 128 * 1024
 router = APIRouter(prefix='/api/sn/report-drafts')
 
@@ -54,6 +54,11 @@ class ReportReference(_Input):
     section: Literal['summary', 'research', 'dashboard', 'watch'] = 'research'
 
 
+class DimensionNote(_Input):
+    text: str = Field(default='', max_length=200)
+    impact: Literal['bullish', 'bearish', 'neutral', 'undecided'] = 'undecided'
+
+
 class ReportDraft(_Input):
     format: Literal['research-report-draft.v1'] = FORMAT
     period: Literal['daily', 'weekly']
@@ -62,6 +67,25 @@ class ReportDraft(_Input):
     sections: ReportSections = Field(default_factory=ReportSections)
     figures: list[ReportFigure] = Field(default_factory=list, max_length=6)
     references: list[ReportReference] = Field(default_factory=list, max_length=8)
+    dimension_notes: dict[str, DimensionNote] = Field(default_factory=dict, max_length=36)
+    figure_conclusions: dict[str, str] = Field(default_factory=dict, max_length=100)
+
+    @field_validator('dimension_notes')
+    @classmethod
+    def dimension_keys(cls, value):
+        # Keep historical stable ids too: a removed dimension never silently
+        # acquires another dimension's note when a draft is opened again.
+        from tin.web.research_dimensions import DIMENSION_ID
+        if any(not DIMENSION_ID.fullmatch(key) for key in value):
+            raise ValueError('Dimension notes need stable dimension ids')
+        return value
+
+    @field_validator('figure_conclusions')
+    @classmethod
+    def conclusion_limits(cls, value):
+        if any(not 1 <= len(key) <= 300 or len(text) > 200 for key, text in value.items()):
+            raise ValueError('Figure conclusions need a key and at most 200 characters')
+        return value
 
     @field_validator('date')
     @classmethod
@@ -117,7 +141,7 @@ def resolve_saved_reference(session, scope, kind, identifier, revision):
     return resolve_reference(session, scope, kind, identifier, revision)
 
 
-def freeze_references(session, scope, references):
+def freeze_references(session, scope, references, *, include_charts=False):
     result, seen = [], set()
     for item in references:
         item = item.model_dump() if isinstance(item, ReportReference) else item
@@ -129,7 +153,9 @@ def freeze_references(session, scope, references):
         if (actual.get('kind') != item['kind'] or str(actual.get('id')) != item['id']
                 or actual.get('revision') != item['revision']):
             raise HTTPException(409, '引用版本已变化，未替换为最新版本')
-        result.append({**{key: deepcopy(actual.get(key)) for key in
+        from tin.web.report_charts import record_chart_references
+        result.append({**({'chart_references': record_chart_references(actual.get('payload') or {})} if include_charts else {}),
+            **{key: deepcopy(actual.get(key)) for key in
             ('kind', 'id', 'revision', 'title', 'status', 'resource_type', 'summary', 'body_text',
              'body_text_truncated', 'series_ids', 'source_ids')}, 'section': item['section']})
     return result
@@ -140,6 +166,20 @@ def bound_series(session, scope, references=()):
     values = saved_bound_series(session, scope)
     for item in references:
         values.extend(item.get('series_ids') or [])
+    from tin.web.research_dimensions import read_dimensions
+    from tin.web.dimension_data import pinned_definition
+    from tin.web.chart_data import definition_series_ids
+    for dimension in read_dimensions(session):
+        for section in dimension.get('sections') or []:
+            for item in section.get('items') or []:
+                if item.get('kind') == 'indicator':
+                    values.append(item['id'])
+                elif item.get('kind') == 'chart':
+                    try:
+                        values.extend(definition_series_ids(pinned_definition(session, item)))
+                    except HTTPException as exc:
+                        if exc.status_code not in {404, 409}:
+                            raise
     return list(dict.fromkeys(values))
 
 
@@ -155,7 +195,7 @@ def current_source_version(scope, identifiers, day):
 def _stored(row):
     try:
         data = json.loads(row.body)
-        user = ReportDraft.model_validate({key: data[key] for key in ReportDraft.model_fields})
+        user = ReportDraft.model_validate({key: data[key] for key in ReportDraft.model_fields if key in data})
         if not isinstance(data.get('reference_snapshots'), list):
             raise ValueError
         version = data.get('source_revision')
@@ -188,7 +228,7 @@ def serialize_report(session, scope, row, *, strict=False):
               for item in saved['reference_snapshots'] if isinstance(item, dict)}
     for reference in saved['references']:
         try:
-            actual = freeze_references(session, scope, [reference])[0]
+            actual = freeze_references(session, scope, [reference], include_charts=True)[0]
             previous = frozen.get((reference['kind'], reference['id'], reference['revision'], reference['section']))
             stable = ('kind', 'id', 'revision', 'title', 'resource_type', 'summary', 'body_text',
                       'body_text_truncated', 'series_ids', 'source_ids', 'section')
@@ -196,7 +236,10 @@ def serialize_report(session, scope, row, *, strict=False):
                 raise HTTPException(409, '引用内容与已保存版本不一致，请重新核对')
             # Preserve the saved quotation and status after checking its current
             # grant and immutable revision, instead of silently replacing it.
-            snapshots.append({key: deepcopy(previous.get(key)) for key in (*stable, 'status')})
+            if ('chart_references' in previous and previous['chart_references'] != actual['chart_references']):
+                raise HTTPException(409, '引用图表与已保存记录版本不一致，请重新核对')
+            snapshots.append({**{key: deepcopy(previous.get(key)) for key in (*stable, 'status')},
+                              'chart_references': deepcopy(actual['chart_references'])})
         except HTTPException as error:
             if error.status_code not in {403, 404, 409}:
                 raise

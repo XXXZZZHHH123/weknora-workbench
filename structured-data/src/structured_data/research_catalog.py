@@ -37,7 +37,7 @@ def _readonly(path):
 
 
 # Bump when the indexed search text changes, so an index built by older code is rebuilt once.
-INDEX_FORMAT = 2
+INDEX_FORMAT = 3
 SEARCH_KEYS = ('metric','name','series_id','source_series_id','source_file','sheet','unit','frequency','dimensions')
 MAX_SEARCH_TERMS = 16
 

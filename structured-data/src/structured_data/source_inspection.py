@@ -22,6 +22,8 @@ MAX_SCAN_ROWS = 50_000
 MAX_SCAN_SECONDS = 8
 MAX_READ_ADMISSION_WAIT_SECONDS = 8
 MAX_RESULT_BYTES = 512 * 1024
+MAX_INSPECTION_CELLS = 400
+MAX_SPLIT_REQUEST_PREVIEW = 8
 CELL = r'[A-Z]{1,3}[1-9][0-9]{0,6}'
 EXCEL_CELL = r'\$?[A-Za-z]{1,3}\$?[1-9][0-9]{0,6}'
 logger = logging.getLogger(__name__)
@@ -87,6 +89,51 @@ def _bounds(ref):
     if left > right or top > bottom or right > 16_384 or bottom > 1_048_576:
         raise ValueError('Excel 范围无效或超出工作表边界')
     return bounds
+
+
+def _split_inspection_range(bounds):
+    """Count and lazily produce bounded rectangles without expanding cells."""
+    left, top, right, bottom = bounds
+    width, height = right - left + 1, bottom - top + 1
+    row_step = max(1, MAX_INSPECTION_CELLS // width)
+    col_step = min(width, MAX_INSPECTION_CELLS)
+    count = ((height + row_step - 1) // row_step) * ((width + col_step - 1) // col_step)
+    if height <= MAX_INSPECTION_CELLS:
+        column_step = MAX_INSPECTION_CELLS // height
+        column_count = (width + column_step - 1) // column_step
+        if column_count < count:
+            row_step, col_step, count = height, column_step, column_count
+
+    def parts():
+        for row in range(top, bottom + 1, row_step):
+            for col in range(left, right + 1, col_step):
+                first = f'{get_column_letter(col)}{row}'
+                last = f'{get_column_letter(min(right, col + col_step - 1))}{min(bottom, row + row_step - 1)}'
+                yield first if first == last else f'{first}:{last}'
+
+    return count, parts()
+
+
+def _inspection_limit_error(sheet, required_count, requested_bounds, group_bounds):
+    """Suggest real, executable source reads while bounding even huge inputs."""
+    requests = []
+    total = 0
+    for bounds in [bounds for _, bounds in requested_bounds] + [
+            bounds for group in group_bounds for bounds in group]:
+        count, parts = _split_inspection_range(bounds)
+        total += count
+        for ref in parts:
+            if len(requests) >= MAX_SPLIT_REQUEST_PREVIEW:
+                break
+            requests.append({'sheet': sheet, 'ranges': [ref], 'max_cells': MAX_INSPECTION_CELLS})
+    preview = json.dumps(requests, ensure_ascii=False)
+    omitted = total - len(requests)
+    notice = (f'共 {total} 次调用，已列出 {len(requests)} 次，另 {omitted} 次未列出；'
+              '其余沿相同行列分块继续读取。' if omitted else f'共 {total} 次调用。')
+    return ValueError(
+        f'指定范围及求和输入共 {required_count} 格，超过 max_cells 硬上限 {MAX_INSPECTION_CELLS}；'
+        '沿用原 dataset_id，分别执行以下拆分建议（每次不超过 400 格）：' + preview + '。' + notice +
+        '这些调用只分批读取原单元格；原 sums 需覆盖全部输入后另行计算，不能把某一批当作完整求和结果。')
 
 
 def _reference(ref, single=False):
@@ -310,7 +357,7 @@ def _validate_inspection_request(sheet=None, searches=None, ranges=None, sums=No
                                  padding_rows=2, padding_cols=2):
     """Validate and normalize the caller request before taking a read slot."""
     _integer(max_matches, 1, 30, 'max_matches')
-    _integer(max_cells, 1, 400, 'max_cells')
+    _integer(max_cells, 1, MAX_INSPECTION_CELLS, 'max_cells')
     _integer(padding_rows, 0, 3, 'padding_rows')
     _integer(padding_cols, 0, 4, 'padding_cols')
     terms = _items(searches, 'searches')
@@ -347,8 +394,8 @@ def _validate_inspection_request(sheet=None, searches=None, ranges=None, sums=No
     # million-row range cannot consume memory outside this 400-cell boundary.
     # Overlap between separate groups is counted each time it will be returned.
     required_count = sum((b[2]-b[0]+1)*(b[3]-b[1]+1) for _, b in requested_bounds) + sum(group_counts)
-    if required_count > max_cells:
-        raise ValueError(f'指定范围及求和输入共 {required_count} 格，超过 max_cells={max_cells}；请缩小范围')
+    if required_count > MAX_INSPECTION_CELLS:
+        raise _inspection_limit_error(sheet, required_count, requested_bounds, group_bounds)
     for bounds in group_bounds:
         seen = set()
         for left, top, right, bottom in bounds:
@@ -361,7 +408,10 @@ def _validate_inspection_request(sheet=None, searches=None, ranges=None, sums=No
     return {'sheet': sheet, 'terms': terms, 'requested': requested,
             'requested_bounds': requested_bounds, 'groups': groups,
             'group_bounds': group_bounds, 'required_count': required_count,
-            'max_matches': max_matches, 'max_cells': max_cells,
+            'max_matches': max_matches, 'max_cells': max(max_cells, required_count),
+            'requested_max_cells': max_cells,
+            'max_cells_adjustment_reason': ('requested_max_cells_below_range'
+                                            if required_count > max_cells else None),
             'padding_rows': padding_rows, 'padding_cols': padding_cols}
 
 
@@ -491,6 +541,9 @@ def _inspect_source_validated(store, dataset_id, request):
         output = {'kind': 'structured_source_inspection', 'status': 'ok',
                   'dataset_id': dataset_id, 'source_file': manifest['source_file'],
                   'sha256': expected, 'hash_verified': True, 'sheets': selected,
+                  'requested_max_cells': request['requested_max_cells'],
+                  'effective_max_cells': max_cells,
+                  'max_cells_adjustment_reason': request['max_cells_adjustment_reason'],
                   'coverage': {name: {'parsed_ranges': [s['parsed_range'] for s in manifest.get('sheets', [])
                                   if s.get('name') == name and s.get('parsed_range')],
                                     'excluded_regions': [s for s in manifest.get('excluded_regions', [])

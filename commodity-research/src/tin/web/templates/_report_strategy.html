@@ -12,7 +12,7 @@
     <div><dt>复核日期</dt><dd>{{ card.review_date }}{% if card.thesis %}<small>适用范围：{{ card.thesis }}</small>{% endif %}{% if card.watch_for %}<small>执行前核对：{{ card.watch_for }}</small>{% endif %}</dd></div>
   </dl>
   {% if m.conditions or m.indicators %}<div class="report-monitor">
-    {% for item in m.conditions %}<div class="report-monitor-item" data-state="{{ item.state }}"><div><span class="report-state">{{ '已触发' if item.state == '触发' else item.state }}</span><strong>{{ item.title }}</strong><small>{{ item.field_label }}</small></div><p>{{ [item.value_text and '当前 ' ~ item.value_text, item.condition and '条件 ' ~ item.condition, item.as_of and '数据 ' ~ item.as_of]|select|join(' · ') }}</p>{{ spark(item.chart) }}{% if item.note or item.outdated %}<small>{{ item.note }}{% if item.outdated %}{{ '；' if item.note }}所引研判已有新版本{% endif %}</small>{% endif %}</div>{% endfor %}
+    {% for item in m.conditions %}<div class="report-monitor-item" data-state="{{ item.state }}"><div><span class="report-state">{{ '已触发' if item.state == '触发' else item.state }}</span><strong>{{ item.title }}</strong><small>{{ item.field_label }}</small></div><p>{{ [item.value_text and '当前 ' ~ item.value_text, item.condition and '条件 ' ~ item.condition, item.as_of and '数据 ' ~ item.as_of, item.stale_note]|select|join(' · ') }}</p>{{ spark(item.chart) }}{% if item.note or item.outdated %}<small>{{ item.note }}{% if item.outdated %}{{ '；' if item.note }}所引研判已有新版本{% endif %}</small>{% endif %}</div>{% endfor %}
     {% for item in m.indicators %}<div class="report-monitor-item" data-state="indicator"><div><span class="report-state">指标</span><strong>{{ item.title }}</strong><small>{{ item.field_label }}</small></div><p>{{ ['最新 ' ~ item.value_text, item.change_text and '较前值 ' ~ item.change_text, item.as_of and '数据 ' ~ item.as_of]|select|join(' · ') }}</p>{{ spark(item.chart) }}{% if item.stale_note or item.note %}<small>{{ item.stale_note or item.note }}</small>{% endif %}</div>{% endfor %}
   </div>{% elif card.citations %}<p class="report-muted">{{ report.coverage.research_cards_monitor_error or '所引条件将在当前研究台中核对。' }}</p>{% endif %}
 </article>
@@ -23,7 +23,7 @@
 {% if report.coverage.research_cards_truncated or report.coverage.research_cards_legacy %}<p class="report-muted">仅展示最近40张已整理策略方案；未整理的旧记录保留在策略管理。</p>{% endif %}
 {% for strategy in report.strategies %}<article class="report-strategy"><header><a href="{{ research_prefix() }}/sn/strategies/{{ strategy.id }}">{{ strategy.title }}</a><span class="report-badge">交易计划 · {{ strategy.status_label }} · {{ strategy.mode_label }}</span></header>
   {% if strategy.thesis %}<p class="research-prose">{{ strategy.thesis }}</p>{% endif %}
-  <p class="report-muted">{% for leg in strategy.legs %}{{ leg.contract }} · {{ '买入' if leg.side == 'buy' else '卖出' if leg.side == 'sell' else leg.side }}{% if not loop.last %} ／ {% endif %}{% endfor %}{% if strategy.entry %} · 入场 {{ strategy.entry.low }} – {{ strategy.entry.high }}{% endif %}</p>
+  <p class="report-muted">{% for leg in strategy.legs %}{{ leg.contract }} · {{ '买入' if leg.side == 'buy' else '卖出' if leg.side == 'sell' else leg.side }}{% if not loop.last %} ／ {% endif %}{% endfor %}{% if strategy.entry %} · 入场 {{ strategy.entry.low_text }} – {{ strategy.entry.high_text }}{% endif %}</p>
   {% if strategy.invalidation %}<p>失效/复核：{{ strategy.invalidation }}</p>{% endif %}
   {% if strategy.review_at %}<small class="report-muted">复核时间 {{ strategy.review_at }}</small>{% endif %}
 </article>{% endfor %}

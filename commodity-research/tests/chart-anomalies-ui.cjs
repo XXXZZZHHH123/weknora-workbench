@@ -1,5 +1,5 @@
 /* Browser coverage; all HTTP requests are fulfilled by synthetic fixtures. */
-const {assert, renderLibrary, launch, open, prefix} = require('./chart-ui-fixture.cjs');
+const {assert, render, renderLibrary, launch, open, prefix, record, cycle} = require('./chart-ui-fixture.cjs');
 const html = renderLibrary();
 const asOf = '2029-09-15', unsafe = '<img src=x onerror="window.__xss=1">';
 const items = Array.from({length: 12}, (_, index) => ({id: 'chart-' + (index + 1), title: index ? '图表' + (index + 1) : unsafe,
@@ -43,6 +43,45 @@ const items = Array.from({length: 12}, (_, index) => ({id: 'chart-' + (index + 1
     assert.equal(await empty.page.locator('#chart-anomalies-more').isVisible(), false);
     assert.equal(await empty.page.locator('#chart-anomalies-table').isVisible(), false);
     await empty.close();
+
+    // Hold the anomaly response until cards, pagination and search have all
+    // completed. Exercise both the indicator tab and the library template.
+    for (const [pathname, content] of [['/sn/indicators?tab=charts', html], ['/sn/charts', render('charts.html')]]) {
+      let release;
+      const pending = new Promise(resolve => { release = resolve; });
+      const records = [record('chart-1'), record('chart-2')];
+      records[1].definition.title = '第二张合成图';
+      const independent = await open(browser, pathname, content, async ({path, url, reply}) => {
+        if (path === '/charts/anomalies') {
+          await pending;
+          return reply({detail: '合成来源暂不可用'}, 503);
+        }
+        if (path === '/charts') {
+          if (url.searchParams.get('q')) return reply({items: [records[1]], total: 1, next_offset: null});
+          if (url.searchParams.get('limit') === '100') return reply({items: records, total: 2, next_offset: null});
+          const offset = Number(url.searchParams.get('offset'));
+          return reply({items: [records[offset]], total: 2, next_offset: offset ? null : 1});
+        }
+        if (path.endsWith('/data')) return reply(cycle());
+        return false;
+      }, {waitUntil: 'domcontentloaded'});
+      const p = independent.page;
+      try {
+        await p.locator('.charts-card .charts-thumbnail svg').waitFor();
+        assert.equal(await p.locator('.charts-card').count(), 1);
+        assert.equal(await p.locator('#chart-anomalies-status').innerText(), '正在读取同期位置…');
+        assert.equal(await p.locator('#chart-anomalies').getAttribute('aria-busy'), 'true');
+        await p.locator('#charts-more').click();
+        await p.waitForFunction(() => document.querySelectorAll('.charts-card').length === 2);
+        await p.locator('#chart-search').fill('第二张');
+        await p.waitForFunction(() => document.querySelectorAll('.charts-card').length === 1 && document.querySelector('.charts-card').dataset.chartId === 'chart-2');
+        release();
+        await p.locator('#chart-anomalies-status').filter({hasText: '同期异动读取失败：合成来源暂不可用'}).waitFor();
+        assert.equal(await p.locator('#chart-anomalies').getAttribute('aria-busy'), 'false');
+        assert.match(await p.locator('.charts-card').innerText(), /第二张合成图/);
+        assert.equal(await p.locator('#charts-status').isVisible(), false);
+      } finally { release(); await independent.close(); }
+    }
     console.log('chart-anomalies-ui: passed');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

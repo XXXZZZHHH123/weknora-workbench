@@ -2,8 +2,10 @@
 {% block title %}日报与周报 · {{ research_workbench().metadata.name if research_workbench() else '研究工作台' }}{% endblock %}
 {% block head %}
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/reports.css?v={{ static_version() }}">
+<script defer src="{{ research_static_prefix() }}/static/chart-kit.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/report-figures.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/report-drafts.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/report-ppt.js?v={{ static_version() }}"></script>
 {% endblock %}
 {% macro note(panel, title) %}{% if panel.text %}<div class="report-note"><strong>{{ title }}</strong><p class="research-prose whitespace-pre-wrap">{{ panel.text }}</p></div>{% endif %}{% endmacro %}
 {% macro references(panel) %}{% for ref in panel.references %}
@@ -16,50 +18,49 @@
 {% if scope and scope.scope_version == 2 and not scope.restricted %}<a class="report-button" id="report-chart-anomalies" href="{{ research_url('/sn/charts') }}{% if selected.date %}?date={{ selected.date | urlencode }}{% endif %}#chart-anomalies">本周同期异动</a>{% endif %}
 <nav id="report-period-switch" class="report-segment" aria-label="报告周期"><a href="{{ research_prefix() }}/sn/reports?period=daily{% if selected.date %}&amp;date={{ selected.date }}{% endif %}" {% if not weekly %}aria-current="page"{% endif %}>日报</a><a href="{{ research_prefix() }}/sn/reports?period=weekly{% if selected.date %}&amp;date={{ selected.date }}{% endif %}" {% if weekly %}aria-current="page"{% endif %}>周报</a></nav>
 <form action="{{ research_prefix() }}/sn/reports" method="get" class="report-date-form"><input type="hidden" name="period" value="{{ period_kind }}"><label>截至<input type="date" name="date" value="{{ selected.date or '' }}" onchange="this.form.submit()" aria-label="报告截止日期"></label>{% if files %}<label class="report-history-label"><span class="sr-only">可回放日期</span><select name="history" aria-label="可回放日期" onchange="this.form.elements.date.value=this.value;this.form.submit()"><option value="" disabled>选择历史日期</option>{% for f in files %}<option value="{{ f.date }}" {% if f.date == selected.date %}selected{% endif %}>{{ f.date }} · 周{{ f.weekday }}</option>{% endfor %}</select></label>{% endif %}<noscript><button type="submit">查看</button></noscript></form></div></header>
-{% if ppt_enabled and scope and scope.scope_version == 2 and not scope.restricted %}
-<details id="report-ppt" class="report-ppt"{% if report %} hidden{% endif %}><summary>导出为 PPT（按我的版式）</summary>
-{% with ppt_page={'enabled': true, 'can_write': scope.can_edit, 'id': none, 'date': selected.date or '', 'write_reason': '' if scope.can_edit else '当前账号没有研究工作台编辑权限，无法上传、修改、删除或生成PPT'} %}
-{% include '_ppt_library.html' %}
-{% endwith %}
-</details>
-{% endif %}
 {% if not report %}<section class="report-section report-empty"><strong>尚无{{ '周报' if weekly else '日报' }}数据</strong><p>可先准备绑定资料、保存研究逻辑，再将需要的内容整理成报告。</p></section>
 {% else %}
-<div class="report-document"><header class="report-document-header"><div><span class="report-eyebrow">{{ 'WEEKLY' if weekly else 'DAILY' }} RESEARCH</span><h2>{{ report.report_title or (scope.metadata.name if scope else '研究') }}{% if not report.report_title %} {{ '周报' if weekly else '日报' }}{% endif %}</h2><p>{{ report_start if weekly else selected.date }}{% if weekly %} — {{ selected.date }}{% endif %} · {% if report.is_manual_report %}个人草稿 v{{ report.manual_report.revision }}{% else %}沿用已保存研究记录{% endif %}{% if report.coverage.latest_data_date %} · 最近数据 {{ report.coverage.latest_data_date[:10] }}{% endif %}</p></div><div class="report-actions">{% if can_edit %}<button type="button" class="report-button" id="report-edit-open">编辑</button>{% endif %}<details class="report-export-menu"><summary class="report-button">导出</summary><div class="report-export-items" role="menu">{% if ppt_enabled and scope and scope.scope_version == 2 and not scope.restricted %}<button type="button" class="report-export-item" role="menuitem" data-open-report-ppt>导出为 PPT（按我的版式）</button>{% endif %}{% with export_kind='weekly' if weekly else 'snapshot', export_id=selected.date %}{% include '_brief_export.html' %}{% endwith %}<a href="{{ research_prefix() }}/sn/reports/{{ selected.date }}/{{ 'weekly' if weekly else 'daily' }}.md" class="report-export-item" role="menuitem">下载 Markdown</a><button type="button" class="report-export-item" role="menuitem" onclick="window.print()">打印</button></div></details></div></header>
+<div class="report-document"><header class="report-document-header"><div><span class="report-eyebrow">{{ 'WEEKLY' if weekly else 'DAILY' }} RESEARCH</span><h2>{{ report.report_title or (scope.metadata.name if scope else '研究') }}{% if not report.report_title %} {{ '周报' if weekly else '日报' }}{% endif %}</h2><p>{{ report_start if weekly else selected.date }}{% if weekly %} — {{ selected.date }}{% endif %} · {% if report.is_manual_report %}个人草稿 v{{ report.manual_report.revision }}{% else %}沿用已保存研究记录{% endif %}{% if report.coverage.latest_data_date %} · 最近数据 {{ report.coverage.latest_data_date[:10] }}{% endif %}</p></div><div class="report-actions">{% if can_edit %}<button type="button" class="report-button" id="report-edit-open">编辑</button>{% endif %}<details class="report-export-menu"><summary class="report-button">导出</summary><div class="report-export-items" role="menu">{% with export_kind='weekly' if weekly else 'snapshot', export_id=selected.date %}{% include '_brief_export.html' %}{% endwith %}<a href="{{ research_prefix() }}/sn/reports/{{ selected.date }}/{{ 'weekly' if weekly else 'daily' }}.md" class="report-export-item" role="menuitem">下载 Markdown</a>{% if scope and not scope.restricted and 'reports' in (scope.view_modules | default(['reports'])) %}<button type="button" id="report-ppt-open" class="report-export-item" role="menuitem">导出为 PPT</button>{% endif %}<button type="button" class="report-export-item" role="menuitem" onclick="window.print()">打印</button></div></details></div></header>
+{% if scope and not scope.restricted and 'reports' in (scope.view_modules | default(['reports'])) %}{% include '_report_ppt.html' %}{% endif %}
 <div id="report-readable" class="report-content">
 {% set panels = report.panels %}
-{% if panels.summary.visible %}{% include '_report_lead.html' %}{% endif %}
-{% set numbers = namespace(next=1) %}
-{% if panels.research.visible %}<section class="report-section" id="report-research"><div class="report-section-heading"><h3><span class="report-section-number">{{ '%02d'|format(numbers.next) }}</span>研判</h3><small>沿用已保存研判 · 当前版本</small></div>{% set numbers.next = numbers.next + 1 %}
-{{ note(panels.research, '研究员按语') }}{{ references(panels.research) }}
-{% include '_report_judgment.html' %}
+{% if panels.summary.visible %}{% include '_report_overview.html' %}{% endif %}
+{% if panels.research.visible or panels.watch.visible %}{% include '_report_logic_strategy.html' %}{% endif %}
+{% if panels.dashboard.visible %}<section class="report-section" id="report-dashboard"><div class="report-section-heading"><h3><span class="report-section-number">03</span>证据图</h3><small>按研究维度归组 · 一句结论与真实图表</small></div>
+{% include '_report_figures.html' %}
 </section>{% endif %}
-{% if panels.watch.visible %}<section class="report-section" id="report-strategy"><div class="report-section-heading"><h3><span class="report-section-number">{{ '%02d'|format(numbers.next) }}</span>策略</h3><small>当前保存的策略方案与交易计划 · 条件状态截至 {{ selected.date }}</small></div>
-{{ note(panels.watch, '研究员按语') }}{{ references(panels.watch) }}
-{% include '_report_strategy.html' %}
+<details class="report-full-record" id="report-full-record"><summary>完整记录 <small>研判、策略原文与原有按语</small></summary>
+{% if panels.summary.visible %}{% include '_report_lead.html' %}{{ references(panels.summary) }}{% endif %}
+{% if panels.research.visible %}<section class="report-section" id="report-research"><div class="report-section-heading"><h3>研判完整记录</h3><small>沿用已保存研判 · 当前版本</small></div>
+{{ note(panels.research, '研究员按语') }}{{ references(panels.research) }}{% include '_report_judgment.html' %}
 </section>{% endif %}
-</div><footer class="report-footer"><details><summary>来源、资料缺口与完整记录</summary>{% if report.manual_report and report.manual_report.unavailable_references %}<p>部分引用的版本或权限已改变，请调整后再导出。</p>{% endif %}{% include '_report_saved_sources.html' %}<p>文字复用已保存研判或人工编辑，不代表新的模型分析；条件触发不等于成交。图表最多6条序列，日报90点/周报120点，是观测点数而非自然天数。</p><details><summary>原始 JSON · 来源、输入与完整记录</summary><pre>{{ preview }}</pre><a href="{{ research_prefix() }}/sn/reports/{{ selected.date }}{{ '/weekly' if weekly else '' }}.json" class="report-button">下载 JSON</a></details></details></footer></div>
+{% if panels.dashboard.visible %}{{ note(panels.dashboard, '图表按语') }}{{ references(panels.dashboard) }}{% endif %}
+{% if panels.watch.visible %}<section class="report-section" id="report-strategy"><div class="report-section-heading"><h3>策略完整记录</h3><small>条件状态截至 {{ selected.date }}</small></div>
+{{ note(panels.watch, '研究员按语') }}{{ references(panels.watch) }}{% include '_report_strategy.html' %}
+</section>{% endif %}
+</details>
+</div><footer class="report-footer"><details><summary>来源与资料缺口</summary>{% if report.manual_report and report.manual_report.unavailable_references %}<p>部分引用的版本或权限已改变，请调整后再导出。</p>{% endif %}{% include '_report_saved_sources.html' %}<p>文字复用已保存研判或人工编辑，不代表新的模型分析；条件触发不等于成交。研判与策略引用的图自动纳入；另加指标图最多6条，日报90点/周报120点，是观测点数而非自然天数。</p><details><summary>原始 JSON · 来源、输入与完整记录</summary><pre>{{ preview }}</pre><a href="{{ research_prefix() }}/sn/reports/{{ selected.date }}{{ '/weekly' if weekly else '' }}.json" class="report-button">下载 JSON</a></details></details></footer></div>
+<script type="application/json" id="report-figure-data">{{ report.report_figures | tojson }}</script>
 {% if can_edit %}
-<script type="application/json" id="report-editor-data">{{ {'draft': report.editable_draft, 'default_title': ((scope.metadata.name if scope and scope.metadata.name else '研究') ~ (' 周报' if weekly else ' 日报')), 'id': report.manual_report.id if report.is_manual_report else none, 'revision': report.manual_report.revision if report.is_manual_report else none, 'figure_options': report.figure_options} | tojson }}</script>
-<dialog id="report-editor" class="report-editor"><form id="report-editor-form"><header class="report-editor-heading"><div><strong>编辑{{ '周报' if weekly else '日报' }}</strong><small>报告由已保存研判与策略组成；这里写的是附加按语，可留空或隐藏对应部分。</small></div><button type="button" id="report-edit-close" class="report-icon-button" aria-label="关闭">×</button></header>
-<div class="report-editor-body"><label class="report-title-field">标题<input id="report-edit-title" maxlength="120" required></label><div class="report-editor-tabs" role="tablist" aria-label="报告段落">{% for key, label in [('summary','导语'),('research','研判'),('dashboard','图表'),('watch','策略')] %}<button type="button" data-report-section="{{ key }}" role="tab" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ label }}</button>{% endfor %}</div><div class="report-edit-section"><label class="report-check"><input id="report-edit-visible" type="checkbox">显示本节</label><textarea id="report-edit-text" rows="6" maxlength="4000" placeholder="可以留空；按语显示在已保存内容旁边，不改写研判、策略或指标事实。" aria-label="按语正文"></textarea></div>
+<script type="application/json" id="report-editor-data">{{ {'draft': report.editable_draft, 'default_title': ((scope.metadata.name if scope and scope.metadata.name else '研究') ~ (' 周报' if weekly else ' 日报')), 'id': report.manual_report.id if report.is_manual_report else none, 'revision': report.manual_report.revision if report.is_manual_report else none, 'figure_options': report.figure_options, 'all_figure_options': report.all_figure_options or report.figure_options, 'automatic_figures': report.automatic_figures, 'all_automatic_figures': report.all_automatic_figures or report.automatic_figures, 'dimensions': report.editable_dimensions | default(report.dimension_overview | default([])), 'report_figures': report.report_figures, 'date': selected.date, 'period': period_kind} | tojson }}</script>
+<dialog id="report-editor" class="report-editor"><form id="report-editor-form"><header class="report-editor-heading"><div><strong>编辑{{ '周报' if weekly else '日报' }}</strong><small>按维度写一句本期变化与含义，并确认影响。模型草稿仅填入编辑框，保存后才生效。</small></div><button type="button" id="report-edit-close" class="report-icon-button" aria-label="关闭">×</button></header>
+<div class="report-editor-body"><label class="report-title-field">标题<input id="report-edit-title" maxlength="120" required></label>
+<div class="report-draft-model"><label for="report-draft-model">起草模型</label><select id="report-draft-model"><option value="">选择模型</option></select><button type="button" class="report-button" id="report-draft-generate">让模型起草</button></div>
+<p class="report-muted">仅使用各维度本期事实、该维度研判依据和已写内容；数字或来源核对未通过的句子不会填入。</p>
+<div id="report-dimension-editors" class="report-dimension-editors"></div>
+<details class="report-editor-tools" id="report-legacy-editor"><summary>原有按语与完整记录显示设置</summary>
+<div class="report-editor-tabs" role="tablist" aria-label="报告段落">{% for key, label in [('summary','导语'),('research','研判'),('dashboard','图表'),('watch','策略')] %}<button type="button" data-report-section="{{ key }}" role="tab" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ label }}</button>{% endfor %}</div><div class="report-edit-section"><label class="report-check"><input id="report-edit-visible" type="checkbox">显示本节</label><textarea id="report-edit-text" rows="4" maxlength="4000" placeholder="保留原有按语，显示在完整记录中。" aria-label="按语正文"></textarea></div></details>
 <details class="report-editor-tools"><summary>引用已有研判或策略</summary><div class="report-reference-picker"><select id="report-ref-kind" aria-label="引用类型"><option value="judgment">研判</option><option value="strategy">策略</option></select><select id="report-ref-record" aria-label="选择已有记录"><option value="">选择记录与版本</option></select><button type="button" id="report-ref-add" class="report-button">引用</button></div><div id="report-ref-list"></div></details>
-<details class="report-editor-tools"><summary>选图与图说 · 最多6条</summary><div id="report-figure-options"></div></details><p class="report-muted">手工文字与引用保留版本；数值、单位、日期和来源仍由系统读取。清空后不会重新填回默认内容。</p><p id="report-edit-status" class="report-edit-status" role="status" aria-live="polite"></p></div><footer class="report-editor-footer"><button type="button" id="report-edit-cancel" class="report-button">取消</button><button type="submit" id="report-edit-save" class="report-button report-button-primary">保存草稿</button></footer></form></dialog>
+<details class="report-editor-tools"><summary>选图与图说</summary><div id="report-figure-conclusions"></div><p class="report-muted">研判和策略引用的图会自动放进报告</p><div id="report-automatic-figures" aria-label="自动纳入的引用图"></div><h4>另加指标图（最多 6 条）</h4><p id="report-figure-count" class="report-muted" role="status" aria-live="polite"></p><div id="report-figure-options"></div></details><p class="report-muted">手工文字与引用保留版本；数值、单位、日期和来源仍由系统读取。清空后不会重新填回默认内容。</p><p id="report-edit-status" class="report-edit-status" role="status" aria-live="polite"></p></div><footer class="report-editor-footer"><button type="button" id="report-edit-cancel" class="report-button">取消</button><button type="submit" id="report-edit-save" class="report-button report-button-primary">保存草稿</button></footer></form></dialog>
 {% endif %}
 {% endif %}
 
 {% endif %}
 <script>
-  // 导出 menu: PPT opens the template panel above the report; the menu closes after a choice.
+  // Close the export menu after choosing an output.
   (function () {
     const menu = document.querySelector('.report-export-menu'); if (!menu) return;
-    menu.querySelector('[data-open-report-ppt]')?.addEventListener('click', () => {
-      const panel = document.getElementById('report-ppt'); if (!panel) return;
-      panel.hidden = false; panel.open = true; menu.open = false;
-      panel.scrollIntoView({behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start'});
-      panel.querySelector('summary')?.focus({preventScroll: true});
-    });
-    menu.querySelectorAll('a.report-export-item, button.report-export-item:not([data-open-report-ppt])').forEach(item => item.addEventListener('click', () => { menu.open = false; }));
+    menu.querySelectorAll('a.report-export-item, button.report-export-item').forEach(item => item.addEventListener('click', () => { menu.open = false; }));
     document.addEventListener('click', event => { if (menu.open && !menu.contains(event.target)) menu.open = false; });
     document.addEventListener('keydown', event => { if (event.key === 'Escape' && menu.open) { menu.open = false; menu.querySelector('summary').focus(); } });
   })();

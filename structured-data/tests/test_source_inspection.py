@@ -250,12 +250,114 @@ def test_bounded_sum_ranges_expand_every_source_cell_and_use_decimal(original):
     assert all(len(item['cells']) == 12 for item in separate_groups['calculations'])
 
 
+@pytest.fixture
+def limit_original(original):
+    store, dataset, path = original
+    from openpyxl import load_workbook
+    source = path / 'source.xlsx'
+    book = load_workbook(source)
+    book['月度']['OR201'] = 'Synthetic source boundary'
+    book.save(source)
+    book.close()
+    manifest = store.manifest(dataset)
+    manifest['sha256'] = hashlib.sha256(source.read_bytes()).hexdigest()
+    dump(path / 'manifest.json', manifest)
+    return store, dataset, path
+
+
+@pytest.mark.parametrize('ref, requested_limit, cell_count', [
+    ('A1:O26', 200, 390), ('A1:L12', 120, 144), ('A1:G13', 30, 91),
+    ('A1:T20', 1, 400),
+])
+def test_explicit_ranges_raise_soft_limit_to_actual_count_within_hard_limit(
+        limit_original, ref, requested_limit, cell_count):
+    store, dataset, path = limit_original
+    result = inspect_source(store, dataset, sheet='月度', ranges=[ref], max_cells=requested_limit)
+    assert result['requested_max_cells'] == requested_limit
+    assert result['effective_max_cells'] == cell_count
+    assert result['max_cells_adjustment_reason'] == 'requested_max_cells_below_range'
+    assert len(result['ranges'][0]['cells']) == cell_count
+    assert result['ranges'][0]['range'] == result['ranges'][0]['read_window'] == ref
+    cells = {cell['cell']: cell for cell in result['ranges'][0]['cells']}
+    assert cells['B2']['sheet'] == '月度' and cells['B2']['value'] == 650
+    assert cells['D2']['raw_value'] == cells['D2']['formula'] == '=B2+C2'
+    assert cells['D2']['cached_value'] is None
+    assert result['dataset_id'] == dataset and result['hash_verified'] is True
+    assert result['source_file'] == 'fixture.xlsx'
+    assert result['sha256'] == hashlib.sha256((path / 'source.xlsx').read_bytes()).hexdigest()
+
+
+def test_ranges_and_sum_inputs_share_hard_limit_and_keep_duplicate_group_accounting(original):
+    store, dataset, _ = original
+    result = inspect_source(store, dataset, sheet='月度', sums=[['B2:B13'], ['B2:B13']], max_cells=23)
+    assert result['effective_max_cells'] == 24
+    assert result['max_cells_adjustment_reason'] == 'requested_max_cells_below_range'
+    assert [item['value'] for item in result['calculations']] == ['760', '760']
+    combined = inspect_source(store, dataset, sheet='月度', ranges=['B2:C3'],
+                              sums=[['B3:C3']], max_cells=5)
+    assert combined['effective_max_cells'] == 6
+    assert len(combined['ranges'][0]['cells']) == 4
+    assert combined['calculations'][0]['value'] == '11'
+    assert combined['calculations'][0]['sha256'] == combined['sha256']
+
+
+def test_soft_limit_adjustment_does_not_expand_search_only_budget_or_exceed_hard_limit(limit_original):
+    store, dataset, _ = limit_original
+    search = inspect_source(store, dataset, sheet='月度', searches=['日期'], max_cells=1,
+                            padding_rows=0, padding_cols=0)
+    assert search['effective_max_cells'] == search['requested_max_cells'] == 1
+    assert search['max_cells_adjustment_reason'] is None
+    assert len(search['matches'][0]['context_cells']) == 1
+    combined = inspect_source(store, dataset, sheet='月度', ranges=['A1:T20'],
+                              searches=['日期'], max_cells=1, padding_rows=0, padding_cols=0)
+    assert combined['effective_max_cells'] == 400
+    assert len(combined['ranges'][0]['cells']) == 400
+    assert combined['matches'] == [] and combined['truncated'] is True
+    assert 'max_cells' in combined['truncation_reasons']
+
+
+def _suggested_split_reads(error):
+    message = str(error)
+    assert '拆分建议' in message
+    return json.JSONDecoder().raw_decode(message[message.index('['):])[0]
+
+
+@pytest.mark.parametrize('ref, expected', [
+    ('A1:B201', ['A1:B200', 'A201:B201']),
+    ('A1:OR1', ['A1:OJ1', 'OK1:OR1']),
+    ('A1:IP3', ['A1:EC3', 'ED1:IP3']),
+])
+def test_oversized_range_error_provides_executable_bounded_splits(limit_original, ref, expected):
+    store, dataset, _ = limit_original
+    with pytest.raises(ValueError, match='超过 max_cells') as caught:
+        inspect_source(store, dataset, sheet='月度', ranges=[ref], max_cells=400)
+    suggestions = _suggested_split_reads(caught.value)
+    assert [item['ranges'][0] for item in suggestions] == expected
+    assert all(item['sheet'] == '月度' and item['max_cells'] == 400 for item in suggestions)
+    count = 0
+    for arguments in suggestions:
+        result = inspect_source(store, dataset, **arguments)
+        cells = result['ranges'][0]['cells']
+        assert 0 < len(cells) <= 400
+        count += len(cells)
+    left, top, right, bottom = source_inspection._bounds(ref)
+    assert count == (right - left + 1) * (bottom - top + 1)
+
+
+def test_combined_range_and_sum_hard_limit_suggests_all_original_inputs(original):
+    store, dataset, _ = original
+    with pytest.raises(ValueError, match='硬上限 400') as caught:
+        inspect_source(store, dataset, sheet='月度', ranges=['A1:T20'], sums=[['B2:C2']])
+    suggestions = _suggested_split_reads(caught.value)
+    assert [item['ranges'] for item in suggestions] == [['A1:T20'], ['B2:C2']]
+    assert '不能把某一批当作完整求和结果' in str(caught.value)
+
+
 @pytest.mark.parametrize('arguments, message', [
     ({'sheet': '月度', 'sums': [['B2:B13', 'B13:C13']]}, '重复坐标'),
     ({'sheet': '月度', 'sums': [['B2:B13', '$b$2']]}, '重复坐标'),
     ({'sums': [['月度!B2:B13', '年度及小表!AG83:AH83']]}, '不同工作表'),
     ({'sheet': '月度', 'sums': [['A1:XFD1048576']]}, '超过 max_cells'),
-    ({'sheet': '月度', 'sums': [['B2:B13'], ['B2:B13']], 'max_cells': 23}, '超过 max_cells'),
     ({'sheet': '月度', 'sums': [['B2']]}, '至少需要 2'),
     ({'sheet': '月度', 'sums': [['B2:D2']]}, '有效数值'),
     ({'sheet': '月度', 'sums': [['C3:D3']]}, '有效数值'),
@@ -273,8 +375,15 @@ def test_sum_budget_rejected_before_source_read_or_large_expansion(original, mon
     def unexpected_read(*args):
         pytest.fail('Oversized references must be rejected before inspecting any dataset source')
     monkeypatch.setattr(store, '_path', unexpected_read)
-    with pytest.raises(ValueError, match='超过 max_cells'):
+    with pytest.raises(ValueError, match='超过 max_cells') as caught:
         inspect_source(store, dataset, sheet='月度', sums=[['A1:XFD1048576']])
+    suggestions = _suggested_split_reads(caught.value)
+    assert len(suggestions) == source_inspection.MAX_SPLIT_REQUEST_PREVIEW
+    assert '次未列出' in str(caught.value) and len(str(caught.value)) < 2000
+    assert suggestions[0]['ranges'] == ['A1:OJ1']
+    for item in suggestions:
+        left, top, right, bottom = source_inspection._bounds(item['ranges'][0])
+        assert (right - left + 1) * (bottom - top + 1) <= 400
 
 
 @pytest.mark.parametrize('arguments', [
@@ -487,6 +596,10 @@ def test_native_schema_and_signature_keep_workspace_boundaries(original, monkeyp
         args = {'dataset_id': dataset, 'sheet': '年度及小表', 'sums': [['AG83', 'AH83']]}
         response = call('inspect_source', args)
         assert response.status_code == 200 and response.json()['calculations'][0]['value'] == '775'
+        lowered = call('inspect_source', args | {'max_cells': 1}).json()
+        assert lowered['status'] == 'ok' and lowered['effective_max_cells'] == 2
+        assert lowered['max_cells_adjustment_reason'] == 'requested_max_cells_below_range'
+        assert lowered['calculations'] == response.json()['calculations']
         other_space = call('inspect_source', args, tenant=10001)
         assert other_space.status_code == 200 and other_space.json()['status'] == 'error'
         assert '数据集不存在' in other_space.json()['error']
@@ -498,6 +611,8 @@ def test_native_schema_and_signature_keep_workspace_boundaries(original, monkeyp
         result = oversized.json()
         assert result['kind'] == 'structured_source_inspection' and result['status'] == 'error'
         assert result['retryable'] and '超过 max_cells' in result['error']
+        assert [item['ranges'] for item in _suggested_split_reads(result['error'])] == [
+            ['A1:B200'], ['A201:B400'], ['A401:B600'], ['A601:B800'], ['A801:B999']]
         assert '缩小' in result['next_step'] and 'ranges' not in result
         source = store._path(dataset) / 'source.xlsx'
         source.write_bytes(source.read_bytes() + b'changed')

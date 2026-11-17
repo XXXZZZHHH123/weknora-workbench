@@ -149,46 +149,6 @@ def test_shared_core_changes_with_cas_and_keeps_history(context):
             {'kind': 'indicator', 'id': OTHER}]
 
 
-@pytest.mark.parametrize('ppt_enabled', [False, True])
-def test_ppt_binding_acceptance_creates_revision_and_preserves_other_bindings(context, monkeypatch, ppt_enabled):
-    monkeypatch.setattr('tin.web.ppt.settings.ppt_enabled', ppt_enabled)
-    now, identifier = datetime.now(timezone.utc), str(uuid4())
-    body = {'format': 'ppt-template.v1', 'filename': 'fixture.pptx', 'sha256': 'a' * 64,
-            'source': {'kind': 'upload'}, 'exports': [],
-            'presentation': {'slides': [{'slots': [{'slot_id': 'slot-a', 'replaceable': True},
-                                                  {'slot_id': 'slot-b', 'replaceable': True}]}]},
-            'bindings': {'slot-a': {'kind': 'series', 'series_id': SID, 'rows': 20}, 'slot-b': {'kind': 'keep'}}}
-    with artifact_session(context.scope) as session:
-        row = WorkbenchArtifact(id=identifier, module='ppt_templates', actor='first', title='Fixture',
-            body=json.dumps(body), status='draft', source_ids=[], source_snapshots=[], revision=1,
-            created_at=now, updated_at=now)
-        session.add(row); session.flush(); remember_record_scope(session, 'artifact', row.id)
-        record_revision(session, row, 'first'); session.commit()
-    if not ppt_enabled:
-        def forbidden(*args, **kwargs):
-            raise AssertionError('Closed PPT reference routes must not read artifacts or catalog fields')
-        with monkeypatch.context() as blocked:
-            blocked.setattr(refs, 'artifact_session', forbidden)
-            blocked.setattr(refs, 'catalog_fields', forbidden)
-            for operation in (lambda: refs.reference_notices('ppt', identifier), lambda: rewrite('ppt', identifier)):
-                with pytest.raises(HTTPException) as error:
-                    operation()
-                assert error.value.status_code == 404
-        with artifact_session(context.scope) as session:
-            row = session.get(WorkbenchArtifact, identifier)
-            assert row.revision == 1
-            assert json.loads(row.body) == body
-            assert session.get(WorkbenchArtifactRevision, (identifier, 2)) is None
-        return
-    assert refs.reference_notices('ppt', identifier)['items'][0]['personal_id'] == SID
-    assert rewrite('ppt', identifier)['revision'] == 2
-    with artifact_session(context.scope) as session:
-        row = session.get(WorkbenchArtifact, identifier)
-        assert json.loads(row.body)['bindings'] == {'slot-a': {'kind': 'series', 'series_id': OTHER, 'rows': 20},
-                                                    'slot-b': {'kind': 'keep'}}
-        assert SID in session.get(WorkbenchArtifactRevision, (identifier, 1)).body
-
-
 def test_permissions_actor_isolation_and_stale_source_decision(context):
     favorites.put_favorites(favorites.FavoritesInput(revision=0, items=[favorites.FavoriteItem(kind='indicator', id=SID)]))
     with different_scope(context, identity={'user_id': 'second'}):

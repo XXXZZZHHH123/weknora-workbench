@@ -53,6 +53,34 @@
 {% endif %}
 <section class="judgment-research-section" id="judgment-hypotheses">
   <h2>核心分歧 · 多 vs 空</h2>
+  {% if research.dimension_groups is defined %}
+  <div class="judgment-dimension-sides judgment-claims">
+  {% for side, label in [('bull','多方'),('bear','空方')] %}
+    <article class="judgment-hypothesis" data-hypothesis="{{ side }}"><h3>{{ label }}逻辑</h3>
+      <p class="judgment-hypothesis-claim">{{ human_text(research.sides[side].claim or '该方观点尚待补充', names) }}</p>
+    </article>
+  {% endfor %}
+  </div>
+  {% for group in research.dimension_groups %}
+  <section class="judgment-dimension-group" data-dimension-group="{{ group.id or '' }}">
+    <h3>{{ group.label }}</h3>
+    <div class="judgment-dimension-sides">
+    {% for side, label in [('bull','支持依据'),('bear','反对依据')] %}
+      <article class="judgment-hypothesis" data-hypothesis="{{ side }}"><h4>{{ label }}</h4>
+        <ul class="judgment-evidence-list">
+        {% for evidence in group[side] %}
+          <li class="judgment-item-card" data-research-item="evidence"><p class="judgment-evidence-desc">{{ human_text(evidence.desc, names) }}</p>
+            {{ item_metrics(evidence) }}
+            {% if not restricted_view %}<div data-judgment-library-target="evidence:{{ side }}:{{ evidence.evidence_index }}"></div>{% endif %}
+          </li>
+        {% else %}<li class="judgment-research-empty">本维度尚无{{ label }}</li>{% endfor %}
+        </ul>
+      </article>
+    {% endfor %}
+    </div>
+  </section>
+  {% else %}<p class="judgment-research-empty">尚待补充依据</p>{% endfor %}
+  {% else %}
   {% set rows = namespace(evidence=1, falsifiers=1) %}
   {% for side in ['bull', 'bear'] %}
     {% set hypothesis = (research.sides|default({})).get(side, {}) %}
@@ -87,7 +115,22 @@
     </article>
   {% endfor %}
   </div>
+  {% endif %}
 </section>
+{% if research.falsifiers is defined %}
+<section id="judgment-falsifiers" class="judgment-research-section"><h2>证伪条件</h2>
+  <div class="judgment-rule-scroll"><table class="judgment-rule-table"><thead><tr><th>证伪条件</th><th>维度</th><th>证伪对象</th><th>指标与规则</th><th>状态</th></tr></thead>
+  {% for side, label in [('bull','多方'),('bear','空方')] %}
+  <tbody data-falsifier-side="{{ side }}"><tr><th colspan="5" scope="rowgroup">什么变化会证伪{{ label }}判断</th></tr>
+  {% for item in research.falsifiers if item.rule.side == side %}<tr data-research-item="falsifier">
+    <td>{{ human_text(item.rule.desc, names) }}{% if not restricted_view %}<div data-judgment-library-target="falsifier:{{ item.rule.id }}"></div><div data-chart-related-rule="{{ item.rule.id }}"></div>{% endif %}</td>
+    <td data-dimension-label>{{ item.dimension_label }}</td><td>{{ '多方原假设' if item.rule.side == 'bull' else '空方原假设' }}</td>
+    <td>{{ item.condition }}{{ item_metrics(item) }}{% if item.gap_note %}<p>{{ human_text(item.gap_note, names) }}</p>{% endif %}</td>
+    <td>{{ item.state }}</td>
+  </tr>{% else %}<tr><td colspan="5" class="judgment-research-empty">尚无已核验的证伪条件</td></tr>{% endfor %}
+  </tbody>{% endfor %}</table></div>
+</section>
+{% endif %}
 {% if research.shared %}
 <section class="judgment-research-section" id="judgment-shared"><h2>多空分歧对照</h2>
   <div class="judgment-shared-list">{% for row in research.shared %}
@@ -114,7 +157,7 @@
   <div class="rounded-lg border border-[var(--line)] bg-[var(--surface)] overflow-hidden shadow-sm overflow-x-auto">
     <table class="w-full text-left text-xs">
       <thead class="bg-[var(--surface-soft)] text-[11px] font-semibold text-[var(--text-muted)] border-b border-[var(--line)]">
-        <tr><th class="py-2.5 px-3">阈值名称</th><th class="py-2.5 px-3">关联指标</th>
+        <tr><th class="py-2.5 px-3">阈值名称</th><th class="py-2.5 px-3">维度</th><th class="py-2.5 px-3">关联指标</th>
           <th class="py-2.5 px-3">触发条件</th><th class="py-2.5 px-3 text-right">当前实际值</th>
           <th class="py-2.5 px-3 w-44">测距</th><th class="py-2.5 px-3">动作提示（平台不执行）</th>
           <th class="py-2.5 px-3 text-center">状态</th></tr>
@@ -123,6 +166,7 @@
         {% for t in radar %}
         <tr>
           <td class="py-3 px-3 font-bold">{{ human_text(t.name, names) }}<div class="text-[10px] font-normal text-[var(--text-muted)]">{{ t.type }} · {{ t.horizon }}</div>{% if not restricted_view %}<div data-chart-related-rule="{{ t.id }}"></div>{% endif %}</td>
+          <td class="py-3 px-3" data-dimension-label>{{ (research.threshold_dimensions|default({})).get(t.id, '未标注') }}</td>
           <td class="py-3 px-3"><span data-indicator-reference>{{ indicator_name(t.series_id, names) }}</span>
             {% set related = (research.threshold_related|default({})).get(t.id, []) %}
             {% if related %}<details class="judgment-threshold-related"><summary>关联观察 · {{ related|length }} 项</summary>
@@ -147,9 +191,9 @@
             {% elif t.state == '数据缺失' %}bg-[var(--amber-soft)] text-[var(--amber)]
             {% else %}bg-[var(--primary-soft)] text-[var(--primary)]{% endif %}">{{ t.state }}</span></td>
         </tr>
-        {% if not restricted_view %}<tr data-rule-chart-row hidden><td colspan="7"><div data-judgment-library-target="threshold:{{ t.id }}"></div></td></tr>{% endif %}
+        {% if not restricted_view %}<tr data-rule-chart-row hidden><td colspan="8"><div data-judgment-library-target="threshold:{{ t.id }}"></div></td></tr>{% endif %}
         {% else %}
-        <tr><td colspan="7" class="py-4 px-3 text-center text-[var(--text-muted)]">尚无已核验的可计算阈值；待验证条件列在下方。</td></tr>
+        <tr><td colspan="8" class="py-4 px-3 text-center text-[var(--text-muted)]">尚无已核验的可计算阈值；待验证条件列在下方。</td></tr>
         {% endfor %}
       </tbody>
     </table>

@@ -36,9 +36,32 @@ def test_simple_auto_parse_provenance_blank_error(tmp_path):
 
 def test_unit_row_and_multi_header_require_review(tmp_path):
     p=book(tmp_path,[['日期','价格'],[None,'元/吨'],[datetime(2023,1,1),1],[datetime(2023,1,2),2]])
-    s=candidate(p);assert s['status']=='auto_ready';assert s['mapping']['blocks'][0]['columns'][0]['unit']=='元/吨'
+    s=candidate(p);assert s['status']=='auto_ready'
+    column=s['mapping']['blocks'][0]['columns'][0]
+    assert column['unit']=='元/吨' and column['unit_cells']==['B2']
+    field=parse_mapped_workbook(p,[s['mapping']])['series'][0]
+    assert field['field_metadata']['unit_source']=='source'
+    assert field['field_metadata']['unit_evidence']==[{'sheet':'prices','cell':'B2','text':'元/吨'}]
     w=load_workbook(p);w.active['B2']='主力';w.save(p)
     assert candidate(p)['status']=='needs_review'
+
+
+@pytest.mark.parametrize('headers', [
+    [['日期','金额(主力)']],
+    [['日期','金额(亿元)'],[None,'万元']],
+])
+def test_unknown_or_conflicting_header_units_remain_unconfirmed(tmp_path, headers):
+    p=book(tmp_path,headers+[[datetime(2023,1,1),1],[datetime(2023,1,2),2]])
+    column=candidate(p)['mapping']['blocks'][0]['columns'][0]
+    assert column['unit'] is None and not column.get('unit_cells')
+
+
+def test_sparse_unmerged_header_does_not_supply_another_columns_unit(tmp_path):
+    p=book(tmp_path,[['日期','金额(亿元)',None],[None,'类别甲','类别乙'],
+                     [None,'累计','累计'],[datetime(2023,1,1),1,2],[datetime(2023,1,2),3,4]])
+    columns=candidate(p)['mapping']['blocks'][0]['columns']
+    assert columns[0]['unit']=='亿元' and columns[0]['unit_cells']==['B1']
+    assert columns[1]['unit'] is None and not columns[1].get('unit_cells')
 
 
 def test_date_modes_do_not_guess(tmp_path):

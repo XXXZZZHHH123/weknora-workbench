@@ -1,0 +1,21 @@
+<script type="application/json" id="report-ppt-data">{{ {'url': research_prefix() ~ '/api/sn/reports/' ~ selected.date ~ '/' ~ period_kind ~ '/ppt', 'figures_url': research_prefix() ~ '/api/sn/reports/figures', 'date': selected.date, 'period': period_kind, 'revision': report.manual_report.revision if report.is_manual_report else none, 'frozen': not live_report, 'sections': {'summary': report.panels.summary.visible, 'research': report.panels.research.visible, 'dashboard': report.panels.dashboard.visible, 'watch': report.panels.watch.visible}} | tojson }}</script>
+<dialog id="report-ppt-dialog" class="report-editor report-ppt-dialog" aria-labelledby="report-ppt-title">
+  <form id="report-ppt-form">
+    <header class="report-editor-heading"><div><strong id="report-ppt-title">导出为 PPT</strong><small>本期综述与逻辑策略为主稿，证据图按研究维度编排。</small></div><button type="button" id="report-ppt-close" class="report-icon-button" aria-label="关闭 PPT 导出">×</button></header>
+    <div class="report-editor-body">
+      <fieldset id="report-ppt-fields" class="report-ppt-fields"><legend>导出内容</legend>
+        <div class="report-ppt-sections">
+          <label class="report-check"><input type="radio" name="mode" value="one_page" checked>一页（默认）</label>
+          <label class="report-check"><input type="radio" name="mode" value="evidence">一页 + 证据附录</label>
+          <label class="report-check"><input type="radio" name="mode" value="full">完整记录</label>
+        </div>
+        <label class="report-ppt-layout" id="report-ppt-density-field" hidden>证据附录每页图数<select id="report-ppt-density" aria-label="证据附录每页图数"><option value="1">1 张</option><option value="2" selected>2 张</option></select></label>
+        <p class="report-muted">主稿优先一页，内容较多时为两页。省略全文保留在备注；附录模式另附全文页。</p>
+      </fieldset>
+      {% if not live_report %}<p class="report-muted">历史归档不重新绘图，图表页仅列标题与引用处。</p>{% endif %}
+      <progress id="report-ppt-progress" max="1" value="0" hidden aria-label="PPT 生成进度"></progress>
+      <p id="report-ppt-status" class="report-edit-status" role="status" aria-live="polite"></p>
+    </div>
+    <footer class="report-editor-footer"><button type="button" id="report-ppt-cancel" class="report-button">取消</button><button type="submit" id="report-ppt-generate" class="report-button report-button-primary">生成并下载</button></footer>
+  </form>
+</dialog>

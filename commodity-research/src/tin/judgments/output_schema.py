@@ -6,6 +6,7 @@ numbers and executable-rule checks remain the responsibility of analysis.py.
 from copy import deepcopy
 
 from tin.schemas.judgment import EXPRESSION, JudgmentIn, PARADIGMS, TONES
+from tin.web.research_dimensions import DIMENSION_ID
 
 
 SERVER_FIELDS = frozenset({
@@ -98,6 +99,9 @@ def model_output_schema():
         definitions[name]['properties']['series_id']['anyOf'][0]['minLength'] = 1
     for name in ('Evidence', 'MarginalItem', 'CostItem', 'UnstructuredItem', 'Threshold', 'Falsifier'):
         definitions[name]['properties']['related_series_ids']['uniqueItems'] = True
+    for name in ('Evidence', 'Threshold', 'Falsifier'):
+        definitions[name]['properties']['dimension'] = {
+            'anyOf': [{'type': 'string', 'pattern': '^' + DIMENSION_ID.pattern + '$'}, {'type': 'null'}]}
     domain['properties']['whitelist']['uniqueItems'] = True
     definitions['PriorityRule']['properties']['order']['uniqueItems'] = True
 

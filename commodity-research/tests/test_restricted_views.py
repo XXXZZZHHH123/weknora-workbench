@@ -71,7 +71,8 @@ def test_market_uses_only_server_core_and_rejects_browser_scope_expansion(canoni
     response = client.get(page(FIRST, '/sn'), headers=headers)
     assert response.status_code == 200, response.text
     from lxml.html import fromstring
-    assert fromstring(response.text).xpath('//*[contains(@class,"restricted-value")]')[0].text_content().strip().startswith('18')
+    # The fixture supplies 17.5; the old unit-based formatter rounded tonnes to 18.
+    assert fromstring(response.text).xpath('//*[contains(@class,"restricted-value")]')[0].text_content().strip() == '17.5'
     requests = state['bounded_requests']
     # Existing core-card consent must not implicitly publish a longer history.
     assert len(requests) == 1
@@ -324,3 +325,54 @@ def test_only_latest_value_and_server_calculated_change_are_rendered(canonical):
     assert response.status_code == 200
     assert '较上期 +17' in response.text
     assert '2026-01-01' not in response.text
+
+
+@pytest.mark.parametrize('reverse_rows', [False, True])
+def test_market_selects_latest_date_and_refreshes_each_bounded_read(canonical, reverse_rows):
+    client, headers, state, _ = canonical
+    state.update(value=17.5, bounded_previous=18, bounded_reverse_rows=reverse_rows)
+    save_core()
+    delegated(state)
+
+    for latest in (17.5, 23.25):
+        state['value'] = latest
+        response = client.get(page(FIRST, '/sn'), headers=headers)
+        assert response.status_code == 200, response.text
+        html = fromstring(response.text)
+        shown = html.xpath('//*[contains(@class,"restricted-value")]')[0]
+        assert shown.text_content().strip() == str(latest)
+        assert '2026-01-02' in response.text and '2026-01-01' not in response.text
+
+    assert len(state['bounded_requests']) == 2
+    assert all(request['points_per_series'] == 2 for request in state['bounded_requests'])
+    assert state['pages'] == 0
+
+
+@pytest.mark.parametrize('reverse_rows', [False, True])
+def test_v2_necessary_values_select_latest_date_on_each_read(monkeypatch, reverse_rows):
+    from types import SimpleNamespace
+    from tin.integration import page_facts
+    from tin.web.restricted_views import necessary_values
+
+    scope = SimpleNamespace(scope_version=2)
+    session = SimpleNamespace(info={'workbench_id': FIRST}, get=lambda *args: None)
+    state, requests = {'value': 17.5}, []
+
+    def bounded(active_scope, identifiers, module, *, origins):
+        assert active_scope is scope and identifiers == [SERIES] and module == 'market'
+        assert origins == {}
+        requests.append(state['value'])
+        rows = [
+            {'series_id': SERIES, 'date': '2026-01-02', 'value': state['value']},
+            {'series_id': SERIES, 'date': '2026-01-01', 'value': 18},
+        ]
+        return {'indicators': [{'series_id': SERIES, 'metric': 'Measured quantity', 'unit': '吨'}],
+                'rows': rows[::-1] if reverse_rows else rows}
+
+    monkeypatch.setattr(page_facts, 'bounded_facts', bounded)
+    for latest in (17.5, 23.25):
+        state['value'] = latest
+        value = necessary_values(session, scope, [SERIES], 'market')[SERIES]
+        assert value['value'] == latest and value['date'] == '2026-01-02'
+        assert value['change'] == latest - 18
+    assert requests == [17.5, 23.25]

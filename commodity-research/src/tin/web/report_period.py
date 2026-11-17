@@ -27,6 +27,7 @@ def period_start(end, kind):
 
 
 def _changes(session, identifiers, names, end, kind):
+    from tin.web.number_format import source_decimals, observation_decimals
     if not identifiers:
         return []
     start = period_start(end, kind)
@@ -81,10 +82,15 @@ def _changes(session, identifiers, names, end, kind):
             comparable, change, pct = False, None, None
             note = '所选日无新观测；以下为最近数据，未记作当日变化'
         def endpoint(row):
+            if row is None:
+                return None
+            digits = observation_decimals(session, identifier, _local(row['as_of']),
+                row['caliber_snapshot'], spec.caliber)
             return {'value': row['value'], 'as_of': _local(row['as_of']), 'source': row['source'],
-                    'revision': row['revision']} if row else None
+                    'revision': row['revision'], **({'display_decimals': digits} if digits is not None else {})}
         output.append({'series_id': identifier, 'name': spec.name, 'unit': spec.unit,
             'first': endpoint(first), 'last': endpoint(last), 'observation_count': count,
+            **({'display_decimals': digits} if (digits := source_decimals(spec.caliber)) is not None else {}),
             'change': change, 'change_pct': pct, 'comparable': comparable, 'note': note})
     return output
 
@@ -109,7 +115,7 @@ def _rule_preview(session, scope, variety, end, judgment):
 
 def _attach_card_monitor(result, scope, end):
     """Current state of what each strategy card explicitly cites, as of the report date."""
-    cards = [{'id': row['id'], 'card': {'citations': row.get('citations') or []}}
+    cards = [{'id': row['id'], 'card': {'citations': [pin for pin in row.get('citations') or [] if pin.get('kind') != 'chart']}}
              for row in result.get('research_cards') or [] if row.get('citations')]
     if not cards or scope is None or scope.restricted or getattr(scope, 'scope_version', 1) != 2:
         return
@@ -124,12 +130,16 @@ def _attach_card_monitor(result, scope, end):
             row['monitor'] = states[row['id']]
 
 
-def build_period(session, variety, end: date, kind='daily', *, source=None, preview_rules=None):
+def build_period(session, variety, end: date, kind='daily', *, source=None, preview_rules=None, include_analysis=True, figure_metadata=True):
     from tin.export.board import snapshot
+    from tin.web.number_format import source_decimals, observation_decimals
     from tin.integration.workbench_scope import current_workbench
     from tin.web.research_strategy import report_projection
     start = period_start(end, kind)
+    scope = current_workbench.get()
     result = deepcopy(source if source is not None else snapshot(session, variety, end))
+    from tin.web.research_dimensions import default_dimensions, read_dimensions, summaries
+    result['research_dimensions'] = summaries(read_dimensions(session) if session.info.get('workbench_id') else default_dimensions())
     identifiers = list(dict.fromkeys(row['series_id'] for row in result.get('observations') or []))
     if len(identifiers) > 256:
         raise HTTPException(413, '报告绑定超过256项，请先在市场总览和研究逻辑中缩小指标范围')
@@ -137,7 +147,11 @@ def build_period(session, variety, end: date, kind='daily', *, source=None, prev
     identifiers = [identifier for identifier in identifiers if identifier in specs]
     for row in result.get('observations') or []:
         if row['series_id'] in specs:
-            row['name'] = specs[row['series_id']].name
+            spec = specs[row['series_id']]
+            row['name'] = spec.name
+            digits = observation_decimals(session, row['series_id'], row.get('as_of'), row, spec.caliber)
+            if digits is not None:
+                row['display_decimals'] = digits
     result['period'] = {'kind': kind, 'start': start.isoformat(), 'end': end.isoformat()}
     result['changes'] = _changes(session, identifiers, specs, end, kind)
     begins = datetime.combine(start, time.min, tzinfo=SHANGHAI)
@@ -157,6 +171,7 @@ def build_period(session, variety, end: date, kind='daily', *, source=None, prev
             'status_label': STATUS.get(row.status, row.status), 'mode': row.mode,
             'mode_label': '模拟跟踪' if row.mode == 'simulation' else '实际成交记录',
             'thesis': plan.get('thesis') or '', 'invalidation': plan.get('invalidation') or '',
+            'chart_references': deepcopy(plan.get('chart_references') or []) if scope is None or not scope.restricted else [],
             'entry': plan.get('entry'), 'review_at': plan.get('review_at'), 'created_at': _local(row.created_at),
             'legs': [{'contract': leg.get('contract'), 'side': leg.get('side'), 'quote_series_id': leg.get('quote_series_id')}
                      for leg in plan.get('legs') or [] if isinstance(leg, dict)]})
@@ -180,7 +195,7 @@ def build_period(session, variety, end: date, kind='daily', *, source=None, prev
         research_cards_legacy=cards.get('legacy_unformatted_count_in_page', 0))
     judgment = result.get('judgment') or {}
     live_rules = source is None if preview_rules is None else preview_rules
-    if live_rules and judgment:
+    if live_rules and judgment and include_analysis:
         try:
             preview = _rule_preview(session, current_workbench.get(), variety, end, judgment)
         except ValueError as exc:
@@ -196,7 +211,26 @@ def build_period(session, variety, end: date, kind='daily', *, source=None, prev
                 ('rule_id','rule_type','trade_date','state','current_value','evidence','gap_note')} for row in preview]}
     from tin.web.report_watch import watch_items
     result['next_review'] = watch_items(judgment, result['strategies'], result['research_cards'])
-    if live_rules:
+    if live_rules and include_analysis:
+        from tin.web.judgment_research import _metric
+        from tin.web.strategy_monitor import _staleness
+        contradiction = judgment.get('contradiction') or {}
+        cited = [item.get('series_id') for side in ('bull', 'bear')
+            for item in (contradiction.get(side) or {}).get('evidence') or []
+            if isinstance(item, dict)] if isinstance(contradiction, dict) else []
+        cited.extend(rule.get('series_id') for key in ('thresholds', 'falsifiers')
+            for rule in judgment.get(key) or [] if isinstance(rule, dict))
+        result['judgment_metrics'] = {}
+        for identifier in dict.fromkeys(cited):
+            if identifier not in specs:
+                continue
+            metric = _metric(session, identifier, end, 24)
+            metric['freshness'] = _staleness(metric, end) if metric.get('date') else None
+            digits = source_decimals(metric, next((row for row in result.get('observations') or []
+                if row['series_id'] == identifier), None), specs[identifier].caliber)
+            if digits is not None:
+                metric['display_decimals'] = digits
+            result['judgment_metrics'][identifier] = metric
         _attach_card_monitor(result, current_workbench.get(), end)
     if live_rules:
         from tin.web.report_drafts import attach_saved_report, bound_series
@@ -204,4 +238,11 @@ def build_period(session, variety, end: date, kind='daily', *, source=None, prev
         result = attach_saved_report(session, scope, result)
         if scope is not None and not scope.restricted:
             result['report_figure_selection'] = bound_series(session, scope)[:6]
+    from tin.web.report_charts import attach_figures
+    result = attach_figures(result, current_workbench.get(), metadata=live_rules and figure_metadata)
+    if live_rules and include_analysis:
+        from tin.web.report_one_page import attach_dimension_data
+        result = attach_dimension_data(session, result, current_workbench.get())
+    from tin.web.report_one_page import dimension_overview
+    result['dimension_overview'] = dimension_overview(result)
     return result

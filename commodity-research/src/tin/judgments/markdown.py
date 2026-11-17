@@ -20,13 +20,22 @@ def related_text(item):
     return ' · 关联指标 ' + '、'.join('`' + sid + '`' for sid in ids) if ids else ''
 
 
-def dump_markdown(payload: JudgmentIn):
+def dimension_text(item, dimensions):
+    from tin.web.judgment_dimension_view import dimension_name
+    identifier = item.get('dimension')
+    return ('维度：' + dimension_name(identifier, dimensions) + '（`' + identifier + '`）') if identifier else ''
+
+
+def dump_markdown(payload: JudgmentIn, *, dimensions=None):
+    from tin.web.research_dimensions import default_dimensions
+    dimensions = default_dimensions() if dimensions is None else dimensions
     j = payload.model_dump(mode='json', by_alias=True)
     lines = ['# 研究逻辑', '', f"品种：{j['variety']} · 撰写日期：{j['written_at']} · 复核周期：{j['review_period_days']}天", '', '## 主矛盾']
     for side, label in [('bull', '支持依据'), ('bear', '反对依据')]:
         data = j['contradiction'][side]
         lines.extend(['', '### ' + label, data['claim'] or '待确认'])
         lines.extend('- ' + e['desc'] + (' · 指标 `' + e['series_id'] + '`' if e.get('series_id') else ' · 未绑定') + related_text(e)
+                     + (' · ' + dimension_text(e, dimensions) if e.get('dimension') else '')
                      for e in data['evidence'])
     if j['contradiction'].get('text'):
         lines.extend(['', '### 主逻辑补充', j['contradiction']['text']])
@@ -56,6 +65,8 @@ def dump_markdown(payload: JudgmentIn):
             t['operator'] + ' ' + json.dumps(t['value'], allow_nan=False), t['type'], t['horizon'],
             t['action_hint'], t['note']])) + ' |')
     for t in j['thresholds']:
+        if t.get('dimension'):
+            lines.append('阈值维度：`' + t['id'] + '`（' + cell(t['name']) + '） · ' + dimension_text(t, dimensions))
         if t.get('related_series_ids'):
             lines.append('阈值关联：`' + t['id'] + '`（' + cell(t['name']) + '）' + related_text(t))
     lines.extend(['', '## 冲突优先级', ' > '.join((j['priority_rule'] or {}).get('order', [])) or '待确认'])
@@ -66,6 +77,8 @@ def dump_markdown(payload: JudgmentIn):
         lines.append('- ' + cell(f['desc']) + ' · `' + f['series_id'] + '` · 条件：' + f['expression']
             + ' · 单位：' + cell(f['unit_confirmed']) + ' · 连续' + str(f['consecutive_periods'])
             + '期 · 证伪对象：' + TARGET_LABELS[f['side']])
+        if f.get('dimension'):
+            lines.append('  - ' + dimension_text(f, dimensions))
         if f.get('related_series_ids'):
             lines.append('  - 关联说明：' + related_text(f).removeprefix(' · '))
         if f['note']:
@@ -77,11 +90,11 @@ def dump_markdown(payload: JudgmentIn):
     return '\n'.join(lines).rstrip() + '\n'
 
 
-def version_diff(before, after):
+def version_diff(before, after, *, dimensions=None):
     left = before.model_dump(mode='json', by_alias=True) if before else {}
     right = after.model_dump(mode='json', by_alias=True)
     fields = [{'field': name, 'label': label, 'before': left.get(name), 'after': right.get(name)}
               for name, label in FIELDS.items() if left.get(name) != right.get(name)]
     return {'fields': fields, 'markdown': ''.join(difflib.unified_diff(
-        dump_markdown(before).splitlines(keepends=True) if before else [],
-        dump_markdown(after).splitlines(keepends=True), fromfile='上一版本.md', tofile='新草稿.md'))}
+        dump_markdown(before, dimensions=dimensions).splitlines(keepends=True) if before else [],
+        dump_markdown(after, dimensions=dimensions).splitlines(keepends=True), fromfile='上一版本.md', tofile='新草稿.md'))}

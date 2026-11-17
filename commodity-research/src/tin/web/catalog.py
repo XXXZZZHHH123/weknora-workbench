@@ -4,12 +4,19 @@ from tin.integration.kb_facts import catalog_page
 
 def indicator_row(spec):
     macro = spec.get('source_kind') == 'macro'
+    metadata = spec.get('field_metadata') or {}
+    role = metadata.get('role')
+    labels = {'numeric': '数值指标', 'text_dimension': '文本维度', 'annotation': '说明列'}
+    quality = '; '.join(part for part in [labels.get(role),
+                                           '单位为人工确认，未在原表找到对应文字' if metadata.get('unit_source') == 'declared' else None,
+                                           '单位待核对' if not spec.get('unit') and role not in ('text_dimension', 'annotation') else None,
+                                           '频率未注明' if not spec.get('frequency') else None] if part)
     return {'series_id': spec['series_id'], 'name': spec.get('metric') or spec.get('name') or spec['series_id'],
             'category': '宏观数据' if macro else '知识库字段', 'macro': macro,
             'caliber': spec.get('dimensions') if isinstance(spec.get('dimensions'), dict) else {},
             'unit': spec.get('unit') or '—', 'source': spec.get('source_file') or '知识库结构化', 'sheet': spec.get('sheet') or '',
             'frequency': spec.get('frequency') or '未注明', 'fetch_mode': 'readonly', 'status': '可用',
-            'registered': True, 'vendor_code': None, 'is_proxy': False, 'note': '',
+            'registered': True, 'vendor_code': None, 'is_proxy': False, 'note': quality, 'field_metadata': spec.get('field_metadata'),
             'knowledge_base_id': spec.get('knowledge_base_id'), 'source_kind': spec.get('source_kind'),
             'dedup_status': spec.get('dedup_status'), 'dedup_pairs': spec.get('dedup_pairs', [])}
 

@@ -23,9 +23,15 @@ def test_merged_headers_keep_category_measure_and_evidence(tmp_path):
     scan=scan_workbook(p);m=scan['sheets'][0]['mapping'];cols=m['blocks'][0]['columns']
     assert [(c['metric'],c['unit']) for c in cols[:6]]==[(a+' / '+b,u) for a,u in [('销售额(亿元)','亿元'),('销量(万件)','万件'),('均价(元/件)','元/件')] for b in ('鞋','衣')]
     assert cols[1]['header_cells']==['B1','C2']
+    assert [c['unit_cells'] for c in cols[:6]]==[['B1'],['B1'],['D1'],['D1'],['F1'],['F1']]
     assert cols[-1]['metric']=='合计' and cols[-1]['unit']=='亿元'
     result=parse_mapped_workbook(p,[m],scan=scan)
     assert len(result['series'])==7
+    for field in result['series']:
+        assert field['field_metadata']['unit_source']=='source'
+        assert field['field_metadata']['unit_evidence']
+    assert next(f for f in result['series'] if f['metric']=='均价(元/件) / 衣')['field_metadata']['unit_evidence']==[
+        {'sheet':'通用零售','cell':'F1','text':'均价(元/件)'}]
     assert next(o for o in result['observations'] if o['source_cell']=='C3')['value']==20
 
 

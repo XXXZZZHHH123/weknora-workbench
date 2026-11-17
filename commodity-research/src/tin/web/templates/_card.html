@@ -1,5 +1,8 @@
 {% macro card(c, loop_index, compact=false) -%}
 {% set pid = "pop-" ~ c.key %}
+{% set details = c.detail|default({}, true) %}
+{% set decimals = details.get('display_decimals') %}
+{% set has_details = details and (details|length > 1 or 'display_decimals' not in details) %}
 <div class="relative rounded-lg border border-[var(--line)] bg-[var(--surface)] p-4 shadow-sm hover:border-[var(--line-strong)] flex flex-col justify-between h-[156px]">
   <div>
     <div class="flex items-start justify-between gap-2 text-xs">
@@ -15,11 +18,11 @@
 
     {% if c.status == 'ok' %}
     <div class="mt-2.5 flex items-baseline gap-2 flex-wrap">
-      <span class="{{ 'restricted-value' if restricted_view else '' }} text-3xl font-extrabold tabular tracking-tight text-[var(--text)]">{{ c.value | num(c.unit, c.badge == '派生') }}</span>
+      <span class="{{ 'restricted-value' if restricted_view else '' }} text-3xl font-extrabold tabular tracking-tight text-[var(--text)]">{{ c.value | num(c.unit, c.badge == '派生', decimals=decimals) }}</span>
       <span class="text-xs font-medium text-[var(--text-muted)]">{{ c.unit }}</span>
       {% if c.change is not none %}
-      <span aria-label="较上期 {{ c.change | num(c.unit, true) }}" class="ml-auto text-xs font-semibold tabular {{ 'text-[var(--up)]' if c.change > 0 else 'text-[var(--down)]' if c.change < 0 else 'text-[var(--text-muted)]' }}">
-        {{ c.change | num(c.unit, true) }}{% if c.change_pct %} ({{ c.change_pct | num('%', true) }}%){% endif %}</span>
+      <span aria-label="较上期 {{ c.change | num(c.unit, true, decimals=decimals) }}" class="ml-auto text-xs font-semibold tabular {{ 'text-[var(--up)]' if c.change > 0 else 'text-[var(--down)]' if c.change < 0 else 'text-[var(--text-muted)]' }}">
+        {{ c.change | num(c.unit, true, decimals=decimals) }}{% if c.change_pct %} ({{ c.change_pct | num('%', true) }}%){% endif %}</span>
       {% elif c.sub %}<span class="ml-auto text-xs px-2 py-0.5 rounded bg-[var(--surface-soft)] text-[var(--text-muted)]">{{ c.sub }}</span>{% endif %}
     </div>
     {% elif c.status == 'blocked' %}
@@ -38,14 +41,14 @@
       {%- elif c.status == 'blocked' -%}两端时点不满足容差
       {%- else -%}{{ c.source or '' }}{%- endif -%}
     </span>
-    {% if c.detail %}
+    {% if has_details %}
     <button type="button" data-popover-trigger onclick="window.togglePopover('{{ pid }}')"
             class="shrink-0 text-[var(--primary)] hover:bg-[var(--primary-soft)] px-1.5 py-0.5 rounded font-medium">
       {{ '口径' if compact else '输入穿透' if c.badge == '派生' else '录入人' if c.manual else '口径' }} ⓘ</button>
     {% endif %}
   </div>
 
-  {% if c.detail %}
+  {% if has_details %}
   <div id="{{ pid }}" data-popover class="hidden absolute left-0 right-0 top-full mt-1.5 z-20 p-3 rounded-lg border border-[var(--line-strong)] bg-[var(--surface)] shadow-xl text-xs space-y-1 {{ 'max-h-72 overflow-y-auto break-words' if compact }}">
     <div class="flex justify-between items-center font-bold border-b border-[var(--line)] pb-1 gap-2">
       <span class="tabular truncate">{{ c.detail.series_id or c.detail.formula or c.key }}</span>

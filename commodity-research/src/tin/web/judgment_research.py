@@ -91,6 +91,10 @@ def _metric(session, identifier, day, count=24):
         raise HTTPException(400, '图表观测范围无效')
     rows = recent_points(session, identifier, day, count) if indicator is not None and day is not None else []
     result = metric_from_rows(indicator, rows, identifier=identifier, limit=count)
+    from tin.web.number_format import observation_decimals
+    digits = observation_decimals(session, identifier, result.get('date'), result)
+    if digits is not None:
+        result['display_decimals'] = digits
     result['history_complete'] = not session.info.get('knowledge_facts') or bool(session.info.get('knowledge_facts_include_invalid'))
     if not result['history_complete']:
         result['streak'] = None
@@ -106,9 +110,12 @@ def metric_from_rows(indicator, rows, *, identifier=None, limit=24):
     previous = valid[-2] if len(valid) > 1 else None
     change = decimal_difference(latest.value, previous.value) if previous is not None else None
     points, segments = _chart(rows)
+    from tin.web.number_format import source_decimals
+    digits = source_decimals(getattr(latest, 'caliber_snapshot', None), getattr(indicator, 'caliber', None))
     name = human_text(indicator.name) if indicator is not None else ''
     return {'series_id': identifier, 'name': name or '指标名称待核对',
         'unit': indicator.unit if indicator is not None else '',
+        **({'display_decimals': digits} if digits is not None else {}),
         'latest': latest.value if latest is not None else None,
         'previous': previous.value if previous is not None else None,
         'date': _stamp(latest) if latest is not None else None,
@@ -208,6 +215,7 @@ def _falsifier(session, judgment, rule, day, metric):
 def _item_view(item, metrics, names):
     identifiers = binding_ids(item)
     return {'desc': human_text(item.desc, names), 'series_id': item.series_id,
+        **({'dimension': item.dimension} if getattr(item, 'dimension', None) is not None else {}),
         'series_ids': identifiers, 'metric': metrics.get(item.series_id),
         'metrics': [metrics[identifier] for identifier in identifiers if identifier in metrics]}
 
@@ -218,6 +226,10 @@ def judgment_research_view(session, judgment, day):
     result = {'sides': sides, 'metrics': {}, 'shared': [], 'counts': counts, 'pending_conditions': []}
     if judgment is None:
         return result
+    from tin.web.research_dimensions import default_dimensions, read_dimensions, summaries
+    from tin.web.judgment_dimension_view import dimension_name, evidence_groups
+    dimensions = read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()
+    result['dimensions'] = summaries(dimensions)
     payload = to_payload(judgment)
     wanted = _windows(payload)
     with session.no_autoflush:
@@ -241,6 +253,7 @@ def judgment_research_view(session, judgment, day):
                         continue
                     value = _falsifier(session, judgment, rule.model_dump(mode='json'), day, metrics[rule.series_id])
                     value['rule']['desc'] = human_text(value['rule']['desc'], names)
+                    value['dimension_label'] = dimension_name(rule.dimension, dimensions)
                     value['metrics'] = [metrics[identifier] for identifier in binding_ids(rule)]
                     view['falsifiers'].append(value)
                     references[side].add(rule.series_id)
@@ -268,6 +281,9 @@ def judgment_research_view(session, judgment, day):
         triggered=sum(item['state'] == '触发' for side in sides.values() for item in side['falsifiers']),
         pending=len(pending))
     result.update(metrics=metrics, shared=shared, pending_conditions=pending,
+        dimension_groups=evidence_groups(sides, dimensions),
+        threshold_dimensions={rule.id: dimension_name(rule.dimension, dimensions) for rule in payload.thresholds},
+        falsifiers=[item for side in sides.values() for item in side['falsifiers']],
         marginal_focus=[_item_view(item, metrics, names) for item in payload.marginal_focus],
         cost_items=[_item_view(item, metrics, names) for item in (payload.cost_line.items if payload.cost_line else [])],
         threshold_related={rule.id: [metrics[identifier] for identifier in rule.related_series_ids]

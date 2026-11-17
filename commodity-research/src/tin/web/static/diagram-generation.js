@@ -3,6 +3,7 @@ let dgGeneratorImage = null, dgGeneratorEpoch = 0, dgGeneratorController = null;
 let dgGeneratorJob = null, dgJobTimer, dgJobEpoch = 0, dgJobReadController = null;
 let dgSubmittingJob = false, dgSubmission = null, dgGenerationContext = null, dgGenerationResult = null;
 let dgLatestResultJob = null;
+let dgDiscardingJob = false, dgPresentedJobId = null, dgPresentedMarkdown = null;
 const dgJobId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{16,128}$/.test(value) ? value : '';
 const dgJobActive = () => dgGeneratorJob && ['queued','running'].includes(dgGeneratorJob.state);
 const dgGeneratorOpen = () => {
@@ -39,8 +40,50 @@ function dgAnnounceJob(job, templateId) {
     purpose:'diagram',workbenchId,jobId:job.id,...(templateId ? {templateId} : {})},location.origin);
 }
 function dgGenerationApplied(templateId) {
-  if (dgGeneratorJob) dgAnnounceJob(dgGeneratorJob, templateId);
-  dgStopJobMonitor(); dgGeneratorJob = null; dgGenerationContext = null; dgGenerationResult = null;
+  if (dgPresentedJobId) dgAnnounceJob({id:dgPresentedJobId}, templateId);
+  dgStopJobMonitor(); dgGeneratorJob = null; dgGenerationContext = null; dgGenerationResult = null; dgPresentedJobId = null; dgPresentedMarkdown = null;
+  dgLatestResultJob = null; dgUpdateGenerationCapability();
+}
+function dgGeneratedJobId() { return dgPresentedJobId; }
+function dgDiscardableJob() {
+  if (dgGeneratorJob?.state === 'succeeded') return dgGeneratorJob;
+  return dgLatestResultJob?.state === 'succeeded' ? dgLatestResultJob : null;
+}
+function dgUpdateDiscardButton() {
+  const button = document.getElementById('dg-ai-discard-result');
+  if (!button) return;
+  button.hidden = !dgDiscardableJob();
+  button.disabled = dgDiscardingJob || dgSubmittingJob || !!dgJobActive();
+}
+async function dgDiscardResult() {
+  const job = dgDiscardableJob();
+  if (!job || dgDiscardingJob || dgSubmittingJob || dgJobActive()) return;
+  if (!window.confirm('确认舍弃这次尚未应用的产业图生成结果吗？舍弃后需要重新生成，已保存的产业图不受影响。')) return;
+  dgDiscardingJob = true;dgUpdateGenerationCapability();dgStopJobMonitor();
+  const status = document.getElementById('dg-ai-status');
+  try {
+    const result = await dgJobRequest('/'+encodeURIComponent(job.id)+'/discard',{method:'POST'});
+    dgCheckJob(result.job);
+    if (result.job.id !== job.id || result.job.discarded !== true) throw new Error('舍弃结果未确认，请重新打开任务检查');
+    if (dgGeneratorJob?.id === job.id) {
+      dgGeneratorJob = null;dgGenerationContext = null;dgGenerationResult = null;
+    }
+    if (dgPresentedJobId === job.id) {
+      if (document.getElementById('dg-md-text').value === dgPresentedMarkdown) document.getElementById('dg-md-text').value = '';
+      dgPresentedJobId = null;dgPresentedMarkdown = null;
+      dg.generatedVersion = null;
+      document.getElementById('dg-ai-bindings').hidden = true;
+    }
+    dgSubmission = null;
+    if (dgLatestResultJob?.id === job.id) dgLatestResultJob = null;
+    document.getElementById('dg-ai-restore-result').hidden = true;
+    status.textContent = '已舍弃这次结果，可以重新生成。';
+    document.getElementById('dg-md-msg').textContent = '已舍弃尚未应用的生成结果，已保存的产业图保持原样。';
+    const url = new URL(location.href);
+    if (url.searchParams.get('analysis_job') === job.id) { url.searchParams.delete('analysis_job');history.replaceState(null,'',url); }
+    dgAnnounceJob(result.job);
+  } catch (error) { status.textContent = '舍弃失败：'+error.message; }
+  finally { dgDiscardingJob = false;dgUpdateGenerationCapability(); }
 }
 async function dgGeneratorRequest(path, options) {
   const response = await researchFetch((window.RESEARCH_PREFIX || '') + '/api/sn/diagram/generation' + path, options);
@@ -95,6 +138,7 @@ async function dgLoadGenerator() {
 async function dgDiscoverLatestResult(operation, signal) {
   const button = document.getElementById('dg-ai-restore-result');
   dgLatestResultJob = null;
+  dgUpdateDiscardButton();
   if (!button) return;
   button.hidden = true;
   try {
@@ -103,11 +147,11 @@ async function dgDiscoverLatestResult(operation, signal) {
     const job = result.job, workbench = window.RESEARCH_CONTEXT?.workbench;
     dgCheckJob(job);
     if (job.purpose !== 'diagram' || !workbench || job.workbench_id !== workbench || job.state !== 'succeeded' || job.result_available !== true) return;
-    dgLatestResultJob = job;button.hidden = false;
+    dgLatestResultJob = job;button.hidden = false;dgUpdateDiscardButton();
   } catch { /* A missing temporary result never blocks the diagram editor. */ }
 }
 async function dgViewLatestResult() {
-  if (!dgLatestResultJob || dgSubmittingJob || dgJobActive()) return;
+  if (!dgLatestResultJob || dgSubmittingJob || dgDiscardingJob || dgJobActive()) return;
   const workbench = window.RESEARCH_CONTEXT?.workbench;
   try { dgCheckJob(dgLatestResultJob); } catch (error) { document.getElementById('dg-ai-status').textContent = error.message;return; }
   if (dgLatestResultJob.purpose !== 'diagram' || !workbench || dgLatestResultJob.workbench_id !== workbench) return;
@@ -121,10 +165,11 @@ function dgUpdateGenerationCapability() {
   const model = document.getElementById('dg-ai-model'), source = document.getElementById('dg-ai-source');
   const hasImage = !!dgGeneratorImage || source.selectedOptions[0]?.dataset.kind === 'image';
   const unsupported = hasImage && model.selectedOptions[0]?.dataset.vision !== 'true';
-  document.getElementById('dg-ai-run').disabled = !model.value || unsupported || dgSubmittingJob || !!dgJobActive();
+  document.getElementById('dg-ai-run').disabled = !model.value || unsupported || dgSubmittingJob || dgDiscardingJob || !!dgJobActive();
   const rebuild = document.getElementById('dg-ai-rebuild');
   if (rebuild) rebuild.disabled = document.getElementById('dg-ai-run').disabled;
   if (unsupported) document.getElementById('dg-ai-status').textContent = '当前模型不支持图片，请选择带“视觉”标识的模型，或改用文字原件与结构说明。';
+  dgUpdateDiscardButton();
   return !unsupported;
 }
 function dgGenerationInputChanged(input) {
@@ -202,6 +247,7 @@ function dgPresentGeneration(data, force = false) {
   if (typeof data?.markdown !== 'string' || !data.markdown.trim() || typeof data.version !== 'string' || !Array.isArray(data.bindings))
     throw new Error('生成结果不完整，请重新打开任务');
   dgGenerationResult = data;
+  if (dgGeneratorJob?.state === 'succeeded') dgLatestResultJob = dgGeneratorJob;
   const status = document.getElementById('dg-ai-status');
   if (!force && dgGenerationContext && (document.getElementById('dg-md-text').value !== dgGenerationContext.markdown
       || dgGenerationRequestBody() !== dgGenerationContext.body)) {
@@ -217,6 +263,8 @@ function dgPresentGeneration(data, force = false) {
     if (typeof data.request.instructions==='string') document.getElementById('dg-ai-instructions').value=data.request.instructions;
   }
   document.getElementById('dg-md-text').value = data.markdown;
+  dgPresentedJobId = dgGeneratorJob?.id || null;
+  dgPresentedMarkdown = data.markdown;
   dg.generatedVersion = data.version;
   const detail = document.getElementById('dg-ai-bindings'), list = detail.querySelector('ul');list.replaceChildren();
   data.bindings.forEach(binding=>{
@@ -262,6 +310,7 @@ async function dgFollowJob(identifier) {
 }
 document.addEventListener('keydown',event => { if (event.key === 'Escape') dgCancelGeneration(); });
 document.getElementById('dg-ai-restore-result')?.addEventListener('click',dgViewLatestResult);
+document.getElementById('dg-ai-discard-result')?.addEventListener('click',dgDiscardResult);
 const dgGeneratorDrawer = document.getElementById('dg-md-drawer');
 if (dgGeneratorDrawer) new MutationObserver(() => {
   if (dgGeneratorDrawer.classList.contains('hidden') || dgGeneratorDrawer.classList.contains('translate-x-full')) dgCancelGeneration();

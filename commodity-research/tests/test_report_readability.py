@@ -18,7 +18,7 @@ def test_integrated_report_is_readable_and_truthful_about_current_source(isolate
     assert '原始 JSON' in response.text and '<details' in response.text
     assert '已冻结' not in response.text and '份归档' not in response.text
     assert '未登记研究判断' in response.text
-    assert '<td class="report-value">0.0</td>' in response.text
+    assert '<td class="report-value">0</td>' in response.text
 
 
 def test_report_presenter_keeps_null_and_zero_and_never_mutates_source():

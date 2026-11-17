@@ -65,6 +65,7 @@ def test_native_excel_continuation_publishes_and_reuses_same_attempt(setup):
     result = finish(client, claim)
     assert result['status'] == 'completed', result
     assert result['result']['attention_count'] == 0
+    assert result['result']['computable_value_count'] == 2
     assert result['result']['sheets'] == [{'name':'records','status':'auto_ready'}]
     datasets = list((root/'knowledge-bases'/'kb-a'/'datasets').glob('*/manifest.json'))
     assert len(datasets) == 1
@@ -109,6 +110,8 @@ def test_pdf_uses_captured_parse_once_and_keeps_source_cells(setup, monkeypatch)
     result = finish(client, claim)
     assert result['status'] == 'completed', result
     assert result['result']['accepted_count'] == 1
+    assert result['result']['table_count'] == 1
+    assert result['result']['computable_value_count'] == 1
     store = PDFTableStore(root/'knowledge-bases'/'kb-a'/'pdf-tables')
     table = store.read_table(store.list_tables()['tables'][0]['table_id'])
     assert table['rows'][0]['raw_values']['value'] == '-1.20'
@@ -134,8 +137,45 @@ def test_pdf_without_tables_still_completes_native_document(setup, engine):
     result = finish(client, claim)
     assert result['status'] == 'completed', result
     assert result['result']['table_count'] == 0
+    assert result['result']['computable_value_count'] == 0
     assert result['result']['attention_count'] == 0
     assert not list(root.glob('**/drafts/*.json'))
+
+
+def test_computable_receipt_counts_only_published_nonmissing_decimal_values():
+    class SavedTables:
+        def _read_table(self, table_id):
+            assert table_id == 'actual-published-id'
+            return {'columns': [{'name': 'number', 'type': 'decimal'}, {'name': 'note', 'type': 'text'}],
+                    'rows': [{'values': {'number': '-3', 'note': '17'}},
+                             {'values': {'number': '0', 'note': 'text'}},
+                             {'values': {'number': None, 'note': '19'}}]}
+    assert ingestion.published_numeric_value_count(SavedTables(), {'groups': [
+        {'status': 'accepted', 'table_id': 'actual-published-id'},
+        {'status': 'accepted', 'table_id': 'actual-published-id'},
+        {'status': 'needs_attention', 'table_id': 'unpublished-id'},
+    ]}) == 2
+
+
+def test_workbook_receipt_counts_all_fields_and_excludes_declared_dimensions(tmp_path):
+    fields = [{'series_id': str(i), 'field_metadata': {'role': 'numeric'}} for i in range(105)]
+    fields[0]['field_metadata']['role'] = 'annotation'
+    fields[1]['field_metadata']['role'] = 'text_dimension'
+    (tmp_path / 'series.json').write_text(json.dumps(fields))
+    class SavedWorkbook:
+        def _path(self, dataset):
+            assert dataset == 'actual-snapshot'
+            return tmp_path
+        def series_quality(self, dataset):
+            return {str(i): {'valid_numeric_count': 1} for i in range(105)}
+        def list_series(self, *args, **kwargs):
+            raise AssertionError('a paginated catalog cannot prove total coverage')
+    counts = ingestion.published_workbook_counts(SavedWorkbook(), {
+        'dataset_id': 'actual-snapshot', 'sheets': [
+            {'published_in_dataset': True, 'published_mapping': {'blocks': [{}, {}]}},
+            {'published_in_dataset': False},
+        ]})
+    assert counts == {'computable_value_count': 103, 'published_table_count': 2}
 
 
 def test_native_excel_followup_publishes_with_one_source_guard(setup, monkeypatch):

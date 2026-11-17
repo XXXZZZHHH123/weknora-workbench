@@ -1,9 +1,11 @@
 """Discovery stays bounded, source-scoped, and independent of workbook parsing."""
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 from pathlib import Path
 import threading
 
+from openpyxl import Workbook
 import pytest
 
 from structured_data import discovery_catalog as discovery
@@ -44,7 +46,9 @@ def test_wide_workbook_recalls_late_sheet_without_reading_original_or_observatio
     assert len(item['sheets']) == len(item['pending_sheet_states']) == 8
     assert item['sheet_count'] == item['pending_sheet_states_count'] == 300
     assert item['sheets_truncated'] and item['pending_sheet_states_truncated']
-    assert len(json.dumps(result, ensure_ascii=False)) < 24000
+    assert len(item['unmapped_sheets']) == 80
+    assert item['unmapped_sheet_count'] == 300 and item['unmapped_sheets_truncated']
+    assert len(json.dumps(result, ensure_ascii=False)) < 32000
     assert all('source_context' not in field for field in result['field_candidates'])
 
 
@@ -187,6 +191,122 @@ def test_same_dataset_id_in_different_workspace_does_not_reuse_other_headers(tmp
     path.write_text(json.dumps(fields))
     assert discovery.search_fields(right, dataset, '', search='Other workspace')[1] == 1
     assert discovery.search_fields(left, dataset, '', search='Other workspace')[1] == 0
+
+
+@pytest.mark.parametrize('arguments', [{'question': '请查看Pending-299中的字段'},
+                                       {'search': 'Pending-299'}])
+def test_unmapped_sheet_literal_recall_ranks_late_candidate_without_hiding_others(tmp_path, arguments):
+    store = DataStore(tmp_path)
+    dataset = publish(store, count=1, sheet_count=300)
+    result = discovery.list_datasets(store, **arguments)
+    item = result['datasets'][0]
+    assert item['dataset_id'] == dataset
+    assert item['unmapped_sheets'][0]['name'] == 'Pending-299'
+    assert item['unmapped_sheet_count'] == 300 and item['unmapped_sheets_truncated']
+    assert len(item['unmapped_sheets']) == item['unmapped_sheet_limit'] == 80
+    assert all(state['status'] == 'needs_review'
+               and state['reasons'] == ['header review']
+               and state['structured_query_available'] is False
+               and '不能用结构化查询取数' in state['next_step']
+               and 'inspect_source' in state['next_step'] for state in item['unmapped_sheets'])
+    # Management-page pending fields retain their separate meaning and order.
+    assert store.list_datasets()[0]['pending_sheets'][0] == 'Pending-0'
+
+
+def test_unmapped_sheets_preserve_known_bounds_and_legacy_entire_sheet_exclusions(tmp_path):
+    store = DataStore(tmp_path)
+    dataset = publish(store)
+    path = store._path(dataset) / 'manifest.json'
+    manifest = json.loads(path.read_text())
+    manifest['coverage'] = [
+        {'name': '待核对表', 'status': 'needs_review', 'reasons': ['组合表头'],
+         'rows': 12, 'columns': 5, 'source_range': 'A1:E12'},
+        {'name': '尚未导入表', 'status': 'auto_ready', 'reasons': ['未发布字段']},
+        {'name': 'Intentionally empty', 'status': 'empty', 'reasons': []}]
+    manifest['excluded_regions'] = [
+        {'sheet': '旧版未映射表', 'range': 'entire_sheet', 'reason': '需要核对映射'},
+        {'sheet': 'Intentionally empty', 'range': 'entire_sheet', 'reason': ''},
+        {'sheet': 'Sheet-0', 'range': 'entire_sheet', 'reason': '已有已发布字段'}]
+    path.write_text(json.dumps(manifest, ensure_ascii=False))
+    item = discovery.list_datasets(store)['datasets'][0]
+    states = {state['name']: state for state in item['unmapped_sheets']}
+    assert set(states) == {'待核对表', '尚未导入表', '旧版未映射表'}
+    assert (states['待核对表']['rows'], states['待核对表']['columns'],
+            states['待核对表']['source_range']) == (12, 5, 'A1:E12')
+    assert states['旧版未映射表']['status'] == 'unmapped'
+    assert states['旧版未映射表']['reasons'] == ['需要核对映射']
+    assert 'rows' not in states['尚未导入表']  # Unknown dimensions are not invented.
+    assert '尚未导入' in states['尚未导入表']['next_step']
+    assert '字段映射待确认' not in states['尚未导入表']['next_step']
+    result = store.list_series(dataset, sheet='旧版未映射表')
+    assert result['match_mode'] == 'pending_scope' and result['series'] == []
+    assert result['catalog_summary']['unmapped_sheets'][0]['name'] == '旧版未映射表'
+
+
+def test_unmapped_catalog_summary_keeps_scope_and_raw_inspection_only(tmp_path):
+    from structured_data.source_inspection import SourceVerificationError, inspect_source
+    store = DataStore(tmp_path / 'data')
+    workbook = Workbook()
+    imported = workbook.active
+    imported.title = 'Mapped'
+    imported.append(['日期', '观察值'])
+    imported.append(['2026-01-01', 7])
+    pending = workbook.create_sheet('待确认组合表')
+    pending.append(['组合标签', '第一项', '第二项'])
+    pending.append(['甲', 3, 4])
+    source = tmp_path / 'synthetic.xlsx'
+    workbook.save(source)
+    workbook.close()
+    dataset = store.publish({
+        'source_file': str(source), 'sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+        'rule_version': 'synthetic-v1', 'dataset_kind': 'business',
+        'sheets': [{'name': 'Mapped', 'series_count': 1, 'observations': 1,
+                    'parsed_range': 'A1:B2'}],
+        'series': [{'series_id': 'observed', 'sheet': 'Mapped', 'metric': '观察值',
+                    'unit': None, 'dimensions': {}, 'header_cells': ['B1']}],
+        'observations': [{'series_id': 'observed', 'date': '2026-01-01', 'value': 7,
+                          'source_cell': 'B2', 'value_status': 'valid'}],
+        'excluded_regions': [{'sheet': pending.title, 'range': 'entire_sheet',
+                              'reason': '组合表头待确认'}], 'issues': [],
+        'coverage': [{'name': pending.title, 'status': 'needs_review',
+                      'reasons': ['组合表头待确认'], 'rows': 2, 'columns': 3}]
+    })['dataset_id']
+    directory = store.list_series(dataset)
+    summary = directory['catalog_summary']
+    assert directory['total'] == summary['series_count'] == 1
+    assert summary['unmapped_sheet_count'] == 1 and not summary['unmapped_sheets_truncated']
+    assert summary['unmapped_sheets'][0]['name'] == pending.title
+    assert summary['groups'] == [{'sheet': 'Mapped', 'metric': '观察值', 'series_count': 1}]
+    target = store.list_series(dataset, sheet=pending.title)
+    assert target['series'] == [] and target['total'] == 0
+    assert target['catalog_summary']['unmapped_sheets'][0]['structured_query_available'] is False
+    with pytest.raises(ValueError, match='指标不存在'):
+        store.query_series(dataset, pending.title)
+    # Discovery creates no field IDs or rows for the pending sheet. The same
+    # preserved original remains readable only through verified source access.
+    raw = inspect_source(store, dataset, sheet=pending.title, ranges=['B2:C2'])
+    assert [cell['value'] for cell in raw['ranges'][0]['cells']] == [3, 4]
+    assert raw['hash_verified'] is True and raw['sha256'] == store.manifest(dataset)['sha256']
+    original = store._path(dataset) / 'source.xlsx'
+    original.write_bytes(original.read_bytes() + b'changed')
+    with pytest.raises(SourceVerificationError):
+        inspect_source(store, dataset, sheet=pending.title, ranges=['B2:C2'])
+
+
+def test_group_summary_bounds_unmapped_candidates_and_ranks_search_without_changing_fields(tmp_path):
+    store = DataStore(tmp_path)
+    dataset = publish(store, count=2, sheet_count=100)
+    path = store._path(dataset) / 'series.json'
+    fields = json.loads(path.read_text())
+    fields[1]['metric'] = 'Pending-99 Measure-1'
+    path.write_text(json.dumps(fields))
+    result = store.list_series(dataset, search='Pending-99 Measure-1')
+    summary = result['catalog_summary']
+    assert summary['unmapped_sheets'][0]['name'] == 'Pending-99'
+    assert summary['unmapped_sheet_count'] == 100 and summary['unmapped_sheets_truncated']
+    assert len(summary['unmapped_sheets']) == 80
+    assert [(row['series_id'], row['sheet']) for row in result['series']] == [('field-1', 'Sheet-1')]
+    assert summary['series_count'] == 1  # Pending label recall does not replace published matches.
 
 
 @pytest.mark.parametrize('arguments', [{'limit': 0}, {'limit': 21}, {'limit': True},

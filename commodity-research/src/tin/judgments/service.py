@@ -46,6 +46,12 @@ def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool 
                  expected_base_version: int | None = None,
                  caliber_confirmations: dict | None = None) -> Judgment:
     """每次保存都生成新版本（FR-1.5）。activate=True 时须通过全部硬校验，且旧的生效版本转为已归档。"""
+    from tin.web.research_dimensions import checked_dimension, default_dimensions, read_dimensions
+    dimensions = read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()
+    tagged = [e for side in ('bull', 'bear') for e in getattr(j.contradiction, side).evidence]
+    for item in [*tagged, *j.thresholds, *j.falsifiers]:
+        if item.dimension is not None and checked_dimension(item.dimension, dimensions) is None:
+            raise JudgmentError('请选择当前研究台存在的维度，或选择未标注')
     refs = _refs(j)
     wanted = {sid for _t, _i, sid in refs}
     verified_catalog = session.info.get('knowledge_facts_catalog')

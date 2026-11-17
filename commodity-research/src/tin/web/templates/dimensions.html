@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}研究维度 · 商品研究{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/dimensions.css?v={{ static_version() }}">
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/charts.css?v={{ static_version() }}">
+<script defer src="{{ research_static_prefix() }}/static/chart-kit.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/chart-hover.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/dimensions.js?v={{ static_version() }}"></script>
+{% endblock %}
+{% block main %}
+<script id="dimensions-page" type="application/json">{{ dimension_page | tojson }}</script>
+<section id="dimensions-app" class="dimensions-app" aria-labelledby="dimensions-title">
+  <header class="dimensions-toolbar">
+    <div><h1 id="dimensions-title">研究维度</h1><p class="dimensions-muted">按研究维度整理指标与图表，观察本期变化。</p></div>
+    <div class="dimensions-actions">
+      <label>截至日期 <input id="dimensions-date" type="date" value="{{ dimension_page.date or '' }}"></label>
+      <label><span class="sr-only">变化周期</span><select id="dimensions-period"><option value="weekly">周</option><option value="daily">日</option></select></label>
+      <button id="dimensions-edit" type="button" hidden>编辑</button>
+      <button id="dimensions-suggest" type="button" hidden>让模型建议</button>
+    </div>
+  </header>
+  <p id="dimensions-status" class="dimensions-muted" role="status" aria-live="polite">正在读取研究维度…</p>
+  <div id="dimensions-edit-actions" class="dimensions-actions" hidden>
+    <button id="dimensions-add" type="button">增加维度</button>
+    <button id="dimensions-templates" type="button">套用模板</button>
+    <button id="dimensions-infer" type="button">从往期周报归纳</button>
+    <span class="dimensions-muted">修改尚未保存；拖动条目可排序或跨环节移动。</span>
+    <button id="dimensions-cancel" type="button">取消</button><button id="dimensions-save" class="dimensions-primary" type="button">保存</button>
+  </div>
+  <section id="dimensions-start" class="dimensions-empty dimensions-start" hidden aria-labelledby="dimensions-start-title">
+    <h2 id="dimensions-start-title">从一套研究结构开始</h2>
+    <p class="dimensions-muted">选择结构后可调整维度和环节，再由模型建议指标、研究员确认。只有点击“保存”才会保存配置。</p>
+    <div class="dimensions-start-options">
+      <button id="dimensions-start-general" type="button"><strong>用“通用六维度”开始</strong><span>价格、供给、需求、库存、平衡与宏观，适合先搭起基本框架。</span></button>
+      <button id="dimensions-start-industry" type="button"><strong>选择行业模板</strong><span>复用从真实研究报告中提炼的维度和环节。</span></button>
+      <button id="dimensions-start-infer" type="button"><strong>从往期周报归纳</strong><span>让模型阅读本研究台已授权的报告，提出结构草稿。</span></button>
+    </div>
+  </section>
+  <div id="dimensions-template-notice" class="dimensions-template-notice" role="status" hidden>
+    <p id="dimensions-template-message"></p><p id="dimensions-template-limits" class="dimensions-error" hidden></p>
+    <button id="dimensions-template-suggest" type="button">让模型按维度推荐指标</button>
+  </div>
+  <p id="dimensions-empty" class="dimensions-empty" hidden>从每个维度的“添加”开始绑定指标或图表，也可以让模型阅读真实目录提出建议。维度名称与环节可以按本研究台调整。</p>
+  <div id="dimensions-sections"></div>
+  <p id="dimensions-evidence" class="dimensions-muted"></p>
+  <details id="dimensions-failed" hidden><summary>部分条目读取失败</summary><ul></ul></details>
+</section>
+<dialog id="dimensions-template-dialog" class="dimensions-dialog" aria-labelledby="dimensions-template-title">
+  <h2 id="dimensions-template-title">选择维度模板</h2>
+  <p class="dimensions-muted">模板只提供维度和环节。已有环节与条目会保留；无法对应的维度会放在草稿末尾并标为“模板外”，请自行决定是否删除。</p>
+  <p id="dimensions-template-status" class="dimensions-muted" role="status" aria-live="polite"></p>
+  <div id="dimensions-template-list" class="dimensions-choice-list"></div>
+  <footer><button id="dimensions-template-close" type="button">关闭</button></footer>
+</dialog>
+<dialog id="dimensions-picker" class="dimensions-dialog" aria-labelledby="dimensions-picker-title">
+  <h2 id="dimensions-picker-title">添加条目</h2>
+  <div class="dimensions-actions"><label>从这里选择 <select id="dimensions-picker-kind"><option value="indicator">指标库</option><option value="chart">图表库</option></select></label><label><span class="sr-only">搜索条目</span><input id="dimensions-picker-search" type="search" placeholder="搜索名称、来源或单位"></label></div>
+  <p id="dimensions-picker-status" class="dimensions-muted" role="status"></p><div id="dimensions-picker-list" class="dimensions-choice-list"></div><button id="dimensions-picker-more" type="button" hidden>更多条目</button>
+  <footer><button id="dimensions-picker-close" type="button">完成选择</button></footer>
+</dialog>
+<dialog id="dimensions-model-dialog" class="dimensions-dialog" aria-labelledby="dimensions-model-title">
+  <h2 id="dimensions-model-title">让模型建议</h2>
+  <label class="dimensions-model-label">平台模型 <select id="dimensions-model" disabled><option value="">正在读取模型…</option></select></label>
+  <div id="dimensions-source-controls" hidden><p class="dimensions-muted">选择本研究台已授权的 1–3 份往期周报或资料。</p><label><span class="sr-only">搜索往期周报</span><input id="dimensions-source-search" type="search" placeholder="搜索往期周报或资料"></label><div id="dimensions-source-list" class="dimensions-choice-list"></div><button id="dimensions-source-more" type="button" hidden>更多资料</button></div>
+  <button id="dimensions-model-run" type="button" disabled>生成建议</button>
+  <p id="dimensions-model-status" class="dimensions-muted" role="status" aria-live="polite"></p>
+  <div id="dimensions-suggestions" class="dimensions-choice-list"></div>
+  <footer><button id="dimensions-model-close" type="button">关闭</button><button id="dimensions-model-adopt" class="dimensions-primary" type="button" disabled>采用所选到编辑草稿</button></footer>
+</dialog>
+{% endblock %}

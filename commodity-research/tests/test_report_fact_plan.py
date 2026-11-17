@@ -83,4 +83,4 @@ def test_report_display_points_never_shorten_a_saved_rule_window(report_scope, s
     assert row.falsifiers[0]['consecutive_periods'] == 9
     plans, _ = page_facts._saved_plan(scope, {'module': 'reports', 'series_ids': None,
         'day': '2026-01-02', 'template_id': None, 'points': 2})
-    assert next(plan['points'] for plan in plans if core in plan['ids']) == 10
+    assert next(plan['points'] for plan in plans if core in plan['ids']) == 24  # also preserves the usual-interval window used by strategy staleness

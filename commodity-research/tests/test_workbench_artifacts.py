@@ -137,3 +137,23 @@ def test_space_editor_without_workbench_edit_can_only_write_personal_notes(clien
 def test_workbench_edit_does_not_raise_space_viewer_ceiling(client):
     headers = {'x-role': 'viewer', 'x-can-edit': 'true'}
     assert client.post(path('structure'), json=entry(), headers=headers).status_code == 403
+
+
+def test_legacy_template_records_stay_out_of_module_lists_and_counts(session):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from tin.models.workbench import WorkbenchArtifact
+    from tin.web.workbench_artifacts import ArtifactModule, artifact_counts, list_owned_artifacts
+
+    now = datetime.now(timezone.utc)
+    row = WorkbenchArtifact(id='legacy-template', module='ppt_templates', actor='first',
+        title='Old template', body='{"format":"ppt-template.v1"}', status='draft',
+        source_ids=[], source_snapshots=[], revision=1, created_at=now, updated_at=now)
+    session.add(row)
+    session.flush()
+    scope = SimpleNamespace(identity=SimpleNamespace(user_id='first'))
+    assert all(value == 0 for value in artifact_counts(session, scope).values())
+    for module in ArtifactModule:
+        assert list_owned_artifacts(session, scope, module.value) == {
+            'items': [], 'total': 0, 'offset': 0, 'truncated': False}
+    assert session.get(WorkbenchArtifact, 'legacy-template') is row

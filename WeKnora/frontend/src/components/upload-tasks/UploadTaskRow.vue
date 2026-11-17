@@ -105,6 +105,8 @@ const handleRowClick = () => {
         <span v-if="folder" class="row-name-folder">{{ folder }}</span>
       </span>
       <span class="row-meta" :title="reason || undefined">{{ meta }}</span>
+      <span v-if="item.transfer === 'uploaded' && item.parseStatus !== 'stored' && item.coverageSummary?.length"
+        class="row-coverage" aria-label="内容处理结果">{{ item.coverageSummary.join(' · ') }}</span>
     </span>
     <span class="row-end">
       <span class="row-status" :class="{ 'has-action': !!action }" aria-hidden="true">
@@ -175,6 +177,12 @@ const handleRowClick = () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.row-coverage {
+  color: var(--td-text-color-secondary);
+  font-size: var(--app-text-sm);
+  overflow-wrap: anywhere;
 }
 
 .row-name {

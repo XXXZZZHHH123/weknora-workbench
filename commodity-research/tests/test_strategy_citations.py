@@ -324,6 +324,23 @@ def test_citations_do_not_expand_workbench_or_delegated_source_permissions(case,
     assert error.value.status_code == 403 and state['downloads'] == [] and state['catalog_reads'] == []
 
 
+def test_shared_file_reader_uses_callers_module_grant_without_expanding_strategy_route(case):
+    scope, state = case
+    scope = replace(scope, view_modules=('indicators',))
+    reference = file_ref(case)
+    args = {key: reference[key] for key in ('source_binding_id', 'knowledge_id', 'file_version')}
+    content = asyncio.run(citations.read_file_content(scope, **args))
+    assert content['supported'] is True and content['text'] == 'Synthetic source text'
+    marker = current_workbench.set(scope)
+    try:
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(citations.citation_file_content(**args))
+        assert caught.value.status_code == 403
+    finally:
+        current_workbench.reset(marker)
+    assert len(state['downloads']) == 1
+
+
 def valid_card(**changes):
     return {'format': 'research-strategy-card.v1', 'title': 'Synthetic strategy', 'direction': 'observe',
         'thesis': 'Research thesis', 'watch_for': 'Watch conditions', 'trigger': 'Explicit trigger',
@@ -486,3 +503,220 @@ def test_explicitly_removing_last_citation_keeps_legacy_shape_and_avoids_source_
     assert result == before
     assert 'citations' not in result
     assert case[1]['catalog_reads'] == [] and case[1]['metadata_reads'] == []
+
+
+def load_structure_digest(case, reference):
+    return run(case, lambda: citations.read_structure_digest(case[0], **{
+        key: reference[key] for key in ('source_binding_id', 'knowledge_id', 'file_version')}))
+
+
+@pytest.mark.parametrize('kind', ['raw', 'parsed'])
+def test_structure_digest_preserves_small_source_content_and_identity(case, kind):
+    reference = (file_ref(case) if kind == 'raw'
+                 else parsed(case, ['First original paragraph', 'Second original paragraph']))
+    original = load_content(case, reference)
+    assert load_structure_digest(case, reference) == original
+
+
+def test_structure_digest_reads_report_sized_chunk_collection_in_source_order(case):
+    texts = [f'[{index:04d}]' + '原始文字' * 150 for index in range(455)]
+    reference = parsed(case, texts)
+    result = load_structure_digest(case, reference)
+    assert result['supported'] is True
+    assert result['content_kind'] == 'structure_digest' and result['truncated'] is True
+    assert len(result['text']) <= citations.MAX_CONTENT_CHARACTERS
+    parts = [part for part in result['text'].splitlines() if part]
+    assert len(parts) == len(texts)
+    full_count, digest_count = result['full_chunk_count'], result['digest_chunk_count']
+    assert full_count > 0 and digest_count > 0 and full_count + digest_count == len(texts)
+    assert parts[:full_count] == texts[:full_count]
+    for original, prefix in zip(texts[full_count:], parts[full_count:], strict=True):
+        assert original.startswith(prefix) and 30 <= len(prefix) <= 200
+    chunks = result['provenance']['chunks']
+    assert result['provenance']['chunk_count'] == len(texts) == len(chunks)
+    for index, (text, chunk) in enumerate(zip(texts, chunks, strict=True)):
+        assert chunk['id'] == f'chunk-{index}'
+        assert chunk['index'] == index and chunk['revision'] == 0
+        assert chunk['sha256'] == hashlib.sha256(text.encode()).hexdigest()
+    assert [row[2] for row in case[1]['chunk_reads']] == list(range(1, 24)) * 2
+    assert case[1]['downloads'] == []
+    # This relaxed reader must not relax the strategy citation reader.
+    with pytest.raises(HTTPException) as error:
+        load_content(case, reference)
+    assert error.value.status_code == 413
+
+
+@pytest.mark.parametrize('count', [citations.MAX_PARSED_CHUNKS + 1, 2000])
+def test_structure_digest_keeps_all_short_chunks_beyond_original_count_limit(case, count):
+    texts = ['Short'] * count
+    result = load_structure_digest(case, parsed(case, texts))
+    assert result['content_kind'] == 'parsed_fragments'
+    assert result['text'] == '\n\n'.join(texts)
+    assert result.get('truncated') is not True
+    assert result['provenance']['chunk_count'] == len(texts)
+
+
+def test_structure_digest_keeps_the_full_opening_when_tail_budget_allows(case):
+    texts = [f'[{index:03d}]' + 'x' * 995 for index in range(100)]
+    result = load_structure_digest(case, parsed(case, texts))
+    full_count = result['full_chunk_count']
+    assert 11000 <= sum(map(len, texts[:full_count])) <= 13000
+    parts = [part for part in result['text'].splitlines() if part]
+    assert parts[:full_count] == texts[:full_count]
+    assert all(text.startswith(part) for text, part in zip(texts, parts, strict=True))
+    assert all(30 <= len(part) <= 200 for part in parts[full_count:])
+    assert len(result['text']) <= citations.MAX_CONTENT_CHARACTERS
+
+
+def test_structure_digest_never_exceeds_budget_for_one_oversized_chunk(case):
+    text = '原始长片段' * citations.MAX_CONTENT_CHARACTERS
+    result = load_structure_digest(case, parsed(case, [text]))
+    assert result['truncated'] is True and result['content_kind'] == 'structure_digest'
+    assert 0 < len(result['text']) <= citations.MAX_CONTENT_CHARACTERS
+    assert text.startswith(result['text'])
+    assert result['provenance']['chunks'][0]['sha256'] == hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_structure_digest_still_rejects_more_than_two_thousand_chunks(case):
+    reference = parsed(case, ['Source chunk'] * 2001)
+    with pytest.raises(HTTPException) as error:
+        load_structure_digest(case, reference)
+    assert error.value.status_code == 413
+    assert len(case[1]['chunk_reads']) == 1 and case[1]['downloads'] == []
+
+
+def test_structure_digest_prioritizes_all_positions_and_total_budget_for_two_thousand_long_chunks(case):
+    texts = [f'[{index:04d}]' + 'x' * 1000 for index in range(2000)]
+    result = load_structure_digest(case, parsed(case, texts))
+    parts = result['text'].splitlines()
+    assert len(parts) == len(texts)
+    assert result['full_chunk_count'] + result['digest_chunk_count'] == len(texts)
+    assert all(original.startswith(part) and 0 < len(part) <= 200
+               for original, part in zip(texts, parts, strict=True))
+    assert len(result['text']) <= citations.MAX_CONTENT_CHARACTERS
+    assert result['provenance']['chunk_count'] == len(texts)
+
+
+@pytest.mark.parametrize('change', [
+    'foreign_knowledge', 'foreign_kb', 'foreign_tenant', 'duplicate_id',
+    'bad_order', 'bad_revision', 'wrong_type', 'bad_pagination',
+])
+def test_structure_digest_preserves_every_chunk_ownership_and_revision_check(case, change):
+    reference = parsed(case, ['First', 'Second'])
+    rows = case[1]['chunks']['pdf']
+    if change == 'foreign_knowledge': rows[0]['knowledge_id'] = 'other'
+    if change == 'foreign_kb': rows[0]['knowledge_base_id'] = 'other'
+    if change == 'foreign_tenant': rows[0]['tenant_id'] = 74
+    if change == 'duplicate_id': rows[1]['id'] = rows[0]['id']
+    if change == 'bad_order': rows[1]['chunk_index'] = rows[0]['chunk_index']
+    if change == 'bad_revision': rows[0]['content_revision'] = -1
+    if change == 'wrong_type': rows[0]['chunk_type'] = 'summary'
+    if change == 'bad_pagination':
+        case[1]['chunk_hook'] = lambda identifier, page, result: result.update(total=3)
+    with pytest.raises(HTTPException) as error:
+        load_structure_digest(case, reference)
+    assert error.value.status_code == 409 and case[1]['downloads'] == []
+
+
+@pytest.mark.parametrize('change', ['revision', 'omitted_content', 'updated_file', 'parse_status', 'chunk_limit'])
+def test_structure_digest_rechecks_omitted_content_revisions_and_file_version(case, change):
+    reference = parsed(case, [f'[{index:04d}]' + 'x' * 1000 for index in range(455)])
+    mutated = False
+    def mutate(identifier, page, result):
+        nonlocal mutated
+        if page != 23 or mutated:
+            return
+        mutated = True
+        if change == 'revision':
+            case[1]['chunks'][identifier][-1]['content_revision'] += 1
+        elif change == 'omitted_content':
+            case[1]['chunks'][identifier][-1]['content'] += 'Changed outside the digest prefix'
+        elif change == 'updated_file':
+            case[1]['files'][identifier]['updated_at'] = '2030-02-01T00:00:00Z'
+        elif change == 'chunk_limit':
+            rows = case[1]['chunks'][identifier]
+            rows.extend({**rows[-1], 'id': f'chunk-{index}', 'chunk_index': index}
+                        for index in range(len(rows), 2001))
+        else:
+            case[1]['files'][identifier]['parse_status'] = 'processing'
+    case[1]['chunk_hook'] = mutate
+    with pytest.raises(HTTPException) as error:
+        load_structure_digest(case, reference)
+    assert mutated and error.value.status_code == 409
+
+
+@pytest.mark.parametrize('status', ['processing', 'failed'])
+def test_structure_digest_does_not_infer_from_unfinished_parsing(case, status):
+    parsed(case, ['Available but unfinished text'])
+    case[1]['files']['pdf']['parse_status'] = status
+    result = load_structure_digest(case, file_ref(case, 'pdf'))
+    assert result['supported'] is False and result['text'] == ''
+    assert case[1]['chunk_reads'] == []
+
+
+def test_structure_digest_does_not_invent_content_when_completed_parsing_is_empty(case):
+    result = load_structure_digest(case, parsed(case, []))
+    assert result['supported'] is False and result['text'] == ''
+    assert case[1]['downloads'] == []
+
+
+@pytest.mark.parametrize('change,status', [('foreign_binding', 403), ('wrong_binding', 404),
+    ('old_version', 409), ('deleted', 404)])
+def test_structure_digest_rejects_wrong_source_and_file_identity_before_reading(case, change, status):
+    reference = parsed(case, ['Source text'])
+    if change == 'foreign_binding': reference['source_binding_id'] = 'foreign'
+    if change == 'wrong_binding': reference['source_binding_id'] = 'binding-default'
+    if change == 'old_version': reference['file_version'] = 'a' * 64
+    if change == 'deleted': case[1]['files']['pdf']['parse_status'] = 'deleted'
+    with pytest.raises(HTTPException) as error:
+        load_structure_digest(case, reference)
+    assert error.value.status_code == status and case[1]['chunk_reads'] == []
+
+
+def test_structure_digest_truncates_large_utf8_original_but_checks_its_whole_identity(case):
+    paragraphs = [f'[{index:04d}]' + '原始文字' * 150 for index in range(100)]
+    raw = '\n'.join(paragraphs).encode()
+    assert len(raw) > citations.MAX_CONTENT_BYTES
+    case[1]['add_file']('long-text', raw=raw, kind='txt')
+    reference = file_ref(case, 'long-text')
+    result = load_structure_digest(case, reference)
+    assert result['content_kind'] == 'structure_digest' and result['truncated'] is True
+    assert len(result['text']) <= citations.MAX_CONTENT_CHARACTERS
+    parts = [part for part in result['text'].splitlines() if part]
+    assert len(parts) == len(paragraphs)
+    assert all(original.startswith(part) for original, part in zip(paragraphs, parts, strict=True))
+    assert parts[0] == paragraphs[0] and len(parts[-1]) <= 200
+    assert result['file_version'] == reference['file_version']
+    assert len(case[1]['downloads']) == 1
+    with pytest.raises(HTTPException) as error:
+        load_content(case, reference)
+    assert error.value.status_code == 413
+
+
+def test_structure_digest_preserves_opening_for_a_long_single_line_original(case):
+    text = 'x' * 24001
+    case[1]['add_file']('single-line', raw=text.encode(), kind='txt')
+    result = load_structure_digest(case, file_ref(case, 'single-line'))
+    assert result['text'].startswith(text[:12000])
+    assert result['full_chunk_count'] == 1
+    assert result['digest_chunk_count'] == 2
+    assert len(result['text']) <= citations.MAX_CONTENT_CHARACTERS
+    assert result['sha256'] == hashlib.sha256(text.encode()).hexdigest()
+
+
+@pytest.mark.parametrize('change,status', [('hash', 409), ('size', 409),
+    ('version', 409), ('invalid_utf8', 422)])
+def test_large_original_digest_never_skips_full_original_validation(case, change, status):
+    raw = ('原始文字' * citations.MAX_CONTENT_CHARACTERS).encode()
+    source = case[1]['add_file']('long-text', raw=raw, kind='txt')
+    if change == 'hash': case[1]['raw']['long-text'] += b'changed suffix'
+    if change == 'size':
+        source['file_hash'] = ''
+        source['file_size'] += 1
+    if change == 'version':
+        case[1]['after_download'] = lambda identifier: case[1]['files'][identifier].update(updated_at='later')
+    if change == 'invalid_utf8':
+        case[1]['add_file']('long-text', raw=raw + b'\xff', kind='txt')
+    with pytest.raises(HTTPException) as error:
+        load_structure_digest(case, file_ref(case, 'long-text'))
+    assert error.value.status_code == status

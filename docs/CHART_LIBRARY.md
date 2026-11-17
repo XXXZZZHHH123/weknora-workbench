@@ -231,6 +231,10 @@
 
 研判与策略现支持显式引用共享图表，保存时冻结图表修订、来源版本与研究日期；历史默认按原修订及截止日渲染，可切换当前数据，规则阈值与相关图表只按真实指标 ID 关联。底层来源不提供旧事实版本回放时，来源更新会明确提示按原截止日重算，旧标题与定义仍取固定修订。
 
+日报周报的“图表”节位于研判之后、策略之前，复用草稿 `sections.dashboard` 的显示开关与按语。清单依次纳入显示中的研判引用、策略卡片及交易计划引用、最多六条另选绑定指标；同图 ID 保留首次位置、取最大修订，图说汇总引用处与挂载依据/条件。另选指标与引用图唯一直接曲线重复时只显示引用图，草稿中的原手选与图说仍保留。引用图不受六条上限限制。
+
+页面 `#report-figure-data` JSON 与报告 JSON 的 `report_figures` 提供完整清单：`key`、`kind`、`title`、`caption`、`unit`、`as_of`、`render_url`，引用图另含固定 `reference`、`references` 和 `single_series_id`，指标图另含 `series_id`。前端进入视口后串行请求 `GET /api/sn/reports/figures/{encodeURIComponent(key)}?date=YYYY-MM-DD&period=daily|weekly&revision=草稿版本`。服务端重新组装授权清单再校验 key；引用图返回 `{figure, rendered}`（`rendered` 复用图表引用读取结果，可直接传给 ChartKit），指标图返回 `{figure, series}`；单图不可读返回 `status: unavailable` 与 `notice`，保留标题和原因。定义固定在引用修订，数据截止报告日期，沿用图表库 ACL、来源核验及每批 256 指标/20000 点预算。Markdown 只列标题、图说、单位与截至日；冻结归档只列已保存引用，不读图表或观测，受限视角不纳入引用图。新版按本期报告内容生成 PPT 将复用此接口，生成器留待下一步实现。
+
 | 期 | 内容 |
 |---|---|
 | 一期（本次） | 第一至六节 |
@@ -245,3 +249,61 @@
 - 指标作图新增 Python 定义与接口验收：多指标共同周期和逐指标统计、派生公式日期交集与单位确认、原表模板元数据默认值、图集完整校验和共同读取预算、预览只读权限。Node 验收多曲线周期、上一期虚线、右轴和派生图例；浏览器夹具 `tests/chart-builder-ui.cjs` 覆盖面板入口、选择、预览、分组保存与图集。
 - 浏览器实际查看：单指标页周期面板、图表库、导入确认、图表详情编辑与修订、重新转换的预览和确认保存；同步更新受影响的组件断言。
 - 测试样例与预期数值只放在测试夹具中，不进入业务代码。
+
+## 九、研究维度
+
+`/sn/dimensions` 在指标与研究判断之间提供研究台自己的维度看板，与产业图自由画布各自保存。未保存时采用共享契约 `research_dimensions.default_dimensions()` 的六维度（`price/supply/demand/inventory/balance/macro`）；显示名为价格与价差、供给、需求、库存、平衡、宏观。通用类别仍使用共享协议的 `CATEGORIES`，页面显示类别中文名。
+
+配置存入 `SourceMapping` 的 `DIMENSIONS_KEY` 研究台作用域键，结构为 `{dimensions:[{id,label,category,description,sections:[{id,label,items:[{kind,id,revision?}]}]}]}`。最多12个维度、每维度8个环节、每环节12条、全台96条，`kind+id` 全台不能重复。新维度由服务端生成 `d-` 加8位小写十六进制编号，改名、排序保留编号；新环节可省略编号由服务端生成。图表必须指定有效修订号，读取固定修订定义，数据按所选截至日重算。已有失效绑定仍保留并返回原因；不能新绑失效条目。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/sn/dimensions` | 有序配置、条目名称/单位/频率/来源/工作表、失效原因、`revision`、`can_write`、类别显示名、依据统计 |
+| PUT | `/api/sn/dimensions` | `{revision,dimensions,confirm_delete?:[维度id]}` 整份保存；初始revision为0，成功递增；修订冲突409；删除有引用维度且未确认返回409及`references:{id:条数}` |
+| GET | `/api/sn/dimensions/data?date=YYYY-MM-DD&period=daily\|weekly` | 本期数据，省略date取已绑定指标与图表操作数中最新有效观测日；省略period为weekly |
+| GET | `/api/sn/dimensions/templates` | 返回随代码发布的`templates:[{id,name,applicability,dimensions}]`，不写数据库 |
+| POST | `/api/sn/dimensions/templates/{template_id}/draft` | `{revision,dimensions?:当前编辑草稿}`，合并模板结构与已有配置，返回配置描述、`template`、`warnings`；模板外维度带`template_extra:true`，不保存 |
+| POST | `/api/sn/dimensions/suggestions` | `{model_id,dimensions?:当前编辑草稿,date?:YYYY-MM-DD}`，按草稿结构（省略时按已保存配置）逐环节生成检索说法、全目录排序召回、模型挑选；返回`items:[{series_id,dimension,section,reason,name,unit,frequency,...}]`及各环节候选数和留空原因，不保存 |
+| GET | `/api/sn/dimensions/sources?search=&offset=0&limit=20` | 复用已授权原文选择路径，返回`items:[{title,citation}],next_offset` |
+| POST | `/api/sn/dimensions/infer` | `{model_id,sources:[KnowledgeFileCitation]}`，选1–3份不同资料，返回带新编号的维度/空环节草稿，不保存 |
+
+只有来源版本2的研究台开放完整接口，读取要求指标页面授权，保存与生成模板草稿要求共享写权限。模型建议同核心关注要求来源可读、账号可写、共享可编辑；模型分组采用本台维度结构，传入草稿时只提取名称、类别、说明和环节，草稿中的条目ID不成为候选证据，程序仅校验真实ID、合法维度、数量和格式。归纳沿用原文读取的版本、绑定、原件/解析正文验证，模型前后复核正文摘要与出处；共享正文读取器仍验证真实来源，维度入口独立校验指标页面与共享写权限。失败如实报错，不用固定列表补齐。
+
+受限视角沿用核心关注规则：页面只读服务端已保存的指标绑定及最新两条必要观测（较上期），不接受自选日期/周期、不读目录/原文/任意历史、不开放修改接口。固定修订图表、同期排名与完整走势显示授权限制原因。来源可读但无共享编辑权限的普通查看成员可以读取完整看板。
+
+本期指标数据包含`latest`、原始`unit`、真实观测`date`、`baseline:{date,value,label,target_date,kind}`、`change`、`change_pct`（比例，显示值乘100）、`direction`、`position`、`freshness`、最近26个有效观测`points`、`display`格式化文本及截断提示。计算只使用截至日（含）前真实有限有效观测，不填零、不插值、不换算单位：
+
+- daily取上一条有效观测；weekly取“截至日前7天当日或之前”的最后有效观测，返回目标日与实际对比日。月度及更低频统一取上一条并标明“较上期”；只有频率未明确时，才以实际间隔至少28天识别低频，明确的日/周频保持原口径。缺少基准不输出变化，基准零不输出变化率；变化率为差值除以基准绝对值。
+- 是否本期更新单独按报告窗口判断：daily基准日为截至日前1天，weekly为前7天，日、周、月及更低频均适用。最新有效观测日不晚于窗口基准日，或计算基准与最新为同一天时，`direction`返回新增值`no_update`，`update_status`为`no_update`，`update_notice`为“本期无新数据（最新 YYYY-MM-DD）”，`comparison_start_date`保留窗口基准日；有本期观测时`update_status`为`updated`。原`previous/baseline/change/change_pct/display`计算口径保留，尤其低频“较上期”差值仍可读取；展示本期方向时须先识别`no_update`，不把无更新的零变化写为持平；本期确有新观测且数值相同仍为`flat`。同期位置和过旧提示继续提供。
+- 同期采用内置自然年模板，容差与覆盖率复用`compute/cycles.py`，统计最近最多5个有观测的往期自然年，返回从高到低的`rank/(n+1)`及`rank_low`。`n<3`或当前期覆盖不足时不给排名并说明原因，不把缺失期补为零。
+- 过旧提示复用`strategy_monitor._staleness`，相对截至日计算。显示精度复用`number_format`，保留原始数值与单位。
+- 指标与图表全部真实操作数按“指标ID、有效截至窗口”去重，20000点是每批上限，不再按全页指标数平分；每批不超过256指标且合计不超过20000点，单指标最多2000点。仅根据真实频率元数据估算五个完整往期自然年加当前年的读取窗口，按`ceil(6×366/频率间隔天数)+2`预留闰年与边界余量，并至少保留26点供走势使用：日度及未知频率2000点、周度316点、月度81点、季度27点、半年和年度26点。固定范围图表先把截至日限制到定义的结束日，图表操作数保留原2000点读取窗口；与指标共享操作数时采用较大窗口。批次之间沿用C1的同请求HTTP连接及已核验目录，不跨请求缓存结果。普通单项失败二分隔离，保留原位置并列入`failed`；权限或来源版本变化拒绝整个读取，不借部分结果绕过授权。
+- 混合频率分组可复用同请求内已核验完整目录的子集：仅限同一授权作用域对象、显式指标ID、无搜索/来源筛选、从第0页开始且父目录完整无截断；子集保留父来源版本并重算条数与缺失ID。不同账号、授权、请求、分页或筛选均不据此复用；后续观测来源版本变化仍返回409，不能用新目录与旧元数据拼出部分结果。
+- 原`limited`与`warnings`中的`history_limited`继续表示底层历史确有截断；新增卡片`history_coverage:{past_cycles:5,available_cycles:n,start_date,end_date,limited}`，其中`limited`仅在截断可能影响近5个往期同期时为真（样本不足且首条已读观测晚于最新观测年前5年的年初）。来源本身历史短不算预算不足，已有5个同期样本时也不提示读取覆盖不足。顶层`history_coverage_limited`汇总这一影响，原警告字段保留供已有消费者读取。`point_limit`保留每指标读取上界，卡片同名字段为实际频率窗口；`point_budget`仍为本请求全部去重窗口的点数预算总和，其值可超过20000，新增`batch_point_budget=20000`、`batch_series_limit=256`明确批次限制。
+- 每维度`summary`包含`up/down/flat/no_update`和同期前两高/前两低的`extreme_high/extreme_low/extreme`，本期无新观测只计`no_update`，不计入涨、跌、持平；同一个指标即使同时属于高低极端也只计一次`extreme`。没有变化/排名的数据不计入相应数量。图表返回固定定义和复用ChartKit的`payload`。
+- 指标卡片与配置条目优先采用目录可读`name`，其次`metric`，复用`research_display.indicator_name`清理展示文本。卡片正文只保留名称、最新值与已知单位、观测日、本期变化或“本期无新数据”、同期位置一句、过旧时“停更N天”小标记及走势线；单位为空或“未注明”时隐藏，无排名时同期位置显示“—”。工作表`sheet`、来源文件、频率、无更新完整说明及计算/覆盖提示归入右上角ⓘ，同类提示合并后每类只出现一次；支持悬停、键盘聚焦和点击固定查看。全局提示仅在确有覆盖影响或条目失败时合并为一条，已读窗口足够时不因更早历史截断提示不足。只改变展示，不改写目录、原始单位、指标绑定或已有计算字段。
+
+50指标合成计时：使用2014–2024日度历史，截至2024-03-29的每个指标读取2000点（均超过5年且同期`n=5`），共5批、100000点；每请求5次目录读取、5次观测读取，仅创建并关闭1个HTTP Client，同组目录只读一次。`tests/test_dimension_data_performance.py`保留真实路由、签名、Client/TLS初始化、JSON核验与周期计算，仅以MockTransport模拟上游网络。本机无额外延迟三轮3.183/1.083/1.223秒（中位1.223秒）；每次上游调用增加5ms时3.288/1.128/1.158秒（中位1.158秒），最高3.288秒，合成场景满足单次≤8秒，保持一次请求返回；宿主负载与首轮初始化造成波动，不能将两组中位数差异解释为延迟收益。真实棉花页面及远端服务耗时未验收，不据此承诺生产耗时。
+
+依据统计直接容忍读取`contradiction.bull/bear.evidence[].dimension`可选字段：有研判页面授权时，当前可见且属于本研究台的生效研判中bull为支持、bear为反对，无字段计`evidence.unassigned`，未知编号计`evidence.deleted`。各维度`references`含`support/oppose/total`。删除确认后不改写任何研判，原编号将计入已删除维度，留待研判重新指派。
+
+“一页周报”可直接调用`GET /api/sn/dimensions/data?date=报告截至日&period=weekly`（日报用daily）。按响应`dimensions`数组顺序逐维度读取`id/label/category/description`、各`sections[].items[]`的真实本期数据及`summary`；使用`baseline.date`表述比较日期、`position.n`说明同期样本、`failed/status/reason/warnings`保留数据限制。新增`direction=no_update`时使用`update_notice`说明停更，不从`change=0`或仍保留的低频较上期差值推断本期方向；读取`summary.no_update`单列本期无新数据数。报告应传明确日期，避免默认最新日随来源更新改变；配置版本由顶层`revision`标识，此接口读取实时配置，不是冻结归档接口。
+
+模型推荐以每个维度的每个环节为研究条目；无环节时以维度本身为条目，`section`返回空字符串。条目内容包含维度名、说明与环节名。模型先写检索说法，程序复用研判的`judgment_recall`通用函数和`CatalogRecall`对完整授权目录排序召回；每个条目都参与，不按工作表顺序截断。每环节候选数依`RECALL_STEPS`的20、12、8逐级退让以满足请求容量，仍超容量则报错。候选附截至`date`（省略时为当天）的最新有效观测日、频率、单位、工作表，由模型判断代表性、口径及长期停更风险。提示要求每环节选择最有代表性的1–4个，同品种多个合约月份仅在含义不同的情况下分别选择，缺少合适指标时留空并说明；程序不按名称、关键词或日期替模型筛选、补选。
+
+程序校验维度、环节存在，指标属于本环节本次展示候选，每环节至多4个、总计至多96个；超限或模型格式无效直接422，调用失败如实返回，不回退固定列表。调用审计使用`dimension_queries`、`dimension_fields`。推荐响应新增`as_of`、`recall_per_section`和`sections:[{dimension,section,item_id,section_id,candidate_count,selected_count,empty_reason}]`；旧`items`结构继续可读，并附`latest_date/item_id/section_id`。`item_id`为本次请求按维度与环节顺序生成的临时条目编号，`section_id`为草稿已有环节编号（没有时为空），用于区分同维度同名环节；模型同名选择必须指明`item_id`，页面采用时保留原环节归属。`field_count`为完整目录条数，`selected_field_count`为本次展示候选的去重条数，`truncated=false`表示未使用工作表字段截断；`recall_per_section`记录本次采用的候选数上限。留空原因来自模型，不由程序以业务规则填造。研究员仍需采用到编辑草稿并保存。
+
+### 内置维度模板库与从模板开始
+
+模板定义在 `commodity-research/src/tin/web/dimension_templates.py` 的 `TEMPLATE_DATA`，随代码发布，不写数据库，只提供维度名称、通用类别、一句说明和环节名，不包含指标或图表绑定。首批提供“通用六维度”和适用于棉花、棉纱、纺织相关品种的“纺织产业链”。前者复用 `default_dimensions()`，新建维度使用六个固定编号，环节为空；合并时仍优先保留同名已有维度编号以兼容引用。后者整理真实棉花周报的价格与价差、美棉供给、国内供给与进口、纺纱需求、织布与终端需求、库存与仓单、替代品、资金与宏观结构。模板加载时统一调用 `research_dimensions.validate_dimension_list` 校验。
+
+未保存过配置的页面提供“用通用六维度开始 / 选择行业模板 / 从往期周报归纳”三个入口；编辑工具栏也可以套用模板。套用只生成可编辑草稿，不写配置，研究员仍需点击“保存”。套用后可一键让模型按草稿维度推荐真实指标，再由研究员选择确认；模板和环节名不得用于关键词匹配或自动分配指标。
+
+已有配置按维度编号优先、同名维度其次对应，保留对应维度的已有编号、环节和条目，新增模板环节以空条目加入。无法对应的已有维度追加到草稿末尾并标为“模板外”，由研究员决定保留或删除；删除被研判引用的维度继续使用原有显式确认流程，不改写研判依据。未保存过配置时，隐式默认六维度不作为已有自定义配置追加。合并后暂时超过12个维度或每维度8个环节时仍保留完整草稿并提示，研究员删减到配置上限后才能保存，不静默丢弃原条目。
+
+### 如何新增一个模板
+
+1. 从真实研究报告提炼稳定的研究结构，记录模板名称、适用品种说明、各维度关注内容和环节名；说明只写“看什么”，不写市场结论。
+2. 在内置模板数据文件中增加结构；每个维度归入 `research_dimensions.CATEGORIES` 中的通用类别。同一类别可以有多个细分维度，不另造通用类别。
+3. 只写结构，不写指标 ID、图表 ID、取数规则或自动归类关键词。行业模板的维度和环节编号在套用时由服务端生成；默认六维度继续复用固定编号。
+4. 运行模板数据校验、草稿合并与权限测试，再运行 `test_dimension_*.py` 和 `dimensions-ui.cjs`。核对空配置、已有配置、模板外维度、引用删除确认以及未保存草稿的模型建议流程。

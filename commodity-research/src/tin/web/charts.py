@@ -10,13 +10,13 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import Field, TypeAdapter, ValidationError, model_validator
 from sqlalchemy import func, select, update
 
-from tin.compute.cycles import BUILTIN_TEMPLATES, compute_cycles, compute_multi_cycles
+from tin.compute.cycles import BUILTIN_TEMPLATES, compute_cycles, compute_multi_cycles, prepare_observations
 from tin.config import settings
 from tin.integration.workbench_scope import artifact_session, current_workbench, require_shared_write
 from tin.models.workbench import WorkbenchArtifact, WorkbenchArtifactRevision
 from tin.models import SourceMapping
 from tin.schemas.chart import ChartDefinition, ChartModel, ChartUpdate, CycleTemplate, RevisionInput
-from tin.web.chart_data import (catalog_fields, cutoff, curve_series_ids, curve_unit,
+from tin.web.chart_data import (catalog_fields, chart_read_scope, cutoff, curve_series_ids, curve_unit,
     definition_series_ids, read_series, resolve_curves, unit_notices, validate_definition)
 from tin.web.workbench_artifacts import record_revision
 
@@ -267,6 +267,7 @@ def create_batch(body: BatchChartInput):
 
 # Keep this literal route ahead of /charts/{chart_id}.
 @router.get('/charts/anomalies')
+@chart_read_scope()
 def chart_anomalies(date: str | None = None, limit: int | None = Query(None, ge=1)):
     """Compare every saved cycle chart; limit applies after the global sort."""
     scope = require_scope()
@@ -337,7 +338,7 @@ def chart_anomalies(date: str | None = None, limit: int | None = Query(None, ge=
             # Share the resolved observations with current and preceding-date
             # comparisons instead of persisting a derived result anywhere.
             raw = read_series([sid for sid in identifiers if sid in fields], day, limit=point_limit)
-            payload = definition_data(scope, definition, day, fields=fields, data=raw, point_limit=point_limit)
+            payload = definition_data(scope, definition, day, fields=fields, data=raw, point_limit=point_limit, details=False)
             curves = resolve_curves(definition, fields, raw)
             current = [item['cycle'] for item in payload['curves']] if len(curves) > 1 else [payload]
             for index, (curve, series, cycle) in enumerate(zip(definition.curves, curves, current)):
@@ -363,14 +364,17 @@ def anomaly_item(row, definition, field, series, day, *, curve=None, current=Non
     time = definition.time
     template = time.template.model_dump(mode='json', exclude_none=True)
     template['transform'] = time.transform
-    current = current or cycle_result(series, template, day, band_cycles=time.band_cycles, cycles=time.cycles)
+    observations = prepare_observations((point['date'], point['value']) for point in series['points'] if point['value'] is not None)
+    current = current or cycle_result(series, template, day, band_cycles=time.band_cycles, cycles=time.cycles,
+                                     observations=observations, details=False)
     position = current['position']
     if position is None or position['n'] < 3 or position.get('rank') is None:
         return None
     previous_days = [point['date'] for point in series['points']
                      if point['value'] is not None and point['date'] < position['date']]
     previous = (cycle_result(series, template, cutoff(previous_days[-1]),
-                             band_cycles=time.band_cycles, cycles=time.cycles)['position']
+                             band_cycles=time.band_cycles, cycles=time.cycles,
+                             observations=observations, details=False)['position']
                 if previous_days else None)
     previous_rank = previous.get('rank') if previous else None
     rank_change = position['rank'] - previous_rank if previous_rank is not None else None
@@ -490,9 +494,9 @@ def revisions(chart_id: str, offset: int = Query(0, ge=0), limit: int = Query(10
                 'total': total, 'offset': offset, 'next_offset': offset + len(rows) if offset + len(rows) < total else None}
 
 
-def cycle_result(series, template, day, *, band_cycles=5, cycles=None):
-    points = [(point['date'], point['value']) for point in series['points'] if point['value'] is not None]
-    result = compute_cycles(points, template, day, band_cycles=band_cycles, cycles=cycles)
+def cycle_result(series, template, day, *, band_cycles=5, cycles=None, observations=None, details=True):
+    points = observations if observations is not None else [(point['date'], point['value']) for point in series['points'] if point['value'] is not None]
+    result = compute_cycles(points, template, day, band_cycles=band_cycles, cycles=cycles, details=details)
     if series['limited']:
         result['warnings'].append('observation_window_limited')
     return result
@@ -508,7 +512,7 @@ def chart_data(chart_id: str, date: str | None = None):
     return definition_data(scope, definition, day, chart_id=chart_id, revision=revision)
 
 
-def definition_data(scope, definition, day, *, chart_id=None, revision=None, fields=None, data=None, point_limit=None):
+def definition_data(scope, definition, day, *, chart_id=None, revision=None, fields=None, data=None, point_limit=None, details=True):
     """Preview and saved charts share the same permission and observation path."""
     identifiers = definition_series_ids(definition)
     fields = catalog_fields(scope, identifiers) if fields is None else fields
@@ -537,10 +541,10 @@ def definition_data(scope, definition, day, *, chart_id=None, revision=None, fie
         template = time.template.model_dump(mode='json', exclude_none=True)
         template['transform'] = time.transform
         if len(curves) == 1:
-            result = cycle_result(curves[0], template, day, band_cycles=time.band_cycles, cycles=time.cycles)
+            result = cycle_result(curves[0], template, day, band_cycles=time.band_cycles, cycles=time.cycles, details=details)
             result.update(series_id=definition.curves[0].series_id, unit=curves[0]['unit'])
         else:
-            result = compute_multi_cycles(curves, template, day, band_cycles=time.band_cycles, cycles=time.cycles)
+            result = compute_multi_cycles(curves, template, day, band_cycles=time.band_cycles, cycles=time.cycles, details=details)
         result.update(id=chart_id, revision=revision, notices=notices, point_limit=limit)
         return result
     for curve in curves:

@@ -109,19 +109,9 @@ def _layout_series_ids(layout):
     return list(dict.fromkeys(identifiers))
 
 
-def _num(value, unit: str = "", signed: bool = False) -> str:
-    if value is None:
-        return "—"
-    if unit == "元":
-        digits = 4
-    elif unit == "%":
-        digits = 2
-    elif unit in ("元/吨", "吨", "手", "实物吨") or float(value).is_integer():
-        digits = 0
-    else:
-        digits = 2
-    s = f"{value:+,.{digits}f}" if signed else f"{value:,.{digits}f}"
-    return s.replace("-", "−")
+def _num(value, unit: str = "", signed: bool = False, decimals: int | None = None) -> str:
+    from tin.web.number_format import format_number
+    return format_number(value, decimals=decimals, signed=signed).replace("-", "−")
 
 
 def static_version() -> str:
@@ -201,7 +191,6 @@ templates.env.globals["research_static_prefix"] = research_static_prefix
 templates.env.globals["research_workbench"] = current_workbench.get
 templates.env.globals["research_prefix"] = research_prefix
 templates.env.globals["research_url"] = research_url
-templates.env.globals["ppt_enabled"] = settings.ppt_enabled
 templates.env.globals["research_form_url"] = research_form_url
 templates.env.globals["research_identity"] = lambda: current_identity.get()
 templates.env.globals["static_version"] = static_version
@@ -237,16 +226,10 @@ from tin.web.indicator_dedup import router as indicator_dedup_router
 app.include_router(indicator_dedup_router)
 from tin.web.dedup_references import router as dedup_references_router
 app.include_router(dedup_references_router)
-from tin.web.ppt import router as ppt_router
-app.include_router(ppt_router)
 from tin.web.chart_import import router as chart_import_router
 app.include_router(chart_import_router)
 from tin.web.chart_pages import build_router as build_chart_pages_router
 app.include_router(build_chart_pages_router(
-    lambda *args, **kwargs: _page_session(*args, **kwargs),
-    lambda *args, **kwargs: _shell(*args, **kwargs), templates))
-from tin.web.ppt_pages import build_router as build_ppt_pages_router
-app.include_router(build_ppt_pages_router(
     lambda *args, **kwargs: _page_session(*args, **kwargs),
     lambda *args, **kwargs: _shell(*args, **kwargs), templates))
 from tin.web.workbench_sources import router as workbench_sources_router
@@ -278,15 +261,26 @@ from tin.web.judgment_panels import router as judgment_panels_router
 app.include_router(judgment_panels_router)
 from tin.web.judgment_lifecycle import router as judgment_lifecycle_router
 app.include_router(judgment_lifecycle_router)
+from tin.web.judgment_dimensions import router as judgment_dimensions_router
+app.include_router(judgment_dimensions_router)
 from tin.web.report_drafts import router as report_drafts_router
 app.include_router(report_drafts_router)
 from tin.web.report_figures import router as report_figures_router
 app.include_router(report_figures_router)
+from tin.web.report_ppt import router as report_ppt_router
+app.include_router(report_ppt_router)
+from tin.web.report_dimension_drafts import router as report_dimension_drafts_router
+app.include_router(report_dimension_drafts_router)
 from tin.web.affairs import router as affairs_router
 app.include_router(affairs_router)
 from tin.web.market import build_market_router, market_catalog as market_catalog_data, saved_core_cards
 from tin.web.focus_suggestions import router as focus_suggestions_router
 app.include_router(focus_suggestions_router)
+from tin.web.dimension_board import router as dimensions_router, build_page_router as build_dimension_pages
+from tin.web.dimension_suggestions import router as dimension_suggestions_router
+app.include_router(dimensions_router)
+app.include_router(dimension_suggestions_router)
+app.include_router(build_dimension_pages(templates))
 app.include_router(build_market_router(lambda: _page_session('market'), templates,
                                        lambda session, day: _home_date(session, day)))
 
@@ -1003,7 +997,8 @@ def reports_page(request: Request, date: str | None = None, period: str = 'daily
                 preview = json.dumps(report, ensure_ascii=False, indent=2)
         return templates.TemplateResponse(request, "reports.html", _shell(
             s, "reports", None, files=files, selected=selected, preview=preview,
-            report=present_snapshot(report, names) if report is not None else None,
+            report=present_snapshot(report, names, dimensions=_report_dimensions(s)
+                                    if settings.weknora_api_url or period == 'weekly' else None) if report is not None else None,
             report_generated_at=(report or {}).get('generated_at'), period_kind=period,
             report_start=period_start(chosen, period).isoformat() if chosen else None,
             live_report=bool(settings.weknora_api_url) or period == 'weekly'))
@@ -1021,7 +1016,16 @@ def report_file(day: str):
     path = settings.exports_dir / V / f"{day}.json"
     if not path.exists():
         raise HTTPException(404, "该日没有归档快照")
-    return FileResponse(path, media_type="application/json", filename=f"{V}_{day}.json")
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    from tin.web.report_one_page import dimension_overview
+    payload['dimension_overview'] = dimension_overview(payload)
+    return JSONResponse(payload, headers={
+        'Content-Disposition': f'attachment; filename="{V}_{day}.json"'})
+
+
+def _report_dimensions(session):
+    from tin.web.research_dimensions import default_dimensions, read_dimensions
+    return read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()
 
 
 def _period_download(day, period, markdown=False):
@@ -1036,11 +1040,17 @@ def _period_download(day, period, markdown=False):
         raise HTTPException(400, '日期格式应为 YYYY-MM-DD') from None
     with _page_session('reports', day=cutoff, points_per_series=8 if period == 'weekly' else 2) as s:
         variety = research_variety(s)
-        payload = build_period(s, variety, cutoff, period)
+        archive = settings.exports_dir / variety / f'{day}.json'
+        frozen = markdown and period == 'daily' and not settings.weknora_api_url and archive.exists()
+        if frozen:
+            payload = json.loads(archive.read_text(encoding='utf-8'))
+        else:
+            payload = build_period(s, variety, cutoff, period)
         if markdown:
             scope = current_workbench.get()
             title = (scope.metadata.get('name') if scope else None) or '研究工作台'
-            body = readable_markdown(payload, title=title + (' 周报' if period == 'weekly' else ' 日报'))
+            body = readable_markdown(payload, title=title + (' 周报' if period == 'weekly' else ' 日报'),
+                                     dimensions=None if frozen else _report_dimensions(s))
             return StreamingResponse(iter([body.encode('utf-8')]), media_type='text/markdown', headers={
                 'Content-Disposition': f'attachment; filename="research_{period}_{day}.md"'})
         return JSONResponse(payload, headers={

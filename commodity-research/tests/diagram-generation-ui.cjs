@@ -27,7 +27,7 @@ const version='b'.repeat(64);
  try{
   const page=await browser.newPage({viewport:{width:1500,height:1000}}),errors=[],requests=[];
   page.on('pageerror',error=>errors.push(error.message));
-  let failure=false,runningJob=false,gate=null,modelLabel='模型 A',catalogGate=null,jobCounter=0,latestJob=null;
+  let failure=false,discardFailure=false,runningJob=false,gate=null,modelLabel='模型 A',catalogGate=null,jobCounter=0,latestJob=null;
   const jobs=new Map();
   const generated={markdown:generatedMarkdown,version,nodes:2,candidates_truncated:false,
    request:{model_id:'fixture-model-b',instructions:'合成任务原说明',source_id:'native-outline',has_image:false},
@@ -57,6 +57,14 @@ const version='b'.repeat(64);
    if(task){
     return route.fulfill({json:task[2]?generated:jobs.get(task[1])});
    }
+   const discard=url.pathname.match(/\/diagram\/jobs\/([a-f0-9]{32})\/discard$/);
+   if(discard&&method==='POST'){
+    if(discardFailure)return route.fulfill({status:409,json:{detail:'此产业图结果已应用，不能舍弃'}});
+    const job=jobs.get(discard[1]);Object.assign(job,{state:'superseded',phase:'superseded',discarded:true,result_available:false,message:'已舍弃暂存结果'});
+    if(latestJob?.id===job.id)latestJob=null;
+    return route.fulfill({json:{job}});
+   }
+   if(/\/diagram\/jobs\/[a-f0-9]{32}\/apply$/.test(url.pathname))return route.fulfill({status:409,json:{detail:'隔离版本检查：请核对来源版本'}});
    if(url.pathname.endsWith('/diagram/markdown'))return route.fulfill({status:409,json:{detail:'隔离版本检查：请核对来源版本'}});
    throw Error('Unexpected browser request '+method+' '+url.pathname);
   });
@@ -106,7 +114,7 @@ const version='b'.repeat(64);
   assert.match(await page.locator('#dg-md-msg').innerText(),/尚未保存/);
   await page.getByRole('button',{name:'导入为新布局',exact:true}).click();
   await page.waitForFunction(()=>document.getElementById('dg-md-msg').textContent.includes('隔离版本检查'));
-  const imported=requests.find(request=>request.path.endsWith('/diagram/markdown')&&request.method==='POST');
+  const imported=requests.find(request=>request.path.endsWith('/apply')&&request.method==='POST');
   assert.equal(JSON.parse(imported.body).fact_version,version,'The original dgImportMarkdown carries the actual generation version');
   assert.equal(JSON.parse(imported.body).markdown,generatedMarkdown);
   runningJob=true;await page.locator('#dg-md-text').fill(originalMarkdown);await page.locator('#dg-ai-run').click();
@@ -120,6 +128,7 @@ const version='b'.repeat(64);
   failure=true;await page.locator('#dg-md-text').fill('# 已有人工内容');await page.locator('#dg-ai-run').click();
   await page.waitForFunction(()=>document.getElementById('dg-ai-status').textContent.includes('暂不可用'));
   assert.equal(await page.locator('#dg-md-text').inputValue(),'# 已有人工内容','Failed generation retains the original edit');
+  assert.equal(await page.evaluate(()=>dgGeneratedJobId()),[...jobs.keys()].at(-2),'A failed new task cannot detach the displayed prior draft from its application token');
   failure=false;
   async function beginHeld(){let release;gate=new Promise(resolve=>{release=resolve});const seen=page.waitForRequest(request=>request.method()==='POST'&&request.url().endsWith('/diagram/jobs'));await page.locator('#dg-ai-run').click();await seen;return()=>{gate=null;release();};}
   let release=await beginHeld();
@@ -194,6 +203,14 @@ const version='b'.repeat(64);
   await page.locator('#dg-md-text').fill('# 未完成的手动编辑');
   page.once('dialog',dialog=>dialog.dismiss());await page.locator('#dg-ai-restore-result').click();
   assert.equal(await page.locator('#dg-md-text').inputValue(),'# 未完成的手动编辑','Recovery cancellation retains the current editor');
+  await page.goto('http://diagram-generation.fixture/');await page.locator('#dg-md-btn').click();
+  await page.waitForFunction(()=>document.getElementById('dg-ai-discard-result')?.hidden===false);
+  await page.evaluate(()=>{dgSubmission={body:dgGenerationRequestBody(),key:'stale-restored-retry-token-0001'};});
+  page.once('dialog',dialog=>dialog.accept());await page.locator('#dg-ai-discard-result').click();
+  await page.waitForFunction(()=>document.getElementById('dg-ai-status').textContent.includes('已舍弃这次结果'));
+  assert.equal(await page.evaluate(()=>dgSubmission),null,'Discarding an unopened latest result clears any earlier retry token');
+  assert.equal(await page.locator('#dg-md-text').inputValue(),originalMarkdown,'Discarding unopened metadata keeps manual Markdown');
+  latestJob={...jobs.get(savedJob),state:'succeeded',result_available:true};
   latestJob={...latestJob,purpose:'judgments'};
   await page.goto('http://diagram-generation.fixture/');await page.locator('#dg-md-btn').click();await page.waitForLoadState('networkidle');
   assert.equal(await page.locator('#dg-ai-restore-result').isHidden(),true,'A judgment task cannot be restored as a diagram');
@@ -218,6 +235,30 @@ const version='b'.repeat(64);
   assert.equal(await page.locator('#dg-md-text').inputValue(),generatedMarkdown,'Rebuild flag does not count as an intervening input edit');
   assert.doesNotMatch(await page.locator('#dg-ai-status').innerText(),/未覆盖/);
   assert.equal(await page.evaluate(()=>JSON.stringify(dg.layout)),initialLayout,'Reuse/rebuild both remain previews until manual apply');
+  const discard=page.locator('#dg-ai-discard-result');
+  assert.equal(await discard.isVisible(),true,'The unsaved generated result offers discard beside recovery');
+  const discardsBefore=requests.filter(request=>request.path.endsWith('/discard')).length;
+  page.once('dialog',dialog=>dialog.dismiss());await discard.click();
+  assert.equal(requests.filter(request=>request.path.endsWith('/discard')).length,discardsBefore,'Cancelling discard sends nothing');
+  discardFailure=true;page.once('dialog',dialog=>dialog.accept());await discard.click();
+  await page.waitForFunction(()=>document.getElementById('dg-ai-status').textContent.includes('舍弃失败：此产业图结果已应用'));
+  assert.equal(await page.locator('#dg-md-text').inputValue(),generatedMarkdown,'A failed discard retains the preview');
+  const retiredKey=requests.filter(request=>request.path.endsWith('/diagram/jobs')&&request.method==='POST').at(-1).headers['idempotency-key'];
+  await page.evaluate(key=>{dgSubmission={body:dgGenerationRequestBody(),key};},retiredKey);
+  discardFailure=false;page.once('dialog',dialog=>dialog.accept());await discard.click();
+  await page.waitForFunction(()=>document.getElementById('dg-ai-status').textContent.includes('已舍弃这次结果'));
+  assert.equal(await discard.isHidden(),true);
+  assert.equal(await page.locator('#dg-ai-restore-result').isHidden(),true);
+  assert.equal(await page.locator('#dg-ai-bindings').isHidden(),true);
+  assert.equal(await page.locator('#dg-md-text').inputValue(),'','The discarded generated Markdown is cleared');
+  assert.equal(await page.locator('#dg-ai-run').isEnabled(),true,'A fresh generation can start after discard');
+  assert.equal(await page.evaluate(()=>JSON.stringify(dg.layout)),initialLayout,'Discard does not modify saved layouts');
+  // A failed admission or restore may leave an earlier retry token in memory.
+  // Discard always drops it before the user generates from the same inputs.
+  assert.equal(await page.evaluate(()=>dgSubmission),null,'Discard clears the previous retry token');
+  await page.locator('#dg-ai-run').click();
+  await page.waitForFunction(()=>document.getElementById('dg-md-text').value.includes('合成生成布局'));
+  assert.notEqual(requests.filter(request=>request.path.endsWith('/diagram/jobs')&&request.method==='POST').at(-1).headers['idempotency-key'],retiredKey,'Regenerating the same input uses a fresh request identity');
   const supersededJob=[...jobs.keys()].at(-1),oldResultReads=requests.filter(request=>request.path.endsWith('/'+supersededJob+'/result')).length;
   Object.assign(jobs.get(supersededJob),{state:'superseded',result_available:false,message:''});
   const beforeSupersededPosts=requests.filter(request=>request.method==='POST'&&request.path.endsWith('/diagram/jobs')).length;
@@ -232,6 +273,9 @@ const version='b'.repeat(64);
   assert.equal(requests.filter(request=>request.method==='POST'&&request.path.endsWith('/diagram/jobs')).length,beforeSupersededPosts);
   assert.equal(new URL(page.url()).searchParams.get('analysis_job'),supersededJob,'A newer success cannot automatically navigate away from the selected old task');
   assert.equal(await page.evaluate(()=>JSON.stringify(dg.layout)),initialLayout);
+  await page.getByRole('button',{name:'导入为新布局',exact:true}).click();
+  await page.waitForFunction(()=>document.getElementById('dg-md-msg').textContent.includes('隔离版本检查'));
+  assert.equal(requests.at(-1).path.endsWith('/diagram/markdown'),true,'Manual Markdown keeps its existing import endpoint');
   assert.deepEqual(errors,[]);
   console.log('PASS: actual diagram Jinja/diagram.js/generator, models and originals, image/remove, no-save draft, safe binding report, import version, failure preservation, duplicate clicks, edits during background generation, close/reopen and full-page restoration without another POST; no cloud model calls.');
  }finally{await browser.close();}

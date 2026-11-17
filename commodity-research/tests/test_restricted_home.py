@@ -101,7 +101,8 @@ def test_readonly_template_keeps_four_original_sections_without_edit_controls(se
     environment = Environment(loader=ChoiceLoader([
         DictLoader({'base.html': '{% block main %}{% endblock %}'}), FileSystemLoader(directory)]),
         autoescape=select_autoescape())
-    environment.filters['num'] = lambda value, *args: str(value) if value is not None else '—'
+    # Layout-only stub accepts the real filter's optional precision keyword.
+    environment.filters['num'] = lambda value, *args, **kwargs: str(value) if value is not None else '—'
     environment.globals.update(research_prefix=lambda: '/research', research_workbench=lambda: current)
     html = environment.get_template('readonly_home.html').render(restricted_data=result, restricted_view=True)
     for title in ('待办', '今日简报', '昨夜到今早什么变了', '全景数据墙'):

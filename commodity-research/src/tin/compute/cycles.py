@@ -3,12 +3,13 @@
 Intervals are inclusive. Ties choose the earlier observation. Forward changes
 use raw observations, including observations outside the displayed segments.
 """
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import date, timedelta
 from math import ceil, floor, isfinite
-from statistics import mean, median
+from statistics import median
 
 from pydantic import TypeAdapter
 
@@ -32,6 +33,53 @@ _TEMPLATE = TypeAdapter(CycleTemplate)
 
 def _date(value):
     return value if type(value) is date else date.fromisoformat(value)
+
+
+@dataclass(frozen=True)
+class _PreparedObservations:
+    rows: tuple
+    days: tuple
+    gaps: tuple
+
+
+def prepare_observations(observations):
+    """Validate an immutable, request-local series once for several cutoffs.
+
+    This is deliberately not a result cache: callers still supply the real
+    authorized observations, and each cutoff selects its own rows/frequency.
+    """
+    if isinstance(observations, _PreparedObservations):
+        return observations
+    rows, previous, gaps = [], None, []
+    for stamp, value in observations:
+        day = _date(stamp)
+        if previous is not None and day <= previous:
+            raise ValueError('观测必须按日期升序且同日唯一')
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
+            raise ValueError('周期计算只接受有效有限观测')
+        if previous is not None:
+            gaps.append((day - previous).days)
+        previous = day
+        rows.append((day, float(value)))
+    return _PreparedObservations(tuple(rows), tuple(day for day, _ in rows), tuple(gaps))
+
+
+def _mean(values):
+    """The exact, correctly rounded float mean, without Fraction per operand.
+
+    All cycle values are finite floats. Their integer-ratio denominators are
+    powers of two, so the largest denominator is their common denominator.
+    Integer true division rounds the final ratio just as statistics.mean does.
+    """
+    numerator, denominator, count = 0, 1, 0
+    for value in values:
+        part, divisor = value.as_integer_ratio()
+        if divisor > denominator:
+            numerator *= divisor // denominator
+            denominator = divisor
+        numerator += part * (denominator // divisor)
+        count += 1
+    return numerator / (denominator * count)
 
 
 def repeat_bounds(template, day):
@@ -97,15 +145,19 @@ def _intervals(template, observations, as_of):
 
 
 def _nearest(points, positions, target, tolerance):
-    index = bisect_left(positions, target)
-    candidates = [i for i in (index - 1, index) if 0 <= i < len(points)]
-    if not candidates:
+    if not points:
         return None
-    chosen = min(candidates, key=lambda i: (abs(positions[i] - target), positions[i]))
+    index = bisect_left(positions, target)
+    if index == 0:
+        chosen = 0
+    elif index == len(points) or target - positions[index - 1] <= positions[index] - target:
+        chosen = index - 1
+    else:
+        chosen = index
     return points[chosen] if abs(positions[chosen] - target) <= tolerance else None
 
 
-def _finite_result(result):
+def _finite_result(result, *, details=True):
     """Keep arithmetic overflow explicit and the read model JSON-safe."""
     unavailable = False
 
@@ -120,19 +172,27 @@ def _finite_result(result):
             return [clean(item) for item in value]
         return value
 
-    result = clean(result)
+    # Segment coordinates/raw values were validated on input and transforms
+    # were checked when constructed. Do not recursively revalidate every point
+    # (or the data-independent, schema-validated template) at every cutoff.
+    for key in ('position', 'band', 'forward'):
+        result[key] = clean(result[key])
     if unavailable and 'non_finite_result' not in result['warnings']:
         result['warnings'].append('non_finite_result')
+    if not details:
+        result['forward'] = []
     return result
 
 
 def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4, 8, 12), cycles=None,
-                   current_start=None):
+                   current_start=None, details=True):
     """Return the chart.v1 cycle read model, without changing the input.
 
     A single observation cannot establish a frequency: curves remain available,
     with ``frequency_unavailable`` and ``insufficient_cycles`` notices. Statistical
     fields are omitted when fewer than three eligible past cycles match.
+    ``details=False`` suppresses band/forward payloads for position-only reads;
+    forward overflow checks still run so warnings retain their full semantics.
     """
     template = _TEMPLATE.validate_python(template).model_dump(mode='json', exclude_none=True)
     as_of = _date(as_of)
@@ -143,17 +203,10 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
         raise ValueError('展示周期数需为正整数')
     if not horizons or len(horizons) > 40 or any(type(h) is not int or not 1 <= h <= 2000 for h in horizons):
         raise ValueError('后续窗口需为明确的正整数期数')
-    rows, previous = [], None
-    for stamp, value in observations:
-        day = _date(stamp)
-        if previous is not None and day <= previous:
-            raise ValueError('观测必须按日期升序且同日唯一')
-        previous = day
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
-            raise ValueError('周期计算只接受有效有限观测')
-        if day <= as_of:
-            rows.append((day, float(value)))
-    gaps = [(right[0] - left[0]).days for left, right in zip(rows, rows[1:])]
+    prepared = prepare_observations(observations)
+    count = bisect_right(prepared.days, as_of)
+    rows = prepared.rows[:count]
+    gaps = prepared.gaps[:max(0, count - 1)]
     freq = median(gaps) if gaps else None
     tol = max(1, floor(freq / 2)) if freq is not None else 1
     # Regular non-observation runs (weekends, exchange holidays) are part of a
@@ -176,7 +229,7 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
         result['warnings'].append('segments_overlap')
     if freq is None:
         result['warnings'].append('frequency_unavailable')
-    row_days = [day for day, _ in rows]
+    row_days = prepared.days[:count]
     candidates = []
     transform = template['transform']
     for label, start, end, anchor in intervals:
@@ -217,7 +270,7 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
         result['warnings'].append('empty_segments_omitted')
     if not candidates:
         result['warnings'].extend(['no_observations', 'insufficient_cycles'])
-        return _finite_result(result)
+        return _finite_result(result, details=details)
     if current_start is None:
         _, _, current_index = max(candidates)
     else:
@@ -232,7 +285,7 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
             result['segments'] = [part for part in result['segments'] if
                 _date(part['start']) < current_start and (selected is None or id(part) in selected)]
             result['warnings'].extend(['current_missing', 'insufficient_cycles'])
-            return _finite_result(result)
+            return _finite_result(result, details=details)
     current = result['segments'][current_index]
     current['current'] = True
     last = current['points'][-1]
@@ -258,17 +311,18 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
     if freq is None or len(peers) < 3:
         position['status'] = 'insufficient_cycles'
         result['warnings'].append('insufficient_cycles')
-        return _finite_result(result)
+        return _finite_result(result, details=details)
     if not eligible(current):
         position['status'] = 'unusable_current'
-        return _finite_result(result)
+        return _finite_result(result, details=details)
     values = [peer['value'] for peer in peers]
     recent = peers[:5]
-    recent_mean = mean(peer['value'] for peer in recent)
+    recent_mean = _mean(peer['value'] for peer in recent)
     percentage = transform == 'raw' and recent_mean > 0
     position.update(status='ok', rank=1 + sum(value > last['value'] for value in values),
                     share_below=sum(value < last['value'] for value in values) / len(values),
-                    min=min(values), max=max(values), median=median(values), mean=mean(values),
+                    min=min(values), max=max(values), median=median(values),
+                    mean=recent_mean if len(values) <= 5 else _mean(values),
                     recent_mean=recent_mean,
                     vs_recent_mean={'kind': 'pct' if percentage else 'change',
                         'value': (last['value'] - recent_mean) / recent_mean if percentage else last['value'] - recent_mean,
@@ -281,11 +335,11 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
         last_x = max((_date(part['end']) - _date(part['start'])).days for part in past)
     step = max(1, floor(freq + 0.5))
     band_points = [(part['points'], [point['x'] for point in part['points']]) for part in band_parts]
-    for x in range(first_x, last_x + 1, step):
+    for x in range(first_x, last_x + 1, step) if details else ():
         matches = [_nearest(points, positions, x, band_tol) for points, positions in band_points]
         values = [match['value'] for match in matches if match is not None]
         if values:
-            result['band'].append({'x': x, 'min': min(values), 'max': max(values), 'mean': mean(values), 'n': len(values)})
+            result['band'].append({'x': x, 'min': min(values), 'max': max(values), 'mean': _mean(values), 'n': len(values)})
     ordinals = [day.toordinal() for day, _ in rows]
     for h in horizons:
         items = []
@@ -307,7 +361,7 @@ def compute_cycles(observations, template, as_of, *, band_cycles=5, horizons=(4,
                                  'median': median(changes) if changes else None,
                                  'min': min(changes) if changes else None, 'max': max(changes) if changes else None,
                                  'up': sum(change > 0 for change in changes)})
-    return _finite_result(result)
+    return _finite_result(result, details=details)
 
 
 def _previous_start(template, current_start):
@@ -324,7 +378,7 @@ def _previous_start(template, current_start):
     return max(earlier).isoformat() if earlier else None
 
 
-def compute_multi_cycles(curves, template, as_of, *, band_cycles=5, cycles=None):
+def compute_multi_cycles(curves, template, as_of, *, band_cycles=5, cycles=None, details=True):
     """Compare curves on one explicit calendar, keeping each curve's statistics.
 
     Every item uses the most recent period observed by any selected curve. The
@@ -337,9 +391,10 @@ def compute_multi_cycles(curves, template, as_of, *, band_cycles=5, cycles=None)
     template = _TEMPLATE.validate_python(template).model_dump(mode='json', exclude_none=True)
     computed = []
     for curve in curves:
-        observations = [(point['date'], point['value']) for point in curve.get('points', [])
-                        if type(point['value']) in {int, float} and isfinite(point['value'])]
-        cycle = compute_cycles(observations, template, as_of, band_cycles=band_cycles, cycles=cycles)
+        observations = prepare_observations((point['date'], point['value']) for point in curve.get('points', [])
+                        if type(point['value']) in {int, float} and isfinite(point['value']))
+        cycle = compute_cycles(observations, template, as_of, band_cycles=band_cycles, cycles=cycles,
+                               details=details)
         computed.append((curve, observations, cycle))
     starts = [part['start'] for _, _, cycle in computed for part in cycle['segments'] if part['current']]
     current_start = max(starts) if starts else None
@@ -351,7 +406,7 @@ def compute_multi_cycles(curves, template, as_of, *, band_cycles=5, cycles=None)
         own_start = next((part['start'] for part in cycle['segments'] if part['current']), None)
         if current_start is not None and own_start != current_start:
             cycle = compute_cycles(observations, template, as_of, band_cycles=band_cycles, cycles=cycles,
-                                   current_start=current_start)
+                                   current_start=current_start, details=details)
         cycle['current_start'] = current_start
         cycle['previous_start'] = previous_start
         cycle['band'] = []

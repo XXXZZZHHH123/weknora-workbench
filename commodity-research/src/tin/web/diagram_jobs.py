@@ -1,6 +1,7 @@
 """Durable private diagram previews sharing the research analysis admission limits."""
 import asyncio
 from copy import deepcopy
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import json
 import logging
@@ -28,6 +29,7 @@ GENERATION_SECONDS = 600
 MAX_PRIVATE_BYTES = 512 * 1024
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 registry = shared.registry
+_application = ContextVar('diagram_job_application', default=None)
 
 
 def trusted_native_messages():
@@ -294,14 +296,14 @@ async def job_status(scope, job_id):
     with artifact_session(scope) as session:
         stored = session.get(SourceMapping, job_key(scope, job_id))
         row = owned_record(session, scope, job_id) if stored is not None or meta['state'] == 'succeeded' else None
-        superseded = row is not None and row.config.get('state') == 'superseded'
+        state = row.config.get('state') if row is not None else None
         completed = row is not None and row.version == 2 and isinstance(row.config.get('result'), dict)
-        if meta['state'] == 'succeeded' and not completed and not superseded:
+        if meta['state'] == 'succeeded' and not completed and state not in {'superseded', 'applied'}:
             raise HTTPException(409, '产业图预览未完整保存，请重新生成')
         if completed and (row.config.get('fence') != meta['fence'] or row.config.get('worker_id') != meta['worker_id']):
             raise HTTPException(409, '产业图任务状态不一致，请重新生成')
-    if superseded:
-        meta = await run_in_threadpool(registry.reconcile, scope.identity, job_id, scope.workbench_id, 'superseded')
+    if state in {'superseded', 'applied'}:
+        meta = await run_in_threadpool(registry.reconcile, scope.identity, job_id, scope.workbench_id, state)
     elif completed and meta['state'] != 'succeeded':
         meta = await run_in_threadpool(registry.reconcile, scope.identity, job_id, scope.workbench_id, 'succeeded')
     return metadata(meta)
@@ -359,6 +361,82 @@ async def latest_job(scope):
     return {'job': metadata(meta) if meta is not None else None}
 
 
+def _discard_snapshot_key(scope, job_id):
+    with artifact_session(scope) as session:
+        config = owned_record(session, scope, job_id).config
+        if config.get('state') == 'applied':
+            raise HTTPException(409, '此产业图结果已应用，不能舍弃')
+        return (config.get('result') or {}).get('analysis_snapshot')
+
+
+def _forget_discarded(scope, key, *, job_id=None):
+    from tin.web.diagram_analysis_cache import forget_snapshot
+    forget_snapshot(scope, key)
+    shared.cleanup_discarded(KIND, registry, PURPOSE, job_id=job_id)
+
+
+async def discard_job(scope, job_id):
+    return await shared.discard_private_job(scope, job_id, verify=fresh_scope, index=registry,
+        purpose=PURPOSE, snapshot_key=_discard_snapshot_key, forget=_forget_discarded,
+        missing='产业图任务不存在或无权访问')
+
+
+def mark_application(session, template_id):
+    """Consume the private result in the same transaction that saves the layout."""
+    application = _application.get()
+    if application is None:
+        return
+    scope, job_id = application
+    row = owned_record(session, scope, job_id)
+    if row.config.get('state') == 'applied':
+        raise HTTPException(409, '此产业图结果已应用，不能再次应用')
+    if not isinstance(row.config.get('result'), dict) or row.config.get('state') == 'superseded':
+        raise HTTPException(410, '产业图生成结果已失效，请重新生成')
+    shared._update_record(session, row, {**row.config, 'state': 'applied',
+        'applied_at': iso(), 'applied_template_id': template_id})
+
+
+def _apply_result(scope, job_id, body):
+    # Apply and discard acquire the registry lock before the WB lock. The WB
+    # marker commits with the layout, allowing status reads to repair the index
+    # if the process exits after that commit.
+    with registry.transaction() as connection:
+        registry.expire(connection)
+        meta = registry.owned(registry.fetch(connection, job_id), scope.identity, scope.workbench_id)
+        if meta.get('purpose', 'judgments') != PURPOSE:
+            raise HTTPException(404, '产业图任务不存在或无权访问')
+        if meta['state'] != 'succeeded':
+            raise HTTPException(410 if meta['state'] in {'superseded', 'expired'} else 409,
+                '产业图结果已应用或已失效，请重新打开任务')
+        marker = _application.set((scope, job_id))
+        try:
+            # Reuse the existing Markdown parsing, fact/version validation and
+            # layout saving behavior; the manual Markdown endpoint stays intact.
+            from tin.web.app import diagram_from_markdown
+            saved = diagram_from_markdown(body)
+        finally:
+            _application.reset(marker)
+        meta.update(state='applied', phase='applied', updated_at=iso(), finished_at=iso())
+        registry.write(connection, meta)
+        registry.compact(connection)
+    return saved
+
+
+async def apply_job(scope, job_id, body):
+    verified = await fresh_scope(scope)
+    identity_marker = current_identity.set(verified.identity)
+    scope_marker = current_workbench.set(verified)
+    try:
+        preview = await job_result(verified, job_id)
+        # The original source version is server-owned; editable Markdown still
+        # passes the same catalog validation as the manual import flow.
+        return await run_in_threadpool(_apply_result, verified, job_id,
+            {**body, 'fact_version': preview['version']})
+    finally:
+        current_workbench.reset(scope_marker)
+        current_identity.reset(identity_marker)
+
+
 @router.post('', status_code=202)
 async def create(request: Request):
     return await start_job(generation.scope_for_generation(), await read_body(request), request.headers.get('idempotency-key'))
@@ -377,3 +455,20 @@ async def status(job_id: str):
 @router.get('/{job_id}/result')
 async def result(job_id: str):
     return await job_result(generation.scope_for_generation(), job_id)
+
+
+@router.post('/{job_id}/discard')
+async def discard(job_id: str):
+    return await discard_job(generation.scope_for_generation(), job_id)
+
+
+@router.post('/{job_id}/apply')
+async def apply(job_id: str, request: Request):
+    scope = generation.scope_for_generation()
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeError):
+        raise HTTPException(422, '产业图应用参数格式无效') from None
+    if not isinstance(body, dict):
+        raise HTTPException(422, '产业图应用参数格式无效')
+    return await apply_job(scope, job_id, body)

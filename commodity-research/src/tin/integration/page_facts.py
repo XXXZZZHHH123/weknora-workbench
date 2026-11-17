@@ -13,9 +13,25 @@ from fastapi import HTTPException
 from tin.config import SHANGHAI, settings
 
 _page = ContextVar('research_page_read', default=None)
+_catalog_read = ContextVar('research_catalog_read', default=None)
 MODULES = {'home','market','indicators','judgments','strategies','diagram','reports'}
 SERIES = re.compile(r'kb-[0-9a-f]{48}\Z')
 LEGACY_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z')
+
+
+@contextmanager
+def catalog_read_scope():
+    """Reuse verified metadata only within this synchronous request.
+
+    Scope object identity deliberately includes the bearer as well as the actor;
+    WorkbenchScope equality alone excludes authorization. No observation or
+    computed result survives the request, and bounded reads still go upstream.
+    """
+    marker = _catalog_read.set({})
+    try:
+        yield
+    finally:
+        _catalog_read.reset(marker)
 
 
 @contextmanager
@@ -77,6 +93,9 @@ def _request(scope, body):
                 or type(result.get('sources_revision')) is not int or result['sources_revision'] != scope.sources_revision
                 or not isinstance(result.get('version'), str) or not re.fullmatch('[0-9a-f]{64}',result['version'])):
             raise ValueError('Invalid current source response')
+        from tin.integration.field_metadata import validate_field_metadata
+        validate_field_metadata(result.get('series', []))
+        validate_field_metadata(result.get('indicators', []))
         return result
     except HTTPException:
         raise
@@ -147,6 +166,39 @@ def _raw_catalog_page(scope, offset=0, limit=200, search=None, series_ids=None, 
         raise HTTPException(400,'目录检索参数无效')
     if scope.scope_version != 2:
         return _legacy_catalog_page(scope,offset,limit,search,series_ids,version,source_kind)
+    cache = _catalog_read.get()
+    cache_key = (id(scope), offset, limit, search, tuple(series_ids) if series_ids is not None else None, source_kind)
+    if cache is not None and cache_key in cache:
+        _, result = cache[cache_key]
+        if version is not None and result['version'] != version:
+            raise HTTPException(409, '目录快照在读取期间变化，请重新读取')
+        return result
+    if (cache is not None and offset == 0 and search is None and source_kind is None
+            and isinstance(series_ids, (list, tuple))
+            and all(isinstance(sid, str) and SERIES.fullmatch(sid) for sid in series_ids)
+            and len(set(series_ids)) == len(series_ids)):
+        requested = set(series_ids)
+        for key, (cached_scope, parent) in cache.items():
+            # A complete explicit directory already proves the same scope's
+            # requested subset, including IDs absent from that directory. Keep
+            # its source stamp so a later bounded read still rejects changes.
+            # Scope identity includes authorization, unlike dataclass equality.
+            if (cached_scope is not scope or key[1] != 0 or key[3] is not None or key[5] is not None
+                    or key[4] is None or not requested.issubset(key[4])
+                    or parent.get('next_offset') is not None or parent.get('truncated')
+                    or parent['total'] != len(parent['series'])):
+                continue
+            known = [field['series_id'] for field in parent['series']]
+            if len(known) != len(set(known)) or not set(known).issubset(key[4]):
+                continue
+            fields = [field for field in parent['series'] if field['series_id'] in requested]
+            if len(fields) > limit:
+                continue
+            if version is not None and parent['version'] != version:
+                raise HTTPException(409, '目录快照在读取期间变化，请重新读取')
+            return {**parent, 'series': fields, 'total': len(fields), 'offset': 0,
+                    'next_offset': None, 'truncated': False,
+                    'unavailable_series_ids': sorted(requested - set(known))}
     body = {'source_bindings':[source['id'] for source in scope.sources if not source['delegated']],
             'catalog_only':True,'offset':offset,'limit':limit}
     if search is not None: body['search'] = search
@@ -165,6 +217,16 @@ def _raw_catalog_page(scope, offset=0, limit=200, search=None, series_ids=None, 
                 or field.get('knowledge_base_id') != source['knowledge_base_id']
                 or field.get('knowledge_base_tenant_id') != source['tenant_id']):
             raise HTTPException(503, '目录项超出当前直接来源授权')
+        from tin.integration.field_metadata import FieldMetadata
+        try:
+            if field.get('field_metadata') is not None:
+                FieldMetadata.model_validate(field['field_metadata'])
+        except ValueError:
+            raise HTTPException(503, '目录字段元数据格式无效') from None
+    if cache is not None and len(cache) < 128:
+        # Retain the scope too, so its object identity cannot be recycled while
+        # a page remains memoized in this request.
+        cache[cache_key] = (scope, result)
     return result
 
 
@@ -227,6 +289,11 @@ def _legacy_catalog_page(scope, offset, limit, search, series_ids, requested, so
         finally: current_workbench.reset(marker)
         if page.get('catalog_only') is not True or not isinstance(page.get('indicators'),list):
             raise HTTPException(503,'知识库目录格式无效')
+        from tin.integration.field_metadata import validate_field_metadata
+        try:
+            validate_field_metadata(page['indicators'])
+        except ValueError:
+            raise HTTPException(503, '目录字段元数据格式无效') from None
         fields.extend({**field,'knowledge_base_id':source.knowledge_base_id,
             'knowledge_base_tenant_id':source.knowledge_base_tenant_id,'source_kind':next((item.get('kind') for item in scope.additional_knowledge_bases if item['knowledge_base_id']==source.knowledge_base_id),'primary'),
             'source_version':page['version']} for field in page['indicators'])
@@ -303,6 +370,9 @@ def _saved_plan(scope, request):
             if judgment:
                 payload = to_payload(judgment)
                 windows.update(_judgment_windows(payload))
+                if module == 'reports':
+                    from tin.web.strategy_monitor import CHART_POINTS
+                    windows = {identifier: max(CHART_POINTS, points) for identifier, points in windows.items()}
                 if module == 'judgments' and (scope.scope_version == 2 or getattr(scope, 'restricted', False)):
                     windows = {identifier: max(24, points) for identifier, points in windows.items()}
                     from tin.schemas.judgment import MovingAverageTarget
@@ -398,6 +468,12 @@ def bounded_facts(scope, identifiers, module, *, day=None, points=2, same_day=No
                 or type(spec.get('knowledge_base_tenant_id')) is not int or spec['knowledge_base_tenant_id'] != source['tenant_id']
                 or spec.get('source_id') != source['source_id'] or spec.get('source_type') != source['source_type']):
             raise HTTPException(503,'页面字段来源与授权绑定不一致')
+        if direct_only:
+            # Catalog and bounded-response versions use different envelopes;
+            # their per-binding source versions are the common snapshot stamp.
+            field = next((field for field in available['series'] if field['series_id'] == spec['series_id']), None)
+            if field is not None and field.get('source_version') is not None and field['source_version'] != source_versions[spec['source_binding_id']]:
+                raise HTTPException(409, '目录与观测的来源快照已变化，请刷新后重试')
     seen,counts = set(),{}
     if include_invalid and result.get('include_invalid') is not True:
         raise HTTPException(503, '来源服务未提供完整的均线观测窗口')
@@ -437,8 +513,31 @@ def _merge_calendars(calendars):
     return result
 
 
-def projected_page_session(engine, scope, **kwargs):
-    from tin.integration.kb_facts import KnowledgeFactSession,_projection_engine,_clear_projection,install_projection
+def _validated_calendar(calendar, requested_day):
+    if calendar is None:
+        return None
+    expected_day = requested_day or datetime.now(SHANGHAI).date().isoformat()
+    if not isinstance(calendar, dict) or calendar.get('as_of') != expected_day:
+        raise HTTPException(503, '页面日期导航边界不一致')
+    today = datetime.now(SHANGHAI).date().isoformat()
+    for key in ('min_date', 'max_date', 'previous_date', 'next_date', 'latest_previous_date'):
+        value = calendar.get(key)
+        if value is None:
+            continue
+        try:
+            if not isinstance(value, str) or date.fromisoformat(value).isoformat() != value or value > today:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise HTTPException(503, '页面日期导航无效') from None
+    return calendar
+
+
+def verified_page_facts(scope):
+    """Read the saved, bounded plan with fresh source and calendar validation.
+
+    Consumers may use these verified rows directly or install the same SQLite
+    projection. This does not cache facts or relax the page's source grant.
+    """
     request = _page.get() or {'module':'home','series_ids':None,'day':None,'template_id':None}
     plans, origins = _saved_plan(scope,request)
     rows, fields, versions, totals, unavailable, calendars, source_versions = [], {}, [], {}, set(), [], {}
@@ -463,34 +562,39 @@ def projected_page_session(engine, scope, **kwargs):
         versions.append(result['version']);rows.extend(result['rows'])
         fields.update((field['series_id'],field) for field in result['indicators'])
         totals.update(result.get('series_totals',{}));unavailable.update(result.get('unavailable_series_ids',[]))
-        calendar=result.get('calendar')
+        calendar = _validated_calendar(result.get('calendar'), request['day'])
         if calendar is not None:
-            expected_day=request['day'] or datetime.now(SHANGHAI).date().isoformat()
-            if not isinstance(calendar,dict) or calendar.get('as_of')!=expected_day:
-                raise HTTPException(503,'页面日期导航边界不一致')
-            for key in ('min_date','max_date','previous_date','next_date','latest_previous_date'):
-                value=calendar.get(key)
-                if value is None:continue
-                try:
-                    if not isinstance(value,str) or date.fromisoformat(value).isoformat()!=value or value>datetime.now(SHANGHAI).date().isoformat():raise ValueError
-                except (TypeError,ValueError):raise HTTPException(503,'页面日期导航无效') from None
             calendars.append(calendar)
     version = hashlib.sha256(json.dumps([scope.sources_revision,versions],separators=(',',':')).encode()).hexdigest()
     decoded = [{**row,**{key:fields[row['series_id']].get(key) for key in ('source_knowledge_id','dataset_id','source_series_id')}} for row in rows]
     page = {'version':version,'indicators':list(fields.values()),'datasets':[],'rows':decoded,'total':len(decoded),
             'offset':0,'next_offset':None,'truncated':False,
             **({'include_invalid':True} if any(plan.get('include_invalid') for plan in plans) else {})}
+    return page, {'knowledge_facts_series_totals': totals,
+        'knowledge_facts_calendar': _merge_calendars(calendars),
+        'knowledge_facts_unavailable_series_ids': sorted(unavailable)}
+
+
+def projected_page_session(engine, scope, **kwargs):
+    from tin.integration.kb_facts import KnowledgeFactSession,_projection_engine,_clear_projection,install_projection
+    page, page_info = verified_page_facts(scope)
     connection = _projection_engine(engine).connect()
     try:
         _clear_projection(connection)
         info = install_projection(connection,scope,pages=[page])
         session = KnowledgeFactSession(bind=connection,expire_on_commit=False,**kwargs)
         source_summaries = [{key:source[key] for key in ('id','source_type','source_id','knowledge_base_id','tenant_id','kind') if key in source} for source in scope.sources]
+        from tin.web.number_format import source_decimals
+        precision = {}
+        for row in page['rows']:
+            digits = source_decimals(row)
+            if digits is not None:
+                precision.setdefault(row['series_id'], {})[row['date']] = digits
+        session.info.update(knowledge_facts_display_precision=precision)
         session.info.update(info,_knowledge_connection=connection,knowledge_base_sources=source_summaries,
             knowledge_base_id=scope.knowledge_base_id,knowledge_base_tenant_id=scope.knowledge_base_tenant_id,
             sources_revision=scope.sources_revision,knowledge_facts_bounded=True,
-            knowledge_facts_series_totals=totals,knowledge_facts_calendar=_merge_calendars(calendars),
-            knowledge_facts_unavailable_series_ids=sorted(unavailable))
+            **page_info)
         return session
     except BaseException:
         connection.invalidate();connection.close();raise

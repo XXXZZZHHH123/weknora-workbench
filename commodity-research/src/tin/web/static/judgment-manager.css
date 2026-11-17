@@ -139,3 +139,10 @@
 .logic-caliber-label textarea{min-height:64px;max-height:130px;margin:0}
 #logic-history-state{margin-right:auto}#logic-version{max-width:min(100%,520px)}
 .logic-dialog .logic-quiet-danger{color:var(--text-muted)}.logic-dialog .logic-quiet-danger:hover:not(:disabled){color:var(--alert);border-color:var(--alert)}
+.logic-dimension-editor{margin:12px 0;padding:12px;border:1px solid var(--line);border-radius:7px}
+.logic-dimension-row{display:flex;align-items:start;flex-wrap:wrap;gap:8px;margin:8px 0;padding:8px 0;border-top:1px solid var(--line)}
+.logic-dimension-title{flex:1;min-width:160px;overflow-wrap:anywhere;line-height:1.7}
+.logic-dimension-suggestion{display:flex;align-items:center;gap:8px;width:100%;color:var(--text-muted);line-height:1.6}
+.logic-dimension-suggestion span{flex:1;overflow-wrap:anywhere}.logic-dimension-suggestion[data-adopted=true]{color:var(--primary)}
+.logic-item-dimension{display:flex;align-items:center;gap:8px;margin:8px 0;color:var(--text-muted);font-size:11px}
+.logic-dimension-select{min-width:120px;max-width:100%}

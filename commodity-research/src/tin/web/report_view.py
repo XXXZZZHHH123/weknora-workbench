@@ -1,6 +1,6 @@
 """Readable views and Markdown from actual report records, without inference."""
 from copy import deepcopy
-from math import isfinite
+from tin.web.number_format import format_number, source_decimals
 from tin.web.research_display import human_text, indicator_name, condition_text
 
 
@@ -8,15 +8,28 @@ def _plain(value):
     return str(value) if isinstance(value, (str, int, float)) else ''
 
 
-def _number(value):
-    if value is None:
-        return '—'
-    if type(value) in (int, float):
-        return (format(value, '.10g') if value else '0') if isfinite(value) else '—'
-    return _plain(value)
+def _number(value, metadata=None):
+    return format_number(value, decimals=source_decimals(metadata))
 
 
-def _judgment_view(payload, names, signals, preview=None):
+def _stale_note(freshness):
+    return (f"最新数据距今 {freshness['age_days']} 天，可能已停更"
+            if isinstance(freshness, dict) and freshness.get('stale') else '')
+
+
+def _condition(expression, metadata=None):
+    from tin.schemas.judgment import EXPRESSION
+    match = EXPRESSION.fullmatch(str(expression or '').strip())
+    if match:
+        return condition_text(expression).removesuffix(match[3]) + _number(match[3], metadata)
+    return condition_text(expression)
+
+
+def _judgment_view(payload, names, signals, preview=None, metrics=None, dimensions=None):
+    from tin.web.research_dimensions import default_dimensions
+    from tin.web.judgment_dimension_view import dimension_name
+    dimensions = default_dimensions() if dimensions is None else dimensions
+    metrics = metrics or {}
     if not isinstance(payload, dict):
         return None
     row = deepcopy(payload)
@@ -32,6 +45,8 @@ def _judgment_view(payload, names, signals, preview=None):
                 if isinstance(item, dict):
                     identifier = item.get('series_id')
                     evidence.append({'text': human_text(item.get('desc'), names), 'series_id': identifier,
+                                     **({'dimension': item['dimension']} if item.get('dimension') else {}),
+                                     'dimension_label': dimension_name(item.get('dimension'), dimensions),
                                      'name': indicator_name(identifier, names) if identifier else None})
             row['cases'].append({'label': label, 'claim': human_text(side.get('claim'), names), 'evidence': evidence})
         row['contradiction'] = human_text(contradiction.get('text'), names)
@@ -46,7 +61,10 @@ def _judgment_view(payload, names, signals, preview=None):
             if not isinstance(item, dict):
                 continue
             rule = dict(item)
+            rule['dimension_label'] = dimension_name(item.get('dimension'), dimensions)
             value = item.get('value')
+            metric = metrics.get(item.get('series_id')) or {}
+            rule['stale_note'] = _stale_note(metric.get('freshness'))
             rule['name'] = human_text(item.get('name') or item.get('desc'), names) or '已保存观察条件'
             rule['series_name'] = indicator_name(item.get('series_id'), names)
             if kind == 'thresholds':
@@ -55,11 +73,11 @@ def _judgment_view(payload, names, signals, preview=None):
                         'crosses_below': '下穿', 'crosses_above': '上穿'}.get(item.get('operator'), '')
                     rule['condition'] = comparison + ' MA' + str(value['window'])
                 else:
-                    rule['condition'] = (' – '.join(_plain(part) for part in value)
+                    rule['condition'] = (' – '.join(_number(part, metric) for part in value)
                         if item.get('operator') == 'between' and isinstance(value, list)
-                        else _plain(item.get('operator')) + ' ' + _plain(value))
+                        else _plain(item.get('operator')) + ' ' + _number(value, metric))
             else:
-                rule['condition'] = condition_text(item.get('expression')) + ' · 连续 ' + str(item.get('consecutive_periods') or 1) + ' 期'
+                rule['condition'] = _condition(item.get('expression'), metric) + ' · 连续 ' + str(item.get('consecutive_periods') or 1) + ' 期'
             saved = states.get(item.get('id')) or {}
             computed = trial.get(item.get('id'))
             signal = computed if computed is not None else saved
@@ -69,14 +87,15 @@ def _judgment_view(payload, names, signals, preview=None):
             rule['evidence_dates'] = sorted({entry['as_of'] for entry in signal.get('evidence') or []
                 if isinstance(entry, dict) and isinstance(entry.get('as_of'), str)})
             rule['current_value'] = signal.get('current_value')
-            rule['current_value_text'] = _number(rule['current_value'])
+            rule['current_value_text'] = _number(rule['current_value'], metric)
             rule['gap_note'] = human_text(signal.get('gap_note'), names)
             rules.append(rule)
         row[kind] = rules
     return row
 
 
-def _brief_view(item, names):
+def _brief_view(item, names, metrics=None):
+    metrics = metrics or {}
     row = deepcopy(item)
     claims = []
     for item in row.get('claims') or []:
@@ -87,9 +106,12 @@ def _brief_view(item, names):
             if not isinstance(evidence, dict):
                 continue
             identifier = evidence.get('series_id')
-            claim['evidence'].append({**evidence, 'name': names.get(identifier) or '指标名称待核对' if identifier else None})
+            claim['evidence'].append({**evidence, 'value_text': _number(evidence.get('value'), evidence if source_decimals(evidence) is not None else metrics.get(identifier)), 'name': names.get(identifier) or '指标名称待核对' if identifier else None})
         claims.append(claim)
     row['claims'] = claims
+    precision = row if source_decimals(row) is not None else metrics.get(row.get('range_series_id'))
+    row['range_low_text'] = _number(row.get('range_low'), precision)
+    row['range_high_text'] = _number(row.get('range_high'), precision)
     row['unverified'] = [{'text': _plain(item.get('claim') or item.get('text')),
         'reason': '；'.join(map(str, item.get('reasons') or item.get('problems') or []))}
         for item in row.get('unverified') or [] if isinstance(item, dict)]
@@ -116,10 +138,20 @@ def _card_monitor_view(row, names):
     for item in (monitor or {}).get('conditions') or []:
         unit = _unit(item.get('unit'))
         value = item.get('value')
+        chart = item.get('chart') or {}
+        definition = item.get('condition_definition') or {}
+        target = definition.get('value')
+        condition = human_text(item.get('condition'), names)
+        if definition.get('expression'):
+            condition = _condition(definition['expression'], chart)
+        elif target is not None and not isinstance(target, dict):
+            condition = (' – '.join(_number(part, chart) for part in target)
+                if definition.get('operator') == 'between' and isinstance(target, list)
+                else _plain(definition.get('operator')) + ' ' + _number(target, chart))
         conditions.append({'title': human_text(item.get('title'), names), 'state': item.get('state') or '无法核对',
-            'field_label': item.get('field_label') or '', 'condition': human_text(item.get('condition'), names),
-            'value_text': (_number(value) + (' ' + unit if unit else '')) if value is not None else '',
-            'as_of': item.get('as_of') or '', 'note': human_text(item.get('note'), names),
+            'field_label': item.get('field_label') or '', 'condition': condition,
+            'value_text': (_number(value, item if source_decimals(item) is not None else chart) + (' ' + unit if unit else '')) if value is not None else '',
+            'as_of': item.get('as_of') or '', 'stale_note': _stale_note((item.get('chart') or {}).get('freshness')), 'note': human_text(item.get('note'), names),
             'outdated': item.get('outdated') is True, 'chart': item.get('chart')})
     for item in (monitor or {}).get('indicators') or []:
         chart = item.get('chart') if isinstance(item.get('chart'), dict) else {}
@@ -127,10 +159,10 @@ def _card_monitor_view(row, names):
         change = chart.get('change')
         fresh = chart.get('freshness') if isinstance(chart.get('freshness'), dict) else {}
         indicators.append({'title': human_text(item.get('title'), names), 'field_label': item.get('field_label') or '',
-            'value_text': (_number(chart.get('latest')) + (' ' + unit if unit else '')) if chart.get('latest') is not None else '暂无可用观测',
-            'change_text': (('+' if type(change) in (int, float) and change > 0 else '') + _number(change)) if change is not None else '',
+            'value_text': (_number(chart.get('latest'), chart) + (' ' + unit if unit else '')) if chart.get('latest') is not None else '暂无可用观测',
+            'change_text': (('+' if type(change) in (int, float) and change > 0 else '') + _number(change, chart)) if change is not None else '',
             'as_of': str(chart.get('date') or '')[:10], 'chart': chart or None,
-            'stale_note': f"最新数据距今 {fresh['age_days']} 天，可能已停更" if fresh.get('stale') else '',
+            'stale_note': _stale_note(fresh),
             'note': human_text(item.get('note'), names)})
     return {'monitored': monitor is not None, 'conditions': conditions, 'indicators': indicators,
             'triggered': sum(item['state'] == '触发' for item in conditions)}
@@ -155,7 +187,30 @@ def _strategy_overview(view):
     return {'text': ' · '.join(parts), 'triggered': [title + '：' + item['title'] for title, item in triggered]}
 
 
-def present_snapshot(payload, names=None):
+def _report_metrics(payload, observations):
+    from datetime import date
+    from tin.web.strategy_monitor import _staleness
+    metrics = deepcopy(payload.get('judgment_metrics') or {})
+    stamp = (payload.get('period') or {}).get('end') or payload.get('as_of')
+    try:
+        cutoff = date.fromisoformat(str(stamp)[:10])
+    except ValueError:
+        return metrics
+    for row in observations:
+        identifier = row['series_id']
+        if identifier in metrics:
+            if source_decimals(metrics[identifier]) is None:
+                digits = source_decimals(row)
+                if digits is not None:
+                    metrics[identifier]['display_decimals'] = digits
+            continue
+        metric = {**row, 'date': row.get('as_of'), 'points': row.get('points') or []}
+        metric['freshness'] = _staleness(metric, cutoff) if metric.get('date') else None
+        metrics[identifier] = metric
+    return metrics
+
+
+def present_snapshot(payload, names=None, *, dimensions=None):
     from tin.web.report_watch import present_watch, watch_items
     fallback = {item['series_id']: item['name'] for item in payload.get('observations') or []
                 if isinstance(item, dict) and isinstance(item.get('series_id'), str)
@@ -167,42 +222,65 @@ def present_snapshot(payload, names=None):
     for item in payload.get('observations', []):
         row = dict(item)
         row['name'] = indicator_name(item['series_id'], names)
+        row['value_text'] = _number(row.get('value'), row)
         observations.append(row)
+    metrics = _report_metrics(payload, observations)
     changes = []
     for item in payload.get('changes') or []:
         first, last = item.get('first') or {}, item.get('last') or {}
+        precision = next((meta for meta in (item, last, first, metrics.get(item.get('series_id')))
+            if source_decimals(meta) is not None), None)
         changes.append({**item, 'name': human_text(item.get('name'), names) or indicator_name(item['series_id'], names),
-            'first_text': _number(first.get('value')), 'last_text': _number(last.get('value')),
-            'change_text': _number(item.get('change')), 'change_pct_text': _number(item.get('change_pct'))})
-    sections = {key: payload.get(key) or [] for key in ('derived', 'signals', 'gaps')}
-    briefs = [_brief_view(item, names) for item in payload.get('briefs') or []]
-    judgment = _judgment_view(payload.get('judgment'), names, sections['signals'], payload.get('rule_preview'))
+            'first_text': _number(first.get('value'), first if source_decimals(first) is not None else precision), 'last_text': _number(last.get('value'), last if source_decimals(last) is not None else precision),
+            'change_text': _number(item.get('change'), precision), 'change_pct_text': _number(item.get('change_pct'))})
+    sections = {key: deepcopy(payload.get(key) or []) for key in ('derived', 'signals', 'gaps')}
+    for row in sections['derived']:
+        row['value_text'] = _number(row.get('value'), row)
+    briefs = [_brief_view(item, names, metrics) for item in payload.get('briefs') or []]
+    judgment = _judgment_view(payload.get('judgment'), names, sections['signals'], payload.get('rule_preview'), metrics,
+                              dimensions if dimensions is not None else payload.get('research_dimensions'))
     replay = None
     if not briefs and judgment and (_plain(judgment.get('tone')) or _plain(judgment.get('tone_note'))):
         replay = {'label': '已保存研判回放', 'tone': _plain(judgment.get('tone')),
                   'tone_note': _plain(judgment.get('tone_note')),
                   'version': judgment.get('version'), 'status': judgment.get('status')}
+    strategies = _content_rows(payload.get('strategies'), names)
+    for strategy in strategies:
+        entry = strategy.get('entry')
+        if not isinstance(entry, dict):
+            continue
+        identifiers = {leg.get('quote_series_id') for leg in strategy.get('legs') or []
+            if isinstance(leg, dict) and leg.get('quote_series_id')}
+        # A spread has no single source precision; its saved endpoints remain
+        # displayed by magnitude unless the entry itself provides precision.
+        precision = entry if source_decimals(entry) is not None else (
+            metrics.get(next(iter(identifiers))) if len(identifiers) == 1 else None)
+        entry['low_text'] = _number(entry.get('low'), precision)
+        entry['high_text'] = _number(entry.get('high'), precision)
     result = {**sections, 'observations': observations,
             'judgment': judgment, 'judgment_replay': replay,
             'rule_preview': payload.get('rule_preview'),
             'period': payload.get('period'), 'changes': changes, 'briefs': briefs,
-            'strategies': _content_rows(payload.get('strategies'), names), 'strategy_events': _content_rows(payload.get('strategy_events'), names),
+            'strategies': strategies, 'strategy_events': _content_rows(payload.get('strategy_events'), names),
             'research_cards': [{**row, 'monitor_view': _card_monitor_view(row, names)}
                                for row in _content_rows(payload.get('research_cards'), names)],
             'research_events': payload.get('research_events') or [],
             'coverage': payload.get('coverage') or {},
             'next_review': present_watch(watch_items(payload.get('judgment'),
-                payload.get('strategies') or [], payload.get('research_cards') or []), names, units),
+                payload.get('strategies') or [], payload.get('research_cards') or []), names, units, metrics),
             'counts': {'observations': len(observations),
                        **{key: len(rows) for key, rows in sections.items()}}}
     from tin.web.report_watch import without_aggregates
     result['pending_conditions'] = without_aggregates([row for row in result['next_review'] if row.get('kind') == 'observation'])
-    result['latest_values'] = {row['series_id']: {'value_text': _number(row.get('value')) + (
-        ' ' + _unit(row.get('unit')) if _unit(row.get('unit')) else ''), 'as_of': str(row.get('as_of') or '')[:10]}
+    result['latest_values'] = {row['series_id']: {'value_text': row['value_text'] + (
+        ' ' + _unit(row.get('unit')) if _unit(row.get('unit')) else ''), 'as_of': str(row.get('as_of') or '')[:10],
+        'stale_note': _stale_note(metrics.get(row['series_id'], {}).get('freshness'))}
         for row in observations if row.get('value') is not None}
     result['strategy_overview'] = _strategy_overview(result)
     result['conclusion'] = _conclusion(result)
     result.update(_workflow_view(result, payload, names))
+    from tin.web.report_one_page import present_one_page
+    result.update(present_one_page(payload, result, dimensions))
     return result
 
 
@@ -249,10 +327,21 @@ def _workflow_view(view, payload, names):
             'date': period.get('end') or payload.get('as_of'), 'title': '研究周报' if period.get('kind') == 'weekly' else '研究日报',
             'sections': {key: {'visible': row['visible'], 'text': row['text'][:4000]} for key, row in panels.items()},
             'figures': figures, 'references': []}
-    return {'panels': panels, 'is_manual_report': saved is not None, 'manual_report': manual if saved else None,
+    for key in ('dimension_notes', 'figure_conclusions'):
+        draft[key] = deepcopy((saved or {}).get(key) or {})
+    from tin.web.report_charts import collect_figures
+    figures_manifest = deepcopy(payload.get('report_figures')) if isinstance(payload.get('report_figures'), list) else collect_figures(payload)
+    automatic = [row for row in figures_manifest if row['kind'] == 'chart']
+    all_payload = deepcopy(payload)
+    for section in ((all_payload.get('manual_report') or {}).get('draft') or {}).get('sections', {}).values():
+        section['visible'] = True
+    all_automatic = [row for row in collect_figures(all_payload) if row['kind'] == 'chart']
+    duplicated = {row['single_series_id'] for row in automatic if row.get('single_series_id')}
+    all_options = [{'series_id': row['series_id'], 'name': row['name'], 'unit': row.get('unit') or ''} for row in view['observations']]
+    return {'all_figure_options': all_options, 'report_figures': figures_manifest, 'automatic_figures': automatic, 'all_automatic_figures': all_automatic, 'panels': panels, 'is_manual_report': saved is not None, 'manual_report': manual if saved else None,
         'editable_draft': draft, 'selected_figures': figures,
         'figure_options': [{'series_id': row['series_id'], 'name': row['name'], 'unit': row.get('unit') or ''}
-            for row in view['observations']],
+            for row in view['observations'] if row['series_id'] not in duplicated],
         'report_title': saved.get('title') if saved else None}
 
 
@@ -279,7 +368,7 @@ def _changes_table(view):
     else:
         for row in view['observations']:
             lines.append('| ' + ' | '.join(_md(value) if value is not None else '—' for value in
-                [row['name'], None, row.get('value'), None, row.get('unit'), row.get('as_of')]) + ' |')
+                [row['name'], None, row['value_text'], None, row.get('unit'), row.get('as_of')]) + ' |')
     return lines + ([''] + notes if notes else [])
 
 
@@ -305,7 +394,7 @@ def _judgment_lines(view):
             for claim in brief['claims']:
                 lines.append('- ' + _md(claim['text']))
                 for evidence in claim['evidence']:
-                    lines.append('  - ' + _md(evidence.get('name') or '已保存证据') + '：' + _md(evidence.get('value'))
+                    lines.append('  - ' + _md(evidence.get('name') or '已保存证据') + '：' + _md(evidence.get('value_text'))
                                  + ' · ' + _md(evidence.get('as_of')))
             lines.append('')
     elif view['judgment_replay']:
@@ -328,9 +417,9 @@ def _judgment_lines(view):
         lines += ['#### ' + side['label'], _md(side['claim']) or '待补充']
         for item in side['evidence']:
             value = latest.get(item.get('series_id')) if item.get('series_id') else None
-            lines.append('- ' + _md(item['text']) + (' · ' + _md(item.get('name')) if item.get('name') else '')
+            lines.append('- [' + _md(item['dimension_label']) + '] ' + _md(item['text']) + (' · ' + _md(item.get('name')) if item.get('name') else '')
                          + (' · 最新 ' + _md(value['value_text']) + (' · ' + _md(value['as_of']) if value['as_of'] else '')
-                            if value else ''))
+                            + (' · ' + _md(value['stale_note']) if value['stale_note'] else '') if value else ''))
         lines.append('')
     for key, heading in [('thresholds', '区间与阈值'), ('falsifiers', '证伪条件')]:
         if not judgment[key]:
@@ -338,9 +427,11 @@ def _judgment_lines(view):
         lines += ['#### ' + heading]
         if view['rule_preview']:
             lines += ['> ' + _md(view['rule_preview']['label']) + '：' + _md(view['rule_preview']['notice'])]
-        lines += ['- ' + _md(item['name']) + ' · ' + _md(item['series_name']) + '：' + _md(item['condition']) + ' · ' + _md(item['state'])
+        lines += ['- [' + _md(item['dimension_label']) + '] ' + _md(item['name']) + ' · ' + _md(item['series_name']) + '：' + _md(item['condition']) + ' · ' + _md(item['state'])
                   + ('（当前规则试算）' if item['is_preview'] else '')
                   + (' · 已记录：' + _md(item['recorded_state']) if item['recorded_state'] else '')
+                  + (' · 当前值：' + _md(item['current_value_text']) if item['current_value'] is not None else '')
+                  + (' · ' + _md(item['stale_note']) if item['stale_note'] else '')
                   + (' · 依据日期：' + '、'.join(_md(value) for value in item['evidence_dates']) if item['evidence_dates'] else '')
                   for item in judgment[key]]
         lines.append('')
@@ -367,7 +458,7 @@ def _strategy_lines(view):
             lines.append('- 执行前核对：' + _md(card['watch_for']))
         for item in monitor['conditions']:
             facts = [item['value_text'] and '当前 ' + item['value_text'], item['condition'] and '条件 ' + item['condition'],
-                     item['as_of'] and '数据 ' + item['as_of'], item['note']]
+                     item['as_of'] and '数据 ' + item['as_of'], item['stale_note'], item['note']]
             lines.append('- 所引条件「' + _md(item['title']) + '」（' + _md(item['field_label']) + '）：'
                          + _md('已触发' if item['state'] == '触发' else item['state'])
                          + ('；' + _md(' · '.join(filter(None, facts))) if any(facts) else ''))
@@ -390,9 +481,9 @@ def _strategy_lines(view):
     return lines
 
 
-def readable_markdown(payload, *, title='研究报告', names=None):
-    """The same collection as the HTML page: saved 研判, then saved 策略, with notes and charts as aids."""
-    view = present_snapshot(payload, names)
+def readable_markdown(payload, *, title='研究报告', names=None, dimensions=None):
+    """One-page overview and evidence, followed by the preserved full records."""
+    view = present_snapshot(payload, names, dimensions=dimensions)
     manual = view['manual_report']
     if manual and manual.get('unavailable_references'):
         from fastapi import HTTPException
@@ -405,6 +496,8 @@ def readable_markdown(payload, *, title='研究报告', names=None):
              '> 报告期：' + str(period.get('start')) + ' — ' + str(period.get('end')),
              '> 依据当前已确认来源回放；研究逻辑和策略为当前保存版本，不代表当时已形成的判断。'
              + ('按语为个人报告 v' + str(manual['revision']) + ' 的人工内容，原始指标事实保持只读。' if manual else ''), '']
+    lines += _one_page_lines(view)
+    lines += ['<details><summary>完整记录</summary>', '']
     if panels['summary']['visible']:
         lines += ['## 导语', '']
         lines += _md_lines(panels['summary']['text']) + ([''] if panels['summary']['text'] else [])
@@ -416,17 +509,19 @@ def readable_markdown(payload, *, title='研究报告', names=None):
         lines.append('')
     if panels['research']['visible']:
         lines += ['## 研判', ''] + _note_lines(panels['research'], '研究员按语') + _judgment_lines(view)
-        if panels['dashboard']['visible']:
-            lines += ['### ' + ('本周主要变化' if weekly else '主要变化'), ''] + _note_lines(panels['dashboard'], '图表说明')
-            lines += _changes_table(view)
-            figure_names = {row['series_id']: row['name'] for row in view['observations']}
-            for figure in view['selected_figures'] if saved else []:
-                lines.append('- 选图：' + _md(figure_names.get(figure['series_id']) or '已引用指标')
-                             + (' · ' + _md(figure.get('caption')) if figure.get('caption') else ''))
-            lines.append('')
+    if panels['dashboard']['visible']:
+        lines += ['## 图表', ''] + _note_lines(panels['dashboard'], '研究员按语')
+        for figure in view['report_figures']:
+            lines += ['### ' + _md(figure['title']),
+                '- ' + _md(figure.get('caption')) if figure.get('caption') else '- 研究员另选指标图',
+                '- 单位：' + _md(figure.get('unit') or '未注明或暂不可核验'),
+                '- 数据截至日：' + _md(figure.get('as_of')), '']
+            if figure.get('notice'):
+                lines += ['> ' + _md(figure['notice']), '']
+        lines += ['### ' + ('本周主要变化' if weekly else '主要变化'), ''] + _changes_table(view) + ['']
     if panels['watch']['visible']:
         lines += ['## 策略', ''] + _note_lines(panels['watch'], '研究员按语') + _strategy_lines(view)
-    lines += ['<details><summary>数据缺口与来源</summary>', '', '## 数据缺口与来源', '']
+    lines += ['', '</details>', '', '<details><summary>数据缺口与来源</summary>', '', '## 数据缺口与来源', '']
     if manual:
         lines += ['- 个人报告记录：`' + _md(manual.get('id')) + '` · v' + str(manual.get('revision')),
                   '- 来源版本：`' + _md(saved.get('source_revision')) + '`']
@@ -439,3 +534,54 @@ def readable_markdown(payload, *, title='研究报告', names=None):
                      + _md(item.get('as_of')) + ' · ' + _md(item.get('source')))
     lines += ['', '</details>', '']
     return '\n'.join(lines)
+
+
+def _one_page_lines(view):
+    panels = view['panels']
+    lines = []
+    if panels['summary']['visible']:
+        lines += ['## 本期综述', '', '| 维度 | 本期变化 | 研究员一句话 | 影响 | 研判依据 |',
+                  '| --- | --- | --- | --- | --- |']
+        for row in view['dimension_overview']:
+            facts = '；'.join(fact.get('latest_text', fact['text']) if row.get('no_update') else fact['text']
+                            for fact in row['facts'])
+            changes = '；'.join(filter(None, (row.get('change_summary'), facts))) or '暂无可用本期指标'
+            lines.append('| ' + ' | '.join(_md(value) for value in (
+                row['label'], changes,
+                row['sentence'], row['impact_label'], f"支持 {row['support_count']} / 反对 {row['oppose_count']}")) + ' |')
+        lines.append('')
+        for row in view['dimension_overview']:
+            if row.get('warnings'):
+                lines += ['<details><summary>' + _md(row.get('warning_summary') or '数据说明') + '</summary>', '',
+                          *('- ' + _md(warning) for warning in row['warnings']), '', '</details>', '']
+            if row['review_needed']:
+                lines += ['- ' + _md(row['label']) + '：与当前研判在该维度的依据方向不一致，建议复核研判。', '']
+            for evidence in row['evidence']:
+                lines.append('- [' + _md(row['label']) + ' · ' + ('支持' if evidence['side'] == 'bull' else '反对') + '] ' + _md(evidence['text']))
+        lines.append('')
+    logic = view['logic_strategy']
+    if panels['research']['visible'] or panels['watch']['visible']:
+        lines += ['## 逻辑与策略', '']
+        if logic['present']:
+            status = logic['status'] or '未登记状态'
+            if logic['written_at']:
+                status += ' · ' + _plain(logic['written_at'])[:10]
+            lines += ['- 研判：' + _md(status)]
+        if logic['contradiction']:
+            lines += ['- 主要矛盾：' + _md(logic['contradiction'])]
+        if logic['tone']:
+            lines += ['- 基调：' + _md(logic['tone'])]
+        for condition in logic['conditions']:
+            lines += ['- [' + _md(condition['dimension_label']) + '] ' + _md(condition['name']) + '：'
+                      + _md(condition['condition']) + ' · ' + _md(condition['state'])]
+        for strategy in logic['strategies']:
+            lines += ['- ' + _md(strategy['title']) + '：' + _md(strategy['text'])]
+        lines.append('')
+    if panels['dashboard']['visible']:
+        lines += ['## 证据图', '']
+        for group in view['evidence_groups']:
+            lines += ['### ' + _md(group['label']), '']
+            for figure in group['figures']:
+                lines += ['#### ' + _md(figure['title']), '', _md(figure['conclusion']) or '尚未填写一句结论',
+                          '', '- ' + _md(figure.get('caption')), '- 数据截至日：' + _md(figure.get('as_of')), '']
+    return lines

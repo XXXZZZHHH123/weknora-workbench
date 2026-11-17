@@ -7,7 +7,8 @@ from jsonschema import Draft202012Validator
 import pytest
 
 from tin.judgments.analysis import ALLOWED_FIELDS
-from tin.judgments.prompt import OUTPUT_PROTOCOL
+from tin.judgments.prompt import OUTPUT_PROTOCOL, PROMPT_VERSION, THRESHOLD_SCHEMA
+from tin.judgments.output_schema import SERVER_FIELDS
 from tin.schemas.judgment import JudgmentIn
 
 
@@ -30,6 +31,31 @@ def test_prompt_schema_covers_the_complete_model_surface_without_server_fields()
     assert body == before  # A schema never fills a category, fact, or viewpoint.
     JudgmentIn.model_validate({**body['judgment'], 'variety': 'TEST',
                               'author': 'test', 'written_at': date(2030, 1, 1)})
+
+
+def test_dimension_format_snapshot_is_customizable_and_model_owned():
+    assert PROMPT_VERSION == 'research-logic-v21'
+    assert 'dimension' not in SERVER_FIELDS
+    expected = {'anyOf': [
+        {'type': 'string', 'pattern': '^[a-z][a-z0-9_-]{1,31}$', 'maxLength': 4000},
+        {'type': 'null'}]}
+    assert {name: SCHEMA['$defs'][name]['properties']['dimension']
+            for name in ('Evidence', 'Threshold', 'Falsifier')} == {
+                'Evidence': expected, 'Threshold': expected, 'Falsifier': expected}
+    assert THRESHOLD_SCHEMA['properties']['dimension'] == {
+        'anyOf': [{'type': 'string', 'pattern': '^[a-z][a-z0-9_-]{1,31}$'}, {'type': 'null'}]}
+
+
+@pytest.mark.parametrize('dimension,valid', [
+    ('price', True), ('desk-flow', True), ('desk_custom_7', True),
+    (None, True), ('Inventory', False), ('', False), ('a', False),
+    ('a' * 33, False), (17, False), ('库存', False),
+])
+def test_model_schema_dimension_values_use_id_syntax_without_fixed_enum(dimension, valid):
+    body = document()
+    body['judgment']['contradiction'] = {'bull': {'evidence': [
+        {'desc': 'Synthetic evidence', 'dimension': dimension}]}}
+    assert VALIDATOR.is_valid(body) is valid
 
 
 @pytest.mark.parametrize('name', [

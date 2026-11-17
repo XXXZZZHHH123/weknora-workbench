@@ -1,5 +1,7 @@
 """Bounded chart reads through the same page projection as indicator history."""
 from datetime import date, datetime
+from contextlib import contextmanager
+from contextvars import ContextVar
 import math
 from statistics import median
 
@@ -10,6 +12,20 @@ from tin.compute.engine import day_end
 from tin.config import SHANGHAI
 from tin.integration.page_facts import SERIES, catalog_page, page_read_scope
 from tin.models import Indicator, Observation
+
+_direct_chart_read = ContextVar('chart_bounded_read', default=False)
+
+
+@contextmanager
+def chart_read_scope(*, use_bounded=True):
+    from tin.integration.page_facts import catalog_read_scope
+    from tin.provenance.bridge import structured_read_scope
+    marker = _direct_chart_read.set(use_bounded)
+    try:
+        with structured_read_scope(), catalog_read_scope():
+            yield
+    finally:
+        _direct_chart_read.reset(marker)
 
 
 def cutoff(value=None):
@@ -181,11 +197,73 @@ def resolve_curves(definition, fields, data):
     return result
 
 
-def read_series(identifiers, day, *, limit=2000):
-    """Read only the active SessionLocal, including local pre-KB indicators.
+def _bounded_series(limit):
+    """Consume the same verified page window without writing it into SQLite.
 
-    Rank revisions before validating values, so invalid new revisions never
-    resurrect an older value. Multiple intraday times keep the latest real time.
+    Only the anomaly request opts in. Local/legacy reads and unusual metadata
+    that relies on SQLite's binding/coercion keep the existing session path.
+    """
+    if not _direct_chart_read.get():
+        return None
+    from tin.integration.identity import current_identity
+    from tin.integration.workbench_scope import current_workbench
+    from tin.integration.page_facts import verified_page_facts
+    scope = current_workbench.get()
+    if scope is None or scope.scope_version != 2 or scope.restricted:
+        return None
+    identity = current_identity.get()
+    if identity is not None and (identity.tenant_id != scope.identity.tenant_id
+            or identity.user_id != scope.identity.user_id):
+        raise PermissionError('Workbench identity does not match the verified caller')
+    page, info = verified_page_facts(scope)
+    fields = {}
+    for spec in page['indicators']:
+        sid = spec.get('series_id') if isinstance(spec, dict) else None
+        if (not isinstance(sid, str) or not SERIES.fullmatch(sid) or sid in fields
+                or any(not isinstance(spec.get(key), str) for key in
+                    ('source_knowledge_id', 'dataset_id', 'source_series_id'))):
+            raise HTTPException(503, '知识库字段身份不完整，未构建研究事实')
+        name = spec.get('metric') or spec.get('name')
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(503, '知识库真实字段缺少名称')
+        # The ordinary wire contract uses text. Preserve SQLite coercion and
+        # binding errors for nonstandard metadata rather than accepting a row
+        # solely because this consumer does not display its evidence fields.
+        if any(spec.get(key) and not isinstance(spec[key], str) for key in ('unit', 'frequency')):
+            return None
+        fields[sid] = {'series_id': sid, 'name': name, 'unit': spec.get('unit') or '未注明',
+            'points': [], 'freq_days': None, 'limited': False, 'point_limit': limit,
+            'source_version': page['version']}
+    binding_types = {str, int, float, bool, bytes, type(None)}
+    for row in page['rows']:
+        if any(type(row.get(key)) not in binding_types for key in ('source_cell', 'date_cell', 'formula')):
+            return None
+        if any(type(value := row.get(key)) is int and not -(2**63) <= value < 2**63
+                for key in ('value', 'source_cell', 'date_cell', 'formula')):
+            return None
+        # bounded_facts already rejects duplicate dates, non-finite/invalid
+        # values and dates after the requested cutoff. No revisions are lost:
+        # the upstream response is the verified final window for each metric.
+        # SQLite REAL normalizes an actually observed signed zero on storage.
+        value = float(row['value']) if row['value'] != 0 else 0.0
+        fields[row['series_id']]['points'].append({'date': row['date'], 'value': value})
+    totals = info['knowledge_facts_series_totals']
+    for sid, series in fields.items():
+        series['points'].sort(key=lambda point: point['date'])
+        dates = [date.fromisoformat(point['date']) for point in series['points']]
+        gaps = [(b - a).days for a, b in zip(dates, dates[1:])]
+        series['freq_days'] = median(gaps) if gaps else None
+        total = totals.get(sid)
+        series['limited'] = total > limit if type(total) is int else len(series['points']) == limit
+    return fields
+
+
+def read_series(identifiers, day, *, limit=2000):
+    """Read verified anomaly windows or the active SessionLocal facts.
+
+    Other chart/local/legacy callers retain SQL revision ordering: invalid new
+    revisions never resurrect an older value, and intraday dates keep the latest
+    real time. The opt-in anomaly window has those revisions resolved upstream.
     """
     from tin.web import app as web
     identifiers = list(dict.fromkeys(identifiers))
@@ -199,6 +277,10 @@ def read_series(identifiers, day, *, limit=2000):
         for start in range(0, len(batch), batch_size):
             selected = batch[start:start + batch_size]
             with page_read_scope('indicators', series_ids=selected, day=day, points_per_series=limit):
+                direct = _bounded_series(limit)
+                if direct is not None:
+                    result.update(direct)
+                    continue
                 with web.SessionLocal() as session:
                     totals = session.info.get('knowledge_facts_series_totals', {})
                     for sid in selected:

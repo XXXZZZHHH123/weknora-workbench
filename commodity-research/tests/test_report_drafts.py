@@ -238,3 +238,47 @@ def test_manual_sections_and_markdown_remain_same_and_empty_text_does_not_fallba
     assert 'Saved explanation' in main and '研究员按语' in main
     assert 'reports/chosen-folder' in main and 'v2' in main
     assert payload == old
+
+
+def test_dimension_notes_and_figure_conclusions_round_trip_without_rewriting_legacy_fields(reports):
+    client, state = reports
+    draft = document(dimension_notes={'custom-axis': {'text': '本期研究员解释', 'impact': 'bearish'}},
+                     figure_conclusions={'series:real': '图表一句结论'})
+    response = client.post(URL, json={'draft': draft})
+    assert response.status_code == 201, response.text
+    saved = response.json()['draft']
+    assert saved['dimension_notes'] == draft['dimension_notes']
+    assert saved['figure_conclusions'] == draft['figure_conclusions']
+    assert saved['sections'] == draft['sections']
+    loaded = client.get(URL + '?date=2026-01-09&period=weekly').json()['draft']
+    assert loaded['dimension_notes'] == draft['dimension_notes']
+    assert loaded['figure_conclusions'] == draft['figure_conclusions']
+
+
+def test_old_stored_report_without_new_fields_remains_readable(reports):
+    client, state = reports
+    created = client.post(URL, json={'draft': document()}).json()
+    with state['storage'](state['scope']) as session:
+        row = session.get(WorkbenchArtifact, created['id'])
+        body = json.loads(row.body)
+        body.pop('dimension_notes', None)
+        body.pop('figure_conclusions', None)
+        row.body = json.dumps(body)
+        session.commit()
+    result = client.get(URL + '?date=2026-01-09&period=weekly')
+    assert result.status_code == 200
+    assert result.json()['draft']['dimension_notes'] == {}
+    assert result.json()['draft']['figure_conclusions'] == {}
+    assert result.json()['draft']['sections'] == document()['sections']
+
+
+@pytest.mark.parametrize('changes', [
+    {'dimension_notes': {'custom-axis': {'text': 'x' * 201, 'impact': 'neutral'}}},
+    {'dimension_notes': {'custom-axis': {'text': 'valid', 'impact': 'unknown'}}},
+    {'dimension_notes': {'invalid id': {'text': 'valid', 'impact': 'neutral'}}},
+    {'figure_conclusions': {'series:real': 'x' * 201}},
+])
+def test_new_draft_fields_enforce_limits_before_saving(reports, changes):
+    client, state = reports
+    response = client.post(URL, json={'draft': document(**changes)})
+    assert response.status_code == 422

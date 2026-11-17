@@ -369,11 +369,15 @@ def judgment_record_block(j, today):
     if j is None:
         return None
     expired = (today - j.review_due).days
+    from tin.integration.workbench_scope import current_workbench
+    scope = current_workbench.get()
+    contradiction = {key: value for key, value in j.contradiction.items()
+                     if key != 'chart_references' or scope is None or not scope.restricted}
     return {
         "id": j.id, "version": j.version, "status": j.status, "author": j.author,
         "written_at": j.written_at.isoformat(), "review_due": j.review_due.isoformat(),
         "expired_days": expired if expired > 0 else 0, "tone": j.tone, "tone_note": j.tone_note,
-        "contradiction": {key: value for key, value in j.contradiction.items() if key != "chart_references"},
+        "contradiction": contradiction,
         "priority_rule": j.priority_rule,
         "thresholds": j.thresholds, "falsifiers": j.falsifiers, "unstructured": j.unstructured,
         "blockers": activation_blockers(to_payload(j)),
@@ -408,10 +412,12 @@ def snapshot(session: Session, variety: str, d: date) -> dict:
                 "as_of": _iso(r.as_of), "inputs": r.inputs, "params": r.params}
                for r in latest_derived(session, variety, d).values()]
     today = datetime.now(SHANGHAI).date()
+    from tin.web.research_dimensions import default_dimensions, read_dimensions, summaries
     return {
         "variety": variety, "as_of": d.isoformat(),
         "generated_at": datetime.now(timezone.utc).astimezone(SHANGHAI).isoformat(timespec="seconds"),
         "judgment": judgment_block(session, variety, today),
+        "research_dimensions": summaries(read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()),
         "observations": sorted(obs, key=lambda x: x["series_id"]),
         "derived": sorted(derived, key=lambda x: x["formula_id"]),
         "signals": signal_block(session, variety, d), "gaps": gaps(session, variety, d), "surveys": [],

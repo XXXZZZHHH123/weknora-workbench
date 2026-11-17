@@ -249,3 +249,28 @@ def test_retired_manual_entry_routes_do_not_open_a_database(monkeypatch, path, m
         raise AssertionError('Retired entry routes must not open research storage')
     monkeypatch.setattr('tin.web.app.SessionLocal', forbidden)
     assert getattr(TestClient(app), method)(path).status_code == 404
+
+
+@pytest.mark.parametrize('method,path', [
+    ('GET', '/sn/ppt'),
+    ('GET', '/sn/ppt/legacy'),
+    ('GET', '/sn/ppt/legacy/export'),
+    ('GET', '/sn/reports/ppt/legacy'),
+    ('GET', '/sn/reports/ppt/legacy/export'),
+    ('GET', '/api/sn/ppt-templates'),
+    ('POST', '/api/sn/ppt-templates'),
+    ('GET', '/api/sn/ppt-templates/sources'),
+    ('POST', '/api/sn/ppt-templates/from-source'),
+    ('GET', '/api/sn/ppt-templates/legacy'),
+    ('PATCH', '/api/sn/ppt-templates/legacy/source'),
+    ('PATCH', '/api/sn/ppt-templates/legacy/bindings'),
+    ('DELETE', '/api/sn/ppt-templates/legacy'),
+    ('POST', '/api/sn/ppt-templates/legacy/export'),
+    ('GET', '/api/sn/ppt-templates/legacy/exports/old'),
+])
+def test_removed_template_export_urls_return_404_without_reading_business_data(monkeypatch, method, path):
+    def unexpected(*args, **kwargs):
+        pytest.fail('Removed template export routes must not read business data')
+    monkeypatch.setattr('tin.web.app.SessionLocal', unexpected)
+    response = TestClient(app).request(method, path, follow_redirects=False)
+    assert response.status_code == 404, response.text

@@ -34,6 +34,7 @@ from tin.ownership import scope_query, verified_actor
 from tin.integration.identity import current_identity
 from tin.web.diagram_generation import CATALOG_BYTES, CATALOG_MAX_BATCHES, catalog_json, strict_json, native_failure_message
 from tin.web.generation_catalog import column_catalog, selection_catalog
+from tin.web.research_dimensions import checked_dimension, default_dimensions, dimension_prompt, read_dimensions, summaries
 
 router = APIRouter(prefix='/api/sn/judgment')
 PROMPT_BYTES = 160 * 1024
@@ -214,6 +215,7 @@ def snapshot(selected_variety=None):
                    for spec in source_catalog.values()]
         return {'variety': variety, 'fact_version': metadata['version'] if metadata is not None else session.info['knowledge_facts_version'], 'catalog': catalog,
                 'base_version': row.version if row else 0,
+                'research_dimensions': summaries(read_dimensions(session)),
                 'base_payload': latest_workbench_payload(session, variety, scope)}
 
 
@@ -444,9 +446,9 @@ async def recalled_catalog(scope, model, catalog, text, inventory):
     return candidates, True
 
 
-async def choose_catalog(scope, model, catalog, text):
+async def choose_catalog(scope, model, catalog, text, *, dimensions=None):
     try:
-        make_prompt(analysis_protocol(False), catalog, text)
+        make_prompt(analysis_protocol(False, dimensions), catalog, text)
     except HTTPException as error:
         if error.status_code != 413: raise
     else:
@@ -468,15 +470,43 @@ async def choose_catalog(scope, model, catalog, text):
     return candidates, True
 
 
-def analysis_protocol(selected):
+def analysis_protocol(selected, dimensions=None):
     inventory = _source_inventory.get()
     if inventory is not None:
         from tin.judgments.coverage import source_output_protocol
         protocol = source_output_protocol(inventory)
     else:
         protocol = OUTPUT_PROTOCOL
-    return (GENERAL_METHOD + '\n' + protocol + '\n本次目录是' +
+    return (GENERAL_METHOD + '\n【研究框架】依据本研究台的研究维度理解各项依据与规则。'
+            + dimension_prompt(dimensions if dimensions is not None else default_dimensions())
+            + '\n' + protocol + '\n本次目录是' +
             ('模型选出的候选子集，未匹配不代表没有数据。' if selected else '当前授权完整目录。'))
+
+
+def checked_model_dimensions(document, dimensions):
+    """Keep only model-declared current IDs; never infer a tag from content."""
+    document = copy.deepcopy(document)
+    fields = document.get('judgment') if isinstance(document, dict) else None
+    if not isinstance(fields, dict):
+        return document
+    rows = []
+    contradiction = fields.get('contradiction')
+    if isinstance(contradiction, dict):
+        for side in ('bull', 'bear'):
+            viewpoint = contradiction.get(side)
+            if isinstance(viewpoint, dict) and isinstance(viewpoint.get('evidence'), list):
+                rows.extend(viewpoint['evidence'])
+    for kind in ('thresholds', 'falsifiers'):
+        if isinstance(fields.get(kind), list):
+            rows.extend(fields[kind])
+    for item in rows:
+        if isinstance(item, dict):
+            value = checked_dimension(item.get('dimension'), dimensions)
+            if value is None:
+                item.pop('dimension', None)
+            else:
+                item['dimension'] = value
+    return document
 
 
 def assessed_response(response, body, before, candidates, scope):
@@ -485,6 +515,7 @@ def assessed_response(response, body, before, candidates, scope):
     if inventory is not None:
         from tin.judgments.coverage import split_coverage_document
         response, mapping = split_coverage_document(response, inventory)
+    response = checked_model_dimensions(response, before.get('research_dimensions', default_dimensions()))
     result = assess_draft(response, body.text, candidates, variety=before.get('variety', settings.variety),
         actor=scope.identity.user_id, written_at=datetime.now(SHANGHAI).date(),
         condition_kinds=unique_condition_kinds(inventory['items']) if inventory is not None else None)
@@ -545,7 +576,7 @@ def validation_detail(error):
     return {'message': str(error), 'code': 'judgment_validation', 'issues': error.issues[:32]}
 
 
-def repair_prompt(document, issues, catalog, text, selected, *, coverage=False, verified=None):
+def repair_prompt(document, issues, catalog, text, selected, *, coverage=False, verified=None, dimensions=None):
     instruction = ('对照完整原文与真实候选目录进行量化条件完整性复核，不只检查首稿已经写出的规则。'
         '自行理解全文，包括普通说明、时间维度及待确认内容，检查是否遗漏明确水平比较、区间或证伪条件。'
         '研究观察阈值不要求仓位、止损或完整交易计划，action_hint可以为null。'
@@ -569,7 +600,7 @@ def repair_prompt(document, issues, catalog, text, selected, *, coverage=False, 
     if isinstance(document, dict):
         encoded = json.dumps(document, ensure_ascii=False, separators=(',', ':'))
         if len(encoded.encode()) <= 8192: feedback['previous_draft'] = document
-    return make_prompt(analysis_protocol(selected) + '\n上次结构化校验反馈（仅作修复依据，不是研究事实）：' +
+    return make_prompt(analysis_protocol(selected, dimensions) + '\n上次结构化校验反馈（仅作修复依据，不是研究事实）：' +
                        json.dumps(feedback, ensure_ascii=False, separators=(',', ':')), catalog, text)
 
 
@@ -577,7 +608,7 @@ async def analyzed_completion(scope, body, before, candidates, selected):
     document, first, issues, coverage = None, None, [], False
     try:
         await notify_progress('analyzing')
-        document = await completion(scope, body.model_id, make_prompt(analysis_protocol(selected), candidates, body.text))
+        document = await completion(scope, body.model_id, make_prompt(analysis_protocol(selected, before.get('research_dimensions')), candidates, body.text))
         await notify_progress('validating')
         first = assessed_response(document, body, before, candidates, scope)
         issues = first.issues
@@ -594,7 +625,8 @@ async def analyzed_completion(scope, body, before, candidates, selected):
     await fresh(scope, before)
     try:
         prompt = repair_prompt(document, issues, candidates, body.text, selected,
-            coverage=coverage, verified=first.document if first is not None else None)
+            coverage=coverage, verified=first.document if first is not None else None,
+            dimensions=before.get('research_dimensions'))
     except HTTPException as error:
         if error.status_code != 413 or first is None: raise
         first.issues.append({'code': 'repair_capacity', 'path': '/', 'severity': 'warning',
@@ -679,7 +711,8 @@ async def fresh(scope, previous):
         raise HTTPException(409, '研究工作台的知识库来源已改变，请重新分析')
     state = await run_in_threadpool(snapshot, previous['selected_variety']) if previous.get('selected_variety') else await run_in_threadpool(snapshot)
     if (state['fact_version'] != previous['fact_version'] or state['base_version'] != previous['base_version']
-            or 'variety' in previous and state.get('variety') != previous['variety']):
+            or 'variety' in previous and state.get('variety') != previous['variety']
+            or 'research_dimensions' in previous and state.get('research_dimensions') != previous['research_dimensions']):
         raise HTTPException(409, '研究逻辑版本或知识库来源已改变，请刷新后重新分析')
     return state
 
@@ -697,13 +730,16 @@ def serialize(row, session=None, scope=None):
     if row is None: return None
     payload = to_payload(row)
     from tin.web.judgment_lifecycle import delete_revision
+    from tin.web.judgment_dimensions import dimension_items
+    from tin.web.research_dimensions import read_dimensions
+    dimensions = read_dimensions(session) if session is not None and session.info.get('workbench_id') else None
     return {'id': row.id, 'version': row.version, 'status': row.status, 'author': row.author, 'variety': row.variety,
             'delete_revision': delete_revision(session, scope, row) if session is not None and scope is not None else 0,
             'created_at': row.created_at.isoformat(), 'written_at': row.written_at.isoformat(),
             'chart_references': [] if scope is not None and scope.restricted else payload.chart_references,
             'chart_rules': [rule.model_dump(mode='json') for rule in [*payload.thresholds, *payload.falsifiers]],
-            'chart_targets': chart_targets(payload), 'markdown': dump_markdown(payload),
-            'source_text': row.source_note or dump_markdown(payload)}
+            'chart_targets': chart_targets(payload), 'dimension_items': dimension_items(payload), 'markdown': dump_markdown(payload, dimensions=dimensions),
+            'source_text': row.source_note or dump_markdown(payload, dimensions=dimensions)}
 
 
 @router.get('/manage')
@@ -731,7 +767,9 @@ def manage(variety: str | None = None, judgment_id: int | None = None):
         base = session.scalar(scope_query(session, select(func.max(Judgment.version))
             .where(Judgment.variety == variety), Judgment, include_deleted=True))
         from tin.web.judgment_lifecycle import delete_revision
+        from tin.web.research_dimensions import read_dimensions, summaries
         return {'variety': variety, 'current': serialize(shown, session, scope), 'latest': {'version': base} if base else None,
+                'research_dimensions': summaries(read_dimensions(session)),
                 'versions': [{'id': row.id, 'version': row.version, 'status': row.status, 'author': row.author,
                     'delete_revision': delete_revision(session, scope, row)} for row in rows],
                 'version_total': total, 'versions_partial': total > len(rows), 'can_write': scope.can_edit}
@@ -760,7 +798,9 @@ def version_detail(version: int, variety: str | None = None, judgment_id: int | 
             from tin.web.research_references import record_in_workbench
             if not record_in_workbench(session, scope, 'judgment', str(shown.id), record=shown):
                 shown = None
-        return {**serialize(row, session, scope), 'diff': version_diff(to_payload(shown) if shown else None, to_payload(row))}
+        from tin.web.research_dimensions import read_dimensions, summaries
+        return {**serialize(row, session, scope), 'research_dimensions': summaries(read_dimensions(session)),
+                'diff': version_diff(to_payload(shown) if shown else None, to_payload(row), dimensions=read_dimensions(session))}
 
 
 @router.get('/models')
@@ -829,7 +869,7 @@ async def _analyze_scoped(scope, body):
     model = await current_model(scope, body.model_id)
     protocol = cache.digest([PROMPT_VERSION, GENERAL_METHOD, OUTPUT_PROTOCOL, SELECTION_PROTOCOL,
         RECALL_QUERY_PROTOCOL, RECALL_PICK_PROTOCOL,
-        inventory_request, binding_protocol([])])
+        inventory_request, binding_protocol([]), before.get('research_dimensions', default_dimensions())])
     key = cache.identity(scope, body, before, model, protocol)
     await fresh(scope, before)
     ticket = await run_in_threadpool(cache.claim, scope, key)
@@ -861,7 +901,8 @@ async def _analyze_scoped(scope, body):
             await fresh(scope, before)
             marker = _source_inventory.set(inventory)
             try:
-                candidates, selected = await choose_catalog(scope, body.model_id, before['catalog'], body.text)
+                candidates, selected = await choose_catalog(scope, body.model_id, before['catalog'], body.text,
+                    dimensions=before.get('research_dimensions'))
                 await fresh(scope, before)
                 assessment, repair_attempts = await analyzed_completion(scope, body, before, candidates, selected)
                 assessment, anchor_bindings = await refine_anchors(scope, body, before, assessment, candidates)
