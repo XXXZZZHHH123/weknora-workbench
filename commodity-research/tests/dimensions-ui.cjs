@@ -16,9 +16,9 @@ function initial(populated = false) {
 function observations(config) {
   const observed = i => i.kind === 'chart'
     ? {...i,status:'ok',name:'合成图表',definition:{title:'合成图表',time:{mode:'cycle'}},payload:cycle()}
-    : {...indicator(i.id),...i,status:'ok',latest:25,date:'2029-09-14',change:1.5,change_pct:.06,direction:'up',baseline:{label:'较 09-07',date:'2029-09-07'},display:{latest:'25',change:'+1.5',change_pct:'+6%'},position:{n:4,rank:4,rank_low:2,text:'近 5 年同期第 2 低'},freshness:{age_days:8,stale:true},points:[{date:'2029-09-07',value:23.5},{date:'2029-09-14',value:25}],...(config.no_update ? {direction:'no_update',update_status:'no_update',update_notice:'本期无新数据（最新 2029-09-14）'} : {})};
+    : {...indicator(i.id),...i,status:'ok',latest:25,date:'2029-09-14',change:1.5,change_pct:.06,direction:'up',baseline:{label:'较 09-07',date:'2029-09-07'},display:{latest:'25',change:'+1.5',change_pct:'+6%'},position:{n:4,rank:4,rank_low:2,text:'近 5 年同期第 2 低'},freshness:{age_days:8,stale:true},points:[{date:'2029-09-07',value:23.5},{date:'2029-09-14',value:25}],...(config.card_overrides || {}),...(config.no_update ? {direction:'no_update',update_status:'no_update',update_notice:'本期无新数据（最新 2029-09-14）'} : {})};
   const dimensions = config.dimensions.map(d => ({...d,summary:{up:config.no_update ? 0 : 1,down:0,flat:0,no_update:config.no_update ? 1 : 0,extreme:1},sections:d.sections.map(s => ({...s,items:s.items.map(observed)}))}));
-  return {as_of:date,latest_data_date:date,period:'weekly',failed:[],warnings:['history_limited'],dimensions};
+  return {as_of:date,latest_data_date:date,period:'weekly',failed:[],warnings:config.warnings || ['history_limited'],history_coverage_limited:config.history_coverage_limited,dimensions};
 }
 function html(boot = {}) {
   return render('dimensions.html',{}, {dimension_page:{date,...boot}}).replace('</head>','<script defer src="/static/catalog-client.js"></script></head>');
@@ -128,9 +128,18 @@ print(env.get_template('base.html').render(nav='dimensions',restricted_view=rest
     assert.equal(empty.stored.dimensions.at(-1).sections[0].items.length,2);
     assert.deepEqual(empty.stored.dimensions.at(-1).sections[0].items[1],{kind:'chart',id:'chart-1',revision:3});
     await p.locator('.dimensions-chart-plot svg').waitFor();
-    assert.match(await p.locator('.dimensions-card').first().innerText(),/25[\s\S]*2029-09-14[\s\S]*较 09-07 \+1.5[\s\S]*近 5 年同期第 2 低[\s\S]*过旧/);
+    assert.match(await p.locator('.dimensions-card').first().innerText(),/25[\s\S]*2029-09-14[\s\S]*较 09-07 \+1.5[\s\S]*近 5 年同期第 2 低[\s\S]*停更 8 天/);
     assert.equal(await p.locator('.dimensions-card h4').first().innerText(),unsafe);
-    assert.equal(await p.locator('.dimensions-card .dimensions-sheet').first().innerText(),'合成工作表');
+    assert.equal(await p.locator('.dimensions-card .dimensions-sheet').first().textContent(),'工作表：合成工作表');
+    assert.doesNotMatch(await p.locator('.dimensions-card-main').first().innerText(),/合成来源|合成工作表|weekly/);
+    assert.equal(await p.locator('.dimensions-value small').first().innerText(),'吨');
+    const firstInfo = p.locator('.dimensions-info-trigger').first(), firstTip = p.locator('.dimensions-tooltip').first();
+    assert.equal(await firstTip.isVisible(),false);
+    await firstInfo.hover(); await firstTip.waitFor({state:'visible'});
+    assert.match(await firstTip.innerText(),/频率：weekly[\s\S]*来源：合成来源[\s\S]*工作表：合成工作表/);
+    const originalURL = p.url(); await firstInfo.click(); await p.mouse.move(0,0);
+    assert.equal(await firstTip.isVisible(),true); assert.equal(p.url(),originalURL);
+    await p.keyboard.press('Escape'); assert.equal(await firstTip.isVisible(),false);
     assert.equal(await p.locator('.dimensions-section img').count(),0);
     assert.equal(await p.evaluate(() => window.__xss),undefined);
     assert.equal(await p.locator('.dimensions-spark').count(),1);
@@ -169,16 +178,57 @@ print(env.get_template('base.html').render(nav='dimensions',restricted_view=rest
     const stopped = await fixture(browser,stoppedConfig), n = stopped.page;
     await n.locator('.dimensions-change.no_update').waitFor();
     assert.equal(await n.locator('.dimensions-card h4').innerText(),'可读指标名称');
-    assert.equal(await n.locator('.dimensions-card .dimensions-sheet').innerText(),unsafe);
-    assert.equal(await n.locator('.dimensions-change').innerText(),'本期无新数据（最新 2029-09-14）');
+    assert.equal(await n.locator('.dimensions-card .dimensions-sheet').textContent(),'工作表：' + unsafe);
+    assert.equal(await n.locator('.dimensions-change').innerText(),'本期无新数据');
+    assert.match(await n.locator('.dimensions-tooltip').textContent(),/本期无新数据（最新 2029-09-14）/);
     assert.match(await n.locator('.dimensions-summary').first().innerText(),/↑0 ↓0 · 持平 0 · 本期无新数据 1/);
-    assert.match(await n.locator('.dimensions-card').innerText(),/近 5 年同期第 2 低[\s\S]*观测已过旧/);
+    assert.match(await n.locator('.dimensions-card').innerText(),/近 5 年同期第 2 低[\s\S]*停更 8 天/);
     assert.equal(await n.locator('.dimensions-card img').count(),0);
     await n.locator('#dimensions-date').fill('2029-09-18'); await n.locator('#dimensions-date').dispatchEvent('change');
     await n.locator('#dimensions-suggest').click(); await n.locator('#dimensions-model-run').click();
     await n.locator('#dimensions-model-adopt:not([disabled])').waitFor();
     assert.equal(stopped.calls.find(c => c.path === '/dimensions/suggestions').body.date,'2029-09-18');
     await stopped.close();
+
+    // Coverage explanations are deduplicated in the info panel; the compact body stays readable.
+    const noisyConfig = initial(true), sampleNotice = '有效往期同期样本不足3年，不提供排名';
+    noisyConfig.warnings = ['history_limited','observation_window_limited','history_limited','empty_segments_omitted','insufficient_cycles'];
+    noisyConfig.history_coverage_limited = true;
+    noisyConfig.card_overrides = {unit:'未注明',source:'合成机构',source_file:unsafe,sheet:'提示工作表',
+      position:{n:1,rank:null,notice:sampleNotice,text:sampleNotice},history_coverage:{limited:true},
+      warnings:['insufficient_cycles','insufficient_cycles','empty_segments_omitted','history_limited','observation_window_limited','baseline_unavailable','baseline_unavailable']};
+    const noisy = await fixture(browser,noisyConfig), z = noisy.page;
+    assert.equal(await z.locator('.dimensions-position').innerText(),'—');
+    assert.equal(await z.locator('.dimensions-value small').count(),0);
+    const compact = await z.locator('.dimensions-card-main').innerText();
+    assert.doesNotMatch(compact,/未注明|样本不足|没有观测|读取上限|合成机构|提示工作表/);
+    assert.equal((compact.match(/停更/g) || []).length,1);
+    const warning = await z.locator('#dimensions-status').innerText();
+    assert.equal((warning.match(/读取上限/g) || []).length,1);
+    assert.doesNotMatch(warning,/样本不足|没有观测|insufficient_cycles/);
+    const detailButton = z.locator('.dimensions-info-trigger'), detail = z.locator('.dimensions-tooltip');
+    await detailButton.focus(); await detail.waitFor({state:'visible'});
+    const notes = await detail.innerText();
+    for (const text of ['样本不足3年','没有观测的历史周期已省略','读取上限','缺少可比的往期观测','单位未注明','合成机构','提示工作表',unsafe]) assert.equal(notes.split(text).length - 1,1,text);
+    assert.equal(await detail.locator('img').count(),0);
+    await z.keyboard.press('Enter'); await z.mouse.move(0,0); assert.equal(await detail.isVisible(),true);
+    await z.locator('.dimensions-stage h3').first().click(); assert.equal(await detail.isVisible(),false);
+    // The info panel stays inside the viewport in both multi-column and phone layouts.
+    for (const width of [800,360]) {
+      await z.setViewportSize({width,height:900}); await detailButton.click();
+      const bounds = await detail.boundingBox(); assert.ok(bounds.x >= 7 && bounds.x + bounds.width <= width - 7);
+      await z.keyboard.press('Escape');
+    }
+    await noisy.close();
+
+    // A capped raw read that already covers five past cycles needs no coverage warning.
+    const coveredConfig = initial(true); coveredConfig.history_coverage_limited = false;
+    coveredConfig.card_overrides = {limited:true,history_coverage:{limited:false},warnings:['history_limited','observation_window_limited','empty_segments_omitted']};
+    const covered = await fixture(browser,coveredConfig), c = covered.page;
+    assert.equal(await c.locator('#dimensions-status').innerText(),'');
+    assert.doesNotMatch(await c.locator('.dimensions-tooltip').textContent(),/读取上限/);
+    assert.match(await c.locator('.dimensions-tooltip').textContent(),/没有观测的历史周期已省略/);
+    await covered.close();
 
     // Same-label sections retain separate targets; item_id also resolves an optional section_id.
     const duplicateConfig = {...initial(),revision:1,duplicate_sections:true};

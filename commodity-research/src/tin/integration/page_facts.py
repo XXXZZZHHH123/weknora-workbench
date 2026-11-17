@@ -173,6 +173,32 @@ def _raw_catalog_page(scope, offset=0, limit=200, search=None, series_ids=None, 
         if version is not None and result['version'] != version:
             raise HTTPException(409, '目录快照在读取期间变化，请重新读取')
         return result
+    if (cache is not None and offset == 0 and search is None and source_kind is None
+            and isinstance(series_ids, (list, tuple))
+            and all(isinstance(sid, str) and SERIES.fullmatch(sid) for sid in series_ids)
+            and len(set(series_ids)) == len(series_ids)):
+        requested = set(series_ids)
+        for key, (cached_scope, parent) in cache.items():
+            # A complete explicit directory already proves the same scope's
+            # requested subset, including IDs absent from that directory. Keep
+            # its source stamp so a later bounded read still rejects changes.
+            # Scope identity includes authorization, unlike dataclass equality.
+            if (cached_scope is not scope or key[1] != 0 or key[3] is not None or key[5] is not None
+                    or key[4] is None or not requested.issubset(key[4])
+                    or parent.get('next_offset') is not None or parent.get('truncated')
+                    or parent['total'] != len(parent['series'])):
+                continue
+            known = [field['series_id'] for field in parent['series']]
+            if len(known) != len(set(known)) or not set(known).issubset(key[4]):
+                continue
+            fields = [field for field in parent['series'] if field['series_id'] in requested]
+            if len(fields) > limit:
+                continue
+            if version is not None and parent['version'] != version:
+                raise HTTPException(409, '目录快照在读取期间变化，请重新读取')
+            return {**parent, 'series': fields, 'total': len(fields), 'offset': 0,
+                    'next_offset': None, 'truncated': False,
+                    'unavailable_series_ids': sorted(requested - set(known))}
     body = {'source_bindings':[source['id'] for source in scope.sources if not source['delegated']],
             'catalog_only':True,'offset':offset,'limit':limit}
     if search is not None: body['search'] = search

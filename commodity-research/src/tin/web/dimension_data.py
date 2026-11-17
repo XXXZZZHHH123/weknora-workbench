@@ -1,11 +1,11 @@
-"""Read-only dimension observations, with one shared budget for all operands.
+"""Read-only dimension observations, with bounded batches for all operands.
 
 Bindings and calendar arithmetic are explicit. Labels never choose sources,
 units, groups or a calculation. A failed item stays in its original position.
 """
 from copy import deepcopy
 from datetime import date, timedelta
-from math import isfinite
+from math import ceil, isfinite
 
 from fastapi import HTTPException
 
@@ -25,6 +25,25 @@ SERIES_POINTS = 2000
 HIGH_FREQUENCIES = frozenset(('日', '日度', '周', '周度', 'daily', 'weekly'))
 LOW_FREQUENCIES = frozenset(('月', '月度', '季', '季度', '半年', '年', '年度',
                             'monthly', 'quarterly', 'semiannual', 'annual', 'yearly'))
+FREQUENCY_DAYS = {
+    **dict.fromkeys(('日', '日度', 'daily'), 1),
+    **dict.fromkeys(('周', '周度', 'weekly'), 7),
+    **dict.fromkeys(('月', '月度', 'monthly'), 28),
+    **dict.fromkeys(('季', '季度', 'quarterly'), 90),
+    **dict.fromkeys(('半年', 'semiannual'), 181),
+    **dict.fromkeys(('年', '年度', 'annual', 'yearly'), 365),
+}
+
+
+def history_point_limit(field):
+    """Allow five complete prior natural years plus the current year.
+
+    Frequency is source metadata, not inferred from indicator names. Unknown
+    frequencies use the conservative daily cap. Retain at least 26 observations
+    for the sparkline; leap days and cycle-boundary neighbours have headroom.
+    """
+    interval = FREQUENCY_DAYS.get(str(field.get('frequency') or '').strip().lower(), 1)
+    return min(SERIES_POINTS, max(26, ceil(6 * 366 / interval) + 2))
 
 
 def _reason(error):
@@ -101,6 +120,13 @@ def indicator_data(identifier, field, series, day, period):
     position = {**raw_position, 'n': n, 'rank': rank, 'total': total, 'rank_low': rank_low,
                 'status': raw_position.get('status', 'insufficient_cycles'), 'notice': notice,
                 'text': text, 'template': template}
+    # ``limited`` keeps its raw source-truncation meaning. Only surface a read
+    # coverage warning when that truncation can affect the five desired peers;
+    # old observations outside this window do not make the page incomplete.
+    history_coverage = {'past_cycles': 5, 'available_cycles': n,
+                        'start_date': points[0]['date'], 'end_date': latest['date'],
+                        'limited': bool(series.get('limited') and n < 5 and
+                            points[0]['date'] > f"{max(1, int(latest['date'][:4]) - 5):04d}-01-01")}
     precision = source_decimals(field)
     warnings = list(cycle['warnings'])
     if series.get('limited'):
@@ -119,7 +145,8 @@ def indicator_data(identifier, field, series, day, period):
             'direction': ('no_update' if update['update_status'] == 'no_update' else
                           None if change is None else 'up' if change > 0 else 'down' if change < 0 else 'flat'),
             'freshness': _staleness({'date': latest['date'], 'points': points[-26:]}, day),
-            'position': position, 'points': points[-26:], 'warnings': warnings,
+            'position': position, 'history_coverage': history_coverage,
+            'points': points[-26:], 'warnings': warnings,
             'limited': bool(series.get('limited')), 'point_limit': series.get('point_limit'),
             'display_decimals': precision,
             'display': {'latest': format_number(latest['value'], decimals=precision),
@@ -146,11 +173,12 @@ def _chart_definition(scope, item):
 
 @chart_read_scope()
 def dimension_data(scope, dimensions, day=None, period='weekly'):
-    """Return ordered card data; successful reads share at most 20,000 points.
+    """Return ordered card data; each batch reads at most 20,000 points.
 
-    Distinct (indicator ID, effective cutoff) windows share the same per-series
-    limit. Ordinary source failures are bisected, while permission/source-change
-    failures reject the request. ``day=None`` selects the latest observed date.
+    Distinct (indicator ID, effective cutoff) windows use frequency-sized limits.
+    Chart operands retain their full existing window. Ordinary source failures
+    are bisected, while permission/source-change failures reject the request.
+    ``day=None`` selects the latest observed date.
     """
     if period not in {'daily', 'weekly'}:
         raise HTTPException(400, '周期应为daily或weekly')
@@ -163,6 +191,7 @@ def dimension_data(scope, dimensions, day=None, period='weekly'):
     for dimension in output:
         dimension.setdefault('sections', [])
     windows, chart_definitions, chart_cutoffs, errors = {}, {}, {}, {}
+    chart_windows = set()
 
     def plan(identifiers, effective_day):
         selected = windows.setdefault(effective_day, {})
@@ -180,19 +209,39 @@ def dimension_data(scope, dimensions, day=None, period='weekly'):
                         chart_definitions[key] = (definition, notice)
                         effective_day = min(day, definition.time.end) if definition.time.mode == 'range' else day
                         chart_cutoffs[key] = effective_day
-                        plan(definition_series_ids(definition), effective_day)
+                        identifiers = definition_series_ids(definition)
+                        plan(identifiers, effective_day)
+                        chart_windows.update((sid, effective_day) for sid in identifiers)
                     except Exception as error:
                         if isinstance(error, HTTPException) and error.status_code in {401, 403}:
                             raise
                         errors[key] = _reason(error)
-    window_count = sum(len(identifiers) for identifiers in windows.values())
-    point_limit = min(SERIES_POINTS, MAX_POINTS // max(1, window_count))
+    point_limit = SERIES_POINTS
+    window_limits = {(sid, effective_day): point_limit
+                     for effective_day, selected in windows.items() for sid in selected}
     fields, series, read_errors = {}, {}, {}
+
+    def read_observations(batch, effective_day, limit):
+        try:
+            data = read_series(batch, effective_day, limit=limit)
+        except Exception as error:
+            if _fatal(error):
+                raise
+            if len(batch) > 1:
+                middle = len(batch) // 2
+                read_observations(batch[:middle], effective_day, limit)
+                read_observations(batch[middle:], effective_day, limit)
+            else:
+                read_errors[(batch[0], effective_day)] = _reason(error)
+            return
+        series.update(((sid, effective_day), value) for sid, value in data.items())
+        for sid in batch:
+            if sid not in data:
+                read_errors[(sid, effective_day)] = '指标观测不可读'
 
     def read_batch(batch, effective_day):
         try:
             metadata = catalog_fields(scope, batch)
-            data = read_series([sid for sid in batch if sid in metadata], effective_day, limit=point_limit)
         except Exception as error:
             if _fatal(error):
                 raise
@@ -204,14 +253,21 @@ def dimension_data(scope, dimensions, day=None, period='weekly'):
                 read_errors[(batch[0], effective_day)] = _reason(error)
             return
         fields.update(metadata)
-        series.update(((sid, effective_day), value) for sid, value in data.items())
+        groups = {}
         for sid in batch:
             if sid not in metadata:
                 read_errors[(sid, effective_day)] = '指标已不在当前授权来源目录'
-            elif sid not in data:
-                read_errors[(sid, effective_day)] = '指标观测不可读'
+                continue
+            limit = point_limit if (sid, effective_day) in chart_windows else history_point_limit(metadata[sid])
+            window_limits[(sid, effective_day)] = limit
+            groups.setdefault(limit, []).append(sid)
+        for limit, identifiers in groups.items():
+            read_observations(identifiers, effective_day, limit)
 
-    batch_size = min(MAX_SERIES, MAX_POINTS // max(1, point_limit))
+    # Start with batches safe even for the maximum per-indicator window. Each
+    # frequency group reuses its verified directory in read_series (C1), and
+    # the enclosing chart_read_scope pools the HTTP connection across all batches.
+    batch_size = min(MAX_SERIES, MAX_POINTS // point_limit)
     for effective_day, selected in windows.items():
         identifiers = list(selected)
         for offset in range(0, len(identifiers), batch_size):
@@ -288,6 +344,10 @@ def dimension_data(scope, dimensions, day=None, period='weekly'):
             section['items'] = cards
         dimension['summary'] = summary
     warnings = ['history_limited'] if any(item.get('limited') for item in series.values()) else []
+    coverage_limited = any(card.get('history_coverage', {}).get('limited')
+                           for dimension in output for section in dimension['sections'] for card in section['items'])
     return {'as_of': day.isoformat(), 'latest_data_date': latest_data_date, 'period': period,
-            'dimensions': output, 'failed': failed, 'point_limit': point_limit, 'point_budget': MAX_POINTS,
-            'warnings': warnings}
+            'dimensions': output, 'failed': failed, 'point_limit': point_limit,
+            'point_budget': sum(window_limits.values()),
+            'batch_point_budget': MAX_POINTS, 'batch_series_limit': MAX_SERIES,
+            'history_coverage_limited': coverage_limited, 'warnings': warnings}

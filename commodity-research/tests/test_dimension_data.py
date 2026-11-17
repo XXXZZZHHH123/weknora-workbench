@@ -153,7 +153,7 @@ def test_summary_counts_no_update_separately_from_flat(chart_client):
     assert summary['down'] == summary['unavailable'] == 0
 
 
-def test_whole_request_budget_and_batches(chart_client):
+def test_each_batch_budget_does_not_shrink_history_with_page_size(chart_client):
     client, state = chart_client
     identifiers = ['kb-' + f'{index:048x}' for index in range(300)]
     for identifier in identifiers:
@@ -164,8 +164,118 @@ def test_whole_request_budget_and_batches(chart_client):
     assert result.status_code == 200, result.text
     reads = [body for _, body in state.requests if 'points_per_series' in body]
     assert len(reads) >= 2 and all(len(body['series_ids']) <= 256 for body in reads)
-    assert sum(len(body['series_ids']) * body['points_per_series'] for body in reads) <= 20000
-    assert result.json()['point_limit'] == 66
+    assert all(len(body['series_ids']) * body['points_per_series'] <= 20000 for body in reads)
+    assert all(body['points_per_series'] == 2000 for body in reads)
+    output = result.json()
+    assert output['point_limit'] == 2000
+    assert output['point_budget'] == 300 * 2000
+    assert output['batch_point_budget'] == 20000 and output['batch_series_limit'] == 256
+    assert len(reads) == 30
+
+
+@pytest.mark.parametrize('frequency,interval', [('日度', 1), ('weekly', 7), ('月', 30),
+                                               ('季度', 91), ('年', 365), ('未知', 1)])
+def test_frequency_sized_reads_retain_five_real_comparable_cycles(chart_client, frequency, interval):
+    client, state = chart_client
+    state.fields[SID]['frequency'] = frequency
+    day = date(2024, 3, 29)
+    state.observations[SID] = [((day - timedelta(days=interval * index)).isoformat(), index)
+                               for index in reversed(range(4000 // interval + 1))]
+    bind(state, dimensions({'kind': 'indicator', 'id': SID}))
+    response = client.get('/dimension-data-test?day=2024-03-29')
+    assert response.status_code == 200, response.text
+    output = response.json()
+    item = output['dimensions'][0]['sections'][0]['items'][0]
+    assert item['position']['n'] == 5 and item['position']['rank'] is not None
+    assert not item['history_coverage']['limited'] and not output['history_coverage_limited']
+    reads = [body for _, body in state.requests if 'points_per_series' in body]
+    assert len(reads) == 1 and 26 <= reads[0]['points_per_series'] <= 2000
+    assert (day - date.fromisoformat(item['history_coverage']['start_date'])).days > 5 * 365
+
+
+def test_mixed_frequencies_use_independent_limits_and_keep_chart_window(chart_client):
+    client, state = chart_client
+    state.fields[SID]['frequency'] = '月'
+    state.fields[OTHER]['frequency'] = '周度'
+    state.fields[THIRD]['frequency'] = 'monthly'
+    chart = create(client)
+    bind(state, dimensions(*({'kind': 'indicator', 'id': sid} for sid in (SID, OTHER, THIRD)),
+                           {'kind': 'chart', 'id': chart['id'], 'revision': 1}))
+    state.requests.clear()
+    response = client.get('/dimension-data-test?day=2023-01-04')
+    assert response.status_code == 200, response.text
+    reads = [body for _, body in state.requests if 'points_per_series' in body]
+    assert {tuple(body['series_ids']): body['points_per_series'] for body in reads} == {
+        (SID,): 2000, (OTHER,): 316, (THIRD,): 81}
+    assert all(len(body['series_ids']) * body['points_per_series'] <= 20000 for body in reads)
+    output = response.json()
+    assert output['point_budget'] == 2000 + 316 + 81
+    cards = output['dimensions'][0]['sections'][0]['items']
+    assert [item['point_limit'] for item in cards[:3]] == [2000, 316, 81]
+    assert cards[3]['payload']['point_limit'] == 120  # The saved recent-chart display window stays intact.
+
+
+def test_truncation_notice_only_when_read_window_affects_five_prior_cycles():
+    points = [((date(2018, 10, 1) + timedelta(days=index)).isoformat(), index) for index in range(2000)]
+    complete = card(points, limited=True)
+    assert complete['limited'] and 'history_limited' in complete['warnings']
+    assert complete['position']['n'] == 5
+    assert not complete['history_coverage']['limited']
+    assert complete['history_coverage']['available_cycles'] == 5
+    truncated = card(points[-400:], limited=True)
+    assert truncated['history_coverage']['limited']
+    assert truncated['position']['n'] < 3
+    # A genuinely short source must not be described as a budget shortfall.
+    short_source = card(points[-400:])
+    assert not short_source['history_coverage']['limited']
+
+
+def test_second_batch_source_version_change_rejects_entire_request(chart_client, monkeypatch):
+    client, state = chart_client
+    identifiers = ['kb-' + f'{index:048x}' for index in range(12)]
+    for identifier in identifiers:
+        state.fields[identifier] = {**FIELDS[SID], 'series_id': identifier, 'frequency': '日度'}
+        state.observations[identifier] = [('2023-01-01', 1), ('2023-01-02', 2)]
+    original = data.read_series
+    calls = []
+
+    def change_after_first_batch(*args, **kwargs):
+        result = original(*args, **kwargs)
+        calls.append(args[0])
+        state.facts_version = 'a' * 64
+        return result
+
+    monkeypatch.setattr(data, 'read_series', change_after_first_batch)
+    bind(state, dimensions(*({'kind': 'indicator', 'id': sid} for sid in identifiers)))
+    response = client.get('/dimension-data-test?day=2023-01-02')
+    assert response.status_code == 409, response.text
+    assert len(calls) == 2
+
+
+def test_single_series_failure_leaves_later_batches_available(chart_client, monkeypatch):
+    client, state = chart_client
+    identifiers = ['kb-' + f'{index:048x}' for index in range(12)]
+    for identifier in identifiers:
+        state.fields[identifier] = {**FIELDS[SID], 'series_id': identifier}
+        state.observations[identifier] = [('2023-01-01', 1), ('2023-01-02', 2)]
+    broken = identifiers[3]
+    original = data.read_series
+
+    def fail_one(ids, *args, **kwargs):
+        if broken in ids:
+            raise HTTPException(503, '隔离单条来源故障')
+        return original(ids, *args, **kwargs)
+
+    monkeypatch.setattr(data, 'read_series', fail_one)
+    bind(state, dimensions(*({'kind': 'indicator', 'id': sid} for sid in identifiers)))
+    response = client.get('/dimension-data-test?day=2023-01-02')
+    assert response.status_code == 200, response.text
+    output = response.json()
+    assert [item['id'] for item in output['failed']] == [broken]
+    cards = output['dimensions'][0]['sections'][0]['items']
+    assert [item['id'] for item in cards] == identifiers
+    assert sum(item['status'] == 'ok' for item in cards) == 11
+    assert cards[-1]['status'] == 'ok'
 
 
 def test_partial_failures_keep_cards(chart_client, monkeypatch):
