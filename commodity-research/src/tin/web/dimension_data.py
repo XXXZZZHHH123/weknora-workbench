@@ -15,6 +15,7 @@ from tin.models.workbench import WorkbenchArtifactRevision
 from tin.web import charts
 from tin.web.chart_data import catalog_fields, chart_read_scope, cutoff, definition_series_ids, read_series
 from tin.web.number_format import format_number, source_decimals
+from tin.web.research_display import indicator_name
 from tin.web.strategy_monitor import _staleness
 
 MAX_POINTS = 20000
@@ -40,6 +41,19 @@ def _observations(series, day):
     return [point for point in series.get('points', [])
             if point['date'] <= day.isoformat() and type(point.get('value')) in {int, float}
             and isfinite(point['value'])]
+
+
+def observation_update(latest_date, baseline_date, day, period):
+    """Describe updates in the report window independently of numeric comparisons.
+
+    Low-frequency cards still compare with their previous observation. That
+    arithmetic does not imply a new observation arrived in this report window.
+    """
+    start = (day - timedelta(days=1 if period == 'daily' else 7)).isoformat()
+    no_update = latest_date <= start or latest_date == baseline_date
+    return {'update_status': 'no_update' if no_update else 'updated',
+            'update_notice': f'本期无新数据（最新 {latest_date}）' if no_update else '',
+            'comparison_start_date': start}
 
 
 def indicator_data(identifier, field, series, day, period):
@@ -70,6 +84,7 @@ def indicator_data(identifier, field, series, day, period):
     label = '较上期' if low_frequency else ('较 ' + previous['date'][5:] if previous else '缺少对比观测')
     baseline = {'date': previous['date'] if previous else None, 'value': previous['value'] if previous else None,
                 'label': label, 'target_date': target, 'kind': 'previous' if low_frequency or period == 'daily' else 'week_ago'}
+    update = observation_update(latest['date'], baseline['date'], day, period)
     template = deepcopy(BUILTIN_TEMPLATES['自然年'])
     # The cycle engine infers matching tolerance from the observed frequency;
     # every frequency uses the built-in natural-year calendar, not a name rule.
@@ -93,14 +108,16 @@ def indicator_data(identifier, field, series, day, period):
     if previous is None:
         warnings.append('baseline_unavailable')
     return {'kind': 'indicator', 'id': identifier, 'series_id': identifier, 'status': 'ok',
-            'name': field.get('metric') or field.get('name') or series.get('name') or identifier,
+            'name': indicator_name(identifier, {identifier: field.get('name') or field.get('metric') or series.get('name')}),
             'unit': unit, 'frequency': frequency, 'source': field.get('source') or field.get('source_file') or '',
             'source_file': field.get('source_file') or '', 'sheet': field.get('sheet') or '',
             'latest': latest['value'], 'date': latest['date'],
             'previous': previous['value'] if previous else None,
             'previous_date': previous['date'] if previous else None, 'baseline': baseline,
             'change': change, 'change_pct': pct,
-            'direction': None if change is None else 'up' if change > 0 else 'down' if change < 0 else 'flat',
+            **update,
+            'direction': ('no_update' if update['update_status'] == 'no_update' else
+                          None if change is None else 'up' if change > 0 else 'down' if change < 0 else 'flat'),
             'freshness': _staleness({'date': latest['date'], 'points': points[-26:]}, day),
             'position': position, 'points': points[-26:], 'warnings': warnings,
             'limited': bool(series.get('limited')), 'point_limit': series.get('point_limit'),
@@ -208,7 +225,7 @@ def dimension_data(scope, dimensions, day=None, period='weekly'):
         day = date.fromisoformat(latest_data_date)
     failed = []
     for dimension in output:
-        summary = dict.fromkeys(('up', 'down', 'flat', 'extreme', 'extreme_high', 'extreme_low', 'unavailable'), 0)
+        summary = dict.fromkeys(('up', 'down', 'flat', 'no_update', 'extreme', 'extreme_high', 'extreme_low', 'unavailable'), 0)
         for section in dimension.get('sections', []):
             cards = []
             for item in section.get('items', []):
@@ -250,7 +267,7 @@ def dimension_data(scope, dimensions, day=None, period='weekly'):
                             chart_series[sid] = {**source, 'points': points}
                         payload = charts.definition_data(scope, definition, actual_day, chart_id=item['id'], revision=item['revision'],
                             fields={sid: fields[sid] for sid in ids}, data=chart_series, point_limit=chart_limit)
-                        sources = [{'id': sid, 'name': fields[sid].get('metric') or fields[sid].get('name') or sid,
+                        sources = [{'id': sid, 'name': indicator_name(sid, {sid: fields[sid].get('name') or fields[sid].get('metric')}),
                                     'unit': fields[sid].get('unit') or '', 'frequency': fields[sid].get('frequency') or '',
                                     'source': fields[sid].get('source_file') or fields[sid].get('source') or '',
                                     'sheet': fields[sid].get('sheet') or ''} for sid in ids]

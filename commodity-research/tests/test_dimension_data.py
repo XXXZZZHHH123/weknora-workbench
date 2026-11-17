@@ -30,6 +30,61 @@ def test_low_frequency_always_previous(frequency):
     assert item['baseline']['label'] == '较上期'
 
 
+@pytest.mark.parametrize('frequency', ['日', '周', '月'])
+@pytest.mark.parametrize('period,latest', [('daily', '2024-03-28'), ('weekly', '2024-03-22')])
+def test_no_observation_after_report_window_start(frequency, period, latest):
+    item = card([('2023-09-01', 10), (latest, 15)], frequency=frequency, period=period)
+    assert item['direction'] == item['update_status'] == 'no_update'
+    assert item['update_notice'] == f'本期无新数据（最新 {latest}）'
+    assert item['comparison_start_date'] == latest
+    assert item['position'] and item['freshness']
+    # Existing deterministic previous-period arithmetic stays available to
+    # consumers even when there was no new observation in the report window.
+    assert item['change'] == (0 if frequency != '月' and period == 'weekly' else 5)
+
+
+def test_same_observation_is_no_update_and_retains_staleness():
+    item = card([('2023-09-15', 10), ('2023-09-22', 15)])
+    assert item['date'] == item['previous_date'] == '2023-09-22'
+    assert item['change'] == item['change_pct'] == 0
+    assert item['direction'] == 'no_update' and item['freshness']['stale']
+    assert item['update_notice'] == '本期无新数据（最新 2023-09-22）'
+
+
+def test_same_date_baseline_is_no_update_even_inside_report_window():
+    update = data.observation_update('2024-03-29', '2024-03-29', date(2024, 3, 29), 'daily')
+    assert update['update_status'] == 'no_update'
+    assert update['update_notice'] == '本期无新数据（最新 2024-03-29）'
+
+
+@pytest.mark.parametrize('frequency', ['日', '周', '月'])
+@pytest.mark.parametrize('period', ['daily', 'weekly'])
+def test_new_observation_with_same_value_is_flat(frequency, period):
+    item = card([('2024-03-01', 15), ('2024-03-21', 15), ('2024-03-29', 15)],
+                frequency=frequency, period=period)
+    assert item['direction'] == 'flat' and item['update_status'] == 'updated'
+    assert item['update_notice'] == ''
+
+
+def test_no_update_without_comparison_observation():
+    item = card([('2023-09-22', 15)], frequency='月')
+    assert item['previous'] is None and item['change'] is None
+    assert item['direction'] == 'no_update'
+    assert 'baseline_unavailable' in item['warnings']
+
+
+def test_indicator_card_uses_readable_catalog_name_without_mutating_metadata():
+    field = {**FIELDS[SID], 'name': '可读指标 / ID123456 [SOURCE.EXAMPLE.value]',
+             'metric': '原始字段表头', 'sheet': '真实工作表'}
+    item = data.indicator_data(SID, field, {'unit': '件', 'points': [
+        {'date': '2024-03-28', 'value': 10}, {'date': '2024-03-29', 'value': 15}]},
+        date(2024, 3, 29), 'weekly')
+    assert item['name'] == '可读指标'
+    assert item['sheet'] == '真实工作表'
+    assert field['name'] == '可读指标 / ID123456 [SOURCE.EXAMPLE.value]'
+    assert field['metric'] == '原始字段表头'
+
+
 def test_missing_baseline_zero_negative_and_future_values():
     item = card([('2024-03-28', 0), ('2024-03-29', -1), ('2024-03-30', 100)], period='daily')
     assert item['latest'] == -1 and item['change'] == -1 and item['change_pct'] is None
@@ -79,8 +134,23 @@ def test_default_latest_and_summary(chart_client):
     assert output['as_of'] == output['latest_data_date'] == '2023-01-04'
     one, two = output['dimensions'][0]['sections'][0]['items']
     assert one['latest'] == 13 and two['date'] == '2023-01-03'
-    assert output['dimensions'][0]['summary'] == {'up': 1, 'down': 1, 'flat': 0, 'extreme': 0,
+    assert two['direction'] == 'no_update' and two['change'] == -5
+    assert output['dimensions'][0]['summary'] == {'up': 1, 'down': 0, 'flat': 0, 'no_update': 1, 'extreme': 0,
         'extreme_high': 0, 'extreme_low': 0, 'unavailable': 0}
+
+
+def test_summary_counts_no_update_separately_from_flat(chart_client):
+    client, state = chart_client
+    state.fields[THIRD]['unit'] = '件'
+    state.observations[SID] = [('2023-09-15', 10), ('2023-09-22', 15)]
+    state.observations[OTHER] = [('2024-03-21', 20), ('2024-03-29', 20)]
+    state.observations[THIRD] = [('2024-03-21', 20), ('2024-03-29', 25)]
+    bind(state, dimensions(*({'kind': 'indicator', 'id': sid} for sid in (SID, OTHER, THIRD))))
+    response = client.get('/dimension-data-test?day=2024-03-29')
+    assert response.status_code == 200, response.text
+    summary = response.json()['dimensions'][0]['summary']
+    assert summary['no_update'] == summary['flat'] == summary['up'] == 1
+    assert summary['down'] == summary['unavailable'] == 0
 
 
 def test_whole_request_budget_and_batches(chart_client):
@@ -169,6 +239,7 @@ def test_explicit_daily_frequency_wins_over_sparse_observation_interval():
     assert item['baseline']['kind'] == 'week_ago'
     assert item['previous_date'] == '2024-03-01'
     assert item['change'] == 0
+    assert item['direction'] == 'no_update'
 
 
 def test_repeated_chart_curves_keep_chart_library_definition_cap(chart_client):

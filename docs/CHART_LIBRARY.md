@@ -258,12 +258,12 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/sn/dimensions` | 有序配置、条目名称/单位/频率/来源、失效原因、`revision`、`can_write`、类别显示名、依据统计 |
+| GET | `/api/sn/dimensions` | 有序配置、条目名称/单位/频率/来源/工作表、失效原因、`revision`、`can_write`、类别显示名、依据统计 |
 | PUT | `/api/sn/dimensions` | `{revision,dimensions,confirm_delete?:[维度id]}` 整份保存；初始revision为0，成功递增；修订冲突409；删除有引用维度且未确认返回409及`references:{id:条数}` |
 | GET | `/api/sn/dimensions/data?date=YYYY-MM-DD&period=daily\|weekly` | 本期数据，省略date取已绑定指标与图表操作数中最新有效观测日；省略period为weekly |
 | GET | `/api/sn/dimensions/templates` | 返回随代码发布的`templates:[{id,name,applicability,dimensions}]`，不写数据库 |
 | POST | `/api/sn/dimensions/templates/{template_id}/draft` | `{revision,dimensions?:当前编辑草稿}`，合并模板结构与已有配置，返回配置描述、`template`、`warnings`；模板外维度带`template_extra:true`，不保存 |
-| POST | `/api/sn/dimensions/suggestions` | `{model_id,dimensions?:当前编辑草稿}`，模型按草稿结构（省略时按已保存配置）两步选择真实工作表及指标；返回`items:[{series_id,dimension,section,reason,name,unit,frequency,...}]`，不保存 |
+| POST | `/api/sn/dimensions/suggestions` | `{model_id,dimensions?:当前编辑草稿,date?:YYYY-MM-DD}`，按草稿结构（省略时按已保存配置）逐环节生成检索说法、全目录排序召回、模型挑选；返回`items:[{series_id,dimension,section,reason,name,unit,frequency,...}]`及各环节候选数和留空原因，不保存 |
 | GET | `/api/sn/dimensions/sources?search=&offset=0&limit=20` | 复用已授权原文选择路径，返回`items:[{title,citation}],next_offset` |
 | POST | `/api/sn/dimensions/infer` | `{model_id,sources:[KnowledgeFileCitation]}`，选1–3份不同资料，返回带新编号的维度/空环节草稿，不保存 |
 
@@ -274,14 +274,20 @@
 本期指标数据包含`latest`、原始`unit`、真实观测`date`、`baseline:{date,value,label,target_date,kind}`、`change`、`change_pct`（比例，显示值乘100）、`direction`、`position`、`freshness`、最近26个有效观测`points`、`display`格式化文本及截断提示。计算只使用截至日（含）前真实有限有效观测，不填零、不插值、不换算单位：
 
 - daily取上一条有效观测；weekly取“截至日前7天当日或之前”的最后有效观测，返回目标日与实际对比日。月度及更低频统一取上一条并标明“较上期”；只有频率未明确时，才以实际间隔至少28天识别低频，明确的日/周频保持原口径。缺少基准不输出变化，基准零不输出变化率；变化率为差值除以基准绝对值。
+- 是否本期更新单独按报告窗口判断：daily基准日为截至日前1天，weekly为前7天，日、周、月及更低频均适用。最新有效观测日不晚于窗口基准日，或计算基准与最新为同一天时，`direction`返回新增值`no_update`，`update_status`为`no_update`，`update_notice`为“本期无新数据（最新 YYYY-MM-DD）”，`comparison_start_date`保留窗口基准日；有本期观测时`update_status`为`updated`。原`previous/baseline/change/change_pct/display`计算口径保留，尤其低频“较上期”差值仍可读取；展示本期方向时须先识别`no_update`，不把无更新的零变化写为持平；本期确有新观测且数值相同仍为`flat`。同期位置和过旧提示继续提供。
 - 同期采用内置自然年模板，容差与覆盖率复用`compute/cycles.py`，读取范围最多含5个往期年，返回从高到低的`rank/(n+1)`及`rank_low`。`n<3`或当前期覆盖不足时不给排名并说明原因，不把缺失期补为零。
 - 过旧提示复用`strategy_monitor._staleness`，相对截至日计算。显示精度复用`number_format`，保留原始数值与单位。
 - 指标与图表全部真实操作数按“指标ID、有效截至窗口”去重后共用20000点预算；固定范围图表先把截至日限制到定义的结束日再取数，避免当前窗口挤掉历史观测；每窗口最多`min(2000,floor(20000/去重窗口数))`点，每批不超过256指标且不超过20000点。预算截断明确标记`history_limited`。普通单项失败保留原位置并列入`failed`；权限或来源版本变化拒绝整个读取，不借部分结果绕过授权。
-- 每维度`summary`包含`up/down/flat`和同期前两高/前两低的`extreme_high/extreme_low/extreme`，同一个指标即使同时属于高低极端也只计一次`extreme`。没有变化/排名的数据不计入相应数量。图表返回固定定义和复用ChartKit的`payload`。
+- 每维度`summary`包含`up/down/flat/no_update`和同期前两高/前两低的`extreme_high/extreme_low/extreme`，本期无新观测只计`no_update`，不计入涨、跌、持平；同一个指标即使同时属于高低极端也只计一次`extreme`。没有变化/排名的数据不计入相应数量。图表返回固定定义和复用ChartKit的`payload`。
+- 指标卡片与配置条目优先采用目录可读`name`，其次`metric`，复用`research_display.indicator_name`清理展示文本；副标题显示`sheet`工作表名。只改变展示，不改写目录或指标绑定。
 
 依据统计直接容忍读取`contradiction.bull/bear.evidence[].dimension`可选字段：有研判页面授权时，当前可见且属于本研究台的生效研判中bull为支持、bear为反对，无字段计`evidence.unassigned`，未知编号计`evidence.deleted`。各维度`references`含`support/oppose/total`。删除确认后不改写任何研判，原编号将计入已删除维度，留待研判重新指派。
 
-“一页周报”可直接调用`GET /api/sn/dimensions/data?date=报告截至日&period=weekly`（日报用daily）。按响应`dimensions`数组顺序逐维度读取`id/label/category/description`、各`sections[].items[]`的真实本期数据及`summary`；使用`baseline.date`表述比较日期、`position.n`说明同期样本、`failed/status/reason/warnings`保留数据限制。报告应传明确日期，避免默认最新日随来源更新改变；配置版本由顶层`revision`标识，此接口读取实时配置，不是冻结归档接口。
+“一页周报”可直接调用`GET /api/sn/dimensions/data?date=报告截至日&period=weekly`（日报用daily）。按响应`dimensions`数组顺序逐维度读取`id/label/category/description`、各`sections[].items[]`的真实本期数据及`summary`；使用`baseline.date`表述比较日期、`position.n`说明同期样本、`failed/status/reason/warnings`保留数据限制。新增`direction=no_update`时使用`update_notice`说明停更，不从`change=0`或仍保留的低频较上期差值推断本期方向；读取`summary.no_update`单列本期无新数据数。报告应传明确日期，避免默认最新日随来源更新改变；配置版本由顶层`revision`标识，此接口读取实时配置，不是冻结归档接口。
+
+模型推荐以每个维度的每个环节为研究条目；无环节时以维度本身为条目，`section`返回空字符串。条目内容包含维度名、说明与环节名。模型先写检索说法，程序复用研判的`judgment_recall`通用函数和`CatalogRecall`对完整授权目录排序召回；每个条目都参与，不按工作表顺序截断。每环节候选数依`RECALL_STEPS`的20、12、8逐级退让以满足请求容量，仍超容量则报错。候选附截至`date`（省略时为当天）的最新有效观测日、频率、单位、工作表，由模型判断代表性、口径及长期停更风险。提示要求每环节选择最有代表性的1–4个，同品种多个合约月份仅在含义不同的情况下分别选择，缺少合适指标时留空并说明；程序不按名称、关键词或日期替模型筛选、补选。
+
+程序校验维度、环节存在，指标属于本环节本次展示候选，每环节至多4个、总计至多96个；超限或模型格式无效直接422，调用失败如实返回，不回退固定列表。调用审计使用`dimension_queries`、`dimension_fields`。推荐响应新增`as_of`、`recall_per_section`和`sections:[{dimension,section,item_id,section_id,candidate_count,selected_count,empty_reason}]`；旧`items`结构继续可读，并附`latest_date/item_id/section_id`。`item_id`为本次请求按维度与环节顺序生成的临时条目编号，`section_id`为草稿已有环节编号（没有时为空），用于区分同维度同名环节；模型同名选择必须指明`item_id`，页面采用时保留原环节归属。`field_count`为完整目录条数，`selected_field_count`为本次展示候选的去重条数，`truncated=false`表示未使用工作表字段截断；`recall_per_section`记录本次采用的候选数上限。留空原因来自模型，不由程序以业务规则填造。研究员仍需采用到编辑草稿并保存。
 
 ### 内置维度模板库与从模板开始
 
