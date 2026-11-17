@@ -6,7 +6,8 @@ from math import ceil
 from fastapi import HTTPException
 
 from tin.compute.condition_backtest import backtest_conditions, validate_rules
-from tin.web.chart_data import catalog_fields, chart_read_scope, cutoff, read_series
+from tin.integration.observation_windows import paged_observations
+from tin.web.chart_data import catalog_fields, chart_read_scope, cutoff
 from tin.web.dimension_data import FREQUENCY_DAYS, LOW_FREQUENCIES
 
 
@@ -17,9 +18,11 @@ def _years(field):
 def backtest_monitor(scope, rules, logic, start=None, end=None):
     """Read roughly two daily/weekly or five monthly/low-frequency years.
 
-    Every request stays below 256 series / 20,000 points and 2,000 points per
-    series. Extra observations precede the displayed interval for change and
-    consecutive-period warmup. Mixed-frequency combinations use the common
+    Complete windows stay below 20,000 points and 2,000 points per series;
+    judgment requests page at most 121 observations over real dates, with
+    at most 256 series / 20,000 points per request. Extra observations precede
+    the displayed interval for change and consecutive-period warmup.
+    Mixed-frequency combinations use the common
     two-year interval; callers may supply an explicit interval up to six years.
     """
     validate_rules(rules, logic)
@@ -47,20 +50,37 @@ def backtest_monitor(scope, rules, logic, start=None, end=None):
             warmup = max(rule['consecutive_periods'] + int(rule['metric'] == 'change')
                          for rule in rules if rule['series_id'] == identifier)
             limit = ceil(history_days / interval) + warmup + 2
-            if limit > 2000:
-                raise HTTPException(413, '回测所需窗口超过单指标2000点，请缩短时间范围或连续期数')
-            groups[limit].append(identifier)
-        data = {}
+            groups[min(limit, 2000)].append(identifier)
+        data, versions = {}, {}
         for limit, selected in groups.items():
-            batch_size = min(256, 20000 // limit)
-            for offset in range(0, len(selected), batch_size):
-                data.update(read_series(selected[offset:offset + batch_size], end_day, limit=limit, preserve_missing=True))
+            observations = paged_observations(scope, selected, end_day, limit, direct_only=True,
+                versions=versions, version_notice='监测来源在分页期间变化，请刷新')
+            for identifier, rows in observations.items():
+                points = [{'date': row['date'], 'value': row['value']} for row in rows]
+                data[identifier] = {'points': points, 'limited': len(points) == limit, 'point_limit': limit,
+                    'coverage': {'start': points[0]['date'] if points else None,
+                                 'end': points[-1]['date'] if points else None,
+                                 'point_count': len(points), 'point_limit': limit}}
         for identifier in identifiers:
             source = data.setdefault(identifier, {'points': []})
             source['frequency'] = fields[identifier].get('frequency') or ''
             source.setdefault('name', fields[identifier].get('metric') or fields[identifier].get('name') or '')
             source.setdefault('unit', fields[identifier].get('unit') or '')
     try:
-        return backtest_conditions(rules, logic, data, start_day, end_day)
+        result = backtest_conditions(rules, logic, data, start_day, end_day)
     except ValueError as error:
         raise HTTPException(422, str(error)) from None
+    for series in result['series']:
+        coverage = data[series['series_id']]['coverage']
+        series['coverage'] = coverage
+        if coverage['start'] is None:
+            notice = '截至所选日期没有可读观测，实际覆盖区间为空'
+        elif coverage['start'] > start_day.isoformat() or series['point_limit'] == 2000:
+            notice = (f"实际读取观测覆盖 {coverage['start']} 至 {coverage['end']}，共 {coverage['point_count']} 点"
+                      f"（本次上限 {coverage['point_limit']} 点）；该指标覆盖区间前的状态为无数据")
+        else:
+            continue
+        series['notice'] = '；'.join(filter(None, [series['notice'], notice]))
+        if notice not in result['notices']:
+            result['notices'].append(notice)
+    return result

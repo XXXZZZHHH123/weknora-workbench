@@ -144,18 +144,22 @@ def complete_window_transport(monkeypatch):
     from tin.integration import page_facts
     from tin.provenance import bridge
     original = bridge.structured_request
+    reads = []
 
     def transport(method, endpoint, body, **kwargs):
         if body.get('include_invalid'):
             assert body['view_module'] == 'judgments'
-            before = page_facts._page.get()
-            assert before['series_ids'] == body['series_ids']
-            marker = page_facts._page.set({**before, 'module': 'indicators'})
-            try:
+            assert 1 <= body['points_per_series'] <= 121
+            assert len(body['series_ids']) <= 256
+            assert len(body['series_ids']) * body['points_per_series'] <= 20000
+            reads.append(body.copy())
+            # The chart fixture models the ordinary indicator projection. Adapt
+            # only that fixture's context; assert the complete-window wire
+            # request above before handing its rows back to the real reader.
+            with page_facts.page_read_scope('indicators', series_ids=body['series_ids'],
+                    day=body['as_of'], points_per_series=body['points_per_series']):
                 adapted = {**body, 'view_module': 'indicators'}
                 response = original(method, endpoint, adapted, **kwargs)
-            finally:
-                page_facts._page.reset(marker)
             content = response.json()
             content['include_invalid'] = True
             for row in content.get('rows', []):
@@ -164,6 +168,7 @@ def complete_window_transport(monkeypatch):
             return httpx.Response(response.status_code, json=content, request=response.request)
         return original(method, endpoint, body, **kwargs)
     monkeypatch.setattr(bridge, 'structured_request', transport)
+    return reads
 
 
 def attach_reader(state, rules, logic='all'):
@@ -179,7 +184,7 @@ def test_authorized_real_projection_frequency_limits_and_warmup(chart_client, mo
     state.fields[SID]['frequency'] = '日'
     state.fields[OTHER]['frequency'] = '月'
     today = date(2024, 3, 29)
-    complete_window_transport(monkeypatch)
+    reads = complete_window_transport(monkeypatch)
     state.observations[SID] = [((today - timedelta(days=index)).isoformat(), 1500 - index)
                                for index in reversed(range(1400))]
     state.observations[OTHER] = [((today - timedelta(days=index * 30)).isoformat(), 100 - index)
@@ -190,12 +195,20 @@ def test_authorized_real_projection_frequency_limits_and_warmup(chart_client, mo
     payload = response.json()
     assert payload['current_state'] == '触发'
     assert payload['start'] == (today - timedelta(days=731)).isoformat()
-    reads = [body for _, body in state.requests if 'points_per_series' in body]
-    limits = {tuple(body['series_ids']): body['points_per_series'] for body in reads}
-    assert 734 <= limits[(SID,)] < 900
-    assert 60 < limits[(OTHER,)] < 100
-    assert all(len(body['series_ids']) <= 256 and len(body['series_ids']) * body['points_per_series'] <= 20000
-               for body in reads)
+    for identifier, expected_limit in ((SID, 737), (OTHER, 69)):
+        pages = [body for body in reads if identifier in body['series_ids']]
+        assert sum(body['points_per_series'] for body in pages) == expected_limit
+        boundary = today.isoformat()
+        stitched = []
+        for body in pages:
+            assert body['as_of'] == boundary
+            page = [point for point in state.observations[identifier]
+                    if point[0] <= boundary][-body['points_per_series']:]
+            stitched.extend(page)
+            boundary = (date.fromisoformat(page[0][0]) - timedelta(days=1)).isoformat()
+        assert sorted(stitched) == state.observations[identifier][-expected_limit:]
+        assert len({stamp for stamp, _ in stitched}) == expected_limit
+    assert len([body for body in reads if SID in body['series_ids']]) > 1
     assert payload['daily_states'][0]['rule_states'] == [True, True]
     assert len(payload['series'][0]['points']) == 732
 
@@ -213,7 +226,25 @@ def test_reader_rejects_future_and_invalid_ranges(chart_client):
     attach_reader(state, [rule(SID)])
     assert client.get('/monitor-data-test?day=2099-01-01').status_code == 422
     assert client.get('/monitor-data-test?day=2024-03-29&start=2000-01-01').status_code == 422
-    assert client.get('/monitor-data-test?day=2024-03-29&start=2018-04-01').status_code == 413
+
+
+def test_reader_caps_large_window_and_reports_actual_coverage(chart_client, monkeypatch):
+    client, state = chart_client
+    state.fields[SID]['frequency'] = '日'
+    today = date(2024, 3, 29)
+    state.observations[SID] = [((today - timedelta(days=index)).isoformat(), 2201 - index)
+                               for index in reversed(range(2200))]
+    reads = complete_window_transport(monkeypatch)
+    attach_reader(state, [rule(SID)])
+    response = client.get('/monitor-data-test?day=2024-03-29&start=2018-04-01')
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert sum(body['points_per_series'] for body in reads) == 2000
+    assert len(payload['series'][0]['points']) == 2000
+    actual_first = (today - timedelta(days=1999)).isoformat()
+    notices = '；'.join(payload['notices'])
+    assert actual_first in notices and today.isoformat() in notices
+    assert payload['series'][0]['limited'] is True
 
 
 def test_reader_reports_unrepresentable_change_as_validation_error(chart_client, monkeypatch):
