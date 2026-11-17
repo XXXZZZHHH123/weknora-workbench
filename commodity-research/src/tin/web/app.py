@@ -274,6 +274,11 @@ app.include_router(affairs_router)
 from tin.web.market import build_market_router, market_catalog as market_catalog_data, saved_core_cards
 from tin.web.focus_suggestions import router as focus_suggestions_router
 app.include_router(focus_suggestions_router)
+from tin.web.dimension_board import router as dimensions_router, build_page_router as build_dimension_pages
+from tin.web.dimension_suggestions import router as dimension_suggestions_router
+app.include_router(dimensions_router)
+app.include_router(dimension_suggestions_router)
+app.include_router(build_dimension_pages(templates))
 app.include_router(build_market_router(lambda: _page_session('market'), templates,
                                        lambda session, day: _home_date(session, day)))
 

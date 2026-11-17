@@ -249,3 +249,34 @@
 - 指标作图新增 Python 定义与接口验收：多指标共同周期和逐指标统计、派生公式日期交集与单位确认、原表模板元数据默认值、图集完整校验和共同读取预算、预览只读权限。Node 验收多曲线周期、上一期虚线、右轴和派生图例；浏览器夹具 `tests/chart-builder-ui.cjs` 覆盖面板入口、选择、预览、分组保存与图集。
 - 浏览器实际查看：单指标页周期面板、图表库、导入确认、图表详情编辑与修订、重新转换的预览和确认保存；同步更新受影响的组件断言。
 - 测试样例与预期数值只放在测试夹具中，不进入业务代码。
+
+## 九、研究维度
+
+`/sn/dimensions` 在指标与研究判断之间提供研究台自己的维度看板，与产业图自由画布各自保存。未保存时采用共享契约 `research_dimensions.default_dimensions()` 的六维度（`price/supply/demand/inventory/balance/macro`）；显示名为价格与价差、供给、需求、库存、平衡、宏观。通用类别仍使用共享协议的 `CATEGORIES`，页面显示类别中文名。
+
+配置存入 `SourceMapping` 的 `DIMENSIONS_KEY` 研究台作用域键，结构为 `{dimensions:[{id,label,category,description,sections:[{id,label,items:[{kind,id,revision?}]}]}]}`。最多12个维度、每维度8个环节、每环节12条、全台96条，`kind+id` 全台不能重复。新维度由服务端生成 `d-` 加8位小写十六进制编号，改名、排序保留编号；新环节可省略编号由服务端生成。图表必须指定有效修订号，读取固定修订定义，数据按所选截至日重算。已有失效绑定仍保留并返回原因；不能新绑失效条目。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/sn/dimensions` | 有序配置、条目名称/单位/频率/来源、失效原因、`revision`、`can_write`、类别显示名、依据统计 |
+| PUT | `/api/sn/dimensions` | `{revision,dimensions,confirm_delete?:[维度id]}` 整份保存；初始revision为0，成功递增；修订冲突409；删除有引用维度且未确认返回409及`references:{id:条数}` |
+| GET | `/api/sn/dimensions/data?date=YYYY-MM-DD&period=daily\|weekly` | 本期数据，省略date取已绑定指标与图表操作数中最新有效观测日；省略period为weekly |
+| POST | `/api/sn/dimensions/suggestions` | `{model_id}`，两步模型选择真实工作表及指标；返回`items:[{series_id,dimension,section,reason,name,unit,frequency,...}]`，不保存 |
+| GET | `/api/sn/dimensions/sources?search=&offset=0&limit=20` | 复用已授权原文选择路径，返回`items:[{title,citation}],next_offset` |
+| POST | `/api/sn/dimensions/infer` | `{model_id,sources:[KnowledgeFileCitation]}`，选1–3份不同资料，返回带新编号的维度/空环节草稿，不保存 |
+
+只有来源版本2的研究台开放完整接口，读取要求指标页面授权，保存要求共享写权限。模型建议同核心关注要求来源可读、账号可写、共享可编辑；模型分组采用本台 `dimension_prompt(read_dimensions(...))`，程序仅校验真实ID、合法维度、数量和格式。归纳沿用原文读取的版本、绑定、原件/解析正文验证，模型前后复核正文摘要与出处；共享正文读取器仍验证真实来源，维度入口独立校验指标页面与共享写权限。失败如实报错，不用固定列表补齐。
+
+受限视角沿用核心关注规则：页面只读服务端已保存的指标绑定及最新两条必要观测（较上期），不接受自选日期/周期、不读目录/原文/任意历史、不开放修改接口。固定修订图表、同期排名与完整走势显示授权限制原因。来源可读但无共享编辑权限的普通查看成员可以读取完整看板。
+
+本期指标数据包含`latest`、原始`unit`、真实观测`date`、`baseline:{date,value,label,target_date,kind}`、`change`、`change_pct`（比例，显示值乘100）、`direction`、`position`、`freshness`、最近26个有效观测`points`、`display`格式化文本及截断提示。计算只使用截至日（含）前真实有限有效观测，不填零、不插值、不换算单位：
+
+- daily取上一条有效观测；weekly取“截至日前7天当日或之前”的最后有效观测，返回目标日与实际对比日。月度及更低频统一取上一条并标明“较上期”；只有频率未明确时，才以实际间隔至少28天识别低频，明确的日/周频保持原口径。缺少基准不输出变化，基准零不输出变化率；变化率为差值除以基准绝对值。
+- 同期采用内置自然年模板，容差与覆盖率复用`compute/cycles.py`，读取范围最多含5个往期年，返回从高到低的`rank/(n+1)`及`rank_low`。`n<3`或当前期覆盖不足时不给排名并说明原因，不把缺失期补为零。
+- 过旧提示复用`strategy_monitor._staleness`，相对截至日计算。显示精度复用`number_format`，保留原始数值与单位。
+- 指标与图表全部真实操作数按“指标ID、有效截至窗口”去重后共用20000点预算；固定范围图表先把截至日限制到定义的结束日再取数，避免当前窗口挤掉历史观测；每窗口最多`min(2000,floor(20000/去重窗口数))`点，每批不超过256指标且不超过20000点。预算截断明确标记`history_limited`。普通单项失败保留原位置并列入`failed`；权限或来源版本变化拒绝整个读取，不借部分结果绕过授权。
+- 每维度`summary`包含`up/down/flat`和同期前两高/前两低的`extreme_high/extreme_low/extreme`，同一个指标即使同时属于高低极端也只计一次`extreme`。没有变化/排名的数据不计入相应数量。图表返回固定定义和复用ChartKit的`payload`。
+
+依据统计直接容忍读取`contradiction.bull/bear.evidence[].dimension`可选字段：有研判页面授权时，当前可见且属于本研究台的生效研判中bull为支持、bear为反对，无字段计`evidence.unassigned`，未知编号计`evidence.deleted`。各维度`references`含`support/oppose/total`。删除确认后不改写任何研判，原编号将计入已删除维度，留待研判重新指派。
+
+“一页周报”可直接调用`GET /api/sn/dimensions/data?date=报告截至日&period=weekly`（日报用daily）。按响应`dimensions`数组顺序逐维度读取`id/label/category/description`、各`sections[].items[]`的真实本期数据及`summary`；使用`baseline.date`表述比较日期、`position.n`说明同期样本、`failed/status/reason/warnings`保留数据限制。报告应传明确日期，避免默认最新日随来源更新改变；配置版本由顶层`revision`标识，此接口读取实时配置，不是冻结归档接口。

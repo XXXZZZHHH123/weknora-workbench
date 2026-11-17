@@ -324,6 +324,23 @@ def test_citations_do_not_expand_workbench_or_delegated_source_permissions(case,
     assert error.value.status_code == 403 and state['downloads'] == [] and state['catalog_reads'] == []
 
 
+def test_shared_file_reader_uses_callers_module_grant_without_expanding_strategy_route(case):
+    scope, state = case
+    scope = replace(scope, view_modules=('indicators',))
+    reference = file_ref(case)
+    args = {key: reference[key] for key in ('source_binding_id', 'knowledge_id', 'file_version')}
+    content = asyncio.run(citations.read_file_content(scope, **args))
+    assert content['supported'] is True and content['text'] == 'Synthetic source text'
+    marker = current_workbench.set(scope)
+    try:
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(citations.citation_file_content(**args))
+        assert caught.value.status_code == 403
+    finally:
+        current_workbench.reset(marker)
+    assert len(state['downloads']) == 1
+
+
 def valid_card(**changes):
     return {'format': 'research-strategy-card.v1', 'title': 'Synthetic strategy', 'direction': 'observe',
         'thesis': 'Research thesis', 'watch_for': 'Watch conditions', 'trigger': 'Explicit trigger',

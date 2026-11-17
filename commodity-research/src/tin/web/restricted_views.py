@@ -695,6 +695,12 @@ def publish_diagram(scope):
 
 
 async def restricted_response(request, scope, route_path):
+    if route_path == '/sn/dimensions' and request.method in {'GET', 'HEAD'}:
+        if set(request.query_params) - {'_research_tenant', '_research_user'}:
+            raise HTTPException(422, '受限视角由服务端绑定确定指标和最新时点，不接受自选查询范围')
+        from tin.web.dimension_board import restricted_page
+        from tin.web.app import templates
+        return await run_in_threadpool(restricted_page, request, scope, templates)
     if request.method == 'GET' and route_path == '/api/sn/judgment/chart':
         from tin.web.judgment_charts import chart
         from starlette.responses import JSONResponse
