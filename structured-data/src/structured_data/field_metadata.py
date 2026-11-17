@@ -14,6 +14,7 @@ class FieldMetadata(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     role: Literal['numeric', 'text_dimension', 'annotation'] | None = None
     unit: str | None = Field(default=None, max_length=128)
+    unit_source: Literal['source', 'declared'] | None = None
     frequency: str | None = Field(default=None, max_length=32)
     unit_evidence: list[MetadataEvidence] = Field(default_factory=list, max_length=16)
     frequency_evidence: list[MetadataEvidence] = Field(default_factory=list, max_length=16)

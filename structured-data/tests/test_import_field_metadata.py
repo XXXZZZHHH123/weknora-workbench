@@ -51,6 +51,7 @@ def test_new_ready_import_uses_source_checked_model_metadata(tmp_path, monkeypat
     numeric = next(f for f in fields if f['field_metadata']['role'] == 'numeric')
     annotation = next(f for f in fields if f['field_metadata']['role'] == 'annotation')
     assert numeric['unit'] == '元' and numeric['frequency'] == '周'
+    assert numeric['field_metadata']['unit_source'] == 'source'
     assert numeric['field_metadata']['unit_evidence'] == [{'sheet': 'Observations', 'cell': 'B1', 'text': '收入（元） / 周度 / 周'}]
     assert numeric['field_metadata']['frequency_evidence'] == numeric['field_metadata']['unit_evidence']
     assert manager.store.query_series(first['dataset_id'], numeric['series_id'], operation='sum')['aggregate'] == 9
@@ -93,6 +94,10 @@ def test_explicit_metadata_has_no_unit_dictionary_and_preserves_raw_evidence(tmp
 def test_metadata_contract_defaults_and_rejects_unknown_fields():
     assert FieldMetadata.model_validate({}).role is None
     assert FieldMetadata.model_validate({}).frequency is None
+    assert FieldMetadata.model_validate({}).unit_source is None
+    assert FieldMetadata.model_validate({'unit_source': 'declared'}).unit_evidence == []
+    with pytest.raises(ValidationError):
+        FieldMetadata.model_validate({'unit_source': 'guessed'})
     with pytest.raises(ValidationError):
         FieldMetadata.model_validate({'unknown': 'invented'})
     with pytest.raises(ValidationError):
@@ -100,6 +105,68 @@ def test_metadata_contract_defaults_and_rejects_unknown_fields():
     consumer = Path(__file__).resolve().parents[2] / 'commodity-research/src/tin/integration/field_metadata.py'
     producer = Path(__file__).resolve().parents[1] / 'src/structured_data/field_metadata.py'
     assert producer.read_text() == consumer.read_text()
+
+
+def test_existing_mapping_unit_without_header_text_parses_as_declared(tmp_path):
+    from structured_data.generic_parser import parse_mapped_workbook
+    from structured_data.scanner import scan_workbook
+    path = original(tmp_path, composite=False)
+    mapping = scan_workbook(path, use_reviewed_mappings=False)['sheets'][0]['mapping']
+    mapping['blocks'][0]['columns'][0]['unit'] = '研究员确认单位'
+    parsed = parse_mapped_workbook(path, [mapping])
+    field = parsed['series'][0]
+    assert field['unit'] == '研究员确认单位'
+    assert field['field_metadata']['unit_source'] == 'declared'
+    assert field['field_metadata']['unit_evidence'] == []
+    assert '单位为人工确认，未在原表找到对应文字' in field['description']
+    assert [r['value'] for r in parsed['observations'] if r['series_id'] == field['series_id']] == [4, 5]
+
+
+def test_user_declared_unit_can_preview_confirm_and_save_template(tmp_path):
+    manager = ImportManager(tmp_path / 'data')
+    first = manager.ingest(original(tmp_path, composite=False), use_reviewed_mappings=False)
+    mapping = deepcopy(manager.sheet(first['import_id'], 'Observations')['mapping'])
+    mapping['blocks'][0]['columns'][0]['unit'] = '人工核定单位'
+    preview = manager.preview(first['import_id'], mapping)
+    assert preview['series'][0]['field_metadata']['unit_source'] == 'declared'
+    saved = manager.confirm(first['import_id'], mapping, save_template=True)
+    field = next(f for f in manager.store.list_series(saved['dataset_id'])['series'] if f['unit'])
+    assert field['unit'] == '人工核定单位'
+    assert field['field_metadata']['unit_source'] == 'declared'
+    assert field['field_metadata']['unit_evidence'] == []
+    assert manager.get(first['import_id'])['sheets'][0]['template_status'] == 'saved'
+    assert manager.store.query_series(saved['dataset_id'], field['series_id'], operation='sum')['aggregate'] == 9
+
+
+@pytest.mark.parametrize('metadata_only', [False, True])
+def test_model_suggested_unit_without_verbatim_evidence_remains_unadopted(tmp_path, monkeypatch, metadata_only):
+    from structured_data.ai_review import suggest_mapping
+    manager = ImportManager(tmp_path / 'data')
+    first = manager.ingest(original(tmp_path, composite=False), use_reviewed_mappings=False)
+    proposal = {'column_updates': [{'block_index': 0, 'column': 'B', 'unit': '模型猜测单位'}],
+                'evidence': [{'block_index': 0, 'column': 'B', 'field': 'unit', 'cells': ['B1']}]}
+    monkeypatch.setattr('structured_data.ai_review._request', lambda *args: proposal)
+    result = suggest_mapping(manager, first['import_id'], 'Observations', strict=True, metadata_only=metadata_only)
+    assert any(d.get('field') == 'unit' for d in result['diagnostics'])
+    assert all(f['unit'] is None for f in manager.store.list_series(first['dataset_id'])['series'])
+    assert manager.sheet(first['import_id'], 'Observations')['mapping']['blocks'][0]['columns'][0]['unit'] is None
+
+
+def test_matrix_declared_unit_without_row_text_is_retained(tmp_path):
+    from structured_data.scanner import scan_workbook
+    from structured_data.generic_parser import parse_mapped_workbook
+    path = tmp_path / 'declared-matrix.xlsx'
+    book = Workbook(); sheet = book.active; sheet.title = 'Periods'
+    sheet.append(['Measure', '2021', '2022', '2023'])
+    sheet.append(['Quantity', 3, 4, 5]); book.save(path)
+    mapping = scan_workbook(path, use_reviewed_mappings=False)['sheets'][0]['mapping']
+    mapping['blocks'][0]['row_rules'][0]['unit'] = '人工核定单位'
+    parsed = parse_mapped_workbook(path, [mapping])
+    field = parsed['series'][0]
+    assert field['unit'] == '人工核定单位'
+    assert field['field_metadata']['unit_source'] == 'declared'
+    assert field['field_metadata']['unit_evidence'] == []
+    assert '单位为人工确认，未在原表找到对应文字' in field['description']
 
 
 def test_model_unit_source_cannot_disagree_with_reviewed_evidence(tmp_path, monkeypatch):
@@ -134,7 +201,8 @@ def test_matrix_metadata_uses_explicit_row_rule_and_keeps_annotation_non_numeric
     assert [r['value'] for r in parsed['observations'] if r['series_id'] == parsed['series'][1]['series_id']] == [None] * 3
 
 
-def test_research_catalog_projects_published_metadata_with_real_source_identity(tmp_path, monkeypatch):
+@pytest.mark.parametrize('unit_source', ['source', 'declared'])
+def test_research_catalog_projects_published_metadata_with_real_source_identity(tmp_path, monkeypatch, unit_source):
     import hashlib
     from structured_data.research_facts import read_facts
     from structured_data.workspaces import Identity, current_identity
@@ -145,17 +213,25 @@ def test_research_catalog_projects_published_metadata_with_real_source_identity(
                   file_hash=hashlib.md5(path.read_bytes()).hexdigest())
     first = manager.ingest(path, use_reviewed_mappings=False, native_source=native)
     mapping = deepcopy(manager.sheet(first['import_id'], 'Observations')['mapping'])
-    mapping['blocks'][0]['columns'][0].update(unit='元', unit_cells=['B1'], frequency='周', frequency_cells=['B1'])
+    unit = '元' if unit_source == 'source' else '人工核定单位'
+    column = mapping['blocks'][0]['columns'][0]
+    column.update(unit=unit, frequency='周', frequency_cells=['B1'])
+    if unit_source == 'source':
+        column['unit_cells'] = ['B1']
     manager.confirm(first['import_id'], mapping)
     marker = current_identity.set(Identity('reader', '', '', 9, 'owner', 'kb-fixture', 9, True))
     try:
         response = read_facts(manager.store, manager, {'sources': [{'knowledge_id': 'original-fixture', 'file_hash': native['file_hash']}], 'catalog_only': True})
     finally:
         current_identity.reset(marker)
-    field = next(f for f in response['indicators'] if f.get('unit') == '元')
+    field = next(f for f in response['indicators'] if f.get('unit') == unit)
     assert field['frequency'] == '周'
     assert field['source_knowledge_id'] == 'original-fixture'
-    assert field['field_metadata']['unit_evidence'][0]['cell'] == 'B1'
+    assert field['field_metadata']['unit_source'] == unit_source
+    if unit_source == 'source':
+        assert field['field_metadata']['unit_evidence'][0]['cell'] == 'B1'
+    else:
+        assert field['field_metadata']['unit_evidence'] == []
     assert field['field_metadata']['frequency_evidence'][0]['text'] == '收入（元） / 周度 / 周'
 
     # Run the actual consumer contract and display adapter on the producer payload.
@@ -166,8 +242,12 @@ def test_research_catalog_projects_published_metadata_with_real_source_identity(
     from tin.web.catalog import indicator_row
     validate_field_metadata(response['indicators'])
     displayed = indicator_row(field)
-    assert displayed['unit'] == '元' and displayed['frequency'] == '周'
-    assert displayed['field_metadata']['unit_evidence'][0]['cell'] == 'B1'
+    assert displayed['unit'] == unit and displayed['frequency'] == '周'
+    if unit_source == 'source':
+        assert displayed['field_metadata']['unit_evidence'][0]['cell'] == 'B1'
+    else:
+        assert '单位为人工确认，未在原表找到对应文字' in displayed['note']
+        assert displayed['field_metadata']['unit_evidence'] == []
 
 
 def test_ready_matrix_also_requests_source_checked_metadata(tmp_path, monkeypatch):

@@ -126,7 +126,11 @@ def parse_matrix(ws,fs,b,bi,sheet,result):
         evidence = {}
         for field in ('unit', 'frequency'):
             value = rule.get(field)
-            locations = rule.get(field + '_cells', [labelcell] if value else [])
+            # A row-rule unit can be a saved human declaration. Retain it
+            # without inventing evidence when the row label has no such text.
+            default_locations = ([labelcell] if value and
+                                 (field != 'unit' or value in str(rawlabel)) else [])
+            locations = rule.get(field + '_cells', default_locations)
             records = []
             for ref in locations:
                 try:
@@ -141,14 +145,17 @@ def parse_matrix(ws,fs,b,bi,sheet,result):
                     raise ValueError('矩阵元数据与原表文字不符')
                 records.append(dict(sheet=sheet, cell=ref, text=str(rawtext)))
             evidence[field + '_evidence'] = records
-        metadata = FieldMetadata(role=rule.get('field_role'), unit=unit, frequency=rule.get('frequency'), **evidence).model_dump()
+        unit_source = ('source' if evidence['unit_evidence'] else 'declared') if unit else None
+        metadata = FieldMetadata(role=rule.get('field_role'), unit=unit, unit_source=unit_source,
+                                 frequency=rule.get('frequency'), **evidence).model_dump()
         result['series'].append({'field_metadata': metadata,
             **({'frequency': rule['frequency'], 'frequency_cells': [e['cell'] for e in evidence['frequency_evidence']]} if rule.get('frequency') else {}),
             'series_id':sid,'sheet':sheet,'metric':metric,'unit':unit,
             'unit_status':'explicit' if unit else 'needs_review','dimensions':dims,'date_mode':'period',
             'block_index':bi,'header_cells':[labelcell]+[p for c in b['columns'] for p in c['header_cells']],
             'periods':[c['period'] for c in b['columns']], 'region_name':b.get('name',''),
-            'description':f'{sheet} / {metric}；按原表期间或版本标签查询，不转换成具体日期。'})
+            'description':f'{sheet} / {metric}；按原表期间或版本标签查询，不转换成具体日期。'
+                + ('单位为人工确认，未在原表找到对应文字' if unit_source == 'declared' else '')})
         for c in b['columns']:
             ci=column_index_from_string(c['column']);cell=rows[rn-1][ci-1];fc=frows[rn-1][ci-1]
             raw=cell.value;formula=fc.value if fc.data_type=='f' else None

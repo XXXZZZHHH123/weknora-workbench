@@ -655,7 +655,7 @@ class ImportManager:
                 # A failed replacement leaves the prior published sheet intact.
                 if sheet['name'] in failed and sheet['name'] in base_sheets:
                     continue
-                coverage[sheet['name']] = {k: sheet[k] for k in ('name', 'status', 'reasons')}
+                coverage[sheet['name']] = {k: sheet[k] for k in ('name', 'status', 'reasons', 'rows', 'columns') if k in sheet}
             metadata['coverage'] = [coverage[s['name']] for s in doc['sheets']]
             report_progress(progress, 'publish')
             if not parts and base and metadata['coverage'] == base.get('coverage', []):

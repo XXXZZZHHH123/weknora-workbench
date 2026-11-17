@@ -189,7 +189,7 @@ def create_app(data_dir: str | Path | None = None):
     @mcp.tool()
     def list_datasets(question: str | None = None, search: str = '', limit: int = 8,
                       offset: int = 0, latest_only: bool = True) -> dict:
-        """分页列出已完成的Excel版本及已发布PDF表。不检索PPT、文档正文或原图；完整空目录也不证明授权知识库无相关内容，文档证据应按当前实际可用工具在授权范围检索/读取。默认每份来源的最新版本，历史用latest_only=false。limit为1..20，next_offset继续文件目录。question保留完整原问题；search为模型生成的字面召回词（空格AND），不决定业务口径。表名预览和field_candidates均有界，候选来自持久的已发布表头索引，无需读取整个Excel。候选不含完整同名来源上下文，选择真实dataset_id后用list_series指定sheet/search并分页核对字段、单位、日期和来源，再提交查询计划或SQL；截断、召回无结果、目录失败都不证明没有数据。datasets仅指Excel，pdf_tables才是PDF，Excel为空不表示没有PDF。"""
+        """分页列出已完成的Excel版本及已发布PDF表。不检索PPT、文档正文或原图；完整空目录也不证明授权知识库无相关内容，文档证据应按当前实际可用工具在授权范围检索/读取。默认每份来源的最新版本，历史用latest_only=false。limit为1..20，next_offset继续文件目录。question保留完整原问题；search为模型生成的字面召回词（空格AND），不决定业务口径。表名预览和field_candidates均有界，候选来自持久的已发布表头索引，无需读取整个Excel。每个数据集另列有界的待确认/未映射工作表及状态、原因、已知范围和next_step；这些表不能结构化查询，可用inspect_source读取经来源校验的原单元格。question/search对这些真实表名同样只做候选召回和排序，不代替模型选择表或列。候选不含完整同名来源上下文，选择真实dataset_id后用list_series指定sheet/search并分页核对字段、单位、日期和来源，再提交查询计划或SQL；截断、召回无结果、目录失败都不证明没有数据。datasets仅指Excel，pdf_tables才是PDF，Excel为空不表示没有PDF。"""
         from .discovery_catalog import list_datasets as discover
         started = time.perf_counter()
         result = discover(store, question, search=search, limit=limit,
@@ -213,9 +213,10 @@ def create_app(data_dir: str | Path | None = None):
     @mcp.tool()
     def inspect_source(dataset_id: str, sheet: str | None = None, searches: list[str] | None = None,
                        ranges: list[str] | None = None, sums: list[list[str]] | None = None,
-                       max_matches: int = 10, max_cells: int = 200,
+                       max_matches: int = 10,
+                       max_cells: Annotated[int, Field(ge=1, le=400, description='可选；显式范围及求和输入总格数不超过400时按实际范围返回，低于实际格数会提升并返回effective_max_cells；搜索邻域仍受此预算约束。')] = 200,
                        padding_rows: int = 2, padding_cols: int = 2) -> dict:
-        """只读核验原 Excel 的单元格、公式及相交原生图表的标题、轴标题和系列引用，追查字段目录未覆盖的来源证据；包括 parsed_range 外区域。dataset_id 必须来自真实目录，文件 SHA256 必须与该版本一致。searches 是原值/公式的字面匹配（最多8词），可跨全部列；未指定 sheet 时按原工作簿顺序扫描，预算可能耗在其他表，目标表根本未扫描。已定位字段后必须指定该字段的真实 sheet 定向检索。跨多表搜索截断时看 scan.unscanned_sheets/incomplete_sheets、truncated 和 next_step；matches=[] 不等于没有数据，继续目标表检索。ranges 支持 A1、$绝对坐标、大小写及同工作表前缀；给出 sheet，或每个引用都带同一真实工作表前缀，最多8段、总格数不超过 max_cells(1..400)，返回每格原值、坐标及公式缓存；coverage.<sheet>.source_used_range 是有界扫描所得的非空原件范围，source_extent_status=unknown_budget 时范围未知；ranges[].read_window 仅表示本次读取窗口，calculations[].input_ranges 表示实际计算输入范围，不能把读取窗口当作原表有效范围。sums 最多8组、每组1..16个A1引用（单格或有限矩形范围，如 C74:C85、D74:D85），展开后每组至少2格；组内重叠坐标拒绝，组间重复按实际输出格数计入 max_cells。同样允许同表前缀与 $，不接受公式、整列、跨表或外部文件，由 Decimal 求和并返回全部展开原单元格；缺失/错误/无缓存不补零。max_matches 1..30；邻域 padding_rows 0..3、padding_cols 0..4。只检视原件，不重解析、不重新计算公式、不猜单位或年度；年度小表可能与月度汇总/不同定义冲突，必须核对并展示，不能自行选优先表。提供 ranges 时另返回最多20条与这些单元格相交的原生图表文本引用（标题、轴标题、曲线标签与原始范围）；chart_references_truncated 标明超限遗漏。图表返回的是原始文本及真实引用，不自动确认字段单位；模型须结合系列范围、轴对应、表头、公式和完整上下文判断适用性，不把其他系列或另一轴的单位套用。目录单位缺省不代表原件没有单位证据。"""
+        """只读核验原 Excel 的单元格、公式及相交原生图表的标题、轴标题和系列引用，追查字段目录未覆盖的来源证据；包括 parsed_range 外区域。dataset_id 必须来自真实目录，文件 SHA256 必须与该版本一致。searches 是原值/公式的字面匹配（最多8词），可跨全部列；未指定 sheet 时按原工作簿顺序扫描，预算可能耗在其他表，目标表根本未扫描。已定位字段后必须指定该字段的真实 sheet 定向检索。跨多表搜索截断时看 scan.unscanned_sheets/incomplete_sheets、truncated 和 next_step；matches=[] 不等于没有数据，继续目标表检索。ranges 支持 A1、$绝对坐标、大小写及同工作表前缀；给出 sheet，或每个引用都带同一真实工作表前缀，最多8段、与求和输入合计硬上限400格，返回每格原值、坐标及公式缓存。max_cells可选，取值1..400；显式请求不超过400时按实际范围返回，若max_cells低于请求格数会提升为effective_max_cells并说明requested_max_cells_below_range；超过400时拒绝并给出可执行的拆分范围。搜索邻域仍受effective_max_cells约束；coverage.<sheet>.source_used_range 是有界扫描所得的非空原件范围，source_extent_status=unknown_budget 时范围未知；ranges[].read_window 仅表示本次读取窗口，calculations[].input_ranges 表示实际计算输入范围，不能把读取窗口当作原表有效范围。sums 最多8组、每组1..16个A1引用（单格或有限矩形范围，如 C74:C85、D74:D85），展开后每组至少2格；组内重叠坐标拒绝，组间重复按实际输出格数计入400格硬上限。同样允许同表前缀与 $，不接受公式、整列、跨表或外部文件，由 Decimal 求和并返回全部展开原单元格；缺失/错误/无缓存不补零。max_matches 1..30；邻域 padding_rows 0..3、padding_cols 0..4。只检视原件，不重解析、不重新计算公式、不猜单位或年度；年度小表可能与月度汇总/不同定义冲突，必须核对并展示，不能自行选优先表。提供 ranges 时另返回最多20条与这些单元格相交的原生图表文本引用（标题、轴标题、曲线标签与原始范围）；chart_references_truncated 标明超限遗漏。图表返回的是原始文本及真实引用，不自动确认字段单位；模型须结合系列范围、轴对应、表头、公式和完整上下文判断适用性，不把其他系列或另一轴的单位套用。目录单位缺省不代表原件没有单位证据。"""
         from .source_inspection import (
             SourceEvidenceReadBudgetExceeded,
             SourceInspectionReadError,
@@ -258,7 +259,7 @@ def create_app(data_dir: str | Path | None = None):
 
     @mcp.tool()
     def list_series(dataset_id: str | None = None, search: str = "", limit: int = 100, offset: int = 0, sheet: str | None = None, context_sheet: str | None = None) -> dict:
-        """读取字段目录中的真实ID、原表头、维度、单位和日期覆盖，不读取业务观测值。field_quality统计真实观测的数值/文本类型与状态，不推断字段用途；文本观测不得作为数值输入，unit_status=needs_review时单位仍未确认。dataset_id可省略，仅有一个当前文件时自动选择；多文件必须先取得真实ID，不猜ID。模型依据完整问题、上下文和实际目录决定是否需要读取记录或计算；列举字段结构不要求额外查询时序。search空格分词AND，仅作字面召回；别名与partial_candidates也仅为候选，不决定业务口径。sheet严格过滤；context_sheet仅优先排序。catalog_summary按分页前实际匹配目录的sheet/metric精确分组计数，可作为实际字段结构列举的来源，不判断业务类别；groups_truncated表示分组展示也有截断。truncated与next_offset说明字段分页，不能将当前页当作全目录。pending_scope只说明对应表未导入，不说明相关主题在其他已导入列中不存在。"""
+        """读取字段目录中的真实ID、原表头、维度、单位和日期覆盖，不读取业务观测值。field_quality统计真实观测的数值/文本类型与状态，不推断字段用途；文本观测不得作为数值输入，unit_status=needs_review时单位仍未确认；field_metadata.unit_source=declared表示单位为人工确认，未在原表找到对应文字，保留单位声明但不冒充原文证据。dataset_id可省略，仅有一个当前文件时自动选择；多文件必须先取得真实ID，不猜ID。模型依据完整问题、上下文和实际目录决定是否需要读取记录或计算；列举字段结构不要求额外查询时序。search空格分词AND，仅作字面召回；别名与partial_candidates也仅为候选，不决定业务口径。sheet严格过滤；context_sheet仅优先排序。catalog_summary按分页前实际匹配目录的sheet/metric精确分组计数，可作为实际字段结构列举的来源，不判断业务类别；groups_truncated表示分组展示也有截断。truncated与next_offset说明字段分页，不能将当前页当作全目录。按工作表分组的目录摘要也列出有界的待确认/未映射表状态、原因、已知范围与next_step；它们没有可查询字段，可用inspect_source读取经来源校验的原单元格。表名字面匹配只作候选召回排序。pending_scope只说明对应表未导入，不说明相关主题在其他已导入列中不存在。"""
         return store.list_series(store.select_dataset(dataset_id), search, limit, offset, sheet, context_sheet)
 
     @mcp.tool()
@@ -349,7 +350,7 @@ def create_app(data_dir: str | Path | None = None):
         'list_pdf_tables','read_pdf_table','query_pdf_table'}}
     argument_models = {}
     for name, fn in read_operations.items():
-        hints = get_type_hints(fn)
+        hints = get_type_hints(fn, include_extras=True)
         fields = {key:(hints.get(key,object), ... if value.default is inspect.Parameter.empty else value.default)
                   for key,value in inspect.signature(fn).parameters.items()}
         argument_models[name] = create_model(name+'_Arguments', __config__=ConfigDict(extra='forbid',strict=True), **fields)

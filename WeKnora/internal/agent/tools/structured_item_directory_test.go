@@ -156,6 +156,39 @@ func TestStructuredItemDirectorySmallResponsesAndOtherOperationsStayUnchanged(t 
 	require.Same(t, query, fitStructuredDirectory(WithOutputBudget(t.Context(), 500), "query_series", query))
 }
 
+func TestStructuredSeriesBriefKeepsReviewSheetsAndDeclaredUnitOrigin(t *testing.T) {
+	original := wideItemCatalog(t, "list_series", 1, 0, 1)
+	original.Data["series"].([]map[string]any)[0]["field_metadata"] = map[string]any{
+		"unit_source": "declared", "unit_evidence": []any{},
+	}
+	original.Data["series"].([]map[string]any)[0]["description"] = "单位为人工确认，未在原表找到对应文字"
+	original.Data["notice"] = strings.Repeat("Verbose directory detail ", 1000)
+	original.Data["catalog_summary"] = map[string]any{
+		"unmapped_sheet_count": 1, "unmapped_sheets_truncated": false, "unmapped_sheet_limit": 80,
+		"unmapped_sheets": []map[string]any{{"name": "Unmapped synthetic", "status": "needs_review",
+			"reasons": []string{"Needs mapping review"}, "structured_query_available": false,
+			"next_step": "字段映射待确认：不能用结构化查询取数，可用 inspect_source 读取原单元格"}},
+	}
+	before, err := json.Marshal(original.Data)
+	require.NoError(t, err)
+	original.Output = string(before)
+	projected := fitStructuredDirectory(WithOutputBudget(t.Context(), 2200), "list_series", original)
+	view := structuredDirectoryView(t, projected, 2200)
+	rows := structuredRecallRows(view["series"])
+	require.Len(t, rows, 1)
+	require.Equal(t, "declared", rows[0]["field_metadata"].(map[string]any)["unit_source"])
+	require.Contains(t, rows[0]["description"], "单位为人工确认")
+	summary := view["catalog_summary"].(map[string]any)
+	require.Equal(t, float64(1), summary["unmapped_sheet_count"])
+	states := structuredRecallRows(summary["unmapped_sheets"])
+	require.Len(t, states, 1)
+	require.Equal(t, "Unmapped synthetic", states[0]["name"])
+	require.Contains(t, states[0]["next_step"], "inspect_source")
+	after, err := json.Marshal(projected.Data)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+}
+
 func TestStructuredItemDirectoryCannotCutAnOversizedIdentity(t *testing.T) {
 	original := wideItemCatalog(t, "list_series", 1, 5, 9)
 	rows := structuredRecallRows(original.Data["series"])

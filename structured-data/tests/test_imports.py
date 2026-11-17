@@ -30,6 +30,11 @@ def test_review_confirm_immutable_and_template_reuse(tmp_path):
     first = manager.ingest(source)
     assert first['summary'] == {'auto_ready':1,'needs_review':1}
     original_id = first['dataset_id']
+    coverage = {state['name']: state for state in manager.store.manifest(original_id)['coverage']}
+    assert (coverage['复杂表']['rows'], coverage['复杂表']['columns']) == (4, 2)
+    from structured_data.discovery_catalog import list_datasets
+    unmapped = list_datasets(manager.store)['datasets'][0]['unmapped_sheets'][0]
+    assert (unmapped['name'], unmapped['rows'], unmapped['columns']) == ('复杂表', 4, 2)
     assert len(manager.store.list_series(original_id)['series']) == 1
     mapping = manager.sheet(first['import_id'],'复杂表')['mapping']
     preview = manager.preview(first['import_id'],mapping)

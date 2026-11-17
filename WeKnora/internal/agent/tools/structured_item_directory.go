@@ -46,6 +46,16 @@ func fitStructuredItemDirectory(ctx context.Context, operation string, result *t
 				brief[field] = value
 			}
 		}
+		if metadata, ok := item["field_metadata"].(map[string]any); ok && operation == "list_series" {
+			// Declared units remain valid metadata; keep their origin visible
+			// even when full source-evidence details do not fit this view.
+			brief["field_metadata"] = structuredDirectoryKeys(metadata, "unit_source")
+			if metadata["unit_source"] == "declared" {
+				if description, exists := item["description"]; exists {
+					brief["description"] = description
+				}
+			}
+		}
 		if operation == "list_charts" {
 			brief["curve_summary_complete"] = false
 			if curves, ok := item["curves"].([]any); ok {
@@ -76,6 +86,16 @@ func fitStructuredItemDirectory(ctx context.Context, operation string, result *t
 			view[field] = value
 		}
 	}
+	var unmapped []map[string]any
+	var reviewSummary map[string]any
+	if summary, ok := source["catalog_summary"].(map[string]any); ok && operation == "list_series" {
+		if _, exists := summary["unmapped_sheets"]; exists {
+			reviewSummary = map[string]any{}
+			copyStructuredUnmappedSheets(summary, reviewSummary, 8)
+			unmapped = structuredRecallRows(reviewSummary["unmapped_sheets"])
+			view["catalog_summary"] = reviewSummary
+		}
+	}
 	// source_context is runtime-private unless the service already exposed it.
 	if output := structuredOperationOutputObject(result.Output); output != nil && output["source_context"] != nil {
 		view["source_context"] = output["source_context"]
@@ -99,6 +119,19 @@ func fitStructuredItemDirectory(ctx context.Context, operation string, result *t
 		}
 		encoded, err = json.Marshal(view)
 		return err == nil && utf8.RuneCount(encoded) <= budget
+	}
+	trimReviewSheet := func() {
+		unmapped = unmapped[:len(unmapped)-1]
+		reviewSummary["unmapped_sheets"], reviewSummary["unmapped_sheets_truncated"] = unmapped, true
+	}
+	for !render() && len(unmapped) > 1 {
+		trimReviewSheet()
+	}
+	for !render() && len(rows) > 1 {
+		rows = rows[:len(rows)-1]
+	}
+	for !render() && len(unmapped) > 0 {
+		trimReviewSheet()
 	}
 	for !render() && len(rows) > 0 {
 		rows = rows[:len(rows)-1]

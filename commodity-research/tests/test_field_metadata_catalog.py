@@ -23,8 +23,18 @@ def test_research_catalog_displays_unit_frequency_role_and_quality():
 
 def test_strict_metadata_defaults_and_unknown_fields():
     assert FieldMetadata().unit is None and FieldMetadata().frequency is None
+    assert FieldMetadata().unit_source is None
     with pytest.raises(ValidationError):
         FieldMetadata.model_validate({'frequency': '周', 'invented': True})
+
+
+def test_catalog_explains_human_declared_units_without_inventing_source_evidence():
+    field = {'series_id': 'declared', 'unit': '人工核定单位',
+             'field_metadata': {'unit': '人工核定单位', 'unit_source': 'declared', 'unit_evidence': []}}
+    row = indicator_row(field)
+    assert row['unit'] == '人工核定单位'
+    assert '单位为人工确认，未在原表找到对应文字' in row['note']
+    assert row['field_metadata']['unit_evidence'] == []
 
 
 def test_catalog_consumer_rejects_unknown_metadata_without_dropping_acl(monkeypatch):

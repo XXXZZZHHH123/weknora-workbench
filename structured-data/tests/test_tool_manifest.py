@@ -1,11 +1,31 @@
 import hashlib
 import json
+import asyncio
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from structured_data.server import create_app
 from structured_data.store import DataStore
 from test_scoped_service import signed
+
+
+def test_go_schema_snapshot_matches_executable_service_and_cell_budget(tmp_path):
+    app = create_app(tmp_path)
+    actual = {tool.name: tool for tool in asyncio.run(app.state.mcp.list_tools())}
+    fixture_path = (Path(__file__).resolve().parents[2] / 'WeKnora' / 'internal' /
+                    'agent' / 'tools' / 'testdata' / 'structured_read_operations.json')
+    fixture = json.loads(fixture_path.read_text())
+    for entry in fixture['tools']:
+        tool = actual[entry['name']]
+        assert entry['inputSchema'] == tool.inputSchema
+        assert entry['description'] == tool.description
+    schema = actual['inspect_source'].inputSchema
+    assert 'max_cells' not in schema['required']
+    assert schema['properties']['max_cells']['maximum'] == 400
+    assert schema['properties']['max_cells']['minimum'] == 1
+    assert '按实际范围返回' in schema['properties']['max_cells']['description']
+    assert 'effective_max_cells' in actual['inspect_source'].description
 
 
 def test_actual_manifest_is_full_stable_selected_independent_and_pinned_before_execution(tmp_path,monkeypatch):

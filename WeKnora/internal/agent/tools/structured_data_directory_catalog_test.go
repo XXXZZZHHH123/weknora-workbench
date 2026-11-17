@@ -201,3 +201,50 @@ func TestStructuredMultiScopeForwardsCatalogFiltersAndHistoricalVersions(t *test
 		require.Equal(t, kb, candidates[index]["knowledge_base_id"], "scope comes from the authorized request, never candidate metadata")
 	}
 }
+
+func TestStructuredReviewSheetDirectorySurvivesMultiScopeAndBudgetProjection(t *testing.T) {
+	states := []map[string]any{}
+	for index := 0; index < 80; index++ {
+		states = append(states, map[string]any{
+			"name": fmt.Sprintf("Review %03d", index), "status": "needs_review",
+			"reasons": []string{"Synthetic unmapped header"}, "source_range": "A1:F40",
+			"structured_query_available": false,
+			"next_step":                  "字段映射待确认：不能用结构化查询取数，可用 inspect_source 读取原单元格",
+		})
+	}
+	base := nativeReadTestTool(t, func(w http.ResponseWriter, request *http.Request) {
+		kb := decodeStructuredScopeIdentity(t, request)["knowledge_base_id"].(string)
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+			"datasets": []map[string]any{{
+				"dataset_id": kb + "-source", "source_file": "synthetic.xlsx", "is_latest_for_source": true,
+				"unmapped_sheets": states, "unmapped_sheet_count": 95, "unmapped_sheet_limit": 80, "unmapped_sheets_truncated": true,
+			}},
+			"dataset_count": 1, "datasets_truncated": false, "latest_only": true,
+		}))
+	}).WithSearchTargets(types.SearchTargets{
+		{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "kb-review-a", TenantID: 7},
+		{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "kb-review-b", TenantID: 29},
+	})
+	result, err := base.Execute(WithOutputBudget(structuredScopeContext(), 9000), json.RawMessage(`{"operation":"list_datasets","arguments":{"question":"Inspect Review 000"}}`))
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	canonical := structuredRecallRows(result.Data["knowledge_base_catalogs"])
+	view := structuredDirectoryView(t, result, 9000)
+	catalogs := structuredRecallRows(view["knowledge_base_catalogs"])
+	require.Len(t, catalogs, 2)
+	for index, row := range catalogs {
+		dataset := structuredRecallRows(row["datasets"])[0]
+		require.Equal(t, json.Number("95"), dataset["unmapped_sheet_count"])
+		require.Equal(t, true, dataset["unmapped_sheets_truncated"])
+		visible := structuredRecallRows(dataset["unmapped_sheets"])
+		require.NotEmpty(t, visible)
+		require.Less(t, len(visible), len(states))
+		require.Equal(t, "Review 000", visible[0]["name"])
+		require.Equal(t, "needs_review", visible[0]["status"])
+		require.Equal(t, false, visible[0]["structured_query_available"])
+		require.Contains(t, visible[0]["next_step"], "inspect_source")
+		require.Equal(t, "A1:F40", visible[0]["source_range"])
+		fullDataset := structuredRecallRows(canonical[index]["datasets"])[0]
+		require.Len(t, structuredRecallRows(fullDataset["unmapped_sheets"]), 80)
+	}
+}

@@ -336,14 +336,13 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
             for bi,b in rowblocks:
                 for column in b['columns']:
                     if column.get('unit') and not column.get('unit_cells'):
-                        # Bind an explicit legacy/user declaration to actual source text.
-                        # This validates the supplied unit; it never chooses a unit.
+                        # Existing/researcher declarations remain valid without
+                        # verbatim evidence. Only label actual source text as evidence;
+                        # model proposals are checked separately by ai_review.
                         locations = [cell for cell in column['header_cells']
                                      if refvalues.get(cell) is not None and column['unit'] in str(refvalues[cell])]
-                        if not locations:
-                            raise ReviewValidationError('单位声明缺少原表文字依据，请核对真实来源。',
-                                sheet=name, block_index=bi, field='unit', column=column['column'])
-                        column['unit_cells'] = locations
+                        if locations:
+                            column['unit_cells'] = locations
                     from .ai_review import _header_ref_covers_column
                     for field in ('unit', 'frequency'):
                         for cell in column.get(field + '_cells', []):
@@ -380,9 +379,12 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                         'description':f"{name} / {c['metric']}；{date_note}；"+('单位：'+c['unit'] if c.get('unit') else '单位待确认')}
                     from .field_metadata import FieldMetadata
                     metadata = FieldMetadata(role=c.get('field_role'), unit=c.get('unit'), frequency=c.get('frequency'),
+                        unit_source=('source' if c.get('unit_cells') else 'declared') if c.get('unit') else None,
                         **{field + '_evidence': [dict(sheet=name, cell=cell, text=str(refvalues[cell]))
                            for cell in c.get(field + '_cells', [])] for field in ('unit', 'frequency')})
                     item['field_metadata'] = metadata.model_dump()
+                    if metadata.unit_source == 'declared':
+                        item['description'] += '；单位为人工确认，未在原表找到对应文字'
                     if c.get('exchange_rate'):item['exchange_rate']=deepcopy(c['exchange_rate'])
                     if c.get('frequency'):
                         item.update(frequency=c['frequency'], frequency_cells=list(c['frequency_cells']))

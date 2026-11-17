@@ -319,6 +319,7 @@ func (t *StructuredDataTool) recallAcrossKnowledgeBases(ctx context.Context, arg
 					compact[key] = value
 				}
 			}
+			copyStructuredUnmappedSheets(item, compact, 80)
 			datasets = append(datasets, compact)
 		}
 		if _, present := result.Data["datasets"]; present {

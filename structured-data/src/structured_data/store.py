@@ -97,6 +97,59 @@ def _unimported_sheet_states(coverage, imported_sheets):
             if s.get("name") not in imported and s.get("status") not in {"needs_review", "unsupported", "empty"}]
 
 
+UNMAPPED_SHEET_LIMIT = 80
+
+
+def _unmapped_sheet_states(manifest):
+    """Saved source sheets without published fields; never confirm a mapping.
+
+    Keep management-page pending states untouched. Older snapshots may only
+    record an entire-sheet exclusion, so they remain discoverable as unmapped.
+    Ranges/dimensions are reported only when already saved, without opening XLSX.
+    """
+    imported = {item['name'] for item in manifest.get('sheets', [])}
+    empty = {item['name'] for item in manifest.get('coverage', []) if item.get('status') == 'empty'}
+    states = {}
+    for item in manifest.get('coverage', []):
+        if item['name'] in imported or item.get('status') == 'empty':
+            continue
+        states[item['name']] = {key: item[key] for key in (
+            'name', 'status', 'reasons', 'rows', 'columns', 'row_count', 'column_count',
+            'source_range', 'source_used_range') if key in item}
+    for excluded in manifest.get('excluded_regions', []):
+        name = excluded.get('sheet')
+        if excluded.get('range') != 'entire_sheet' or not name or name in imported or name in empty:
+            continue
+        states.setdefault(name, {'name': name, 'status': 'unmapped',
+                                 'reasons': [excluded['reason']] if excluded.get('reason') else []})
+    for item in states.values():
+        item.setdefault('reasons', [])
+        item['structured_query_available'] = False
+        if item['status'] == 'unsupported':
+            item['next_step'] = '此工作表尚不支持结构化查询；可用 inspect_source 读取原单元格，按实际限制核对来源。'
+        elif item['status'] in {'needs_review', 'unmapped'}:
+            item['next_step'] = '字段映射待确认：不能用结构化查询取数，可用 inspect_source 读取原单元格'
+        else:
+            item['next_step'] = '此版本尚未导入该工作表字段：不能用结构化查询取数，可用 inspect_source 读取原单元格'
+    return list(states.values())
+
+
+def _unmapped_sheet_directory(states, search='', sheet=None):
+    from .field_index import normalize
+    query = normalize(search)
+    terms = query.split()
+    entries = [state for state in states if sheet is None or state['name'] == sheet]
+    # Literal labels only rank recall evidence, never select the answer source.
+    entries.sort(key=lambda state: (
+        not (normalize(state['name']) and normalize(state['name']) in query),
+        -len(normalize(state['name'])) if normalize(state['name']) in query else 0,
+        -sum(term in normalize(state['name']) for term in terms)))
+    return {'unmapped_sheets': entries[:UNMAPPED_SHEET_LIMIT],
+            'unmapped_sheet_count': len(entries),
+            'unmapped_sheets_truncated': len(entries) > UNMAPPED_SHEET_LIMIT,
+            'unmapped_sheet_limit': UNMAPPED_SHEET_LIMIT}
+
+
 class DataStore:
     def __init__(self, root: Path | str):
         self.root = Path(root)
@@ -268,7 +321,9 @@ class DataStore:
                           'parent_dataset_id': doc.get('parent_dataset_id'),
                           **{k: doc[k] for k in ("dataset_id", "source_file", "sha256", "rule_version", "imported_at", "series_count", "observation_count", "valid_count", "issue_count", "sheets", "excluded_regions")}})
         for item in items:
-            coverage = self.manifest(item["dataset_id"]).get("coverage", [])
+            manifest = self.manifest(item["dataset_id"])
+            coverage = manifest.get("coverage", [])
+            item['unmapped_sheets'] = _unmapped_sheet_states(manifest)
             item["pending_sheets"] = [s["name"] for s in coverage if s["status"] in {"needs_review", "unsupported"}]
             item["pending_sheet_states"] = [
                 {"name": s["name"], "status": s["status"], "reasons": s.get("reasons", [])}
@@ -415,8 +470,12 @@ class DataStore:
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise ValueError("offset 必须为非负整数。")
         from .catalog_search import normalize, aliases_for, search_text
-        coverage = self.manifest(dataset_id).get("coverage", [])
+        manifest = self.manifest(dataset_id)
+        coverage = manifest.get("coverage", [])
+        unmapped = _unmapped_sheet_states(manifest)
         pending = [s for s in coverage if s["status"] in {"needs_review", "unsupported", "empty"}]
+        coverage_names = {state['name'] for state in coverage}
+        pending += [state for state in unmapped if state['name'] not in coverage_names]
         if sheet is not None:
             series = [s for s in series if s['sheet']==sheet or s.get('chart_sheet')==sheet]
             pending = [s for s in pending if s['name']==sheet]
@@ -426,9 +485,11 @@ class DataStore:
                 if unimported and not pending:
                     return {"dataset_id":dataset_id,"series":[],"total":0,"offset":offset,"next_offset":None,
                             "truncated":False,"match_mode":"unimported_sheet","pending_sheets":[],"unimported_sheet_states":unimported,
+                            "catalog_summary": self._catalog_summary([], sheet, search, 'unimported_sheet', unmapped),
                             "notice":"原件包含该工作表，但本数据集版本没有导入其字段；这不表示原件无数据。可用inspect_source指定该sheet定向读取原单元格、表头与单位作为来源证据，不能替换为其他工作表的同名指标。"}
                 return {"dataset_id":dataset_id,"series":[],"total":0,"offset":offset,"next_offset":None,
                         "truncated":False,"match_mode":"pending_scope" if pending else "sheet_not_found",
+                        "catalog_summary": self._catalog_summary([], sheet, search, 'pending_scope' if pending else 'sheet_not_found', unmapped),
                         "pending_sheets":pending,"notice":"指定工作表没有已导入指标；不能替换为其他工作表。"
                         + ("可用inspect_source指定该sheet读取原单元格作为来源证据。" if pending else "")}
         terms = normalize(search).split()
@@ -454,6 +515,7 @@ class DataStore:
                 return {"dataset_id":dataset_id, "series":[], "total":0, "offset":offset,
                         "next_offset":None, "truncated":False, "match_mode":"pending_scope",
                         "pending_sheets":relevant[:20],
+                        "catalog_summary": self._catalog_summary([], sheet, search, 'pending_scope', unmapped),
                         "notice":"查询涉及的工作表在本版本字段目录中尚未导入或尚未确认映射，不能用字段查询；这不代表原表缺数据。可用inspect_source指定该sheet定向读取原单元格、表头与单位作为来源证据；不可用其他工作表、国家或指标替代。如需长期按字段查询，在结构化工作台核对并导入该表。"}
             scored = [(sum(t in json.dumps(s, ensure_ascii=False).lower() for t in terms), s) for s in series]
             best = max((score for score, _ in scored), default=0)
@@ -476,12 +538,12 @@ class DataStore:
         notice = {'partial_candidates':'这些是部分关键词匹配的候选指标，仅作召回证据，不代表全部条件匹配或已确定业务口径。',
                   'alias_candidates':'别名仅用于发现候选，不证明业务口径等价；按原指标、货币方向和来源核对。context_sheet仅优先排序，不自动认定候选。'}
         return {"dataset_id": dataset_id, "series": selected, "total": len(matches), "offset": offset, "next_offset": offset+limit if len(matches)>offset+limit else None, "truncated": len(matches) > offset+limit,
-                "catalog_summary": self._catalog_summary(matches, sheet, search, mode),
+                "catalog_summary": self._catalog_summary(matches, sheet, search, mode, unmapped),
                 "match_mode": mode, "notice": notice.get(mode,"已返回当前搜索与工作表范围内的字段目录。" if matches else "目录搜索无结果不等于工作簿没有数据，可使用单个关键词或留空查看目录。") +
                 "total为分页前匹配字段数，truncated与next_offset说明字段分页；catalog_summary另列实际分组及其展示覆盖。这是目录事实，不是业务观测值。sheet_status=has_imported_series表示该目录项已有已导入记录；unit_status=needs_review表示字段单位元数据尚待核对，不表示原件其他位置没有单位证据，也不表示工作表待导入。pending_sheets另行描述未确认或不支持的工作表。模型依据完整问题、上下文和来源决定是否需要读取记录或计算，不因取得目录而必须继续取数。"}
 
     @staticmethod
-    def _catalog_summary(matches, sheet, search, mode):
+    def _catalog_summary(matches, sheet, search, mode, unmapped=()):
         # Literal, deterministic catalogue facts. No domain classification or
         # choice of which groups answer the question happens in this layer.
         groups = {}
@@ -498,6 +560,8 @@ class DataStore:
             "groups": [{"sheet": key[0], "metric": key[1], "series_count": len(ids)}
                        for key, ids in ordered[:100]],
             "groups_truncated": len(groups) > 100,
+            **_unmapped_sheet_directory(unmapped, search, sheet),
+            "unmapped_sheet_scope": "指定工作表" if sheet is not None else "本数据集未映射工作表，search仅按表名字面匹配优先排序，不过滤来源",
             "notice": "按本次全部匹配目录（分页前）的工作表和原指标名精确分组计数，可作为实际字段结构列举的来源。仅计数目录，不判断哪些指标属于用户所问的业务类别，不代表观测值统计。部分匹配或别名候选不能当作全部业务范围。",
         }
 

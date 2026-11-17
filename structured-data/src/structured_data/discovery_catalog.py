@@ -132,6 +132,7 @@ def search_fields(store, dataset_id, question, *, search='', limit=FIELD_LIMIT):
 
 
 def _compact_dataset(source, question):
+    from .store import _unmapped_sheet_directory
     item = {key: source[key] for key in (
         'dataset_id', 'source_file', 'sha256', 'imported_at', 'is_latest_for_source',
         'series_count', 'import_id', 'use_reviewed_mappings', 'parent_dataset_id') if key in source}
@@ -143,6 +144,7 @@ def _compact_dataset(source, question):
                                       -len(name) if normalize(name) in query else 0))
     item.update(sheet_count=len(sheets), sheets=sheets[:SHEET_PREVIEW_LIMIT],
                 sheets_truncated=len(sheets) > SHEET_PREVIEW_LIMIT)
+    item.update(_unmapped_sheet_directory(source.get('unmapped_sheets', []), question or ''))
     if source['is_latest_for_source']:
         for key in ('pending_sheets', 'pending_sheet_states', 'empty_sheets', 'unimported_sheet_states'):
             entries = source.get(key, [])
@@ -178,6 +180,7 @@ def list_datasets(store, question=None, *, search='', limit=8, offset=0, latest_
             '文件名或发布日期不能确定正文、图形覆盖期；工具不可用时只说明该限制，不扩展权限。',
         'next_step': '模型依据完整问题生成search字面检索词；用next_offset继续文件目录，或按候选dataset_id调用'
             'list_series指定sheet/search并分页，核对真实字段、单位、日期及同名来源上下文后，再生成查询计划或SQL。'
+            'unmapped_sheets列出未映射工作表，仅供来源召回；可按真实sheet用inspect_source读取原单元格，不能结构化查询取数。'
             '原生图表标题与曲线未在此展开，按需用list_charts查看。'}
     if not sources:
         result['empty_catalog_notice'] = ('total_dataset_count=0表示此范围没有已注册电子表格版本；'
