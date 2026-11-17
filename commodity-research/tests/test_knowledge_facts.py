@@ -127,7 +127,7 @@ def canonical(monkeypatch, tmp_path):
                 assert 'series_ids' in body and 1 <= body['points_per_series'] <= 121
             if 'series_ids' in body:
                 state.setdefault('bounded_requests', []).append(body)
-                selected_spec, value = spec, state['value']
+                selected_spec, value = {**spec, **state.get('bounded_spec_metadata', {})}, state['value']
                 if caller['knowledge_base_id'] == OTHER_KB and state.get('default_macro'):
                     selected_spec = {**spec, 'series_id': 'kb-' + 'c' * 48, 'metric': 'Macro quantity',
                         'source_knowledge_id': 'macro-source', 'dataset_id': 'f' * 24}
@@ -136,9 +136,12 @@ def canonical(monkeypatch, tmp_path):
                 if state.get('bounded_bad_response'):
                     active = True
                 version = hashlib.sha256(b'bounded-fixture').hexdigest()
-                rows = [{'series_id': selected_spec['series_id'], 'date': '2026-01-02', 'value': value, 'value_status': 'valid'}]
+                rows = [{'series_id': selected_spec['series_id'], 'date': '2026-01-02', 'value': value,
+                         'value_status': 'valid', **state.get('bounded_row_metadata', {})}]
                 if state.get('bounded_previous') is not None:
                     rows.append({**rows[0], 'date': '2026-01-01', 'value': state['bounded_previous']})
+                if state.get('bounded_reverse_rows'):
+                    rows.reverse()
                 return httpx.Response(200, json={'knowledge_base_id': caller['knowledge_base_id'],
                     'knowledge_base_tenant_id': 17, 'version': version, 'bounded': True,
                     **({'include_invalid': True} if body.get('include_invalid') else {}),

@@ -36,7 +36,8 @@ def format_number(value, *, decimals=None, signed=False):
     if not number.is_finite():
         return '—'
     magnitude = number.copy_abs()
-    if type(decimals) is not int or not 0 <= decimals <= 15:
+    explicit_precision = type(decimals) is int and 0 <= decimals <= 15
+    if not explicit_precision:
         decimals = (0 if magnitude >= 1000 else 1 if magnitude >= 100 else 2 if magnitude >= 1
                     else max(0, 3 - magnitude.adjusted()) if magnitude else 0)
     with localcontext() as context:
@@ -45,4 +46,4 @@ def format_number(value, *, decimals=None, signed=False):
         if shown == 0:
             shown = abs(shown)
         text = format(shown, '+,f' if signed else ',f')
-    return text.rstrip('0').rstrip('.') if '.' in text else text
+    return text.rstrip('0').rstrip('.') if not explicit_precision and '.' in text else text

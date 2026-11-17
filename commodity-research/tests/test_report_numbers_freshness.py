@@ -19,7 +19,8 @@ def test_shared_report_precision_by_magnitude(value, expected):
 
 @pytest.mark.parametrize('value,digits,expected', [
     (2574.064978, 3, '2,574.065'), (116.58, 2, '116.58'),
-    (-97.9695486, 0, '-98'), (1.2, 4, '1.2'), (0, 3, '0')])
+    (-97.9695486, 0, '-98'), (1.2, 4, '1.2000'), (0, 3, '0.000'),
+    (17.5, 2, '17.50'), (-0.0, 2, '0.00')])
 def test_explicit_source_precision_and_trailing_zeros(value, digits, expected):
     assert format_number(value, decimals=digits) == expected
 
@@ -156,7 +157,7 @@ def test_report_formats_strategy_condition_and_entry_from_known_source_precision
     assert view['strategies'][0]['entry']['high_text'] == '2,575.39'
     condition = view['research_cards'][0]['monitor_view']['conditions'][0]
     assert condition['value_text'] == '2,574.065 吨'
-    assert condition['condition'] == '97.97 – 2,574.065'
+    assert condition['condition'] == '97.970 – 2,574.065'
     assert '当前 2,574.065 吨' in readable_markdown(payload)
     assert payload == before
 

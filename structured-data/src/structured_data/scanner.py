@@ -15,7 +15,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter, range_boundaries
 
 RULE_VERSION = 'generic-layout-v1'
-# Layout-only candidate labels; never persisted as a unit declaration.
+# Literal unit labels in source headers; never infer units from a metric name.
 _UNITS = {'元/吨','元/件','元/米','元/公斤','美元/公斤','美元/磅','美元/吨','美分/磅','吨','万吨','千吨','包','万包','公顷','万公顷','亩','万亩','%','％','亿元','万元','美元','万美元','亿美元','万件','件','万米','米','天','摄氏度','华氏度','卢比/公担'}
 
 
@@ -182,12 +182,31 @@ def scan_workbook(path, sample_rows=40, *, use_reviewed_mappings=True, progress=
                     if not any(v is not None for v in sample) and not direct:
                         continue
                     labels=[str(v).strip() for _,v,_ in entries if isinstance(v,str) and v.strip() and v.strip() not in _UNITS]
+                    # Copy unambiguous literal declarations with their real cells.
+                    # Unknown/contradictory metadata still needs model/user review.
+                    units = {}
+                    for source_row, value, cell in entries:
+                        if not isinstance(value, str):
+                            continue
+                        source_column = ordcol(re.match(r'[A-Z]+', cell).group())
+                        if source_column != c and not any(
+                                top == source_row == bottom and left == source_column <= c <= right
+                                for left, top, right, bottom in merged_headers):
+                            continue
+                        text = value.strip()
+                        literals = [text] + re.findall(r'[（(]([^()（）]+)[）)]', text)
+                        for literal in literals:
+                            if literal in _UNITS:
+                                units.setdefault(literal, []).append(cell)
                     if not any(v is not None for v in sample) and not labels:
                         # Annotation-only columns are not metrics. Named empty series remain candidates.
                         continue
-                    columns.append({'column':get_column_letter(c),'metric':' / '.join(dict.fromkeys(labels)),
-                        'unit':None,  # Semantic metadata requires a source-backed model/user mapping.
-                        'header_cells':[coord for _,_,coord in entries]})
+                    column = {'column':get_column_letter(c),'metric':' / '.join(dict.fromkeys(labels)),
+                        'unit':next(iter(units)) if len(units) == 1 else None,
+                        'header_cells':[coord for _,_,coord in entries]}
+                    if column['unit']:
+                        column['unit_cells'] = list(dict.fromkeys(units[column['unit']]))[:16]
+                    columns.append(column)
                 blocks.append({'date_column':d['column'],'date_mode':'date','header_rows':header_rows,
                     'data_start_row':start,'data_end_row':None,'columns':columns})
             visual=visuals.get(ws.title, {'chart_count':0,'image_count':0,'visual_content_parsed':False})

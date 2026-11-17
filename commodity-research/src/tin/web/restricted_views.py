@@ -22,6 +22,7 @@ from tin.config import SHANGHAI, settings
 from tin.integration.workbench_scope import artifact_session, current_workbench
 from tin.models import DailyBrief, DiagramTemplate, Judgment, Researcher, SourceMapping, Strategy
 from tin.models.workbench import WorkbenchArtifact, WorkbenchStorageScope
+from tin.web.number_format import source_decimals
 
 CORE_KEY = 'workbench-market-core'
 ORIGINS_KEY = 'workbench-series-origins'
@@ -266,7 +267,8 @@ def _bounded_part(scope, identifiers, module):
             entries = result.setdefault(identifier, [])
             if len(entries) >= 2 or any(item['date'] == day.isoformat() for item in entries):
                 raise ValueError('Duplicate or excess observations')
-            entries.append({'date': day.isoformat(), 'value': value})
+            entries.append({'date': day.isoformat(), 'value': value,
+                            'display_decimals': source_decimals(row)})
         output = {}
         for identifier in identifiers:
             spec = catalog.get(identifier)
@@ -280,6 +282,7 @@ def _bounded_part(scope, identifiers, module):
                 'display_name': spec.get('display_name') or spec.get('name'),
                 'display_metadata': {key: spec[key] for key in ('code', 'vendor_code', 'coverage') if key in spec},
                 'date': latest.get('date'), 'value': value,
+                'display_decimals': source_decimals(latest, spec),
                 'change': value - old if value is not None and old is not None else None,
                 'change_pct': (value - old) / abs(old) * 100 if value is not None and old not in {None, 0} else None}
         return output
@@ -310,6 +313,7 @@ def necessary_values(session, scope, identifiers, module):
                 'display_name':spec.get('display_name') or spec.get('name'),
                 'display_metadata':{key:spec[key] for key in ('code','vendor_code','coverage') if key in spec},
                 'date':latest.get('date'),'value':value,
+                'display_decimals':source_decimals(latest,spec),
                 'change':value-old if value is not None and old is not None else None,
                 'change_pct':(value-old)/abs(old)*100 if value is not None and old not in {None,0} else None}
         return output
@@ -507,6 +511,8 @@ def _market_cards(identifiers, values, compact=False):
                  unit=values[identifier]['unit'], status='ok' if values[identifier]['value'] is not None else 'missing',
                  value=values[identifier]['value'], as_of=values[identifier]['date'],
                  change=values[identifier]['change'], change_pct=values[identifier]['change_pct'],
+                 detail=({'display_decimals': values[identifier]['display_decimals']}
+                         if values[identifier].get('display_decimals') is not None else {}),
                  badge='已授权') for identifier in identifiers if identifier in values]
     if compact:
         from tin.web.market_card_labels import compact_market_card
@@ -743,6 +749,7 @@ async def restricted_response(request, scope, route_path):
                  'category': '工作台绑定指标', 'macro': False, 'registered': False,
                  'caliber': {}, 'status': '可用', 'fetch_mode': 'readonly', 'vendor_code': None,
                  'is_proxy': False, 'value': card.value, 'as_of': card.as_of,
+                 'display_decimals': values.get('display_decimals'),
                  'change': card.change, 'change_pct': card.change_pct}
                 for card, values in zip(payload.get('market_cards', []), payload.get('cards', []))]
         context.update(rows=rows, groups=[{'name': '工作台绑定指标', 'rows': rows}],

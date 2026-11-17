@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 from lxml.html import fromstring
 
 from tests.test_judgment_dimension_schema import legacy_fields
-from tests.test_judgment_research_view import facts, saved, DAY
+from tests.test_judgment_research_view import facts, saved, rule, A, DAY
 from tests.test_judgment_research_template import render
 from tin.export.board import judgment_record_block
 from tin.judgments.markdown import dump_markdown
@@ -48,6 +48,11 @@ def test_default_groups_include_support_and_opposition_and_put_untagged_last(fac
     assert html.xpath('//*[@id="judgment-falsifiers"]//th[text()="维度"]')
     restricted = fromstring(render(restricted_view=True, **view))
     assert not restricted.xpath('//*[@data-judgment-library-target]')
+    for document in (html, restricted):
+        for side, label in (('bull', '多方'), ('bear', '空方')):
+            section = document.xpath(f'//*[@id="judgment-falsifiers"]//tbody[@data-falsifier-side="{side}"]')[0]
+            assert section.xpath('./tr/th[@scope="rowgroup"]')[0].text_content() == f'什么变化会证伪{label}判断'
+            assert '尚无已核验的证伪条件' in section.text_content()
 
 
 def test_custom_dimensions_and_renames_use_current_labels_without_reassigning_ids(facts):
@@ -61,6 +66,18 @@ def test_custom_dimensions_and_renames_use_current_labels_without_reassigning_id
     facts.commit()
     assert judgment_research_view(facts, row, DAY)['dimension_groups'][0]['label'] == '成本变化'
     assert row.contradiction['bull']['evidence'][0]['dimension'] == 'desk_cost'
+
+
+def test_grouped_falsifiers_keep_each_condition_under_its_original_hypothesis(facts):
+    row = saved(falsifiers=[rule('support', A, 'bull'), rule('opposition', A, 'bear')])
+    view = judgment_research_view(facts, row, DAY)
+    for restricted in (False, True):
+        document = fromstring(render(restricted_view=restricted, **view))
+        for side, own, other in (('bull', 'support', 'opposition'), ('bear', 'opposition', 'support')):
+            section = document.xpath(f'//*[@id="judgment-falsifiers"]//tbody[@data-falsifier-side="{side}"]')[0]
+            rows = section.xpath('./tr[@data-research-item="falsifier"]')
+            assert len(rows) == 1
+            assert rows[0].xpath('./td[1]')[0].text_content().strip() == 'Original falsification condition ' + own
 
 
 def test_report_html_markdown_and_snapshot_keep_tag_ids_and_names_without_mutating():

@@ -422,7 +422,10 @@ def test_legacy_template_artifact_does_not_break_or_enter_research_pages(isolate
         response = client.get(page(suffix))
         assert response.status_code == 200, (suffix, response.text)
         assert 'Retired template must stay private' not in response.text
-        assert 'report-ppt' not in response.text
+        # Current report-ppt-* export controls are separate from retired templates.
+        for legacy_marker in ('retired-template', 'ppt-template.v1', '/api/sn/ppt-templates',
+                              'data-ppt-template'):
+            assert legacy_marker not in response.text
         assert '按我的版式' not in response.text
     with isolated_session_factory(17, WB)() as session:
         assert session.get(WorkbenchArtifact, 'retired-template').revision == 1

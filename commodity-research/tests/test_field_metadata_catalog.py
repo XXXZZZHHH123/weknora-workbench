@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from tin.integration import page_facts
-from tin.integration.field_metadata import FieldMetadata
+from tin.integration.field_metadata import FieldMetadata, validate_field_metadata
 from tin.web.catalog import indicator_row
 
 
@@ -35,6 +35,45 @@ def test_catalog_explains_human_declared_units_without_inventing_source_evidence
     assert row['unit'] == '人工核定单位'
     assert '单位为人工确认，未在原表找到对应文字' in row['note']
     assert row['field_metadata']['unit_evidence'] == []
+
+
+@pytest.mark.parametrize('unit_source', ['source', 'declared'])
+def test_published_metadata_projects_with_real_source_identity(monkeypatch, unit_source):
+    """Keep the consumer half of the producer's cross-service contract in its CI job."""
+    evidence = {'sheet': 'Observations', 'cell': 'B1', 'text': '收入（元） / 周度 / 周'}
+    unit = '元' if unit_source == 'source' else '人工核定单位'
+    field = {'series_id': 'kb-' + 'a' * 48, 'metric': '收入（元） / 周度 / 周',
+             'source_binding_id': 'binding', 'source_knowledge_id': 'original-fixture',
+             'source_series_id': 'original-field', 'dataset_id': 'published-fixture',
+             'knowledge_base_id': 'kb-fixture', 'knowledge_base_tenant_id': 9,
+             'source_file': 'metadata.xlsx', 'sheet': 'Observations',
+             'unit': unit, 'frequency': '周', 'field_metadata': {
+                 'unit': unit, 'unit_source': unit_source, 'frequency': '周',
+                 'unit_evidence': [evidence] if unit_source == 'source' else [],
+                 'frequency_evidence': [evidence]}}
+    response = {'catalog_only': True, 'series': [field], 'total': 1, 'offset': 0,
+                'datasets': [], 'next_offset': None, 'truncated': False}
+    scope = SimpleNamespace(scope_version=2, sources=[{'id': 'binding', 'delegated': False,
+        'knowledge_base_id': 'kb-fixture', 'tenant_id': 9}])
+    monkeypatch.setattr(page_facts, '_request', lambda *args: response)
+    projected = page_facts._raw_catalog_page(scope)['series']
+    validate_field_metadata(projected)
+    published = projected[0]
+    assert published['source_knowledge_id'] == 'original-fixture'
+    assert published['source_series_id'] == 'original-field'
+    assert published['dataset_id'] == 'published-fixture'
+    row = indicator_row(published)
+    assert row['series_id'] == field['series_id']
+    assert row['unit'] == unit and row['frequency'] == '周'
+    assert row['knowledge_base_id'] == 'kb-fixture'
+    assert row['source'] == 'metadata.xlsx' and row['sheet'] == 'Observations'
+    assert row['field_metadata']['unit_source'] == unit_source
+    assert row['field_metadata']['frequency_evidence'] == [evidence]
+    if unit_source == 'source':
+        assert row['field_metadata']['unit_evidence'] == [evidence]
+    else:
+        assert row['field_metadata']['unit_evidence'] == []
+        assert '单位为人工确认，未在原表找到对应文字' in row['note']
 
 
 def test_catalog_consumer_rejects_unknown_metadata_without_dropping_acl(monkeypatch):

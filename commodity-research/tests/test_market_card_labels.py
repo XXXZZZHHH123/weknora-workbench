@@ -107,6 +107,14 @@ def test_restricted_market_only_reuses_selected_text_metadata_without_source_ids
     assert 'source_knowledge_id' not in render(card) and 'dataset_id' not in render(card)
 
 
+def test_source_precision_alone_does_not_add_a_card_details_popover():
+    card = Card(key='fixture', label='Measured quantity', unit='吨', status='ok',
+        value=17.5, change=2.5, detail={'display_decimals': 2})
+    tree = fromstring(render(card, compact=False))
+    assert '17.50' in tree.text_content() and '+2.50' in tree.text_content()
+    assert not tree.xpath('//*[@data-popover or @data-popover-trigger]')
+
+
 def test_core_refresh_and_saved_card_have_compact_title_but_preserve_catalog_identity(canonical, monkeypatch):
     import httpx
     client, headers, state, _ = canonical

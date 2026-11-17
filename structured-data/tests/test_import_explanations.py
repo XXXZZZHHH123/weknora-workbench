@@ -35,6 +35,11 @@ def test_equal_headers_keep_distinct_values_units_and_source_cells(tmp_path):
     series = manager.store.list_series(result['dataset_id'])['series']
     assert {s['metric'] for s in series} == {'20天原料'}
     assert {s['unit'] for s in series} == {'元/吨'}
+    for item in series:
+        column = item['dimensions']['原表列']
+        assert item['field_metadata']['unit_source'] == 'source'
+        assert item['field_metadata']['unit_evidence'] == [
+            {'sheet': '原料价格', 'cell': column+'2', 'text': '元/吨'}]
     sums = {}
     for item in series:
         column = item['dimensions']['原表列']

@@ -119,14 +119,16 @@
 </section>
 {% if research.falsifiers is defined %}
 <section id="judgment-falsifiers" class="judgment-research-section"><h2>证伪条件</h2>
-  <div class="judgment-rule-scroll"><table class="judgment-rule-table"><thead><tr><th>证伪条件</th><th>维度</th><th>证伪对象</th><th>指标与规则</th><th>状态</th></tr></thead><tbody>
-  {% for item in research.falsifiers %}<tr data-research-item="falsifier">
+  <div class="judgment-rule-scroll"><table class="judgment-rule-table"><thead><tr><th>证伪条件</th><th>维度</th><th>证伪对象</th><th>指标与规则</th><th>状态</th></tr></thead>
+  {% for side, label in [('bull','多方'),('bear','空方')] %}
+  <tbody data-falsifier-side="{{ side }}"><tr><th colspan="5" scope="rowgroup">什么变化会证伪{{ label }}判断</th></tr>
+  {% for item in research.falsifiers if item.rule.side == side %}<tr data-research-item="falsifier">
     <td>{{ human_text(item.rule.desc, names) }}{% if not restricted_view %}<div data-judgment-library-target="falsifier:{{ item.rule.id }}"></div><div data-chart-related-rule="{{ item.rule.id }}"></div>{% endif %}</td>
     <td data-dimension-label>{{ item.dimension_label }}</td><td>{{ '多方原假设' if item.rule.side == 'bull' else '空方原假设' }}</td>
     <td>{{ item.condition }}{{ item_metrics(item) }}{% if item.gap_note %}<p>{{ human_text(item.gap_note, names) }}</p>{% endif %}</td>
     <td>{{ item.state }}</td>
   </tr>{% else %}<tr><td colspan="5" class="judgment-research-empty">尚无已核验的证伪条件</td></tr>{% endfor %}
-  </tbody></table></div>
+  </tbody>{% endfor %}</table></div>
 </section>
 {% endif %}
 {% if research.shared %}

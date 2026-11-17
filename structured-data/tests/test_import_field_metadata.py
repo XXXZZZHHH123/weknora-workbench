@@ -238,6 +238,10 @@ def test_research_catalog_projects_published_metadata_with_real_source_identity(
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / 'commodity-research/src'))
     for key, value in {'TIN_LLM_BASE_URL': '', 'TIN_LLM_API_KEY': '', 'TIN_DATABASE_URL': 'sqlite://', 'TIN_AUTO_MIGRATE': 'false'}.items():
         monkeypatch.setenv(key, value)
+    # The structured-data CI job intentionally installs only producer dependencies.
+    # Consumer coverage also runs unconditionally in commodity-research's suite.
+    pytest.importorskip('tin')
+    pytest.importorskip('sqlalchemy')
     from tin.integration.field_metadata import validate_field_metadata
     from tin.web.catalog import indicator_row
     validate_field_metadata(response['indicators'])
