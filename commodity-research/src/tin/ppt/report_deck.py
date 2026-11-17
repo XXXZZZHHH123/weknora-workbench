@@ -42,7 +42,8 @@ def chart_slots(per_page=2):
 
 
 def _s(value):
-    return str(value) if isinstance(value, (str, int, float)) else ''
+    # Convert timestamps before any manual line wrapping splits them.
+    return _display(value) if isinstance(value, str) else str(value) if isinstance(value, (int, float)) else ''
 
 
 _ISO_STAMP = re.compile(r'(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?')
