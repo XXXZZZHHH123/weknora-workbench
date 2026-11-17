@@ -218,11 +218,9 @@ def threshold_overlays(scope, definition, rules, day, *, point_limit=None, plan=
     return overlays
 
 
-def render_chart_reference(scope, reference, *, current=False, rules=None):
+def reference_definition(scope, reference):
     scope = require_scope(scope)
     value = _pin(reference)
-    if not current and not isinstance(value.get('as_of'), str):
-        raise HTTPException(422, '历史图表引用需要保存时的明确截止日期')
     with artifact_session(scope) as session:
         row = charts.load_artifact(session, value['id'], deleted=True)
         chosen = session.get(WorkbenchArtifactRevision, (row.id, value['revision']))
@@ -230,9 +228,15 @@ def render_chart_reference(scope, reference, *, current=False, rules=None):
             raise HTTPException(404, '所引用的图表修订不存在')
         saved = charts.decode_definition(chosen)
         status = 'deleted' if row.status == 'deleted' else 'updated' if row.revision != value['revision'] else 'current'
-        # Current data changes the cutoff, while the research pin's definition
-        # remains stable even after a chart edit or deletion.
-        definition = saved
+    return value, saved, status
+
+
+def render_chart_reference(scope, reference, *, current=False, rules=None):
+    scope = require_scope(scope)
+    value, definition, status = reference_definition(scope, reference)
+    saved = definition
+    if not current and not isinstance(value.get('as_of'), str):
+        raise HTTPException(422, '历史图表引用需要保存时的明确截止日期')
     day = cutoff(None if current else value['as_of'])
     identifiers = definition_series_ids(definition)
     fields, version = _metadata(scope, identifiers)

@@ -400,3 +400,29 @@ def test_viewer_may_preview_a_citation_but_still_cannot_save_a_strategy(isolated
     assert client.post(page('/api/sn/research-strategies/citation-preview'), json={'citation': {}}).status_code == 403
     saved = client.post(page('/api/sn/research-strategies'), headers=origin, json={})
     assert saved.status_code == 403 and '只有读取权限' in saved.text
+
+
+def test_legacy_template_artifact_does_not_break_or_enter_research_pages(isolated):
+    from datetime import datetime, timezone
+    from tin.integration.workbench_scope import isolated_session_factory
+    from tin.models.workbench import WorkbenchArtifact
+
+    client, headers, state, _ = isolated
+    login(client, headers)
+    # Old module bodies are deliberately outside today's report/chart schemas.
+    # Pages must filter by module before parsing, without migrating/deleting them.
+    now = datetime.now(timezone.utc)
+    with isolated_session_factory(17, WB)() as session:
+        session.add(WorkbenchArtifact(id='retired-template', module='ppt_templates', actor='writer',
+            title='Retired template must stay private', body='{"format":"ppt-template.v1"}',
+            status='draft', source_ids=[], source_snapshots=[], revision=1,
+            created_at=now, updated_at=now))
+        session.commit()
+    for suffix in ('/', '/sn/indicators?tab=charts', '/sn/judgment', '/sn/strategies', '/sn/reports'):
+        response = client.get(page(suffix))
+        assert response.status_code == 200, (suffix, response.text)
+        assert 'Retired template must stay private' not in response.text
+        assert 'report-ppt' not in response.text
+        assert '按我的版式' not in response.text
+    with isolated_session_factory(17, WB)() as session:
+        assert session.get(WorkbenchArtifact, 'retired-template').revision == 1

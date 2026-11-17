@@ -84,7 +84,7 @@ test('导出图表PNG精确保留图位2倍像素，字号没有被exactSize缩�
   await handle.toPNGBlob(); const canvas = canvases.at(-1);
   assert.equal(canvas.width, 801); assert.equal(canvas.height, 360); handle.destroy();
 });
-test('PPT短图位精确保留宽高比，PNG为CSS尺寸2倍；常规图表仍遵守原最小高度', async t => {
+test('短图位精确保留宽高比，PNG为CSS尺寸2倍；常规图表仍遵守原最小高度', async t => {
   const {container, canvases} = fixture(t), payload = {curves: [{label: '曲线', points: [{date: '2030-01-01', value: 1}]}]};
   const handle = K.render(container, payload, {width: 320, height: 90, exactSize: true});
   const svg = nodes(container).find(node => node.name === 'svg');

@@ -231,6 +231,10 @@
 
 研判与策略现支持显式引用共享图表，保存时冻结图表修订、来源版本与研究日期；历史默认按原修订及截止日渲染，可切换当前数据，规则阈值与相关图表只按真实指标 ID 关联。底层来源不提供旧事实版本回放时，来源更新会明确提示按原截止日重算，旧标题与定义仍取固定修订。
 
+日报周报的“图表”节位于研判之后、策略之前，复用草稿 `sections.dashboard` 的显示开关与按语。清单依次纳入显示中的研判引用、策略卡片及交易计划引用、最多六条另选绑定指标；同图 ID 保留首次位置、取最大修订，图说汇总引用处与挂载依据/条件。另选指标与引用图唯一直接曲线重复时只显示引用图，草稿中的原手选与图说仍保留。引用图不受六条上限限制。
+
+页面 `#report-figure-data` JSON 与报告 JSON 的 `report_figures` 提供完整清单：`key`、`kind`、`title`、`caption`、`unit`、`as_of`、`render_url`，引用图另含固定 `reference`、`references` 和 `single_series_id`，指标图另含 `series_id`。前端进入视口后串行请求 `GET /api/sn/reports/figures/{encodeURIComponent(key)}?date=YYYY-MM-DD&period=daily|weekly&revision=草稿版本`。服务端重新组装授权清单再校验 key；引用图返回 `{figure, rendered}`（`rendered` 复用图表引用读取结果，可直接传给 ChartKit），指标图返回 `{figure, series}`；单图不可读返回 `status: unavailable` 与 `notice`，保留标题和原因。定义固定在引用修订，数据截止报告日期，沿用图表库 ACL、来源核验及每批 256 指标/20000 点预算。Markdown 只列标题、图说、单位与截至日；冻结归档只列已保存引用，不读图表或观测，受限视角不纳入引用图。新版按本期报告内容生成 PPT 将复用此接口，生成器留待下一步实现。
+
 | 期 | 内容 |
 |---|---|
 | 一期（本次） | 第一至六节 |

@@ -171,7 +171,7 @@ function mock(items = initial, options = {}) {
 
     const widgetHtml = kind => html.replace('</head>', '<script defer src="/static/dedup-references.js"></script></head>')
       .replace(/<main>[\s\S]*<\/main>/, '<main><div data-dedup-references="' + kind + '" data-dedup-reference-id="artifact-fixture"></div></main>');
-    for (const kind of ['favorites', 'core', 'chart', 'ppt', 'judgment', 'strategy']) {
+    for (const kind of ['favorites', 'core', 'chart', 'judgment', 'strategy']) {
       let saved = false;
       const canRewrite = !['judgment', 'strategy'].includes(kind);
       const reference = await open(browser, prefix + '/sn/reference-fixture', widgetHtml(kind), event => {

@@ -109,19 +109,9 @@ def _layout_series_ids(layout):
     return list(dict.fromkeys(identifiers))
 
 
-def _num(value, unit: str = "", signed: bool = False) -> str:
-    if value is None:
-        return "—"
-    if unit == "元":
-        digits = 4
-    elif unit == "%":
-        digits = 2
-    elif unit in ("元/吨", "吨", "手", "实物吨") or float(value).is_integer():
-        digits = 0
-    else:
-        digits = 2
-    s = f"{value:+,.{digits}f}" if signed else f"{value:,.{digits}f}"
-    return s.replace("-", "−")
+def _num(value, unit: str = "", signed: bool = False, decimals: int | None = None) -> str:
+    from tin.web.number_format import format_number
+    return format_number(value, decimals=decimals, signed=signed).replace("-", "−")
 
 
 def static_version() -> str:
@@ -201,7 +191,6 @@ templates.env.globals["research_static_prefix"] = research_static_prefix
 templates.env.globals["research_workbench"] = current_workbench.get
 templates.env.globals["research_prefix"] = research_prefix
 templates.env.globals["research_url"] = research_url
-templates.env.globals["ppt_enabled"] = settings.ppt_enabled
 templates.env.globals["research_form_url"] = research_form_url
 templates.env.globals["research_identity"] = lambda: current_identity.get()
 templates.env.globals["static_version"] = static_version
@@ -237,16 +226,10 @@ from tin.web.indicator_dedup import router as indicator_dedup_router
 app.include_router(indicator_dedup_router)
 from tin.web.dedup_references import router as dedup_references_router
 app.include_router(dedup_references_router)
-from tin.web.ppt import router as ppt_router
-app.include_router(ppt_router)
 from tin.web.chart_import import router as chart_import_router
 app.include_router(chart_import_router)
 from tin.web.chart_pages import build_router as build_chart_pages_router
 app.include_router(build_chart_pages_router(
-    lambda *args, **kwargs: _page_session(*args, **kwargs),
-    lambda *args, **kwargs: _shell(*args, **kwargs), templates))
-from tin.web.ppt_pages import build_router as build_ppt_pages_router
-app.include_router(build_ppt_pages_router(
     lambda *args, **kwargs: _page_session(*args, **kwargs),
     lambda *args, **kwargs: _shell(*args, **kwargs), templates))
 from tin.web.workbench_sources import router as workbench_sources_router
@@ -1036,7 +1019,11 @@ def _period_download(day, period, markdown=False):
         raise HTTPException(400, '日期格式应为 YYYY-MM-DD') from None
     with _page_session('reports', day=cutoff, points_per_series=8 if period == 'weekly' else 2) as s:
         variety = research_variety(s)
-        payload = build_period(s, variety, cutoff, period)
+        archive = settings.exports_dir / variety / f'{day}.json'
+        if markdown and period == 'daily' and not settings.weknora_api_url and archive.exists():
+            payload = json.loads(archive.read_text(encoding='utf-8'))
+        else:
+            payload = build_period(s, variety, cutoff, period)
         if markdown:
             scope = current_workbench.get()
             title = (scope.metadata.get('name') if scope else None) or '研究工作台'

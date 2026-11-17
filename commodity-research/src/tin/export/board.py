@@ -369,11 +369,15 @@ def judgment_record_block(j, today):
     if j is None:
         return None
     expired = (today - j.review_due).days
+    from tin.integration.workbench_scope import current_workbench
+    scope = current_workbench.get()
+    contradiction = {key: value for key, value in j.contradiction.items()
+                     if key != 'chart_references' or scope is None or not scope.restricted}
     return {
         "id": j.id, "version": j.version, "status": j.status, "author": j.author,
         "written_at": j.written_at.isoformat(), "review_due": j.review_due.isoformat(),
         "expired_days": expired if expired > 0 else 0, "tone": j.tone, "tone_note": j.tone_note,
-        "contradiction": {key: value for key, value in j.contradiction.items() if key != "chart_references"},
+        "contradiction": contradiction,
         "priority_rule": j.priority_rule,
         "thresholds": j.thresholds, "falsifiers": j.falsifiers, "unstructured": j.unstructured,
         "blockers": activation_blockers(to_payload(j)),
