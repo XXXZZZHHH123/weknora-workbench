@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from tin.integration.workbench_scope import artifact_session, current_workbench, require_shared_write
 from tin.models import Judgment, SourceMapping
-from tin.web.research_dimensions import (CATEGORIES, DIMENSIONS_KEY, read_dimensions,
+from tin.web.research_dimensions import (CATEGORIES, DIMENSIONS_KEY, default_dimensions, read_dimensions,
                                          validate_dimension_list)
 from tin.web.research_framework import dimension_label
 from tin.web.restricted_views import mapping_key
@@ -25,6 +25,12 @@ class DimensionConfig(BaseModel):
     revision: int = Field(ge=0)
     dimensions: list[dict] = Field(max_length=12)
     confirm_delete: list[str] = Field(default_factory=list, max_length=12)
+
+
+class DimensionTemplateDraft(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    revision: int = Field(ge=0)
+    dimensions: list[dict] | None = Field(default=None, max_length=24)
 
 
 def require_scope(*, write=False):
@@ -45,10 +51,15 @@ def revision(session):
     return (row.version or 1) if row else 0
 
 
-def validate_config(values, previous):
-    """Only persisted dimension ids survive; all new ids are server authored."""
+def validate_config(values, previous, *, draft=False):
+    """Keep persisted/reserved ids; all other new ids are server authored.
+
+    Template drafts may temporarily retain extra dimensions and sections for
+    review. Saving always uses the original shared-contract limits.
+    """
     values = deepcopy(values)
     known = {item['id'] for item in previous}
+    defaults = {item['id']: item['category'] for item in default_dimensions()}
     seen_client, seen_items, section_ids = set(), set(), set()
     total = 0
     for dim in values:
@@ -59,12 +70,13 @@ def validate_config(values, previous):
             raise HTTPException(422, '维度编号无效或重复')
         if identifier:
             seen_client.add(identifier)
-        if identifier not in known:
+        if identifier not in known and defaults.get(identifier) != dim.get('category'):
             dim['id'] = 'd-' + uuid4().hex[:8]
         dim['label'] = dim.get('label', '').strip() if isinstance(dim.get('label'), str) else None
         sections = dim.get('sections', [])
-        if not isinstance(sections, list) or len(sections) > 8:
-            raise HTTPException(422, '每个维度最多8个环节')
+        section_limit = 16 if draft else 8
+        if not isinstance(sections, list) or len(sections) > section_limit:
+            raise HTTPException(422, f'每个维度最多{section_limit}个环节')
         clean_sections = []
         for section in sections:
             if (not isinstance(section, dict) or not isinstance(section.get('label'), str)
@@ -101,7 +113,17 @@ def validate_config(values, previous):
         dim['sections'] = clean_sections
     if total > 96:
         raise HTTPException(422, '研究维度总计最多96条')
-    validate_dimension_list(values)
+    if draft:
+        if not 1 <= len(values) <= 24:
+            raise HTTPException(422, '模板草稿需要1–24个维度')
+        labels = set()
+        for dim in values:
+            validate_dimension_list([dim])
+            if dim['label'] in labels:
+                raise HTTPException(422, '研究维度的名称不能重复')
+            labels.add(dim['label'])
+    else:
+        validate_dimension_list(values)
     return [{key: dim.get(key, '') for key in ('id', 'label', 'category', 'description', 'sections')} for dim in values]
 
 
@@ -247,6 +269,32 @@ def put_config(body: DimensionConfig):
     scope = require_scope(write=True)
     with artifact_session(scope) as session:
         return save_config(session, scope, body)
+
+
+@router.get('/templates')
+def get_templates():
+    from tin.web.dimension_templates import template_list
+    require_scope()
+    return {'templates': template_list()}
+
+
+@router.post('/templates/{template_id}/draft')
+def template_draft(template_id: str, body: DimensionTemplateDraft):
+    from tin.web.dimension_templates import draft_warnings, get_template, merge_template
+    scope = require_scope(write=True)
+    template = get_template(template_id)
+    with artifact_session(scope) as session:
+        expected = revision(session)
+        if body.revision != expected:
+            raise HTTPException(409, {'reason': 'revision_conflict', 'message': '配置已由其他研究员修改，请刷新后重试', 'revision': expected})
+        # An unsaved workbench has implicit defaults, not six custom dimensions.
+        previous = read_dimensions(session) if expected else []
+        if body.dimensions is not None:
+            previous = validate_config(body.dimensions, read_dimensions(session), draft=True)
+        dimensions = merge_template(template_id, previous)
+        return {**describe_config(session, scope, dimensions),
+                'template': {'id': template['id'], 'name': template['name']},
+                'warnings': draft_warnings(dimensions)}
 
 
 @router.get('/data')

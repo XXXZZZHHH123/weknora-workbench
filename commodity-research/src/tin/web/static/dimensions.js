@@ -8,7 +8,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let config, current, draft, editing = false, saving = false, deleted = new Set(), generation = 0;
   let pickerTarget, pickerNext = null, pickerToken = 0, pickerTimer, drag, modelMode = 'suggest', running = false;
   let suggestions = [], inferred = [], selectedSources = new Map(), sourceNext = null, sourceToken = 0, sourceTimer;
-  const renderers = new Set(), modelDialog = get('model-dialog'), picker = get('picker');
+  let templates, templateApplying = false, appliedTemplate, templateToken = 0;
+  const renderers = new Set(), modelDialog = get('model-dialog'), picker = get('picker'), templateDialog = get('template-dialog');
   const clone = value => JSON.parse(JSON.stringify(value));
   const itemName = item => item.name || item.title || item.id;
   const warningText = value => ({history_limited:'历史观测已达到读取上限，同期统计仅覆盖已读取窗口。',observation_window_limited:'观测已达到读取上限，统计仅覆盖已读取窗口。',baseline_unavailable:'缺少可比的往期观测。',insufficient_cycles:'有效同期样本不足，暂不提供排名。',empty_segments_omitted:'没有观测的历史周期已省略。'}[value] || '部分数据存在读取或覆盖提示，请核对条目。');
@@ -25,14 +26,14 @@ document.addEventListener('DOMContentLoaded', () => {
     return result;
   }
   function query() { const q = new URLSearchParams({period: get('period').value}); if (get('date').value) q.set('date', get('date').value); return q; }
-  function freshId() { const bytes = new Uint8Array(4); crypto.getRandomValues(bytes); return 's-' + [...bytes].map(v => v.toString(16).padStart(2, '0')).join(''); }
+  function freshId(prefix = 's-') { const bytes = new Uint8Array(4); crypto.getRandomValues(bytes); return prefix + [...bytes].map(v => v.toString(16).padStart(2, '0')).join(''); }
   const editable = () => config?.can_write === true;
   const dims = () => editing ? draft : config.dimensions;
   function clearRenderers() { renderers.forEach(value => value.destroy?.()); renderers.clear(); window.ChartHover?.close(); }
   function allItems() { return (draft || config?.dimensions || []).flatMap(d => (d.sections || []).flatMap(s => s.items || [])); }
   function countItems() { return allItems().length; }
-  function serialized() {
-    return draft.map(d => ({...(d.id ? {id: d.id} : {}),label: d.label,category: d.category,description: d.description || '',
+  function serialized(dimensions = draft) {
+    return dimensions.map(d => ({...(d.id ? {id: d.id} : {}),label: d.label,category: d.category,description: d.description || '',
       sections: (d.sections || []).map(s => ({id: s.id, label: s.label,items: (s.items || []).map(i => ({kind: i.kind,id: i.id,...(i.kind === 'chart' ? {revision: i.revision} : {})}))}))}));
   }
   async function load() {
@@ -74,11 +75,18 @@ document.addEventListener('DOMContentLoaded', () => {
   function render() {
     if (!config) return;
     clearRenderers(); const root = get('sections'); root.replaceChildren();
+    const locked = saving || templateApplying, starting = config.revision === 0 && !editing && editable();
+    get('start').hidden = !starting; root.hidden = starting;
     get('edit-actions').hidden = !editing; get('edit').hidden = !editable() || editing;
-    get('save').disabled = saving; get('cancel').disabled = saving;
-    get('date').disabled = editing || initial.restricted; get('period').disabled = editing || initial.restricted;
+    get('suggest').hidden = !editable() || starting;
+    get('save').disabled = locked; get('cancel').disabled = locked; get('edit').disabled = locked;
+    get('date').disabled = editing || initial.restricted || locked; get('period').disabled = editing || initial.restricted || locked;
+    get('template-notice').hidden = !editing || !appliedTemplate;
+    if (appliedTemplate) get('template-message').textContent = `已套用“${appliedTemplate.name}”到编辑草稿，尚未保存。可让模型按维度推荐指标，确认后再保存。`;
+    const limits = editing ? draftLimits() : [];
+    get('template-limits').textContent = limits.join('；'); get('template-limits').hidden = !limits.length;
     const dataById = new Map((current?.dimensions || []).map(d => [d.id, d]));
-    for (const [index, dim] of dims().entries()) {
+    for (const [index, dim] of (starting ? [] : dims()).entries()) {
       const section = node('section', 'dimensions-section'); section.dataset.dimensionId = dim.id || ''; section.dataset.dimensionIndex = index;
       if (editing) renderEditor(section, dim, index);
       else {
@@ -107,15 +115,22 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       root.append(section);
     }
-    get('empty').hidden = allItems().length > 0 || editing;
+    get('empty').hidden = allItems().length > 0 || editing || starting;
     const unassigned = config.evidence?.unassigned, removed = config.evidence?.deleted;
     get('evidence').textContent = config.evidence_available === false ? '' : [unassigned ? `未标注维度的研判依据 ${unassigned.total ?? unassigned} 条` : '', removed ? `已删除维度的研判依据 ${removed.total ?? removed} 条，请在研究判断中重新指派。` : ''].filter(Boolean).join('；');
     const failed = current?.failed || []; get('failed').hidden = !failed.length;
     get('failed').querySelector('ul').replaceChildren(...failed.map(item => node('li', '', `${item.name || item.title || item.id}：${item.reason}`)));
-    if (saving) {
+    if (locked) {
       root.querySelectorAll('input,textarea,select,button').forEach(control => control.disabled = true);
-      get('add').disabled = true; get('infer').disabled = true; get('suggest').disabled = true;
-    } else { get('add').disabled = false; get('infer').disabled = false; get('suggest').disabled = false; }
+    }
+    for (const id of ['add','infer','suggest','templates','template-suggest','start-general','start-industry','start-infer','template-close']) get(id).disabled = locked;
+    get('template-list').querySelectorAll('button').forEach(control => control.disabled = locked);
+  }
+  function draftLimits() {
+    const warnings = [];
+    if (draft.length > 12) warnings.push(`当前草稿有 ${draft.length} 个维度，请删减至12个以内再保存`);
+    for (const dim of draft) if ((dim.sections || []).length > 8) warnings.push(`“${dim.label}”有 ${dim.sections.length} 个环节，请删减至8个以内再保存`);
+    return warnings;
   }
   function renderCard(item) {
     const card = node(initial.restricted ? 'article' : 'a', 'dimensions-card'); if (!initial.restricted) card.href = prefix + (item.kind === 'chart' ? '/sn/charts/' : '/sn/indicators/') + encodeURIComponent(item.id) + (get('date').value ? '?date=' + get('date').value : '');
@@ -152,6 +167,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   function reorder(values, from, to) { if (to < 0 || to >= values.length) return; values.splice(to, 0, values.splice(from, 1)[0]); render(); }
   function renderEditor(root, dim, index) {
+    if (dim.template_extra) {
+      root.dataset.templateExtra = 'true';
+      root.append(node('span', 'dimensions-template-extra', '模板外'));
+    }
     const fields = node('div', 'dimensions-edit-fields'), label = input(dim.label, '维度名称', value => dim.label = value); label.dataset.field = 'label'; label.maxLength = 24;
     const category = node('select'); category.setAttribute('aria-label', '通用类别');
     for (const entry of config.categories || []) category.append(new Option(entry.label || entry, entry.id || entry.value || entry));
@@ -191,7 +210,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   function ensureStage(di) { draft[di].sections ||= []; if (!draft[di].sections.length) draft[di].sections.push({id: freshId(),label: '重点跟踪',items: []}); }
   async function save() {
-    if (saving || !editing) return;
+    if (saving || templateApplying || !editing) return;
+    const limits = draftLimits();
+    if (limits.length) return status(limits.join('；'), true);
     for (const old of config.dimensions) {
       const refs = evidence(old);
       if (old.id && !draft.some(d => d.id === old.id) && refs.total && !deleted.has(old.id)) {
@@ -202,9 +223,46 @@ document.addEventListener('DOMContentLoaded', () => {
     saving = true; render(); status('正在保存…');
     try {
       config = await request('/dimensions', {revision: config.revision,dimensions: serialized(),confirm_delete: [...deleted]}, 'PUT');
-      editing = false; draft = undefined; current = undefined; render(); status('已保存研究维度。'); await loadData();
+      editing = false; draft = undefined; current = undefined; appliedTemplate = undefined; render(); status('已保存研究维度。'); await loadData();
     } catch (error) { status(error.status === 409 ? `${error.message} 若配置已被其他人更新，请刷新页面后再修改；当前编辑尚未保存。` : error.message, true); }
     finally { saving = false; render(); }
+  }
+  async function openTemplates(industryOnly = false) {
+    if (!editable() || saving || templateApplying) return;
+    const own = ++templateToken;
+    get('template-list').replaceChildren(); get('template-status').textContent = '正在读取内置模板…'; templateDialog.showModal();
+    try {
+      if (!templates) templates = (await request('/dimensions/templates')).templates || [];
+      if (own !== templateToken || !templateDialog.open) return;
+      for (const template of templates.filter(row => !industryOnly || row.id !== 'general-six')) {
+        const card = node('section', 'dimensions-template-card'), title = node('h3', '', template.name);
+        card.append(title, node('p', 'dimensions-muted', template.applicability));
+        const dimensions = node('ul', 'dimensions-template-preview');
+        for (const dim of template.dimensions || []) {
+          const row = node('li'); row.append(node('strong', '', dim.label));
+          row.append(node('span', 'dimensions-muted', ` · ${dim.description || ''}`));
+          if (dim.sections?.length) row.append(node('small', 'dimensions-muted', dim.sections.join(' / ')));
+          dimensions.append(row);
+        }
+        const apply = button('套用此模板', () => void applyTemplate(template.id)); apply.dataset.templateId = template.id;
+        card.append(dimensions, apply); get('template-list').append(card);
+      }
+      get('template-status').textContent = get('template-list').children.length ? '套用后先生成编辑草稿，点击页面“保存”才会保存。' : '暂无可用的行业模板。';
+    } catch (error) { if (own === templateToken) get('template-status').textContent = error.message; }
+  }
+  async function applyTemplate(id) {
+    if (!editable() || saving || templateApplying) return;
+    templateApplying = true; render(); status('正在生成模板草稿…');
+    try {
+      const keepDraft = editing && (config.revision > 0 || appliedTemplate || JSON.stringify(serialized()) !== JSON.stringify(serialized(config.dimensions)));
+      const body = {revision: config.revision,...(keepDraft ? {dimensions: serialized()} : {})};
+      const result = await request('/dimensions/templates/' + encodeURIComponent(id) + '/draft', body, 'POST');
+      draft = result.dimensions; editing = true; appliedTemplate = result.template; templateDialog.close();
+      status(['已生成模板草稿，请核对后保存。',...(result.warnings || [])].join(' '));
+    } catch (error) {
+      status(error.message, true);
+      if (templateDialog.open) get('template-status').textContent = error.message;
+    } finally { templateApplying = false; render(); }
   }
   function openPicker(di, si) { pickerTarget = {di, si}; get('picker-search').value = ''; picker.showModal(); void loadChoices(); }
   async function loadChoices(append = false) {
@@ -235,7 +293,9 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) { if (own === pickerToken) get('picker-status').textContent = error.message; }
   }
   async function openModels(mode) {
-    if (!editable()) return; modelMode = mode; suggestions = []; inferred = []; selectedSources = new Map(); sourceNext = null;
+    if (!editable() || saving || templateApplying) return;
+    if (mode === 'suggest' && editing && draftLimits().length) return status(draftLimits().join('；'), true);
+    modelMode = mode; suggestions = []; inferred = []; selectedSources = new Map(); sourceNext = null;
     get('model-title').textContent = mode === 'infer' ? '从往期周报归纳维度' : '让模型建议指标';
     get('source-controls').hidden = mode !== 'infer'; get('suggestions').replaceChildren(); get('model-status').textContent = '';
     get('model-adopt').textContent = mode === 'infer' ? '将这套维度作为编辑草稿' : '采用所选到编辑草稿'; modelDialog.showModal(); syncModel();
@@ -274,7 +334,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (running || get('model-run').disabled) return; running = true; suggestions = []; inferred = []; get('suggestions').replaceChildren(); syncModel();
     get('model-status').textContent = modelMode === 'infer' ? '正在读取所选原文并归纳维度…' : '正在核对工作表与真实指标…';
     try {
-      const result = await request('/dimensions/' + (modelMode === 'infer' ? 'infer' : 'suggestions'), {model_id: get('model').value,...(modelMode === 'infer' ? {sources: [...selectedSources.values()]} : {})}, 'POST');
+      if (modelMode === 'suggest' && editing) for (const dim of draft) if (!dim.id) dim.id = freshId('d-');
+      const result = await request('/dimensions/' + (modelMode === 'infer' ? 'infer' : 'suggestions'), {model_id: get('model').value,...(modelMode === 'infer' ? {sources: [...selectedSources.values()]} : editing ? {dimensions: serialized()} : {})}, 'POST');
       if (modelMode === 'infer') {
         inferred = result.dimensions || [];
         for (const d of inferred) {
@@ -309,7 +370,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (running || get('model-adopt').disabled) return;
     if (modelMode === 'infer') {
       if (!window.confirm('将这套维度放入编辑草稿？当前未保存的编辑会被替换，现有配置要点击“保存”后才会覆盖。')) return;
-      startEdit(); draft = clone(inferred); render(); modelDialog.close(); status('已放入编辑草稿，可增删改后保存。'); return;
+      startEdit(); draft = clone(inferred); appliedTemplate = undefined; render(); modelDialog.close(); status('已放入编辑草稿，可增删改后保存。'); return;
     }
     const candidate = clone(editing ? draft : config.dimensions); let merged = 0;
     for (const check of get('suggestions').querySelectorAll('input[type="checkbox"]:checked')) {
@@ -326,8 +387,14 @@ document.addEventListener('DOMContentLoaded', () => {
     startEdit(); draft = candidate; render(); modelDialog.close(); status(`已合并 ${merged} 个指标到编辑草稿，请核对并保存。`);
   }
   get('edit').addEventListener('click', startEdit); get('save').addEventListener('click', save);
-  get('cancel').addEventListener('click', () => { if (saving) return; editing = false; draft = undefined; deleted = new Set(); render(); status('已取消未保存的编辑。'); });
-  get('add').addEventListener('click', () => { if (draft.length >= 12) return status('最多12个维度。',true); draft.push({label:'新维度',category:config.categories?.[0]?.id || config.categories?.[0] || '其他',description:'',sections:[]}); render(); });
+  get('cancel').addEventListener('click', () => { if (saving || templateApplying) return; editing = false; draft = undefined; appliedTemplate = undefined; deleted = new Set(); render(); status('已取消未保存的编辑。'); });
+  get('add').addEventListener('click', () => { if (draft.length >= 12) return status('最多12个维度。',true); draft.push({id:freshId('d-'),label:'新维度',category:config.categories?.[0]?.id || config.categories?.[0] || '其他',description:'',sections:[]}); render(); });
+  get('templates').addEventListener('click', () => void openTemplates());
+  get('start-general').addEventListener('click', () => void applyTemplate('general-six'));
+  get('start-industry').addEventListener('click', () => void openTemplates(true));
+  get('start-infer').addEventListener('click', () => void openModels('infer'));
+  get('template-close').addEventListener('click', () => templateDialog.close());
+  get('template-suggest').addEventListener('click', () => void openModels('suggest'));
   get('date').addEventListener('change', () => void loadData()); get('period').addEventListener('change', () => void loadData());
   get('picker-kind').addEventListener('change', () => void loadChoices()); get('picker-more').addEventListener('click', () => void loadChoices(true)); get('picker-close').addEventListener('click', () => picker.close());
   get('picker-search').addEventListener('input', () => { pickerToken++; clearTimeout(pickerTimer); pickerTimer = setTimeout(() => void loadChoices(),180); });
@@ -335,6 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
   get('model').addEventListener('change', syncModel); get('model-run').addEventListener('click', () => void generate()); get('model-adopt').addEventListener('click', adopt); get('model-close').addEventListener('click', () => modelDialog.close());
   get('source-search').addEventListener('input', () => { sourceToken++; clearTimeout(sourceTimer); sourceTimer = setTimeout(() => void loadSources(),180); }); get('source-more').addEventListener('click', () => void loadSources(true));
   modelDialog.addEventListener('cancel', event => { if (running) event.preventDefault(); });
+  templateDialog.addEventListener('cancel', event => { if (templateApplying) event.preventDefault(); });
   const params = new URLSearchParams(location.search); if (params.get('period') === 'daily') get('period').value = 'daily';
   if (params.get('date')) get('date').value = params.get('date'); else if (initial.date) get('date').value = initial.date;
   window.addEventListener('pagehide', clearRenderers); void load();
