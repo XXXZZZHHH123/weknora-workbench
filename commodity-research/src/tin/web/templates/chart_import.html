@@ -11,8 +11,27 @@
   <div class="charts-toolbar"><button type="button" id="chart-import-more" class="charts-button" hidden>加载更多预览</button><button type="button" id="chart-import-apply" class="charts-button primary" disabled>确认导入所选工作表</button></div>
   <p id="chart-import-hint" class="charts-muted">请先加载全部预览，核对后按工作表勾选。</p>
   <div id="chart-import-result" role="status" hidden></div>
+  <details id="report-chart-import" class="charts-panel">
+    <summary>从往期周报导入常用图</summary>
+    <p class="charts-muted">只导入图表结构并映射真实指标，后续按最新数据绘制。往期结论不会保存；请核对映射和预览后再导入。</p>
+    <div class="charts-fields">
+      <label class="charts-field">查找周报<input type="search" id="report-chart-search" maxlength="200" placeholder="按文件名查找" {% if not chart_page.can_write %}disabled{% endif %}></label>
+      <label class="charts-field">已授权周报（PPTX / PDF）<select id="report-chart-file" {% if not chart_page.can_write %}disabled{% endif %}><option value="">请选择周报</option></select></label>
+      <label class="charts-field">平台模型<select id="report-chart-model" disabled><option value="">正在读取模型…</option></select></label>
+      <label class="charts-field">图表分组<input id="report-chart-group" maxlength="80" {% if not chart_page.can_write %}disabled{% endif %}></label>
+    </div>
+    <button type="button" id="report-chart-more" class="charts-button" hidden>加载更多周报</button>
+    <button type="button" id="report-chart-recognize" class="charts-button" disabled>识别周报中的图表</button>
+    <div id="report-chart-status" role="status" aria-live="polite" hidden></div>
+    <p id="report-chart-progress" class="charts-muted" aria-live="polite"></p>
+    <div id="report-chart-failures" class="charts-notice warning" hidden></div>
+    <div id="report-chart-cards" class="charts-grid"></div>
+    <div class="charts-toolbar"><span id="report-chart-selection" class="charts-muted"></span><button type="button" id="report-chart-apply" class="charts-button primary" disabled>导入所选</button></div>
+    <div id="report-chart-result" role="status" hidden></div>
+  </details>
   {% endif %}
 </div>
 <script type="application/json" id="chart-page-config">{{ chart_page | tojson }}</script>
 <script src="{{ research_static_prefix() }}/static/chart-import.js?v={{ static_version() }}"></script>
+<script src="{{ research_static_prefix() }}/static/report-chart-import.js?v={{ static_version() }}"></script>
 {% endblock %}
