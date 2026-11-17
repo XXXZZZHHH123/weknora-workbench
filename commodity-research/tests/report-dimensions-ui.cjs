@@ -13,7 +13,11 @@ function report() {
     strategy_overview: {text: '暂无策略', triggered: []}, selected_figures: draft.figures, report_figures: [figure], automatic_figures: [], figure_options: [{series_id: 'series-one', name: figure.title}],
     dimension_overview: [
       {id: 'custom-demand', label: '下游跟踪', facts: [{text: '合成指标 12 吨（较 09-08 +2，近 4 年同期第 1 高）'}], sentence: '', impact: 'undecided', support_count: 0, oppose_count: 1, evidence: [{side: 'bear', text: '下游原文依据'}]},
-      {id: 'custom-stock', label: '库存观察', facts: [], sentence: '研究员原句', impact: 'bearish', support_count: 2, oppose_count: 0, review_needed: true, evidence: [{side: 'bull', text: '库存原文依据'}]}
+      {id: 'custom-stock', label: '库存观察', change_summary: '本期无新数据（最新 2029-03-10）', facts: [
+        {text: '合成库存 42 吨（本期无新数据，最新 2029-03-10）', latest_text: '合成库存 42 吨'},
+        {text: '合成周转 8 天（本期无新数据，最新 2029-03-09）', latest_text: '合成周转 8 天'}
+      ], warning_summary: '2 项停更（最长 190 天）', warnings: ['合成库存：最新数据距今 189 天，可能已停更', '合成周转：最新数据距今 190 天，可能已停更', '历史观测达到读取上限，同期位置可能受限'],
+      sentence: '研究员原句', impact: 'bearish', support_count: 2, oppose_count: 0, review_needed: true, evidence: [{side: 'bull', text: '库存原文依据'}]}
     ], editable_dimensions: dimensions,
     logic_strategy: {contradiction: '合成主要矛盾', tone: '观察 · 保存基调', conditions: [{dimension_label: '下游跟踪', name: '合成阈值', condition: '> 12', state: '未触发', current_value_text: '10'}], strategies: [{text: '观察；保存逻辑；触发：保存条件；应对：继续观察'}]},
     evidence_groups: [{id: 'other', label: '其他', figures: [figure]}], editable_draft: draft};
@@ -43,13 +47,27 @@ const html = (config = {}, value = report()) => render('reports.html', config, {
     assert.deepEqual(await p.locator('[data-report-dimension]').evaluateAll(nodes => nodes.map(node => node.dataset.reportDimension)), ['custom-demand', 'custom-stock']);
     assert.equal(await p.locator('#report-overview').getByText('备选维度').count(), 0);
     assert.match(await p.locator('#report-overview').innerText(), /12 吨.*09-08.*近 4 年/);
+    assert.deepEqual(await p.locator('.report-overview-table thead th').allTextContents(), ['维度', '本期变化', '研究员一句话', '影响', '依据计数']);
+    const stock = p.locator('[data-report-dimension="custom-stock"]');
+    assert.equal(await stock.locator('.report-change-summary').innerText(), '本期无新数据（最新 2029-03-10）');
+    assert.deepEqual(await stock.locator('.report-latest-reference').allTextContents(), ['合成库存 42 吨', '合成周转 8 天']);
+    assert.equal((await stock.innerText()).match(/本期无新数据/g).length, 1, '无更新说明在维度内只显示一次');
+    assert.doesNotMatch(await stock.innerText(), /较.*[+＋]0|持平|最新数据距今|历史观测达到读取上限/);
+    assert.equal(await stock.locator('.report-dimension-notices').evaluate(node => node.open), false);
+    assert.match(await stock.locator('.report-dimension-notices > summary').innerText(), /2 项停更（最长 190 天）/);
+    await stock.locator('.report-dimension-notices > summary').click();
+    assert.match(await stock.innerText(), /最新数据距今 190 天.*历史观测达到读取上限/s);
+    await stock.locator('.report-dimension-notices > summary').click();
+    assert.equal(await stock.locator('.report-impact').innerText(), '偏空');
+    assert.notEqual(await stock.locator('.report-impact').evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)');
+    assert.equal(await p.locator('.report-overview-table').evaluate(node => node.getBoundingClientRect().width <= node.parentElement.clientWidth), true, '桌面综述表不横向溢出');
     assert.match(await p.locator('#report-logic-strategy').innerText(), /主要矛盾.*合成主要矛盾/s);
     assert.equal(await p.locator('#report-full-record').evaluate(node => node.open), false);
     assert.match(await p.locator('#report-full-record').textContent(), /旧草稿导语/);
     assert.equal(await p.locator('[data-evidence-dimension="other"] > h4').innerText(), '其他');
     assert.equal(await p.locator('.report-figure-conclusion').innerText(), '原图结论');
     assert.match(await p.locator('[data-report-dimension="custom-stock"] .report-review-warning').getAttribute('href'), /\/sn\/judgment$/);
-    await p.locator('[data-report-dimension="custom-stock"] details > summary').click();
+    await stock.locator('.report-dimension-evidence > summary').click();
     assert.match(await p.locator('[data-report-dimension="custom-stock"]').innerText(), /库存原文依据/);
     await p.locator('#report-edit-open').click();
     assert.deepEqual(await p.locator('[data-edit-dimension]').evaluateAll(nodes => nodes.map(node => node.dataset.editDimension)), dimensions.map(row => row.id));

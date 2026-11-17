@@ -130,6 +130,32 @@ def test_restricted_dimension_endpoint_denies_raw_reads_before_transport(report_
     assert 'dimensions' not in result.json()
 
 
+def test_stale_dimension_metadata_reaches_overview_and_non_numeric_fields_are_excluded(report_flow):
+    from tin.web.report_dimension_drafts import source_facts
+    client, state, *_ = configured_flow(report_flow)
+    for sid in (SID, OTHER):
+        state.observations[sid] = [('2022-03-15', 21), ('2022-03-22', 23)]
+    response = client.get(f'/sn/reports/{DAY}/weekly.json')
+    assert response.status_code == 200, response.text
+    rows = response.json()['dimension_overview']
+    assert all(row['change_summary'] == '本期无新数据（最新 2022-03-22）' for row in rows)
+    assert rows[1]['warning_summary'].startswith('2 项停更')
+    assert all('较 ' not in fact['text'] for row in rows for fact in row['facts'])
+    state.fields[OTHER]['field_metadata'] = {'role': 'annotation'}
+    response = client.get(f'/sn/reports/{DAY}/weekly.json')
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    annotated = payload['dimension_data']['dimensions'][0]['sections'][0]['items'][0]
+    assert annotated['field_metadata']['role'] == 'annotation'
+    rows = payload['dimension_overview']
+    assert rows[0]['facts'] == [] and not source_facts(rows[0])
+    assert [fact['series_id'] for fact in rows[1]['facts']] == [SID]
+    state.fields[OTHER]['field_metadata']['role'] = 'text_dimension'
+    response = client.get(f'/sn/reports/{DAY}/weekly.json')
+    assert response.status_code == 200, response.text
+    assert response.json()['dimension_overview'][0]['facts'] == []
+
+
 def test_frozen_archive_keeps_custom_dimensions_and_never_reads_dimension_data(loaded, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, 'weknora_api_url', '')
     monkeypatch.setattr(settings, 'exports_dir', tmp_path)
@@ -163,7 +189,9 @@ def test_frozen_archive_keeps_custom_dimensions_and_never_reads_dimension_data(l
     assert len(deck.slides) == 1
     ppt_text = '\n'.join(cell.text for slide in deck.slides for shape in slide.shapes if shape.has_table
                          for row in shape.table.rows for cell in row.cells)
-    assert '归档自定义维度' in ppt_text.replace('\n', '') and '归档指标 21 件（较 09-11 +1）' in ppt_text
+    assert '归档自定义维度' in ppt_text.replace('\n', '')
+    assert '归档指标 21件（较09-11 +1）' in ppt_text
+    assert ppt_text.count('21') == 1
     client = TestClient(web.app)
     page = client.get('/sn/reports?date=2026-09-18')
     assert page.status_code == 200, page.text

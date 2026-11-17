@@ -267,14 +267,14 @@ def test_default_one_page_has_table_logo_and_exact_report_numbers(view):
     assert not chart_pictures(deck)
 
 
-def test_one_page_long_content_is_two_pages_at_most_and_notes_keep_full_text(view):
+def test_one_page_compresses_twelve_rows_and_notes_keep_full_text(view):
     one_page_view(view)
     view['dimension_overview'] *= 2
     for row in view['dimension_overview']:
         row['sentence'] = '研究员长文字' * 60 + '保留全文末尾'
         row['facts'] *= 4
     deck = new_deck(view)
-    assert len(deck.slides) == 2
+    assert len(deck.slides) == 1
     assert '…' in ''.join(text(slide) for slide in deck.slides)
     assert all('保留全文末尾' in slide.notes_slide.notes_text_frame.text for slide in deck.slides)
     for slide in deck.slides:
@@ -329,11 +329,141 @@ def test_new_modes_respect_hidden_panels_and_never_reopen_empty_logic(view):
         new_deck(view, sections={'summary': False})
 
 
-def test_short_overview_keeps_all_facts_when_they_fit(view):
+def test_short_overview_limits_facts_to_two_and_keeps_all_in_notes(view):
     one_page_view(view)
     view['dimension_overview'] = view['dimension_overview'][:1]
     view['dimension_overview'][0]['facts'] = [{'text': f'指标{index} 值 {index + 10} 吨'} for index in range(4)]
     deck = new_deck(view)
     assert len(deck.slides) == 1
-    for index in range(4):
+    for index in range(2):
         assert f'指标{index} 值 {index + 10} 吨' in text(deck.slides[0])
+    assert '指标2 值 12 吨' not in text(deck.slides[0])
+    for index in range(4):
+        assert f'指标{index} 值 {index + 10} 吨' in deck.slides[0].notes_slide.notes_text_frame.text
+
+
+
+def dense_eight_dimension_view(view):
+    """Isolated synthetic acceptance data, deliberately unrelated to a commodity."""
+    one_page_view(view)
+    impacts = [('bullish', '偏多'), ('bearish', '偏空'), ('neutral', '中性'), ('undecided', '未判断')]
+    view['dimension_overview'] = []
+    for index in range(8):
+        impact, label = impacts[index % 4]
+        facts = []
+        for metric in range(4):
+            name = f'合成维度{index + 1}的非常长且需精简的指标名称{metric + 1}'
+            no_update = index % 2 == 0
+            details = '本期无新数据（最新 2030-03-01）' if no_update else '较 04-01 +1.23'
+            facts.append({'name': name, 'readable_name': name, 'latest': 1234.56 + metric,
+                'latest_date': '2030-03-01' if no_update else '2030-04-04',
+                'unit': '吨', 'display': {'latest': f'{1234.56 + metric:,.2f}', 'change': '+1.23'},
+                'update_status': 'no_update' if no_update else 'updated',
+                'baseline': {'date': '2030-04-01'}, 'change': 1.23,
+                'position': {'rank': 2, 'n': 5, 'text': '近 6 年同期第 2 高'},
+                'text': f'{name} {1234.56 + metric:,.2f} 吨（{details}，近 6 年同期第 2 高）'})
+        view['dimension_overview'].append({'id': f'dense-{index}', 'label': f'维度{index + 1}',
+            'facts': facts, 'no_update': index % 2 == 0, 'latest_date': '2030-03-01',
+            'change_summary': '本期无新数据（最新 2030-03-01）' if index % 2 == 0 else '',
+            'sentence': '研究员已经确认但超过六十字的完整分析，包含各环节的相互关系和下一阶段需要核验的条件。' * 4 + f'全文末尾{index}',
+            'impact': impact, 'impact_label': label, 'support_count': 123, 'oppose_count': 456,
+            'warning_summary': '4 项停更（最长 35 天）', 'warnings': ['合成停更明细：最新数据距今 35 天']})
+    view['logic_strategy'] = {'active': True, 'tone': '中性 · 等待条件核验',
+        'contradiction': '合成供应与需求之间的主要矛盾，保留已确认研究员的判断。',
+        'conditions': [{'name': f'合成关注区间{index + 1}', 'condition': f'>={20 + index}',
+            'state': '未触发' if index % 2 else '已触发', 'current_value_text': str(19 + index)} for index in range(4)],
+        'strategies': [{'title': f'方案{index + 1}',
+            'direction': '观察', 'thesis': '核心逻辑为等待合成区间有效突破并且需要研究员重新确认' * 5,
+            'trigger': '已保存条件达到且复核通过' * 5, 'response_action': '重新核验并按原定措施应对' * 5,
+            'text': '观察；核心逻辑为等待合成区间有效突破；触发：已保存条件；应对：重新核验。' * 5 + f'策略全文末尾{index}'} for index in range(3)]}
+    return view
+
+
+def assert_one_page_text_fits(deck):
+    """Estimate occupied height from the actual python-pptx paragraphs and fonts."""
+    from tin.ppt.report_deck import _wrap
+    for slide in deck.slides:
+        for shape in slide.shapes:
+            assert shape.left >= 0 and shape.top >= 0
+            assert shape.left + shape.width <= deck.slide_width + 1
+            assert shape.top + shape.height <= deck.slide_height + 1
+            frames = []
+            if shape.has_text_frame and shape.text:
+                frames.append((shape.text_frame, shape.width - shape.text_frame.margin_left - shape.text_frame.margin_right,
+                               shape.height - shape.text_frame.margin_top - shape.text_frame.margin_bottom))
+            if shape.has_table:
+                for rindex, row in enumerate(shape.table.rows):
+                    for cindex, cell in enumerate(row.cells):
+                        if cell.text:
+                            frames.append((cell.text_frame, shape.table.columns[cindex].width - cell.margin_left - cell.margin_right,
+                                           row.height - cell.margin_top - cell.margin_bottom))
+            for frame, width, height in frames:
+                used = 0
+                for paragraph in frame.paragraphs:
+                    size = max((run.font.size.pt for run in paragraph.runs if run.font.size), default=10.5)
+                    assert size >= 10.5
+                    line_count = len(_wrap(paragraph.text,
+                        width / Inches(1), size))
+                    # The generated paragraphs are explicitly wrapped; no extra
+                    # automatic line can silently spill into another cell.
+                    assert line_count == 1
+                    spacing = paragraph.line_spacing
+                    spacing = spacing if isinstance(spacing, float) else spacing.pt / size if spacing is not None else 1.15
+                    used += size * spacing / 72
+                available = height / Inches(1)
+                assert used <= available + .015, (shape.name, frame.text, used, available)
+
+
+def test_eight_dimensions_long_content_fit_one_page_with_labels_and_full_notes(view):
+    dense_eight_dimension_view(view)
+    deck = new_deck(view)
+    assert len(deck.slides) == 1
+    slide = deck.slides[0]
+    body = text(slide)
+    notes = slide.notes_slide.notes_text_frame.text
+    table = next(shape.table for shape in slide.shapes if shape.has_table)
+    assert len(table.rows) == 9
+    assert [cell.text for cell in table.rows[0].cells] == ['维度', '本期变化', '研究员一句话', '影响']
+    for index in range(8):
+        assert f'维度{index + 1}' in body
+        assert f'全文末尾{index}' in notes and f'全文末尾{index}' not in body
+        assert len(table.cell(index + 1, 2).text.replace('\n', '')) <= 60
+    assert '支持 123' not in body and '反对 456' not in body
+    assert '本期无新数据（最新 2030-03-01）' in body and '较 04-01 +0' not in body
+    assert all(value in body for value in ('基调：', '主要矛盾：', '合成关注区间1', '合成关注区间2', '合成关注区间3', '当前 19', '已触发', '未触发'))
+    assert '合成关注区间4' not in body and '合成关注区间4' in notes
+    assert all(f'策略全文末尾{index}' in notes for index in range(3))
+    strategy_box = next(shape for shape in slide.shapes if shape.name == 'Strategy summary')
+    assert len(strategy_box.text.splitlines()) == 3
+    assert all('观察 · ' in line and '触发：' in line and '应对：' in line for line in strategy_box.text.splitlines())
+    assert '合成停更明细' in notes and '合成停更明细' not in body
+    assert '条件触发不等于成交' in notes
+    tags = [shape for shape in slide.shapes if shape.name.startswith('Impact tag ')]
+    assert len(tags) == 8 and len({str(shape.fill.fore_color.rgb) for shape in tags}) == 4
+    assert_one_page_text_fits(deck)
+
+
+def test_no_active_judgment_has_explicit_left_column_and_never_reopens_record(view):
+    dense_eight_dimension_view(view)
+    view['logic_strategy'].update(active=False, tone='', contradiction='', conditions=[])
+    view['judgment']['contradiction'] = '旧生效记录不得回退'
+    deck = new_deck(view)
+    assert '暂无生效研判' in text(deck.slides[0])
+    assert '旧生效记录不得回退' not in text(deck.slides[0]) + deck.slides[0].notes_slide.notes_text_frame.text
+    assert_one_page_text_fits(deck)
+
+
+
+def test_legacy_text_only_long_fact_never_silently_drops_numerical_tail(view):
+    one_page_view(view)
+    view['dimension_overview'] = view['dimension_overview'][:1]
+    name = '长指标的完整名称' * 20
+    original = name + ' 87.65 吨（较 04-01 -4.32）'
+    view['dimension_overview'][0]['facts'] = [{'name': name, 'text': original},
+        {'text': '没有结构化名称的长指标' * 20 + ' 98.76 吨（较 04-01 +5.43）'}]
+    deck = new_deck(view)
+    body = text(deck.slides[0])
+    assert '87.65 吨（较 04-01 -4.32）' in body
+    assert '完整指标事实见备注' in body
+    assert '98.76 吨（较 04-01 +5.43）' in deck.slides[0].notes_slide.notes_text_frame.text
+    assert_one_page_text_fits(deck)

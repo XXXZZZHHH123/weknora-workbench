@@ -1,0 +1,38 @@
+[
+  {
+    "case": "digits_in_metric_names",
+    "text": "本期郑棉05合约16,865元/吨、中国棉花价格指数:328 18,220……",
+    "metric_names": ["郑棉05合约", "中国棉花价格指数:328"],
+    "facts": [
+      {"name": "郑棉05合约", "raw_name": "CZCE / 郑棉05合约", "latest": 16865, "unit": "元/吨", "date": "2023-09-21", "display": {"latest": "16,865"}},
+      {"name": "EDBclose / 中国棉花价格指数:328", "readable_name": "中国棉花价格指数:328", "latest": 18220, "unit": "元/吨", "date": "2023-09-21", "display": {"latest": "18,220"}}
+    ]
+  },
+  {
+    "case": "semantic_change_signs",
+    "text": "坯布库存36.12天，较07-31下降2.91天……较05-31增加35.7亿元",
+    "metric_names": ["坯布库存"],
+    "facts": [
+      {"name": "坯布库存", "latest": 36.12, "unit": "天", "date": "2023-08-31", "change": -2.91, "baseline": {"date": "2023-07-31", "value": 39.03}, "display": {"latest": "36.12", "change": "-2.91"}},
+      {"name": "测试夹具第二指标", "latest": 135.7, "unit": "亿元", "date": "2023-06-30", "change": 35.7, "baseline": {"date": "2023-05-31", "value": 100}, "display": {"latest": "135.7", "change": "+35.7"}}
+    ]
+  },
+  {
+    "case": "normalized_source_names",
+    "text": "本期CZCE短纤结算价7,796、持仓量402,903……",
+    "metric_names": ["ＣＺＣＥ 短纤结算价", "持仓量"],
+    "facts": [
+      {"name": "短纤结算价", "raw_name": "CZCE / 短纤结算价", "latest": 7796, "unit": "元/吨", "date": "2023-09-21", "display": {"latest": "7,796"}},
+      {"name": "CZCE / 持仓量", "readable_name": "持仓量", "latest": 402903, "unit": "手", "date": "2023-09-21", "display": {"latest": "402,903"}}
+    ]
+  },
+  {
+    "case": "no_update",
+    "text": "郑棉05合约本期无新数据（最新2023-09-21），最新16,865元/吨供参考。",
+    "rejected_text": "郑棉05合约较09-21为+0。",
+    "metric_names": ["郑棉05合约"],
+    "facts": [
+      {"name": "郑棉05合约", "latest": 16865, "unit": "元/吨", "date": "2023-09-21", "change": 0, "change_pct": 0, "baseline": {"date": "2023-09-21", "value": 16865}, "update_status": "no_update", "direction": "no_update", "text": "郑棉05合约16,865元/吨（本期无新数据，最新2023-09-21）", "display": {"latest": "16,865", "change": "+0", "change_pct": "+0%"}}
+    ]
+  }
+]

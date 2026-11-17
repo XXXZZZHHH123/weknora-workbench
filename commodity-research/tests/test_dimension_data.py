@@ -75,11 +75,15 @@ def test_no_update_without_comparison_observation():
 
 def test_indicator_card_uses_readable_catalog_name_without_mutating_metadata():
     field = {**FIELDS[SID], 'name': '可读指标 / ID123456 [SOURCE.EXAMPLE.value]',
-             'metric': '原始字段表头', 'sheet': '真实工作表'}
+             'metric': '原始字段表头', 'sheet': '真实工作表', 'field_metadata': {'role': 'annotation'}}
     item = data.indicator_data(SID, field, {'unit': '件', 'points': [
         {'date': '2024-03-28', 'value': 10}, {'date': '2024-03-29', 'value': 15}]},
         date(2024, 3, 29), 'weekly')
     assert item['name'] == '可读指标'
+    assert item['raw_name'] == field['name']
+    assert item['field_metadata'] == {'role': 'annotation'}
+    item['field_metadata']['role'] = 'numeric'
+    assert field['field_metadata']['role'] == 'annotation'
     assert item['sheet'] == '真实工作表'
     assert field['name'] == '可读指标 / ID123456 [SOURCE.EXAMPLE.value]'
     assert field['metric'] == '原始字段表头'

@@ -135,6 +135,8 @@ def indicator_data(identifier, field, series, day, period):
         warnings.append('baseline_unavailable')
     return {'kind': 'indicator', 'id': identifier, 'series_id': identifier, 'status': 'ok',
             'name': indicator_name(identifier, {identifier: field.get('name') or field.get('metric') or series.get('name')}),
+            'raw_name': field.get('name') or field.get('metric') or series.get('name') or '',
+            'field_metadata': deepcopy(field.get('field_metadata') or {}),
             'unit': unit, 'frequency': frequency, 'source': field.get('source') or field.get('source_file') or '',
             'source_file': field.get('source_file') or '', 'sheet': field.get('sheet') or '',
             'latest': latest['value'], 'date': latest['date'],

@@ -543,11 +543,17 @@ def _one_page_lines(view):
         lines += ['## 本期综述', '', '| 维度 | 本期变化 | 研究员一句话 | 影响 | 研判依据 |',
                   '| --- | --- | --- | --- | --- |']
         for row in view['dimension_overview']:
+            facts = '；'.join(fact.get('latest_text', fact['text']) if row.get('no_update') else fact['text']
+                            for fact in row['facts'])
+            changes = '；'.join(filter(None, (row.get('change_summary'), facts))) or '暂无可用本期指标'
             lines.append('| ' + ' | '.join(_md(value) for value in (
-                row['label'], '；'.join(fact['text'] for fact in row['facts']) or '暂无可用本期指标',
+                row['label'], changes,
                 row['sentence'], row['impact_label'], f"支持 {row['support_count']} / 反对 {row['oppose_count']}")) + ' |')
         lines.append('')
         for row in view['dimension_overview']:
+            if row.get('warnings'):
+                lines += ['<details><summary>' + _md(row.get('warning_summary') or '数据说明') + '</summary>', '',
+                          *('- ' + _md(warning) for warning in row['warnings']), '', '</details>', '']
             if row['review_needed']:
                 lines += ['- ' + _md(row['label']) + '：与当前研判在该维度的依据方向不一致，建议复核研判。', '']
             for evidence in row['evidence']:

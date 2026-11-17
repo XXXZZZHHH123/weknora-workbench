@@ -5,9 +5,11 @@ an impact; those are saved researcher choices or unaccepted model suggestions.
 """
 from copy import deepcopy
 from math import isfinite
+import re
 
 from tin.web.number_format import format_number, source_decimals
 from tin.web.research_dimensions import default_dimensions, read_dimensions, summaries
+from tin.web.research_display import indicator_name
 
 IMPACTS = {'bullish': '偏多', 'bearish': '偏空', 'neutral': '中性', 'undecided': '未判断'}
 UNLABELED, DELETED, OTHER = '__unlabeled__', '__deleted__', '__other__'
@@ -63,6 +65,40 @@ def _number(value):
     return type(value) in {int, float} and isfinite(value)
 
 
+def _no_update(card):
+    return card.get('update_status') == 'no_update' or card.get('direction') == 'no_update'
+
+
+def _numeric_card(card):
+    # Roles come from the authorized structured directory, never label guesses.
+    role = (card.get('field_metadata') or {}).get('role') or card.get('role')
+    return role not in {'annotation', 'text_dimension'} and card.get('status') == 'ok' and _number(card.get('latest'))
+
+
+def _cards(dimension, day=None):
+    seen = set()
+    for item in _items(dimension):
+        # A historical chart remains evidence for its own window only.
+        if item.get('kind') == 'chart' and day and item.get('as_of') and item['as_of'] < day:
+            continue
+        for card in ([item] if item.get('kind') == 'indicator' else item.get('indicators') or []):
+            sid = card.get('series_id') or card.get('id')
+            if sid not in seen and _numeric_card(card):
+                seen.add(sid)
+                yield card
+
+
+def _readable_name(card):
+    sid = card.get('series_id') or card.get('id') or ''
+    name = indicator_name(sid, {sid: card.get('readable_name') or card.get('name') or card.get('raw_name')})
+    # A slash-separated ASCII source prefix is metadata beside a readable
+    # localized label. Keep the original name for source and model verification.
+    parts = re.split(r'\s+[/／]\s+', name)
+    if len(parts) > 1 and parts[0].isascii() and any(not part.isascii() for part in parts[1:]):
+        name = ' / '.join(parts[1:])
+    return name
+
+
 def _fact(card):
     display = card.get('display') or {}
     baseline = card.get('baseline') or {}
@@ -70,41 +106,39 @@ def _fact(card):
     latest = display.get('latest') or format_number(card['latest'], decimals=source_decimals(card))
     change = display.get('change') or format_number(card.get('change'), decimals=source_decimals(card), signed=True)
     details = []
-    if baseline.get('date') and _number(card.get('change')):
+    if _no_update(card):
+        latest_date = card.get('date') or card.get('latest_date')
+        details.append('本期无新数据' + ('，最新 ' + latest_date if latest_date else ''))
+    elif baseline.get('date') and _number(card.get('change')):
         details.append('较 ' + baseline['date'][5:] + ' ' + change)
     if position.get('rank') is not None and position.get('n', 0) >= 3:
         details.append(position.get('text') or '')
-    text = str(card.get('name') or card.get('series_id') or '') + ' ' + latest
-    if card.get('unit'):
-        text += ' ' + card['unit']
+    name = _readable_name(card)
+    unit = str(card.get('unit') or '').strip()
+    if unit == '未注明':
+        unit = ''
+    latest_text = name + ' ' + latest + (' ' + unit if unit else '')
+    text = latest_text
     if details:
         text += '（' + '，'.join(filter(None, details)) + '）'
-    return {**_compact(card), 'text': text}
+    return {**_compact(card), 'name': name, 'readable_name': name,
+            'raw_name': card.get('raw_name') or card.get('name') or '', 'unit': unit,
+            'latest_text': latest_text, 'text': text}
 
 
 def select_facts(dimension, limit=4, *, day=None):
-    """Stable display order: seasonal extremes, then absolute observed change rate."""
-    cards, seen = [], set()
-    for item in _items(dimension):
-        # A deliberately historical chart is evidence for its own window. Its
-        # endpoint must not masquerade as an observation for this report.
-        if item.get('kind') == 'chart' and day and item.get('as_of') and item['as_of'] < day:
-            continue
-        candidates = [item] if item.get('kind') == 'indicator' else item.get('indicators') or []
-        for card in candidates:
-            sid = card.get('series_id') or card.get('id')
-            if sid in seen or card.get('status') != 'ok' or not _number(card.get('latest')):
-                continue
-            seen.add(sid)
-            cards.append(card)
+    """Prefer updates, then seasonal extremes and absolute observed change rate."""
+    cards = list(_cards(dimension, day))
 
     def rank(card):
         position = card.get('position') or {}
         extreme = position.get('n', 0) >= 3 and any(
             _number(position.get(key)) and position[key] <= 2 for key in ('rank', 'rank_low'))
         pct = card.get('change_pct')
-        return (not extreme, -abs(pct) if _number(pct) else float('inf'))
+        return (_no_update(card), not extreme, -abs(pct) if _number(pct) else float('inf'))
 
+    if cards and all(_no_update(card) for card in cards):
+        limit = min(limit, 2)
     return [_fact(card) for card in sorted(cards, key=rank)[:limit]]
 
 
@@ -114,7 +148,8 @@ def _dimension_id(identifier, valid):
 
 def dimension_overview(payload, dimensions=None):
     dimensions = dimensions if dimensions is not None else payload.get('research_dimensions') or default_dimensions()
-    data = {row['id']: row for row in (payload.get('dimension_data') or {}).get('dimensions') or []}
+    data = {row['id']: row for row in dimensions}
+    data.update((row['id'], row) for row in (payload.get('dimension_data') or {}).get('dimensions') or [])
     saved = ((payload.get('manual_report') or {}).get('draft') or {})
     notes = saved.get('dimension_notes') or {}
     day = (payload.get('period') or {}).get('end') or payload.get('as_of')
@@ -156,18 +191,26 @@ def dimension_overview(payload, dimensions=None):
         row.setdefault('sentence', '')
         row.setdefault('impact', 'undecided')
         row['impact_label'] = IMPACTS[row['impact']]
+        cards = list(_cards(data.get(row['id']) or {}, day))
+        row['no_update'] = bool(cards) and all(_no_update(card) for card in cards)
+        row['latest_date'] = max((card.get('date') or card.get('latest_date') or '' for card in cards), default='')
+        row['change_summary'] = ('本期无新数据' + ('（最新 ' + row['latest_date'] + '）' if row['latest_date'] else '')) if row['no_update'] else ''
         warnings = [item.get('reason') for item in _items(data.get(row['id']) or {}) if item.get('status') == 'unavailable']
         if any(item.get('kind') == 'chart' and day and item.get('as_of') and item['as_of'] < day
                for item in _items(data.get(row['id']) or {})):
             warnings.append('历史区间图仅作证据，不将历史窗口的变化作为本期变化')
-        for fact in row['facts']:
+        stale = []
+        for fact in cards:
             if (fact.get('freshness') or {}).get('stale'):
-                warnings.append(f"{fact.get('name') or ''}：最新数据距今 {fact['freshness']['age_days']} 天，可能已停更")
+                stale.append(fact)
+                warnings.append(f"{_readable_name(fact)}：最新数据距今 {fact['freshness']['age_days']} 天，可能已停更")
             if (fact.get('position') or {}).get('notice'):
                 warnings.append(fact['position']['notice'])
-            if fact.get('limited'):
+            if (fact.get('history_coverage') or {}).get('limited', fact.get('limited', False)):
                 warnings.append('历史观测达到读取上限，同期位置可能受限')
         row['warnings'] = list(dict.fromkeys(filter(None, warnings)))
+        row['warning_summary'] = (f"{len(stale)} 项停更（最长 {max(fact['freshness']['age_days'] for fact in stale)} 天）"
+                                  if stale else '')
         row['review_needed'] = row['id'] in valid and (
             (row['impact'] == 'bearish' and row['support_count'] > row['oppose_count'])
             or (row['impact'] == 'bullish' and row['oppose_count'] > row['support_count']))
@@ -224,6 +267,8 @@ def logic_strategy(view):
                  ('触发：' + card['trigger']) if card.get('trigger') else '',
                  ('应对：' + card['response_action']) if card.get('response_action') else '']
         strategies.append({'id': card.get('id'), 'title': card.get('title') or '',
+                           'direction': card.get('direction_label') or '', 'thesis': card.get('thesis') or '',
+                           'trigger': card.get('trigger') or '', 'response_action': card.get('response_action') or '',
                            'text': '；'.join(str(part) for part in parts if part)})
     for plan in view.get('strategies') or []:
         directions = ' / '.join(dict.fromkeys({'buy': '买入', 'sell': '卖出', 'long': '做多', 'short': '做空'}.get(
@@ -233,8 +278,10 @@ def logic_strategy(view):
         parts = [directions, plan.get('thesis'), ('触发区间：' + trigger) if trigger else '',
                  ('失效应对：' + plan['invalidation']) if plan.get('invalidation') else '']
         strategies.append({'id': plan.get('id'), 'title': plan.get('title') or '',
+                           'direction': directions, 'thesis': plan.get('thesis') or '',
+                           'trigger': trigger, 'response_action': plan.get('invalidation') or '',
                            'text': '；'.join(str(part) for part in parts if part)})
-    return {'contradiction': judgment.get('contradiction') if active else '',
+    return {'active': active, 'contradiction': judgment.get('contradiction') if active else '',
             'tone': ' · '.join(filter(None, (judgment.get('tone'), judgment.get('tone_note')))) if active else '',
             'conditions': conditions, 'strategies': strategies}
 
@@ -248,7 +295,7 @@ def present_one_page(payload, view, dimensions=None):
         overview_payload['judgment'] = None
     logic = logic_strategy(view)
     if not view['panels']['research']['visible']:
-        logic.update(contradiction='', tone='', conditions=[])
+        logic.update(active=False, contradiction='', tone='', conditions=[])
     if not view['panels']['watch']['visible']:
         logic['strategies'] = []
     # Dimension bindings need not appear in the report page's bounded fact

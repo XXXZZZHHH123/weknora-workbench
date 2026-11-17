@@ -48,6 +48,66 @@ def test_extremes_then_absolute_rate_stable_dedup_and_limit():
     assert '近' not in select_facts(dimension('custom', card('short', .1, rank=1, n=1)))[0]['text']
 
 
+def test_no_update_is_not_a_flat_change_and_updated_facts_are_preferred():
+    old = {**card('old', .99, rank=1), 'update_status': 'no_update', 'direction': 'no_update',
+           'date': '2026-03-21', 'change': 0, 'display': {'latest': '23.46', 'change': '+0'}}
+    current = {**card('current', .01), 'update_status': 'updated'}
+    facts = select_facts(dimension('custom', old, current))
+    assert [fact['id'] for fact in facts] == ['current', 'old']
+    assert '本期无新数据，最新 2026-03-21' in facts[1]['text']
+    assert '+0' not in facts[1]['text'] and '较 ' not in facts[1]['text']
+    assert facts[1]['update_status'] == 'no_update'
+
+
+def test_all_no_update_summarizes_once_with_two_latest_values_in_markdown():
+    items = [{**card(str(i), .1), 'date': f'2026-03-{20 + i:02}',
+              'update_status': 'no_update', 'direction': 'no_update'} for i in range(4)]
+    dims = [dimension('custom', *items)]
+    payload = {'as_of': '2026-11-13', 'observations': [], 'research_dimensions': dims,
+               'dimension_data': {'dimensions': dims}}
+    row = dimension_overview(payload)[0]
+    assert row['no_update'] and len(row['facts']) == 2
+    assert row['change_summary'] == '本期无新数据（最新 2026-03-23）'
+    markdown = readable_markdown(payload)
+    overview = markdown.split('## 本期综述')[1].split('## 逻辑与策略')[0]
+    assert overview.count('本期无新数据') == 1
+    assert all(fact['latest_text'] in overview for fact in row['facts'])
+    assert '较 ' not in overview
+
+
+def test_readable_fact_names_units_and_explicit_non_numeric_roles():
+    named = {**card('named', .1), 'name': 'FEEDcode / 可读指数:级别9 / ID123456', 'unit': '未注明'}
+    annotation = {**card('note', 100), 'field_metadata': {'role': 'annotation'}}
+    text = {**card('text', 200), 'field_metadata': {'role': 'text_dimension'}}
+    chart = {'kind': 'chart', 'id': 'chart', 'indicators': [annotation, text]}
+    facts = select_facts(dimension('custom', named, annotation, chart))
+    assert len(facts) == 1
+    assert facts[0]['name'] == '可读指数:级别9'
+    assert facts[0]['raw_name'] == named['name']
+    assert facts[0]['unit'] == '' and '未注明' not in facts[0]['text']
+    assert 'FEEDcode' not in facts[0]['text'] and 'ID123456' not in facts[0]['text']
+
+
+def test_staleness_counts_all_numeric_bindings_deduplicates_and_folds_details():
+    items = [{**card(str(i), .1), 'freshness': {'stale': True, 'age_days': 100 + i},
+              'limited': True, 'history_coverage': {'limited': True},
+              'position': {'notice': '同期样本说明'}} for i in range(6)]
+    items += [deepcopy(items[0]), {**card('annotation', 1), 'field_metadata': {'role': 'annotation'},
+                                 'freshness': {'stale': True, 'age_days': 999}}]
+    dims = [dimension('custom', *items)]
+    payload = {'as_of': '2026-11-13', 'observations': [], 'research_dimensions': dims,
+               'dimension_data': {'dimensions': dims}}
+    before = deepcopy(payload)
+    row = dimension_overview(payload)[0]
+    assert len(row['facts']) == 4
+    assert row['warning_summary'] == '6 项停更（最长 105 天）'
+    assert len(row['warnings']) == 8
+    assert row['warnings'].count('同期样本说明') == 1
+    markdown = readable_markdown(payload)
+    assert '<details><summary>6 项停更（最长 105 天）</summary>' in markdown
+    assert payload == before
+
+
 def test_bound_chart_operands_supply_facts_without_an_extra_read():
     chart = {'kind': 'chart', 'id': 'chart-1', 'status': 'ok', 'indicators': [card('inside', .4, rank=1)]}
     assert select_facts(dimension('custom', chart))[0]['series_id'] == 'inside'

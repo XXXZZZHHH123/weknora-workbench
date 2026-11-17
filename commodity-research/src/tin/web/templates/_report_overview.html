@@ -1,9 +1,12 @@
 <section class="report-section" id="report-overview">
 <div class="report-section-heading"><h3><span class="report-section-number">01</span>本期综述</h3><small>本研究台维度 · 仅展示有内容的维度</small></div>
 {% if report.dimension_overview %}
-<div class="report-overview-scroll"><table class="report-table report-overview-table"><thead><tr><th scope="col">维度</th><th scope="col">本期变化</th><th scope="col">研究员一句话</th><th scope="col">影响</th><th scope="col">研判依据</th></tr></thead><tbody>
+<div class="report-overview-scroll"><table class="report-table report-overview-table"><thead><tr><th scope="col">维度</th><th scope="col">本期变化</th><th scope="col">研究员一句话</th><th scope="col">影响</th><th scope="col">依据计数</th></tr></thead><tbody>
 {% for dimension in report.dimension_overview %}<tr data-report-dimension="{{ dimension.id }}">
-<th scope="row">{{ dimension.label }}</th><td class="report-dimension-facts">{% for fact in dimension.facts %}<p>{{ fact.text }}</p>{% else %}<span class="report-muted">暂无可用本期数值</span>{% endfor %}{% if dimension.warnings %}<small>{{ dimension.warnings | join('；') }}</small>{% endif %}</td>
+<th scope="row">{{ dimension.label }}</th><td class="report-dimension-facts">
+{% if dimension.change_summary %}<p class="report-change-summary">{{ dimension.change_summary }}</p>{% endif %}
+{% for fact in dimension.facts %}<p{% if dimension.change_summary %} class="report-latest-reference"{% endif %}>{{ (fact.latest_text or fact.text) if dimension.change_summary else fact.text }}</p>{% else %}{% if not dimension.change_summary %}<span class="report-muted">暂无可用本期数值</span>{% endif %}{% endfor %}
+{% if dimension.warnings %}<details class="report-dimension-notices"><summary>{{ dimension.warning_summary or '数据说明' }} <span aria-hidden="true">ⓘ</span></summary><div>{% for warning in dimension.warnings %}<p>{{ warning }}</p>{% endfor %}</div></details>{% elif dimension.warning_summary %}<small>{{ dimension.warning_summary }}</small>{% endif %}</td>
 <td class="research-prose whitespace-pre-wrap">{{ dimension.sentence or '待研究员填写' }}{% if dimension.review_needed %}<a class="report-review-warning" href="{{ research_url('/sn/judgment') }}">与当前研判在该维度的依据方向不一致，建议复核研判</a>{% endif %}</td>
 <td><span class="report-impact" data-impact="{{ dimension.impact or 'undecided' }}">{{ dimension.impact_label or {'bullish':'偏多','bearish':'偏空','neutral':'中性','undecided':'未判断'}.get(dimension.impact, '未判断') }}</span></td>
 <td><details class="report-dimension-evidence"><summary>支持 {{ dimension.support_count or 0 }} / 反对 {{ dimension.oppose_count or 0 }}</summary>{% for evidence in dimension.evidence %}<p><small>{{ '支持' if evidence.side in ['bull', 'support'] else '反对' }}</small>{{ evidence.text }}</p>{% else %}<p class="report-muted">暂无该维度研判依据</p>{% endfor %}</details></td>

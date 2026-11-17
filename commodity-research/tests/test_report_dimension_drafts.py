@@ -1,6 +1,9 @@
 """Dimension prose uses authorized facts, audited models and an explicit save."""
 import asyncio
 from copy import deepcopy
+from decimal import Decimal
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import FastAPI, HTTPException
@@ -280,3 +283,114 @@ def test_retained_uneditable_dimension_buckets_do_not_call_model(monkeypatch):
     assert response.status_code == 200
     assert [item['id'] for item in response.json()['dimensions']] == ['custom']
     assert calls == ['report_dimension_draft', 'report_dimension_review']
+
+
+ACCEPTANCE = json.loads((Path(__file__).parent / 'fixtures' /
+                         'report_dimension_draft_acceptance.json').read_text())
+
+
+@pytest.mark.parametrize('example', ACCEPTANCE, ids=lambda example: example['case'])
+def test_real_acceptance_sentences_remain_isolated_and_use_only_source_facts(example):
+    facts = drafts.source_facts({'facts': example['facts']})
+    result = drafts._candidate(candidate(example['text'], metric_names=example['metric_names']), facts)
+    assert result['status'] == 'ok', result
+    if example.get('rejected_text'):
+        result = drafts._candidate(candidate(example['rejected_text'], metric_names=example['metric_names']), facts)
+        assert result['status'] == 'numbers_unverified' and result['text'] == ''
+
+
+@pytest.mark.parametrize('word', ['下降', '减少', '回落', '下滑', '低于'])
+def test_negative_change_direction_words_accept_absolute_magnitude(word):
+    facts = [{'name': '合成指标', 'latest': 36.12, 'change': -2.91,
+              'display': {'change': '-2.91'}}]
+    assert drafts.semantic_change('2.91', word) == Decimal('-2.91')
+    assert drafts.numbers_verified('合成指标' + word + '2.91。', facts)
+
+
+@pytest.mark.parametrize('word', ['上升', '增加', '回升', '提高', '高于'])
+def test_positive_change_direction_words_accept_absolute_magnitude(word):
+    facts = [{'name': '合成指标', 'latest': 36.12, 'change': 2.91,
+              'display': {'change': '+2.91'}}]
+    assert drafts.semantic_change('2.91', word) == Decimal('2.91')
+    assert drafts.numbers_verified('合成指标' + word + '2.91。', facts)
+
+
+@pytest.mark.parametrize('text', ['甲指标增加2.91', '甲指标上升-2.91', '甲指标下降+2.91',
+    '乙指标下降2.91', '甲指标增加35.7'])
+def test_reversed_change_cannot_borrow_a_latest_value_or_another_metric(text):
+    facts = [{'name': '甲指标', 'latest': 2.91, 'change': -2.91},
+             {'name': '乙指标', 'latest': 36.12, 'change': 2.91},
+             {'name': '丙指标', 'latest': 135.7, 'change': 35.7}]
+    assert not drafts.numbers_verified(text, facts)
+
+
+def test_names_and_alias_digits_are_removed_but_do_not_authorize_values():
+    facts = [{'name': '合约99测试', 'raw_name': 'DATA / 合约99测试',
+              'readable_name': '合约99测试', 'aliases': ['测试合约99'], 'latest': 12.35}]
+    assert drafts.numbers_verified('ＤＡＴＡ／ 合约 99 测试最新12.35。', facts)
+    assert drafts.numbers_verified('测试合约99最新12.35。', facts)
+    assert not drafts.numbers_verified('本期最新99。', facts)
+    assert not drafts.metric_names_verified(['合约98测试'], facts)
+
+
+def test_name_normalization_does_not_merge_distinct_numeric_tokens():
+    facts = [{'name': '合成指标99', 'latest': 1235}]
+    assert drafts.numbers_verified('合成 指标 99 最新1235', facts)
+    assert not drafts.numbers_verified('合成指标99 最新12 35', facts)
+
+
+def test_numeric_only_name_segments_cannot_hide_a_new_observation():
+    facts = [{'name': '合成指标 / 99', 'latest': 12.35, 'unit': '1'}]
+    assert drafts.numbers_verified('合成指标/99最新12.35', facts)
+    assert not drafts.numbers_verified('本期为99', facts)
+    assert not drafts.numbers_verified('本期为1', facts)
+
+
+def test_normalized_names_are_verified_in_the_independent_second_review(monkeypatch):
+    example = next(example for example in ACCEPTANCE if example['case'] == 'normalized_source_names')
+    projection = {'dimension_overview': [{**row(), 'facts': example['facts']}]}
+    monkeypatch.setattr(drafts, 'read_report', lambda *_: deepcopy(projection))
+    purposes = []
+    async def complete(*args, **kwargs):
+        purposes.append(kwargs['purpose'])
+        if kwargs['purpose'] == 'report_dimension_review':
+            return review(metric_names=['CZCE短纤结算价', 'ＣＺＣＥ ／ 持仓量'])
+        return candidate(example['text'], metric_names=example['metric_names'])
+    monkeypatch.setattr(drafts.strategy_text, 'completion', complete)
+    response = request({'model_id': 'model'}, active=scope())
+    assert response.json()['dimensions'][0]['status'] == 'ok'
+    assert purposes == ['report_dimension_draft', 'report_dimension_review']
+
+
+def test_no_update_prompt_retains_latest_reference_without_authorizing_historical_change():
+    example = next(example for example in ACCEPTANCE if example['case'] == 'no_update')
+    facts = drafts.source_facts({'facts': example['facts']})
+    assert facts[0]['update_status'] == 'no_update' and facts[0]['latest'] == 16865
+    assert facts[0]['update_notice'] == '本期无新数据（最新 2023-09-21）'
+    assert 'change' not in facts[0] and 'baseline' not in facts[0]
+    assert facts[0]['display'] == {'latest': '16,865'}
+    prompt = drafts.drafting_prompt({}, facts, '')
+    assert 'no_update' in prompt and '本期无新数据' in prompt and '不写+0或持平' in prompt
+    assert not drafts.numbers_verified('郑棉05合约下降0', facts)
+    assert '不能据历史差值声称本期变化或持平' in drafts.review_prompt(facts, [], example['text'])
+
+
+def test_no_update_does_not_leak_historical_changes_from_old_display_text():
+    item = {'facts': [{'name': '合成指标', 'latest': 168.5, 'date': '2023-09-21',
+        'text': '合成指标168.5（较09-21 +0）', 'change': 0, 'previous': 168.5,
+        'display': {'latest': '168.5', 'change': '+0'}, 'update_status': 'no_update'}]}
+    facts = drafts.source_facts(item)
+    assert 'text' not in facts[0] and '+0' not in drafts._encode(facts)
+    assert not drafts.numbers_verified('合成指标较09-21为+0。', facts)
+    assert drafts.numbers_verified('合成指标本期无新数据（最新2023-09-21），最新168.5供参考。', facts)
+
+
+def test_annotation_and_text_dimensions_never_enter_model_source_facts():
+    item = row()
+    item['facts'] += [{'name': '说明列', 'latest': 777, 'field_metadata': {'role': 'annotation'}},
+                      {'name': '文本维度', 'latest': 888, 'field_metadata': {'role': 'text_dimension'}},
+                      {'name': '旧归档说明列', 'latest': 999, 'role': 'annotation'}]
+    facts = drafts.source_facts(item)
+    assert len(facts) == 1
+    assert not drafts.metric_names_verified(['说明列', '文本维度', '旧归档说明列'], facts)
+    assert not drafts.numbers_verified('数值777', facts)
