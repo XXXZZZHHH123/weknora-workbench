@@ -129,9 +129,11 @@
     const groups = new Map(), queue = [];
     function addToGroup(item, failed = false) {
       const index = Number.isInteger(item.source_index) ? item.source_index : null;
-      const key = item.page != null ? `page:${item.page}` : index != null ? `fragment:${index}` : item.page_label || (item.batch != null ? `batch:${item.batch}` : 'unknown');
-      if (!groups.has(key)) groups.set(key, {label: item.page != null ? `第 ${item.page} 页` : item.page_label || (index != null ? `片段${index + 1}` : item.batch != null ? `第 ${item.batch} 批` : '未定位依据'),
-        order: index ?? item.page ?? Number.MAX_SAFE_INTEGER, entries: []});
+      // Real pages group cards; without page numbers, one grid in source order
+      // (each card title keeps its fragment label) instead of one group per fragment.
+      const key = item.page != null ? `page:${item.page}` : 'source-order';
+      if (!groups.has(key)) groups.set(key, {label: item.page != null ? `第 ${item.page} 页` : '按原文顺序（该文件未提供可靠页码）',
+        order: item.page ?? Number.MAX_SAFE_INTEGER, entries: []});
       const group = groups.get(key);
       group.order = Math.min(group.order, index ?? item.page ?? Number.MAX_SAFE_INTEGER);
       group.entries.push({item, failed});

@@ -75,7 +75,7 @@ const base = ({path, reply}) => {
     await failedDefinition.locator('[data-report-flags]').filter({hasText: '定义失败'}).waitFor();
     assert.equal(await failedDefinition.locator('[data-report-select]').isDisabled(), true);
     assert.equal(await failedDefinition.locator('[data-report-select]').isChecked(), false);
-    assert.deepEqual(await p.locator('[data-report-page] > h2').allTextContents(), ['第 2 页', '第 3 页', '第 4 页', '片段9', '第 5 页', '第 3 批', '未定位依据']);
+    assert.deepEqual(await p.locator('[data-report-page] > h2').allTextContents(), ['第 2 页', '第 3 页', '第 4 页', '第 5 页', '按原文顺序（该文件未提供可靠页码）']);
     assert.equal(await p.locator('[data-report-page="page:2"] [data-report-chart]').count(), 2);
     assert.equal(await p.locator('[data-report-failure]').count(), 3);
     assert.match(await p.locator('#report-chart-failures').innerText(), /第 5 页：本页识别超时/);
