@@ -265,6 +265,8 @@ from tin.web.report_drafts import router as report_drafts_router
 app.include_router(report_drafts_router)
 from tin.web.report_figures import router as report_figures_router
 app.include_router(report_figures_router)
+from tin.web.report_ppt import router as report_ppt_router
+app.include_router(report_ppt_router)
 from tin.web.affairs import router as affairs_router
 app.include_router(affairs_router)
 from tin.web.market import build_market_router, market_catalog as market_catalog_data, saved_core_cards

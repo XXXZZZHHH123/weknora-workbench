@@ -34,6 +34,7 @@ env=Environment(loader=ChoiceLoader([DictLoader({'base.html':host}),FileSystemLo
 scope=SimpleNamespace(metadata=SimpleNamespace(name='合成研究台'),scope_version=2,restricted=data['config'].get('restricted',False),can_edit=data['config']['can_write'])
 env.globals.update(research_identity=lambda:None,research_workbench=lambda:scope,research_prefix=lambda:'/research/workbenches/fixture',research_url=lambda s:'/research/workbenches/fixture'+s,research_static_prefix=lambda:'',static_version=lambda:'chart-ui-fixture')
 env.filters['num']=lambda value,*args: str(value) if value is not None else '—'
+env.filters['local']=lambda value,*args: str(value) if value is not None else '—'
 ctx=dict(chart_page=data['config'],request=SimpleNamespace(query_params={'date':data['config'].get('date')}),palette=json.load(open(sys.argv[2])),restricted_view=data['config'].get('restricted',False),d=data['config'].get('date'),**data['extra'])
 print(env.get_template(data['template']).render(**ctx))
 `, path.join(web, 'templates'), path.join(web, 'static/chart-palette.json'), JSON.stringify(input)], {stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024});
