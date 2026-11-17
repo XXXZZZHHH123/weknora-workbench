@@ -8,11 +8,73 @@ document.addEventListener('DOMContentLoaded', () => {
   let config, current, draft, editing = false, saving = false, deleted = new Set(), generation = 0;
   let pickerTarget, pickerNext = null, pickerToken = 0, pickerTimer, drag, modelMode = 'suggest', running = false;
   let suggestions = [], inferred = [], selectedSources = new Map(), sourceNext = null, sourceToken = 0, sourceTimer;
+  let suggestionTargets = new Map();
   let templates, templateApplying = false, appliedTemplate, templateToken = 0;
   const renderers = new Set(), modelDialog = get('model-dialog'), picker = get('picker'), templateDialog = get('template-dialog');
   const clone = value => JSON.parse(JSON.stringify(value));
   const itemName = item => item.name || item.title || item.id;
-  const warningText = value => ({history_limited:'历史观测已达到读取上限，同期统计仅覆盖已读取窗口。',observation_window_limited:'观测已达到读取上限，统计仅覆盖已读取窗口。',baseline_unavailable:'缺少可比的往期观测。',insufficient_cycles:'有效同期样本不足，暂不提供排名。',empty_segments_omitted:'没有观测的历史周期已省略。'}[value] || '部分数据存在读取或覆盖提示，请核对条目。');
+  const warningText = value => ({history_limited:'历史观测已达到读取上限，同期统计仅覆盖已读取窗口。',observation_window_limited:'观测已达到读取上限，统计仅覆盖已读取窗口。',baseline_unavailable:'缺少可比的往期观测。',insufficient_cycles:'有效往期同期样本不足3年，不提供排名。',empty_segments_omitted:'没有观测的历史周期已省略。',current_missing:'当前周期没有有效观测。',frequency_unavailable:'无法推断观测频率。',no_observations:'没有有效观测。',segments_overlap:'历史周期有重叠。',non_finite_transform:'部分观测转换后无有效数值。',non_finite_result:'部分计算结果无有效数值。'}[value] || '数据提示：' + value);
+  const knownUnit = value => String(value || '').trim() === '未注明' ? '' : String(value || '').trim();
+  let activeInfo, infoSequence = 0;
+  function closeInfo() {
+    if (!activeInfo) return;
+    activeInfo.panel.hidden = true; activeInfo.trigger.setAttribute('aria-expanded', 'false'); activeInfo = null;
+  }
+  document.addEventListener('pointerdown', event => { if (activeInfo && !activeInfo.root.contains(event.target)) closeInfo(); });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape' && activeInfo) { closeInfo(); event.preventDefault(); event.stopPropagation(); } });
+  function globalNotice(data) {
+    const warnings = new Set(data.warnings || []), messages = [];
+    if (data.history_coverage_limited ?? (warnings.has('history_limited') || warnings.has('observation_window_limited'))) messages.push('部分指标的历史观测已达到读取上限，同期统计覆盖不足');
+    if ((data.failed || []).length) messages.push('部分条目暂不可用');
+    // Empty historical segments and a naturally short source are card details.
+    if ([...warnings].some(value => !['history_limited','observation_window_limited','empty_segments_omitted','insufficient_cycles'].includes(value))) messages.push('部分数据存在读取或覆盖提示');
+    return messages.length ? messages.join('；') + '，详情见卡片 ⓘ。' : '';
+  }
+  function cardNotes(item) {
+    const notes = new Map(), add = (key, text) => { if (text) notes.set(key, String(text).replace(/[。；;\s]+$/, '') + '。'); };
+    if (item.position?.notice) add('position', item.position.notice);
+    if (item.notice) add('notice', item.notice);
+    if (item.update_notice) add('update', item.update_notice);
+    for (const warning of item.warnings || []) {
+      const code = typeof warning === 'string' ? warning : warning.code;
+      const category = ['history_limited','observation_window_limited'].includes(code) ? 'history' : code === 'insufficient_cycles' ? 'position' : code;
+      if (category === 'history' && item.history_coverage?.limited === false) continue;
+      if (!notes.has(category)) add(category, warningText(code || warning.message || '部分数据存在读取或覆盖提示'));
+    }
+    if ((item.history_coverage?.limited ?? item.limited) && !notes.has('history')) add('history', warningText('history_limited'));
+    if (!knownUnit(item.unit) && item.kind === 'indicator') add('unit', '单位未注明');
+    const rows = [...new Set(notes.values())].map(text => ({text}));
+    if (item.frequency) rows.push({text: '频率：' + item.frequency});
+    if (item.source && item.source !== item.source_file) rows.push({text: '来源：' + item.source});
+    if (item.source_file) rows.push({text: '来源文件：' + item.source_file});
+    if (item.sheet) rows.push({text: '工作表：' + item.sheet, css: 'dimensions-sheet'});
+    return rows;
+  }
+  function cardInfo(item) {
+    const rows = cardNotes(item);
+    if (!rows.length) return null;
+    const root = node('div', 'dimensions-info'), trigger = button('ⓘ', () => {
+      if (activeInfo?.root === root && activeInfo.pinned) closeInfo(); else show(true);
+    }), panel = node('div', 'dimensions-tooltip');
+    trigger.className = 'dimensions-info-trigger'; trigger.setAttribute('aria-label', '查看' + itemName(item) + '的说明与来源');
+    panel.id = 'dimensions-info-' + ++infoSequence; panel.setAttribute('role', 'tooltip'); panel.hidden = true;
+    trigger.setAttribute('aria-controls', panel.id); trigger.setAttribute('aria-describedby', panel.id); trigger.setAttribute('aria-expanded', 'false');
+    for (const row of rows) panel.append(node('p', row.css || '', row.text));
+    function show(pinned = false) {
+      const wasPinned = activeInfo?.root === root && activeInfo.pinned;
+      closeInfo(); window.ChartHover?.close(); panel.hidden = false; trigger.setAttribute('aria-expanded', 'true');
+      panel.style.transform = '';
+      const box = panel.getBoundingClientRect(), viewportWidth = document.documentElement.clientWidth;
+      const shift = Math.max(8 - box.left, Math.min(0, viewportWidth - 8 - box.right));
+      if (shift) panel.style.transform = `translateX(${shift}px)`;
+      activeInfo = {root, panel, trigger, pinned: pinned || wasPinned};
+    }
+    root.addEventListener('pointerenter', event => { if (event.pointerType !== 'touch') show(); });
+    root.addEventListener('pointerleave', () => { if (activeInfo?.root === root && !activeInfo.pinned && !root.contains(document.activeElement)) closeInfo(); });
+    root.addEventListener('focusin', () => show());
+    root.addEventListener('focusout', event => { if (activeInfo?.root === root && !activeInfo.pinned && !root.contains(event.relatedTarget)) closeInfo(); });
+    root.append(trigger, panel); return root;
+  }
   function node(tag, css, text) { const el = document.createElement(tag); if (css) el.className = css; if (text !== undefined) el.textContent = text; return el; }
   function button(label, action, disabled = false) { const el = node('button', '', label); el.type = 'button'; el.disabled = disabled; el.addEventListener('click', action); return el; }
   function status(message, error = false) { get('status').textContent = message || ''; get('status').classList.toggle('error', error); }
@@ -29,7 +91,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function freshId(prefix = 's-') { const bytes = new Uint8Array(4); crypto.getRandomValues(bytes); return prefix + [...bytes].map(v => v.toString(16).padStart(2, '0')).join(''); }
   const editable = () => config?.can_write === true;
   const dims = () => editing ? draft : config.dimensions;
-  function clearRenderers() { renderers.forEach(value => value.destroy?.()); renderers.clear(); window.ChartHover?.close(); }
+  function clearRenderers() { closeInfo(); renderers.forEach(value => value.destroy?.()); renderers.clear(); window.ChartHover?.close(); }
   function allItems() { return (draft || config?.dimensions || []).flatMap(d => (d.sections || []).flatMap(s => s.items || [])); }
   function countItems() { return allItems().length; }
   function serialized(dimensions = draft) {
@@ -61,7 +123,7 @@ document.addEventListener('DOMContentLoaded', () => {
       current = data;
       if (!get('date').value) get('date').value = data.latest_data_date || data.as_of || '';
       if (!editing) render();
-      status([...new Set((data.warnings || []).map(warningText))].join('；'));
+      status(globalNotice(data));
     } catch (error) { if (own === generation) status(error.message, true); }
   }
   function startEdit() {
@@ -93,7 +155,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const observed = dataById.get(dim.id), heading = node('header', 'dimensions-heading'), title = node('div');
         title.append(node('h2', '', dim.label));
         const summary = observed?.summary;
-        title.append(node('p', 'dimensions-summary', summary ? `↑${summary.up} ↓${summary.down} · 持平 ${summary.flat} · 同期极端 ${summary.extreme}` : '本期数据读取中…'));
+        title.append(node('p', 'dimensions-summary', summary ? `↑${summary.up} ↓${summary.down} · 持平 ${summary.flat} · 本期无新数据 ${summary.no_update ?? 0} · 同期极端 ${summary.extreme}` : '本期数据读取中…'));
         heading.append(title);
         if (config.evidence_available === false) heading.append(node('p','dimensions-muted','研判依据统计未授权'));
         else {
@@ -133,28 +195,29 @@ document.addEventListener('DOMContentLoaded', () => {
     return warnings;
   }
   function renderCard(item) {
-    const card = node(initial.restricted ? 'article' : 'a', 'dimensions-card'); if (!initial.restricted) card.href = prefix + (item.kind === 'chart' ? '/sn/charts/' : '/sn/indicators/') + encodeURIComponent(item.id) + (get('date').value ? '?date=' + get('date').value : '');
-    card.dataset.itemId = item.id; card.append(node('h4', '', itemName(item)));
-    if (item.status === 'unavailable' || item.status === 'missing' || item.reason) { card.append(node('p', 'dimensions-error', item.reason || item.notice || '条目暂不可用')); return card; }
+    const card = node('article', 'dimensions-card'), body = node(initial.restricted ? 'div' : 'a', 'dimensions-card-main');
+    if (!initial.restricted) body.href = prefix + (item.kind === 'chart' ? '/sn/charts/' : '/sn/indicators/') + encodeURIComponent(item.id) + (get('date').value ? '?date=' + get('date').value : '');
+    card.dataset.itemId = item.id; body.append(node('h4', '', itemName(item))); card.append(body);
+    const info = cardInfo(item); if (info) card.append(info);
+    if (item.status === 'unavailable' || item.status === 'missing' || item.reason) { body.append(node('p', 'dimensions-error', item.reason || item.notice || '条目暂不可用')); return card; }
     if (item.kind === 'chart') {
-      const plot = node('div', 'dimensions-chart-plot'); card.append(plot);
+      const plot = node('div', 'dimensions-chart-plot'); body.append(plot);
       if (item.payload && window.ChartKit) {
         try { renderers.add(window.ChartKit.render(plot, item.payload, {definition: item.definition, thumbnail: true, width: 500, height: 155})); } catch (error) { plot.textContent = error.message; }
       } else plot.textContent = '图表数据读取中…';
-      if (item.notice) card.append(node('p', 'dimensions-muted', item.notice));
       return card;
     }
-    const display = item.display || {}, value = node('p', 'dimensions-value', display.latest ?? '—'); value.append(node('small', '', item.unit || ''));
-    card.append(value, node('p', 'dimensions-muted', [item.date, item.frequency].filter(Boolean).join(' · ')));
+    const unit = knownUnit(item.unit), display = item.display || {}, value = node('p', 'dimensions-value', display.latest ?? '—');
+    if (unit) value.append(node('small', '', unit));
+    body.append(value, node('p', 'dimensions-date dimensions-muted', item.date || '—'));
     const baselineLabel = item.baseline?.label === '较上期' ? '较上期 ' + (item.baseline.date || item.previous_date || '').slice(5) : item.baseline?.label || ('较 ' + (item.previous_date || '').slice(5));
-    const change = item.change === null || item.change === undefined ? '暂无可比观测' : `${baselineLabel} ${display.change ?? '—'} ${item.unit || ''}${display.change_pct ? '（' + display.change_pct + '）' : ''}`;
-    card.append(node('p', 'dimensions-change ' + (item.direction || ''), change));
-    card.append(node('p', 'dimensions-position', item.position?.text || item.position?.notice || '同期位置读取中…'));
-    if (item.freshness?.stale) card.append(node('p', 'dimensions-stale', `观测已过旧，距截至日 ${item.freshness.age_days} 天`));
-    if (item.source || item.source_file) { const source = node('p', 'dimensions-muted', item.source || item.source_file); source.title = source.textContent; card.append(source); }
-    for (const warning of [...new Set((item.warnings || []).map(warningText))]) card.append(node('p','dimensions-muted',warning));
-    if (item.points?.length) card.append(spark(item.points));
-    if (item.status === 'ok' && !initial.restricted) window.ChartHover?.attach(card, {key: 'dimension:' + item.id + ':' + get('date').value,title: itemName(item),load: async () => ({title: itemName(item),data: await request('/indicators/' + encodeURIComponent(item.id) + '/cycle?' + new URLSearchParams({date: get('date').value})),definition: {title: itemName(item),time: {mode: 'cycle'}}})});
+    const noUpdate = item.update_status === 'no_update' || item.direction === 'no_update';
+    const change = noUpdate ? '本期无新数据' : item.change === null || item.change === undefined ? '暂无可比观测' : `${baselineLabel} ${display.change ?? '—'}${unit ? ' ' + unit : ''}${display.change_pct ? '（' + display.change_pct + '）' : ''}`;
+    body.append(node('p', 'dimensions-change ' + (noUpdate ? 'no_update' : item.direction || ''), change));
+    body.append(node('p', 'dimensions-position', item.position?.rank != null ? item.position.text || '—' : '—'));
+    if (item.freshness?.stale) body.append(node('span', 'dimensions-stale', `停更 ${item.freshness.age_days} 天`));
+    if (item.points?.length) body.append(spark(item.points));
+    if (item.status === 'ok' && !initial.restricted) window.ChartHover?.attach(body, {key: 'dimension:' + item.id + ':' + get('date').value,title: itemName(item),load: async () => ({title: itemName(item),data: await request('/indicators/' + encodeURIComponent(item.id) + '/cycle?' + new URLSearchParams({date: get('date').value})),definition: {title: itemName(item),time: {mode: 'cycle'}}})});
     return card;
   }
   function spark(points) {
@@ -295,7 +358,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function openModels(mode) {
     if (!editable() || saving || templateApplying) return;
     if (mode === 'suggest' && editing && draftLimits().length) return status(draftLimits().join('；'), true);
-    modelMode = mode; suggestions = []; inferred = []; selectedSources = new Map(); sourceNext = null;
+    modelMode = mode; suggestions = []; inferred = []; suggestionTargets = new Map(); selectedSources = new Map(); sourceNext = null;
     get('model-title').textContent = mode === 'infer' ? '从往期周报归纳维度' : '让模型建议指标';
     get('source-controls').hidden = mode !== 'infer'; get('suggestions').replaceChildren(); get('model-status').textContent = '';
     get('model-adopt').textContent = mode === 'infer' ? '将这套维度作为编辑草稿' : '采用所选到编辑草稿'; modelDialog.showModal(); syncModel();
@@ -331,11 +394,15 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) { get('model-status').textContent = error.message; } syncModel();
   }
   async function generate() {
-    if (running || get('model-run').disabled) return; running = true; suggestions = []; inferred = []; get('suggestions').replaceChildren(); syncModel();
-    get('model-status').textContent = modelMode === 'infer' ? '正在读取所选原文并归纳维度…' : '正在核对工作表与真实指标…';
+    if (running || get('model-run').disabled) return; running = true; suggestions = []; inferred = []; suggestionTargets = new Map(); get('suggestions').replaceChildren(); syncModel();
+    get('model-status').textContent = modelMode === 'infer' ? '正在读取所选原文并归纳维度…' : '正在为每个环节召回并核对真实指标…';
     try {
       if (modelMode === 'suggest' && editing) for (const dim of draft) if (!dim.id) dim.id = freshId('d-');
-      const result = await request('/dimensions/' + (modelMode === 'infer' ? 'infer' : 'suggestions'), {model_id: get('model').value,...(modelMode === 'infer' ? {sources: [...selectedSources.values()]} : editing ? {dimensions: serialized()} : {})}, 'POST');
+      if (modelMode === 'suggest') {
+        const targets = dims().flatMap(d => (d.sections?.length ? d.sections : [{label:''}]).map(s => ({dimension:d.id,section:s.label,section_id:s.id})));
+        suggestionTargets = new Map(targets.map((target, index) => ['i' + (index + 1), target]));
+      }
+      const result = await request('/dimensions/' + (modelMode === 'infer' ? 'infer' : 'suggestions'), {model_id: get('model').value,...(modelMode === 'infer' ? {sources: [...selectedSources.values()]} : {...(get('date').value ? {date: get('date').value} : {}),...(editing ? {dimensions: serialized()} : {})})}, 'POST');
       if (modelMode === 'infer') {
         inferred = result.dimensions || [];
         for (const d of inferred) {
@@ -344,15 +411,23 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       } else {
         suggestions = result.items || [];
-        const available = dims(), groups = new Map();
+        const available = dims(), groups = new Map(), sections = result.sections || [];
         for (const d of available) {
           const group = node('section','dimensions-suggestion-group'); group.append(node('h3','',d.label)); groups.set(d.id,group);
-          if (suggestions.some(row => row.dimension === d.id)) get('suggestions').append(group);
+          for (const section of sections.filter(row => row.dimension === d.id)) {
+            const summary = node('p', 'dimensions-recall-summary dimensions-muted', `${section.section || d.label} · 候选 ${section.candidate_count} · 已选 ${section.selected_count}`);
+            if (section.item_id) summary.dataset.itemId = section.item_id;
+            if (section.section_id) summary.dataset.sectionId = section.section_id;
+            if (section.empty_reason) summary.append(node('span', 'dimensions-empty-reason', ` · 留空原因：${section.empty_reason}`));
+            group.append(summary);
+          }
+          if (suggestions.some(row => row.dimension === d.id) || sections.some(row => row.dimension === d.id)) get('suggestions').append(group);
         }
         const unresolved = node('section','dimensions-suggestion-group'); unresolved.append(node('h3','','待指定维度'));
         for (const [index, row] of suggestions.entries()) {
           const choice = node('label','dimensions-choice'), check = node('input'); check.type = 'checkbox'; check.checked = true; check.dataset.index = index;
-          const body = node('span','dimensions-choice-body'); body.append(node('strong','',row.name || row.series_id),node('small','',row.reason));
+          const body = node('span','dimensions-choice-body'); body.append(node('strong','',row.name || row.series_id),node('small','dimensions-suggestion-reason',row.reason));
+          if (row.sheet) body.append(node('small','dimensions-sheet',row.sheet));
           const target = node('select'); target.setAttribute('aria-label','建议指标的维度');
           target.append(new Option('请选择维度','')); available.forEach((d, i) => target.append(new Option(d.label,String(i))));
           const matched = available.findIndex(d => d.id === row.dimension); target.value = matched < 0 ? '' : String(matched); target.addEventListener('change',syncModel);
@@ -379,10 +454,13 @@ document.addEventListener('DOMContentLoaded', () => {
       if (selectedDimension === '' || !candidate[Number(selectedDimension)]) { get('model-status').textContent = '请为每个所选指标指定当前草稿中存在的维度。'; return; }
       if (candidate.flatMap(d => (d.sections || []).flatMap(s => s.items)).some(i => i.kind === 'indicator' && i.id === row.series_id)) continue;
       const dim = candidate[Number(selectedDimension)], label = choice.querySelector('input[type="text"]').value.trim() || '重点跟踪'; dim.sections ||= [];
-      let stage = dim.sections.find(s => s.label === label);
+      const target = suggestionTargets.get(row.item_id), sectionId = row.section_id || target?.section_id;
+      const originalTarget = dim.id === row.dimension && label === row.section && (!target || target.dimension === dim.id && target.section === label);
+      let stage = originalTarget && sectionId ? dim.sections.find(s => s.id === sectionId && s.label === label) : undefined;
+      stage ||= dim.sections.find(s => s.label === label);
       if (!stage) { if (dim.sections.length >= 8) { get('model-status').textContent = '某维度的环节已满，请改放到已有环节。'; return; } stage = {id: freshId(),label,items: []}; dim.sections.push(stage); }
       if (stage.items.length >= 12 || candidate.flatMap(d => (d.sections || []).flatMap(s => s.items)).length >= 96) { get('model-status').textContent = '采用后将超过每环节12条或总96条上限，请减少所选或调整环节。'; return; }
-      stage.items.push({kind:'indicator',id:row.series_id,name:row.name,unit:row.unit,frequency:row.frequency}); merged++;
+      stage.items.push({kind:'indicator',id:row.series_id,name:row.name,unit:row.unit,frequency:row.frequency,sheet:row.sheet,source:row.source}); merged++;
     }
     startEdit(); draft = candidate; render(); modelDialog.close(); status(`已合并 ${merged} 个指标到编辑草稿，请核对并保存。`);
   }

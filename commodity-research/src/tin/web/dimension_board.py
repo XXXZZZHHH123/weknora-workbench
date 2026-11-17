@@ -1,6 +1,6 @@
 """Ordered shared research dimensions and explicit, revision-locked bindings."""
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import re
 from uuid import uuid4
 
@@ -14,6 +14,7 @@ from tin.models import Judgment, SourceMapping
 from tin.web.research_dimensions import (CATEGORIES, DIMENSIONS_KEY, default_dimensions, read_dimensions,
                                          validate_dimension_list)
 from tin.web.research_framework import dimension_label
+from tin.web.research_display import indicator_name
 from tin.web.restricted_views import mapping_key
 
 router = APIRouter(prefix='/api/sn/dimensions')
@@ -191,15 +192,16 @@ def describe_config(session, scope, dimensions=None):
             for item in section['items']:
                 if item['kind'] == 'indicator':
                     field = fields.get(item['id'])
-                    item.update(name=(field.get('metric') or field.get('name') or item['id']) if field else '已失效指标',
+                    item.update(name=indicator_name(item['id'], {item['id']: field.get('name') or field.get('metric')}) if field else '已失效指标',
                         unit=field.get('unit') or '' if field else '', frequency=field.get('frequency') or '' if field else '',
                         source=field.get('source_file') or field.get('source') or '' if field else '',
+                        sheet=field.get('sheet') or '' if field else '',
                         status='ok' if field else 'missing', reason='' if field else '指标已不在当前授权来源目录')
                 else:
                     definition = charts.get(item['id'])
                     valid = not isinstance(definition, str)
                     missing = valid and any(sid not in fields for sid in definition_series_ids(definition))
-                    sources = [{'id': sid, 'name': fields[sid].get('metric') or fields[sid].get('name') or sid,
+                    sources = [{'id': sid, 'name': indicator_name(sid, {sid: fields[sid].get('name') or fields[sid].get('metric')}),
                                 'unit': fields[sid].get('unit') or '', 'frequency': fields[sid].get('frequency') or '',
                                 'source': fields[sid].get('source_file') or fields[sid].get('source') or '',
                                 'sheet': fields[sid].get('sheet') or ''}
@@ -334,6 +336,7 @@ def restricted_page(request, scope, templates):
     from tin.web.restricted_views import ORIGINS_KEY
     from tin.web.number_format import format_number
     from tin.web.strategy_monitor import _staleness
+    from tin.web.dimension_data import observation_update
     from tin.config import SHANGHAI
     if 'indicators' not in scope.view_modules or not scope.source_available:
         raise HTTPException(403, '当前授权未开放研究维度')
@@ -347,19 +350,22 @@ def restricted_page(request, scope, templates):
         counts, extra = evidence_counts(session, dimensions, scope)
         rev = revision(session)
     today = datetime.now(SHANGHAI).date()
+    report_day = date.fromisoformat(max((point['date'] for point in facts['rows']
+        if point['series_id'] in fields), default=today.isoformat()))
     failed, dates = [], []
     config_dims, data_dims = deepcopy(dimensions), deepcopy(dimensions)
     for config, dim in zip(config_dims, data_dims):
         config.setdefault('sections', [])
         dim.setdefault('sections', [])
         config['references'] = dim['references'] = counts[dim['id']]
-        summary = dict.fromkeys(('up', 'down', 'flat', 'extreme'), 0)
+        summary = dict.fromkeys(('up', 'down', 'flat', 'no_update', 'extreme'), 0)
         for config_section, section in zip(config['sections'], dim['sections']):
             for meta, item in zip(config_section['items'], section['items']):
                 field = fields.get(item['id']) if item['kind'] == 'indicator' else None
                 reason = '受限视角不开放图表库' if item['kind'] == 'chart' else '已绑定指标暂不可用'
-                meta.update(name=(field.get('metric') or field.get('name') or '已绑定指标') if field else '不可用条目',
+                meta.update(name=indicator_name(item['id'], {item['id']: field.get('name') or field.get('metric')}) if field else '不可用条目',
                             unit=field.get('unit') or '' if field else '', frequency=field.get('frequency') or '' if field else '',
+                            sheet=field.get('sheet') or '' if field else '',
                             source='已授权绑定', status='ok' if field else 'unavailable', reason='' if field else reason)
                 item.update(meta)
                 points = sorted([point for point in facts['rows'] if point['series_id'] == item['id']], key=lambda point: point['date'])
@@ -371,12 +377,15 @@ def restricted_page(request, scope, templates):
                 value = latest['value']
                 delta = value - old['value'] if old else None
                 pct = delta / abs(old['value']) if old and old['value'] != 0 else None
-                direction = 'up' if delta is not None and delta > 0 else 'down' if delta is not None and delta < 0 else 'flat' if delta == 0 else None
+                update = observation_update(latest['date'], old['date'] if old else None, report_day, 'daily')
+                direction = ('no_update' if update['update_status'] == 'no_update' else
+                             'up' if delta is not None and delta > 0 else 'down' if delta is not None and delta < 0 else 'flat' if delta == 0 else None)
                 if direction:
                     summary[direction] += 1
                 dates.append(latest['date'])
                 item.update(latest=value, date=latest['date'], previous_date=old['date'] if old else None,
                     change=delta, change_pct=pct, direction=direction, points=[],
+                    **update,
                     baseline={'label': '较上期', 'date': old['date'] if old else None},
                     display={'latest': format_number(value), 'change': format_number(delta, signed=True),
                              'change_pct': format_number(pct * 100 if pct is not None else None, signed=True) + ('%' if pct is not None else '')},

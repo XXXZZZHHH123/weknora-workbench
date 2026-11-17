@@ -13,7 +13,7 @@ from tin.web import dimension_board as board, charts
 from tin.web.research_dimensions import DIMENSIONS_KEY, default_dimensions, read_dimensions
 from tin.web.restricted_views import mapping_key
 from tests.test_core_focus import focus, add_chart
-from tests.chart_fixtures import SID
+from tests.chart_fixtures import SID, OTHER
 
 
 @pytest.fixture
@@ -134,6 +134,16 @@ def test_new_unavailable_binding_is_rejected(api):
     assert error.value.status_code == 422
 
 
+def test_config_card_prefers_readable_name_and_retains_sheet_without_catalog_changes(api):
+    field = api.session.info['knowledge_facts_catalog'][SID]
+    field.update(name='目录可读指标 / ID123456 [SOURCE.EXAMPLE.value]', metric='原始表头', sheet='来源工作表')
+    result = save(api, config([{'kind': 'indicator', 'id': SID}]))
+    card = result['dimensions'][0]['sections'][0]['items'][0]
+    assert card['name'] == '目录可读指标' and card['sheet'] == '来源工作表'
+    assert field['name'] == '目录可读指标 / ID123456 [SOURCE.EXAMPLE.value]'
+    assert field['metric'] == '原始表头'
+
+
 @pytest.mark.parametrize('permission', ['viewer', 'restricted', 'module'])
 def test_read_write_authorization(api, permission):
     scope = api.scope
@@ -196,6 +206,30 @@ def test_restricted_page_reads_only_persisted_ids_and_hides_charts(api, monkeypa
     assert page['restricted'] and not page['can_write']
     assert page['data']['dimensions'][0]['sections'][0]['items'][0]['latest'] == 2
     assert page['data']['dimensions'][0]['sections'][0]['items'][1]['status'] == 'unavailable'
+
+
+def test_restricted_page_update_window_uses_its_report_date(api, monkeypatch):
+    from tin.web import app as web
+    save(api, config([{'kind': 'indicator', 'id': SID}, {'kind': 'indicator', 'id': OTHER}]))
+    def bounded(*args, **kwargs):
+        return {'indicators': [{'series_id': SID, 'metric': '旧表头', 'name': '可读指标', 'sheet': '授权工作表'},
+                               {'series_id': OTHER, 'metric': '第二指标'}],
+                'rows': [{'series_id': SID, 'date': '2024-03-20', 'value': 1},
+                         {'series_id': SID, 'date': '2024-03-28', 'value': 2},
+                         {'series_id': OTHER, 'date': '2024-03-28', 'value': 3},
+                         {'series_id': OTHER, 'date': '2024-03-29', 'value': 3}]}
+    monkeypatch.setattr(page_facts, 'bounded_facts', bounded)
+    request = Request({'type': 'http', 'method': 'GET', 'path': '/sn/dimensions', 'headers': [], 'query_string': b''})
+    scope = replace(api.scope, metadata={**api.scope.metadata, 'can_read_source': False})
+    page = board.restricted_page(request, scope, web.templates).context['dimension_page']['data']
+    assert page['as_of'] == '2024-03-29'
+    dimension = page['dimensions'][0]
+    old, new = dimension['sections'][0]['items']
+    assert old['direction'] == 'no_update' and old['change'] == 1
+    assert old['comparison_start_date'] == '2024-03-28'
+    assert old['name'] == '可读指标' and old['sheet'] == '授权工作表'
+    assert new['direction'] == 'flat'
+    assert dimension['summary']['no_update'] == dimension['summary']['flat'] == 1
 
 
 def test_counts_do_not_read_unauthorized_judgments(api):
