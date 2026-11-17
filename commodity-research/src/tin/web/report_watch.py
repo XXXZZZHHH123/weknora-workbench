@@ -2,6 +2,7 @@
 import re
 
 from tin.schemas.judgment import EXPRESSION
+from tin.web.number_format import format_number, source_decimals
 
 
 # These are storage/protocol identifiers, never business-intent classifiers.
@@ -92,13 +93,15 @@ def watch_items(judgment, strategies=(), research_cards=()):
     return items
 
 
-def present_watch(items, names, units=None):
+def present_watch(items, names, units=None, precision=None):
     units = units or {}
+    precision = precision or {}
     result = []
     for item in items:
         row = dict(item)
         text = strip_list_mark(display_text(row.get('text'), names))
         identifier = row.get('series_id')
+        digits = source_decimals(precision.get(identifier))
         name = display_text(names.get(identifier)) or '该指标'
         condition = ''
         if row.get('kind') == 'threshold':
@@ -109,14 +112,14 @@ def present_watch(items, names, units=None):
                 if comparison:
                     condition = f'{name}{comparison} MA{value["window"]}'
             elif row.get('operator') == 'between' and isinstance(value, list) and len(value) == 2:
-                condition = f'{name}处于 {value[0]} — {value[1]}{unit} 区间'
+                condition = f'{name}处于 {format_number(value[0], decimals=digits)} — {format_number(value[1], decimals=digits)}{unit} 区间'
             elif row.get('operator') in _COMPARISON and type(value) in {int, float}:
-                condition = f'{name}{_COMPARISON[row["operator"]]} {value}{unit}'
+                condition = f'{name}{_COMPARISON[row["operator"]]} {format_number(value, decimals=digits)}{unit}'
         elif row.get('kind') == 'falsifier':
             match = EXPRESSION.fullmatch(_plain(row.get('expression')))
             if match:
                 subject = '较上一期变化' if match[1] == 'change' else '数值'
-                condition = f'{name}{subject}{_COMPARISON[match[2]]} {match[3]}{row.get("unit") or ""}，连续 {row.get("consecutive_periods") or 1} 期'
+                condition = f'{name}{subject}{_COMPARISON[match[2]]} {format_number(match[3], decimals=digits)}{row.get("unit") or ""}，连续 {row.get("consecutive_periods") or 1} 期'
         row['text'] = text + ('；验证：' + condition if condition else '')
         if row['text']:
             result.append(row)

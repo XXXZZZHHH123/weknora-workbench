@@ -425,4 +425,6 @@ def reference_preview(kind: str, reference_id: str, revision: int | None = Query
     scope = current_workbench.get()
     if scope is None:raise HTTPException(409, '请先进入当前研究工作台')
     with artifact_session(scope) as session:
-        return resolve_reference(session, scope, kind, reference_id, revision)
+        result = resolve_reference(session, scope, kind, reference_id, revision)
+        from tin.web.report_charts import record_chart_references
+        return {**result, 'chart_references': record_chart_references(result.get('payload') or {})}

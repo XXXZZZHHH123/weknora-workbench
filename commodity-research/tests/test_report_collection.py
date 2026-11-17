@@ -45,12 +45,12 @@ def test_view_summarises_saved_research_and_cited_strategy_conditions():
                                          'triggered': ['Buy the range low：Volatility guard']}
     card = view['research_cards'][0]['monitor_view']
     assert card['triggered'] == 1 and card['conditions'][0]['value_text'] == '19.45 点'
-    assert card['conditions'][1]['value_text'] == '7757.17' and card['conditions'][1]['outdated'] is True
+    assert card['conditions'][1]['value_text'] == '7,757' and card['conditions'][1]['outdated'] is True
     indicator = card['indicators'][0]
-    assert indicator['value_text'] == '2610 元/吨' and indicator['as_of'] == '2026-09-22'
+    assert indicator['value_text'] == '2,610 元/吨' and indicator['as_of'] == '2026-09-22'
     assert indicator['stale_note'] == '最新数据距今 32 天，可能已停更'
     assert [row['text'] for row in view['pending_conditions']] == ['Imports recover to ten thousand tonnes']
-    assert view['latest_values'][FIELD] == {'value_text': '17500 元/吨', 'as_of': '2026-09-22'}
+    assert view['latest_values'][FIELD] == {'value_text': '17,500 元/吨', 'as_of': '2026-09-22', 'stale_note': ''}
     assert all(panel['text'] == '' for panel in view['panels'].values())
     assert source == original
 
@@ -63,9 +63,9 @@ def test_markdown_orders_lead_research_strategy_and_sources():
     assert '区间震荡，Range trading; buy dips.' in lead and '1 项所引条件已触发' in lead
     strategy = text.split('\n## 策略\n', 1)[1].split('<details>', 1)[0]
     assert '所引条件「Volatility guard」（暂停 / 撤回）：已触发；当前 19.45 点 · 条件 &gt; 19 · 数据 2026-10-24 · 已越线' in strategy
-    assert '所引指标「Spot premium」：最新 2610 元/吨 · 较前值 0 · 数据 2026-09-22 · 最新数据距今 32 天，可能已停更' in strategy
+    assert '所引指标「Spot premium」：最新 2,610 元/吨 · 较前值 0 · 数据 2026-09-22 · 最新数据距今 32 天，可能已停更' in strategy
     research = text.split('\n## 研判\n', 1)[1].split('\n## 策略\n', 1)[0]
-    assert '- [ ] Imports recover to ten thousand tonnes' in research and '最新 17500 元/吨 · 2026-09-22' in research
+    assert '- [ ] Imports recover to ten thousand tonnes' in research and '最新 17,500 元/吨 · 2026-09-22' in research
     assert FIELD not in text.split('\n## 数据缺口与来源\n', 1)[0]
 
 

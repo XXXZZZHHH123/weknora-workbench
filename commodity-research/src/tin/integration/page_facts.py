@@ -303,6 +303,9 @@ def _saved_plan(scope, request):
             if judgment:
                 payload = to_payload(judgment)
                 windows.update(_judgment_windows(payload))
+                if module == 'reports':
+                    from tin.web.strategy_monitor import CHART_POINTS
+                    windows = {identifier: max(CHART_POINTS, points) for identifier, points in windows.items()}
                 if module == 'judgments' and (scope.scope_version == 2 or getattr(scope, 'restricted', False)):
                     windows = {identifier: max(24, points) for identifier, points in windows.items()}
                     from tin.schemas.judgment import MovingAverageTarget
@@ -486,6 +489,13 @@ def projected_page_session(engine, scope, **kwargs):
         info = install_projection(connection,scope,pages=[page])
         session = KnowledgeFactSession(bind=connection,expire_on_commit=False,**kwargs)
         source_summaries = [{key:source[key] for key in ('id','source_type','source_id','knowledge_base_id','tenant_id','kind') if key in source} for source in scope.sources]
+        from tin.web.number_format import source_decimals
+        precision = {}
+        for row in decoded:
+            digits = source_decimals(row)
+            if digits is not None:
+                precision.setdefault(row['series_id'], {})[row['date']] = digits
+        session.info.update(knowledge_facts_display_precision=precision)
         session.info.update(info,_knowledge_connection=connection,knowledge_base_sources=source_summaries,
             knowledge_base_id=scope.knowledge_base_id,knowledge_base_tenant_id=scope.knowledge_base_tenant_id,
             sources_revision=scope.sources_revision,knowledge_facts_bounded=True,

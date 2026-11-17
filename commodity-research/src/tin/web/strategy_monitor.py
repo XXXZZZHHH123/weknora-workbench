@@ -53,7 +53,7 @@ def _chart(metric, cutoff=None):
     if not isinstance(metric, dict):
         return None
     result = {key: metric.get(key) for key in ('series_id', 'name', 'unit', 'latest', 'previous', 'date',
-                                               'change', 'change_pct', 'points', 'segments', 'point_count')}
+                                               'change', 'change_pct', 'points', 'segments', 'point_count', 'display_decimals')}
     result['freshness'] = _staleness(metric, cutoff) if cutoff is not None and metric.get('date') else None
     return result
 
@@ -80,7 +80,7 @@ def _judgment_states(scope, judgment_id, wanted, cutoff):
                     states[('threshold', rule['id'])] = {
                         'state': STATE.get(row.get('state'), '数据缺失'), 'value': row.get('value'),
                         'as_of': (row.get('as_of') or '')[:10] or None, 'unit': row.get('unit') or '',
-                        'condition': row.get('condition') or '', 'distance': row.get('distance') or '',
+                        'condition': row.get('condition') or '', 'condition_definition': rule, 'distance': row.get('distance') or '',
                         'series_id': rule['series_id'], 'name': rule.get('name') or '',
                         'chart': _chart(_metric(session, rule['series_id'], cutoff, CHART_POINTS), cutoff)}
                 for rule in judgment.falsifiers:
@@ -91,6 +91,7 @@ def _judgment_states(scope, judgment_id, wanted, cutoff):
                     states[('falsifier', rule['id'])] = {
                         'state': signal.state, 'value': signal.current_value, 'as_of': dates[-1] if dates else None,
                         'unit': rule.get('unit_confirmed') or '', 'condition': rule.get('expression') or '',
+                        'condition_definition': rule,
                         'distance': signal.gap_note or '', 'series_id': rule['series_id'], 'name': rule.get('desc') or '',
                         'chart': _chart(_metric(session, rule['series_id'], cutoff, CHART_POINTS), cutoff)}
             finally:
@@ -156,6 +157,7 @@ def monitor_cards(scope, cards, *, day=None, include_indicators=True):
                         condition = condition_text(condition)
                     row.update(state=state['state'], value=state['value'], unit=state['unit'], as_of=state['as_of'],
                                title=human_text(state['name']) or row['title'], condition=condition,
+                               condition_definition=state.get('condition_definition'),
                                note=human_text(state['distance']), chart=state['chart'],
                                judgment={**version, 'cited_revision': citation['revision']},
                                outdated=version['current_revision'] is not None and not version['is_current'])

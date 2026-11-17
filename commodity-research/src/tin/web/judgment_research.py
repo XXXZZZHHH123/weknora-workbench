@@ -91,6 +91,10 @@ def _metric(session, identifier, day, count=24):
         raise HTTPException(400, '图表观测范围无效')
     rows = recent_points(session, identifier, day, count) if indicator is not None and day is not None else []
     result = metric_from_rows(indicator, rows, identifier=identifier, limit=count)
+    from tin.web.number_format import observation_decimals
+    digits = observation_decimals(session, identifier, result.get('date'), result)
+    if digits is not None:
+        result['display_decimals'] = digits
     result['history_complete'] = not session.info.get('knowledge_facts') or bool(session.info.get('knowledge_facts_include_invalid'))
     if not result['history_complete']:
         result['streak'] = None
@@ -106,9 +110,12 @@ def metric_from_rows(indicator, rows, *, identifier=None, limit=24):
     previous = valid[-2] if len(valid) > 1 else None
     change = decimal_difference(latest.value, previous.value) if previous is not None else None
     points, segments = _chart(rows)
+    from tin.web.number_format import source_decimals
+    digits = source_decimals(getattr(latest, 'caliber_snapshot', None), getattr(indicator, 'caliber', None))
     name = human_text(indicator.name) if indicator is not None else ''
     return {'series_id': identifier, 'name': name or '指标名称待核对',
         'unit': indicator.unit if indicator is not None else '',
+        **({'display_decimals': digits} if digits is not None else {}),
         'latest': latest.value if latest is not None else None,
         'previous': previous.value if previous is not None else None,
         'date': _stamp(latest) if latest is not None else None,

@@ -21,7 +21,7 @@ FORMAT = 'research-report-draft.v1'
 # Stored keys stay stable for saved drafts; the report itself is a collection of
 # 研判 and 策略. Text written here is a researcher note shown beside the saved
 # records, never a replacement for them.
-SECTION_LABELS = {'summary': '导语', 'research': '研判', 'dashboard': '图表说明', 'watch': '策略'}
+SECTION_LABELS = {'summary': '导语', 'research': '研判', 'dashboard': '图表', 'watch': '策略'}
 MAX_BYTES = 128 * 1024
 router = APIRouter(prefix='/api/sn/report-drafts')
 
@@ -117,7 +117,7 @@ def resolve_saved_reference(session, scope, kind, identifier, revision):
     return resolve_reference(session, scope, kind, identifier, revision)
 
 
-def freeze_references(session, scope, references):
+def freeze_references(session, scope, references, *, include_charts=False):
     result, seen = [], set()
     for item in references:
         item = item.model_dump() if isinstance(item, ReportReference) else item
@@ -129,7 +129,9 @@ def freeze_references(session, scope, references):
         if (actual.get('kind') != item['kind'] or str(actual.get('id')) != item['id']
                 or actual.get('revision') != item['revision']):
             raise HTTPException(409, '引用版本已变化，未替换为最新版本')
-        result.append({**{key: deepcopy(actual.get(key)) for key in
+        from tin.web.report_charts import record_chart_references
+        result.append({**({'chart_references': record_chart_references(actual.get('payload') or {})} if include_charts else {}),
+            **{key: deepcopy(actual.get(key)) for key in
             ('kind', 'id', 'revision', 'title', 'status', 'resource_type', 'summary', 'body_text',
              'body_text_truncated', 'series_ids', 'source_ids')}, 'section': item['section']})
     return result
@@ -188,7 +190,7 @@ def serialize_report(session, scope, row, *, strict=False):
               for item in saved['reference_snapshots'] if isinstance(item, dict)}
     for reference in saved['references']:
         try:
-            actual = freeze_references(session, scope, [reference])[0]
+            actual = freeze_references(session, scope, [reference], include_charts=True)[0]
             previous = frozen.get((reference['kind'], reference['id'], reference['revision'], reference['section']))
             stable = ('kind', 'id', 'revision', 'title', 'resource_type', 'summary', 'body_text',
                       'body_text_truncated', 'series_ids', 'source_ids', 'section')
@@ -196,7 +198,10 @@ def serialize_report(session, scope, row, *, strict=False):
                 raise HTTPException(409, '引用内容与已保存版本不一致，请重新核对')
             # Preserve the saved quotation and status after checking its current
             # grant and immutable revision, instead of silently replacing it.
-            snapshots.append({key: deepcopy(previous.get(key)) for key in (*stable, 'status')})
+            if ('chart_references' in previous and previous['chart_references'] != actual['chart_references']):
+                raise HTTPException(409, '引用图表与已保存记录版本不一致，请重新核对')
+            snapshots.append({**{key: deepcopy(previous.get(key)) for key in (*stable, 'status')},
+                              'chart_references': deepcopy(actual['chart_references'])})
         except HTTPException as error:
             if error.status_code not in {403, 404, 409}:
                 raise

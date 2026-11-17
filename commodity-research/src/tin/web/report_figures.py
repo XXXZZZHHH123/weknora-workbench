@@ -140,3 +140,77 @@ def report_figures(date: str, period: str = 'daily', revision: int | None = None
         row['caption'] = captions.get(row['series_id'], '')
     payload['draft_revision'] = saved['revision'] if saved else None
     return payload
+
+
+def report_manifest(scope, day, period, revision=None):
+    """Rebuild the authorized record list, never accept a client chart definition."""
+    from tin.integration.research_profile import research_variety
+    from tin.web.report_period import build_period
+    from tin.web.report_drafts import load_report
+    if scope.scope_version != 2:
+        raise HTTPException(409, '当前来源授权不支持有界报告图表，请重新打开研究台更新授权')
+    with artifact_session(scope) as results:
+        engine = results.get_bind()
+        saved = load_report(results, scope, day.isoformat(), period, strict=True)
+        if revision is not None and (saved is None or saved['revision'] != revision):
+            raise HTTPException(409, '报告选图已有新版本，请重新打开')
+    with page_read_scope('reports', day=day, points_per_series=8 if period == 'weekly' else 2):
+        with projected_page_session(engine, scope) as session:
+            session.info.update(scope.identity.session_info(), workbench_id=scope.workbench_id,
+                knowledge_base_id=scope.knowledge_base_id,
+                knowledge_base_tenant_id=scope.knowledge_base_tenant_id,
+                source_storage_legacy=scope.metadata.get('workspace_mode') == 'legacy')
+            payload = build_period(session, research_variety(session), day, period,
+                                   include_analysis=False, figure_metadata=False)
+    if revision is not None and (payload.get('manual_report') or {}).get('revision') != revision:
+        raise HTTPException(409, '报告选图已有新版本，请重新打开')
+    return payload['report_figures']
+
+
+def render_report_figure(scope, figure, through, period):
+    """Per-figure failures remain visible and never drop later charts."""
+    from tin.web.chart_references import render_chart_reference
+    try:
+        if figure['kind'] == 'chart':
+            # Only the cutoff changes. The immutable revision, ACL and source
+            # revalidation all remain the chart-reference reader's responsibility.
+            reference = {**figure['reference'], 'as_of': through.isoformat()}
+            rendered = render_chart_reference(scope, reference)
+            curves = (rendered.get('payload') or {}).get('curves') or []
+            payload = rendered.get('payload') or {}
+            unit = ' / '.join(dict.fromkeys(row.get('unit') or '' for row in curves)) or payload.get('unit') or ''
+            missing = [row.get('label') or '曲线' for row in curves if row.get('status') in {'missing', 'invalid'}]
+            if missing:
+                rendered['notice'] = '；'.join(filter(None, [rendered.get('notice'),
+                    '、'.join(missing) + '：指标来源已失效、未授权或单位无效，请核对来源']))
+            elif any(isinstance(note, dict) and note.get('code') == 'missing'
+                     for note in [*(payload.get('notices') or []), *(payload.get('warnings') or [])]):
+                rendered['notice'] = '；'.join(filter(None, [rendered.get('notice'), '指标来源已失效或暂不可读']))
+            actual = {**figure, 'title': rendered['title'], 'unit': unit or figure.get('unit') or '',
+                      'as_of': rendered['as_of']}
+            return {'figure': actual, 'rendered': rendered}
+        sid = figure['series_id']
+        with artifact_session(scope) as results:
+            engine = results.get_bind()
+        with page_read_scope('reports', series_ids=[sid], day=through,
+                             points_per_series=points_for_period(period)):
+            with projected_page_session(engine, scope) as session:
+                series = read_figures(session, [sid], through, period)['series'][0]
+        series['caption'] = figure['caption']
+        actual = {**figure, 'title': series['name'], 'unit': series['unit']}
+        return {'figure': actual, 'series': series}
+    except HTTPException as exc:
+        reason = exc.detail if isinstance(exc.detail, str) else '图表暂不可读'
+        return {'figure': {**figure, 'notice': reason}, 'notice': reason, 'status': 'unavailable'}
+
+
+@router.get('/figures/{key}')
+def report_figure(key: str, date: str, period: str = 'daily', revision: int | None = None):
+    from tin.web.report_drafts import require_scope, validate_period
+    scope = require_scope()
+    through = validate_period(date, period)
+    manifest = report_manifest(scope, through, period, revision)
+    figure = next((row for row in manifest if row['key'] == key), None)
+    if figure is None:
+        raise HTTPException(404, '此图不在当前报告的已保存引用或手选范围内')
+    return render_report_figure(scope, figure, through, period)
