@@ -562,6 +562,11 @@ def _one_page_lines(view):
     logic = view['logic_strategy']
     if panels['research']['visible'] or panels['watch']['visible']:
         lines += ['## 逻辑与策略', '']
+        if logic['present']:
+            status = logic['status'] or '未登记状态'
+            if logic['written_at']:
+                status += ' · ' + _plain(logic['written_at'])[:10]
+            lines += ['- 研判：' + _md(status)]
         if logic['contradiction']:
             lines += ['- 主要矛盾：' + _md(logic['contradiction'])]
         if logic['tone']:

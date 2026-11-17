@@ -258,9 +258,13 @@ def evidence_groups(payload, figures, dimensions):
 
 
 def logic_strategy(view):
+    # The readable report already selected and projected this saved record.
+    # Its status describes the record; it must not select a second, narrower
+    # source for the concise report or PPT.
     judgment = view.get('judgment') or {}
+    present = bool(judgment)
     active = judgment.get('status') == '生效'
-    conditions = [deepcopy(row) for kind in ('thresholds', 'falsifiers') for row in judgment.get(kind) or []] if active else []
+    conditions = [deepcopy(row) for kind in ('thresholds', 'falsifiers') for row in judgment.get(kind) or []]
     strategies = []
     for card in view.get('research_cards') or []:
         parts = [card.get('direction_label'), card.get('thesis'),
@@ -281,8 +285,10 @@ def logic_strategy(view):
                            'direction': directions, 'thesis': plan.get('thesis') or '',
                            'trigger': trigger, 'response_action': plan.get('invalidation') or '',
                            'text': '；'.join(str(part) for part in parts if part)})
-    return {'active': active, 'contradiction': judgment.get('contradiction') if active else '',
-            'tone': ' · '.join(filter(None, (judgment.get('tone'), judgment.get('tone_note')))) if active else '',
+    return {'present': present, 'active': active,
+            'status': judgment.get('status') or '', 'written_at': judgment.get('written_at') or '',
+            'contradiction': judgment.get('contradiction') or '',
+            'tone': ' · '.join(filter(None, (judgment.get('tone'), judgment.get('tone_note')))),
             'conditions': conditions, 'strategies': strategies}
 
 
@@ -295,7 +301,8 @@ def present_one_page(payload, view, dimensions=None):
         overview_payload['judgment'] = None
     logic = logic_strategy(view)
     if not view['panels']['research']['visible']:
-        logic.update(active=False, contradiction='', tone='', conditions=[])
+        logic.update(present=False, active=False, status='', written_at='',
+                     contradiction='', tone='', conditions=[])
     if not view['panels']['watch']['visible']:
         logic['strategies'] = []
     # Dimension bindings need not appear in the report page's bounded fact

@@ -442,29 +442,36 @@ def _clip(value, width, lines=2, size=12):
     return '\n'.join(wrapped[:lines - 1] + [last + '…'])
 
 
+def _logic_projection(view):
+    projection = view.get('logic_strategy')
+    if isinstance(projection, dict):
+        return projection
+    # Older archives have no one-page projection. Use the same pure projection
+    # as HTML; do not independently choose a different judgment or status.
+    from tin.web.report_one_page import logic_strategy
+    return logic_strategy(view)
+
+
 def _logic_columns(view):
     """Read the shared, visibility-filtered projection without reviving old records."""
     panels = view.get('panels') or {}
     research_visible = (panels.get('research') or {}).get('visible', True)
     watch_visible = (panels.get('watch') or {}).get('visible', True)
-    logic = view.get('logic_strategy')
-    if not isinstance(logic, dict):
-        judgment = view.get('judgment') or {}
-        judgment = judgment if judgment.get('status') == '生效' else {}
-        logic = {'contradiction': judgment.get('contradiction'), 'tone': judgment.get('tone'),
-                 'conditions': [*(judgment.get('thresholds') or []), *(judgment.get('falsifiers') or [])]}
+    logic = _logic_projection(view)
     research = []
-    if research_visible and logic.get('active', True) and any(logic.get(key) for key in ('contradiction', 'tone', 'conditions')):
+    present = logic.get('present', any(logic.get(key) for key in ('contradiction', 'tone', 'conditions')))
+    if research_visible and present:
         contradiction = logic.get('contradiction')
         if isinstance(contradiction, dict):
             contradiction = contradiction.get('text')
-        research.extend(['基调：' + (_s(logic.get('tone')) or '未填写'),
+        research.extend([_join(logic.get('status'), _s(logic.get('written_at'))[:10],
+                              '基调：' + (_s(logic.get('tone')) or '未填写')),
                          '主要矛盾：' + (_s(contradiction) or '未填写')])
         for item in logic.get('conditions') or []:
             research.append('关注：' + _join(item.get('dimension_label'), item.get('name'), item.get('condition'),
                 item.get('state'), item.get('current_value_text'), item.get('stale_note')))
     if not research:
-        research = ['暂无生效研判']
+        research = ['暂无研判']
     strategies = logic.get('strategies') if watch_visible else []
     if strategies is None:
         strategies = []
@@ -480,7 +487,10 @@ def _logic_columns(view):
             strategies.append({'title': row.get('title'), 'text': _join(directions, row.get('thesis'),
                 '触发：' + trigger if trigger else '',
                 '应对：' + _s(row.get('invalidation')) if row.get('invalidation') else '')})
-    plans = [_join(item.get('title'), _s(item.get('text')).replace('；', ' · ')) for item in strategies]
+    plans = [_join(item.get('title'), item.get('direction'), item.get('thesis'),
+                   '触发：' + _s(item.get('trigger')) if item.get('trigger') else '',
+                   '应对：' + _s(item.get('response_action')) if item.get('response_action') else '',
+                   item.get('text')) for item in strategies]
     return research, [line for line in plans if line] or ['暂无策略方案']
 
 
@@ -581,182 +591,252 @@ def _short_fact(fact, width, size, *, reference=False):
     return '\n'.join(_wrap(_named_fact(name, value + ('' if reference else details), width, size), width, size))
 
 
-def _compact_row(source, size, fact_limit=2, lines=2):
-    width = _OVERVIEW_WIDTHS[1] - .14
+def _overview_sources(view):
+    sources = list(view.get('dimension_overview') or [])
+    if not (view.get('panels', {}).get('summary') or {}).get('visible', True):
+        return [], []
+    configured = view.get('research_dimensions')
+    valid = {row['id'] for row in configured} if configured is not None else None
+    selected, extra = [], []
+    for source in sources:
+        included = source.get('id') in valid if valid is not None else source.get('id') not in {
+            '__unlabeled__', '__deleted__', '__other__'}
+        (selected if included else extra).append(source)
+    return selected, extra
+
+
+def _overview_widths(sources, size):
+    longest = max((sum(1 if unicodedata.east_asian_width(char) in {'W', 'F'} else .58
+                       for char in _s(row.get('label'))) for row in sources), default=2)
+    dimension = min(1.6, max(.75, longest * size / 72 / .88 + .14))
+    delta = dimension - _OVERVIEW_WIDTHS[0]
+    return [dimension, _OVERVIEW_WIDTHS[1] - delta * .6,
+            BODY_W - dimension - (_OVERVIEW_WIDTHS[1] - delta * .6) - _OVERVIEW_WIDTHS[3],
+            _OVERVIEW_WIDTHS[3]]
+
+
+def _compact_row(source, size, fact_limit=2, lines=2, widths=None):
+    widths = widths or _OVERVIEW_WIDTHS
+    width = widths[1] - .14
     facts = (source.get('facts') or [])[:fact_limit]
     all_no_update = source.get('no_update') or facts and all(
         fact.get('update_status') == 'no_update' or fact.get('direction') == 'no_update' for fact in facts)
     if all_no_update:
-        summary = _s(source.get('change_summary')) or '本期无新数据'
-        if not source.get('change_summary') and source.get('latest_date'):
-            summary += '（最新 ' + _s(source['latest_date'])[:10] + '）'
-        if lines == 1:
-            fact_text = summary + ('；' + _short_fact(facts[0], max(1, width - 3), size, reference=True) if facts else '')
-        else:
-            each_width = (width - .2 * (len(facts) - 1)) / max(1, len(facts))
-            references = '；'.join(_short_fact(fact, each_width, size, reference=True) for fact in facts)
-            fact_text = summary + ('\n' + references if references else '')
+        latest = _s(source.get('latest_date'))[:10] or max(
+            (_s(fact.get('latest_date'))[:10] for fact in facts), default='')
+        summary = '无新数据' + (' · 最新 ' + latest if latest else '')
+        each_width = (width - .2 * (len(facts) - 1)) / max(1, len(facts))
+        references = '；'.join(_short_fact(fact, each_width, size, reference=True) for fact in facts)
+        fact_text = summary + ('\n' + references if references else '')
     else:
         fact_text = '\n'.join(_short_fact(fact, width, size) for fact in facts)
     sentence = _s(source.get('sentence'))
     sentence = sentence if len(sentence) <= 60 else sentence[:59] + '…'
     impact = source.get('impact_label') or {'bullish': '偏多', 'bearish': '偏空',
         'neutral': '中性', 'undecided': '未判断'}.get(source.get('impact'), '未判断')
-    return [_clip(source.get('label'), _OVERVIEW_WIDTHS[0] - .12, lines, size), fact_text,
-            _clip(sentence, _OVERVIEW_WIDTHS[2] - .14, lines, size), impact]
+    # The configured name is never clipped, even when it needs several lines.
+    return ['\n'.join(_wrap(source.get('label'), widths[0] - .14, size)), fact_text,
+            _clip(sentence, widths[2] - .14, lines, size), impact]
 
 
 def _table_records(rows, size=12):
     line_height = size / 72 * 1.08
-    return [(row, max(.25, max(len(value.split('\n')) for value in row) * line_height + .075)) for row in rows]
+    return [(row, max(.25, max(len(value.split('\n')) for value in row) * line_height + .08)) for row in rows]
 
 
-def _overview_table(slide, rows, y=1.7, size=12):
+def _overview_table(slide, rows, y=1.7, size=12, widths=None, heights=None):
+    widths = widths or _OVERVIEW_WIDTHS
     headings = ['维度', '本期变化', '研究员一句话', '影响']
     records = _table_records(rows, size)
-    header_h = .30
-    table = slide.shapes.add_table(len(records) + 1, 4, Inches(.4), Inches(y), Inches(BODY_W),
-                                   Inches(header_h + sum(height for _, height in records))).table
-    for index, width in enumerate(_OVERVIEW_WIDTHS):
+    header_h = max(.30, size / 72 * 1.08 + .08)
+    heights = heights or [height for _, height in records]
+    shape = slide.shapes.add_table(len(records) + 1, 4, Inches(.4), Inches(y), Inches(BODY_W),
+                                   Inches(header_h + sum(heights)))
+    shape.name = 'Dimension overview'
+    table = shape.table
+    for index, width in enumerate(widths):
         table.columns[index].width = Inches(width)
-    offset = y
-    for rindex, (values, height) in enumerate([(headings, header_h), *records]):
+    # Finish every row first, then use the actual table geometry for overlays.
+    for rindex, (values, height) in enumerate(zip([headings, *rows], [header_h, *heights])):
         table.rows[rindex].height = Inches(height)
         for cindex, value in enumerate(values):
             cell = table.cell(rindex, cindex)
             cell.margin_left = cell.margin_right = Inches(.055)
             cell.margin_top = cell.margin_bottom = Inches(.03)
+            cell.vertical_anchor = MSO_ANCHOR.MIDDLE
             cell.fill.solid()
             cell.fill.fore_color.rgb = RGBColor.from_string('F2F2F2' if rindex == 0 else ('FCFAFA' if rindex % 2 else 'FFFFFF'))
             cell.text_frame.clear()
             cell.text_frame.word_wrap = False
             cell.text_frame.auto_size = MSO_AUTO_SIZE.NONE
-            if rindex and cindex == 3:
-                continue
             for index, line in enumerate(value.split('\n')):
                 paragraph = cell.text_frame.paragraphs[0] if index == 0 else cell.text_frame.add_paragraph()
                 paragraph.space_before = paragraph.space_after = Pt(0)
                 paragraph.line_spacing = Pt(size * 1.08)
+                # Empty impact cells also need an explicit font: LibreOffice
+                # otherwise gives them its larger default paragraph height.
+                paragraph.font.size = Pt(size)
+                if rindex and cindex == 3:
+                    continue
                 run = paragraph.add_run()
                 run.text = line
-                _font(run, size, bold=rindex == 0, color=THEME_RED if rindex == 0 else TEXT)
-        if rindex:
-            label = values[3]
-            fill, color = _IMPACT_COLORS.get(label, _IMPACT_COLORS['未判断'])
-            x = .4 + sum(_OVERVIEW_WIDTHS[:3]) + .08
-            top, tag_h = offset + (height - .25) / 2, .25
-            tag = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(x), Inches(top), Inches(.82), Inches(tag_h))
-            tag.name = 'Impact tag ' + str(rindex)
-            tag.fill.solid()
-            tag.fill.fore_color.rgb = RGBColor.from_string(fill)
-            tag.line.fill.background()
-            tag._element.spPr.append(OxmlElement('a:effectLst'))
-            for effect in tag._element.xpath('./p:style/a:effectRef'):
-                effect.set('idx', '0')
-            _text(slide, label, x, top + .005, .82, .24, size=size, color=color, align=PP_ALIGN.CENTER,
-                  name='Impact label ' + str(rindex))
+                badge = rindex and cindex == 1 and index == 0 and line.startswith('无新数据')
+                _font(run, max(11, size - 1) if badge else size, bold=rindex == 0,
+                      color=THEME_RED if rindex == 0 else MUTED if badge else TEXT)
+                if badge:
+                    highlight = OxmlElement('a:highlight')
+                    color = OxmlElement('a:srgbClr')
+                    color.set('val', 'EEEEEE')
+                    highlight.append(color)
+                    run._r.get_or_add_rPr().append(highlight)
+    offset = shape.top + table.rows[0].height
+    for rindex, values in enumerate(rows, 1):
+        height = table.rows[rindex].height
+        label = values[3]
+        fill, color = _IMPACT_COLORS.get(label, _IMPACT_COLORS['未判断'])
+        tag_h = Inches(max(.25, size / 72 * 1.15 + .03))
+        top = offset + (height - tag_h) // 2
+        x, tag_w = .4 + sum(widths[:3]) + .065, widths[3] - .13
+        tag = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(x), top, Inches(tag_w), tag_h)
+        tag.name = 'Impact tag ' + str(rindex)
+        tag.fill.solid()
+        tag.fill.fore_color.rgb = RGBColor.from_string(fill)
+        tag.line.fill.background()
+        tag._element.spPr.append(OxmlElement('a:effectLst'))
+        for effect in tag._element.xpath('./p:style/a:effectRef'):
+            effect.set('idx', '0')
+        box = _text(slide, label, x, top / Inches(1), tag_w, tag_h / Inches(1),
+                    size=size, color=color, align=PP_ALIGN.CENTER, name='Impact label ' + str(rindex))
+        box.text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+        box.text_frame.margin_top = box.text_frame.margin_bottom = 0
         offset += height
-    return offset
+    return (shape.top + shape.height) / Inches(1)
 
 
 def _strategy_summary(item, width, size):
-    if not any(key in item for key in ('direction', 'thesis', 'trigger', 'response_action')):
-        return _clip(_join(item.get('title'), _s(item.get('text')).replace('；', ' · ')), width, 1, size)
-    def units(value):
-        return sum(1 if unicodedata.east_asian_width(char) in {'W', 'F'} else .58 for char in value)
-    def piece(value, budget):
-        value = _s(value) or '未填写'
-        return _clip(value, budget * size / 72 / .88, 1, size)
-    direction = piece(item.get('direction'), 4)
-    budget = width * 72 / size * .88 - units(direction) - units(' ·  · 触发： · 应对：')
-    thesis = piece(item.get('thesis'), budget * .44)
-    trigger = piece(item.get('trigger'), budget * .28)
-    response = piece(item.get('response_action'), budget * .28)
-    return direction + ' · ' + thesis + ' · 触发：' + trigger + ' · 应对：' + response
+    if not any(item.get(key) for key in ('direction', 'thesis', 'trigger', 'response_action')):
+        return _clip(_join(item.get('title'), item.get('text')), width, 3, size)
+    lines = [_clip(_join(item.get('direction'), item.get('title')) or '未命名方案', width, 1, size)]
+    if item.get('thesis'):
+        lines.append(_clip(item['thesis'], width, 1, size))
+    if item.get('trigger') or item.get('response_action'):
+        # Keep both sides visible rather than allowing a long trigger to consume
+        # the response's width. Full fields are retained in the slide notes.
+        prefix, arrow = '触发：', ' → 应对：'
+        room = width - sum(1 if unicodedata.east_asian_width(char) in {'W', 'F'} else .58
+                           for char in prefix + arrow) * size / 72 / .88
+        trigger = _clip(item.get('trigger') or '未填写', room / 2, 1, size)
+        response = _clip(item.get('response_action') or '未填写', room / 2, 1, size)
+        lines.append(prefix + trigger + arrow + response)
+    return '\n'.join(lines[:3])
 
 
-def _logic_block(slide, view, y, size):
+def _logic_content(view, size):
     research, strategies = _logic_columns(view)
-    _text(slide, '逻辑与策略', .4, y, BODY_W, .25, size=14, bold=True, color=THEME_RED)
-    top = y + .29
-    width = (BODY_W - .24) / 2
-    _text(slide, '研判', .4, top, width, .22, size=size, bold=True, color=THEME_RED)
-    _text(slide, '策略', .4 + width + .24, top, width, .22, size=size, bold=True, color=THEME_RED)
-    top += .25
-    line_h = size / 72 * 1.15
-    available = max(1, int((6.86 - top - .03) / line_h))
-    # One tone, one contradiction and up to three current conditions.
-    left = research[:2]
-    projection = view.get('logic_strategy')
-    if not isinstance(projection, dict):
-        judgment = view.get('judgment') or {}
-        projection = {'conditions': [*(judgment.get('thresholds') or []), *(judgment.get('falsifiers') or [])]}
-    if research != ['暂无生效研判']:
+    width = (BODY_W - .24) / 2 - .03
+    left = []
+    for line in research[:2]:
+        left.extend(_clip(line, width, 2, size).split('\n'))
+    projection = _logic_projection(view)
+    if research != ['暂无研判']:
         for item in (projection.get('conditions') or [])[:3]:
             remainder = _join(item.get('condition'), item.get('state'),
                 '当前 ' + _s(item['current_value_text']) if item.get('current_value_text') else '')
             left.append('关注：' + _named_fact(_s(item.get('name') or item.get('dimension_label')),
-                remainder, width - .65, size))
-    if len(left) > available:
-        left = left[:available]
-    strategy_sources = projection.get('strategies')
+                                            remainder, width - .65, size))
+    sources = projection.get('strategies')
     watch_visible = ((view.get('panels') or {}).get('watch') or {}).get('visible', True)
-    if watch_visible and strategy_sources:
-        right = [_strategy_summary(item, width - .03, size) for item in strategy_sources[:available]]
+    right = []
+    if watch_visible and sources:
+        for item in sources:
+            right.extend(_strategy_summary(item, width, size).split('\n'))
     else:
-        right = strategies[:available]
-    _text(slide, '\n'.join(_clip(line, width - .03, 1, size) for line in left),
-          .4, top, width, 6.86 - top, size=size, name='Judgment summary')
-    _text(slide, '\n'.join(_clip(line, width - .03, 1, size) for line in right),
-          .4 + width + .24, top, width, 6.86 - top, size=size, name='Strategy summary')
-    return len(research) > len(left) or len(strategies) > len(right) or any(
-        len(_wrap(line, width - .03, size)) > 1 for line in left + right)
+        right = [line for value in strategies for line in _clip(value, width, 3, size).split('\n')]
+    return left, right
+
+
+def _logic_height(view, size):
+    left, right = _logic_content(view, size)
+    return .51 + max(len(left), len(right), 1) * size / 72 * 1.08 + .04
+
+
+def _logic_block(slide, view, y, size):
+    _text(slide, '逻辑与策略', .4, y, BODY_W, .25, size=13, bold=True, color=THEME_RED)
+    top, width = y + .28, (BODY_W - .24) / 2
+    _text(slide, '研判', .4, top, width, .23, size=size, bold=True, color=THEME_RED)
+    _text(slide, '策略', .4 + width + .24, top, width, .23, size=size, bold=True, color=THEME_RED)
+    top += .23
+    left, right = _logic_content(view, size)
+    available = max(1, int((6.86 - top - .035) / (size / 72 * 1.08)))
+    for name, text, x in [('Judgment summary', left, .4), ('Strategy summary', right, .4 + width + .24)]:
+        box = _text(slide, '\n'.join(text[:available]), x, top, width, 6.86 - top,
+                    size=size, name=name)
+        for paragraph in box.text_frame.paragraphs:
+            paragraph.line_spacing = Pt(size * 1.08)
+    return len(left) > available or len(right) > available
 
 
 def _one_page(deck, view):
-    """Fit the overview before considering continuation; preserve full text in notes."""
+    """Jointly fit the table and logic, preserving the complete source in notes."""
     rows = _overview_rows(view)
-    sources = list(view.get('dimension_overview') or []) if rows else []
-    logic = _logic_lines(view)
-    # A fixed lower reserve guarantees that eight ordinary dimensions leave
-    # room for an actual judgment and strategies, rather than crowding them out.
-    table_budget = 3.65
-    compact, size = [], 12
-    for fact_limit, lines in ((2, 2), (1, 2), (1, 1)):
-        for size in (12, 11.5, 11, 10.5):
-            compact = [_compact_row(source, size, fact_limit, lines) for source in sources]
-            if .30 + sum(height for _, height in _table_records(compact, size)) <= table_budget:
+    sources, extra = _overview_sources(view)
+    compact, size, logic_size, widths = [], 14, 13, _overview_widths(sources, 14)
+    fitted = False
+    for fact_limit, lines in ((2, 2), (2, 1), (1, 1)):
+        for size in (14, 13.5, 13, 12.5, 12, 11.5, 11):
+            widths = _overview_widths(sources, size)
+            compact = [_compact_row(source, size, fact_limit, lines, widths) for source in sources]
+            logic_size = min(13, max(11, size - 1))
+            table_h = max(.30, size / 72 * 1.08 + .08) + sum(height for _, height in _table_records(compact, size))
+            if 1.7 + table_h + .14 + _logic_height(view, logic_size) <= 6.86:
+                fitted = True
                 break
-        else:
-            continue
-        break
-    # Unusually large custom configurations can still continue, after the
-    # minimum font and one-fact layout have both been exhausted.
-    groups, group, used = [], [], .30
+        if fitted:
+            break
+    # Very large configurations may continue, without ever truncating a name.
+    table_budget = 6.86 - 1.7 - .14 - min(_logic_height(view, logic_size), 2.4)
+    groups, group, used = [], [], max(.30, size / 72 * 1.08 + .08)
     for row, height in _table_records(compact, size):
         if group and used + height > table_budget:
             groups.append(group)
-            group, used = [], .30
+            group, used = [], max(.30, size / 72 * 1.08 + .08)
         group.append(row)
         used += height
     groups.append(group)
+    logic = _logic_lines(view)
     full = ['本期综述（全文附录）'] + ['\n'.join(row) for row in rows] + ['逻辑与策略'] + logic
-    if sources:
-        full += ['提示明细：' + _s(source.get('label')) + '\n' + '\n'.join(filter(None,
-            [_s(source.get('warning_summary')), *(_s(warning) for warning in source.get('warnings') or [])]))
-            for source in sources if source.get('warnings') or source.get('warning_summary')]
+    for source in sources + extra:
+        if source.get('warnings') or source.get('warning_summary'):
+            full.append('提示明细：' + _s(source.get('label')) + '\n' + '\n'.join(filter(None,
+                [_s(source.get('warning_summary')), *(_s(warning) for warning in source.get('warnings') or [])])))
+        if source in extra:
+            full.append('表外依据：' + _s(source.get('label')) + '\n' + '\n'.join(
+                _s(item.get('text') or item.get('desc')) for item in source.get('evidence') or []))
+    if view.get('report_title'):
+        full.append('报告原题：' + _s(view['report_title']))
     full += ['省略文字保留于本页全文附录。条件触发不等于成交。']
     full_text = '\n\n'.join(full)
     shortened = compact != rows
     summary_visible = (view.get('panels', {}).get('summary') or {}).get('visible', True)
+    label, stamp = _period(view)
+    title = (_s(view.get('workbench_name')) or '研究工作台') + ' ' + label + (' · ' + stamp if stamp else '')
     for index, group in enumerate(groups):
-        slide = deck.slide((_s(view.get('report_title')) or '本期报告') + ('（续）' if index else ''))
+        slide = deck.slide(title + ('（续）' if index else ''))
         if summary_visible:
             _text(slide, '本期综述', .4, 1.45, 12.5, .25, size=14, bold=True, color=THEME_RED)
-        y = _overview_table(slide, group, size=size) if group else 2.05 if summary_visible else 1.45
-        if summary_visible and not group:
-            _text(slide, '本期暂无维度综述。', .4, 1.8, 12.5, .3, size=12, color=MUTED)
-        shortened = _logic_block(slide, view, y + .12, size) or shortened
+        if group:
+            heights = [height for _, height in _table_records(group, size)]
+            header_h = max(.30, size / 72 * 1.08 + .08)
+            # Spend remaining space on comfortable rows, after reserving the
+            # actual logical content. Do not leave a fixed unused lower half.
+            spare = max(0, 6.86 - 1.7 - header_h - sum(heights) - .14 - _logic_height(view, logic_size))
+            heights = [height + min(.20, spare / len(group)) for height in heights]
+            y = _overview_table(slide, group, size=size, widths=widths, heights=heights)
+        else:
+            y = 2.05 if summary_visible else 1.45
+            if summary_visible:
+                _text(slide, '本期暂无维度综述。', .4, 1.8, 12.5, .3, size=14, color=MUTED)
+        shortened = _logic_block(slide, view, y + .14, logic_size) or shortened
         slide.notes_slide.notes_text_frame.text = full_text
     return rows, logic, shortened
 

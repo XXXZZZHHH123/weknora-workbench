@@ -235,7 +235,7 @@ def test_wrapped_table_cells_never_split_a_raw_timestamp():
 def one_page_view(view):
     view['dimension_overview'] = [
         {'id': 'custom-' + str(index), 'label': '自定义维度' + str(index),
-         'facts': [{'text': '样本指标 12.34 吨（较 04-01 +1.23，近 5 年同期第 2 高）'}],
+         'facts': [{'name': '样本指标', 'text': '样本指标 12.34 吨（较 04-01 +1.23，近 5 年同期第 2 高）'}],
          'sentence': '研究员确认的本期含义', 'impact': 'neutral', 'impact_label': '中性',
          'support_count': 2, 'oppose_count': 1}
         for index in range(6)]
@@ -429,13 +429,15 @@ def test_eight_dimensions_long_content_fit_one_page_with_labels_and_full_notes(v
         assert f'全文末尾{index}' in notes and f'全文末尾{index}' not in body
         assert len(table.cell(index + 1, 2).text.replace('\n', '')) <= 60
     assert '支持 123' not in body and '反对 456' not in body
-    assert '本期无新数据（最新 2030-03-01）' in body and '较 04-01 +0' not in body
+    assert '无新数据 · 最新 2030-03-01' in body and '较 04-01 +0' not in body
     assert all(value in body for value in ('基调：', '主要矛盾：', '合成关注区间1', '合成关注区间2', '合成关注区间3', '当前 19', '已触发', '未触发'))
     assert '合成关注区间4' not in body and '合成关注区间4' in notes
     assert all(f'策略全文末尾{index}' in notes for index in range(3))
-    strategy_box = next(shape for shape in slide.shapes if shape.name == 'Strategy summary')
-    assert len(strategy_box.text.splitlines()) == 3
-    assert all('观察 · ' in line and '触发：' in line and '应对：' in line for line in strategy_box.text.splitlines())
+    strategy_boxes = [shape for shape in slide.shapes if shape.name.startswith('Strategy summary')]
+    strategy_lines = [line for shape in strategy_boxes for line in shape.text.splitlines() if line]
+    assert len(strategy_lines) <= 9
+    assert any('观察' in line and '方案1' in line for line in strategy_lines)
+    assert any('触发' in line and '→' in line for line in strategy_lines)
     assert '合成停更明细' in notes and '合成停更明细' not in body
     assert '条件触发不等于成交' in notes
     tags = [shape for shape in slide.shapes if shape.name.startswith('Impact tag ')]
@@ -443,12 +445,12 @@ def test_eight_dimensions_long_content_fit_one_page_with_labels_and_full_notes(v
     assert_one_page_text_fits(deck)
 
 
-def test_no_active_judgment_has_explicit_left_column_and_never_reopens_record(view):
+def test_missing_projected_judgment_has_explicit_left_column_and_never_reopens_record(view):
     dense_eight_dimension_view(view)
-    view['logic_strategy'].update(active=False, tone='', contradiction='', conditions=[])
+    view['logic_strategy'].update(present=False, active=False, tone='', contradiction='', conditions=[])
     view['judgment']['contradiction'] = '旧生效记录不得回退'
     deck = new_deck(view)
-    assert '暂无生效研判' in text(deck.slides[0])
+    assert '暂无研判' in text(deck.slides[0])
     assert '旧生效记录不得回退' not in text(deck.slides[0]) + deck.slides[0].notes_slide.notes_text_frame.text
     assert_one_page_text_fits(deck)
 
@@ -466,4 +468,205 @@ def test_legacy_text_only_long_fact_never_silently_drops_numerical_tail(view):
     assert '87.65 吨（较 04-01 -4.32）' in body
     assert '完整指标事实见备注' in body
     assert '98.76 吨（较 04-01 +5.43）' in deck.slides[0].notes_slide.notes_text_frame.text
+    assert_one_page_text_fits(deck)
+
+
+def custom_dimension_acceptance_view(view):
+    """Eight configured rows, plus out-of-band evidence and two long draft plans."""
+    from tin.web.report_one_page import logic_strategy
+
+    dense_eight_dimension_view(view)
+    labels = ['样本价格价差分析', '外部供应', '境内供给与流入', '上游加工需求',
+              '织布以及终端需求', '库存及凭证', '关联替代品', '资金与环境']
+    view['research_dimensions'] = []
+    for index, (row, label) in enumerate(zip(view['dimension_overview'], labels)):
+        row['label'] = label
+        view['research_dimensions'].append({'id': row['id'], 'label': label})
+        for metric, fact in enumerate(row['facts']):
+            original_name = fact['name']
+            fact['name'] = fact['readable_name'] = f'样本指标{index + 1}-{metric + 1}'
+            fact['text'] = fact['text'].replace(original_name, fact['name'])
+    view['dimension_overview'].append({'id': '__unlabeled__', 'label': '未标注',
+        'facts': [], 'sentence': '未标注依据保留说明', 'impact': 'undecided', 'impact_label': '未判断',
+        'evidence': [{'text': '未标注依据完整内容'}]})
+    view['judgment'].update(status='草稿', written_at='2030-04-03T14:30:00+08:00',
+                            tone='中性', tone_note='等待核验', contradiction='供应释放与需求恢复之间的矛盾')
+    view['research_cards'] = [{
+        'id': f'plan-{index}', 'title': f'合成方案{index + 1}', 'direction_label': '观察',
+        'thesis': '等待样本供需关系确认，综合跟踪加工需求和供给变化。' * 5 + f'逻辑末尾{index}',
+        'trigger': '样本条件达到阈值并且连续观察确认后复核。' * 5 + f'触发末尾{index}',
+        'response_action': '重新核验指标并按照保存的方案调整风险敞口。' * 5 + f'应对末尾{index}',
+    } for index in range(2)]
+    view['strategies'] = []
+    view['logic_strategy'] = logic_strategy(view)
+    return view
+
+
+def _one_page_table(slide):
+    return next(shape for shape in slide.shapes if shape.has_table)
+
+
+def _table_sizes(slide):
+    return [run.font.size.pt for row in _one_page_table(slide).table.rows
+            for cell in row.cells for paragraph in cell.text_frame.paragraphs
+            for run in paragraph.runs if run.text and run.font.size]
+
+
+def test_custom_dimensions_draft_and_long_plans_have_one_page_geometry(view):
+    custom_dimension_acceptance_view(view)
+    before = deepcopy(view)
+    deck = new_deck(view)
+    assert len(deck.slides) == 1
+    assert view == before
+    slide = deck.slides[0]
+    body, notes = text(slide), slide.notes_slide.notes_text_frame.text
+    shape = _one_page_table(slide)
+    table = shape.table
+    assert len(table.rows) == len(view['research_dimensions']) + 1
+    assert abs(shape.height - sum(row.height for row in table.rows)) <= len(table.rows)
+    assert [table.cell(index + 1, 0).text.replace('\n', '') for index in range(8)] == [
+        dimension['label'] for dimension in view['research_dimensions']]
+    assert all('…' not in table.cell(index + 1, 0).text for index in range(8))
+    assert '未标注' not in body
+    assert '未标注' in notes and '未标注依据完整内容' in notes
+    assert '草稿' in body and '2030-04-03' in body
+    assert '供应释放与需求恢复之间的矛盾' in body.replace('\n', '')
+    assert '2030-04-01—2030-04-05' in title(slide)
+
+    row_top = shape.top + table.rows[0].height
+    for index, row in enumerate(list(table.rows)[1:], 1):
+        for prefix in ('Impact tag ', 'Impact label '):
+            tag = next(item for item in slide.shapes if item.name == prefix + str(index))
+            assert abs(tag.top + tag.height / 2 - (row_top + row.height / 2)) < row.height / 4
+        row_top += row.height
+    logic_title = next(item for item in slide.shapes if item.has_text_frame and item.text == '逻辑与策略')
+    assert logic_title.top > shape.top + shape.height
+    assert row_top == pytest.approx(shape.top + shape.height, abs=len(table.rows))
+
+    strategy_boxes = [item for item in slide.shapes if item.name.startswith('Strategy summary')]
+    assert strategy_boxes
+    lines = [line for item in strategy_boxes for line in item.text.splitlines() if line]
+    assert len(lines) <= 6
+    for index in range(2):
+        assert any(f'合成方案{index + 1}' in line and '观察' in line for line in lines)
+        for suffix in ('逻辑末尾', '触发末尾', '应对末尾'):
+            assert suffix + str(index) in notes
+    assert sum('→' in line for line in lines) == 2
+    assert all(11 <= size <= 14 for size in _table_sizes(slide))
+    for row in list(table.rows)[1:]:
+        # The impact text is an overlay. Its empty cell still needs an explicit
+        # paragraph size, otherwise LibreOffice expands it using a 32pt default.
+        assert row.cells[3].text == ''
+        for paragraph in row.cells[3].text_frame.paragraphs:
+            assert paragraph.font.size is not None
+            assert 11 <= paragraph.font.size.pt <= 14
+    for item in strategy_boxes + [item for item in slide.shapes if item.name == 'Judgment summary']:
+        assert all(11 <= run.font.size.pt <= 13 for paragraph in item.text_frame.paragraphs
+                   for run in paragraph.runs if run.text and run.font.size)
+    assert_one_page_text_fits(deck)
+
+
+def test_twenty_four_character_dimension_labels_wrap_without_truncation(view):
+    custom_dimension_acceptance_view(view)
+    view['dimension_overview'] = view['dimension_overview'][:8]
+    view['logic_strategy']['strategies'] = []
+    label = '自定义研究维度名称需要完整显示及支持列内自动换行'
+    assert len(label) == 24
+    for index, (row, dimension) in enumerate(zip(view['dimension_overview'], view['research_dimensions'])):
+        row['label'] = dimension['label'] = label if index == 0 else '短名'
+        row['sentence'] = '简短说明'
+        row['facts'] = row['facts'][:1]
+    deck = new_deck(view)
+    assert len(deck.slides) == 1
+    table = _one_page_table(deck.slides[0]).table
+    assert table.columns[0].width <= Inches(1.65)
+    for index, dimension in enumerate(view['research_dimensions']):
+        assert table.cell(index + 1, 0).text.replace('\n', '') == dimension['label']
+        assert '…' not in table.cell(index + 1, 0).text
+    assert '\n' in table.cell(1, 0).text
+    assert_one_page_text_fits(deck)
+
+
+def test_dimension_width_and_body_font_follow_actual_content(view):
+    dense = custom_dimension_acceptance_view(deepcopy(view))
+    sparse = deepcopy(dense)
+    sparse['dimension_overview'] = sparse['dimension_overview'][:2]
+    sparse['research_dimensions'] = sparse['research_dimensions'][:2]
+    for row, dimension in zip(sparse['dimension_overview'], sparse['research_dimensions']):
+        row['label'] = dimension['label'] = '短名'
+        row['facts'] = row['facts'][:1]
+        row['sentence'] = '简短说明'
+    sparse['logic_strategy']['strategies'] = []
+    sparse['logic_strategy']['conditions'] = []
+    dense_deck, sparse_deck = new_deck(dense), new_deck(sparse)
+    dense_table, sparse_table = _one_page_table(dense_deck.slides[0]).table, _one_page_table(sparse_deck.slides[0]).table
+    assert sparse_table.columns[0].width < dense_table.columns[0].width
+    assert min(_table_sizes(sparse_deck.slides[0])) > min(_table_sizes(dense_deck.slides[0]))
+    assert_one_page_text_fits(sparse_deck)
+
+
+def test_no_update_badge_has_date_two_values_and_stays_inside_its_cell(view):
+    custom_dimension_acceptance_view(view)
+    deck = new_deck(view)
+    slide = deck.slides[0]
+    body = text(slide)
+    assert '本期无新数据（最新' not in body
+    assert '无新数据 · 最新 2030-03-01' in body
+    shape = _one_page_table(slide)
+    table = shape.table
+    # Check one stale row and one updated row; numeric comparisons stay visible.
+    assert '较04-01 +1.23' in table.cell(2, 1).text
+    assert '样本指标1-1' in table.cell(1, 1).text
+    for metric in range(2):
+        if f'样本指标1-{metric + 1}' in table.cell(1, 1).text:
+            assert f'{1234.56 + metric:,.2f}吨' in table.cell(1, 1).text
+    assert '样本指标1-3' not in body
+    assert '样本指标1-3' in slide.notes_slide.notes_text_frame.text
+    paragraph = next(item for item in table.cell(1, 1).text_frame.paragraphs
+                     if item.text == '无新数据 · 最新 2030-03-01')
+    # A small muted tag gives the date less visual weight than the indicators.
+    badge_sizes = [run.font.size.pt for run in paragraph.runs if run.text and run.font.size]
+    assert badge_sizes and max(badge_sizes) <= max(_table_sizes(slide))
+    colors = [color.get('val') for run in paragraph.runs
+              for color in run._r.xpath('./a:rPr/a:highlight/a:srgbClr')]
+    assert colors
+    assert all(color[:2] == color[2:4] == color[4:6] and int(color[:2], 16) >= 230 for color in colors)
+    assert_one_page_text_fits(deck)
+
+
+def test_one_page_daily_title_has_single_date(view):
+    one_page_view(view)
+    view['period']['kind'] = 'daily'
+    deck = new_deck(view)
+    assert '2030-04-05' in title(deck.slides[0])
+    assert '2030-04-01' not in title(deck.slides[0])
+    assert '—' not in title(deck.slides[0])
+
+
+def test_archive_without_one_page_projection_uses_same_draft_judgment(view):
+    one_page_view(view)
+    del view['logic_strategy']
+    view['judgment'].update(status='草稿', written_at='2030-04-03T09:00:00+08:00')
+    deck = new_deck(view)
+    assert len(deck.slides) == 1
+    body = text(deck.slides[0])
+    for expected in ('草稿', '2030-04-03', '基调：中性', '主要矛盾：供需主要矛盾'):
+        assert expected in body
+    assert '暂无研判' not in body
+    assert_one_page_text_fits(deck)
+
+
+def test_long_tone_note_cannot_hide_judgment_status_and_date(view):
+    from tin.web.report_one_page import logic_strategy
+
+    custom_dimension_acceptance_view(view)
+    note = '完整的研究基调补充说明需要保留，但状态应始终可见。' * 8
+    view['judgment']['tone_note'] = note
+    view['logic_strategy'] = logic_strategy(view)
+    deck = new_deck(view)
+    assert len(deck.slides) == 1
+    summary = next(shape for shape in deck.slides[0].shapes if shape.name == 'Judgment summary')
+    assert '草稿' in summary.text and '2030-04-03' in summary.text
+    assert '基调：中性' in summary.text
+    assert note in deck.slides[0].notes_slide.notes_text_frame.text
     assert_one_page_text_fits(deck)

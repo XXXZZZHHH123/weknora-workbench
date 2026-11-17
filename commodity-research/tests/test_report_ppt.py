@@ -349,14 +349,19 @@ def test_actual_archive_loader_does_not_reopen_chart_sources(ppt_client, monkeyp
 
 def test_new_one_page_mode_needs_no_bitmaps_and_is_default(ppt_client):
     client, state = ppt_client
+    report = client.get(f'/sn/reports/{DAY}/weekly.json')
+    assert report.status_code == 200
+    judgment = present_snapshot(report.json())['judgment']
+    assert judgment['status'] == '草稿'
     for options in ({'mode': 'one_page'}, {'figures_per_slide': 2}):
         response = export(client, state, options=options, keys=[], images=[])
         assert response.status_code == 200, response.text
         deck = Presentation(BytesIO(response.content))
         assert 1 <= len(deck.slides) <= 2
-        # The fixture judgment is still a draft; only effective judgments may
-        # enter the new main copy, while full mode retains the saved record.
-        assert '服务端保存的主要矛盾' not in slide_text(deck)
+        # Status annotates the same saved judgment selected by the report page.
+        assert judgment['contradiction'] in slide_text(deck)
+        assert judgment['status'] in slide_text(deck)
+        assert judgment['written_at'][:10] in slide_text(deck)
         assert '本期综述' in slide_text(deck) and '逻辑与策略' in slide_text(deck)
         assert not any(shape.name.startswith('Report chart ') for slide in deck.slides for shape in slide.shapes)
     wrong = export(client, state, options={'mode': 'one_page'})

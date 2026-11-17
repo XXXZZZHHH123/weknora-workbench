@@ -210,15 +210,60 @@ def test_hidden_research_does_not_reopen_in_concise_view():
     payload['manual_report']['draft']['sections']['research']['visible'] = False
     view = present_snapshot(payload)
     assert not view['logic_strategy']['contradiction'] and not view['logic_strategy']['conditions']
+    assert not view['logic_strategy']['present'] and not view['logic_strategy']['active']
+    assert not view['logic_strategy']['status'] and not view['logic_strategy']['written_at']
     assert all(not row['evidence'] for row in view['dimension_overview'])
 
 
-def test_draft_judgment_stays_in_full_records_only():
+def test_draft_judgment_uses_same_record_as_readable_report():
     payload = source()
     payload['judgment']['status'] = '草稿'
+    payload['judgment']['written_at'] = '2026-11-09'
     view = present_snapshot(payload)
-    assert view['logic_strategy']['contradiction'] == ''
+    logic = view['logic_strategy']
+    assert logic['present'] and not logic['active']
+    assert logic['status'] == view['judgment']['status'] == '草稿'
+    assert logic['written_at'] == view['judgment']['written_at'] == '2026-11-09'
+    assert logic['tone'] == '中性 · 保存的基调'
+    assert logic['contradiction'] == view['judgment']['contradiction']
     assert view['judgment']['contradiction'] == '保存的主要矛盾'
+    concise_markdown = readable_markdown(payload).split('## 逻辑与策略', 1)[1].split('## 证据图', 1)[0]
+    assert '- 研判：草稿 · 2026-11-09' in concise_markdown
+    html = _logic_html(view)
+    assert '草稿 · 2026-11-09' in html and '保存的主要矛盾' in html
+    assert '暂无研判' not in html and '来自生效研判' not in html
+
+
+def _logic_html(view):
+    from pathlib import Path
+    from jinja2 import Environment, FileSystemLoader
+    import tin.web.report_view
+
+    environment = Environment(loader=FileSystemLoader(
+        Path(tin.web.report_view.__file__).with_name('templates')), autoescape=True)
+    return environment.get_template('_report_logic_strategy.html').render(
+        report=view, panels=view['panels'])
+
+
+def test_missing_judgment_does_not_invent_concise_record():
+    payload = source()
+    payload.pop('judgment')
+    logic = present_snapshot(payload)['logic_strategy']
+    assert not logic['present'] and not logic['active']
+    assert not any(logic[key] for key in ('tone', 'contradiction', 'status', 'written_at', 'conditions'))
+    assert '暂无研判。' in _logic_html(present_snapshot(payload))
+
+
+def test_hidden_judgment_status_does_not_leak_through_concise_outputs():
+    payload = source()
+    payload['judgment'].update(status='草稿', written_at='2026-11-09')
+    note(payload, {})
+    payload['manual_report']['draft']['sections']['research']['visible'] = False
+    view = present_snapshot(payload)
+    html = _logic_html(view)
+    assert '草稿' not in html and '2026-11-09' not in html
+    concise_markdown = readable_markdown(payload).split('## 逻辑与策略', 1)[1].split('## 证据图', 1)[0]
+    assert '草稿' not in concise_markdown and '2026-11-09' not in concise_markdown
 
 
 def test_explicit_citation_dimension_survives_dedup_manifest():
