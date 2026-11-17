@@ -836,7 +836,9 @@ def _one_page(deck, view):
             y = 2.05 if summary_visible else 1.45
             if summary_visible:
                 _text(slide, '本期暂无维度综述。', .4, 1.8, 12.5, .3, size=14, color=MUTED)
-        shortened = _logic_block(slide, view, y + .14, logic_size) or shortened
+        if index == 0:
+            # Continuation slides carry only the remaining overview rows.
+            shortened = _logic_block(slide, view, y + .14, logic_size) or shortened
         slide.notes_slide.notes_text_frame.text = full_text
     return rows, logic, shortened
 
