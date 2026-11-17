@@ -53,6 +53,72 @@ def test_model_prompts_use_current_custom_dimensions_at_both_steps():
     assert '核心关注' not in suggestions.indicator_prompt([], [], 0, dimensions)
 
 
+def test_unsaved_template_structure_drives_both_model_steps_without_saving(monkeypatch, session):
+    dimensions = [{'id': 'd-template', 'label': 'Draft research axis', 'category': '供给',
+                   'description': 'Draft structure', 'sections': [{'id': 's-draft', 'label': 'Draft stage',
+                       'items': [{'kind': 'indicator', 'id': 'draft-forged-item'}]}]}]
+    before = deepcopy(dimensions)
+    monkeypatch.setattr(suggestions, 'dimensions_for_scope', lambda active: pytest.fail('must use unsaved draft'))
+    monkeypatch.setattr(suggestions, 'catalog_snapshot', lambda active: {'catalog': catalog()})
+    monkeypatch.setattr(suggestions, 'current_workbench', SimpleNamespace(get=lambda: scope()))
+    monkeypatch.setattr(suggestions, 'require_shared_write', lambda value: None)
+    calls = []
+
+    async def complete(active, model_id, prompt, **kwargs):
+        calls.append(kwargs['purpose'])
+        assert 'd-template' in prompt and 'Draft stage' in prompt and 'Draft structure' in prompt
+        assert 'draft-forged-item' not in prompt and 's-draft' not in prompt
+        if kwargs['purpose'] == 'dimension_sheets':
+            return {'worksheets': [{'worksheet_id': 'w1', 'dimension': 'd-template'}]}
+        return {'items': [choice(dimension='d-template', section='Draft stage')]}
+    monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
+    app = FastAPI()
+    app.include_router(suggestions.router)
+
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            response = await client.post('/api/sn/dimensions/suggestions', json={
+                'model_id': 'model', 'dimensions': dimensions})
+        assert response.status_code == 200
+        assert response.json()['items'][0]['dimension'] == 'd-template'
+        assert response.json()['items'][0]['section'] == 'Draft stage'
+    asyncio.run(check())
+    assert calls == ['dimension_sheets', 'dimension_fields']
+    assert dimensions == before
+    assert list(session.scalars(select(SourceMapping))) == []
+
+
+@pytest.mark.parametrize('mutation', ['empty', 'count', 'duplicate', 'id', 'label', 'category',
+    'description', 'sections_type', 'sections_count', 'section_label'])
+def test_invalid_draft_structure_fails_before_catalog_or_model(monkeypatch, mutation):
+    dimensions = default_dimensions()
+    if mutation == 'empty': dimensions = []
+    elif mutation == 'count': dimensions *= 3
+    elif mutation == 'duplicate': dimensions[1]['id'] = dimensions[0]['id']
+    elif mutation == 'id': dimensions[0]['id'] = 'bad id'
+    elif mutation == 'label': dimensions[0]['label'] = 'x' * 25
+    elif mutation == 'category': dimensions[0]['category'] = 'invented'
+    elif mutation == 'description': dimensions[0]['description'] = 'x' * 201
+    elif mutation == 'sections_type': dimensions[0]['sections'] = 'invented'
+    elif mutation == 'sections_count': dimensions[0]['sections'] = [{'label': 'Stage'}] * 9
+    elif mutation == 'section_label': dimensions[0]['sections'] = [{'label': ' '}]
+    monkeypatch.setattr(suggestions, 'catalog_snapshot', lambda active: pytest.fail('invalid structure must fail first'))
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(suggestions.generate_suggestions(scope(), 'model', dimensions))
+    assert caught.value.status_code == 422
+
+
+def test_draft_structure_cannot_authorize_unknown_indicators_or_persisted_dimension_ids(monkeypatch):
+    dimensions = [{'id': 'd-template', 'label': 'Draft axis', 'category': '供给', 'description': '',
+                   'sections': [{'label': 'Stage', 'items': [{'kind': 'indicator', 'id': 'invented'}]}]}]
+    clean = suggestions.draft_dimensions(dimensions)
+    assert clean[0]['sections'] == [{'label': 'Stage'}]
+    with pytest.raises(HTTPException):
+        suggestions.validate_suggestions({'items': [choice('invented', 'd-template')]}, catalog(), clean)
+    with pytest.raises(HTTPException):
+        suggestions.validate_suggestions({'items': [choice(dimension='supply')]}, catalog(), clean)
+
+
 def test_model_decisions_preserve_order_without_name_based_grouping_or_completion():
     data, dimensions = catalog(), default_dimensions()
     renamed = deepcopy(data)

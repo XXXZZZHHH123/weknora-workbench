@@ -261,11 +261,13 @@
 | GET | `/api/sn/dimensions` | 有序配置、条目名称/单位/频率/来源、失效原因、`revision`、`can_write`、类别显示名、依据统计 |
 | PUT | `/api/sn/dimensions` | `{revision,dimensions,confirm_delete?:[维度id]}` 整份保存；初始revision为0，成功递增；修订冲突409；删除有引用维度且未确认返回409及`references:{id:条数}` |
 | GET | `/api/sn/dimensions/data?date=YYYY-MM-DD&period=daily\|weekly` | 本期数据，省略date取已绑定指标与图表操作数中最新有效观测日；省略period为weekly |
-| POST | `/api/sn/dimensions/suggestions` | `{model_id}`，两步模型选择真实工作表及指标；返回`items:[{series_id,dimension,section,reason,name,unit,frequency,...}]`，不保存 |
+| GET | `/api/sn/dimensions/templates` | 返回随代码发布的`templates:[{id,name,applicability,dimensions}]`，不写数据库 |
+| POST | `/api/sn/dimensions/templates/{template_id}/draft` | `{revision,dimensions?:当前编辑草稿}`，合并模板结构与已有配置，返回配置描述、`template`、`warnings`；模板外维度带`template_extra:true`，不保存 |
+| POST | `/api/sn/dimensions/suggestions` | `{model_id,dimensions?:当前编辑草稿}`，模型按草稿结构（省略时按已保存配置）两步选择真实工作表及指标；返回`items:[{series_id,dimension,section,reason,name,unit,frequency,...}]`，不保存 |
 | GET | `/api/sn/dimensions/sources?search=&offset=0&limit=20` | 复用已授权原文选择路径，返回`items:[{title,citation}],next_offset` |
 | POST | `/api/sn/dimensions/infer` | `{model_id,sources:[KnowledgeFileCitation]}`，选1–3份不同资料，返回带新编号的维度/空环节草稿，不保存 |
 
-只有来源版本2的研究台开放完整接口，读取要求指标页面授权，保存要求共享写权限。模型建议同核心关注要求来源可读、账号可写、共享可编辑；模型分组采用本台 `dimension_prompt(read_dimensions(...))`，程序仅校验真实ID、合法维度、数量和格式。归纳沿用原文读取的版本、绑定、原件/解析正文验证，模型前后复核正文摘要与出处；共享正文读取器仍验证真实来源，维度入口独立校验指标页面与共享写权限。失败如实报错，不用固定列表补齐。
+只有来源版本2的研究台开放完整接口，读取要求指标页面授权，保存与生成模板草稿要求共享写权限。模型建议同核心关注要求来源可读、账号可写、共享可编辑；模型分组采用本台维度结构，传入草稿时只提取名称、类别、说明和环节，草稿中的条目ID不成为候选证据，程序仅校验真实ID、合法维度、数量和格式。归纳沿用原文读取的版本、绑定、原件/解析正文验证，模型前后复核正文摘要与出处；共享正文读取器仍验证真实来源，维度入口独立校验指标页面与共享写权限。失败如实报错，不用固定列表补齐。
 
 受限视角沿用核心关注规则：页面只读服务端已保存的指标绑定及最新两条必要观测（较上期），不接受自选日期/周期、不读目录/原文/任意历史、不开放修改接口。固定修订图表、同期排名与完整走势显示授权限制原因。来源可读但无共享编辑权限的普通查看成员可以读取完整看板。
 
@@ -280,3 +282,18 @@
 依据统计直接容忍读取`contradiction.bull/bear.evidence[].dimension`可选字段：有研判页面授权时，当前可见且属于本研究台的生效研判中bull为支持、bear为反对，无字段计`evidence.unassigned`，未知编号计`evidence.deleted`。各维度`references`含`support/oppose/total`。删除确认后不改写任何研判，原编号将计入已删除维度，留待研判重新指派。
 
 “一页周报”可直接调用`GET /api/sn/dimensions/data?date=报告截至日&period=weekly`（日报用daily）。按响应`dimensions`数组顺序逐维度读取`id/label/category/description`、各`sections[].items[]`的真实本期数据及`summary`；使用`baseline.date`表述比较日期、`position.n`说明同期样本、`failed/status/reason/warnings`保留数据限制。报告应传明确日期，避免默认最新日随来源更新改变；配置版本由顶层`revision`标识，此接口读取实时配置，不是冻结归档接口。
+
+### 内置维度模板库与从模板开始
+
+模板定义在 `commodity-research/src/tin/web/dimension_templates.py` 的 `TEMPLATE_DATA`，随代码发布，不写数据库，只提供维度名称、通用类别、一句说明和环节名，不包含指标或图表绑定。首批提供“通用六维度”和适用于棉花、棉纱、纺织相关品种的“纺织产业链”。前者复用 `default_dimensions()`，新建维度使用六个固定编号，环节为空；合并时仍优先保留同名已有维度编号以兼容引用。后者整理真实棉花周报的价格与价差、美棉供给、国内供给与进口、纺纱需求、织布与终端需求、库存与仓单、替代品、资金与宏观结构。模板加载时统一调用 `research_dimensions.validate_dimension_list` 校验。
+
+未保存过配置的页面提供“用通用六维度开始 / 选择行业模板 / 从往期周报归纳”三个入口；编辑工具栏也可以套用模板。套用只生成可编辑草稿，不写配置，研究员仍需点击“保存”。套用后可一键让模型按草稿维度推荐真实指标，再由研究员选择确认；模板和环节名不得用于关键词匹配或自动分配指标。
+
+已有配置按维度编号优先、同名维度其次对应，保留对应维度的已有编号、环节和条目，新增模板环节以空条目加入。无法对应的已有维度追加到草稿末尾并标为“模板外”，由研究员决定保留或删除；删除被研判引用的维度继续使用原有显式确认流程，不改写研判依据。未保存过配置时，隐式默认六维度不作为已有自定义配置追加。合并后暂时超过12个维度或每维度8个环节时仍保留完整草稿并提示，研究员删减到配置上限后才能保存，不静默丢弃原条目。
+
+### 如何新增一个模板
+
+1. 从真实研究报告提炼稳定的研究结构，记录模板名称、适用品种说明、各维度关注内容和环节名；说明只写“看什么”，不写市场结论。
+2. 在内置模板数据文件中增加结构；每个维度归入 `research_dimensions.CATEGORIES` 中的通用类别。同一类别可以有多个细分维度，不另造通用类别。
+3. 只写结构，不写指标 ID、图表 ID、取数规则或自动归类关键词。行业模板的维度和环节编号在套用时由服务端生成；默认六维度继续复用固定编号。
+4. 运行模板数据校验、草稿合并与权限测试，再运行 `test_dimension_*.py` 和 `dimensions-ui.cjs`。核对空配置、已有配置、模板外维度、引用删除确认以及未保存草稿的模型建议流程。
