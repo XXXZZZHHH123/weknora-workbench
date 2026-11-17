@@ -535,11 +535,12 @@ async def _parsed_content(scope, bound, source, source_binding_id, result):
         'provenance': {'kind': 'knowledge_chunks', 'chunk_count': len(rows), 'chunks': provenance}}
 
 
-@router.get('/citation-file-content')
-async def citation_file_content(source_binding_id: str = Query(min_length=1, max_length=128),
-        knowledge_id: str = Query(min_length=1, max_length=128),
-        file_version: str = Query(pattern=r'^[a-f0-9]{64}$')):
-    scope = require_scope()
+async def read_file_content(scope, source_binding_id, knowledge_id, file_version):
+    """Read an explicit versioned original for a caller with its own page grant.
+
+    The caller checks its module permission. This shared read still verifies
+    direct-source ownership, the file version, bounded content and provenance.
+    """
     bound, source = await _native_file(scope, source_binding_id, knowledge_id)
     expected = _file_version(source)
     if file_version != expected:
@@ -593,3 +594,10 @@ async def citation_file_content(source_binding_id: str = Query(min_length=1, max
         raise HTTPException(413, '文件正文超过24000字，请保留文件引用或选择更小的资料')
     return {**result, 'supported': True, 'text': text, 'sha256': hashlib.sha256(raw).hexdigest(),
         'content_kind': 'original_text', 'notice': ''}
+
+
+@router.get('/citation-file-content')
+async def citation_file_content(source_binding_id: str = Query(min_length=1, max_length=128),
+        knowledge_id: str = Query(min_length=1, max_length=128),
+        file_version: str = Query(pattern=r'^[a-f0-9]{64}$')):
+    return await read_file_content(require_scope(), source_binding_id, knowledge_id, file_version)
