@@ -18,6 +18,8 @@
   }
   const post = (url, body) => api(url, {method: 'POST', body: JSON.stringify(body)});
   const reason = value => typeof value === 'string' ? value : value?.reason || value?.message || '处理失败';
+  const noticeText = values => [...new Set((values || []).map(U.message).filter(Boolean))].join('；');
+  const missingMessage = '指标库中未找到，请手动选择或跳过';
   function controls() {
     $('file').disabled = !config.can_write || busy;
     $('search').disabled = !config.can_write || busy;
@@ -27,7 +29,7 @@
     $('recognize').disabled = !config.can_write || busy || !$('file').value || !$('model').value;
     const selected = [...states.values()].filter(state => state.selected && state.valid && !state.imported);
     $('apply').disabled = !config.can_write || busy || invalidated || !selected.length;
-    $('selection').textContent = states.size ? `已选 ${selected.length} / ${states.size} 张；可能重复的图默认不勾选。` : '';
+    $('selection').textContent = states.size ? `已选 ${selected.length} / ${states.size} 张；可能重复、未找到指标、定义失败的图默认不勾选。` : '';
     for (const state of states.values()) {
       state.element.querySelector('[data-report-select]').disabled = !config.can_write || busy || invalidated || !state.valid || state.imported;
       state.element.querySelectorAll('select,button').forEach(control => { control.disabled = !config.can_write || busy || invalidated || state.imported; });
@@ -49,55 +51,106 @@
     return {chart_id: state.item.id, mappings: [...state.element.querySelectorAll('[data-report-mapping]')].map(select => select.value),
       chart_type: state.element.querySelector('[data-report-type]').value};
   }
+  function flags(state) {
+    const missing = [...state.element.querySelectorAll('[data-report-mapping]')].some(select => !select.value);
+    state.element.querySelectorAll('[data-report-missing]').forEach((node, index) => {
+      node.hidden = !!state.element.querySelector(`[data-report-mapping="${index}"]`).value;
+    });
+    U.notice(state.element.querySelector('[data-report-flags]'), [
+      state.duplicate ? '可能重复：图表库已有同指标、同图型的图。' : '',
+      missing ? '未找到指标：' + missingMessage : '',
+      state.definitionFailed && !missing ? '定义失败：请修改映射或图型后重新预览。' : '',
+      state.needsReview && state.valid ? '请核对后手动勾选。' : ''
+    ].filter(Boolean).join('；'), 'warning');
+    return missing;
+  }
   async function preview(state) {
     if (busy || invalidated || state.imported || !config.can_write) return;
     const version = ++state.version, own = generation;
     state.valid = false; state.selected = false; state.element.querySelector('[data-report-select]').checked = false;
     state.renderer?.destroy(); state.renderer = null;
     const plot = state.element.querySelector('[data-report-plot]'), notice = state.element.querySelector('[data-report-notice]');
+    if (flags(state)) {
+      plot.textContent = ''; U.notice(notice, noticeText([...(state.item.warnings || []), ...(state.item.mapping_warnings || [])]), 'warning'); controls(); return;
+    }
     plot.textContent = '正在读取真实数据预览…'; controls();
     try {
       const result = await post('/preview', {job_id: jobId, group: $('group').value, ...selection(state)});
       if (closed || own !== generation || version !== state.version) return;
       const errors = (result.errors || []).map(reason);
       if (errors.length || !result.definition || !result.payload) {
+        state.definitionFailed = true; state.needsReview = true; flags(state);
         plot.textContent = ''; U.notice(notice, errors.join('；') || '暂无有效图表预览', 'error'); return;
       }
       state.renderer = K.render(plot, result.payload, {definition: result.definition, thumbnail: true, width: 680, height: 250});
       state.valid = true;
-      const duplicate = result.possible_duplicate;
-      state.selected = !duplicate;
+      state.definitionFailed = false;
+      state.duplicate = !!result.possible_duplicate;
+      state.needsReview = state.needsReview || state.duplicate;
+      state.selected = !state.duplicate && !state.needsReview;
       state.element.querySelector('[data-report-select]').checked = state.selected;
-      U.notice(notice, [duplicate ? '可能重复：图表库已有同指标、同图型的图。' : '',
-        U.noticeText ? U.noticeText(result.warnings || []) : (result.warnings || []).map(U.message).join('；')].filter(Boolean).join('；'), 'warning');
+      flags(state);
+      U.notice(notice, noticeText([...(state.item.warnings || []), ...(result.warnings || [])]), 'warning');
     } catch (error) {
       if (closed || own !== generation || version !== state.version) return;
+      state.definitionFailed = true; state.needsReview = true; flags(state);
       plot.textContent = ''; U.notice(notice, error.message + (!error.status ? '；可点击“预览”重试。' : ''), 'error');
       if ([403, 409].includes(error.status)) conflict(error);
     } finally { if (own === generation && version === state.version) controls(); }
   }
-  function addCard(item) {
+  function addCard(item, target) {
     const card = document.createElement('article'); card.className = 'charts-card'; card.dataset.reportChart = item.id;
     const pageLabel = item.page != null ? `第 ${item.page} 页` : item.page_label || '片段顺序';
-    card.innerHTML = `<h2><label><input type="checkbox" data-report-select disabled> ${E(pageLabel)} · ${E(item.title)}</label></h2>` +
+    card.innerHTML = `<h2><label><input type="checkbox" data-report-select disabled> ${E(pageLabel)} · ${E(item.title)}</label></h2><p role="status" data-report-flags hidden></p>` +
       '<div class="charts-fields"><label class="charts-field">图型<select data-report-type><option value="trend">走势</option><option value="seasonal">同期对比（按年份分列）</option><option value="comparison">多指标对比</option></select></label></div>' +
-      (item.series || []).map((series, index) => `<label class="charts-field">原文图例：${E(series.name)}${series.unit ? `（${E(series.unit)}）` : ''} → 指标<select data-report-mapping="${index}"><option value="">请选择指标</option>${(series.candidates || []).map(candidate => `<option value="${E(candidate.id)}">${E(candidate.name || candidate.metric || candidate.id)}${candidate.unit ? ` · ${E(candidate.unit)}` : ''}${candidate.sheet ? ` · ${E(candidate.sheet)}` : ''}${candidate.source_file ? ` · ${E(candidate.source_file)}` : ''}</option>`).join('')}</select></label>`).join('') +
+      (item.series || []).map((series, index) => `<label class="charts-field">原文图例：${E(series.name)}${series.unit ? `（${E(series.unit)}）` : ''} → 指标<select data-report-mapping="${index}"><option value="">请选择指标</option>${(series.candidates || []).map(candidate => `<option value="${E(candidate.id)}">${E(candidate.name || candidate.metric || candidate.id)}${candidate.unit ? ` · ${E(candidate.unit)}` : ''}${candidate.sheet ? ` · ${E(candidate.sheet)}` : ''}${candidate.source_file ? ` · ${E(candidate.source_file)}` : ''}</option>`).join('')}</select></label>` +
+        (series.legends?.length ? `<p class="charts-muted">${item.legend_semantics === 'periods' ? '原文周期图例' : '原文图例'}：${E(series.legends.join('、'))}</p>` : '') +
+        `<p class="charts-notice warning" data-report-missing="${index}" hidden>${missingMessage}</p>`).join('') +
       '<button type="button" class="charts-button" data-report-preview>预览</button><div class="charts-thumbnail" data-report-plot></div><p role="status" data-report-notice hidden></p>' +
       `<details><summary>原文图表依据</summary><p class="charts-muted">${E(Array.isArray(item.evidence) ? item.evidence.map(value => typeof value === 'string' ? value : value.text || value.quote || '').join('\n') : item.evidence)}</p></details>`;
-    const state = {item, element: card, valid: false, selected: false, version: 0, imported: false}; states.set(item.id, state);
+    const missing = item.series?.some(series => !series.selected_id);
+    const state = {item, element: card, valid: false, selected: false, version: 0, imported: false,
+      duplicate: !!item.possible_duplicate, definitionFailed: !!item.definition_failed || !!item.errors?.length && !missing,
+      needsReview: !!item.possible_duplicate || !!item.missing_indicators || missing || !!item.definition_failed || !!item.errors?.length}; states.set(item.id, state);
     const type = card.querySelector('[data-report-type]'); type.value = item.chart_type || '';
     card.querySelectorAll('[data-report-mapping]').forEach((select, index) => { select.value = item.series[index].selected_id || ''; });
     card.querySelector('[data-report-select]').addEventListener('change', event => { state.selected = event.target.checked; controls(); });
     card.querySelectorAll('select').forEach(select => select.addEventListener('change', () => preview(state)));
     card.querySelector('[data-report-preview]').addEventListener('click', () => preview(state));
-    $('cards').append(card);
-    if (item.errors?.length) U.notice(card.querySelector('[data-report-notice]'), item.errors.map(reason).join('；'), 'warning');
+    target.append(card); flags(state);
+    U.notice(card.querySelector('[data-report-notice]'), noticeText([
+      ...(item.errors || []).map(reason), ...(item.warnings || []), ...(item.mapping_warnings || [])
+    ]), 'warning');
     return state;
   }
   async function renderResult(data, own) {
     clearCards();
     if (data.group !== undefined) $('group').value = data.group;
-    const queue = (data.charts || []).map(addCard);
+    const groups = new Map(), queue = [];
+    function addToGroup(item, failed = false) {
+      const index = Number.isInteger(item.source_index) ? item.source_index : null;
+      const key = item.page != null ? `page:${item.page}` : index != null ? `fragment:${index}` : item.page_label || (item.batch != null ? `batch:${item.batch}` : 'unknown');
+      if (!groups.has(key)) groups.set(key, {label: item.page != null ? `第 ${item.page} 页` : item.page_label || (index != null ? `片段${index + 1}` : item.batch != null ? `第 ${item.batch} 批` : '未定位依据'),
+        order: index ?? item.page ?? Number.MAX_SAFE_INTEGER, entries: []});
+      const group = groups.get(key);
+      group.order = Math.min(group.order, index ?? item.page ?? Number.MAX_SAFE_INTEGER);
+      group.entries.push({item, failed});
+    }
+    (data.charts || []).forEach(item => addToGroup(item));
+    (data.failures || []).forEach(item => addToGroup(item, true));
+    for (const [key, group] of [...groups.entries()].sort((a, b) => a[1].order - b[1].order)) {
+      const section = document.createElement('section'); section.dataset.reportPage = key;
+      const heading = document.createElement('h2'); heading.textContent = group.label;
+      const cards = document.createElement('div'); cards.className = 'charts-grid';
+      section.append(heading, cards); $('cards').append(section);
+      for (const {item, failed} of group.entries.sort((a, b) => (a.item.source_index ?? 0) - (b.item.source_index ?? 0))) {
+        if (!failed) { queue.push(addCard(item, cards)); continue; }
+        const card = document.createElement('article'); card.className = 'charts-card'; card.dataset.reportFailure = '';
+        const title = document.createElement('h2'); title.textContent = item.title || '未完成的图表识别';
+        const message = document.createElement('p'); message.className = 'charts-notice warning';
+        message.textContent = '定义失败：' + reason(item); card.append(title, message); cards.append(card);
+      }
+    }
     U.notice($('failures'), (data.failures || []).map(item => {
       const location = item.page != null ? `第 ${item.page} 页` : item.page_label || (item.batch != null ? `第 ${item.batch} 批` : '');
       return [location, item.title, reason(item)].filter(Boolean).join('：');

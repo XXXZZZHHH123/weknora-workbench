@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     refresh_scheduler_enabled: bool = True
     refresh_poll_seconds: float = 30.0
     refresh_workers: int = 2
+    report_chart_import_concurrency: int = Field(default=3, ge=1, le=8)
     variety: str = "SN"
     liquidity_min_volume: int = 500
     http_timeout: float = 40.0

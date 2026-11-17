@@ -1,15 +1,20 @@
 """Explicit report imports exercise the real isolated chart store and data path."""
 import asyncio
+from collections import Counter
 from copy import deepcopy
+import json
+from time import perf_counter
 
 from fastapi import HTTPException
+import httpx
 import pytest
 from sqlalchemy import select
 
 from tin.integration.workbench_scope import current_workbench, isolated_session_factory
-from tin.models import SourceMapping
+from tin.models import LlmCall, SourceMapping
 from tin.models.workbench import WorkbenchArtifact
 from tin.web import report_chart_import as imports
+from tin.web.report_chart_suggestions import recognize_batch as actual_recognize_batch
 from tests.chart_fixtures import SID, OTHER, THIRD
 from tests.test_chart_api import chart_client, WB  # noqa: F401
 
@@ -250,6 +255,7 @@ def test_report_revision_change_during_definition_preparation_blocks_response_an
 
 def test_total_timeout_preserves_completed_pages_after_final_evidence_recheck(report_client, monkeypatch):
     client, state = report_client
+    monkeypatch.setattr(imports.settings, 'report_chart_import_concurrency', 1)
     original = imports.suggestions.recognize_batch
     async def delayed(scope, model_id, batch, catalog=None):
         if batch[0]['index'] == 1:
@@ -274,3 +280,156 @@ def test_ordinary_batch_failure_retains_other_successful_pages(report_client):
     _, result = complete(client)
     assert len(result['charts']) == 1 and result['charts'][0]['id'] == 'b2-chart'
     assert result['failures'][0]['batch'] == 1 and result['failures'][0]['reason']
+
+
+def test_unmapped_chart_is_visible_unselected_and_manual_candidate_can_repair_it(report_client):
+    client, state = report_client
+    state.report_result = [candidate(selected=None)]
+    identifier, result = complete(client)
+    chart = result['charts'][0]
+    assert chart['missing_indicators'] and not chart['definition_failed']
+    assert chart['errors'] == ['指标库中未找到，请手动选择或跳过']
+    assert 'definition' not in chart
+    assert preview(client, identifier, selection(mappings=[None])).status_code == 422
+    assert preview(client, identifier).status_code == 200
+    assert client.get('/api/sn/charts').json()['total'] == 0
+
+
+def test_duplicate_bindings_warn_in_draft_and_in_manually_changed_preview(report_client):
+    client, state = report_client
+    chart = candidate()
+    chart['series'].append({**deepcopy(chart['series'][0]), 'id': 's2', 'name': 'Another legend'})
+    state.report_result = [chart]
+    identifier, result = complete(client)
+    assert len(result['charts'][0]['definition']['curves']) == 1
+    assert any('重复映射' in warning for warning in result['charts'][0]['mapping_warnings'])
+    response = preview(client, identifier, selection(mappings=[SID, SID]))
+    assert response.status_code == 200 and len(response.json()['definition']['curves']) == 1
+    assert any('重复映射' in warning for warning in response.json()['warnings'])
+
+
+def test_bounded_concurrency_progress_order_failure_isolation_and_serial_equivalence(report_client, monkeypatch):
+    client, state = report_client
+    state.report_batches = 12
+    active, peak, finished = 0, 0, []
+    async def recognize(scope, model_id, batch, catalog=None):
+        nonlocal active, peak
+        index = batch[0]['index']
+        active += 1
+        peak = max(peak, active)
+        try:
+            # Three fake model stages, with first batch deliberately finishing late.
+            for _ in range(3):
+                await asyncio.sleep(0.025 if index == 0 else 0.015)
+            if index == 4:
+                raise HTTPException(422, 'Synthetic malformed model output')
+            return {'charts': [candidate()], 'failed': []}
+        finally:
+            active -= 1
+            finished.append(index)
+    monkeypatch.setattr(imports.suggestions, 'recognize_batch', recognize)
+    # Warm the artifact store/catalog before comparing concurrency. Otherwise
+    # first-job initialization would inflate only the serial measurement.
+    complete(client)
+    results, timing = [], []
+    for concurrency in (1, 3):
+        monkeypatch.setattr(imports.settings, 'report_chart_import_concurrency', concurrency)
+        peak, finished = 0, []
+        state.progress.clear()
+        started = perf_counter()
+        _, result = complete(client)
+        timing.append(perf_counter() - started)
+        assert active == 0 and peak == concurrency
+        assert [p['completed'] for p in state.progress] == [0, *range(1, 13), 12]
+        assert all(p['total'] == 12 for p in state.progress)
+        assert len(result['charts']) == 11
+        assert result['failures'] == [{'batch': 5, 'reason': 'Synthetic malformed model output'}]
+        assert [chart['id'] for chart in result['charts']] == [f'b{i + 1}-chart' for i in range(12) if i != 4]
+        if concurrency == 3:
+            assert finished[0] != 0, 'Exercise completion in a different order from source'
+        for chart in result['charts']:
+            chart['definition']['origin']['ref'] = 'normalized-job-id'
+        results.append(result)
+    assert results[0] == results[1]
+    print('report-chart benchmark ' + json.dumps({'batches': 12, 'stages_per_batch': 3,
+        'serial_seconds': round(timing[0], 4), 'parallel_seconds': round(timing[1], 4),
+        'speedup': round(timing[0] / timing[1], 2)}))
+
+
+def test_fatal_revision_change_cancels_and_drains_other_batches(report_client, monkeypatch):
+    client, state = report_client
+    state.report_batches = 8
+    monkeypatch.setattr(imports.settings, 'report_chart_import_concurrency', 3)
+    entered, cancelled = [], []
+    async def recognize(scope, model_id, batch, catalog=None):
+        index = batch[0]['index']
+        entered.append(index)
+        if index == 0:
+            await asyncio.sleep(0.01)
+            raise HTTPException(409, 'Synthetic source changed')
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(index)
+    monkeypatch.setattr(imports.suggestions, 'recognize_batch', recognize)
+    identifier = client.post('/fixture/report-job').json()['job_id']
+    assert client.get(BASE + '/jobs/' + identifier).status_code == 409
+    assert entered == [0, 1, 2] and sorted(cancelled) == [1, 2]
+    assert client.get('/api/sn/charts').json()['total'] == 0
+
+
+@pytest.mark.parametrize('failure_kind', ['http', 'timeout'])
+def test_concurrent_real_model_path_persists_every_stage_audit_including_failure(report_client, monkeypatch, failure_kind):
+    client, state = report_client
+    state.report_batches = 3
+    monkeypatch.setattr(imports.settings, 'report_chart_import_concurrency', 3)
+    monkeypatch.setattr(imports.settings, 'weknora_api_url', 'http://fixture.invalid')
+    monkeypatch.setattr(imports, 'BATCH_SECONDS', 1)
+    text = 'Original chart title\nOriginal legend'
+    async def read(scope, citation):
+        return {'filename': 'Synthetic weekly.pptx', 'file_version': SOURCE['file_version'],
+            'knowledge_id': 'report', 'source_binding_id': 'binding', 'provenance': [],
+            'locator_digest': 'digest', 'fragments': [], 'batches': [[{
+                'id': f'chunk-{i}', 'index': i, 'page': i + 1, 'content': text}] for i in range(3)]}
+    extraction_started = 0
+    ready = None
+    async def upstream(request):
+        nonlocal extraction_started, ready
+        prompt = json.loads(request.content)['prompt']
+        if prompt.startswith('report-chart-extract'):
+            if ready is None:
+                ready = asyncio.Event()
+            extraction_started += 1
+            if extraction_started == 3:
+                ready.set()
+            await asyncio.wait_for(ready.wait(), 1)
+            fragments = json.loads(prompt.split('\n解析片段：', 1)[1])
+            fragment = fragments[0]
+            # One transport error is still audited and cannot poison its neighbours.
+            if fragment['index'] == 1:
+                if failure_kind == 'timeout':
+                    await asyncio.Event().wait()
+                return httpx.Response(503, json={'success': False})
+            document = {'charts': [{'title': 'Original chart title', 'page': fragment['page'],
+                'chart_type': 'trend', 'legend_semantics': 'indicators',
+                'series': [{'name': 'Original legend', 'unit': '', 'legends': ['Original legend']}],
+                'evidence': [{'chunk_id': fragment['id'], 'quote': text}]}]}
+        elif prompt.startswith('report-chart-map'):
+            document = {'picks': {'c1/s1': {'series_id': SID, 'reason': 'Same measurement scope'}}}
+        else:
+            document = {'queries': {'c1/s1': ['真实字段']}}
+        return httpx.Response(200, json={'success': True, 'data': {
+            'model_id': 'model', 'content': json.dumps(document), 'finish_reason': 'stop'}})
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(imports.suggestions, 'read_report', read)
+    monkeypatch.setattr(imports.suggestions, 'recognize_batch', actual_recognize_batch)
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda *args, **kwargs: original_client(
+        *args, **{**kwargs, 'transport': httpx.MockTransport(upstream)}))
+    _, result = complete(client)
+    assert len(result['charts']) == 2 and len(result['failures']) == 1
+    with isolated_session_factory(17, WB)() as session:
+        calls = session.scalars(select(LlmCall)).all()
+        assert Counter(call.purpose for call in calls) == {
+            'report_chart_extract': 3, 'report_chart_queries': 2, 'report_chart_fields': 2}
+        assert Counter(call.status for call in calls) == {'ok': 6, 'error': 1}
+        assert all(call.model == 'model' and call.request for call in calls)
