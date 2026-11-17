@@ -39,14 +39,52 @@ def test_original_titles_legends_current_units_and_empty_note(fields):
     assert [(curve.label, curve.axis) for curve in result.curves] == [('原文图例0', 'left'), ('原文图例1', 'right')]
 
 
-def test_seasonal_year_legends_collapse_only_explicit_same_real_binding(fields):
+def test_duplicate_real_bindings_collapse_for_every_chart_type(fields):
     chart = recognized(SID, SID, OTHER)
     result = build(chart, [SID, SID, OTHER], 'seasonal')
     assert [curve.series_id for curve in result.curves] == [SID, OTHER]
     assert result.time.mode == 'cycle' and result.time.template.name == '自然年'
     assert result.time.template.period == 'year' and result.time.template.start == '01-01'
     assert result.time.template.transform == 'raw'
-    assert len(build(chart, [SID, SID, OTHER], 'trend').curves) == 3
+    assert len(build(chart, [SID, SID, OTHER], 'trend').curves) == 2
+    assert len(build(chart, [SID, SID, OTHER], 'comparison').curves) == 2
+    assert report.mapping_warnings([SID, SID, OTHER]) == [
+        '重复映射已合并：3条原文系列映射到2个指标，定义已去重；请核对指标口径']
+    assert report.mapping_warnings([SID, OTHER, None]) == []
+
+
+def test_model_grouped_period_legends_form_one_metric_cycle(fields):
+    chart = recognized(SID)
+    chart['legend_semantics'] = 'periods'
+    chart['series'][0].update(name='原文指标价格', legends=['2019年度', '2020年度', '2021年度'])
+    result = build(chart, [SID], 'seasonal')
+    assert len(result.curves) == 1
+    assert result.curves[0].series_id == SID and result.curves[0].label == '原文指标价格'
+    assert result.time.mode == 'cycle' and result.time.template.period == 'year'
+    assert chart['series'][0]['legends'] == ['2019年度', '2020年度', '2021年度']
+
+
+def test_multiple_model_grouped_metrics_keep_independent_cycle_bindings(fields):
+    chart = recognized(SID, OTHER)
+    chart['legend_semantics'] = 'periods'
+    chart['series'][0].update(name='原文指标甲', legends=['甲上一期', '甲本期'])
+    chart['series'][1].update(name='原文指标乙', legends=['乙上一期', '乙本期'])
+    result = build(chart, [SID, OTHER], 'seasonal')
+    assert [curve.series_id for curve in result.curves] == [SID, OTHER]
+    assert [curve.label for curve in result.curves] == ['原文指标甲', '原文指标乙']
+
+
+def test_missing_indicator_is_explained_without_dropping_other_bindings(fields):
+    chart = recognized(SID, OTHER)
+    with pytest.raises(HTTPException) as caught:
+        build(chart, [SID, None], 'comparison')
+    assert caught.value.detail == '指标库中未找到，请手动选择或跳过'
+
+
+def test_deduplication_does_not_bypass_each_legends_candidate_check(fields):
+    with pytest.raises(HTTPException) as caught:
+        build(recognized(SID, OTHER), [SID, SID], 'seasonal')
+    assert '本次展示' in caught.value.detail
 
 
 @pytest.mark.parametrize('frequency', ['daily', 'weekly', 'monthly', 'quarterly', 'annual', '未知', ''])

@@ -14,6 +14,7 @@ from pydantic import Field
 from sqlalchemy import select, update
 from starlette.concurrency import run_in_threadpool
 
+from tin.config import settings
 from tin.integration.identity import research_url
 from tin.integration.page_facts import catalog_snapshot
 from tin.integration.workbench_scope import artifact_session, current_workbench, resolve_workbench
@@ -22,7 +23,7 @@ from tin.schemas.chart import ChartModel
 from tin.web import report_chart_suggestions as suggestions, strategy_citations
 from tin.web.chart_data import cutoff
 from tin.web.charts import create_row, definition_data, require_scope, serialize
-from tin.web.report_chart_definitions import build_definition, duplicate_ids
+from tin.web.report_chart_definitions import build_definition, duplicate_ids, mapping_warnings
 
 router = APIRouter(prefix='/api/sn/charts/import/report')
 KIND = 'report-chart-import.v1'
@@ -156,16 +157,26 @@ def draft(scope, state, selection, group):
 def annotate(scope, charts, group, identifier):
     for chart in charts:
         chart.setdefault('errors', [])
+        mappings = [s.get('selected_id') for s in chart['series']]
+        chart.setdefault('warnings', [])
+        chart['mapping_warnings'] = mapping_warnings(mappings)
+        chart['missing_indicators'] = any(value is None for value in mappings)
+        chart['definition_failed'] = False
+        if chart['missing_indicators']:
+            chart['errors'].append('指标库中未找到，请手动选择或跳过')
+            continue
         try:
-            value = build_definition(scope, chart, [s.get('selected_id') for s in chart['series']],
+            value = build_definition(scope, chart, mappings,
                                      chart['chart_type'], group, f"report:{identifier}:{chart['id']}")
             chart['definition'] = value.model_dump(mode='json')
             chart['possible_duplicate'] = bool(duplicate_ids(scope, value))
         except HTTPException as exc:
             if exc.status_code in {401, 403, 409}:
                 raise
+            chart['definition_failed'] = True
             chart['errors'].append(reason(exc))
         except ValueError:
+            chart['definition_failed'] = True
             chart['errors'].append('图表定义不符合图表库格式或数量限制')
     return charts
 
@@ -184,29 +195,64 @@ async def process(scope, identifier, body):
             original = {key: value for key, value in report.items() if key not in {'fragments', 'batches'}}
             await run_in_threadpool(save_state, scope, identifier, status='running', group=group,
                 original=original, progress={'completed': 0, 'total': len(batches), 'message': '正在识别证据页上的图'})
-            for index, batch in enumerate(batches):
-                await fresh_scope(scope)
-                try:
-                    result = await asyncio.wait_for(suggestions.recognize_batch(scope, body.model_id, batch,
-                        catalog=catalog), timeout=BATCH_SECONDS)
-                    batch_charts = result['charts']
-                    for item in batch_charts:
-                        item['id'] = f'b{index + 1}-{item["id"]}'
-                    charts.extend(await run_in_threadpool(annotate, scope, batch_charts, group, identifier))
-                    failed.extend(result.get('failed', []))
-                except TimeoutError:
-                    failed.append({'batch': index + 1, 'reason': f'本批处理超过{BATCH_SECONDS}秒'})
-                except HTTPException as exc:
-                    if exc.status_code in {401, 403, 409}:
-                        raise
-                    failed.append({'batch': index + 1, 'reason': reason(exc)})
-                except Exception as exc:
-                    failed.append({'batch': index + 1, 'reason': reason(exc)})
-                await suggestions.verify_report(scope, body.source, original)
-                completed = index + 1
-                await run_in_threadpool(save_state, scope, identifier, progress={
-                    'completed': index + 1, 'total': len(batches), 'message': f'已处理{index + 1}/{len(batches)}批'},
-                    failures=failed)
+            pending = iter(enumerate(batches))
+            outcomes = {}
+            publish = asyncio.Lock()
+
+            async def worker():
+                nonlocal completed
+                for index, batch in pending:
+                    await fresh_scope(scope)
+                    batch_charts, batch_failed = [], []
+                    try:
+                        # Retain the existing audited model path for every stage.
+                        result = await asyncio.wait_for(suggestions.recognize_batch(scope, body.model_id, batch,
+                            catalog=catalog), timeout=BATCH_SECONDS)
+                        batch_charts = result['charts']
+                        for item in batch_charts:
+                            item['id'] = f'b{index + 1}-{item["id"]}'
+                        batch_failed = result.get('failed', [])
+                    except TimeoutError:
+                        batch_failed = [{'batch': index + 1, 'reason': f'本批处理超过{BATCH_SECONDS}秒'}]
+                    except HTTPException as exc:
+                        if exc.status_code in {401, 403, 409}:
+                            raise
+                        batch_failed = [{'batch': index + 1, 'reason': reason(exc)}]
+                    except Exception as exc:
+                        batch_failed = [{'batch': index + 1, 'reason': reason(exc)}]
+                    # Verify and persist one completed batch at a time. Completion
+                    # count is independent of source order; public results are not.
+                    async with publish:
+                        try:
+                            batch_charts = await run_in_threadpool(annotate, scope, batch_charts, group, identifier)
+                        except HTTPException as exc:
+                            if exc.status_code in {401, 403, 409}:
+                                raise
+                            batch_charts = []
+                            batch_failed.append({'batch': index + 1, 'reason': reason(exc)})
+                        except Exception as exc:
+                            batch_charts = []
+                            batch_failed.append({'batch': index + 1, 'reason': reason(exc)})
+                        await suggestions.verify_report(scope, body.source, original)
+                        outcomes[index] = (batch_charts, batch_failed)
+                        charts[:] = [chart for key in sorted(outcomes) for chart in outcomes[key][0]]
+                        failed[:] = [failure for key in sorted(outcomes) for failure in outcomes[key][1]]
+                        completed = len(outcomes)
+                        await run_in_threadpool(save_state, scope, identifier, progress={
+                            'completed': completed, 'total': len(batches), 'message': f'已处理{completed}/{len(batches)}批'},
+                            failures=failed)
+
+            workers = [asyncio.create_task(worker()) for _ in
+                       range(min(settings.report_chart_import_concurrency, len(batches)))]
+            try:
+                await asyncio.gather(*workers)
+            finally:
+                # Fatal scope/revision changes, total timeout and cancellation all
+                # drain workers, including each in-flight model call's audit.
+                for task in workers:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
             await fresh_scope(scope)
             await suggestions.verify_report(scope, body.source, original)
             await run_in_threadpool(save_state, scope, identifier, status='complete', charts=charts,
@@ -294,7 +340,8 @@ async def preview(body: PreviewInput):
         _, value = draft(scope, state, body, body.group)
         payload = definition_data(scope, value, cutoff())
         return {'definition': value.model_dump(mode='json'), 'payload': payload,
-                'possible_duplicate': bool(duplicate_ids(scope, value)), 'errors': []}
+                'possible_duplicate': bool(duplicate_ids(scope, value)), 'errors': [],
+                'warnings': mapping_warnings(body.mappings)}
     result = await run_in_threadpool(render)
     await verified_state(scope, body.job_id)
     return result
@@ -334,7 +381,7 @@ def apply_selections(scope, body, definitions, failed):
                     saved = create_row(session, scope, value, snapshots=[{
                         'kind': 'report_chart_structure', 'knowledge_id': row.config['source']['knowledge_id'],
                         'file_version': row.config['source']['file_version'], 'page': chart.get('page'),
-                        'legends': [s['name'] for s in chart['series']]}])
+                        'legends': [name for s in chart['series'] for name in s.get('legends', [s['name']])]}])
                     result = jsonable_encoder(serialize(saved, definition=value))
                     result['href'] = research_url('/sn/charts/' + saved.id)
                 applied[selection.chart_id] = result

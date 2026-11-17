@@ -30,6 +30,15 @@ def frequency_template(fields):
     return deepcopy(BUILTIN_TEMPLATES['自然年'])
 
 
+def mapping_warnings(mappings):
+    """Describe duplicate bindings without inferring anything from their names."""
+    selected = [identifier for identifier in mappings if isinstance(identifier, str) and identifier]
+    if len(selected) == len(set(selected)):
+        return []
+    return [f'重复映射已合并：{len(selected)}条原文系列映射到'
+            f'{len(set(selected))}个指标，定义已去重；请核对指标口径']
+
+
 def build_definition(scope, chart, mappings, chart_type, group, origin_ref):
     if chart_type not in CHART_TYPES:
         raise HTTPException(422, '图型只能选择走势、同期对比或多指标对比')
@@ -38,6 +47,8 @@ def build_definition(scope, chart, mappings, chart_type, group, origin_ref):
             or len(mappings) != len(legends)):
         raise HTTPException(422, '请为每条原文图例确认一个候选指标')
     for legend, identifier in zip(legends, mappings):
+        if identifier is None or identifier == '':
+            raise HTTPException(422, '指标库中未找到，请手动选择或跳过')
         shown = {row.get('id') for row in legend.get('candidates', []) if isinstance(row, dict)}
         if not isinstance(identifier, str) or not identifier or identifier not in shown:
             raise HTTPException(422, '只能选择该图例本次展示过的候选指标，请重新确认映射')
@@ -47,9 +58,9 @@ def build_definition(scope, chart, mappings, chart_type, group, origin_ref):
         raise HTTPException(422, '映射指标已不在当前研究台来源目录，请重新识别')
     units, curves, seen = [], [], set()
     for legend, identifier in zip(legends, mappings):
-        # A seasonal source often draws one metric once per year. One current
-        # series generates those periods; repeated IDs must not duplicate them.
-        if chart_type == 'seasonal' and identifier in seen:
+        # Every legend is independently grounded and authorized above. Once
+        # confirmed, repeated real bindings must not draw identical curves.
+        if identifier in seen:
             continue
         seen.add(identifier)
         field = fields[identifier]
