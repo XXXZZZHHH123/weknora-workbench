@@ -272,9 +272,11 @@ def dimension_data(scope, dimensions, day=None, period='weekly'):
         identifiers = list(selected)
         for offset in range(0, len(identifiers), batch_size):
             read_batch(identifiers[offset:offset + batch_size], effective_day)
-    versions = {item.get('source_version') for item in series.values() if item.get('source_version')}
-    if len(versions) > 1:
-        raise HTTPException(409, '研究维度来源在读取期间已变化，请刷新')
+    # Each batch is a separate verified facts read: authorization, source
+    # bindings and per-binding versions are checked inside that read (as in the
+    # anomalies endpoint). Its page version hashes the datasets that batch
+    # touched, so versions legitimately differ across batches of a workbench
+    # with several datasets and must not be compared here.
     dates = [point['date'] for item in series.values() for point in _observations(item, day)]
     latest_data_date = max(dates) if dates else None
     if requested_day is None and latest_data_date:

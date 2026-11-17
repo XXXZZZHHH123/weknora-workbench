@@ -230,7 +230,9 @@ def test_truncation_notice_only_when_read_window_affects_five_prior_cycles():
     assert not short_source['history_coverage']['limited']
 
 
-def test_second_batch_source_version_change_rejects_entire_request(chart_client, monkeypatch):
+def test_batches_with_different_page_versions_are_each_verified_not_rejected(chart_client, monkeypatch):
+    """A page version hashes the datasets one batch read; workbenches with
+    several datasets get different versions per batch without any change."""
     client, state = chart_client
     identifiers = ['kb-' + f'{index:048x}' for index in range(12)]
     for identifier in identifiers:
@@ -239,16 +241,16 @@ def test_second_batch_source_version_change_rejects_entire_request(chart_client,
     original = data.read_series
     calls = []
 
-    def change_after_first_batch(*args, **kwargs):
+    def other_version_after_first_batch(*args, **kwargs):
         result = original(*args, **kwargs)
         calls.append(args[0])
         state.facts_version = 'a' * 64
         return result
 
-    monkeypatch.setattr(data, 'read_series', change_after_first_batch)
+    monkeypatch.setattr(data, 'read_series', other_version_after_first_batch)
     bind(state, dimensions(*({'kind': 'indicator', 'id': sid} for sid in identifiers)))
     response = client.get('/dimension-data-test?day=2023-01-02')
-    assert response.status_code == 409, response.text
+    assert response.status_code == 200, response.text
     assert len(calls) == 2
 
 
