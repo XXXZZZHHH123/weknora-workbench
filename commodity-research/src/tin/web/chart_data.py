@@ -197,7 +197,7 @@ def resolve_curves(definition, fields, data):
     return result
 
 
-def _bounded_series(limit):
+def _bounded_series(limit, *, preserve_missing=False):
     """Consume the same verified page window without writing it into SQLite.
 
     Only the anomaly request opts in. Local/legacy reads and unusual metadata
@@ -245,12 +245,13 @@ def _bounded_series(limit):
         # values and dates after the requested cutoff. No revisions are lost:
         # the upstream response is the verified final window for each metric.
         # SQLite REAL normalizes an actually observed signed zero on storage.
-        value = float(row['value']) if row['value'] != 0 else 0.0
+        value = (None if preserve_missing and row.get('value_status') == 'missing' and row['value'] is None
+                 else float(row['value']) if row['value'] != 0 else 0.0)
         fields[row['series_id']]['points'].append({'date': row['date'], 'value': value})
     totals = info['knowledge_facts_series_totals']
     for sid, series in fields.items():
         series['points'].sort(key=lambda point: point['date'])
-        dates = [date.fromisoformat(point['date']) for point in series['points']]
+        dates = [date.fromisoformat(point['date']) for point in series['points'] if point['value'] is not None]
         gaps = [(b - a).days for a, b in zip(dates, dates[1:])]
         series['freq_days'] = median(gaps) if gaps else None
         total = totals.get(sid)
@@ -258,12 +259,14 @@ def _bounded_series(limit):
     return fields
 
 
-def read_series(identifiers, day, *, limit=2000):
+def read_series(identifiers, day, *, limit=2000, preserve_missing=False):
     """Read verified anomaly windows or the active SessionLocal facts.
 
     Other chart/local/legacy callers retain SQL revision ordering: invalid new
     revisions never resurrect an older value, and intraday dates keep the latest
     real time. The opt-in anomaly window has those revisions resolved upstream.
+    ``preserve_missing`` uses the complete judgment-window protocol so a
+    condition cannot calculate across an explicitly missing observation.
     """
     from tin.web import app as web
     identifiers = list(dict.fromkeys(identifiers))
@@ -276,8 +279,13 @@ def read_series(identifiers, day, *, limit=2000):
         batch_size = min(256, max(1, 20000 // limit))
         for start in range(0, len(batch), batch_size):
             selected = batch[start:start + batch_size]
-            with page_read_scope('indicators', series_ids=selected, day=day, points_per_series=limit):
-                direct = _bounded_series(limit)
+            # Complete condition windows use the existing judgment protocol,
+            # including explicit missing observations. Ordinary chart callers
+            # retain their established indicator window and numeric-only path.
+            module = 'judgments' if preserve_missing else 'indicators'
+            with page_read_scope(module, series_ids=selected, day=day, points_per_series=limit,
+                                 include_invalid=preserve_missing):
+                direct = _bounded_series(limit, preserve_missing=True) if preserve_missing else _bounded_series(limit)
                 if direct is not None:
                     result.update(direct)
                     continue

@@ -36,17 +36,11 @@ def _cutoff(day):
 
 
 def _staleness(metric, cutoff):
-    """Days since the latest point, flagged only when beyond the series' own usual interval."""
-    try:
-        latest = date.fromisoformat(str(metric.get('date'))[:10])
-        stamps = sorted({date.fromisoformat(str(point['date'])[:10]) for point in metric.get('points') or []})
-    except (TypeError, ValueError, KeyError):
+    """Days since the latest point under the shared research-desk cadence policy."""
+    from tin.compute.condition_backtest import observation_freshness
+    if not metric.get('date'):
         return None
-    age = (cutoff - latest).days
-    gaps = sorted((right - left).days for left, right in zip(stamps, stamps[1:]) if (right - left).days > 0)
-    usual = gaps[len(gaps) // 2] if gaps else None
-    stale = age > max(10, 2.5 * usual) if usual else age > 60
-    return {'age_days': age, 'usual_interval_days': usual, 'stale': stale}
+    return observation_freshness(metric.get('points') or [], cutoff, latest_date=metric['date'])
 
 
 def _chart(metric, cutoff=None):

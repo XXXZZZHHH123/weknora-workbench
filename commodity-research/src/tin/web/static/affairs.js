@@ -15,10 +15,11 @@
     for (const item of items.slice(0, 30)) {
       const row = document.createElement('a'), copy = document.createElement('div');
       row.className = 'affairs-row';
-      row.href = typeof item.href === 'string' && item.href.startsWith('/sn/') ? prefix + item.href : prefix + '/sn/judgment';
+      const monitorLink = typeof item.href === 'string' && (item.href === '/#monitors' || /^\/\?monitor=[A-Za-z0-9%._~-]+#monitors$/.test(item.href));
+      row.href = typeof item.href === 'string' && (item.href.startsWith('/sn/') || monitorLink) ? prefix + item.href : prefix + '/sn/judgment';
       const title = document.createElement('div'), kind = document.createElement('span'), name = document.createElement('span');
       title.className = 'affairs-row-title'; kind.className = 'affairs-row-kind';
-      kind.textContent = {triggered: '研判触发', missing: '数据缺失', strategy: '策略条件', strategy_missing: '策略缺数'}[item.kind] || item.kind || '检查结果'; name.textContent = item.title || '';
+      kind.textContent = {triggered: '研判触发', missing: '数据缺失', strategy: '策略条件', strategy_missing: '策略缺数', monitor: '监测触发'}[item.kind] || item.kind || '检查结果'; name.textContent = item.title || '';
       row.dataset.kind = typeof item.kind === 'string' ? item.kind : '';
       title.append(kind, name);
       const detail = document.createElement('div'); detail.className = 'affairs-row-detail';
@@ -29,7 +30,7 @@
       arrow.className = 'affairs-row-arrow'; arrow.textContent = '查看 →'; row.append(copy, arrow); rows.push(row);
     }
     if (!rows.length) { const empty = document.createElement('div'); empty.className = 'affairs-empty';
-      empty.textContent = result.checked_rules === 0 ? '暂无可检查规则' : '暂无预警记录'; rows.push(empty); }
+      empty.textContent = result.checked_rules === 0 && !(result.checked_monitors > 0) ? '暂无可检查规则' : '暂无预警记录'; rows.push(empty); }
     list.replaceChildren(...rows);
   }
   async function check() {
@@ -40,12 +41,17 @@
       const result = await response.json();
       if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : '检查未完成，原记录已保留。');
       if (!Array.isArray(result.alerts)) throw new Error('检查结果格式不完整，原记录已保留。');
-      render(result.alerts, result); inform([result.checked_at ? '检查于 ' + stamp(result.checked_at) : '',
+      const items = Array.isArray(result.monitor_alerts) ? [...result.alerts.filter(item => item.kind !== 'monitor'), ...result.monitor_alerts] : result.alerts;
+      render(items, result); inform([result.checked_at ? '检查于 ' + stamp(result.checked_at) : '',
         result.partial ? '部分结果' : ''].filter(Boolean).join(' · '));
+      if (typeof window.dispatchEvent === 'function') window.dispatchEvent(new CustomEvent('affairs-checked'));
     } catch (error) { inform(error.message || '检查未完成，原记录已保留。', true); }
     finally { busy = false; button.disabled = false; button.dataset.busy = 'false'; }
   }
   button.addEventListener('click', check);
+  if (typeof window.addEventListener === 'function') window.addEventListener('monitors-changed', event => {
+    if (event.detail?.enabled && !busy) button.disabled = false;
+  });
   // One bounded check per page open, after the fact-free page has rendered;
   // the button re-runs it. Nothing is polled in the background.
   if (!button.disabled) check();

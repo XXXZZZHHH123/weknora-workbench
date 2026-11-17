@@ -468,6 +468,9 @@
       const showBand = cycle && !multiCycle && validBand.length > 0;
       const allX = series.flatMap(s => s.points.filter(p => finite(p.x)).map(p => p.x));
       if (showBand) allX.push(...validBand.map(p => p.x));
+      if (!cycle && options.dateRange) for (const date of [options.dateRange.start, options.dateRange.end]) {
+        const x = dayNumber(date); if (finite(x)) allX.push(x);
+      }
       let minX = allX.length ? Math.min(...allX) : 0, maxX = allX.length ? Math.max(...allX) : 1;
       if (cycle) {
         const template = payload.template || {};
@@ -552,6 +555,19 @@
       });
       const plot = add('g', {'clip-path': `url(#${clipId})`});
       const path = (run, y) => run.map((p, i) => `${i ? 'L' : 'M'}${xScale(p.x).toFixed(2)},${y(p.value).toFixed(2)}`).join(' ');
+      // Explicit dated events supplied by callers. They annotate the date axis
+      // without creating observations or changing either axis' numeric range.
+      if (!cycle) for (const marker of Array.isArray(options.markers) ? options.markers : []) {
+        const x = dayNumber(marker?.date);
+        if (!finite(x) || x < minX || x > maxX) continue;
+        const group = add('g', {'data-event-marker': marker.date}, undefined, plot);
+        add('title', {}, `${marker.date} · ${marker.label || '事件'}`, group);
+        add('line', {x1: xScale(x), x2: xScale(x), y1: margin.top, y2: bottom,
+          stroke: exportTheme?.text || 'var(--alert)', 'stroke-width': 1.2 * scale,
+          'stroke-dasharray': '3 4'}, undefined, group);
+        add('path', {d: `M${xScale(x) - 4 * scale},${margin.top}h${8 * scale}l${-4 * scale},${6 * scale}Z`,
+          fill: exportTheme?.text || 'var(--alert)'}, undefined, group);
+      }
       if (showBand) {
         const y = axes[base.axis || 'left'].scale;
         // Keep low-n holes as explicit breaks; a band may extend beyond the current segment.

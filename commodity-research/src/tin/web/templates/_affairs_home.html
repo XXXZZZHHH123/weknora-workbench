@@ -27,3 +27,6 @@
   {% endfor %}
 </div>
 {% if affairs.partial %}<p class="affairs-notice">部分结果</p>{% endif %}
+{% if not restricted_view and (not research_workbench() or not research_workbench().restricted) %}
+{% include '_monitors.html' %}
+{% endif %}

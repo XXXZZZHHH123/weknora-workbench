@@ -28,6 +28,26 @@ function attr(element, key, value) { return nodes(element).filter(node => Object
 function pathXs(node) { return [...node.attrs.d.matchAll(/[ML](-?[\d.]+),/g)].map(match => Number(match[1])); }
 function assertClose(actual, expected) { assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} ≈ ${expected}`); }
 
+test('显式回测日期轴在末次观测之后标事件，不插入观测或改变数值轴', () => {
+  const payload = {curves: [{series_id: 'synthetic-weekly', label: '周观测', unit: '吨', points: [
+    {date: '2030-01-01', value: 100}, {date: '2030-01-08', value: 110}]}]};
+  const container = fixture(), original = structuredClone(payload);
+  const handle = K.render(container, payload, {dateRange: {start: '2030-01-01', end: '2030-01-20'}, markers: [
+    {date: '2030-01-15', label: '<script>触发</script>'}, {date: 'bad', label: '无效'}, {date: '2030-02-01', label: '范围外'}]});
+  assert.equal(attr(container, 'data-event-marker').length, 1);
+  const marker = attr(container, 'data-event-marker', '2030-01-15')[0];
+  assert.equal(marker.children[0].textContent, '2030-01-15 · <script>触发</script>');
+  assert.equal(marker.children[0].name, 'title');
+  const lastX = pathXs(attr(container, 'data-curve-run')[0]).at(-1);
+  assert.ok(Number(marker.children.find(item => item.name === 'line').attrs.x1) > lastX);
+  const ticksWithMarker = attr(container, 'data-axis-tick', 'left').map(item => item.textContent);
+  assert.deepEqual(payload, original); handle.destroy();
+  const unmarked = K.render(container, payload, {dateRange: {start: '2030-01-01', end: '2030-01-20'}});
+  assert.equal(attr(container, 'data-event-marker').length, 0);
+  assert.deepEqual(attr(container, 'data-axis-tick', 'left').map(item => item.textContent), ticksWithMarker);
+  assert.equal(attr(container, 'data-curve-run').length, 1); unmarked.destroy();
+});
+
 test('导出按实际图位布局：深色文字、完整标题、白底、浅网格和区间带，细线提高下限', () => {
   for (const [width, height] of [[320, 180], [400, 180], [960, 400], [1600, 600]]) {
     const container = fixture(), payload = cycle(), def = structuredClone(definition), style = K.exportStyle(width);
