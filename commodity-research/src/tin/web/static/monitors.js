@@ -5,6 +5,8 @@
   const get = id => document.getElementById('monitor-' + id);
   const api = (window.RESEARCH_PREFIX || '') + '/api/sn';
   let draft = null, busy = false, canWrite = false, tested = false, listToken = 0;
+  let viewedItem = null, customDraftWindow = false;
+  const overlapWarning = '规则之间重叠数据不足，建议更换覆盖更长的指标';
   const selected = new URLSearchParams(window.location.search).get('monitor');
   let selectedOpened = false;
   const displays = new Map();
@@ -36,6 +38,7 @@
     for (const control of get('list').querySelectorAll('input,button')) {
       control.disabled = busy || (control.dataset.write === 'true' && !canWrite);
     }
+    for (const control of get('view').querySelectorAll('input,button')) control.disabled = busy;
   }
   function clearDisplay(target) {
     for (const view of displays.get(target) || []) { view.observer?.disconnect(); view.renderer?.destroy(); }
@@ -61,7 +64,64 @@
     for (const [key, text] of options) control.append(new Option(text, key));
     control.value = value; return control;
   }
-  function renderRules() {
+  function coverageText(candidate) {
+    const coverage = candidate.coverage || candidate;
+    const range = !coverage.end ? '暂无有效观测' : coverage.start ? `覆盖 ${coverage.start} 至 ${coverage.end}` :
+      `首个观测日未核实${coverage.observed_start ? `，已读取 ${coverage.observed_start} 至 ${coverage.end}` : `，最新观测 ${coverage.end}`}`;
+    return [range, coverage.limited ? '覆盖信息受读取上限限制' : '',
+      coverage.frequency || candidate.frequency,
+      coverage.point_count != null ? `${coverage.point_count} 个观测` : '',
+      coverage.stale ? `数据停更（最新 ${coverage.end || '未知'}）` : ''].filter(Boolean).join(' · ');
+  }
+  function overlapText(label, overlap) {
+    const bound = overlap.observation_periods_limited ? (overlap.observation_periods_bound === 'upper' ? '至多' : '至少') : '';
+    const periods = overlap.observation_periods == null ? '观测期待核实' : `${bound}${overlap.observation_periods} 个观测期`;
+    return `${label} ${overlap.start || '无'} 至 ${overlap.end || '无'} · ${overlap.days ?? '待核实'} 天 · ${periods}`;
+  }
+  function selectedCoverage() {
+    return draft.rules.map(rule => rule._candidates.find(item => item.series_id === rule.series_id)?.coverage || {});
+  }
+  function showRuleCoverage(serverOverlap) {
+    const coverages = selectedCoverage();
+    const complete = coverages.every(item => item.start && item.end);
+    const start = complete ? coverages.map(item => item.start).sort().at(-1) : null;
+    const end = complete ? coverages.map(item => item.end).sort()[0] : null;
+    const days = start && end ? Math.max(0, Math.round((Date.parse(end) - Date.parse(start)) / 86400000) + 1) : null;
+    const sparse = coverages.some(item => Number.isInteger(item.point_count) && item.point_count < 10);
+    const insufficient = draft.rules.length > 1 && (serverOverlap?.insufficient || sparse || (days !== null && days < 180));
+    for (const [index, row] of [...get('rules').children].entries()) {
+      row.querySelector('[data-coverage]').textContent = coverageText(coverages[index]);
+      const warning = row.querySelector('[data-overlap-warning]');
+      warning.textContent = insufficient ? overlapWarning : '';
+      warning.hidden = !insufficient;
+    }
+  }
+  function setWindow(prefix, result) {
+    get(prefix + 'start').value = result.start || '';
+    get(prefix + 'end').value = result.end || '';
+  }
+  function windowParams(prefix) {
+    const values = {};
+    for (const key of ['start', 'end']) {
+      const input = get(prefix + key);
+      if (!input.checkValidity()) throw new Error('请填写有效回测日期。');
+      if (input.value) values[key] = input.value;
+    }
+    return values;
+  }
+  function resetDraftWindow() {
+    if (customDraftWindow) return;
+    const coverages = selectedCoverage();
+    if (!coverages.length || coverages.some(item => !item.end)) { setWindow('', {}); return; }
+    const today = new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'}).format(new Date());
+    const end = [...coverages.map(item => item.end), today].sort()[0];
+    const years = Math.min(...coverages.map(item => item.default_years || 2));
+    const date = new Date(end + 'T00:00:00Z');
+    const year = date.getUTCFullYear() - years, month = date.getUTCMonth();
+    const day = Math.min(date.getUTCDate(), new Date(Date.UTC(year, month + 1, 0)).getUTCDate());
+    setWindow('', {start: new Date(Date.UTC(year, month, day)).toISOString().slice(0, 10), end});
+  }
+  function renderRules(overlap) {
     const rows = draft.rules.map((rule, index) => {
       const row = node('div', undefined, 'affairs-row monitor-rule'); row.dataset.monitorRule = String(index);
       const summary = node('div', undefined, 'affairs-row-title');
@@ -72,9 +132,9 @@
       summarize(); row.append(summary);
       const controls = node('div', undefined, 'monitor-fields');
       const choices = select(rule._candidates.map(item => [item.series_id,
-        [item.name, item.unit, item.frequency].filter(Boolean).join(' · ')]), rule.series_id, 'series_id');
+        [item.name, item.unit, coverageText(item)].filter(Boolean).join(' · ')]), rule.series_id, 'series_id');
       choices.setAttribute('aria-label', `第${index + 1}条规则指标`);
-      choices.addEventListener('change', () => { rule.series_id = choices.value; summarize(); invalidate(); });
+      choices.addEventListener('change', () => { rule.series_id = choices.value; summarize(); resetDraftWindow(); showRuleCoverage(); invalidate(); });
       controls.append(field('指标', choices));
       const metric = select([['value', '本期值'], ['change', '本期变化']], rule.metric, 'metric');
       const operator = select(['>', '>=', '<', '<='].map(value => [value, value]), rule.operator, 'operator');
@@ -93,23 +153,30 @@
         }); controls.append(field(label, input));
       }
       const remove = node('button', '删除规则', 'affairs-check'); remove.type = 'button';
-      remove.addEventListener('click', () => { draft.rules.splice(index, 1); invalidate(); renderRules(); });
+      remove.addEventListener('click', () => { draft.rules.splice(index, 1); resetDraftWindow(); invalidate(); renderRules(); });
       controls.append(remove); row.append(controls);
       const definition = node('input'); definition.type = 'text'; definition.maxLength = 1000;
       definition.value = rule.definition; definition.className = 'monitor-rule-definition';
       definition.setAttribute('aria-label', `第${index + 1}条规则口径说明`);
       definition.addEventListener('input', () => { rule.definition = definition.value; invalidate(); });
-      row.append(field('口径说明', definition)); return row;
+      row.append(field('口径说明', definition));
+      const coverage = node('p', '', 'affairs-row-detail'); coverage.dataset.coverage = 'true'; row.append(coverage);
+      const warning = node('p', '', 'monitor-warning'); warning.dataset.overlapWarning = 'true'; warning.hidden = true; row.append(warning);
+      const candidates = node('details', undefined, 'monitor-candidates'); candidates.append(node('summary', '候选指标与数据覆盖'));
+      const list = node('ul', undefined, 'affairs-row-detail');
+      for (const candidate of rule._candidates) list.append(node('li', `${candidate.name || candidate.series_id} · ${coverageText(candidate)}`));
+      candidates.append(list); row.append(candidates); return row;
     });
-    get('rules').replaceChildren(...rows); sync();
+    get('rules').replaceChildren(...rows); showRuleCoverage(overlap); sync();
   }
   function setDraft(result) {
     draft = {...result, rules: result.rules.map((rule, index) => ({...rule,
       _candidates: result.candidates.filter(item => item.rule_index === index)}))};
     get('title').value = result.title; get('logic').value = result.logic;
+    customDraftWindow = false; setWindow('', result.default_window || {});
     get('confirmation-list').replaceChildren(...(result.confirmations || []).map(text => node('li', text)));
     if (!(result.confirmations || []).length) get('confirmation-list').append(node('li', '请核对所选指标、比较方式和连续期数是否符合原意。'));
-    get('draft').hidden = false; invalidate(); renderRules();
+    get('draft').hidden = false; invalidate(); renderRules(result.overlap);
   }
   function display(target, result) {
     clearDisplay(target); target.hidden = false;
@@ -120,6 +187,14 @@
     }
     target.append(summary);
     if (result.start || result.end) target.append(node('p', `回测范围 ${result.start || '—'} 至 ${result.end || '—'}，按各指标最近已知状态组合，不插值、不填零。`, 'affairs-row-detail'));
+    if (result.window_reason) target.append(node('p', result.window_reason, 'affairs-row-detail'));
+    if (result.overlap) {
+      const overlap = result.overlap;
+      target.append(node('p', overlapText('规则来源数据重叠', overlap), 'affairs-row-detail'));
+      if (overlap.insufficient) target.append(node('p', overlap.warning || overlapWarning, 'monitor-warning'));
+    }
+    if (result.window_overlap) target.append(node('p', overlapText('本次回测窗口重叠', result.window_overlap), 'affairs-row-detail'));
+    for (const item of result.rule_coverage || []) target.append(node('p', `第${item.rule_index + 1}条规则 · ${coverageText(item)}`, 'affairs-row-detail'));
     const triggerDetails = node('details'); triggerDetails.append(node('summary', '触发日期与持续期数'));
     const triggers = node('ul', undefined, 'monitor-trigger-list');
     const intervals = result.intervals || [];
@@ -159,8 +234,10 @@
   function signalList(items) {
     window.dispatchEvent(new CustomEvent('monitors-changed', {detail: {enabled: items.some(item => item.enabled)}}));
   }
-  async function viewItem(item) {
-    const result = await request('/monitors/' + encodeURIComponent(item.id) + '/backtest');
+  async function viewItem(item, adjust = false) {
+    const query = adjust ? new URLSearchParams(windowParams('view-')).toString() : '';
+    const result = await request('/monitors/' + encodeURIComponent(item.id) + '/backtest' + (query ? '?' + query : ''));
+    viewedItem = item; setWindow('view-', result);
     get('view').hidden = false; get('view-title').textContent = item.title + ' · 历史回测';
     display(get('view-result'), result); get('view').scrollIntoView({block: 'nearest'}); status('历史回测已更新。');
   }
@@ -206,6 +283,7 @@
   }
   get('sentence').addEventListener('input', sync); get('model').addEventListener('change', sync);
   get('title').addEventListener('input', invalidate); get('logic').addEventListener('change', invalidate);
+  for (const key of ['start', 'end']) get(key).addEventListener('input', () => { customDraftWindow = true; invalidate(); });
   get('confirm').addEventListener('change', sync);
   get('generate').addEventListener('click', () => void act(async () => {
     status('正在理解原话、召回并核对授权指标…');
@@ -214,7 +292,9 @@
   }));
   get('backtest').addEventListener('click', () => void act(async () => {
     for (const input of get('draft').querySelectorAll('input[type=number]')) if (!input.checkValidity()) throw new Error('请填写有效阈值和连续期数。');
-    status('正在读取历史观测并回测…'); const result = await request('/monitors/backtest', body(), 'POST');
+    status('正在读取历史观测并回测…');
+    const result = await request('/monitors/backtest', {...body(), ...(customDraftWindow ? windowParams('') : {})}, 'POST');
+    setWindow('', result); showRuleCoverage(result.overlap);
     display(get('backtest-result'), result); tested = true; status('回测完成。核对规则与口径后可保存监测。');
   }));
   get('save').addEventListener('click', () => void act(async () => {
@@ -224,6 +304,7 @@
   }));
   get('cancel').addEventListener('click', () => { get('draft').hidden = true; clearDisplay(get('backtest-result')); draft = null; tested = false; sync(); });
   get('view-close').addEventListener('click', () => { get('view').hidden = true; clearDisplay(get('view-result')); });
+  get('view-backtest').addEventListener('click', () => { if (viewedItem) void act(() => viewItem(viewedItem, true)); });
   get('refresh').addEventListener('click', () => void act(loadList));
   window.addEventListener('affairs-checked', () => { void loadList().catch(error => status(error.message, true)); });
   void loadList().catch(error => { get('list').replaceChildren(node('div', '监测读取失败，请刷新列表重试。', 'affairs-empty')); status(error.message, true); });

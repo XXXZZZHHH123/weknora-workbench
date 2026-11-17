@@ -18,6 +18,7 @@ from tin.web import monitors
 URL = '/api/sn/monitors'
 SID = 'KB.fixture.warehouse'
 OTHER_SID = 'KB.fixture.basis'
+REAL_CANDIDATE_METADATA = monitors._candidate_metadata
 
 
 def rule(**changes):
@@ -55,6 +56,7 @@ def monitor_client(tmp_path, monkeypatch):
             current_workbench.reset(token)
             current_identity.reset(actor)
     monkeypatch.setattr(monitors, '_validate_catalog', lambda scope, rules: {})
+    monkeypatch.setattr(monitors, '_candidate_metadata', lambda *args: {})
     with TestClient(app) as client:
         client.get(URL)
         yield client, state
@@ -141,6 +143,45 @@ def test_model_draft_recall_and_per_rule_candidate_validation(monitor_client, mo
     assert '不要输出series_id' in calls[0][0]
     assert client.post(URL, json={key: draft[key] for key in (
         'draft_id', 'title', 'sentence', 'logic', 'rules')}).status_code == 201
+
+
+def test_draft_displays_real_candidate_coverage_without_changing_model_selection(monitor_client, monkeypatch):
+    from tin.web import chart_data, monitor_coverage, strategy_text
+    client, state = monitor_client
+    fields = [
+        {'id': SID, 'series_id': SID, 'name': '仓单', 'frequency': '周'},
+        {'id': OTHER_SID, 'series_id': OTHER_SID, 'name': '仓单另一口径', 'frequency': '日'},
+    ]
+    monkeypatch.setattr(monitors, '_draft_context', lambda scope: ([], fields))
+    monkeypatch.setattr(chart_data, 'catalog_fields', lambda scope, ids: {
+        field['series_id']: field for field in fields if field['series_id'] in ids})
+    coverage = {
+        SID: {'start': '2022-07-13', 'end': '2022-11-04', 'point_count': 79, 'frequency': '周', 'stale': True},
+        OTHER_SID: {'start': '2020-01-01', 'end': '2026-11-01', 'point_count': 900,
+                    'frequency': '日', 'stale': False},
+    }
+    reads = []
+    def read(scope, identifiers, **kwargs):
+        reads.append(identifiers)
+        return coverage
+    monkeypatch.setattr(monitor_coverage, 'read_coverage', read)
+    # The shared client isolates the coverage transport; restore only this real enrichment path.
+    monkeypatch.setattr(monitors, '_candidate_metadata', REAL_CANDIDATE_METADATA)
+    calls = []
+    async def completion(*args, **kwargs):
+        calls.append(1)
+        return model_output() if len(calls) == 1 else {'picks': {'0': ['r1']}}
+    monkeypatch.setattr(strategy_text, 'completion', completion)
+    response = client.post(URL + '/draft', json={'sentence': '连续增加时提醒我', 'model_id': 'fixture'})
+    assert response.status_code == 200, response.text
+    draft = response.json()
+    assert draft['rules'][0]['series_id'] == SID
+    assert set(reads[0]) == {SID, OTHER_SID}
+    assert {item['series_id']: item['coverage'] for item in draft['candidates']} == coverage
+    assert draft['default_window']['end'] == coverage[SID]['end']
+    with artifact_session(state['scope']) as session:
+        stored = monitors._body(monitors._owned(session, state['scope'], draft['draft_id'], monitors.DRAFT_MODULE))
+        assert stored['candidates'] == draft['candidates']
 
 
 @pytest.mark.parametrize('output', [
@@ -263,6 +304,44 @@ def test_backtest_enforces_candidate_ids_without_writing_a_monitor(monitor_clien
     saved = client.post(URL, json=request).json()
     assert client.get(URL + '/' + saved['id'] + '/backtest').status_code == 200
     assert client.get(URL + '/' + saved['id'] + '/backtest', headers={'x-actor': 'second'}).status_code == 404
+
+
+def test_backtest_dates_forwarded_for_draft_body_query_and_saved_monitor(monitor_client, monkeypatch):
+    client, state = monitor_client
+    calls = []
+    def read(scope, rules, logic, **kwargs):
+        calls.append(kwargs)
+        return {'start': kwargs.get('start'), 'end': kwargs.get('end')}
+    monkeypatch.setattr(monitors, 'backtest', read)
+    request = body(state)
+    window = {'start': '2022-01-01', 'end': '2022-11-04'}
+    assert client.post(URL + '/backtest', json={**request, **window}).json() == window
+    assert client.post(URL + '/backtest', params=window, json=request).json() == window
+    saved = client.post(URL, json=request).json()
+    assert client.get(URL + '/' + saved['id'] + '/backtest', params=window).json() == window
+    assert calls == [window] * 3
+    conflict = client.post(URL + '/backtest', params={'end': '2023-01-01'}, json={**request, **window})
+    assert conflict.status_code == 422 and len(calls) == 3
+    assert client.post(URL + '/backtest', json={**request, 'start': 20220101}).status_code == 422
+    assert client.post(URL, json={**request, **window}).status_code == 422
+    assert client.get(URL).json()['items'][0]['rules'] == request['rules']
+
+
+@pytest.mark.parametrize('condition_state', ['触发', '无数据'])
+def test_stale_monitor_check_has_latest_date_and_never_creates_alert(monitor_client, monkeypatch, condition_state):
+    client, state = monitor_client
+    client.post(URL, json=body(state))
+    monkeypatch.setattr(monitors, 'backtest', lambda *args, **kwargs: {
+        'current_state': condition_state, 'last_trigger': '2022-11-04',
+        'series': [
+            {'latest_date': '2023-09-25', 'freshness': {'stale': True}},
+            {'latest_date': '2022-11-04', 'latest_valid_date': '2022-11-04', 'freshness': {'stale': True}},
+        ]})
+    checked = monitors.check_monitors(state['scope'], date(2026, 11, 18), '2026-11-18T12:00:00+08:00')
+    assert checked['checked'] == 1 and checked['alerts'] == []
+    assert client.get(URL).json()['items'][0]['current_state'] == '数据停更（最新 2022-11-04）'
+    with artifact_session(state['scope']) as session:
+        assert monitors.recorded_monitor_alerts(session, state['scope']) == []
 
 
 def test_model_cannot_pick_candidate_shown_only_for_another_rule(monitor_client, monkeypatch):

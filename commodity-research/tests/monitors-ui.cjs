@@ -9,11 +9,20 @@ const rule = {series_id: 'synthetic-a', metric: 'change', operator: '>', value: 
 const monthly = {series_id: 'synthetic-monthly', metric: 'value', operator: '>', value: 50,
   consecutive_periods: 1, label: '合成月度观测', definition: '月度观测值大于五十'};
 const draft = {draft_id: 'offered-fixture', title: '合成监测 <script>unsafe</script>', sentence: '合成周观测连续增加两期且合成月观测大于五十时提醒我',
+  default_window: {start: '2028-01-20', end: '2030-01-20', window_reason: '按数据可用区间回测'},
   logic: 'all', rules: [rule, monthly], confirmations: ['请确认变化按相邻观测计算'], candidates: [
-    {rule_index: 0, series_id: 'synthetic-a', name: '合成观测A', unit: '吨', frequency: '周'},
-    {rule_index: 0, series_id: 'synthetic-b', name: '合成观测B', unit: '吨', frequency: '周'},
-    {rule_index: 1, series_id: 'synthetic-monthly', name: '合成月度观测', unit: '吨', frequency: '月'}]};
+    {rule_index: 0, series_id: 'synthetic-a', name: '合成观测A', unit: '吨', frequency: '周',
+      coverage: {start: '2029-11-01', end: '2030-01-20', frequency: '周', point_count: 12, stale: true}},
+    {rule_index: 0, series_id: 'synthetic-b', name: '合成观测B', unit: '吨', frequency: '周',
+      coverage: {start: '2025-01-01', end: '2030-01-20', frequency: '周', point_count: 260, stale: false}},
+    {rule_index: 1, series_id: 'synthetic-monthly', name: '合成月度观测', unit: '吨', frequency: '月',
+      coverage: {start: '2025-01-01', end: '2030-01-20', frequency: '月', point_count: 60, stale: false}}]};
 const backtest = {start: '2030-01-01', end: '2030-01-20', current_state: '触发', trigger_count: 1,
+  window_reason: '数据最新至 2030-01-20，按数据可用区间回测',
+  overlap: {start: '2025-01-01', end: '2030-01-20', days: 1846, observation_periods: 60,
+    observation_periods_limited: true, observation_periods_bound: 'lower', insufficient: false},
+  window_overlap: {start: '2030-01-01', end: '2030-01-20', days: 20, observation_periods: null},
+  rule_coverage: draft.candidates.filter(item => item.series_id !== 'synthetic-a').map(item => ({...item.coverage, series_id: item.series_id, rule_index: item.rule_index})),
   last_trigger: '2030-01-15', trigger_dates: ['2030-01-15'], daily_states: [],
   intervals: [{start: '2030-01-15', end: '2030-01-20', duration_periods: 1, duration_days: 6, ongoing: true}],
   series: [{series_id: 'synthetic-b', name: '合成观测B', unit: '吨', frequency: '周', latest_date: '2030-01-15',
@@ -21,24 +30,37 @@ const backtest = {start: '2030-01-01', end: '2030-01-20', current_state: '触发
     quantities: [{date: '2030-01-01', value: null}, {date: '2030-01-08', value: 10}, {date: '2030-01-15', value: 10}]},
     {series_id: monthly.series_id, name: monthly.label, unit: '吨', frequency: '月', latest_date: '2030-01-01', rule: monthly,
       points: [{date: '2030-01-01', value: 60}], quantities: [{date: '2030-01-01', value: 60}]}]};
+const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'}, monthly],
+  overlap: {start: '2025-01-01', end: '2030-01-20', days: 1846, observation_periods: 8, insufficient: true},
+  candidates: [...draft.candidates,
+    {rule_index: 0, series_id: 'synthetic-sparse', name: '长跨度稀疏观测', unit: '吨', frequency: '周',
+      coverage: {start: '2025-01-01', end: '2030-01-20', frequency: '周', point_count: null}},
+    {rule_index: 0, series_id: 'synthetic-five', name: '长跨度五个观测', unit: '吨', frequency: '周',
+      coverage: {start: '2025-01-01', end: '2030-01-20', frequency: '周', point_count: 5}}]};
 (async () => {
   const browser = await f.launch(); let env;
-  const saved = [], checks = [], tests = [];
+  let offeredDraft = draft;
+  let returnedBacktest = backtest;
+  const saved = [], checks = [], tests = [], savedWindows = [];
   try {
     const html = f.render('home.html', {}, {affairs});
-    env = await f.open(browser, f.prefix + '/', html, async ({path, method, body, reply}) => {
+    env = await f.open(browser, f.prefix + '/', html, async ({path, method, body, url, reply}) => {
       if (path === '/strategies/models') return reply({models: [{id: 'fixture-model', name: '合成模型'}]});
       if (path === '/monitors' && method === 'GET') return reply({items: saved, can_write: true});
-      if (path === '/monitors/draft') { assert.equal(body.sentence, draft.sentence); assert.equal(body.model_id, 'fixture-model'); return reply(draft); }
+      if (path === '/monitors/draft') { assert.equal(body.sentence, offeredDraft.sentence); assert.equal(body.model_id, 'fixture-model'); return reply(offeredDraft); }
       if (path === '/monitors/backtest') {
         tests.push(body); assert.equal(body.draft_id, draft.draft_id); assert.equal(body.rules[0].series_id, 'synthetic-b');
-        assert.equal(body.rules[0].value, 7); return reply(backtest);
+        assert.equal(body.rules[0].value, 7); return reply({...returnedBacktest, start: body.start || returnedBacktest.start, end: body.end || returnedBacktest.end});
       }
       if (path === '/monitors' && method === 'POST') {
-        assert.deepEqual(body, tests.at(-1)); saved.push({...body, id: 'monitor-fixture', revision: 1, current_state: '未检查', last_trigger: null});
+        const {start, end, ...testedBody} = tests.at(-1);
+        assert.deepEqual(body, testedBody); saved.push({...body, id: 'monitor-fixture', revision: 1, current_state: '未检查', last_trigger: null});
         return reply(saved[0]);
       }
-      if (path === '/monitors/monitor-fixture/backtest') return reply(backtest);
+      if (path === '/monitors/monitor-fixture/backtest') {
+        const window = Object.fromEntries(url.searchParams); savedWindows.push(window);
+        return reply({...backtest, start: window.start || backtest.start, end: window.end || backtest.end});
+      }
       if (path === '/monitors/monitor-fixture' && method === 'PATCH') {
         assert.equal(body.revision, saved[0].revision); Object.assign(saved[0], {enabled: body.enabled, revision: saved[0].revision + 1}); return reply(saved[0]);
       }
@@ -62,7 +84,16 @@ const backtest = {start: '2030-01-01', end: '2030-01-20', current_state: '触发
     await page.locator('#monitor-draft:not([hidden])').waitFor();
     assert.match(await page.locator('#monitor-rules').innerText(), /本期变化 > 0 · 连续 2 期/);
     assert.match(await page.locator('#monitor-confirmation-list').innerText(), /相邻观测/);
+    assert.equal(await page.getByLabel('草稿回测起始日期', {exact: true}).inputValue(), draft.default_window.start);
+    assert.equal(await page.getByLabel('草稿回测结束日期', {exact: true}).inputValue(), draft.default_window.end);
+    const firstRule = page.locator('[data-monitor-rule="0"]');
+    await firstRule.locator('.monitor-candidates summary').click();
+    assert.match(await firstRule.locator('.monitor-candidates').innerText(), /合成观测A · 覆盖 2029-11-01 至 2030-01-20 · 周 · 12 个观测 · 数据停更/);
+    assert.match(await firstRule.locator('.monitor-candidates').innerText(), /合成观测B · 覆盖 2025-01-01 至 2030-01-20/);
+    assert.match(await page.getByLabel('第1条规则指标', {exact: true}).textContent(), /覆盖 2029-11-01 至 2030-01-20/);
+    assert.equal(await firstRule.locator('[data-overlap-warning]').isVisible(), true);
     await page.getByLabel('第1条规则指标', {exact: true}).selectOption('synthetic-b');
+    assert.equal(await firstRule.locator('[data-overlap-warning]').isHidden(), true, 'Changing a candidate recalculates the overlap warning without replacing another choice');
     await page.getByLabel('第1条规则阈值', {exact: true}).fill('7');
     await page.getByRole('button', {name: '回测', exact: true}).click();
     await page.locator('#monitor-backtest-result [data-event-marker="2030-01-15"]').first().waitFor();
@@ -71,6 +102,9 @@ const backtest = {start: '2030-01-01', end: '2030-01-20', current_state: '触发
       'Both frequencies show the combination entry even after the monthly series latest observation');
     assert.equal(await page.locator('#monitor-backtest-result [data-axis-unit="right"]').textContent(), '吨');
     assert.match(await page.locator('#monitor-backtest-result').innerText(), /触发次数.*1.*最近触发.*2030-01-15/s);
+    assert.match(await page.locator('#monitor-backtest-result').innerText(), /按数据可用区间回测/);
+    assert.match(await page.locator('#monitor-backtest-result').innerText(), /规则来源数据重叠 2025-01-01 至 2030-01-20 · 1846 天 · 至少60 个观测期/);
+    assert.match(await page.locator('#monitor-backtest-result').innerText(), /本次回测窗口重叠 2030-01-01 至 2030-01-20 · 20 天 · 观测期待核实/);
     assert.equal(await page.locator('#monitor-save').isDisabled(), true);
     await page.locator('#monitor-confirm').check();
     assert.equal(await page.locator('#monitor-save').isEnabled(), true);
@@ -78,8 +112,12 @@ const backtest = {start: '2030-01-01', end: '2030-01-20', current_state: '触发
     assert.equal(await page.locator('#monitor-save').isDisabled(), true, 'Changing combination logic invalidates the previous backtest and confirmation');
     assert.equal(await page.locator('#monitor-backtest-result').isHidden(), true);
     await page.locator('#monitor-logic').selectOption('all');
+    await page.getByLabel('草稿回测起始日期', {exact: true}).fill('2029-12-01');
+    await page.getByLabel('草稿回测结束日期', {exact: true}).fill('2030-01-18');
     await page.getByRole('button', {name: '回测', exact: true}).click();
     await page.locator('#monitor-backtest-result [data-event-marker="2030-01-15"]').first().waitFor();
+    assert.equal(tests.at(-1).start, '2029-12-01'); assert.equal(tests.at(-1).end, '2030-01-18');
+    assert.match(await page.locator('#monitor-backtest-result').innerText(), /回测范围 2029-12-01 至 2030-01-18/);
     await page.locator('#monitor-confirm').check();
     await page.getByRole('button', {name: '保存监测', exact: true}).click();
     await page.locator('[data-monitor-id="monitor-fixture"]').waitFor();
@@ -96,6 +134,12 @@ const backtest = {start: '2030-01-01', end: '2030-01-20', current_state: '触发
     assert.equal(checks.length, 2);
     await page.locator('[data-monitor-id="monitor-fixture"]').getByRole('button', {name: '查看', exact: true}).click();
     await page.locator('#monitor-view [data-event-marker="2030-01-15"]').first().waitFor();
+    assert.equal(await page.getByLabel('已保存监测回测起始日期', {exact: true}).inputValue(), backtest.start);
+    await page.getByLabel('已保存监测回测起始日期', {exact: true}).fill('2030-01-04');
+    await page.getByLabel('已保存监测回测结束日期', {exact: true}).fill('2030-01-19');
+    await page.getByRole('button', {name: '调整窗口后回测', exact: true}).click();
+    await page.waitForFunction(() => document.getElementById('monitor-view-result').textContent.includes('回测范围 2030-01-04 至 2030-01-19'));
+    assert.deepEqual(savedWindows.at(-1), {start: '2030-01-04', end: '2030-01-19'});
     assert.deepEqual(await page.locator('.affairs-grid').evaluate(element => ({html: element.innerHTML, width: element.getBoundingClientRect().width})), previousLayout,
       'Building, checking and viewing monitors preserve the existing groups and geometry');
     for (const width of [1280, 390]) {
@@ -107,9 +151,27 @@ const backtest = {start: '2030-01-01', end: '2030-01-20', current_state: '触发
     await page.waitForFunction(() => document.getElementById('monitor-list').textContent.includes('v2'));
     await page.locator('[data-monitor-id="monitor-fixture"]').getByRole('button', {name: '删除', exact: true}).click();
     await page.getByText('还没有保存监测。先用一句话生成草稿。', {exact: true}).waitFor();
+    offeredDraft = sparseDraft;
+    await page.getByRole('button', {name: '生成草稿', exact: true}).click();
+    await page.locator('#monitor-draft:not([hidden])').waitFor();
+    assert.equal(await page.getByLabel('第1条规则指标', {exact: true}).inputValue(), 'synthetic-sparse');
+    assert.equal(await firstRule.locator('[data-overlap-warning]').isVisible(), true,
+      'The initial server overlap warning is shown even with a long calendar span and unknown total count');
+    await page.getByLabel('第1条规则指标', {exact: true}).selectOption('synthetic-b');
+    assert.equal(await firstRule.locator('[data-overlap-warning]').isHidden(), true);
+    await page.getByLabel('第1条规则指标', {exact: true}).selectOption('synthetic-five');
+    assert.equal(await firstRule.locator('[data-overlap-warning]').isVisible(), true,
+      'A candidate with fewer than ten total observations proves insufficient overlap despite its long date span');
+    returnedBacktest = {...backtest, overlap: {...backtest.overlap, observation_periods: 8,
+      observation_periods_bound: 'upper', insufficient: true}};
+    await page.getByLabel('第1条规则指标', {exact: true}).selectOption('synthetic-b');
+    await page.getByLabel('第1条规则阈值', {exact: true}).fill('7');
+    await page.getByRole('button', {name: '回测', exact: true}).click();
+    await page.locator('#monitor-backtest-result:not([hidden])').waitFor();
+    assert.match(await page.locator('#monitor-backtest-result').innerText(), /规则来源数据重叠.*至多8 个观测期/);
     assert.deepEqual(env.errors, []);
     const restrictedHtml = f.render('home.html', {restricted: true}, {affairs});
     assert.ok(!restrictedHtml.includes('id="monitors"'), 'The restricted view does not expose monitoring controls');
-    console.log('PASS: monitor sentence → draft → candidate and threshold edits → actual ChartKit trigger marker → save → personal list → check/toggle/delete; existing layout preserved at 1280px and 390px.');
+    console.log('PASS: monitor sentence → draft → candidate coverage and overlap warning → adjusted draft/saved windows → actual ChartKit trigger marker → save → personal list → check/toggle/delete; existing layout preserved at 1280px and 390px.');
   } finally { await env?.context.close(); await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

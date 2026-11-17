@@ -13,6 +13,7 @@
       <div class="monitor-fields"><label>标题 <input id="monitor-title" type="text" maxlength="120"></label><label>组合方式 <select id="monitor-logic"><option value="all">全部满足（且）</option><option value="any">任一满足（或）</option></select></label></div>
       <div id="monitor-rules"></div>
       <div id="monitor-confirmations"><div class="affairs-row-title">需要你确认的口径</div><ul id="monitor-confirmation-list" class="affairs-row-detail"></ul></div>
+      <div class="monitor-fields"><label>回测起始日期 <input id="monitor-start" type="date" aria-label="草稿回测起始日期"></label><label>回测结束日期 <input id="monitor-end" type="date" aria-label="草稿回测结束日期"></label></div>
       <div class="monitor-fields"><button id="monitor-backtest" type="button" class="affairs-check">回测</button><label><input id="monitor-confirm" type="checkbox"> 我已核对指标、规则和口径</label><button id="monitor-save" type="button" class="affairs-check" disabled>保存监测</button></div>
       <p class="affairs-row-detail">规则或组合方式调整后请重新回测。连续期数按指标观测期计算；历史触发标记表示组合条件首次进入触发的日期。</p>
       <div id="monitor-backtest-result" hidden></div>
@@ -22,6 +23,7 @@
   <div id="monitor-list"><div class="affairs-empty">正在读取监测…</div></div>
   <div id="monitor-view" hidden>
     <div class="affairs-section-head"><h2 id="monitor-view-title">历史回测</h2><button id="monitor-view-close" type="button" class="affairs-check">收起</button></div>
+    <div class="monitor-content monitor-fields"><label>回测起始日期 <input id="monitor-view-start" type="date" aria-label="已保存监测回测起始日期"></label><label>回测结束日期 <input id="monitor-view-end" type="date" aria-label="已保存监测回测结束日期"></label><button id="monitor-view-backtest" type="button" class="affairs-check">调整窗口后回测</button></div>
     <div id="monitor-view-result" class="monitor-content"></div>
   </div>
 </section>
