@@ -39,3 +39,24 @@
 ## 本次验收范围
 
 后端使用合成资料、模型替身和临时 SQLite 验证协议、权限、事务回滚及数值边界；浏览器验收使用真实模板、脚本与确认 API。没有代用户调用配置模型、保存真实业务研判或激活任何版本。实际业务资料仍由用户自行分析验收。
+
+## 研判维度
+
+支持、反对依据及每条阈值、证伪条件可选填 `dimension`，保存本研究台稳定的维度编号；名称和说明读取当前研究台配置。缺省字段不写入 JSON，旧记录序列化及哈希保持原样。编号已删除时显示“已删除维度”，可重新指派或清为“未标注”；不按依据文字、指标名或关键词补分类。
+
+分析原文使用 `research-logic-v21`，模型参考本研究台维度逐条标注，未知编号和缺失标签保留未标注。确认与复核卡片可手动改维度，修改只暂存标签，不改变原条目的确认状态。已有研判在“管理研究逻辑”的当前内容或历史版本入口编辑维度；选择补标模型后，“模型补标”（`judgment-dimensions-v1`）只展示逐条建议与理由，研究员逐条采纳或修改后，再点“保存为新版本”。原判断、数字、来源、冻结图表及历史版本保留，仍遵守本人归属、当前研究台权限和版本并发基准；受限视角不可补标或保存。
+
+补标接口为 `POST /api/sn/judgment/dimension-suggestions`，传 `judgment_id/version/model_id`，返回 `suggestions`，每项包含 `section/index/dimension/reason`；`section` 使用 `supporting/opposing/thresholds/falsifiers`，索引属于指定不可变研判版本。模型调用成功和失败均留审计，不自动保存。人工保存接口 `POST /api/sn/judgment/dimensions` 只接收指定研判的完整标签列表与 `base_version`，沿用原保存流程新增草稿，不自动生效。
+
+后续“一页周报”读取 `contradiction.bull.evidence[*].dimension`、`contradiction.bear.evidence[*].dimension`、`thresholds[*].dimension`、`falsifiers[*].dimension`，通过共享 `read_dimensions` / `summaries` 解析当前名称；空标签及已删除编号不得自行推断或映射。看板 JSON、报告快照和 Markdown 保留标签；日报周报暂在原顺序旁显示维度名称，研究判断页按维度归组，未标注放最后。
+
+2026-11-17 验证：新增与格式定向测试 104 项通过；相关 109 个测试文件分三组执行，共 2032 项。初轮 9 处复核展示兼容问题已修复，受影响 106 项复验全部通过；最终覆盖 2031 项通过，1 项因不随仓库分发的私有原文缺失跳过。全部相关 28 个独立 CJS 文件最终 57 项通过，包含新增 Chromium 维度交互；多绑定浏览器脚本需从仓库根目录运行以读取字体。仅有既有 FastAPI `on_event` 弃用警告。普通沙箱中的 TestClient/浏览器运行曾中止，提升测试执行权限后已取得结果；未启动外部服务、调用真实模型、修改业务数据或提交代码。
+
+复验使用本任务约定的 Python、Node 和 Playwright 解释器及环境变量，`PYTHONPATH` 指向本 worktree 的 `commodity-research/src`。Python 文件集合如下（本次按文件名分成三组运行）；独立脚本从仓库根目录运行：
+
+```sh
+# commodity-research/
+python -m pytest -q tests/test_*judgment*.py tests/test_*report*.py tests/test_*strateg*.py tests/test_*board*.py tests/test_research_references.py tests/test_research_ownership.py tests/test_research_reads.py tests/test_canonical_research_results.py
+# 仓库根目录
+node --test --test-concurrency=2 commodity-research/tests/*judgment*.cjs commodity-research/tests/*report*.cjs commodity-research/tests/*strateg*.cjs
+```

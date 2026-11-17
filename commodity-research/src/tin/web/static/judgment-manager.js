@@ -12,6 +12,8 @@
   let uncertainSubmission = null;
   let historyEntries = [], historical = null, historyEpoch = 0, historyPending = false;
   let chartReferences = [];
+  let dimensionEdits = new Map(), dimensionSuggestions = new Map(), dimensionDirty = false;
+  let dimensionSuggesting = false, dimensionSuggestEpoch = 0;
   const reviewEdits = new Map();
   const rememberedChoices = new Set();
   let reviewControls = [], searchSessions = [], selectedSection = '', reviewView = 'all';
@@ -69,6 +71,9 @@
     return value;
   }
   function panelTitle() { const title = byId('new-panel-title')?.value.trim(); return title ? {panel_title: title} : {}; }
+  function syncModelSelection(identifier) {
+    for (const name of ['model', 'dimension-model']) if (byId(name)) byId(name).value = identifier;
+  }
   function navigateToJudgment(identifier) {
     const url = new URL(location.href || endpoint.replace('/api/sn/judgment', '/sn/judgment'), location.origin);
     if (identifier) url.searchParams.set('judgment_id', String(identifier));
@@ -148,7 +153,7 @@
           if (value.job) { checkJob(value.job); if (value.job.id !== identifier) throw new Error('分析结果与当前任务不一致。'); }
           input.value = value.source_text || input.value;
           if (value.variety) byId('variety').value = value.variety;
-          if (value.model_id) byId('model').value = value.model_id;
+          if (value.model_id) syncModelSelection(value.model_id);
           if (value.source_name) text('file-name', value.source_name);
           if (byId('new-panel-title') && value.panel_title !== undefined) byId('new-panel-title').value = value.panel_title;
           presentDraft(value); await hydrateReview(value); tab('analyze'); inform(previewNotice(value));
@@ -185,12 +190,88 @@
   function showVersion(row) {
     displayed = row;
     chartReferences = JSON.parse(JSON.stringify(row?.chart_references || []));
+    dimensionEdits = new Map((row?.dimension_items || []).map(item => [dimensionKey(item), item.dimension || '']));
+    dimensionSuggestions.clear(); dimensionDirty = false; dimensionSuggesting = false; dimensionSuggestEpoch++;
+    renderDimensionEditor();
     renderChartEditor();
     text('current-md', row?.markdown || '尚无研究逻辑。可在“导入与分析”添加原文。');
     text('original-source', row?.source_text || '尚无原始输入');
     text('current-state', row ? `${display.reference(row)} · ${row.status}` : '尚无研究逻辑');
     syncManagement();
   }
+  const dimensionKey = item => item.section + ':' + item.index;
+  function researchDimensions() { return managed?.research_dimensions || review?.research_dimensions || draft?.research_dimensions || []; }
+  function dimensionName(identifier) {
+    return identifier ? researchDimensions().find(item => item.id === identifier)?.label || '已删除维度' : '未标注';
+  }
+  function dimensionSelect(value) {
+    const select = element('select', 'logic-dimension-select'); select.setAttribute('aria-label', '研究维度');
+    for (const item of [{id: '', label: '未标注'}, ...researchDimensions()]) {
+      const option = element('option', '', item.label); option.value = item.id; select.append(option);
+    }
+    if (value && !researchDimensions().some(item => item.id === value)) {
+      const deleted = element('option', '', '已删除维度（请重新指派）'); deleted.value = value; deleted.disabled = true; select.append(deleted);
+    }
+    select.value = value || ''; return select;
+  }
+  function syncDimensionControls() {
+    const writing = managed?.can_write === true;
+    for (const node of byId('dimension-items')?.querySelectorAll?.('select,button') || []) node.disabled = busy || !writing;
+    if (byId('dimension-suggest')) byId('dimension-suggest').disabled = busy || dimensionSuggesting || !writing || !displayed;
+    if (byId('dimension-model')) byId('dimension-model').disabled = busy || !writing;
+    if (byId('dimension-save')) byId('dimension-save').disabled = busy || !writing || !displayed || !dimensionDirty;
+  }
+  function renderDimensionEditor() {
+    const editor = byId('dimension-editor'), container = byId('dimension-items');
+    if (!editor || !container) return;
+    editor.hidden = !displayed?.dimension_items?.length; container.replaceChildren();
+    for (const item of displayed?.dimension_items || []) {
+      const key = dimensionKey(item), row = element('article', 'logic-dimension-row');
+      row.dataset.dimensionSection = item.section; row.dataset.dimensionIndex = String(item.index);
+      const select = dimensionSelect(dimensionEdits.get(key)); select.setAttribute('aria-label', item.title + '的研究维度');
+      select.addEventListener('change', () => { dimensionEdits.set(key, select.value); dimensionDirty = true; syncDimensionControls(); });
+      row.append(element('span', 'logic-dimension-title', item.title), select);
+      const suggestion = dimensionSuggestions.get(key);
+      if (suggestion) {
+        const content = element('div', 'logic-dimension-suggestion');
+        content.append(element('span', '', '建议：' + dimensionName(suggestion.dimension) + (suggestion.reason ? ' · ' + suggestion.reason : '')));
+        const adopt = element('button', '', '采纳建议'); adopt.type = 'button'; adopt.dataset.dimensionAdopt = key;
+        adopt.addEventListener('click', () => {
+          dimensionEdits.set(key, suggestion.dimension || ''); dimensionDirty = true;
+          select.value = suggestion.dimension || ''; content.dataset.adopted = 'true'; adopt.textContent = '已采纳'; syncDimensionControls();
+        });
+        content.append(adopt); row.append(content);
+      }
+      container.append(row);
+    }
+    syncDimensionControls();
+  }
+  byId('dimension-suggest')?.addEventListener('click', async () => {
+    if (busy || dimensionSuggesting || !displayed || !managed?.can_write) return;
+    const modelId = (byId('dimension-model') || byId('model')).value;
+    if (!modelId) return inform('请选择补标模型；暂无可用模型时请先配置对话模型。', true);
+    const record = displayed, epoch = ++dimensionSuggestEpoch; dimensionSuggesting = true; syncDimensionControls(); inform('正在建议研究维度，可继续手动编辑…');
+    try {
+      const result = await api('/dimension-suggestions', {judgment_id: record.id, version: record.version, model_id: modelId});
+      if (displayed !== record || epoch !== dimensionSuggestEpoch) return;
+      if (result.research_dimensions) managed.research_dimensions = result.research_dimensions;
+      dimensionSuggestions = new Map((result.suggestions || []).map(item => [dimensionKey(item), item]));
+      renderDimensionEditor(); inform('维度建议已生成，请逐条采纳或修改后保存。');
+    } catch (error) { if (error.name !== 'AbortError' && epoch === dimensionSuggestEpoch) inform(error.message, true); }
+    finally { if (epoch === dimensionSuggestEpoch) { dimensionSuggesting = false; syncDimensionControls(); } }
+  });
+  byId('dimension-save')?.addEventListener('click', async () => {
+    if (busy || !displayed || !managed?.can_write || !dimensionDirty) return;
+    const allowed = new Set(researchDimensions().map(item => item.id));
+    const items = (displayed.dimension_items || []).map(item => ({section: item.section, index: item.index, dimension: dimensionEdits.get(dimensionKey(item)) || null}));
+    if (items.some(item => item.dimension && !allowed.has(item.dimension))) return inform('请为已删除维度重新指派，或选择“未标注”。', true);
+    setBusy(true);
+    try {
+      const result = await api('/dimensions', {judgment_id: displayed.id, base_version: managed.latest?.version || displayed.version, items});
+      navigateToJudgment(result.id);
+    } catch (error) { if (error.name !== 'AbortError') inform(error.message, true); }
+    finally { setBusy(false); }
+  });
   function renderChartEditor() {
     const editor = byId('chart-editor'), selected = byId('chart-selected'), target = byId('chart-target');
     if (!editor || !selected || !target) return;
@@ -231,9 +312,10 @@
   });
   function syncManagement() {
     const writing = managed?.can_write === true;
+    syncDimensionControls();
     for (const name of ['chart-insert', 'chart-save', 'chart-target']) if (byId(name)) byId(name).disabled = busy || !writing || !displayed;
     if (byId('current-delete')) byId('current-delete').disabled = busy || !writing || !displayed || !Number.isSafeInteger(displayed.delete_revision);
-    for (const name of ['history-download', 'history-reuse', 'history-delete']) if (byId(name))
+    for (const name of ['history-download', 'history-reuse', 'history-delete', 'history-dimensions']) if (byId(name))
       byId(name).disabled = busy || historyPending || !historical || (name !== 'history-download' && !writing)
         || (name === 'history-delete' && !Number.isSafeInteger(historical?.delete_revision));
     if (byId('history-more')) byId('history-more').disabled = busy;
@@ -310,6 +392,7 @@
     return value.notice || '';
   }
   function presentDraft(value, preserveEdits = false) {
+    if (managed && (value.research_dimensions || value.review?.research_dimensions)) managed.research_dimensions = value.research_dimensions || value.review.research_dimensions;
     draft = value; byId('preview').hidden = false;
     text('preview-md', value.markdown); text('generated-diff', value.diff?.markdown);
     text('coverage', `${(value.bindings || []).length} 个已绑定指标`);
@@ -382,7 +465,7 @@
       ? `连续 ${periods} 期 = ${periods} 个观测（目录频率：${frequencyLabel(edit.selected)}）`
       : '频率未注明，请核对连续期数的口径';
   }
-  function changed(edit) { edit.dirty = true; edit.renderCondition?.(); edit.renderErrors?.(); edit.renderConfirmation?.(); edit.renderOutcome?.(); syncReviewVisibility(); syncReviewControls(); syncApply(); }
+  function changed(edit, dimensionOnly = false) { edit.dirty = true; edit.dimensionOnly = dimensionOnly; edit.renderCondition?.(); edit.renderErrors?.(); edit.renderConfirmation?.(); edit.renderOutcome?.(); syncReviewVisibility(); syncReviewControls(); syncApply(); }
   const ruleNumber = '[+-]?(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?';
   const singleRuleNumber = new RegExp('^' + ruleNumber + '$');
   const rangeRuleNumbers = new RegExp('^\\[\\s*(' + ruleNumber + ')\\s*,\\s*(' + ruleNumber + ')\\s*\\]$');
@@ -726,7 +809,7 @@
       group.append(heading);
       for (const item of sectionItems) {
         let edit = reviewEdits.get(item.id);
-        if (!edit) { edit = {selected: Object.hasOwn(item, 'binding') ? item.binding : item.ai_binding || null, additional: (item.related_bindings || []).map(selected => ({selected, query: ''})), remember: rememberedChoices.has(item.id), dirty: false, query: '', sourceQuote: null, bindingChanged: false}; reviewEdits.set(item.id, edit); }
+        if (!edit) { edit = {selected: Object.hasOwn(item, 'binding') ? item.binding : item.ai_binding || null, additional: (item.related_bindings || []).map(selected => ({selected, query: ''})), remember: rememberedChoices.has(item.id), dirty: false, query: '', sourceQuote: null, bindingChanged: false, dimension: item.dimension || '', dimensionChanged: false}; reviewEdits.set(item.id, edit); }
         const card = element('article', 'logic-review-card'); card.dataset.reviewItem = item.id; card.dataset.reviewStatus = item.status;
         card.append(element('strong', 'logic-item-title', display.text(item.title)));
         const fields = new Map();
@@ -737,6 +820,22 @@
         }
         const note = element('div', 'logic-item-description');
         note.append(element('p', '', (display.prose || display.text)(item.description || ''))); field(note, 'content'); card.append(note);
+        if (item.can_dimension) {
+          const label = element('label', 'logic-item-dimension'), select = registerControl(dimensionSelect(edit.dimension), item, 'dimension');
+          label.append(element('span', '', '研究维度'), select); field(label, 'dimension'); card.append(label);
+          const chooseDimension = identifier => {
+            const dimensionOnly = !edit.dirty || edit.dimensionOnly; edit.dimension = identifier || ''; select.value = edit.dimension; edit.dimensionChanged = true; changed(edit, dimensionOnly);
+            if (dimensionOnly) return updateReview(item, edit, 'dimension');
+          };
+          select.addEventListener('change', () => chooseDimension(select.value));
+          if (item.dimension_suggestion) {
+            const suggestion = item.dimension_suggestion, content = element('div', 'logic-dimension-suggestion');
+            content.append(element('span', '', '模型建议：' + dimensionName(suggestion.dimension) + (suggestion.reason ? ' · ' + suggestion.reason : '')));
+            const adopt = registerControl(element('button', '', '采纳维度建议'), item, 'dimension-adopt', () => Boolean(suggestion.dimension) && !researchDimensions().some(row => row.id === suggestion.dimension)); adopt.type = 'button';
+            adopt.addEventListener('click', () => chooseDimension(suggestion.dimension));
+            content.append(adopt); card.append(content);
+          }
+        }
         if (item.rule) {
           const condition = element('div', 'logic-item-condition'); condition.dataset.reviewItem = item.id; condition.dataset.reviewControl = 'condition';
           const value = element('span'), periodNote = element('small', 'logic-period-note'); condition.append(value, periodNote); field(condition, 'condition');
@@ -852,11 +951,13 @@
   async function updateReview(item, edit, action, holdBusy = false, caliber = null) {
     if ((busy && !holdBusy) || !review || !draft || !managed?.can_write) return;
     if (action === 'confirm' && item.can_bind && pendingBindingQuery(edit)) { edit.errorFields = ['binding']; edit.errorMessage = '请选择搜索结果中的指标，或选择“暂无”。'; changed(edit); return; }
-    const body = {draft_id: draft.draft_id, revision: review.revision, item_id: item.id, action, remember: action === 'confirm' && edit.remember};
+    const body = {draft_id: draft.draft_id, revision: review.revision, item_id: item.id, action};
+    if (action !== 'dimension') body.remember = action === 'confirm' && edit.remember;
+    if (item.can_dimension && (action === 'dimension' || edit.dimensionChanged)) body.dimension = edit.dimension || null;
     if (item.can_bind && (action === 'confirm' || action === 'keep_text')) body.series_id = action === 'keep_text' ? null : edit.selected?.series_id || null;
     if (item.can_add_binding && (action === 'confirm' || action === 'keep_text')) body.related_series_ids = action === 'keep_text' ? [] : (edit.additional || []).map(slot => slot.selected?.series_id).filter(Boolean);
     if (caliber !== null && action === 'confirm') body.caliber = caliber;
-    if (edit.sourceQuote !== null) body.source_quote = edit.sourceQuote;
+    if (action !== 'dimension' && edit.sourceQuote !== null) body.source_quote = edit.sourceQuote;
     const place = reviewPlace(item.id);
     edit.saving = true; edit.renderOutcome?.(); setBusy(true); inform('正在同步修改…');
     try {
@@ -881,7 +982,7 @@
       }
       if (body.remember) rememberedChoices.add(item.id); else rememberedChoices.delete(item.id);
       reviewEdits.delete(item.id); presentDraft(result, true); keepPlace(place);
-      inform(action === 'confirm' ? '本条已确认。' : action === 'keep_text' ? '本条已保留为文字。' : '本条已排除。');
+      inform(action === 'dimension' ? '维度已暂存，确认保存后生效。' : action === 'confirm' ? '本条已确认。' : action === 'keep_text' ? '本条已保留为文字。' : '本条已排除。');
       return true;
     } catch (error) {
       if (error.status === 409) { invalidate(); inform(error.message, true); }
@@ -903,11 +1004,14 @@
       dialog.querySelector('[data-logic-tab="analyze"]').disabled = !managed.can_write;
       setBusy(false);
       if (managed.can_write) {
-        const models = await api('/models'); const selector = byId('model'); selector.replaceChildren();
-        for (const model of models.models) {
-          const option = document.createElement('option'); option.value = model.id; option.textContent = model.name; selector.append(option);
+        const models = await api('/models');
+        for (const selector of [byId('model'), byId('dimension-model')].filter(Boolean)) {
+          selector.replaceChildren();
+          for (const model of models.models) {
+            const option = document.createElement('option'); option.value = model.id; option.textContent = model.name; selector.append(option);
+          }
+          if (!models.models.length) selector.append(new Option('暂无可用对话模型', ''));
         }
-        if (!models.models.length) { selector.append(new Option('暂无可用对话模型', '')); }
       }
       await loadPanels();
       if (review && draft) renderReview();
@@ -1012,7 +1116,8 @@
     } catch (error) { await recover(error); }
     finally { setBusy(false); }
   });
-  input.addEventListener('input', invalidate); byId('model').addEventListener('change', invalidate);
+  input.addEventListener('input', invalidate); byId('model').addEventListener('change', () => { syncModelSelection(byId('model').value); invalidate(); });
+  byId('dimension-model')?.addEventListener('change', () => syncModelSelection(byId('dimension-model').value));
   byId('variety').addEventListener('input', invalidate);
   byId('new-panel-title')?.addEventListener('input', invalidate);
   byId('panel-switch')?.addEventListener('change', syncPanelName);
@@ -1090,6 +1195,17 @@
     finally { if (epoch === historyEpoch) { historyPending = false; syncManagement(); } }
   }
   byId('version').addEventListener('change', event => loadVersion(event.target.value));
+  byId('history-dimensions')?.addEventListener('click', async () => {
+    if (busy || historyPending || !historical || !managed?.can_write) return;
+    const identifier = historical.id; setBusy(true);
+    try {
+      const result = await api('/manage?judgment_id=' + encodeURIComponent(identifier));
+      if (String(result.current?.id) !== String(identifier)) throw new Error('历史研判已变化，请重新选择。');
+      managed = result; dialog.dataset.judgmentId = String(identifier); showVersion(result.current); tab('current');
+      byId('dimension-editor')?.scrollIntoView?.({block: 'nearest'});
+    } catch (error) { if (error.name !== 'AbortError') inform(error.message, true); }
+    finally { setBusy(false); }
+  });
   for (const [name, mode] of [['review-attention', 'attention'], ['review-all', 'all']]) byId(name)?.addEventListener('click', () => { reviewView = mode; syncReviewVisibility(); });
   byId('review-edit')?.addEventListener('click', () => {
     if (busy) return;

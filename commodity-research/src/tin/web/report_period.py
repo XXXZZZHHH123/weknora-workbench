@@ -138,6 +138,8 @@ def build_period(session, variety, end: date, kind='daily', *, source=None, prev
     start = period_start(end, kind)
     scope = current_workbench.get()
     result = deepcopy(source if source is not None else snapshot(session, variety, end))
+    from tin.web.research_dimensions import default_dimensions, read_dimensions, summaries
+    result['research_dimensions'] = summaries(read_dimensions(session) if session.info.get('workbench_id') else default_dimensions())
     identifiers = list(dict.fromkeys(row['series_id'] for row in result.get('observations') or []))
     if len(identifiers) > 256:
         raise HTTPException(413, '报告绑定超过256项，请先在市场总览和研究逻辑中缩小指标范围')

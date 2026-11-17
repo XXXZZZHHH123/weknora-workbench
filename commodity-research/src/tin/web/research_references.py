@@ -340,9 +340,11 @@ def resolve_reference(session, scope, kind, reference_id, revision=None, *, incl
         if revision is not None and revision != row.version:raise HTTPException(404, '所选研判版本不存在')
         from tin.judgments.service import _refs, to_payload
         from tin.judgments.markdown import dump_markdown
+        from tin.web.research_dimensions import default_dimensions, read_dimensions
         payload = to_payload(row)
         data = payload.model_dump(mode='json', by_alias=True)
-        text = dump_markdown(payload)
+        text = dump_markdown(payload, dimensions=read_dimensions(session)
+                             if session.info.get('workbench_id') else default_dimensions())
         return {**_judgment_metadata(row), 'payload': data, 'source_ids': [],
                 'series_ids': list(dict.fromkeys(identifier for _, _, identifier in _refs(payload))),
                 'body_text': text[:2000], 'body_text_truncated': len(text) > 2000,

@@ -412,10 +412,12 @@ def snapshot(session: Session, variety: str, d: date) -> dict:
                 "as_of": _iso(r.as_of), "inputs": r.inputs, "params": r.params}
                for r in latest_derived(session, variety, d).values()]
     today = datetime.now(SHANGHAI).date()
+    from tin.web.research_dimensions import default_dimensions, read_dimensions, summaries
     return {
         "variety": variety, "as_of": d.isoformat(),
         "generated_at": datetime.now(timezone.utc).astimezone(SHANGHAI).isoformat(timespec="seconds"),
         "judgment": judgment_block(session, variety, today),
+        "research_dimensions": summaries(read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()),
         "observations": sorted(obs, key=lambda x: x["series_id"]),
         "derived": sorted(derived, key=lambda x: x["formula_id"]),
         "signals": signal_block(session, variety, d), "gaps": gaps(session, variety, d), "surveys": [],

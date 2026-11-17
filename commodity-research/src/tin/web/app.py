@@ -261,6 +261,8 @@ from tin.web.judgment_panels import router as judgment_panels_router
 app.include_router(judgment_panels_router)
 from tin.web.judgment_lifecycle import router as judgment_lifecycle_router
 app.include_router(judgment_lifecycle_router)
+from tin.web.judgment_dimensions import router as judgment_dimensions_router
+app.include_router(judgment_dimensions_router)
 from tin.web.report_drafts import router as report_drafts_router
 app.include_router(report_drafts_router)
 from tin.web.report_figures import router as report_figures_router
@@ -988,7 +990,7 @@ def reports_page(request: Request, date: str | None = None, period: str = 'daily
                 preview = json.dumps(report, ensure_ascii=False, indent=2)
         return templates.TemplateResponse(request, "reports.html", _shell(
             s, "reports", None, files=files, selected=selected, preview=preview,
-            report=present_snapshot(report, names) if report is not None else None,
+            report=present_snapshot(report, names, dimensions=_report_dimensions(s)) if report is not None else None,
             report_generated_at=(report or {}).get('generated_at'), period_kind=period,
             report_start=period_start(chosen, period).isoformat() if chosen else None,
             live_report=bool(settings.weknora_api_url) or period == 'weekly'))
@@ -1007,6 +1009,11 @@ def report_file(day: str):
     if not path.exists():
         raise HTTPException(404, "该日没有归档快照")
     return FileResponse(path, media_type="application/json", filename=f"{V}_{day}.json")
+
+
+def _report_dimensions(session):
+    from tin.web.research_dimensions import default_dimensions, read_dimensions
+    return read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()
 
 
 def _period_download(day, period, markdown=False):
@@ -1029,7 +1036,8 @@ def _period_download(day, period, markdown=False):
         if markdown:
             scope = current_workbench.get()
             title = (scope.metadata.get('name') if scope else None) or '研究工作台'
-            body = readable_markdown(payload, title=title + (' 周报' if period == 'weekly' else ' 日报'))
+            body = readable_markdown(payload, title=title + (' 周报' if period == 'weekly' else ' 日报'),
+                                     dimensions=_report_dimensions(s))
             return StreamingResponse(iter([body.encode('utf-8')]), media_type='text/markdown', headers={
                 'Content-Disposition': f'attachment; filename="research_{period}_{day}.md"'})
         return JSONResponse(payload, headers={

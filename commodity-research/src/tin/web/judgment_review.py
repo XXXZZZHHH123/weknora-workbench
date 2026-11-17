@@ -49,7 +49,8 @@ class CaliberUpdate(BaseModel):
 
 class UpdateRequest(ReviewRequest):
     item_id: str = Field(min_length=1, max_length=80)
-    action: Literal['confirm', 'keep_text', 'exclude']
+    action: Literal['confirm', 'keep_text', 'exclude', 'dimension']
+    dimension: str | None = Field(default=None, max_length=32)
     series_id: str | None = Field(default=None, max_length=256)
     related_series_ids: list[Annotated[str, Field(strict=True, min_length=1, max_length=256)]] = Field(
         default_factory=list, max_length=7)
@@ -94,6 +95,12 @@ def describe(value):
 
 def requires_binding(item):
     return item['kind'] in ('thresholds', 'falsifiers', 'whitelist') or item['path'][0] == 'marginal_focus'
+
+
+def can_dimension(item):
+    path = item.get('path', [])
+    return (item.get('kind') in ('thresholds', 'falsifiers') or len(path) == 4
+        and path[0] == 'contradiction' and path[1] in ('bull', 'bear') and path[2] == 'evidence')
 
 
 def has_binding(item):
@@ -289,6 +296,8 @@ def initialize_review(preview, assessment, catalog):
             'ai_related_series_ids': list(value.get('related_series_ids', [])) if isinstance(value, dict) else [],
             'warnings': list(dict.fromkeys(warnings or [])), 'remembered': False,
             'binding_explicit': False, 'requires_explicit_binding': False}
+        if can_dimension(item):
+            item['ai_dimension'] = value.get('dimension')
         review['items'].append(item)
 
     fields = baseline['judgment']
@@ -589,7 +598,9 @@ def adopt_catalog_choices(preview, catalog):
     return value
 
 
-def review_response(scope, token, preview, catalog):
+def review_response(scope, token, preview, catalog, *, dimensions=None):
+    from tin.web.research_dimensions import default_dimensions
+    dimensions = default_dimensions() if dimensions is None else dimensions
     known = {field['id']: field for field in catalog}
     sections = []
     for section_id, title in SECTIONS:
@@ -639,6 +650,10 @@ def review_response(scope, token, preview, catalog):
             items.append({'id': item['id'], 'kind': item['kind'], 'title': item['title'],
                 'description': item['description'], 'original_text': item['source_quote'],
                 'source_quote': item['source_quote'], 'status': item['status'],
+                'can_dimension': can_dimension(item),
+                **({'dimension': item['value'].get('dimension'),
+                    'dimension_suggestion': {'dimension': item['ai_dimension'], 'reason': ''}
+                        if item.get('ai_dimension') else None} if can_dimension(item) else {}),
                 'manually_confirmed': item['status'] == 'confirmed'
                     and (item.get('number_confirmation') or {}).get('mode') == 'manual',
                 'origin': item['origin'], 'requires_attention': item['status'] == 'pending',
@@ -663,6 +678,7 @@ def review_response(scope, token, preview, catalog):
             sections.append({'id': section_id, 'title': title, 'items': items})
     items = preview['review']['items']
     return {'draft_id': token, 'revision': preview['review']['revision'], 'sections': sections,
+        'research_dimensions': dimensions,
         'pending_count': sum(item['status'] == 'pending' for item in items),
         'needs_attention_count': sum(item['status'] == 'pending' for item in items),
         'ready_count': sum(item['status'] == 'ready' for item in items),
@@ -671,19 +687,22 @@ def review_response(scope, token, preview, catalog):
 
 
 def preview_response(scope, token, preview, state):
+    from tin.web.research_dimensions import default_dimensions
+    dimensions = state.get('research_dimensions', default_dimensions())
     catalog = state['catalog']
     preview = adopt_catalog_choices(preview, catalog)
     result = checked(preview, preview['document'], catalog, scope)
     known = {field['id']: field for field in catalog}
     complete = 'analysis_snapshot' not in preview or preview['analysis_snapshot'] is not None
     return {'draft_id': token, 'base_version': preview['base_version'], 'source_text': preview['text'],
-        'markdown': dump_markdown(result.payload), 'diff': version_diff(state['base_payload'], result.payload),
+        'markdown': dump_markdown(result.payload, dimensions=dimensions),
+        'diff': version_diff(state['base_payload'], result.payload, dimensions=dimensions),
         'bindings': [{key: value for key, value in binding(known[sid]).items() if key in ('series_id', 'name', 'unit')}
             for sid in result.binding_units], 'unresolved': result.unresolved,
         'catalog_total': len(catalog), 'candidate_count': preview.get('candidate_count', len(catalog)),
         'candidate_subset': preview.get('candidate_subset', False), 'validation_issues': preview['validation_issues'],
         'repair_attempts': preview['repair_attempts'], 'review_available': True,
-        'review': review_response(scope, token, preview, catalog),
+        'review': review_response(scope, token, preview, catalog, dimensions=dimensions),
         'analysis_reused': preview.get('analysis_reused') is True,
         'analysis_complete': complete,
         'notice': '部分原文尚未完成核对，已保留可用结果。' if not complete else
@@ -691,6 +710,7 @@ def preview_response(scope, token, preview, state):
 
 
 def review_snapshot(scope, preview, page_query=None):
+    from tin.web.research_dimensions import read_dimensions, summaries
     metadata = catalog_page(scope, **(page_query or {'limit': 1}), version=preview['fact_version'])
     with artifact_session(scope) as session:
         row = latest(session, preview['variety'])
@@ -701,6 +721,7 @@ def review_snapshot(scope, preview, page_query=None):
         # used for generation. A current version check makes its metadata safe
         # to reuse without downloading that catalog on every keystroke.
         return {'catalog': preview['review']['catalog'], 'page': metadata,
+            'research_dimensions': summaries(read_dimensions(session)),
             'base_payload': latest_workbench_payload(session, preview['variety'], scope)}
 
 
@@ -767,6 +788,10 @@ def record_decisions(scope, token, before, preview, catalog, decisions):
                 detail['binding_warning'] = deepcopy(item['binding_warning_confirmation'])
             if item.get('number_confirmation'):
                 detail['number_confirmation'] = deepcopy(item['number_confirmation'])
+            if can_dimension(item):
+                detail['dimension'] = item['value'].get('dimension')
+            if item.get('dimension_only'):
+                detail['action'] = 'dimension'
             preview['review']['audit'].append(detail)
             session.add(AuditLog(at=now, actor=verified_actor(session, ''), action='研判逐项确认',
                 target_type='judgment_preview', target_id=digest(token), detail=detail))
@@ -792,7 +817,7 @@ def check_revision(preview, revision):
 async def get_review(draft_id: str = Query(min_length=16, max_length=128)):
     scope = generation.scope_for_analysis(write=True)
     preview, state = await current_preview(scope, draft_id)
-    return review_response(scope, draft_id, preview, state['catalog'])
+    return review_response(scope, draft_id, preview, state['catalog'], dimensions=state['research_dimensions'])
 
 
 @router.get('/indicators')
@@ -819,6 +844,29 @@ async def update_review(request: Request):
         item = next((item for item in preview['review']['items'] if item['id'] == body.item_id), None)
         if item is None:
             raise HTTPException(404, '待确认条目不存在，请刷新预览')
+        item.pop('dimension_only', None)
+        if body.action == 'dimension' or 'dimension' in body.model_fields_set:
+            from tin.web.research_dimensions import checked_dimension
+            if not can_dimension(item):
+                raise HTTPException(422, '此条目不支持研究维度')
+            dimensions = state['research_dimensions']
+            if body.dimension is not None and checked_dimension(body.dimension, dimensions) is None:
+                raise HTTPException(422, '请选择当前研究台存在的维度，或选择未标注')
+            if body.dimension is None:
+                item['value'].pop('dimension', None)
+            else:
+                item['value']['dimension'] = body.dimension
+        if body.action == 'dimension':
+            if (body.model_fields_set - {'draft_id', 'revision', 'item_id', 'action', 'dimension'}
+                    or 'dimension' not in body.model_fields_set):
+                raise HTTPException(422, '维度编辑只能修改本条维度')
+            item['dimension_only'] = True
+            preview['document'] = build_document(preview, state['catalog'])
+            checked(preview, preview['document'], state['catalog'], scope)
+            preview['review']['revision'] += 1
+            await current_preview(scope, body.draft_id)
+            await run_in_threadpool(record_decisions, scope, body.draft_id, before, preview, state['catalog'], [(item, False)])
+            return preview_response(scope, body.draft_id, preview, state)
         can_bind = item['kind'] in ('binding', 'unresolved_binding', 'whitelist', 'thresholds', 'falsifiers')
         known = {field['id']: field for field in state['catalog']}
         if 'related_series_ids' in body.model_fields_set:

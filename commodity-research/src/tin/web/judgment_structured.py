@@ -19,6 +19,7 @@ from tin.schemas.judgment import JudgmentIn, EXPRESSION
 from tin.web.judgment_generation import (ApplyRequest, PreviewStore, result_session,
                                          scope_for_analysis, scope_key, read_body)
 from tin.config import SHANGHAI
+from tin.web.research_dimensions import checked_dimension, default_dimensions, read_dimensions, summaries
 
 router = APIRouter(prefix='/api/sn/judgment/structured')
 previews = PreviewStore()
@@ -30,7 +31,12 @@ class StructuredInput(BaseModel):
     panel_title: str = Field(default='', max_length=120, strict=True)
 
 
-def _validate_payload(payload, catalog):
+def _validate_payload(payload, catalog, *, dimensions=None):
+    dimensions = default_dimensions() if dimensions is None else dimensions
+    evidence = [*payload.contradiction.bull.evidence, *payload.contradiction.bear.evidence]
+    for item in [*evidence, *payload.thresholds, *payload.falsifiers]:
+        if item.dimension is not None and checked_dimension(item.dimension, dimensions) is None:
+            raise HTTPException(422, '请选择当前研究台存在的维度，或选择未标注')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,15}', payload.variety):
         raise HTTPException(422, '研究品种需要1至16位明确代码，只允许字母、数字、点、横线和下划线')
     from tin.integration.page_facts import _judgment_windows
@@ -65,7 +71,6 @@ def _validate_payload(payload, catalog):
             expression = EXPRESSION.fullmatch(rule.expression)
             if expression is None or not math.isfinite(float(expression.group(3))):
                 raise HTTPException(422, '证伪条件中的比较值必须是有限数')
-    evidence = [*payload.contradiction.bull.evidence, *payload.contradiction.bear.evidence]
     costs = payload.cost_line
     if (any(item.value is not None for item in evidence)
             or costs and (costs.value is not None or any(item.value is not None for item in costs.items))):
@@ -90,6 +95,7 @@ def _state(scope, payload):
             raise HTTPException(422, '部分指标不在当前已授权来源中；请核对真实指标ID，不按名称替代绑定')
         row = latest(session, payload.variety)
         return {'catalog': catalog,
+                'dimensions': summaries(read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()),
                 'version': metadata['version'] if metadata is not None else session.info['knowledge_facts_version'],
                 'datasets': metadata['datasets'] if metadata is not None else session.info.get('knowledge_facts_datasets', []),
                 'base_version': row.version if row else 0,
@@ -106,7 +112,7 @@ async def preview(request: Request):
     if len(encoded.encode()) > 48 * 1024:
         raise HTTPException(413, '结构化研究逻辑超过48 KiB')
     state = await run_in_threadpool(_state, scope, payload)
-    _validate_payload(payload, state['catalog'])
+    _validate_payload(payload, state['catalog'], dimensions=state['dimensions'])
     token = previews.put(scope, {'payload': payload.model_dump(mode='json', by_alias=True),
                                 'panel_title': body.panel_title,
                                 'base_version': state['base_version'], 'fact_version': state['version']})
@@ -114,7 +120,9 @@ async def preview(request: Request):
                  'unit': spec.get('unit')} for sid, spec in state['catalog'].items()
                  if sid in {sid for _, _, sid in _refs(payload)}]
     return {'kind': 'structured', 'draft_id': token, 'base_version': state['base_version'],
-            'markdown': dump_markdown(payload), 'diff': version_diff(state['before'], payload),
+            'markdown': dump_markdown(payload, dimensions=state['dimensions']),
+            'diff': version_diff(state['before'], payload, dimensions=state['dimensions']),
+            'research_dimensions': state['dimensions'],
             'bindings': bindings, 'unresolved': [row.model_dump() for row in payload.unstructured],
             'activation_blockers': activation_blockers(payload),
             'catalog_total': len(state['catalog']), 'candidate_count': len(bindings),
@@ -136,7 +144,7 @@ async def apply(request: Request):
     payload = JudgmentIn.model_validate(saved['payload'])
     scope = fresh
     state = await run_in_threadpool(_state, scope, payload)
-    _validate_payload(payload, state['catalog'])
+    _validate_payload(payload, state['catalog'], dimensions=state['dimensions'])
     if state['base_version'] != saved['base_version'] or state['version'] != saved['fact_version']:
         raise HTTPException(409, '研究逻辑或来源数据已改变，请重新预览')
 

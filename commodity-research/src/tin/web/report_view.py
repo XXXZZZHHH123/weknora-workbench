@@ -25,7 +25,10 @@ def _condition(expression, metadata=None):
     return condition_text(expression)
 
 
-def _judgment_view(payload, names, signals, preview=None, metrics=None):
+def _judgment_view(payload, names, signals, preview=None, metrics=None, dimensions=None):
+    from tin.web.research_dimensions import default_dimensions
+    from tin.web.judgment_dimension_view import dimension_name
+    dimensions = default_dimensions() if dimensions is None else dimensions
     metrics = metrics or {}
     if not isinstance(payload, dict):
         return None
@@ -42,6 +45,8 @@ def _judgment_view(payload, names, signals, preview=None, metrics=None):
                 if isinstance(item, dict):
                     identifier = item.get('series_id')
                     evidence.append({'text': human_text(item.get('desc'), names), 'series_id': identifier,
+                                     **({'dimension': item['dimension']} if item.get('dimension') else {}),
+                                     'dimension_label': dimension_name(item.get('dimension'), dimensions),
                                      'name': indicator_name(identifier, names) if identifier else None})
             row['cases'].append({'label': label, 'claim': human_text(side.get('claim'), names), 'evidence': evidence})
         row['contradiction'] = human_text(contradiction.get('text'), names)
@@ -56,6 +61,7 @@ def _judgment_view(payload, names, signals, preview=None, metrics=None):
             if not isinstance(item, dict):
                 continue
             rule = dict(item)
+            rule['dimension_label'] = dimension_name(item.get('dimension'), dimensions)
             value = item.get('value')
             metric = metrics.get(item.get('series_id')) or {}
             rule['stale_note'] = _stale_note(metric.get('freshness'))
@@ -204,7 +210,7 @@ def _report_metrics(payload, observations):
     return metrics
 
 
-def present_snapshot(payload, names=None):
+def present_snapshot(payload, names=None, *, dimensions=None):
     from tin.web.report_watch import present_watch, watch_items
     fallback = {item['series_id']: item['name'] for item in payload.get('observations') or []
                 if isinstance(item, dict) and isinstance(item.get('series_id'), str)
@@ -231,7 +237,8 @@ def present_snapshot(payload, names=None):
     for row in sections['derived']:
         row['value_text'] = _number(row.get('value'), row)
     briefs = [_brief_view(item, names, metrics) for item in payload.get('briefs') or []]
-    judgment = _judgment_view(payload.get('judgment'), names, sections['signals'], payload.get('rule_preview'), metrics)
+    judgment = _judgment_view(payload.get('judgment'), names, sections['signals'], payload.get('rule_preview'), metrics,
+                              dimensions if dimensions is not None else payload.get('research_dimensions'))
     replay = None
     if not briefs and judgment and (_plain(judgment.get('tone')) or _plain(judgment.get('tone_note'))):
         replay = {'label': '已保存研判回放', 'tone': _plain(judgment.get('tone')),
@@ -406,7 +413,7 @@ def _judgment_lines(view):
         lines += ['#### ' + side['label'], _md(side['claim']) or '待补充']
         for item in side['evidence']:
             value = latest.get(item.get('series_id')) if item.get('series_id') else None
-            lines.append('- ' + _md(item['text']) + (' · ' + _md(item.get('name')) if item.get('name') else '')
+            lines.append('- [' + _md(item['dimension_label']) + '] ' + _md(item['text']) + (' · ' + _md(item.get('name')) if item.get('name') else '')
                          + (' · 最新 ' + _md(value['value_text']) + (' · ' + _md(value['as_of']) if value['as_of'] else '')
                             + (' · ' + _md(value['stale_note']) if value['stale_note'] else '') if value else ''))
         lines.append('')
@@ -416,7 +423,7 @@ def _judgment_lines(view):
         lines += ['#### ' + heading]
         if view['rule_preview']:
             lines += ['> ' + _md(view['rule_preview']['label']) + '：' + _md(view['rule_preview']['notice'])]
-        lines += ['- ' + _md(item['name']) + ' · ' + _md(item['series_name']) + '：' + _md(item['condition']) + ' · ' + _md(item['state'])
+        lines += ['- [' + _md(item['dimension_label']) + '] ' + _md(item['name']) + ' · ' + _md(item['series_name']) + '：' + _md(item['condition']) + ' · ' + _md(item['state'])
                   + ('（当前规则试算）' if item['is_preview'] else '')
                   + (' · 已记录：' + _md(item['recorded_state']) if item['recorded_state'] else '')
                   + (' · 当前值：' + _md(item['current_value_text']) if item['current_value'] is not None else '')
@@ -470,9 +477,9 @@ def _strategy_lines(view):
     return lines
 
 
-def readable_markdown(payload, *, title='研究报告', names=None):
+def readable_markdown(payload, *, title='研究报告', names=None, dimensions=None):
     """The same collection as the HTML page: saved 研判, then saved 策略, with notes and charts as aids."""
-    view = present_snapshot(payload, names)
+    view = present_snapshot(payload, names, dimensions=dimensions)
     manual = view['manual_report']
     if manual and manual.get('unavailable_references'):
         from fastapi import HTTPException
