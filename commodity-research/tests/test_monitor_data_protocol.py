@@ -102,7 +102,7 @@ def protocol_client(tmp_path, monkeypatch, validate_request):
         sources=(direct,), view_modules=('home',))
     state = SimpleNamespace(requests=[], observations={SID: [], OTHER: []},
                             frequencies={SID: '日', OTHER: '日'}, on_read=None, reads=0, scope=scope,
-                            coverage_metadata=True, source_calendar=True)
+                            coverage_metadata=True, source_calendar=True, read_error=None, logic='all')
 
     def transport(method, endpoint, body, **kwargs):
         assert method == 'POST' and endpoint == '/api/research/facts'
@@ -117,6 +117,10 @@ def protocol_client(tmp_path, monkeypatch, validate_request):
         version = 'a' * 64
         if not body.get('catalog_only'):
             state.reads += 1
+            failure = state.read_error(body, state.reads) if state.read_error else None
+            if failure:
+                status, detail = failure
+                return httpx.Response(status, json={'detail': detail}, request=request)
             if state.on_read:
                 version = state.on_read(body, state.reads) or version
         ids = body.get('series_ids', list(state.observations))
@@ -141,13 +145,16 @@ def protocol_client(tmp_path, monkeypatch, validate_request):
             for field in fields:
                 sid = field['series_id']
                 selected = sorted((stamp, value) for stamp, value in state.observations[sid]
-                                  if stamp <= body['as_of'])[-body['points_per_series']:]
+                                  if stamp <= body['as_of'] and (body.get('include_invalid') or value is not None)
+                                  )[-body['points_per_series']:]
                 rows.extend({'series_id': sid, 'date': stamp, 'value': value,
                              'value_status': 'missing' if value is None else 'valid'}
                             for stamp, value in selected)
             payload = {**envelope, 'bounded': True, 'indicators': fields, 'rows': rows,
-                       'source_versions': {direct['id']: version}, 'include_invalid': True,
+                       'source_versions': {direct['id']: version},
                        'unavailable_series_ids': [], 'datasets': []}
+            if body.get('include_invalid'):
+                payload['include_invalid'] = True
             if state.source_calendar:
                 valid = sorted(stamp for sid in ids for stamp, value in state.observations[sid]
                                if value is not None and stamp <= END.isoformat())
@@ -171,11 +178,11 @@ def protocol_client(tmp_path, monkeypatch, validate_request):
 
     @app.get('/protocol-backtest')
     def read(start: str | None = None):
-        return backtest_monitor(scope, state.rules, 'all', start=start, end=END)
+        return backtest_monitor(scope, state.rules, state.logic, start=start, end=END)
 
     @app.get('/protocol-default-backtest')
     def read_default(start: str | None = None, end: str | None = None):
-        return backtest_monitor(scope, state.rules, 'all', start=start, end=end)
+        return backtest_monitor(scope, state.rules, state.logic, start=start, end=end)
 
     @app.post('/protocol-check')
     def check():
@@ -193,7 +200,7 @@ def observation_window(end=END, size=900, interval=1):
 
 def assert_paged_on_real_dates(state):
     previous = {}
-    reads = [body for body in state.requests if not body.get('catalog_only')]
+    reads = [body for body in state.requests if body.get('include_invalid')]
     assert reads
     for body in reads:
         assert body['view_module'] == 'judgments' and body['include_invalid'] is True
@@ -313,19 +320,25 @@ def test_six_year_daily_request_reports_capped_actual_coverage_instead_of_413(pr
     assert len(assert_paged_on_real_dates(state)) == 17
 
 
-def test_current_monitor_check_and_saved_backtest_share_the_protocol_reader(protocol_client):
-    client, state = protocol_client
-    state.observations[SID] = observation_window()
+def save_protocol_monitor(client, state):
     sentence = '隔离协议测试提醒'
     with artifact_session(state.scope) as session:
         draft = monitors._new_artifact(state.scope, monitors.DRAFT_MODULE, '隔离草稿',
-            {'workbench_id': WB, 'sentence': sentence, 'candidates': [{'series_id': SID}]})
+            {'workbench_id': WB, 'sentence': sentence,
+             'candidates': [{'series_id': item['series_id']} for item in state.rules]})
         session.add(draft)
         session.commit()
         draft_id = draft.id
     saved = client.post(URL, json={'draft_id': draft_id, 'title': '隔离协议测试',
-        'sentence': sentence, 'logic': 'all', 'rules': state.rules, 'enabled': True})
+        'sentence': sentence, 'logic': state.logic, 'rules': state.rules, 'enabled': True})
     assert saved.status_code == 201, saved.text
+    return saved.json()
+
+
+def test_current_monitor_check_and_saved_backtest_share_the_protocol_reader(protocol_client):
+    client, state = protocol_client
+    state.observations[SID] = observation_window()
+    saved = save_protocol_monitor(client, state)
     state.requests.clear()
     response = client.post('/protocol-check')
     assert response.status_code == 200, response.text
@@ -333,7 +346,7 @@ def test_current_monitor_check_and_saved_backtest_share_the_protocol_reader(prot
     assert client.get(URL).json()['items'][0]['current_state'] == '触发'
     assert_paged_on_real_dates(state)
     state.requests.clear()
-    response = client.get(URL + '/' + saved.json()['id'] + '/backtest')
+    response = client.get(URL + '/' + saved['id'] + '/backtest')
     assert response.status_code == 200, response.text
     assert_paged_on_real_dates(state)
 
@@ -424,7 +437,7 @@ def test_sparse_source_calendar_sample_proves_short_total_coverage(protocol_clie
     assert overlap['insufficient'] is True and '重叠数据不足' in overlap['warning']
 
 
-def test_source_calendar_can_prove_all_valid_points_fit_in_a_full_invalid_sample_page(protocol_client):
+def test_source_calendar_ordinary_sample_proves_all_valid_points_fit(protocol_client):
     client, state = protocol_client
     state.coverage_metadata = False
     rows = observation_window(size=60)
@@ -434,7 +447,8 @@ def test_source_calendar_can_prove_all_valid_points_fit_in_a_full_invalid_sample
     coverage = payload['rule_coverage'][0]
     assert coverage['source'] == 'source_calendar' and coverage['point_count'] == 6
     assert coverage['start'] == rows[-6][0]
-    assert len([item for item in state.requests if item.get('points_per_series') == 26]) == 1
+    probes = [item for item in state.requests if item.get('points_per_series') == 26]
+    assert len(probes) == 1 and 'include_invalid' not in probes[0]
 
 
 def test_short_date_overlap_warns_and_exposes_real_rule_coverage(protocol_client):
@@ -539,3 +553,170 @@ def test_unknown_first_date_does_not_claim_zero_overlap_or_recommend_replacement
         overlap = rule_overlap([rule(), rule(OTHER)], coverage, observations)
         assert overlap['days'] is None and overlap['observation_periods'] is None
         assert overlap['insufficient'] is False and overlap['warning'] == ''
+
+
+def offer_protocol_draft(monkeypatch):
+    from tin.web import judgment_recall, strategy_text
+    fields = [{'id': sid, 'series_id': sid, 'name': '隔离协议字段', 'frequency': '日'}
+              for sid in (SID, OTHER)]
+    monkeypatch.setattr(monitors, '_draft_context', lambda scope: ([], fields))
+    monkeypatch.setattr(judgment_recall, 'recall_groups', lambda index, inventory, phrased, per_item: [
+        (inventory['items'][0], [SID, OTHER])])
+    calls = []
+
+    async def completion(*args, **kwargs):
+        calls.append(kwargs['purpose'])
+        if len(calls) == 1:
+            selected = {key: value for key, value in rule().items() if key != 'series_id'}
+            return {'title': '隔离草稿', 'logic': 'all', 'rules': [
+                {**selected, 'indicator_description': '隔离协议字段', 'value_source': 'explicit'}],
+                'confirmations': []}
+        return {'picks': {'0': ['r1']}}
+
+    monkeypatch.setattr(strategy_text, 'completion', completion)
+
+
+def test_candidate_coverage_does_not_request_invalid_observation_order(protocol_client, monkeypatch):
+    client, state = protocol_client
+    state.coverage_metadata = False
+    state.observations[SID] = state.observations[OTHER] = observation_window(size=40)
+    state.read_error = lambda body, count: (409, '未确认日期不能确定观测顺序') if body.get('include_invalid') else None
+    offer_protocol_draft(monkeypatch)
+    response = client.post(URL + '/draft', json={'sentence': '隔离协议字段增加时提醒', 'model_id': 'fixture'})
+    assert response.status_code == 200, response.text
+    draft = response.json()
+    assert draft['rules'][0]['series_id'] == SID
+    assert all(item['coverage']['start'] == state.observations[SID][0][0] for item in draft['candidates'])
+    probes = [body for body in state.requests if not body.get('catalog_only')]
+    assert len(probes) == 2 and all('include_invalid' not in body for body in probes)
+
+
+@pytest.mark.parametrize('status,source_calendar', [
+    (400, True), (401, True), (403, True), (404, True), (409, True), (413, True), (422, True),
+    (500, True), (503, True), (409, False),
+])
+def test_failed_candidate_coverage_keeps_draft_and_candidate_selectable(
+        protocol_client, monkeypatch, status, source_calendar):
+    client, state = protocol_client
+    state.coverage_metadata = False
+    state.source_calendar = source_calendar
+    state.observations[SID] = state.observations[OTHER] = observation_window(size=40)
+    detail = '所选指标含未确认日期，请先核对原表日期；' + '覆盖读取的可读原因' * 30
+    state.read_error = lambda body, count: (status, detail) if SID in body['series_ids'] else None
+    offer_protocol_draft(monkeypatch)
+    response = client.post(URL + '/draft', json={'sentence': '隔离协议字段增加时提醒', 'model_id': 'fixture'})
+    assert response.status_code == 200, response.text
+    draft = response.json()
+    candidates = {item['series_id']: item for item in draft['candidates']}
+    failed, readable = candidates[SID]['coverage'], candidates[OTHER]['coverage']
+    assert failed['unknown'] is True and failed['reason'] == detail[:200]
+    assert failed['start'] is None and failed['end'] is None
+    assert readable['start'] == state.observations[OTHER][0][0]
+    assert readable['end'] == END.isoformat()
+    assert draft['rules'][0]['series_id'] == SID
+    probes = [body for body in state.requests if not body.get('catalog_only')]
+    assert probes and all('include_invalid' not in body for body in probes)
+    assert all(len(body['series_ids']) == 1 for body in probes)
+    # The catalog still authorizes this candidate; unknown optional coverage
+    # must not prevent the researcher retaining the model's chosen binding.
+    saved = client.post(URL, json={key: draft[key] for key in (
+        'draft_id', 'title', 'sentence', 'logic', 'rules')})
+    assert saved.status_code == 201, saved.text
+    assert saved.json()['rules'][0]['series_id'] == SID
+
+
+@pytest.mark.parametrize('logic,healthy_value,expected', [
+    ('all', 0, '无法判断'), ('all', 2, '无法判断'),
+    ('any', 0, '无法判断'), ('any', 2, '触发'),
+])
+def test_backtest_rejected_rule_preserves_detail_and_combines_other_rule(
+        protocol_client, logic, healthy_value, expected):
+    client, state = protocol_client
+    state.logic = logic
+    state.rules = [rule(sid, metric='value', value=1, consecutive_periods=1) for sid in (SID, OTHER)]
+    state.observations[SID] = [(END.isoformat(), 3)]
+    state.observations[OTHER] = [(END.isoformat(), healthy_value)]
+    detail = '所选指标含未确认日期，无法确定均线观测顺序，请先核对原表日期；' + '完整来源说明' * 40
+    state.read_error = lambda body, count: (409, detail) if body.get('include_invalid') and SID in body['series_ids'] else None
+    response = client.get('/protocol-backtest')
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['current_state'] == payload['condition_state'] == expected
+    assert payload['series'][0]['state'] == '无法判断'
+    assert payload['series'][0]['notice'] == detail[:200]
+    assert payload['series'][0]['points'] == []
+    assert payload['series'][1]['state'] == ('触发' if healthy_value > 1 else '未触发')
+    assert payload['series'][1]['points'] == [{'date': END.isoformat(), 'value': healthy_value}]
+    assert payload['daily_states'][-1]['rule_states'] == [None, healthy_value > 1]
+    assert payload['daily_states'][-1]['state'] == expected
+    assert payload['triggered'] is (True if expected == '触发' else None)
+    assert detail[:200] in payload['notices']
+    assert all(len(body['series_ids']) == 1 for body in state.requests if body.get('include_invalid'))
+
+
+def test_backtest_rejected_later_page_discards_partial_history(protocol_client):
+    client, state = protocol_client
+    state.rules = [rule(), rule(OTHER)]
+    state.observations[SID] = state.observations[OTHER] = observation_window()
+    detail = '所选指标含未确认日期，无法确定均线观测顺序，请先核对原表日期'
+    state.read_error = lambda body, count: (409, detail) if (
+        body.get('include_invalid') and SID in body['series_ids'] and body['as_of'] < END.isoformat()) else None
+    response = client.get('/protocol-backtest')
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['current_state'] == '无法判断' and payload['trigger_dates'] == []
+    assert payload['series'][0]['state'] == '无法判断'
+    assert payload['series'][0]['points'] == [] and payload['series'][0]['notice'] == detail
+    assert payload['series'][1]['state'] == '触发' and len(payload['series'][1]['points']) == 732
+    reads = [body for body in state.requests if body.get('include_invalid') and SID in body['series_ids']]
+    assert len(reads) == 2 and reads[0]['as_of'] == END.isoformat()
+
+
+@pytest.mark.parametrize('detail', ['', '   '])
+def test_backtest_rejection_with_blank_detail_remains_undecidable(protocol_client, detail):
+    client, state = protocol_client
+    state.observations[SID] = observation_window(size=40)
+    state.read_error = lambda body, count: (409, detail)
+    response = client.get('/protocol-backtest')
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['current_state'] == payload['series'][0]['state'] == '无法判断'
+    assert payload['series'][0]['notice'] == '当前指标来源暂时不可读'
+    assert payload['triggered'] is None and payload['trigger_dates'] == []
+
+
+@pytest.mark.parametrize('status', [401, 403])
+@pytest.mark.parametrize('coverage_metadata', [True, False])
+def test_backtest_and_current_check_reject_authorization_errors_as_a_whole(
+        protocol_client, status, coverage_metadata):
+    client, state = protocol_client
+    state.rules = [rule(), rule(OTHER)]
+    state.observations[SID] = state.observations[OTHER] = observation_window(size=40)
+    save_protocol_monitor(client, state)
+    state.coverage_metadata = coverage_metadata
+    state.read_error = lambda body, count: (status, '当前来源授权已失效') if SID in body['series_ids'] else None
+    response = client.get('/protocol-backtest')
+    assert response.status_code == status, response.text
+    response = client.post('/protocol-check')
+    assert response.status_code == status, response.text
+    assert client.get(URL).json()['items'][0]['current_state'] == '未检查'
+
+
+@pytest.mark.parametrize('logic,expected', [('all', '无法判断'), ('any', '触发')])
+def test_current_check_returns_rule_failure_reason_in_personal_list(protocol_client, logic, expected):
+    client, state = protocol_client
+    state.logic = logic
+    state.rules = [rule(), rule(OTHER)]
+    state.observations[SID] = state.observations[OTHER] = observation_window(size=40)
+    save_protocol_monitor(client, state)
+    detail = '所选指标含未确认日期，无法确定均线观测顺序，请先核对原表日期'
+    state.read_error = lambda body, count: (409, detail) if body.get('include_invalid') and SID in body['series_ids'] else None
+    response = client.post('/protocol-check')
+    assert response.status_code == 200, response.text
+    assert response.json()['checked'] == 1
+    listed = client.get(URL).json()['items'][0]
+    assert listed['current_state'] == expected
+    assert len(listed['rule_states']) == 2
+    assert listed['rule_states'][0]['state'] == '无法判断'
+    assert listed['rule_states'][0]['notice'] == detail
+    assert listed['rule_states'][1]['state'] == '触发'

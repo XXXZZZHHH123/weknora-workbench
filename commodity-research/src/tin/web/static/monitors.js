@@ -66,7 +66,8 @@
   }
   function coverageText(candidate) {
     const coverage = candidate.coverage || candidate;
-    const range = !coverage.end ? '暂无有效观测' : coverage.start ? `覆盖 ${coverage.start} 至 ${coverage.end}` :
+    const range = coverage.unknown ? `覆盖未知：${coverage.reason || '数据来源暂时不可读'}` :
+      !coverage.end ? '暂无有效观测' : coverage.start ? `覆盖 ${coverage.start} 至 ${coverage.end}` :
       `首个观测日未核实${coverage.observed_start ? `，已读取 ${coverage.observed_start} 至 ${coverage.end}` : `，最新观测 ${coverage.end}`}`;
     return [range, coverage.limited ? '覆盖信息受读取上限限制' : '',
       coverage.frequency || candidate.frequency,
@@ -185,6 +186,10 @@
     for (const [label, value] of [['当前状态', result.current_state], ['触发次数', result.trigger_count], ['最近触发', result.last_trigger || '无']]) {
       const card = node('div', undefined, 'research-stat'); card.append(node('small', label), node('strong', value ?? '—')); summary.append(card);
     }
+    if (result.condition_state && result.condition_state !== result.current_state) {
+      const card = node('div', undefined, 'research-stat');
+      card.append(node('small', '组合条件'), node('strong', result.condition_state)); summary.append(card);
+    }
     target.append(summary);
     if (result.start || result.end) target.append(node('p', `回测范围 ${result.start || '—'} 至 ${result.end || '—'}，按各指标最近已知状态组合，不插值、不填零。`, 'affairs-row-detail'));
     if (result.window_reason) target.append(node('p', result.window_reason, 'affairs-row-detail'));
@@ -207,11 +212,14 @@
       const rule = item.rule || draft?.rules[index] || {};
       const section = node('div', undefined, 'monitor-chart'); section.dataset.monitorChart = String(index);
       section.append(node('div', rule.label || item.name || '指标走势', 'affairs-row-title'));
-      section.append(node('p', [item.name, item.unit, item.frequency,
-        item.latest_date ? '最近观测 ' + item.latest_date : '无数据', item.notice].filter(Boolean).join(' · '), 'affairs-row-detail monitor-chart-note'));
+      section.append(node('p', [item.state ? '规则状态 ' + item.state : '', item.name, item.unit, item.frequency,
+        item.latest_date ? '最近观测 ' + item.latest_date : '', item.notice].filter(Boolean).join(' · '), 'affairs-row-detail monitor-chart-note'));
       const plot = node('div'); section.append(plot); target.append(section);
       const points = (item.points || []).map(point => ({...point, raw: point.value}));
-      if (!points.some(point => Number.isFinite(point.value))) { plot.append(node('p', '该指标在回测范围内无有效观测。', 'affairs-empty')); continue; }
+      if (!points.some(point => Number.isFinite(point.value))) {
+        plot.append(node('p', item.state === '无法判断' ? '指标暂不可读，无法展示观测。' : '该指标在回测范围内无有效观测。', 'affairs-empty'));
+        continue;
+      }
       const source = item.series_id, changeId = source + '::monitor-change';
       const curves = [{series_id: source, label: item.name || rule.label || '本期值', unit: item.unit || '', points, axis: 'left', kind: 'line'}];
       if (rule.metric === 'change') curves.push({series_id: changeId, label: '本期变化', unit: item.unit || '',
@@ -248,6 +256,8 @@
       const title = node('div', undefined, 'affairs-row-title'); title.append(node('span', item.current_state || '未检查', 'affairs-row-kind'), node('span', item.title));
       copy.append(title, node('div', item.sentence, 'affairs-row-detail'), node('div',
         `最近触发 ${item.last_trigger || '无'} · v${item.revision}` + (item.checked_at ? ' · 检查于 ' + item.checked_at.slice(0, 16).replace('T', ' ') : ''), 'affairs-row-detail'));
+      for (const rule of item.rule_states || []) copy.append(node('p',
+        [`第${rule.rule_index + 1}条规则`, rule.label, rule.state, rule.notice].filter(Boolean).join(' · '), 'affairs-row-detail'));
       const actions = node('div', undefined, 'monitor-actions');
       const enabled = node('input'); enabled.type = 'checkbox'; enabled.checked = item.enabled; enabled.dataset.write = 'true';
       enabled.setAttribute('aria-label', '启用 ' + item.title);

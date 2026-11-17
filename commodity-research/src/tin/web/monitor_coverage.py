@@ -5,7 +5,7 @@ from fastapi import HTTPException
 
 from tin.compute.condition_backtest import observation_freshness
 from tin.integration.observation_windows import paged_observations
-from tin.integration.page_facts import bounded_facts, _validated_calendar
+from tin.integration.page_facts import StructuredFactsError, bounded_facts, _validated_calendar
 from tin.web.chart_data import catalog_fields, cutoff
 from tin.web.dimension_data import FREQUENCY_DAYS, LOW_FREQUENCIES
 
@@ -41,8 +41,8 @@ def _versions(facts, versions):
         versions[binding] = version
 
 
-def read_coverage(scope, identifiers, *, fields=None, day=None, versions=None):
-    """Read full valid-date bounds from a verified catalog or source calendar.
+def read_coverage(scope, identifiers, *, fields=None, day=None, versions=None, reject_auth=False):
+    """Read valid-date bounds, isolating optional coverage failures per candidate.
 
     The source calendar is requested separately per indicator so another
     indicator cannot supply its bounds. Older sources without that calendar
@@ -57,60 +57,86 @@ def read_coverage(scope, identifiers, *, fields=None, day=None, versions=None):
     versions = {} if versions is None else versions
     result = {}
     for sid in identifiers:
-        field = fields[sid]
-        frequency = str(field.get('frequency') or '')
-        first, latest = _catalog_day(field.get('first_valid_date')), _catalog_day(field.get('last_valid_date'))
-        count = field.get('valid_count')
-        count = count if type(count) is int and count >= 0 else None
-        metadata = (first is not None and latest is not None and latest <= today.isoformat()
-                    or count == 0 and first is None and latest is None)
-        source, limited, observed_start, sample = 'catalog', False, first, []
-        if not metadata:
-            facts = bounded_facts(scope, [sid], 'judgments', day=today.isoformat(), points=26,
-                                  direct_only=True, include_invalid=True)
-            _versions(facts, versions)
-            sample = [row for row in facts['rows'] if row['series_id'] == sid and row['value'] is not None]
-            calendar = _validated_calendar(facts.get('calendar'), today.isoformat())
-            if calendar is not None:
-                first, latest = calendar.get('min_date'), calendar.get('max_date')
-                source, count, observed_start = 'source_calendar', None, first
-                earliest_read = min((row['date'] for row in facts['rows']), default=None)
-                if (first is None or len(facts['rows']) < 26
-                        or earliest_read is not None and first >= earliest_read):
-                    count = len(sample)
-            else:
-                rows = paged_observations(scope, [sid], today, 2000, direct_only=True,
-                    versions=versions, version_notice='监测来源在读取覆盖期间变化，请刷新')[sid]
-                sample = [row for row in rows if row['value'] is not None]
-                limited = len(rows) == 2000
-                observed_start = sample[0]['date'] if sample else None
-                first = None if limited else observed_start
-                latest = sample[-1]['date'] if sample else None
-                count = None if limited else len(sample)
-                source = 'observations'
-        if first and latest and first > latest:
-            raise HTTPException(503, '指标目录的数据覆盖区间无效')
-        freshness = observation_freshness(sample[-26:], today, latest_date=latest) if latest else None
-        if latest and (freshness is None or freshness['usual_interval_days'] is None):
-            interval = FREQUENCY_DAYS.get(frequency.strip().lower())
-            age = (today - date.fromisoformat(latest)).days
-            freshness = {'age_days': age, 'usual_interval_days': interval,
-                         'stale': age > max(10, 2.5 * interval) if interval else age > 60}
-        result[sid] = {'start': first, 'end': latest, 'point_count': count, 'frequency': frequency,
-            'stale': bool(freshness and freshness['stale']), 'freshness': freshness,
-            'limited': limited, 'observed_start': observed_start, 'source': source,
-            'default_years': 5 if frequency.strip().lower() in LOW_FREQUENCIES else 2}
+        try:
+            result[sid] = _indicator_coverage(scope, sid, fields[sid], today, versions)
+        except HTTPException as error:
+            # Draft coverage is optional metadata for already authorized catalog
+            # candidates. Evaluation still rejects lost authorization and local
+            # snapshot/validation failures; only source refusals are isolated.
+            if reject_auth and (error.status_code in {401, 403}
+                                or not isinstance(error, StructuredFactsError)):
+                raise
+            frequency = str(fields[sid].get('frequency') or '')
+            result[sid] = {'unknown': True, 'reason': error_reason(error),
+                'start': None, 'end': None, 'point_count': None, 'frequency': frequency,
+                'stale': False, 'freshness': None, 'limited': False,
+                'observed_start': None, 'source': 'unavailable',
+                'default_years': 5 if frequency.strip().lower() in LOW_FREQUENCIES else 2}
     return result
+
+
+def error_reason(error):
+    return (error.detail[:200] if isinstance(error.detail, str) and error.detail.strip()
+            else '当前指标来源暂时不可读')
+
+
+def _indicator_coverage(scope, sid, field, today, versions):
+    frequency = str(field.get('frequency') or '')
+    first, latest = _catalog_day(field.get('first_valid_date')), _catalog_day(field.get('last_valid_date'))
+    count = field.get('valid_count')
+    count = count if type(count) is int and count >= 0 else None
+    metadata = (first is not None and latest is not None and latest <= today.isoformat()
+                or count == 0 and first is None and latest is None)
+    source, limited, observed_start, sample = 'catalog', False, first, []
+    if not metadata:
+        facts = bounded_facts(scope, [sid], 'judgments', day=today.isoformat(), points=26,
+                              direct_only=True, upstream_error_detail=True)
+        _versions(facts, versions)
+        sample = [row for row in facts['rows'] if row['series_id'] == sid and row['value'] is not None]
+        calendar = _validated_calendar(facts.get('calendar'), today.isoformat())
+        if calendar is not None:
+            first, latest = calendar.get('min_date'), calendar.get('max_date')
+            source, count, observed_start = 'source_calendar', None, first
+            earliest_read = min((row['date'] for row in facts['rows']), default=None)
+            if (first is None or len(facts['rows']) < 26
+                    or earliest_read is not None and first >= earliest_read):
+                count = len(sample)
+        else:
+            rows = paged_observations(scope, [sid], today, 2000, direct_only=True,
+                versions=versions, version_notice='监测来源在读取覆盖期间变化，请刷新',
+                include_invalid=False, upstream_error_detail=True)[sid]
+            sample = [row for row in rows if row['value'] is not None]
+            limited = len(rows) == 2000
+            observed_start = sample[0]['date'] if sample else None
+            first = None if limited else observed_start
+            latest = sample[-1]['date'] if sample else None
+            count = None if limited else len(sample)
+            source = 'observations'
+    if first and latest and first > latest:
+        raise HTTPException(503, '指标目录的数据覆盖区间无效')
+    freshness = observation_freshness(sample[-26:], today, latest_date=latest) if latest else None
+    if latest and (freshness is None or freshness['usual_interval_days'] is None):
+        interval = FREQUENCY_DAYS.get(frequency.strip().lower())
+        age = (today - date.fromisoformat(latest)).days
+        freshness = {'age_days': age, 'usual_interval_days': interval,
+                     'stale': age > max(10, 2.5 * interval) if interval else age > 60}
+    return {'start': first, 'end': latest, 'point_count': count, 'frequency': frequency,
+        'stale': bool(freshness and freshness['stale']), 'freshness': freshness,
+        'limited': limited, 'observed_start': observed_start, 'source': source,
+        'default_years': 5 if frequency.strip().lower() in LOW_FREQUENCIES else 2}
 
 
 def default_window(fields, coverages, today=None):
     today = today or cutoff()
     selected = [coverages[sid] for sid in fields]
     latest = [item['end'] for item in selected if item.get('end')]
+    unknown = any(item.get('unknown') for item in selected)
     end = min(today, date.fromisoformat(min(latest))) if latest else today
     years = min(5 if str(field.get('frequency') or '').strip().lower() in LOW_FREQUENCIES else 2
                 for field in fields.values())
-    if not latest:
+    if not latest and unknown:
+        reason = '指标覆盖暂不可读，暂以今天为回测终点；各规则将在回测时分别核对'
+    elif not latest:
         reason = '暂无有效观测，暂以今天为回测终点'
     elif len(latest) != len(selected):
         reason = f'可读指标数据最新至 {end.isoformat()}，按可用数据确定回测终点'
@@ -118,7 +144,8 @@ def default_window(fields, coverages, today=None):
         reason = (f'数据最新至 {end.isoformat()}，按数据可用区间回测'
                   if end < today else '各规则指标数据覆盖至今天，按默认区间回测')
     if len(latest) != len(selected):
-        reason += '；部分规则指标没有有效观测，无法确定完整共同数据区间'
+        reason += ('；部分规则指标覆盖未知，无法确定完整共同数据区间' if unknown else
+                   '；部分规则指标没有有效观测，无法确定完整共同数据区间')
     return {'start': years_before(end, years).isoformat(), 'end': end.isoformat(), 'window_reason': reason}
 
 
@@ -138,7 +165,8 @@ def rule_overlap(rules, coverages, observations=None, *, start=None, end=None):
         first = max(first, str(start))
     if last and end:
         last = min(last, str(end))
-    unknown_start = all(ends) and not all(starts)
+    unknown_coverage = any(item.get('unknown') for item in selected)
+    unknown_start = unknown_coverage or all(ends) and not all(starts)
     days = (max(0, (date.fromisoformat(last) - date.fromisoformat(first)).days + 1)
             if first and last else None if unknown_start else 0)
     if first and last and first > last:
@@ -146,7 +174,9 @@ def rule_overlap(rules, coverages, observations=None, *, start=None, end=None):
     counts, limits, limited = [], [], False
     exact_short = any(item.get('point_count') is not None and item['point_count'] < 10 for item in selected)
     bound = 'exact'
-    if observations is not None and not unknown_start:
+    unreadable = observations is not None and any(
+        'read_error' in observations.get(rule['series_id'], {}) for rule in rules)
+    if observations is not None and not unknown_start and not unreadable:
         for rule in rules:
             source = observations.get(rule['series_id'], {})
             points = source.get('points') or []

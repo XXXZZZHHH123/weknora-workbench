@@ -208,6 +208,7 @@ def serialize(row, state=None):
     value.update(id=row.id, revision=row.revision, current_state='未检查', last_trigger=None, checked_at=None)
     if state and state.get('condition_key') == _condition_key(body):
         value.update({key: state.get(key) for key in ('current_state', 'last_trigger', 'checked_at')})
+        value['rule_states'] = state.get('rule_states') or []
     return jsonable_encoder(value)
 
 
@@ -394,6 +395,8 @@ def backtest(scope, rules, logic, *, start=None, end=None):
 
 def _check_state(data):
     """A historical condition cannot create today's reminder from stale data."""
+    if data['current_state'] == '无法判断':
+        return data['current_state']
     stale = [item for item in data.get('series', [])
              if (item.get('freshness') or {}).get('stale')]
     if not stale and data['current_state'] != '数据停更':
@@ -427,6 +430,8 @@ def check_monitors(scope, cutoff, checked):
             _validate_catalog(scope, monitor['rules'])
             data = backtest(scope, monitor['rules'], monitor['logic'], end=cutoff.isoformat())
         except HTTPException as error:
+            if error.status_code in {401, 403}:
+                raise
             result.update(partial=True)
             result['notice'] += '监测“' + monitor['title'] + '”未完成：' + str(error.detail)[:300] + '。'
             continue
@@ -452,9 +457,15 @@ def check_monitors(scope, cutoff, checked):
                     'detail': monitor['sentence'], 'href': '/?monitor=' + monitor['id'] + '#monitors',
                     'recorded_at': checked, 'trade_date': cutoff.isoformat(),
                     'evidence_dates': [item['latest_date'] for item in data.get('series', []) if item.get('latest_date')]}
+                rule_states = []
+                for index, rule in enumerate(monitor['rules']):
+                    item = data.get('series', [])[index] if index < len(data.get('series', [])) else {}
+                    rule_states.append({'rule_index': index, 'series_id': rule['series_id'],
+                        'label': rule['label'], 'state': item.get('state'), 'notice': item.get('notice') or ''})
                 payload = {'workbench_id': scope.workbench_id, 'monitor_id': row.id,
                     'monitor_revision': row.revision, 'condition_key': key,
                     'current_state': current, 'checked_at': checked,
+                    'rule_states': rule_states,
                     'triggered': triggered if determined else preceding,
                     'last_trigger': data.get('last_trigger'),
                     'alerts': ([alert] if entered else []) + (old.get('alerts') or [])[:19]}
