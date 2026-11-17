@@ -9,7 +9,7 @@ from tin.schemas.chart import ChartDefinition, NativeApplyInput, NativePreviewIn
 from tin.web.chart_data import catalog_fields, cutoff, read_series
 from tin.web.charts import artifact_query, create_row, require_scope, serialize
 
-router = APIRouter(prefix='/api/sn/charts/import/native')
+native_router = APIRouter(prefix='/api/sn/charts/import/native')
 
 
 def suggestions_for(scope, charts, *, overrides=None):
@@ -25,7 +25,7 @@ def suggestions_for(scope, charts, *, overrides=None):
                          start_override=(overrides or {}).get((chart.knowledge_id, chart.sheet))) for chart in charts]
 
 
-@router.post('/preview')
+@native_router.post('/preview')
 def preview(body: NativePreviewInput):
     scope = require_scope()
     page = native_chart_page(scope, offset=body.offset, limit=body.limit)
@@ -86,7 +86,7 @@ def original_native_chart(scope, chart_key):
     return found
 
 
-@router.post('/apply')
+@native_router.post('/apply')
 def apply(body: NativeApplyInput):
     scope = require_scope(write=True)
     selections = {(sheet.knowledge_id, sheet.sheet): sheet for sheet in body.sheets}
@@ -123,3 +123,10 @@ def apply(body: NativeApplyInput):
         session.commit()
     return {'created': created, 'skipped': skipped, 'unconvertible': rejected,
             'sheets': group_suggestions(suggestions)}
+
+
+# Keep the existing native-chart endpoints and workflow independent.
+from tin.web.report_chart_import import router as report_router
+router = APIRouter()
+router.include_router(native_router)
+router.include_router(report_router)
