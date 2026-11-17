@@ -560,7 +560,7 @@ def projected_page_session(engine, scope, **kwargs):
         source_summaries = [{key:source[key] for key in ('id','source_type','source_id','knowledge_base_id','tenant_id','kind') if key in source} for source in scope.sources]
         from tin.web.number_format import source_decimals
         precision = {}
-        for row in decoded:
+        for row in page['rows']:
             digits = source_decimals(row)
             if digits is not None:
                 precision.setdefault(row['series_id'], {})[row['date']] = digits
