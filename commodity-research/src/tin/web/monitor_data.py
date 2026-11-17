@@ -1,5 +1,4 @@
 """Authorized, bounded observation reads for reusable condition backtests."""
-from collections import defaultdict
 from datetime import date
 from math import ceil
 
@@ -7,9 +6,10 @@ from fastapi import HTTPException
 
 from tin.compute.condition_backtest import backtest_conditions, validate_rules
 from tin.integration.observation_windows import paged_observations
+from tin.integration.page_facts import StructuredFactsError
 from tin.web.chart_data import catalog_fields, chart_read_scope, cutoff
 from tin.web.dimension_data import FREQUENCY_DAYS, LOW_FREQUENCIES
-from tin.web.monitor_coverage import default_window, read_coverage, rule_overlap, years_before
+from tin.web.monitor_coverage import default_window, error_reason, read_coverage, rule_overlap, years_before
 
 
 def _years(field):
@@ -54,34 +54,46 @@ def backtest_monitor(scope, rules, logic, start=None, end=None):
         if any(identifier not in fields for identifier in identifiers):
             raise HTTPException(422, '监测指标不在当前研究台授权目录中')
         versions = {}
-        coverages = read_coverage(scope, identifiers, fields=fields, day=today, versions=versions)
+        coverages = read_coverage(scope, identifiers, fields=fields, day=today,
+                                  versions=versions, reject_auth=True)
         defaults = default_window(fields, coverages, today)
         years = min(_years(fields[identifier]) for identifier in identifiers)
         end_day = explicit_end or date.fromisoformat(defaults['end'])
         start_day = explicit_start or years_before(end_day, years)
         if start_day > end_day or start_day < years_before(end_day, 6):
             raise HTTPException(422, '回测时间范围应为不超过6年的递增日期')
-        groups = defaultdict(list)
+        data = {}
         for identifier in identifiers:
             field = fields[identifier]
             interval = FREQUENCY_DAYS.get(str(field.get('frequency') or '').strip().lower(), 1)
             history_days = max((_years(field) * 366), (end_day - start_day).days)
             warmup = max(rule['consecutive_periods'] + int(rule['metric'] == 'change')
                          for rule in rules if rule['series_id'] == identifier)
-            limit = ceil(history_days / interval) + warmup + 2
-            groups[min(limit, 2000)].append(identifier)
-        data = {}
-        for limit, selected in groups.items():
-            observations = paged_observations(scope, selected, end_day, limit, direct_only=True,
-                versions=versions, version_notice='监测来源在分页期间变化，请刷新')
-            for identifier, rows in observations.items():
+            limit = min(ceil(history_days / interval) + warmup + 2, 2000)
+            # A source may reject a complete window while its ordinary valid
+            # observations remain readable. Isolate by real series ID, discarding
+            # every page of a rejected source rather than evaluating partial data.
+            try:
+                rows = paged_observations(scope, [identifier], end_day, limit, direct_only=True,
+                    versions=versions, version_notice='监测来源在分页期间变化，请刷新',
+                    upstream_error_detail=True)[identifier]
+            except StructuredFactsError as error:
+                if error.status_code in {401, 403}:
+                    raise
+                data[identifier] = {'points': [], 'read_error': error_reason(error),
+                                    'limited': False, 'point_limit': limit}
+            else:
                 points = [{'date': row['date'], 'value': row['value']} for row in rows]
-                data[identifier] = {'points': points, 'limited': len(points) == limit, 'point_limit': limit,
-                    'coverage': {'start': points[0]['date'] if points else None,
-                                 'end': points[-1]['date'] if points else None,
-                                 'point_count': len(points), 'point_limit': limit}}
+                data[identifier] = {'points': points, 'limited': len(points) == limit, 'point_limit': limit}
         for identifier in identifiers:
-            source = data.setdefault(identifier, {'points': []})
+            source = data[identifier]
+            points = source['points']
+            source['coverage'] = {'start': points[0]['date'] if points else None,
+                                  'end': points[-1]['date'] if points else None,
+                                  'point_count': None if 'read_error' in source else len(points),
+                                  'point_limit': source['point_limit']}
+            if 'read_error' in source:
+                source['coverage'].update(unknown=True, reason=source['read_error'])
             source['as_of'] = end_day.isoformat()
             source['frequency'] = fields[identifier].get('frequency') or ''
             source.setdefault('name', fields[identifier].get('metric') or fields[identifier].get('name') or '')
@@ -94,6 +106,8 @@ def backtest_monitor(scope, rules, logic, start=None, end=None):
         coverage = data[series['series_id']]['coverage']
         series['coverage'] = coverage
         series['data_coverage'] = coverages[series['series_id']]
+        if 'read_error' in data[series['series_id']]:
+            continue
         if coverage['start'] is None:
             notice = '截至所选日期没有可读观测，实际覆盖区间为空'
         elif coverage['start'] > start_day.isoformat() or series['point_limit'] == 2000:

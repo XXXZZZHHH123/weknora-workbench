@@ -4,6 +4,7 @@ from datetime import date
 import asyncio
 
 from fastapi import HTTPException
+import httpx
 import pytest
 from sqlalchemy import select,func,text
 from sqlalchemy.exc import DatabaseError
@@ -12,6 +13,96 @@ from tin.integration import kb_facts,page_facts,workbench_scope
 from tin.integration.identity import current_identity
 from tin.models import Indicator
 from tests.test_workbench_sources_v2 import IDENTITY,WB,source
+
+
+@pytest.mark.parametrize('status', [400, 401, 403, 404, 409, 413, 422, 500, 503])
+@pytest.mark.parametrize('upstream_error_detail', [False, True])
+def test_source_error_detail_requires_explicit_caller_opt_in(monkeypatch, status, upstream_error_detail):
+    from tin.provenance import bridge
+    detail = '所选指标含未确认日期，无法确定均线观测顺序，请先核对原表日期'
+    response = httpx.Response(status, json={'detail': detail}, request=httpx.Request('POST', 'https://fixture.invalid/facts'))
+    monkeypatch.setattr(bridge, 'structured_request', lambda *args, **kwargs: response)
+    scope = workbench_scope.WorkbenchScope(IDENTITY, WB, '', 0, {'scope_version': 2}, 'Bearer synthetic',
+        scope_version=2, sources_revision=7)
+    previous = workbench_scope.current_workbench.get()
+    with pytest.raises(HTTPException) as error:
+        page_facts.bounded_facts(scope, ['kb-' + 'a' * 48], 'judgments',
+                                 upstream_error_detail=upstream_error_detail)
+    expected_status = status if upstream_error_detail or status in {400, 401, 403, 404, 409, 413} else 503
+    assert error.value.status_code == expected_status
+    assert type(error.value) is (page_facts.StructuredFactsError if upstream_error_detail else HTTPException)
+    if upstream_error_detail:
+        assert error.value.detail == detail
+    elif status == 413:
+        assert error.value.detail == '当前来源目录或必要读取超过容量限制，请分批处理或拆分来源；未返回部分数据'
+    elif status in {400, 401, 403, 404, 409}:
+        assert error.value.detail == '数据来源、授权或所需指标已变化，请刷新后核对'
+    else:
+        assert error.value.detail == '当前数据来源暂时不可读；未加载历史副本或全量事实'
+    assert workbench_scope.current_workbench.get() is previous
+
+
+def test_opt_in_source_detail_is_limited_to_200_characters(monkeypatch):
+    from tin.provenance import bridge
+    detail = '日期未确认；' * 50
+    response = httpx.Response(409, json={'detail': detail}, request=httpx.Request('POST', 'https://fixture.invalid/facts'))
+    monkeypatch.setattr(bridge, 'structured_request', lambda *args, **kwargs: response)
+    with pytest.raises(HTTPException) as error:
+        page_facts._request(object(), {}, upstream_error_detail=True)
+    assert error.value.status_code == 409
+    assert error.value.detail == detail[:200]
+    assert len(error.value.detail) == 200
+
+
+@pytest.mark.parametrize('payload', [{}, {'detail': {'message': '不可读'}}, ['不可读'], None])
+def test_unreadable_opt_in_detail_uses_generic_reason(monkeypatch, payload):
+    from tin.provenance import bridge
+    response = httpx.Response(409, json=payload, request=httpx.Request('POST', 'https://fixture.invalid/facts'))
+    monkeypatch.setattr(bridge, 'structured_request', lambda *args, **kwargs: response)
+    with pytest.raises(HTTPException) as error:
+        page_facts._request(object(), {}, upstream_error_detail=True)
+    assert error.value.status_code == 409
+    assert error.value.detail == '数据来源、授权或所需指标已变化，请刷新后核对'
+
+
+def test_non_json_opt_in_error_keeps_status_and_generic_reason(monkeypatch):
+    from tin.provenance import bridge
+    response = httpx.Response(500, text='unreadable', request=httpx.Request('POST', 'https://fixture.invalid/facts'))
+    monkeypatch.setattr(bridge, 'structured_request', lambda *args, **kwargs: response)
+    with pytest.raises(HTTPException) as error:
+        page_facts._request(object(), {}, upstream_error_detail=True)
+    assert error.value.status_code == 500
+    assert error.value.detail == '当前数据来源暂时不可读；未加载历史副本或全量事实'
+
+
+def test_opt_in_does_not_classify_invalid_success_as_upstream_rejection(monkeypatch):
+    from tin.provenance import bridge
+    response = httpx.Response(200, json={}, request=httpx.Request('POST', 'https://fixture.invalid/facts'))
+    monkeypatch.setattr(bridge, 'structured_request', lambda *args, **kwargs: response)
+    with pytest.raises(HTTPException) as error:
+        page_facts._request(object(), {}, upstream_error_detail=True)
+    assert type(error.value) is HTTPException
+    assert error.value.status_code == 503
+
+
+@pytest.mark.parametrize('options, expected', [
+    ({}, {'include_invalid': True}),
+    ({'include_invalid': False}, {}),
+    ({'upstream_error_detail': True}, {'include_invalid': True, 'upstream_error_detail': True}),
+])
+def test_paged_observations_preserves_defaults_and_allows_plain_reads(monkeypatch, options, expected):
+    from tin.integration.observation_windows import paged_observations
+    sid = 'kb-' + 'a' * 48
+    calls = []
+    def read(scope, identifiers, module, *, day, points, **kwargs):
+        calls.append(kwargs)
+        assert identifiers == [sid] and module == 'judgments'
+        assert day == '2026-01-02' and points == 2
+        return {'rows': [{'series_id': sid, 'date': '2026-01-01', 'value': 2}]}
+    monkeypatch.setattr(page_facts, 'bounded_facts', read)
+    rows = paged_observations(object(), [sid], date(2026, 1, 2), 2, **options)
+    assert calls == [expected]
+    assert rows[sid] == [{'series_id': sid, 'date': '2026-01-01', 'value': 2}]
 
 
 def test_empty_v2_session_masks_legacy_tables_without_any_full_facts_request(tmp_path,monkeypatch):

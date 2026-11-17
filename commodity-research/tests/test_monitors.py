@@ -375,6 +375,53 @@ def test_same_condition_toggle_does_not_repeat_alert_and_keeps_history(monitor_c
         assert len(monitors.recorded_monitor_alerts(session, scope)) == 1
 
 
+def test_undecidable_current_check_retains_rule_reason_and_alert_transition(monitor_client, monkeypatch):
+    client, state = monitor_client
+    draft_id = seed_draft(state, [{'series_id': SID}, {'series_id': OTHER_SID}])
+    saved = client.post(URL, json=body(state, draft_id=draft_id,
+                                    rules=[rule(), rule(series_id=OTHER_SID)]))
+    assert saved.status_code == 201, saved.text
+    detail = '所选指标含未确认日期，无法确定均线观测顺序，请先核对原表日期'
+    current = {'failed': False}
+
+    def backtest(*args, **kwargs):
+        if not current['failed']:
+            return {'current_state': '触发', 'series': []}
+        return {'current_state': '无法判断', 'condition_state': '无法判断', 'series': [
+            {'series_id': SID, 'rule': rule(), 'state': '无法判断', 'notice': detail,
+             'latest_date': None, 'read_error': detail},
+            {'series_id': OTHER_SID, 'rule': rule(series_id=OTHER_SID), 'state': '触发',
+             'notice': '该指标数据停更', 'latest_date': '2022-11-04', 'freshness': {'stale': True}},
+        ]}
+
+    monkeypatch.setattr(monitors, 'backtest', backtest)
+    check = lambda: monitors.check_monitors(state['scope'], date(2026, 11, 18), '2026-11-18T12:00:00+08:00')
+    assert len(check()['alerts']) == 1
+    current['failed'] = True
+    assert check()['alerts'] == []
+    listed = client.get(URL).json()['items'][0]
+    assert listed['current_state'] == '无法判断'
+    assert listed['rule_states'][0]['state'] == '无法判断'
+    assert listed['rule_states'][0]['notice'] == detail
+    current['failed'] = False
+    assert check()['alerts'] == []
+
+
+@pytest.mark.parametrize('status', [401, 403])
+def test_current_check_does_not_degrade_authorization_errors(monitor_client, monkeypatch, status):
+    client, state = monitor_client
+    client.post(URL, json=body(state))
+
+    def denied(*args, **kwargs):
+        raise HTTPException(status, '当前来源授权已失效')
+
+    monkeypatch.setattr(monitors, 'backtest', denied)
+    with pytest.raises(HTTPException) as caught:
+        monitors.check_monitors(state['scope'], date(2026, 11, 18), '2026-11-18T12:00:00+08:00')
+    assert caught.value.status_code == status
+    assert client.get(URL).json()['items'][0]['current_state'] == '未检查'
+
+
 def test_foreign_artifacts_and_retired_check_states_do_not_consume_active_limit(monitor_client):
     client, state = monitor_client
     request = body(state)

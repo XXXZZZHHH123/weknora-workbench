@@ -105,6 +105,43 @@ def test_three_valued_combination_preserves_unknown(logic, first, state):
     assert result['daily_states'][0]['rule_states'][1] is None
 
 
+@pytest.mark.parametrize('logic,healthy_value,state,triggered', [
+    ('all', 0, '无法判断', None), ('all', 2, '无法判断', None),
+    ('any', 0, '无法判断', None), ('any', 2, '触发', True),
+])
+def test_source_read_error_is_indeterminate_without_discarding_healthy_rules(
+        logic, healthy_value, state, triggered):
+    reason = '所选指标含未确认日期，无法确定均线观测顺序，请先核对原表日期'
+    result = run([rule('healthy'), rule('refused')], {
+        'healthy': history(('2026-01-01', healthy_value)),
+        # A failed read's partial history must not become usable evidence.
+        'refused': history(('2026-01-01', 2), read_error=reason)}, logic)
+    assert result['current_state'] == state
+    assert result['condition_state'] == state
+    assert result['triggered'] is triggered
+    assert all(day['state'] == state for day in result['daily_states'])
+    assert all(day['triggered'] is triggered for day in result['daily_states'])
+    assert all(day['rule_states'] == [healthy_value > 1, None] for day in result['daily_states'])
+    assert result['series'][0]['state'] == ('触发' if healthy_value > 1 else '未触发')
+    assert result['series'][1]['state'] == '无法判断'
+    assert result['series'][1]['notice'] == reason
+    assert result['series'][1]['points'] == []
+    assert reason in result['notices']
+    assert result['trigger_dates'] == (['2026-01-01'] if triggered else [])
+
+
+def test_any_source_read_error_keeps_real_trigger_entries_and_intervals():
+    result = run([rule('healthy'), rule('refused')], {
+        'healthy': history(('2026-01-01', 0), ('2026-01-03', 2), ('2026-01-05', 0)),
+        'refused': history(read_error='日期待核对')}, 'any')
+    assert [day['state'] for day in result['daily_states'][:5]] == [
+        '无法判断', '无法判断', '触发', '触发', '无法判断']
+    assert result['trigger_dates'] == ['2026-01-03']
+    assert result['intervals'][0]['start'] == '2026-01-03'
+    assert result['intervals'][0]['end'] == '2026-01-04'
+    assert result['current_state'] == '无法判断'
+
+
 def test_stale_and_absent_series_have_explicit_status_and_latest_date():
     stale = run([rule()], {'one': history(('2026-01-01', 2), ('2026-01-02', 3))}, end='2026-03-01')
     assert stale['current_state'] == '数据停更' and stale['condition_state'] == '触发'

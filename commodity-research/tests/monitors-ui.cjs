@@ -8,6 +8,7 @@ const rule = {series_id: 'synthetic-a', metric: 'change', operator: '>', value: 
   consecutive_periods: 2, label: '合成观测', definition: '本期变化连续两期大于零'};
 const monthly = {series_id: 'synthetic-monthly', metric: 'value', operator: '>', value: 50,
   consecutive_periods: 1, label: '合成月度观测', definition: '月度观测值大于五十'};
+const sourceError = '所选指标含未确认日期，无法确定均线观测顺序，请先核对原表日期 <img src=x onerror=window.__monitorXss=1>';
 const draft = {draft_id: 'offered-fixture', title: '合成监测 <script>unsafe</script>', sentence: '合成周观测连续增加两期且合成月观测大于五十时提醒我',
   default_window: {start: '2028-01-20', end: '2030-01-20', window_reason: '按数据可用区间回测'},
   logic: 'all', rules: [rule, monthly], confirmations: ['请确认变化按相邻观测计算'], candidates: [
@@ -15,6 +16,8 @@ const draft = {draft_id: 'offered-fixture', title: '合成监测 <script>unsafe<
       coverage: {start: '2029-11-01', end: '2030-01-20', frequency: '周', point_count: 12, stale: true}},
     {rule_index: 0, series_id: 'synthetic-b', name: '合成观测B', unit: '吨', frequency: '周',
       coverage: {start: '2025-01-01', end: '2030-01-20', frequency: '周', point_count: 260, stale: false}},
+    {rule_index: 0, series_id: 'synthetic-unknown', name: '覆盖待核对观测', unit: '吨', frequency: '周',
+      coverage: {start: null, end: null, frequency: '周', unknown: true, reason: sourceError}},
     {rule_index: 1, series_id: 'synthetic-monthly', name: '合成月度观测', unit: '吨', frequency: '月',
       coverage: {start: '2025-01-01', end: '2030-01-20', frequency: '月', point_count: 60, stale: false}}]};
 const backtest = {start: '2030-01-01', end: '2030-01-20', current_state: '触发', trigger_count: 1,
@@ -22,7 +25,7 @@ const backtest = {start: '2030-01-01', end: '2030-01-20', current_state: '触发
   overlap: {start: '2025-01-01', end: '2030-01-20', days: 1846, observation_periods: 60,
     observation_periods_limited: true, observation_periods_bound: 'lower', insufficient: false},
   window_overlap: {start: '2030-01-01', end: '2030-01-20', days: 20, observation_periods: null},
-  rule_coverage: draft.candidates.filter(item => item.series_id !== 'synthetic-a').map(item => ({...item.coverage, series_id: item.series_id, rule_index: item.rule_index})),
+  rule_coverage: draft.candidates.filter(item => ['synthetic-b', 'synthetic-monthly'].includes(item.series_id)).map(item => ({...item.coverage, series_id: item.series_id, rule_index: item.rule_index})),
   last_trigger: '2030-01-15', trigger_dates: ['2030-01-15'], daily_states: [],
   intervals: [{start: '2030-01-15', end: '2030-01-20', duration_periods: 1, duration_days: 6, ongoing: true}],
   series: [{series_id: 'synthetic-b', name: '合成观测B', unit: '吨', frequency: '周', latest_date: '2030-01-15',
@@ -92,6 +95,11 @@ const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'},
     assert.match(await firstRule.locator('.monitor-candidates').innerText(), /合成观测B · 覆盖 2025-01-01 至 2030-01-20/);
     assert.match(await page.getByLabel('第1条规则指标', {exact: true}).textContent(), /覆盖 2029-11-01 至 2030-01-20/);
     assert.equal(await firstRule.locator('[data-overlap-warning]').isVisible(), true);
+    await page.getByLabel('第1条规则指标', {exact: true}).selectOption('synthetic-unknown');
+    assert.equal(await page.getByLabel('第1条规则指标', {exact: true}).inputValue(), 'synthetic-unknown',
+      'A failed coverage read remains selectable');
+    assert.equal(await firstRule.locator('[data-coverage]').innerText(), '覆盖未知：' + sourceError + ' · 周');
+    assert.equal(await page.evaluate(() => window.__monitorXss), undefined);
     await page.getByLabel('第1条规则指标', {exact: true}).selectOption('synthetic-b');
     assert.equal(await firstRule.locator('[data-overlap-warning]').isHidden(), true, 'Changing a candidate recalculates the overlap warning without replacing another choice');
     await page.getByLabel('第1条规则阈值', {exact: true}).fill('7');
@@ -132,6 +140,14 @@ const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'},
     assert.equal(await page.locator('#affairs-alert-list .affairs-row-kind').filter({hasText: '监测触发'}).count(), 1,
       'A repeated check retains exactly one persisted monitor reminder');
     assert.equal(checks.length, 2);
+    Object.assign(saved[0], {current_state: '无法判断', rule_states: [
+      {rule_index: 0, label: rule.label, state: '无法判断', notice: sourceError},
+      {rule_index: 1, label: monthly.label, state: '触发', notice: ''}]});
+    await page.getByRole('button', {name: '刷新列表', exact: true}).click();
+    await page.waitForFunction(() => document.getElementById('monitor-list').textContent.includes('所选指标含未确认日期'));
+    assert.match(await page.locator('#monitor-list').innerText(), /第1条规则.*无法判断.*所选指标含未确认日期/s);
+    assert.match(await page.locator('#monitor-list').innerText(), /第2条规则.*触发/s);
+    assert.equal(await page.evaluate(() => window.__monitorXss), undefined);
     await page.locator('[data-monitor-id="monitor-fixture"]').getByRole('button', {name: '查看', exact: true}).click();
     await page.locator('#monitor-view [data-event-marker="2030-01-15"]').first().waitFor();
     assert.equal(await page.getByLabel('已保存监测回测起始日期', {exact: true}).inputValue(), backtest.start);
@@ -169,6 +185,26 @@ const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'},
     await page.getByRole('button', {name: '回测', exact: true}).click();
     await page.locator('#monitor-backtest-result:not([hidden])').waitFor();
     assert.match(await page.locator('#monitor-backtest-result').innerText(), /规则来源数据重叠.*至多8 个观测期/);
+    returnedBacktest = {...backtest, current_state: '无法判断', condition_state: '无法判断',
+      trigger_count: 0, last_trigger: null, trigger_dates: [], intervals: [],
+      series: [{...backtest.series[0], points: [], quantities: [], state: '无法判断', notice: sourceError},
+        {...backtest.series[1], state: '触发', notice: ''}]};
+    await page.getByRole('button', {name: '回测', exact: true}).click();
+    await page.waitForFunction(() => document.getElementById('monitor-backtest-result').textContent.includes('规则状态 无法判断'));
+    assert.match(await page.locator('#monitor-backtest-result .monitor-summary').innerText(), /当前状态.*无法判断/s);
+    assert.match(await page.locator('[data-monitor-chart="0"] .monitor-chart-note').innerText(), /规则状态 无法判断.*所选指标含未确认日期/s);
+    assert.match(await page.locator('[data-monitor-chart="1"] .monitor-chart-note').innerText(), /规则状态 触发/);
+    await page.locator('#monitor-logic').selectOption('any');
+    returnedBacktest = {...returnedBacktest, current_state: '触发', condition_state: '触发'};
+    await page.getByRole('button', {name: '回测', exact: true}).click();
+    await page.waitForFunction(() => document.querySelector('#monitor-backtest-result .monitor-summary strong')?.textContent === '触发');
+    assert.match(await page.locator('[data-monitor-chart="0"] .monitor-chart-note').innerText(), /规则状态 无法判断.*所选指标含未确认日期/s);
+    returnedBacktest = {...returnedBacktest, current_state: '数据停更', condition_state: '触发'};
+    await page.getByRole('button', {name: '回测', exact: true}).click();
+    await page.waitForFunction(() => document.querySelector('#monitor-backtest-result .monitor-summary strong')?.textContent === '数据停更');
+    assert.match(await page.locator('#monitor-backtest-result .monitor-summary').innerText(), /当前状态.*数据停更.*组合条件.*触发/s);
+    assert.match(await page.locator('[data-monitor-chart="0"] .monitor-chart-note').innerText(), /规则状态 无法判断.*所选指标含未确认日期/s);
+    assert.equal(await page.evaluate(() => window.__monitorXss), undefined);
     assert.deepEqual(env.errors, []);
     const restrictedHtml = f.render('home.html', {restricted: true}, {affairs});
     assert.ok(!restrictedHtml.includes('id="monitors"'), 'The restricted view does not expose monitoring controls');

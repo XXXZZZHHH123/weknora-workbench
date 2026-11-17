@@ -144,8 +144,10 @@ def backtest_conditions(rules, logic, series, start, end):
 
     ``series`` is ``{id: {points: [{date: 'YYYY-MM-DD', value: number|None}],
     name, unit, frequency, ...}}``. Supply observations before ``start`` for
-    change/consecutive warmup. Unknown states use three-valued all/any (a true
-    resolves any; a false resolves all). Intervals count observed combination
+    change/consecutive warmup. Missing states use three-valued all/any (a true
+    resolves any; a false resolves all). A source ``read_error`` makes its rule
+    indeterminate throughout the range: all remains indeterminate, while any
+    can still be resolved by another true rule. Intervals count observed combination
     updates as periods and report calendar duration separately. A condition already true before the
     requested range is not counted as a new entry on its first calendar day.
     """
@@ -154,10 +156,13 @@ def backtest_conditions(rules, logic, series, start, end):
     if first > last or (last - first).days > 6 * 366:
         raise ValueError('回测时间范围应为不超过6年的递增日期')
     histories, charts, events = [], [], set()
+    read_errors = []
     for rule in rules:
         source = series.get(rule['series_id']) or {}
+        read_error = source.get('read_error') or ''
+        read_errors.append(read_error)
         points, dates = [], set()
-        for point in source.get('points') or []:
+        for point in ([] if read_error else source.get('points') or []):
             stamp = _day(point['date']).isoformat()
             if stamp > last.isoformat():
                 continue
@@ -178,11 +183,14 @@ def backtest_conditions(rules, logic, series, start, end):
         condition_state = history[-1][1] if history else None
         notice = (f'该指标最新数据 {latest}，监测可能不会更新'
                   if freshness and freshness['stale'] else '')
-        if condition_state is None:
+        if read_error:
+            notice = read_error
+        elif condition_state is None:
             notice = '；'.join(filter(None, [notice, '判定窗口包含缺失观测或观测期数不足，无法判断本条规则']))
         charts.append({'series_id': rule['series_id'], 'name': source.get('name') or rule.get('label') or '',
             'unit': source.get('unit') or '', 'frequency': source.get('frequency') or '',
-            'rule': rule, 'state': '无数据' if condition_state is None else '触发' if condition_state else '未触发',
+            'rule': rule, 'state': ('无法判断' if read_error else '无数据' if condition_state is None
+                                   else '触发' if condition_state else '未触发'),
             'points': [point for point in points if point['date'] >= first.isoformat()],
             'quantities': [{'date': stamp, 'value': value} for stamp, _state, value in history
                            if stamp >= first.isoformat()],
@@ -203,7 +211,7 @@ def backtest_conditions(rules, logic, series, start, end):
             while indexes[index] < len(history) and history[indexes[index]][0] <= stamp:
                 _date, states[index], current_values[index] = history[indexes[index]]
                 indexes[index] += 1
-        combined = combine_states(states, logic)
+        combined = (None if any(read_errors) and logic == 'all' else combine_states(states, logic))
         if combined is True and previous is not True:
             opened = {'start': stamp, 'end': stamp, 'duration_periods': 0, 'duration_days': 1,
                       'ongoing': True, 'started_before_range': stamp < first.isoformat()}
@@ -234,14 +242,15 @@ def backtest_conditions(rules, logic, series, start, end):
             next_stamp = next(snapshot_dates, None)
         triggered = current['triggered']
         daily.append({'date': stamp, **current,
-                      'state': '无数据' if triggered is None else '触发' if triggered else '未触发'})
+                      'state': ('无法判断' if triggered is None and any(read_errors) else
+                                '无数据' if triggered is None else '触发' if triggered else '未触发')})
     condition_state = daily[-1]['state']
     stale = any(chart['freshness'] and chart['freshness']['stale'] for chart in charts)
-    current_state = ('无数据' if condition_state == '无数据' else
+    current_state = (condition_state if condition_state in {'无数据', '无法判断'} else
                      '数据停更' if stale else condition_state)
     return {'start': first.isoformat(), 'end': last.isoformat(), 'logic': logic,
             'daily_states': daily, 'trigger_dates': entries, 'intervals': intervals,
             'trigger_count': len(entries), 'last_trigger': entries[-1] if entries else None,
             'current_state': current_state, 'condition_state': condition_state,
-            'triggered': current_state == '触发', 'series': charts,
+            'triggered': None if current_state == '无法判断' else current_state == '触发', 'series': charts,
             'notices': list(dict.fromkeys(chart['notice'] for chart in charts if chart['notice']))}

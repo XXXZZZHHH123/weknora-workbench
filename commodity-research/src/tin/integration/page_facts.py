@@ -19,6 +19,10 @@ SERIES = re.compile(r'kb-[0-9a-f]{48}\Z')
 LEGACY_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z')
 
 
+class StructuredFactsError(HTTPException):
+    """An upstream facts rejection exposed to a caller that opted into details."""
+
+
 @contextmanager
 def catalog_read_scope():
     """Reuse verified metadata only within this synchronous request.
@@ -76,12 +80,28 @@ def page_read_scope(module, *, series_ids=None, day=None, template_id=None, poin
         _page.reset(marker)
 
 
-def _request(scope, body):
+def _request(scope, body, *, upstream_error_detail=False):
     from tin.integration.workbench_scope import current_workbench
     from tin.provenance.bridge import structured_request
     marker = current_workbench.set(scope)
     try:
         response = structured_request('POST','/api/research/facts',body,return_error_response=True)
+        if upstream_error_detail and 400 <= response.status_code < 600:
+            detail = None
+            try:
+                payload = response.json()
+                if isinstance(payload, dict) and isinstance(payload.get('detail'), str):
+                    detail = payload['detail'][:200]
+            except (ValueError, TypeError):
+                pass
+            if detail is None:
+                if response.status_code == 413:
+                    detail = '当前来源目录或必要读取超过容量限制，请分批处理或拆分来源；未返回部分数据'
+                elif response.status_code in {400,401,403,404,409}:
+                    detail = '数据来源、授权或所需指标已变化，请刷新后核对'
+                else:
+                    detail = '当前数据来源暂时不可读；未加载历史副本或全量事实'
+            raise StructuredFactsError(response.status_code, detail)
         if response.status_code==413:
             raise HTTPException(413,'当前来源目录或必要读取超过容量限制，请分批处理或拆分来源；未返回部分数据')
         if response.status_code in {400,401,403,404,409}:
@@ -408,7 +428,7 @@ def _saved_plan(scope, request):
         return plans,origins
 
 
-def bounded_facts(scope, identifiers, module, *, day=None, points=2, same_day=None, origins=None, direct_only=False, include_invalid=False, include_display_precision=False):
+def bounded_facts(scope, identifiers, module, *, day=None, points=2, same_day=None, origins=None, direct_only=False, include_invalid=False, include_display_precision=False, upstream_error_detail=False):
     identifiers = list(dict.fromkeys(identifiers))
     query_ids=[identifier for identifier in identifiers if isinstance(identifier,str) and SERIES.fullmatch(identifier)]
     legacy_unavailable=set(identifiers)-set(query_ids)
@@ -445,7 +465,8 @@ def bounded_facts(scope, identifiers, module, *, day=None, points=2, same_day=No
         if module != 'indicators' or scope.scope_version != 2 or scope.restricted or any(source['delegated'] for source in targets):
             raise HTTPException(403, '显示精度仅用于直接授权的指标核实')
         body['include_display_precision'] = True
-    result = _request(scope,body)
+    error_options = {'upstream_error_detail': True} if upstream_error_detail else {}
+    result = _request(scope,body,**error_options)
     unavailable = result.get('unavailable_series_ids',[])
     if (not isinstance(unavailable,list) or any(identifier not in query_ids for identifier in unavailable)
             or len(unavailable)!=len(set(unavailable)) or direct_only and unavailable):

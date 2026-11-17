@@ -5,8 +5,9 @@ from fastapi import HTTPException
 
 
 def paged_observations(scope, identifiers, day, limit, *, direct_only=False,
-                       versions=None, version_notice='均线来源在分页期间变化，请刷新'):
-    """Page backward by each series' real dates, retaining invalid observations.
+                       versions=None, version_notice='均线来源在分页期间变化，请刷新',
+                       include_invalid=True, upstream_error_detail=False):
+    """Page backward by each series' real dates, retaining invalid slots by default.
 
     ``versions`` may be shared across window groups in one read. Catalog and
     facts envelopes vary with the query; only binding snapshot versions can be
@@ -29,8 +30,12 @@ def paged_observations(scope, identifiers, day, limit, *, direct_only=False,
             for offset in range(0, len(ids), batch_size):
                 selected = ids[offset:offset + batch_size]
                 options = {'direct_only': True} if direct_only else {}
+                if include_invalid:
+                    options['include_invalid'] = True
+                if upstream_error_detail:
+                    options['upstream_error_detail'] = True
                 facts = bounded_facts(scope, selected, 'judgments', day=boundary.isoformat(),
-                                      points=size, include_invalid=True, **options)
+                                      points=size, **options)
                 for binding, version in facts.get('source_versions', {}).items():
                     if binding in versions and versions[binding] != version:
                         raise HTTPException(409, version_notice)
