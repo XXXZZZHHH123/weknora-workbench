@@ -28,6 +28,7 @@ anthropic>=1.8
 openpyxl>=3.1.5
 xlrd>=2.0.1
 charset-normalizer>=3.3
+python-pptx>=1.0.2
 
 # 测试
 pytest>=8.3

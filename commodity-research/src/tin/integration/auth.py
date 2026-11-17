@@ -26,6 +26,11 @@ READ_ONLY_POSTS = frozenset({"/api/sn/diagram/values", "/api/sn/diagram/markdown
                              "/api/sn/research-strategies/citation-preview"})
 
 
+def is_read_only_post(path):
+    return path in READ_ONLY_POSTS or bool(re.fullmatch(
+        r'/api/sn/reports/[0-9]{4}-[0-9]{2}-[0-9]{2}/(?:daily|weekly)/ppt', path))
+
+
 @dataclass
 class ResearchSession:
     token: str
@@ -235,7 +240,7 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                         or (expected_user is not None and expected_user != identity.user_id)):
                     raise HTTPException(403, "当前页面的账号或空间已改变，请重新打开商品研究")
                 if request.method not in {"GET", "HEAD", "OPTIONS"}:
-                    if (not identity.can_write and route_path not in READ_ONLY_POSTS
+                    if (not identity.can_write and not is_read_only_post(route_path)
                             and not path.startswith("/api/library") and not global_analysis_dismiss):
                         raise HTTPException(403, "当前空间角色只有读取权限")
                     if not _same_origin(request):
@@ -272,7 +277,7 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
                 if source_preparation_required(route_path):
                     raise HTTPException(409, "请在绑定知识库准备资料，并从本工作台的资料与来源入口核对后导入")
                 if request.method not in {"GET", "HEAD", "OPTIONS"}:
-                    if not identity.can_write and route_path not in READ_ONLY_POSTS:
+                    if not identity.can_write and not is_read_only_post(route_path):
                         raise HTTPException(403, "当前空间角色只有读取权限")
                     if not _same_origin(request):
                         raise HTTPException(403, "请求来源不匹配")
