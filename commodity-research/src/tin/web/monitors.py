@@ -70,6 +70,11 @@ class MonitorInput(Strict):
         return value.strip()
 
 
+class BacktestInput(MonitorInput):
+    start: str | None = Field(default=None, strict=True)
+    end: str | None = Field(default=None, strict=True)
+
+
 class DraftInput(Strict):
     sentence: str = Field(min_length=1, max_length=4000, strict=True)
     model_id: str = Field(min_length=1, max_length=128, strict=True)
@@ -318,6 +323,22 @@ def _draft_context(scope):
     return dimensions, catalog
 
 
+def _candidate_metadata(scope, candidates, rules):
+    from tin.web.chart_data import catalog_fields, chart_read_scope, cutoff
+    from tin.web.monitor_coverage import default_window, read_coverage, rule_overlap
+    identifiers = list(dict.fromkeys(item['series_id'] for item in candidates))
+    with chart_read_scope():
+        fields = catalog_fields(scope, identifiers)
+        if set(fields) != set(identifiers):
+            raise HTTPException(422, '候选指标不在当前研究台授权目录中，请重新生成草稿')
+        coverage = read_coverage(scope, identifiers, fields=fields)
+    for item in candidates:
+        item['coverage'] = coverage[item['series_id']]
+    selected_fields = {rule['series_id']: fields[rule['series_id']] for rule in rules}
+    return {'default_window': default_window(selected_fields, coverage, cutoff()),
+            'overlap': rule_overlap(rules, coverage)}
+
+
 async def draft_from_text(scope, sentence, model_id):
     from tin.web import judgment_recall, strategy_text
     dimensions, catalog = await run_in_threadpool(_draft_context, scope)
@@ -356,6 +377,7 @@ async def draft_from_text(scope, sentence, model_id):
                 'name': field['name'], 'unit': field.get('unit') or '', 'frequency': field.get('frequency') or ''})
     result = {'title': output.title, 'sentence': sentence, 'logic': output.logic,
               'rules': rules, 'confirmations': output.confirmations, 'candidates': candidates}
+    result.update(await run_in_threadpool(_candidate_metadata, scope, candidates, rules))
     with workbench_scope.artifact_session(scope) as session:
         row = _new_artifact(scope, DRAFT_MODULE, output.title,
             {**result, 'workbench_id': scope.workbench_id})
@@ -365,9 +387,24 @@ async def draft_from_text(scope, sentence, model_id):
     return result
 
 
-def backtest(scope, rules, logic, *, end=None):
+def backtest(scope, rules, logic, *, start=None, end=None):
     from tin.web.monitor_data import backtest_monitor
-    return backtest_monitor(scope, rules, logic, end=end)
+    return backtest_monitor(scope, rules, logic, start=start, end=end)
+
+
+def _check_state(data):
+    """A historical condition cannot create today's reminder from stale data."""
+    stale = [item for item in data.get('series', [])
+             if (item.get('freshness') or {}).get('stale')]
+    if not stale and data['current_state'] != '数据停更':
+        return data['current_state']
+    dates = [item.get('latest_valid_date') or item.get('end') or item.get('latest_date')
+             for item in stale]
+    if not any(dates):
+        dates = [item.get('latest_valid_date') or item.get('latest_date')
+                 for item in data.get('series', [])]
+    latest = min(stamp for stamp in dates if stamp) if any(dates) else None
+    return f'数据停更（最新 {latest}）' if latest else '数据停更'
 
 
 def recorded_monitor_alerts(session, scope):
@@ -406,7 +443,7 @@ def check_monitors(scope, cutoff, checked):
                 # start a new lifecycle without erasing previously recorded alerts.
                 key = _condition_key(_body(row))
                 same_condition = old.get('condition_key') == key
-                current = data['current_state']
+                current = _check_state(data)
                 determined = current in {'触发', '未触发'}
                 triggered = current == '触发'
                 preceding = old.get('triggered', False) if same_condition else False
@@ -469,11 +506,16 @@ async def draft_route(request: Request):
 
 
 @router.post('/backtest')
-async def backtest_route(request: Request):
+async def backtest_route(request: Request, start: str | None = None, end: str | None = None):
     scope = require_scope()
-    body = await read_body(request, MonitorInput)
+    body = await read_body(request, BacktestInput)
+    if ((start is not None and body.start is not None and start != body.start)
+            or (end is not None and body.end is not None and end != body.end)):
+        raise HTTPException(422, '回测起止日期参数不一致')
     rules = await run_in_threadpool(validate_input, scope, body)
-    return await run_in_threadpool(backtest, scope, rules, body.logic)
+    return await run_in_threadpool(backtest, scope, rules, body.logic,
+                                  start=body.start if body.start is not None else start,
+                                  end=body.end if body.end is not None else end)
 
 
 @router.post('', status_code=201)
@@ -484,13 +526,13 @@ async def create_route(request: Request):
 
 
 @router.get('/{identifier}/backtest')
-def saved_backtest_route(identifier: str):
+def saved_backtest_route(identifier: str, start: str | None = None, end: str | None = None):
     scope = require_scope()
     with workbench_scope.artifact_session(scope) as session:
         row = _owned(session, scope, identifier)
         body = _body(row)
     _validate_catalog(scope, body['rules'])
-    return backtest(scope, body['rules'], body['logic'])
+    return backtest(scope, body['rules'], body['logic'], start=start, end=end)
 
 
 @router.patch('/{identifier}')

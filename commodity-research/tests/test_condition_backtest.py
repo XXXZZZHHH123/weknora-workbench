@@ -173,6 +173,12 @@ def complete_window_transport(monkeypatch):
 
 def attach_reader(state, rules, logic='all'):
     from tin.web.monitor_data import backtest_monitor
+    # Catalog coverage describes the full source, independently of the bounded
+    # historical window requested below.
+    for sid, field in state.fields.items():
+        valid = sorted(stamp for stamp, value in state.observations.get(sid, []) if value is not None)
+        field.update(first_valid_date=valid[0] if valid else None,
+                     last_valid_date=valid[-1] if valid else None, valid_count=len(valid))
 
     @state.app.get('/monitor-data-test')
     def read(day: str = '2024-03-29', start: str | None = None):
