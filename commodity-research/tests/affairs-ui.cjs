@@ -11,7 +11,7 @@ class Element {
   append(...items){this.children.push(...items);}
   replaceChildren(...items){this.children=items;}
 }
-function setup({failure=false,zeroRules=false,checkable=true}={}) {
+function setup({failure=false,zeroRules=false,checkable=true,monitoring=false,persisted=false}={}) {
   const nodes=Object.fromEntries(['affairs-check','affairs-check-status','affairs-alert-list'].map(id=>[id,new Element()]));
   nodes['affairs-check'].disabled=!checkable;
   nodes['affairs-alert-list'].children.push('Original persisted alert');
@@ -19,7 +19,9 @@ function setup({failure=false,zeroRules=false,checkable=true}={}) {
   const context={window:{RESEARCH_PREFIX:'/research/workbenches/fixture'},
     document:{getElementById:id=>nodes[id],createElement:()=>new Element()},
     async researchFetch(url,options){requests.push({url,options});return {ok:!failure,json:async()=>failure?{detail:'Source access changed'}:{
-      alerts:zeroRules?[]:[{kind:'triggered',title:'<img onerror=unsafe>',detail:'Actual bounded result',href:'/sn/judgment?judgment_id=7',trade_date:'2026-01-01',evidence_dates:['2025-12-30']}],
+      alerts:zeroRules?[]:[{kind:monitoring?'monitor':'triggered',title:'<img onerror=unsafe>',detail:'Actual bounded result',href:monitoring?'/?monitor=fixture-id#monitors':'/sn/judgment?judgment_id=7',trade_date:'2026-01-01',evidence_dates:['2025-12-30']}],
+      ...(persisted?{monitor_alerts:[{kind:'monitor',title:'Persistent monitor',detail:'Entered trigger',href:'/?monitor=fixture-id#monitors'}]}:{}),
+      checked_monitors:monitoring?1:0,
       checked_at:'2026-01-02 10:00',checked_rules:zeroRules?0:1,partial:false,notice:zeroRules?'尚未保存可检查规则':'Read-only check; no signal written'}};}};
   vm.runInNewContext(source,context);
   return {nodes,requests};
@@ -50,5 +52,15 @@ const settle=()=>new Promise(resolve=>setImmediate(resolve));
   const double=setup();const automatic=double.nodes['affairs-check'].fire('click');await settle();
   const first=double.nodes['affairs-check'].fire('click');const second=double.nodes['affairs-check'].fire('click');await Promise.all([automatic,first,second]);
   assert.equal(double.requests.length,2,'Clicks during a running check must not start concurrent fact checks');
-  console.log('6 isolated affairs UI interaction checks passed');
+  const monitor=setup({monitoring:true});await settle();
+  assert.equal(monitor.nodes['affairs-alert-list'].children[0].href,'/research/workbenches/fixture/?monitor=fixture-id#monitors');
+  assert.match(JSON.stringify(monitor.nodes['affairs-alert-list'].children[0]),/监测触发/);
+  const checkedMonitor=setup({zeroRules:true,monitoring:true});await settle();
+  assert.equal(checkedMonitor.nodes['affairs-alert-list'].children[0].textContent,'暂无预警记录','A checked monitor without an alert is not an absence of checkable rules');
+  const history=setup({monitoring:true,persisted:true});await settle();
+  assert.equal(history.nodes['affairs-alert-list'].children.length,1,'A persisted monitor alert replaces its newly returned copy');
+  assert.match(JSON.stringify(history.nodes['affairs-alert-list'].children),/Persistent monitor/);
+  await history.nodes['affairs-check'].fire('click');
+  assert.equal(history.nodes['affairs-alert-list'].children.length,1,'Repeated checks retain one copy of the persisted reminder');
+  console.log('9 isolated affairs UI interaction checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

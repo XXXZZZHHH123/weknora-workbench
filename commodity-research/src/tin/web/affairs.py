@@ -253,6 +253,9 @@ def build_affairs(session, scope, *, today=None, limit=8):
                                'href': '/sn/reports?date=' + day + '&period=weekly'})
     alerts, truncated = _recorded_alerts(session, judgments, limit)
     partial |= truncated
+    from tin.web.monitors import recorded_monitor_alerts, _rows, _body
+    alerts.extend(recorded_monitor_alerts(session, scope))
+    enabled_monitors = sum(_body(row)['enabled'] for row in _rows(session, scope))
     review.sort(key=lambda item: item['due_date'])
     counts = {'progress': len(progress), 'review': len(review), 'approvals': len(approvals) + len(observations),
               'reports': len(reports)}
@@ -264,7 +267,7 @@ def build_affairs(session, scope, *, today=None, limit=8):
         ('market', '市场总览', '/sn'), ('judgments', '研究判断', '/sn/judgment'),
         ('strategies', '策略', '/sn/strategies'), ('diagram', '产业图', '/sn/diagram'),
         ('reports', '日报与周报', '/sn/reports')] if module in modules]
-    can_check = ('judgments' in modules and formal is not None and formal.status != '已归档') or monitored > 0
+    can_check = ('judgments' in modules and formal is not None and formal.status != '已归档') or monitored > 0 or enabled_monitors > 0
     return {'alerts': alerts, 'progress': progress[:limit], 'review': review[:limit], 'approvals': approvals[:limit],
         'observations': observations[:limit], 'reports': reports[:limit], 'report_links': report_links, 'counts': counts, 'sections': sections, 'shortcuts': shortcuts, 'partial': partial,
         'record_budget': RECORD_BUDGET, 'signal_budget': SIGNAL_BUDGET, 'monitored_strategies': monitored,

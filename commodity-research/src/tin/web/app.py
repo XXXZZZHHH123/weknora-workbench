@@ -273,6 +273,8 @@ from tin.web.report_dimension_drafts import router as report_dimension_drafts_ro
 app.include_router(report_dimension_drafts_router)
 from tin.web.affairs import router as affairs_router
 app.include_router(affairs_router)
+from tin.web.monitors import router as monitors_router
+app.include_router(monitors_router)
 from tin.web.market import build_market_router, market_catalog as market_catalog_data, saved_core_cards
 from tin.web.focus_suggestions import router as focus_suggestions_router
 app.include_router(focus_suggestions_router)

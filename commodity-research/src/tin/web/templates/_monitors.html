@@ -1,0 +1,27 @@
+<section id="monitors" class="affairs-group" aria-labelledby="monitors-title">
+  <div class="affairs-section-head"><h2 id="monitors-title">监测</h2></div>
+  <div class="monitor-content">
+    <label for="monitor-sentence" class="affairs-row-title">一句话建监测</label>
+    <p class="affairs-description">把需要关注的变化写下来，核对模型草稿和历史回测后保存。数据需研究员更新，仅提供站内提醒。</p>
+    <textarea id="monitor-sentence" rows="3" maxlength="4000" placeholder="描述指标、变化方向、阈值和连续期数" aria-label="监测需求原话"></textarea>
+    <div class="monitor-fields"><label>模型 <select id="monitor-model" disabled><option value="">正在读取模型…</option></select></label><button id="monitor-generate" type="button" class="affairs-check" disabled>生成草稿</button></div>
+  </div>
+  <p id="monitor-status" class="affairs-status" role="status" aria-live="polite"></p>
+  <div id="monitor-draft" hidden>
+    <div class="affairs-section-head"><h2>监测草稿</h2><button id="monitor-cancel" type="button" class="affairs-check">收起草稿</button></div>
+    <div class="monitor-content">
+      <div class="monitor-fields"><label>标题 <input id="monitor-title" type="text" maxlength="120"></label><label>组合方式 <select id="monitor-logic"><option value="all">全部满足（且）</option><option value="any">任一满足（或）</option></select></label></div>
+      <div id="monitor-rules"></div>
+      <div id="monitor-confirmations"><div class="affairs-row-title">需要你确认的口径</div><ul id="monitor-confirmation-list" class="affairs-row-detail"></ul></div>
+      <div class="monitor-fields"><button id="monitor-backtest" type="button" class="affairs-check">回测</button><label><input id="monitor-confirm" type="checkbox"> 我已核对指标、规则和口径</label><button id="monitor-save" type="button" class="affairs-check" disabled>保存监测</button></div>
+      <p class="affairs-row-detail">规则或组合方式调整后请重新回测。连续期数按指标观测期计算；历史触发标记表示组合条件首次进入触发的日期。</p>
+      <div id="monitor-backtest-result" hidden></div>
+    </div>
+  </div>
+  <div class="affairs-section-head"><h2>我的监测</h2><button id="monitor-refresh" type="button" class="affairs-check">刷新列表</button></div>
+  <div id="monitor-list"><div class="affairs-empty">正在读取监测…</div></div>
+  <div id="monitor-view" hidden>
+    <div class="affairs-section-head"><h2 id="monitor-view-title">历史回测</h2><button id="monitor-view-close" type="button" class="affairs-check">收起</button></div>
+    <div id="monitor-view-result" class="monitor-content"></div>
+  </div>
+</section>
