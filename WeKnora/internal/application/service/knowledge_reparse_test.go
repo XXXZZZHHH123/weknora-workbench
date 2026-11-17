@@ -18,6 +18,7 @@ func TestResetKnowledgeForReparseClearsPreviousAttemptState(t *testing.T) {
 		ErrorMessage:         "embedding request failed: context deadline exceeded",
 		EmbeddingModelID:     "old-model",
 		PendingSubtasksCount: 3,
+		Metadata:             types.JSON(`{"_content_processing_v1":{"text_chunk_count":8,"image_count":2},"custom":"kept"}`),
 	}
 	kb := &types.KnowledgeBase{EmbeddingModelID: "new-model"}
 
@@ -30,4 +31,5 @@ func TestResetKnowledgeForReparseClearsPreviousAttemptState(t *testing.T) {
 	require.Empty(t, knowledge.ErrorMessage)
 	require.Equal(t, "new-model", knowledge.EmbeddingModelID)
 	require.Zero(t, knowledge.PendingSubtasksCount)
+	require.JSONEq(t, `{"custom":"kept"}`, string(knowledge.Metadata))
 }

@@ -185,6 +185,15 @@ func TestProcessDocumentChunksStoredInlineImagesOverLegacyLimit(t *testing.T) {
 			require.Len(t, storage.saved, count, "each inline image must be stored")
 			require.Len(t, uniqueInlineStrings(storage.saved), count, "each stored image must have a unique URL")
 			require.Len(t, catalog.binds, count, "all stored images, including over-limit ones, must be bound")
+			var metadata map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(knowledge.Metadata, &metadata))
+			var receipt struct {
+				Images int `json:"image_count"`
+				Chunks int `json:"text_chunk_count"`
+			}
+			require.NoError(t, json.Unmarshal(metadata[contentProcessingKey], &receipt))
+			require.Equal(t, count, receipt.Images, "count all saved images, including those outside the AI quota")
+			require.Equal(t, len(chunkRepo.chunks), receipt.Chunks)
 			var chunkText strings.Builder
 			for _, chunk := range chunkRepo.chunks {
 				chunkText.WriteString(chunk.Content)

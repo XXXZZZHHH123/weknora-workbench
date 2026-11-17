@@ -149,6 +149,20 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                 c['metric']=metric.strip()
                 if c.get('unit') is not None and (not isinstance(c['unit'],str) or not c['unit'].strip()):
                     raise ReviewValidationError(f'{c.get("column")} 列的单位填写无效。请按原表填写单位；原表没有注明时留空，不要只填写空格。', field='unit', column=c.get('column'))
+                from .field_metadata import FieldMetadata
+                FieldMetadata(role=c.get('field_role'), unit=c.get('unit'), frequency=c.get('frequency'))
+                if c.get('unit_cells') is not None:
+                    locations = c['unit_cells']
+                    if not c.get('unit') or not isinstance(locations, list) or not 1 <= len(locations) <= 16:
+                        raise ReviewValidationError('单位须保留真实来源单元格。', field='unit_cells', column=c.get('column'))
+                    for location in locations:
+                        if location == '$sheet_title':
+                            continue
+                        match = re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]*)', location) if isinstance(location, str) else None
+                        if not match or not 1 <= int(match.group(2)) < start:
+                            raise ReviewValidationError('单位来源须位于数据前的原表元数据中。', field='unit_cells', cells=locations)
+                        _column(match.group(1), sheet_scan['columns'], field='unit_cells')
+                    c['unit_cells'] = list(dict.fromkeys(locations))
                 if c.get('frequency') is not None or c.get('frequency_cells') is not None:
                     frequency, locations = c.get('frequency'), c.get('frequency_cells')
                     if not isinstance(frequency, str) or not frequency.strip() or len(frequency) > 32:
@@ -156,6 +170,8 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                     if not isinstance(locations, list) or not 1 <= len(locations) <= 16:
                         raise ReviewValidationError('频率须保留至少一个真实元数据单元格。', field='frequency_cells', column=c.get('column'))
                     for location in locations:
+                        if location == '$sheet_title':
+                            continue
                         match = re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]*)', location) if isinstance(location, str) else None
                         if not match or not 1 <= int(match.group(2)) < start:
                             raise ReviewValidationError('频率来源必须位于数据起始行之前的原表元数据中。', field='frequency_cells', cells=locations)
@@ -308,20 +324,36 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                        [column_index_from_string(b[k]) for bi,b in rowblocks for k in ('date_column','category_column') if b.get(k) and (k!='date_column' or b['date_mode'] not in ('shared_cell','none'))]+[1])
             # Read declared header/date anchors once; templates verify local headers too.
             refs={cell for bi,b in rowblocks for c in b['columns'] for cell in c['header_cells']}
-            refs.update(cell for bi,b in rowblocks for c in b['columns'] for cell in c.get('frequency_cells', []))
+            refs.update(cell for bi,b in rowblocks for c in b['columns'] for field in ('frequency_cells', 'unit_cells') for cell in c.get(field, []))
             refs.update(b['date_cell'] for bi,b in rowblocks if b['date_mode']=='shared_cell')
             refs.update(cell for bi,b in rowblocks for cell in b.get('header_expectations',{}))
+            refs.discard('$sheet_title')
             maxref=max([int(re.search(r'[0-9]+',x).group()) for x in refs] or [1])
             refwidth=max([column_index_from_string(re.match(r'[A-Z]+',x).group()) for x in refs] or [1])
             refvalues={f'{get_column_letter(ci)}{rn}':cell.value for rn,row in enumerate(ws.iter_rows(max_row=maxref,max_col=refwidth),1) for ci,cell in enumerate(row,1) if f'{get_column_letter(ci)}{rn}' in refs}
+            refvalues['$sheet_title'] = ws.title
             anchor_dates={}
             for bi,b in rowblocks:
                 for column in b['columns']:
-                    for cell in column.get('frequency_cells', []):
-                        value = refvalues.get(cell)
-                        if value is None or str(value).strip() != column['frequency']:
-                            raise ReviewValidationError(f'{name}!{cell} 的实际频率元数据与映射不一致，请核对原文。',
-                                sheet=name, block_index=bi, field='frequency_cells', cells=[cell])
+                    if column.get('unit') and not column.get('unit_cells'):
+                        # Bind an explicit legacy/user declaration to actual source text.
+                        # This validates the supplied unit; it never chooses a unit.
+                        locations = [cell for cell in column['header_cells']
+                                     if refvalues.get(cell) is not None and column['unit'] in str(refvalues[cell])]
+                        if not locations:
+                            raise ReviewValidationError('单位声明缺少原表文字依据，请核对真实来源。',
+                                sheet=name, block_index=bi, field='unit', column=column['column'])
+                        column['unit_cells'] = locations
+                    from .ai_review import _header_ref_covers_column
+                    for field in ('unit', 'frequency'):
+                        for cell in column.get(field + '_cells', []):
+                            if not _header_ref_covers_column(cell, column['column'], byname[name]):
+                                raise ReviewValidationError('元数据来源未覆盖该字段原列。',
+                                    sheet=name, block_index=bi, field=field + '_cells', cells=[cell])
+                            value = refvalues.get(cell)
+                            if value is None or column[field] not in str(value):
+                                raise ReviewValidationError(f'{name}!{cell} 的实际元数据与映射不一致，请核对原文。',
+                                    sheet=name, block_index=bi, field=field + '_cells', cells=[cell])
                 for cell,expected in b.get('header_expectations',{}).items():
                     if str(refvalues.get(cell))!=expected:raise ReviewValidationError(f'{name}!{cell} 区块表头已变化：原规则为 {expected!r}，原文件实际为 {refvalues.get(cell)!r}。模板不能直接复用，请重新识别或核对该单元格后更新映射。', sheet=name, block_index=bi, field='header_rows', cells=[cell])
                 if b['date_mode']=='shared_cell':
@@ -346,6 +378,11 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                         'header_cells':c['header_cells'],'date_mode':b['date_mode'],
                         'region_name':b.get('name',f'区块{bi+1}'),'block_index':bi,
                         'description':f"{name} / {c['metric']}；{date_note}；"+('单位：'+c['unit'] if c.get('unit') else '单位待确认')}
+                    from .field_metadata import FieldMetadata
+                    metadata = FieldMetadata(role=c.get('field_role'), unit=c.get('unit'), frequency=c.get('frequency'),
+                        **{field + '_evidence': [dict(sheet=name, cell=cell, text=str(refvalues[cell]))
+                           for cell in c.get(field + '_cells', [])] for field in ('unit', 'frequency')})
+                    item['field_metadata'] = metadata.model_dump()
                     if c.get('exchange_rate'):item['exchange_rate']=deepcopy(c['exchange_rate'])
                     if c.get('frequency'):
                         item.update(frequency=c['frequency'], frequency_cells=list(c['frequency_cells']))
@@ -403,6 +440,8 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                         elif cell.data_type=='e':status='excel_error'
                         elif isinstance(raw,(int,float)) and not isinstance(raw,bool) and isfinite(raw):status='valid';value=raw
                         else:status='unexpected_text' if isinstance(raw,str) else 'invalid_value'
+                        if c.get('field_role') in ('text_dimension', 'annotation') and raw is not None:
+                            status = c['field_role']; value = None
                         if status!='valid':counts[status]+=1;firsts.setdefault(status,coord)
                         result['observations'].append({'series_id':sid,'date':dateval,'period':period,'period_cell':f"{b['date_column']}{rn}" if period_mode else None,'value':value,'source_cell':coord,
                             'date_cell':datecell,'category_cell':category_cell,'category':category,'block_index':bi,

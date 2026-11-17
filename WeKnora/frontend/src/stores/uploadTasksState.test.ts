@@ -136,7 +136,9 @@ test('pickNextToStart skips items whose conflict key is already in flight', () =
 test('classifyUploadResult reads success, duplicate rejections and failures', () => {
   assert.deepEqual(
     classifyUploadResult({ success: true, data: { id: 'k1', parse_status: 'pending' } }),
-    { kind: 'uploaded', knowledgeId: 'k1', parseStatus: 'pending' },
+    { kind: 'uploaded', knowledgeId: 'k1', parseStatus: 'pending', coverageSummary: [
+      '正文：未统计', '图片：未统计', '表格：未统计', '可计算数据：未统计', '内容覆盖尚未核验',
+    ] },
   )
   assert.deepEqual(
     classifyUploadResult({ status: 409, success: false, code: 'duplicate_file', message: 'exists', data: { id: 'k0' } }),

@@ -15,6 +15,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter, range_boundaries
 
 RULE_VERSION = 'generic-layout-v1'
+# Layout-only candidate labels; never persisted as a unit declaration.
 _UNITS = {'元/吨','元/件','元/米','元/公斤','美元/公斤','美元/磅','美元/吨','美分/磅','吨','万吨','千吨','包','万包','公顷','万公顷','亩','万亩','%','％','亿元','万元','美元','万美元','亿美元','万件','件','万米','米','天','摄氏度','华氏度','卢比/公担'}
 
 
@@ -181,14 +182,11 @@ def scan_workbook(path, sample_rows=40, *, use_reviewed_mappings=True, progress=
                     if not any(v is not None for v in sample) and not direct:
                         continue
                     labels=[str(v).strip() for _,v,_ in entries if isinstance(v,str) and v.strip() and v.strip() not in _UNITS]
-                    units=[str(v).strip() for _,v,_ in entries if str(v).strip() in _UNITS]
-                    for label in labels:
-                        units.extend(u for u in re.findall(r'[（(]([^()（）]+)[）)]',label) if u in _UNITS)
-                    if not any(v is not None for v in sample) and (not labels or any(len(label)>100 or label.startswith(('备注','说明')) for label in labels)):
+                    if not any(v is not None for v in sample) and not labels:
                         # Annotation-only columns are not metrics. Named empty series remain candidates.
                         continue
                     columns.append({'column':get_column_letter(c),'metric':' / '.join(dict.fromkeys(labels)),
-                        'unit':units[0] if len(set(units))==1 else None,
+                        'unit':None,  # Semantic metadata requires a source-backed model/user mapping.
                         'header_cells':[coord for _,_,coord in entries]})
                 blocks.append({'date_column':d['column'],'date_mode':'date','header_rows':header_rows,
                     'data_start_row':start,'data_end_row':None,'columns':columns})

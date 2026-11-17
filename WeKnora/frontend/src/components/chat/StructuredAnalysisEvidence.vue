@@ -28,10 +28,11 @@
           <button v-if="group.kind === 'pdf' && canOpenPdf(group.primary)" class="source-open" type="button" :disabled="busyKey === sourceKey(group.primary)" @click="openPdf(group.primary)">{{ busyKey === sourceKey(group.primary) ? '正在打开…' : '查看原件' }}</button>
           <button v-else-if="group.kind === 'excel' && group.primary.context" class="source-open" type="button" :disabled="busyKey === sourceKey(group.primary)" @click="openExcel(group.primary)">{{ busyKey === sourceKey(group.primary) ? '正在打开…' : '查看原始表格单元格' }}</button>
         </div>
+        <p class="fine-print source-version">来源版本 SHA-256：{{ group.primary.data.source.sha256 }}</p>
         <template v-if="group.kind === 'excel'">
           <p v-if="!group.primary.context" class="blocked">来源信息不完整，暂时无法打开原件。</p>
-          <div v-if="activeSourceKey === sourceKey(group.primary) && sourceCellsFor(group.primary.data).length" class="source-cell-picker">
-            <button v-for="cell in visibleSourceCells(group.primary)" :key="`${cell.sheet}:${cell.address}`" type="button" :aria-pressed="selectedCell?.sheet === cell.sheet && selectedCell?.address === cell.address" @click="openExcel(group.primary, cell)">{{ cell.sheet }}!{{ cell.address }}</button>
+          <div v-if="group.primary.context && sourceCellsFor(group.primary.data).length" class="source-cell-picker">
+            <button v-for="cell in visibleSourceCells(group.primary)" :key="`${cell.sheet}:${cell.address}`" type="button" :aria-pressed="activeSourceKey === sourceKey(group.primary) && selectedCell?.sheet === cell.sheet && selectedCell?.address === cell.address" @click="openExcel(group.primary, cell)">{{ cell.sheet }}!{{ cell.address }}</button>
             <button v-if="sourceCellPageStart(group.primary) > 0" type="button" @click="changeSourceCellPage(group.primary, -1)">上一组</button>
             <button v-if="sourceCellPageStart(group.primary) + sourceCellPageSize < sourceCellsFor(group.primary.data).length" type="button" @click="changeSourceCellPage(group.primary, 1)">下一组</button>
           </div>
@@ -398,6 +399,7 @@ details + .source-locator { margin-top: 12px; }
 .pdf-source-viewer { flex: 1; min-height: 0; }
 .blocked { color: #8a4b16; font-size: var(--app-text-md); margin: 6px 0; }
 .fine-print { color: #66766c; font-size: .9em; }
+.source-version { overflow-wrap: anywhere; }
 .highlighted { background: #ffe59b; outline: 2px solid #c77900; outline-offset: -2px; }
 @media (max-width: 600px) {
   .source-heading { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 2px 8px; }

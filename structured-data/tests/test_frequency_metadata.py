@@ -21,7 +21,7 @@ def source(tmp_path):
     mapping = deepcopy(manager.sheet(result["import_id"], "Records")["mapping"])
     block = mapping["blocks"][0]; block["header_rows"] = [1]
     column = block["columns"][0]
-    column.update(metric="Quantity", unit="吨", header_cells=["B1"], frequency="周", frequency_cells=["B4"])
+    column.update(metric="Quantity", unit="吨", unit_cells=["B3"], header_cells=["B1"], frequency="周", frequency_cells=["B4"])
     return manager, result, mapping
 
 

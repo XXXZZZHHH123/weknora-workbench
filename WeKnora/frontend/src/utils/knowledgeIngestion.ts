@@ -40,22 +40,37 @@ export function knowledgeCoverageSummary(metadata: unknown, parseStatus?: string
 
   const tableCount = result ? count(result.table_count) : undefined
   const acceptedCount = result ? count(result.accepted_count) : undefined
-  if (acceptedCount !== undefined && acceptedCount > 0) {
-    parts.push(`自动入库 ${acceptedCount} 张表`)
+  const metadataRecord = metadata && typeof metadata === 'object'
+    ? metadata as Record<string, unknown>
+    : undefined
+  const content = metadataRecord?._content_processing_v1
+  const saved = content && typeof content === 'object' && !Array.isArray(content)
+    ? content as Record<string, unknown> : undefined
+  const textCount = count(saved?.text_chunk_count)
+  parts.push(textCount === undefined ? '正文：未统计'
+    : saved?.text_is_catalog === true ? `正文：未统计（另存目录 ${textCount} 分块）`
+    : `正文：已保存 ${textCount} 个文本分块`)
+  const imageCount = count(saved?.image_count)
+  parts.push(imageCount === undefined ? '图片：未统计' : `图片：已保存 ${imageCount} 张`)
+  const publishedCount = result ? count(result.published_table_count) : undefined
+  if (publishedCount !== undefined) {
+    parts.push(`表格：已入库 ${publishedCount} 个数据区块`)
+  } else if (acceptedCount !== undefined && acceptedCount > 0) {
+    parts.push(`表格：自动入库 ${acceptedCount} 张${tableCount !== undefined ? `（识别片段 ${tableCount}）` : ''}`)
   } else if (tableCount === 0 && acceptedCount === 0) {
-    parts.push('未识别到结构化表格')
+    parts.push('表格：识别 0 张')
   } else if (tableCount !== undefined) {
-    parts.push(`识别到 ${tableCount} 张表`)
+    parts.push(`表格：识别片段 ${tableCount}，入库待核对`)
+  } else {
+    parts.push('表格：未统计')
   }
+  const numericCount = result ? count(result.computable_value_count) : undefined
+  parts.push(numericCount === undefined ? '可计算数据：未统计' : `可计算数据：已入库 ${numericCount} 个有效数值`)
+  parts.push('内容覆盖尚未核验')
 
   if (result && Array.isArray(result.sheets)) {
     parts.push(`工作表结果 ${result.sheets.length} 项`)
   }
-  const metadataRecord = metadata && typeof metadata === 'object'
-    ? metadata as Record<string, unknown>
-    : undefined
-  const imageCount = count(metadataRecord?.image_count) ?? count(metadataRecord?.images_found)
-  if (imageCount !== undefined) parts.push(`图片 ${imageCount}`)
   const media = metadataRecord?.pptx_media_processing_v1
   if (media && typeof media === 'object' && !Array.isArray(media)) {
     const preview = media as Record<string, unknown>
@@ -64,8 +79,6 @@ export function knowledgeCoverageSummary(metadata: unknown, parseStatus?: string
     if (deferred !== undefined && deferred > 0 && deferred <= 4096) parts.push(`预览待生成 ${deferred}`)
     if (unavailable !== undefined && unavailable > 0 && unavailable <= 4096) parts.push(`原图不可用 ${unavailable}`)
   }
-  const chunkCount = count(metadataRecord?.chunk_count)
-  if (chunkCount !== undefined) parts.push(`分块 ${chunkCount}`)
   if (receipt.attentionCount > 0) parts.push(`待处理 ${receipt.attentionCount}`)
   return parts
 }

@@ -188,3 +188,69 @@ strings.TrimLeft(line, "0123456789.-*) ")
 隔离知识库与 3 条会话删除返回 200；知识库随后 404，可见知识库数恢复为原来的 10；会话再次读取均为 404。由本轮生成的 3 条任务记忆分别删除返回 200。服务内部软删除、缓存、审计记录或存储回收机制不等同于物理彻底擦除，本轮没有清理系统审计。
 
 生产七容器基线对比一致。没有修改已有业务文件、生产配置或服务；没有业务代码修复、提交、推送或发布。
+
+## 2026-11-17 源码复核与修复（fix/review-followups）
+
+基线为 `45e53c161bf8f5526a5c8417fd85a5be12859b75`，工作区开始时干净。先逐项核查后修复；本轮只修改源码、隔离测试和本节，没有提交、推送、切换分支、启动/重启服务或访问 18090/18190。以下结论不代替真实模型、浏览器和生产验收，也不代表全仓问答硬编码审计完成。
+
+| 项目 | 核查时结论 → 本次结果 | 对应链路与回归依据 |
+|---|---|---|
+| F1 | 需在生产同版本环境复验，本任务不涉及 | 不读取生产日志、不调整运行环境。 |
+| F2 | 已修复 → 补跨年度、数字正文与真实编号混合回归 | `WeKnora/internal/application/service/knowledge_process.go` 的 `parseGeneratedQuestions` 先读 JSON 数组/对象，再按明确列表协议处理文本；`knowledge_process_questions_test.go::TestParseGeneratedQuestions`。 |
+| F3 | 部分修复 → 最终答案可直接点击每个真实坐标，显示来源 SHA256 | 已有 `chat/index.vue`、`StructuredAnalysisEvidence.vue`、`structuredAnswerSources.ts` 及服务端 `handler/session/evidence_detail.go`。本次常显真实坐标按钮，新增组件运行测试覆盖实时/刷新、B2/B3 直达、403、版本/身份冲突、失败工具与缺少授权范围；继续保留原有权限、版本及数值门禁。完整 SQL 输入血缘仍见下文边界。 |
+| F4 | 已修复 → 补下载名称及原件字节回归 | `structured-data/src/structured_data/imports.py::display_source_file/source_path/presentation_view`、`store.py::_native_source_binding/result_source`、`server.py` 的 source 下载路由。`test_native_latest_result.py::test_real_result_route_keeps_stored_identity_when_verified_native_display_name_changes` 新增下载原名与字节断言；已有 `test_legacy_native_binding_changes_display_name_without_renaming_storage` 等覆盖存储/显示分离。 |
+| F5 | 部分修复 → 可查询与质量并列；字段角色写入元数据并约束计算 | `imports.py::publication_view`、`generic_parser.py`、`matrix.py`、`store.py::field_quality/query_series` 和两个目录界面。新增 `test_import_field_metadata.py`；`test_import_field_roles_sql.py::test_non_numeric_field_role_cannot_aggregate_numeric_raw_values` 覆盖行式/矩阵、说明/文本维度、SQL 求和、强制转换与混合指标。 |
+| F6 | 部分修复 → 文件列表和上传结果摘要分别显示四类实际统计/未知状态 | `WeKnora/internal/application/service/knowledge_content_processing.go`、`knowledge_process.go` 成功落库点；`structured-data/ingestion.py::published_workbook_counts/published_numeric_value_count`；`knowledgeIngestion.ts`、`uploadQueue.ts`、`UploadTaskRow.vue`。不以页数、解析结束、发现图片数冒充保存量或完整性。新增/扩充内容回执、81 张图片保存、重解析/替换清旧统计、无表 PDF、有效/缺失值和超过 100 字段的回归。 |
+| F7 | 部分具备观测 → 只核查，不优化 | `agent/progress.go` 有 stage/iteration；`engine.go` 的 round span 有 duration/用量；`act.go` 有工具耗时；`think.go` 有模型流耗时及核验 attempt；`structured_result_review.go`、`discovery_delivery_review.go` 有协议修复/失败记录；`finalize.go::turnUsage` 汇总主调用与辅助用量。`TestTurnUsage*` 通过。尚无本轮固定数据集多次中位数/p95、首次状态/最终正文及恢复次数统一基线。 |
+| F8 | 已修复 → 现有全文件回归通过，无业务改动 | `source_inspection.py::source_extent/inspect_source` 显式返回 `source_used_range`、`read_window`、`input_ranges`；`test_read_window_and_calculation_inputs_are_separate_from_actual_source_extent` 验证读取 A1:D4、真实 A1:C4、计算 B2:B4 互不混淆，预算不足时范围未知。 |
+| F9 | 已修复 → 补抽屉交互执行回归 | `stores/ui.ts` 在窄屏默认收起且保存桌面偏好，`views/platform/index.vue` 已有遮罩、目标选择/路由变化关闭、ESC 与焦点恢复；`uiSidebar.test.ts` 和新增 `mobileSidebar.test.ts` 共 5 项通过。未启动页面做真实 390px 浏览器复验。 |
+| F10 | 部分修复 → 临时模式不写长期记忆闭环已有，本次补回归 | `Session.MemoryDisabled` 持久化，`handler/session/qa.go`、`memory/service.go` 和 `memory/extract.go` 在显式写入、入队、worker 执行时核验；fork 继承。新增 `TestTemporaryConversationBlocksExplicitAndAsyncWritesAfterRequestCloses`、按钮重挂载与记忆行操作测试。已采用记忆能查看；当前只有全局遗忘，没有仅本轮排除。 |
+| M | 部分修复 → 新导入把来源明确的单位、频率与原文位置写入目录 | 新导入发布前通过既有模型建议流程核对完整表头，只有元数据可变；无可靠证据、模型未配置/失败或预算不足时保留待核对。不按单位词表终判、不换算；纵向/矩阵共用可选严格 `FieldMetadata`，生产端与研究消费端均 `extra=forbid`，旧数据默认可读。`test_import_field_metadata.py` 覆盖原文、错列、无依据、矩阵、旧数据、严格协议及真实生产目录→消费适配。 |
+
+### 改动文件（按项分组）
+
+- F2：`WeKnora/internal/application/service/knowledge_process_questions_test.go`。
+- F3：`WeKnora/frontend/src/components/chat/StructuredAnalysisEvidence.vue`、同目录 `StructuredAnalysisEvidence.test.ts`。
+- F4：`structured-data/tests/test_native_latest_result.py`。
+- F5/M：`structured-data/src/structured_data/{field_metadata,generic_parser,matrix,scanner,ai_review,mapping_suggestions,imports,store,discovery_catalog,research_catalog,research_facts,review_errors}.py`、同目录 `index.html`；`structured-data/tests/{test_import_field_metadata,test_import_field_roles_sql,test_frequency_metadata,test_generic_parser}.py`、`structured-data/tests/field-metadata-ui.cjs`；`commodity-research/src/tin/integration/{field_metadata,page_facts,kb_facts}.py`、`src/tin/web/catalog.py`、`src/tin/web/templates/_indicator_catalog_groups.html`、`tests/test_field_metadata_catalog.py`。
+- F6：`WeKnora/internal/application/service/{knowledge_content_processing,knowledge_content_processing_test,knowledge_process,knowledge_process_inline_image_test,knowledge_reparse_test,knowledge_replace,knowledge_replace_test}.go`；`WeKnora/frontend/src/utils/{knowledgeIngestion,knowledgeIngestion.test}.ts`、`src/stores/{uploadQueue,uploadQueue.test,uploadTasksState,uploadTasksState.test}.ts`、`src/components/upload-tasks/UploadTaskRow.vue`；`structured-data/src/structured_data/ingestion.py`、`structured-data/tests/test_ingestion.py`。
+- F9：`WeKnora/frontend/src/views/platform/mobileSidebar.test.ts`。
+- F10：`WeKnora/internal/handler/session/temporary_memory_test.go`、`WeKnora/frontend/src/components/ConversationMemoryToggle.test.ts`、`WeKnora/frontend/src/composables/useChatMemoryRow.test.ts`。
+- F1/F7/F8 无业务代码改动；记录仅追加本文件。`go.mod/go.sum` 未修改。
+
+### 验证方式与环境限制
+
+Go 保留任务给出的 PATH/GOPATH/GOMODCACHE/GOTOOLCHAIN/CGO/C_INCLUDE_PATH，原 GOCACHE 只读，实际改用 `GOCACHE=/tmp/wb-f10-go-cache`，追加 `-mod=readonly`。在 `WeKnora` 下执行：
+
+```sh
+go test -mod=readonly -tags sqlite_fts5 ./internal/application/service -run 'TestParseGeneratedQuestions|TestContentReceipt|TestResetKnowledgeForReparse|TestReplaceKnowledgeFile|TestProcessDocumentChunksStoredInlineImagesOverLegacyLimit'
+go test -mod=readonly -tags sqlite_fts5 ./internal/handler/session -run 'TestEvidenceDetail|TestEvidencePreview|TestTemporaryConversation|TestMemoryRecalled|TestCreateSessionPersistsExplicitMemoryPolicy'
+go test -mod=readonly -tags sqlite_fts5 ./internal/application/service/memory/... -run TestSessionMemoryPolicy
+go test -mod=readonly -tags sqlite_fts5 ./internal/types/...
+go test -mod=readonly -tags sqlite_fts5 ./internal/agent -run TestTurnUsage
+```
+
+上述定向套件通过。尝试 `./internal/application/service/...` 整包未通过：沙箱不允许 httptest/miniredis 监听随机回环端口；OSS 测试受 DNS 限制；`TestMemoryConsistencyRealMessagePaging` 的隔离数据库缺 `message_evidence_records`。未修改无关测试夹具，也不把定向通过写成整包通过。
+
+前端在 `WeKnora/frontend` 使用任务给定 Node PATH：
+
+```sh
+npx tsx --test src/utils/knowledgeIngestion.test.ts src/stores/uploadQueue.test.ts src/stores/uploadTasksState.test.ts src/views/platform/mobileSidebar.test.ts src/stores/uiSidebar.test.ts src/components/chat/StructuredAnalysisEvidence.test.ts src/utils/structuredAnswerSources.test.ts src/utils/structuredSheetView.test.ts src/utils/structuredSourceRead.test.ts src/components/ConversationMemoryToggle.test.ts src/composables/useChatMemoryRow.test.ts src/composables/useChatStreamHandler.integration.test.ts
+npx vue-tsc --noEmit
+for cfg in node app tests; do node --max-old-space-size=4096 node_modules/vue-tsc/bin/vue-tsc.js -p tsconfig.$cfg.json --noEmit --tsBuildInfoFile /tmp/wb-review-tsconfig.$cfg.tsbuildinfo || exit; done
+```
+
+88 项前端测试通过；类型检查三配置通过。tsx 在沙箱内因 IPC `EPERM` 失败，最终按原命令仅放开隔离测试执行通过；早期也以 `node --import tsx <测试文件>` 确认真实断言。项目类型检查脚本先遇到软链 node_modules 构建信息只读，改写 `/tmp` 后默认 2GB 堆不足，最终 4GB 堆通过；没有改依赖或编译配置。
+
+结构化服务始终在本工作区 `structured-data` 使用 `PYTHONPATH=src /home/lvzi/weknora-workbench/.venv/bin/python -m pytest -q`。`test_source_inspection.py` 58 通过，`test_native_latest_result.py` 26 通过，`test_ingestion.py` 22 通过，`test_result_native_source.py test_incremental_import.py` 12 通过，`test_import_field_roles_sql.py` 4 通过。TestClient 在沙箱内停于 anyio 线程 portal；涉及该限制的完整测试改为仅测试的沙箱外执行，使用临时数据与 MockTransport，未启动应用服务或连接真实环境。
+
+F5/M 最终命令参数为 `tests/test_import_field_metadata.py tests/test_import_field_roles_sql.py tests/test_ai_review.py tests/test_frequency_metadata.py tests/test_generic_parser.py tests/test_publication_status.py tests/test_global_catalog.py -k 'not http'`，99 通过、1 个 HTTP 用例另跑通过（`tests/test_global_catalog.py::test_global_http_is_scoped_to_verified_kb_and_rechecks_revoked_grant`）；研究服务 `tests/test_field_metadata_catalog.py tests/test_indicator_dedup_catalog.py` 在任务指定的空 LLM、隔离 SQLite、禁自动迁移环境下 9 通过；`node --test structured-data/tests/field-metadata-ui.cjs` 通过（两个格式器场景）。加入工作表标题真实来源后，最终再次合并执行 `tests/test_ingestion.py tests/test_native_latest_result.py tests/test_result_native_source.py tests/test_incremental_import.py tests/test_source_inspection.py`，118 通过（36.70 秒）。
+
+### 保留边界与显式重新生成
+
+- F2 不批量改写存量残缺问题。可在文档分块的推荐问题操作中显式重新生成（`POST /api/v1/chunks/by-id/:id/questions/regenerate`，沿用写权限校验）；若需重新解析整份文档，应明确选择该文档正常重解析流程，并保留操作记录。
+- F3 本次完成最终正文到真实原件/工作表/单元格的最小闭环；任意 SQL 聚合的完整输入范围与全量行级血缘卡未完成。现有卡明确示例坐标不代表完整 SQL 输入，保留有效/缺失数量及表达式，不制造范围。
+- F5/M 单位、频率支持真实单元格及工作表标题（技术位置 `$sheet_title`）；模型负责理解含义，程序核对实际原文及位置。READY/template_ready 矩阵同样请求元数据；结构仍待核对的矩阵须先走正常结构确认。每个新文件共享 12 次既有模型请求预算，完整表头超容量则放弃本次元数据建议并显示待核对。不强制回填旧数据；可显式打开已有工作表→AI 辅助生成建议→核对原文位置→确认导入新版本。不静默覆盖已有版本或自动换算。需要真实模型与复杂真实文件另验；离线模拟模型通过不代表实际模型识别率。
+- F6 计数是实际保存/识别/发布量，正文以文本分块计，PDF 表格注明识别片段，可计算数据以有效数值计；统一保留“内容覆盖尚未核验”。旧文件未统计则显示未知，需显式重解析才生成新回执。复杂 PDF 页级金标准、遗漏内容评估及人工核验没有在本轮进行。
+- F10 临时选项、持久策略及异步不写回归完成。仅本轮排除需同时贯通两路召回、工具、执行上下文、刷新/续流及范围权限，完整实现预计超过约 600 行，按任务允许范围保留为未完成项；全局遗忘不冒充本轮排除。
+- 未运行真实在线模型、390px 浏览器、CI、全量测试或生产同版本验收。指定私有项目记忆目录在本环境不存在，未同步 `PROGRESS.md`，不声称已同步或开启自动记忆。

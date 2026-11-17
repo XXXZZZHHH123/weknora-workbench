@@ -116,9 +116,9 @@ class ImportManager:
             quality_rows = published_series.get(sheet.get('name'), []) if actual is not None else []
             quality_summary = {
                 'series_count': len(quality_rows),
-                'unit_review_count': sum(item.get('unit_status') == 'needs_review' for item in quality_rows),
-                'text_field_count': sum(quality_by_series.get(item['series_id'], {}).get('observed_type') == 'text'
-                                        for item in quality_rows),
+                'unit_review_count': sum(item.get('unit_status') == 'needs_review' and (item.get('field_metadata') or {}).get('role') not in ('text_dimension', 'annotation') for item in quality_rows),
+                'text_field_count': sum((item.get('field_metadata') or {}).get('role') == 'text_dimension' or quality_by_series.get(item['series_id'], {}).get('observed_type') == 'text' for item in quality_rows),
+                'annotation_field_count': sum((item.get('field_metadata') or {}).get('role') == 'annotation' for item in quality_rows),
                 'no_valid_numeric_count': sum(
                     quality_by_series.get(item['series_id'], {}).get('observed_type') == 'no_valid_numeric_values'
                     for item in quality_rows),
@@ -371,6 +371,7 @@ class ImportManager:
                 # _publish. Save the source and review only after its final
                 # authorization guard succeeds, so a revoked first import does
                 # not leave a discoverable half-created record behind.
+                self._enrich_new_metadata(doc, before_publish=before_publish)
                 self._validate_pending_candidates(doc, progress=progress)
                 self._publish(doc, before_publish=before_publish, progress=progress)
                 doc['publish_status'] = 'completed'
@@ -433,6 +434,52 @@ class ImportManager:
                 return [clean(v) for v in value]
             return value
         return json.dumps(clean(mapping), ensure_ascii=False, sort_keys=True)
+
+    def _enrich_new_metadata(self, doc, *, before_publish=None):
+        """Ask the configured model once per new ready sheet; never backfill saved data.
+
+        Only optional metadata may change. Unavailable or unsupported suggestions
+        keep the original query mapping and visible needs-review quality.
+        """
+        from copy import deepcopy
+        from .ai_review import suggest_mapping, AIRequestBudget
+        from .generic_parser import validate_mapping
+        from .model_settings import read_model
+        cfg = read_model(self.root)
+        configured = bool(cfg.get('native_model_id') or cfg.get('model') and cfg.get('base_url'))
+        budget = AIRequestBudget(12)
+        fields = {'unit', 'unit_cells', 'frequency', 'frequency_cells', 'field_role'}
+
+        def structure(mapping):
+            result = deepcopy(mapping)
+            for block in result.get('blocks', []):
+                for column in (block.get('row_rules', []) if block.get('layout') == 'matrix' else block.get('columns', [])):
+                    for key in fields:
+                        column.pop(key, None)
+            return result
+
+        for sheet in doc['sheets']:
+            mapping = sheet.get('mapping')
+            columns = [c for b in (mapping or {}).get('blocks', [])
+                       for c in (b.get('row_rules', []) if b.get('layout') == 'matrix' else b.get('columns', []))]
+            if sheet['status'] not in READY or not columns or not any(
+                    not c.get('unit') or not c.get('frequency') or not c.get('field_role') for c in columns):
+                continue
+            sheet['metadata_review'] = 'needs_review'
+            if not configured or budget.used >= budget.max_requests:
+                continue
+            try:
+                if before_publish is not None:
+                    before_publish()
+                result = suggest_mapping(self, doc['import_id'], sheet['name'], mapping=mapping,
+                    budget=budget, strict=True, source_document=doc, metadata_only=True)
+                proposed = result.get('mapping')
+                if (proposed is not None and not result.get('diagnostics')
+                        and structure(proposed) == structure(validate_mapping(mapping, sheet))):
+                    sheet['mapping'] = proposed
+                    sheet['metadata_review'] = 'source_checked'
+            except (ValueError, OSError, KeyError, TypeError) as exc:
+                logger.info('import_metadata_review_pending error_type=%s', type(exc).__name__)
 
     def _validate_pending_candidates(self, doc, *, progress=None):
         """Separate untested mappings from actual block errors before review.

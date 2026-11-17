@@ -1,4 +1,4 @@
-import { knowledgeIngestion } from '../utils/knowledgeIngestion'
+import { knowledgeCoverageSummary, knowledgeIngestion } from '../utils/knowledgeIngestion'
 import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess'
 import {
   classifyUploadResult,
@@ -171,6 +171,7 @@ export function createUploadQueue(items: UploadItem[], batches: UploadBatch[], d
         item.processingStatus = outcome.processingStatus
         item.processingStage = outcome.processingStage
         item.attentionCount = outcome.attentionCount
+        item.coverageSummary = outcome.coverageSummary
         payloads.delete(item.id)
         schedulePoll()
       } else if (outcome.kind === 'duplicate') {
@@ -301,6 +302,7 @@ export function createUploadQueue(items: UploadItem[], batches: UploadBatch[], d
         item.processingStatus = processing.status
         item.processingStage = processing.stage
         item.attentionCount = processing.attentionCount
+        item.coverageSummary = knowledgeCoverageSummary(row.metadata, row.parse_status)
       }
     }
 

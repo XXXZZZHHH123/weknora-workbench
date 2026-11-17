@@ -6,7 +6,7 @@ BLOCK_FIELDS = {'name', 'date_mode', 'date_column', 'date_cell', 'date_format',
                 'category_column', 'category_name', 'row_label_column',
                 'header_rows', 'data_start_row', 'data_end_row', 'row_rules'}
 COLUMN_FIELDS = {'metric', 'unit', 'dimensions', 'period', 'header_cells',
-                 'frequency', 'frequency_cells'}
+                 'frequency', 'frequency_cells', 'unit_cells', 'field_role'}
 
 
 def apply_suggestion(candidate, suggestion):

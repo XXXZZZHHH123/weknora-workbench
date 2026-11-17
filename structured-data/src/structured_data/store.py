@@ -28,6 +28,8 @@ def field_quality(status_counts):
         observed_type = 'numeric'
     elif text:
         observed_type = 'text'
+    elif counts.get('text_dimension') or counts.get('annotation'):
+        observed_type = 'non_numeric'
     else:
         observed_type = 'no_valid_numeric_values'
     return {'observed_type': observed_type, 'record_count': sum(counts.values()),
@@ -212,7 +214,7 @@ class DataStore:
         rows = enrich_catalog(self, dataset_id, catalog(self, dataset_id, sheet, question))
         quality = self.series_quality(dataset_id, [item['series_id'] for item in rows
                                                      if item.get('series_id')])
-        return [{**item, **({'field_quality': quality[item['series_id']]}
+        return [{**item, **({'field_quality': {**quality[item['series_id']], 'field_role': (item.get('field_metadata') or {}).get('role') or ('numeric' if quality[item['series_id']]['valid_numeric_count'] else 'text_dimension' if quality[item['series_id']]['observed_type'] == 'text' else None)}}
                             if item.get('series_id') in quality else {})} for item in rows]
 
     def series_quality(self, dataset_id, series_ids=None):
@@ -650,6 +652,11 @@ class DataStore:
         if start and end and start > end:
             raise ValueError("开始日期不能晚于结束日期。")
         series = self._series(dataset_id, series_id)
+        role = (series.get('field_metadata') or {}).get('role')
+        quality = self.series_quality(dataset_id, [series.get('source_series_id', series_id)]).get(series.get('source_series_id', series_id), {})
+        if operation not in ('rows', 'count') and (role in ('text_dimension', 'annotation')
+                or quality.get('observed_type') == 'text'):
+            raise ValueError('文本维度或说明字段只可读取/筛选，不能作为数值指标聚合。')
         mode=series.get('date_mode','date')
         if mode in ('none','period') and (start or end):raise ValueError('此指标没有具体日期，请使用期间/版本标签或不限定时间')
         if mode in ('none','period') and operation=='latest':raise ValueError('无具体日期的指标不推测最新版本，请指定期间标签或逐条查询')

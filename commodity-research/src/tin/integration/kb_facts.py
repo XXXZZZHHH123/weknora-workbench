@@ -233,6 +233,11 @@ def fact_pages(scope, sources=None, pinned_version=None):
                 or type(page.get('total')) is not int or not 0 <= page['total'] <= MAX_ROWS
                 or page.get('offset') != offset or len(page['rows']) > 10000):
             raise HTTPException(503, '知识库事实响应不完整或超过规模上限，未返回部分事实')
+        from tin.integration.field_metadata import validate_field_metadata
+        try:
+            validate_field_metadata(page['indicators'])
+        except ValueError:
+            raise HTTPException(503, '事实字段元数据格式无效') from None
         if catalog is None:
             if version is not None and page['version'] != version:
                 raise HTTPException(409,'知识库版本在装载前改变，请重试')

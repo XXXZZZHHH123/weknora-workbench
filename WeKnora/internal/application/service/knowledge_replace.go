@@ -131,6 +131,11 @@ func (s *knowledgeService) ReplaceKnowledgeFile(ctx context.Context,
 		}
 		return existing, types.NewDuplicateFileError(existing)
 	}
+	// Counts and table receipts belong to the previous source. Clear them in
+	// the same source update, before the replacement's parse can be queued.
+	replacementMetadata := &types.Knowledge{FileHash: hash, Metadata: newMetadata}
+	clearContentProcessingMetadata(replacementMetadata)
+	newMetadata = replacementMetadata.Metadata
 
 	fileSvc := s.resolveFileService(ctx, kb)
 	newPath, err := fileSvc.SaveFile(ctx, file, existing.TenantID, existing.ID)
