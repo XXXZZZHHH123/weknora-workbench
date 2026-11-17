@@ -388,23 +388,39 @@ def test_invalid_inferred_shared_fields_and_sections_fail(document):
     assert caught.value.status_code == 422
 
 
-def test_inference_reads_selected_versioned_sources_and_never_saves(monkeypatch, session):
+def test_inference_reads_selected_versioned_digests_and_never_saves(monkeypatch, session):
     active, calls = scope(), []
 
     async def content(active_scope, binding, identifier, version):
+        assert active_scope is active
         calls.append((binding, identifier, version))
         return {'knowledge_id': identifier, 'filename': identifier + '.md', 'file_version': version,
-                'supported': True, 'text': 'Full original research prose', 'sha256': 'content-digest'}
+                'supported': True, 'text': 'Bounded research prose', 'sha256': 'content-digest',
+                'content_kind': 'structure_digest', 'truncated': True, 'full_chunk_count': 12,
+                'digest_chunk_count': 443, 'provenance': {'chunks': [{'id': 'identity-only-for-recheck'}]}}
 
     async def complete(active_scope, model_id, prompt, **kwargs):
-        assert 'Full original research prose' in prompt and kwargs['purpose'] == 'dimension_inference'
+        assert 'Bounded research prose' in prompt and kwargs['purpose'] == 'dimension_inference'
+        assert '开头部分为全文，其余为各段开头' in prompt and '不搬运观点' in prompt
+        assert 'identity-only-for-recheck' not in prompt
         return {'dimensions': [{'label': 'Custom', 'category': '其他', 'sections': ['Stage']}]}
-    monkeypatch.setattr(suggestions.strategy_citations, 'read_file_content', content)
+    monkeypatch.setattr(suggestions.strategy_citations, 'read_structure_digest', content)
     monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
-    body = suggestions.InferenceInput(model_id='model', sources=[source('first'), source('second')])
-    result = asyncio.run(suggestions.infer_dimensions(active, body))
+    monkeypatch.setattr(suggestions, 'current_workbench', SimpleNamespace(get=lambda: active))
+    monkeypatch.setattr(suggestions, 'require_shared_write', lambda value: None)
+    app = FastAPI()
+    app.include_router(suggestions.router)
+    async def invoke():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            response = await client.post('/api/sn/dimensions/infer',
+                json={'model_id': 'model', 'sources': [source('first'), source('second')]})
+            assert response.status_code == 200, response.text
+            return response.json()
+    result = asyncio.run(invoke())
     assert len(result['dimensions']) == 1 and len(calls) == 4
     assert calls[:2] == calls[2:]
+    assert all(row['truncated'] and '已按摘要读取（全文 12 段，摘要 443 段）' in row['notice']
+               for row in result['sources'])
     assert list(session.scalars(select(SourceMapping))) == []
 
 
@@ -416,7 +432,7 @@ def test_inference_refuses_unreadable_or_changed_originals(monkeypatch):
         return replies.pop(0)
     async def complete(*args, **kwargs):
         return {'dimensions': [{'label': 'Custom', 'category': '其他'}]}
-    monkeypatch.setattr(suggestions.strategy_citations, 'read_file_content', content)
+    monkeypatch.setattr(suggestions.strategy_citations, 'read_structure_digest', content)
     monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
     body = suggestions.InferenceInput(model_id='model', sources=[source()])
     with pytest.raises(HTTPException) as caught:
@@ -426,6 +442,22 @@ def test_inference_refuses_unreadable_or_changed_originals(monkeypatch):
     with pytest.raises(HTTPException) as caught:
         asyncio.run(suggestions.infer_dimensions(scope(), body))
     assert caught.value.status_code == 422
+
+
+def test_inference_rechecks_all_chunk_provenance_when_visible_digest_is_unchanged(monkeypatch):
+    replies = [{'supported': True, 'text': 'same digest', 'sha256': 'same',
+                'provenance': {'chunks': [{'id': 'outside-digest', 'revision': revision}]}}
+               for revision in (0, 1)]
+    async def content(*args):
+        return replies.pop(0)
+    async def complete(*args, **kwargs):
+        return {'dimensions': [{'label': 'Custom', 'category': '其他'}]}
+    monkeypatch.setattr(suggestions.strategy_citations, 'read_structure_digest', content)
+    monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(suggestions.infer_dimensions(scope(), suggestions.InferenceInput(
+            model_id='model', sources=[source()])))
+    assert caught.value.status_code == 409
 
 
 def test_api_scope_permissions_input_limits_and_model_failures(monkeypatch):

@@ -3,6 +3,8 @@ from copy import deepcopy
 from datetime import datetime
 import hashlib
 import json
+from io import TextIOWrapper
+from tempfile import SpooledTemporaryFile
 from typing import Annotated, Any, Literal, Union
 from urllib.parse import quote, urlsplit
 
@@ -22,6 +24,10 @@ MAX_CITATIONS = 32
 MAX_CONTENT_BYTES = 96 * 1024
 MAX_CONTENT_CHARACTERS = 24000
 MAX_PARSED_CHUNKS = 200
+MAX_STRUCTURE_CHUNKS = 2000
+STRUCTURE_OPENING_CHARACTERS = 12000
+STRUCTURE_MIN_PREFIX = 30
+STRUCTURE_MAX_PREFIX = 200
 MAX_REQUEST_BYTES = 128 * 1024
 TEXT_KINDS = frozenset({'txt', 'md', 'markdown', 'json', 'csv', 'tsv', 'xml'})
 CitationField = Literal['thesis', 'watch_for', 'trigger', 'response_action', 'invalidation', 'original_text']
@@ -466,7 +472,7 @@ async def citation_preview(request: Request):
     return {'citation': normalized, **snapshot}
 
 
-async def _parsed_chunk_rows(bound, knowledge_id):
+async def _parsed_chunk_rows(bound, knowledge_id, *, structure_digest=False):
     rows, identifiers, total, previous_index = [], set(), None, -1
     page, size = 1, 20
     while total is None or len(rows) < total:
@@ -478,7 +484,7 @@ async def _parsed_chunk_rows(bound, knowledge_id):
                 or document.get('page_size') != size or total is not None and total != count
                 or len(data) != min(size, max(0, count - (page - 1) * size))):
             raise HTTPException(409, '已有解析片段的分页信息不完整，请刷新后重试')
-        if count > MAX_PARSED_CHUNKS:
+        if count > (MAX_STRUCTURE_CHUNKS if structure_digest else MAX_PARSED_CHUNKS):
             raise HTTPException(413, '已有解析片段过多，请保留文件引用或选择更小的资料')
         total = count
         for row in data:
@@ -495,10 +501,13 @@ async def _parsed_chunk_rows(bound, knowledge_id):
             identifiers.add(row['id'])
             previous_index = row['chunk_index']
             rows.append(row)
-            text = '\n\n'.join(item['content'] for item in rows)
             try:
-                if len(text.encode('utf-8')) > MAX_CONTENT_BYTES or len(text) > MAX_CONTENT_CHARACTERS:
-                    raise HTTPException(413, '已有解析正文超过96 KiB或24000字，请保留文件引用或选择更小的资料')
+                if structure_digest:
+                    row['content'].encode('utf-8')
+                else:
+                    text = '\n\n'.join(item['content'] for item in rows)
+                    if len(text.encode('utf-8')) > MAX_CONTENT_BYTES or len(text) > MAX_CONTENT_CHARACTERS:
+                        raise HTTPException(413, '已有解析正文超过96 KiB或24000字，请保留文件引用或选择更小的资料')
             except UnicodeEncodeError:
                 raise HTTPException(422, '已有解析正文包含无效文字，未载入替代内容') from None
         page += 1
@@ -511,28 +520,183 @@ def _chunk_provenance(rows):
         for row in rows]
 
 
-async def _parsed_content(scope, bound, source, source_binding_id, result):
+async def _parsed_content(scope, bound, source, source_binding_id, result, *, structure_digest=False):
     notice = '知识库已有解析片段，可能有重叠、表格或人工修订，不等同原件全文。'
     if source.get('parse_status') not in {'ready', 'completed'}:
         return {**result, 'supported': False, 'text': '', 'content_kind': 'parsed_fragments',
             'notice': '该文件尚无已完成的解析正文；可保留文件引用并在知识库预览。'}
-    rows = await _parsed_chunk_rows(bound, source['id'])
+    rows = await _parsed_chunk_rows(bound, source['id'], structure_digest=structure_digest)
     if not rows:
         return {**result, 'supported': False, 'text': '', 'content_kind': 'parsed_fragments',
             'notice': '该文件暂无可读的已有解析正文；可保留文件引用并在知识库预览。'}
     provenance = _chunk_provenance(rows)
     # Chunk edits need not change the original file hash. Recheck the bounded
     # chunk revision/content identities as well as the native file metadata.
-    repeated = await _parsed_chunk_rows(bound, source['id'])
+    try:
+        repeated = await _parsed_chunk_rows(bound, source['id'], structure_digest=structure_digest)
+    except HTTPException as exc:
+        if structure_digest and exc.status_code == 413:
+            raise HTTPException(409, '解析正文在读取期间修订，请刷新后重新选择') from None
+        raise
     if _chunk_provenance(repeated) != provenance:
         raise HTTPException(409, '解析正文在读取期间修订，请刷新后重新选择')
     _, after = await _native_file(scope, source_binding_id, source['id'])
     if _file_version(after) != result['file_version'] or after.get('parse_status') not in {'ready', 'completed'}:
         raise HTTPException(409, '文件在读取期间更新，请刷新后重新选择')
-    text = '\n\n'.join(row['content'] for row in rows)
+    digest = {}
+    characters = sum(len(row['content']) for row in rows) + 2 * (len(rows) - 1)
+    if structure_digest and characters > MAX_CONTENT_CHARACTERS:
+        digest = _structure_digest(lambda: ((row['content'], len(row['content'])) for row in rows), len(rows))
+        text = digest.pop('text')
+        notice += _structure_notice(digest)
+    else:
+        text = '\n\n'.join(row['content'] for row in rows)
     return {**result, 'supported': True, 'text': text, 'content_kind': 'parsed_fragments',
         'sha256': hashlib.sha256(text.encode()).hexdigest(), 'notice': notice,
-        'provenance': {'kind': 'knowledge_chunks', 'chunk_count': len(rows), 'chunks': provenance}}
+        'provenance': {'kind': 'knowledge_chunks', 'chunk_count': len(rows), 'chunks': provenance}, **digest}
+
+
+def _structure_notice(content):
+    return f"已按摘要读取（全文 {content['full_chunk_count']} 段，摘要 {content['digest_chunk_count']} 段）"
+
+
+def structure_source_summary(content):
+    """Expose read coverage without putting all chunk identities into a prompt."""
+    keys = ('knowledge_id', 'filename', 'content_kind', 'notice')
+    summary = {key: content.get(key) for key in keys}
+    if content.get('truncated'):
+        summary.update({key: content[key] for key in ('truncated', 'full_chunk_count', 'digest_chunk_count')})
+        if _structure_notice(content) not in (summary.get('notice') or ''):
+            summary['notice'] = _structure_notice(content)
+    return summary
+
+
+def _structure_digest(parts, count):
+    """Keep an opening of whole positional segments, then equal-length prefixes.
+
+    ``parts`` is repeatable and yields (prefix, full_length). Raw originals can
+    therefore stay on disk; parsed chunks retain their complete provenance.
+    Separators count against the same character budget as source text.
+    """
+    budget = MAX_CONTENT_CHARACTERS - max(0, count - 1)
+    # At 2000 segments even 30 characters each exceeds the total budget.
+    # Preserve every segment's position and the hard total limit in that case.
+    minimum = min(STRUCTURE_MIN_PREFIX, max(1, budget // max(1, count)))
+    full_count, opening_size = 0, 0
+    for prefix, length in parts():
+        remaining = count - full_count - 1
+        if (opening_size + length > STRUCTURE_OPENING_CHARACTERS
+                or opening_size + length + remaining * minimum > budget):
+            break
+        full_count += 1
+        opening_size += length
+    digest_count = count - full_count
+    allowance = min(STRUCTURE_MAX_PREFIX, (budget - opening_size) // max(1, digest_count))
+    text = '\n'.join(prefix if index < full_count else prefix[:allowance]
+                     for index, (prefix, _) in enumerate(parts()))
+    return {'text': text, 'content_kind': 'structure_digest', 'truncated': True,
+        'full_chunk_count': full_count, 'digest_chunk_count': digest_count}
+
+
+async def _structure_original(scope, bound, source, source_binding_id, result):
+    """Spool the complete original and verify it before returning any digest.
+
+    Download size is no longer an output limit. Disk spooling keeps that change
+    from requiring the entire original to fit in memory.
+    """
+    size = source.get('file_size')
+    if type(size) is int and size < 0:
+        raise HTTPException(413, '文件正文大小无效，请重新选择')
+    base = (settings.weknora_api_url or '').rstrip('/')
+    parsed = urlsplit(base)
+    if (not bound.authorization.startswith('Bearer ') or parsed.scheme not in {'http', 'https'}
+            or not parsed.netloc or parsed.username or parsed.path or parsed.query or parsed.fragment):
+        raise HTTPException(503, '知识库原件读取地址或授权无效')
+    hashes = {32: hashlib.md5(), 64: hashlib.sha256()}
+    received = 0
+    with SpooledTemporaryFile(max_size=MAX_CONTENT_BYTES, mode='w+b') as raw:
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=False, trust_env=False) as client:
+                async with client.stream('GET', base + '/api/v1/knowledge/'
+                        + quote(source['id'], safe='') + '/download',
+                        headers={'Authorization': bound.authorization,
+                                 'X-Tenant-ID': str(bound.identity.tenant_id)}) as response:
+                    if response.status_code != 200:
+                        raise HTTPException(response.status_code if response.status_code in {401, 403, 404} else 503,
+                            '文件正文暂不可读，原有策略内容已保留')
+                    async for chunk in response.aiter_bytes():
+                        raw.write(chunk)
+                        received += len(chunk)
+                        for digest in hashes.values():
+                            digest.update(chunk)
+        except httpx.HTTPError:
+            raise HTTPException(503, '文件正文读取未完成，原有策略内容已保留') from None
+        registered = source.get('file_hash')
+        if registered:
+            if (not isinstance(registered, str) or len(registered) not in hashes
+                    or any(char not in '0123456789abcdefABCDEF' for char in registered)
+                    or hashes[len(registered)].hexdigest() != registered.lower()):
+                raise HTTPException(409, '文件正文与登记版本不一致，未载入替代内容')
+        if type(size) is int and received != size:
+            raise HTTPException(409, '文件正文大小与登记版本不一致，未载入替代内容')
+        _, after = await _native_file(scope, source_binding_id, source['id'])
+        if _file_version(after) != result['file_version']:
+            raise HTTPException(409, '文件在读取期间更新，请重新选择后载入')
+        raw.seek(0)
+        with TextIOWrapper(raw, encoding='utf-8-sig', newline='') as original:
+            try:
+                text = original.read(MAX_CONTENT_CHARACTERS + 1)
+                content = {**result, 'supported': True, 'sha256': hashes[64].hexdigest()}
+                if len(text) <= MAX_CONTENT_CHARACTERS and received <= MAX_CONTENT_BYTES:
+                    return {**content, 'text': text, 'content_kind': 'original_text', 'notice': ''}
+
+                def segments():
+                    original.seek(0)
+                    # Very long lines are divided by position, without looking
+                    # at headings, keywords or other business content.
+                    while part := original.readline(STRUCTURE_OPENING_CHARACTERS):
+                        yield part.rstrip('\r\n')
+
+                # This also validates UTF-8 in all omitted portions of the file.
+                count = sum(1 for _ in segments())
+                group_size = max(1, (count + MAX_STRUCTURE_CHUNKS - 1) // MAX_STRUCTURE_CHUNKS)
+
+                def parts():
+                    prefix, length, grouped = '', 0, 0
+                    for part in segments():
+                        separator = '\n' if grouped else ''
+                        if len(prefix) < STRUCTURE_OPENING_CHARACTERS:
+                            prefix = (prefix + separator + part)[:STRUCTURE_OPENING_CHARACTERS]
+                        length += len(separator) + len(part)
+                        grouped += 1
+                        if grouped == group_size:
+                            yield prefix, length
+                            prefix, length, grouped = '', 0, 0
+                    if grouped:
+                        yield prefix, length
+
+                digest = _structure_digest(parts, (count + group_size - 1) // group_size)
+            except UnicodeDecodeError:
+                raise HTTPException(422, '文件正文不是有效UTF-8，请转为UTF-8后载入；文件引用仍可保留') from None
+            return {**content, **digest, 'notice': _structure_notice(digest)}
+
+
+async def read_structure_digest(scope, source_binding_id, knowledge_id, file_version):
+    """Read bounded structural evidence under the caller's own page grant.
+
+    Ownership, native version and complete-content identity checks match the
+    citation reader; only this explicit inference path can truncate content.
+    """
+    bound, source = await _native_file(scope, source_binding_id, knowledge_id)
+    expected = _file_version(source)
+    if file_version != expected:
+        raise HTTPException(409, '引用文件的版本已更新，请重新选择；未读取替代正文')
+    result = {'knowledge_id': knowledge_id, 'file_version': expected,
+        'filename': _text(source.get('file_name') or source.get('title'), '未命名知识库文件')}
+    kind = _text(source.get('file_type')).lower().lstrip('.')
+    if kind not in TEXT_KINDS:
+        return await _parsed_content(scope, bound, source, source_binding_id, result, structure_digest=True)
+    return await _structure_original(scope, bound, source, source_binding_id, result)
 
 
 async def read_file_content(scope, source_binding_id, knowledge_id, file_version):
