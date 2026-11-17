@@ -216,3 +216,10 @@ def test_generator_does_not_mutate_server_view(view):
     assert view == before
     with pytest.raises(ValueError, match='1、2 或 4'):
         load(view, options={'figures_per_slide': 3})
+
+
+def test_iso_timestamps_display_as_dates_without_changing_other_text():
+    from tin.ppt.report_deck import _display
+    assert _display('2023-08-31T00:00:00+08:00 → 2023-09-21T00:00:00+08:00') == '2023-08-31 → 2023-09-21'
+    assert _display('生成时间：2026-11-17T11:39:46+08:00') == '生成时间：2026-11-17 11:39'
+    assert _display('2024-03-29 · 116.6 万吨') == '2024-03-29 · 116.6 万吨'

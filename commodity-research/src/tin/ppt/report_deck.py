@@ -45,6 +45,14 @@ def _s(value):
     return str(value) if isinstance(value, (str, int, float)) else ''
 
 
+_ISO_STAMP = re.compile(r'(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?')
+
+
+def _display(text):
+    """Show ISO timestamps as dates (or date and minute); stored values are untouched."""
+    return _ISO_STAMP.sub(lambda m: m.group(1) if m.group(2) == '00:00' else m.group(1) + ' ' + m.group(2), text)
+
+
 def _join(*values):
     return ' · '.join(_s(value) for value in values if _s(value))
 
@@ -124,7 +132,7 @@ def _text(slide, text, x, y, w, h, *, size=15, bold=False, color=TEXT,
         p.space_before = p.space_after = Pt(0)
         p.line_spacing = 1.15
         run = p.add_run()
-        run.text = line
+        run.text = _display(line)
         _font(run, size, bold=bold, color=color)
     return shape
 
@@ -215,7 +223,8 @@ class _Deck:
                     cell.margin_left = cell.margin_right = Inches(.065)
                     cell.margin_top = cell.margin_bottom = Inches(.045)
                     cell.fill.solid()
-                    cell.fill.fore_color.rgb = RGBColor.from_string(THEME_RED if rindex == 0 else ('F5F5F5' if rindex % 2 else 'FFFFFF'))
+                    # Header: light grey with red text, so the theme colour stays an accent.
+                    cell.fill.fore_color.rgb = RGBColor.from_string('F2F2F2' if rindex == 0 else ('FAFAFA' if rindex % 2 else 'FFFFFF'))
                     cell.text_frame.clear()
                     cell.text_frame.word_wrap = False
                     cell.text_frame.auto_size = MSO_AUTO_SIZE.NONE
@@ -225,8 +234,8 @@ class _Deck:
                         p.space_before = p.space_after = Pt(0)
                         p.line_spacing = 1.05
                         run = p.add_run()
-                        run.text = line
-                        _font(run, 12, bold=rindex == 0, color='FFFFFF' if rindex == 0 else TEXT)
+                        run.text = _display(line)
+                        _font(run, 12, bold=rindex == 0, color=THEME_RED if rindex == 0 else TEXT)
 
 
 def _notes(view, section):
