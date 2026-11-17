@@ -17,3 +17,12 @@ RESEARCH_FRAMEWORK = (
     '\n- 宏观：只建可观测的外部变量（指数、利率、汇率、相关商品价格等），不建事件或政策。'
     '资料提到的宏观驱动优先；资料没有提到时，从可用宏观指标中选与该品种研究最相关的2到4个，名称用指标的通用叫法。'
 )
+
+# Display names for the six research dimensions. Internal keys stay
+# RESEARCH_GROUPS so saved records and model protocols do not change.
+DIMENSION_LABELS = {'核心标的': '价格与价差', '供给': '供给', '需求': '需求',
+                    '库存': '库存', '平衡': '平衡', '宏观': '宏观'}
+
+
+def dimension_label(key):
+    return DIMENSION_LABELS.get(key, '未标注')
