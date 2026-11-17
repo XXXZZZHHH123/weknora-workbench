@@ -1,4 +1,4 @@
-"""Dimension names and evidence groups come only from explicit IDs and desk config."""
+"""Optional dimension labels preserve the saved research layout and explicit IDs."""
 from copy import deepcopy
 from datetime import date, datetime, timezone
 
@@ -7,7 +7,7 @@ from lxml.html import fromstring
 from tests.test_judgment_dimension_schema import legacy_fields
 from tests.test_judgment_research_view import facts, saved, rule, A, DAY
 from tests.test_judgment_research_template import render
-from tin.export.board import judgment_record_block
+from tin.export.board import judgment_record_block, threshold_radar_values
 from tin.judgments.markdown import dump_markdown
 from tin.judgments.markdown_protocol import exported_rules
 from tin.models import SourceMapping
@@ -28,31 +28,54 @@ def configure(session, dimensions):
     session.commit()
 
 
-def test_default_groups_include_support_and_opposition_and_put_untagged_last(facts):
+def test_optional_dimension_tags_keep_evidence_in_its_original_side_and_order(facts):
     row = saved(bull=[{'desc': 'No tag'}, {'desc': 'Higher explicit price', 'dimension': 'price'}],
                 bear=[{'desc': 'Lower explicit price', 'dimension': 'price'},
                       {'desc': 'Deleted assignment', 'dimension': 'obsolete'}])
     view = judgment_research_view(facts, row, DAY)
-    assert [item['label'] for item in view['dimension_groups']] == ['价格与价差', '已删除维度', '未标注']
-    group = view['dimension_groups'][0]
-    assert group['bull'][0]['desc'] == 'Higher explicit price' and group['bull'][0]['evidence_index'] == 1
-    assert group['bear'][0]['desc'] == 'Lower explicit price'
-    assert view['dimension_groups'][-1]['bull'][0]['desc'] == 'No tag'
-    html = fromstring(render(**view))
-    groups = html.xpath('//*[@data-dimension-group]')
-    assert [item.get('data-dimension-group') for item in groups] == ['price', 'obsolete', '']
-    assert groups[0].xpath('.//*[@data-hypothesis="bull"]//*[contains(text(),"Higher explicit price")]')
-    assert groups[0].xpath('.//*[@data-hypothesis="bear"]//*[contains(text(),"Lower explicit price")]')
-    assert html.xpath('//*[@data-judgment-library-target="evidence:bull:1"]')
-    assert html.xpath('//*[@id="judgment-thresholds"]//th[text()="维度"]')
-    assert html.xpath('//*[@id="judgment-falsifiers"]//th[text()="维度"]')
-    restricted = fromstring(render(restricted_view=True, **view))
-    assert not restricted.xpath('//*[@data-judgment-library-target]')
-    for document in (html, restricted):
-        for side, label in (('bull', '多方'), ('bear', '空方')):
-            section = document.xpath(f'//*[@id="judgment-falsifiers"]//tbody[@data-falsifier-side="{side}"]')[0]
-            assert section.xpath('./tr/th[@scope="rowgroup"]')[0].text_content() == f'什么变化会证伪{label}判断'
+    bull, bear = view['sides']['bull']['evidence'], view['sides']['bear']['evidence']
+    assert [item['desc'] for item in bull] == ['No tag', 'Higher explicit price']
+    assert not bull[0].get('dimension_label')
+    assert bull[1]['dimension_label'] == bear[0]['dimension_label'] == '价格与价差'
+    assert bear[1]['dimension_label'] == '已删除维度'
+    assert 'dimension_groups' not in view
+    for restricted in (False, True):
+        document = fromstring(render(restricted_view=restricted, **view))
+        assert not document.xpath('//*[@data-dimension-group]')
+        assert not document.xpath('//th[text()="维度"]')
+        assert '未标注' not in document.text_content()
+        assert len(document.xpath('//*[@id="judgment-hypotheses"]/*[contains(@class,"judgment-hypotheses")]/article')) == 2
+        for side, descriptions, labels in (
+                ('bull', ['No tag', 'Higher explicit price'], [[], ['价格与价差']]),
+                ('bear', ['Lower explicit price', 'Deleted assignment'], [['价格与价差'], ['已删除维度']])):
+            section = document.xpath(f'//*[@id="judgment-hypotheses"]//article[@data-hypothesis="{side}"]')[0]
+            cards = section.xpath('.//li[@data-research-item="evidence"]')
+            assert len(cards) == len(descriptions)
+            for index, (card, description, tag_labels) in enumerate(zip(cards, descriptions, labels)):
+                desc = card.xpath('./p[contains(@class,"judgment-evidence-desc")]')[0]
+                assert desc.text.strip() == description
+                tags = desc.xpath('./span[@data-dimension-label]')
+                assert [tag.text_content() for tag in tags] == tag_labels
+                assert all('judgment-dimension-tag' in tag.get('class', '').split() for tag in tags)
+                if not restricted:
+                    assert card.xpath(f'.//*[@data-judgment-library-target="evidence:{side}:{index}"]')
+            # Preserve the explanatory titles restored by the CI fix.
+            label = '多方' if side == 'bull' else '空方'
+            assert section.xpath('./h4[contains(@class,"judgment-falsifier-section")]')[0].text_content() == f'什么变化会证伪{label}判断'
             assert '尚无已核验的证伪条件' in section.text_content()
+        if restricted:
+            assert not document.xpath('//*[@data-judgment-library-target]')
+
+
+def test_untagged_judgment_adds_no_labels_or_dimension_layout(facts):
+    row = saved(bull=[{'desc': 'No tag'}], bear=[{'desc': 'Still no tag'}],
+                falsifiers=[rule('support', A, 'bull')])
+    view = judgment_research_view(facts, row, DAY)
+    for restricted in (False, True):
+        document = fromstring(render(restricted_view=restricted, **view))
+        assert not document.xpath('//*[@data-dimension-label or @data-dimension-group]')
+        assert not document.xpath('//th[text()="维度"]')
+        assert '未标注' not in document.text_content()
 
 
 def test_custom_dimensions_and_renames_use_current_labels_without_reassigning_ids(facts):
@@ -60,24 +83,97 @@ def test_custom_dimensions_and_renames_use_current_labels_without_reassigning_id
     row = saved(bull=[{'desc': 'Cost change', 'dimension': 'desk_cost'},
                       {'desc': 'No silent remap', 'dimension': 'supply'}])
     first = judgment_research_view(facts, row, DAY)
-    assert [item['label'] for item in first['dimension_groups']] == ['成本与利润', '已删除维度']
+    assert [item['dimension_label'] for item in first['sides']['bull']['evidence']] == ['成本与利润', '已删除维度']
     config = facts.get(SourceMapping, mapping_key(facts, DIMENSIONS_KEY))
     config.config = {'dimensions': [{**CUSTOM[0], 'label': '成本变化'}]}
     facts.commit()
-    assert judgment_research_view(facts, row, DAY)['dimension_groups'][0]['label'] == '成本变化'
+    assert judgment_research_view(facts, row, DAY)['sides']['bull']['evidence'][0]['dimension_label'] == '成本变化'
     assert row.contradiction['bull']['evidence'][0]['dimension'] == 'desk_cost'
 
 
-def test_grouped_falsifiers_keep_each_condition_under_its_original_hypothesis(facts):
-    row = saved(falsifiers=[rule('support', A, 'bull'), rule('opposition', A, 'bear')])
+def test_falsifier_tags_stay_beside_condition_names_under_original_hypotheses(facts):
+    row = saved(falsifiers=[{**rule('support', A, 'bull'), 'dimension': 'price'},
+                            rule('opposition', A, 'bear')])
     view = judgment_research_view(facts, row, DAY)
     for restricted in (False, True):
         document = fromstring(render(restricted_view=restricted, **view))
-        for side, own, other in (('bull', 'support', 'opposition'), ('bear', 'opposition', 'support')):
-            section = document.xpath(f'//*[@id="judgment-falsifiers"]//tbody[@data-falsifier-side="{side}"]')[0]
-            rows = section.xpath('./tr[@data-research-item="falsifier"]')
-            assert len(rows) == 1
-            assert rows[0].xpath('./td[1]')[0].text_content().strip() == 'Original falsification condition ' + own
+        for side, own, other, labels in (('bull', 'support', 'opposition', ['价格与价差']),
+                                          ('bear', 'opposition', 'support', [])):
+            section = document.xpath(f'//*[@id="judgment-hypotheses"]//article[@data-hypothesis="{side}"]')[0]
+            cards = section.xpath('./div[@data-research-item="falsifier"]')
+            assert len(cards) == 1
+            heading = cards[0].xpath('./div[contains(@class,"judgment-falsifier-heading")]')[0]
+            assert 'Original falsification condition ' + own in heading.text_content()
+            assert 'Original falsification condition ' + other not in heading.text_content()
+            assert [tag.text_content() for tag in heading.xpath('.//*[@data-dimension-label]')] == labels
+        assert not document.xpath('//*[@id="judgment-falsifiers"]')
+        assert '未标注' not in document.text_content()
+
+
+def test_shared_comparison_keeps_duplicate_text_labels_with_their_own_evidence(facts):
+    for tagged in (True, False):
+        bull = [{'desc': 'Same interpretation', 'series_id': A, 'dimension': 'price'},
+                {'desc': 'Same interpretation', 'series_id': A, 'dimension': 'inventory'},
+                {'desc': 'Same interpretation', 'series_id': A}]
+        bear = [{'desc': 'Other interpretation', 'series_id': A, 'dimension': 'obsolete'},
+                {'desc': 'Other interpretation', 'series_id': A}]
+        falsifiers = [{**rule('support', A, 'bull'), 'dimension': 'price'}, rule('opposition', A, 'bear')]
+        if not tagged:
+            for item in bull + bear + falsifiers:
+                item.pop('dimension', None)
+        view = judgment_research_view(facts, saved(bull=bull, bear=bear, falsifiers=falsifiers), DAY)
+        assert len(view['shared']) == 1
+        for restricted in (False, True):
+            document = fromstring(render(restricted_view=restricted, **view))
+            shared = document.xpath('//*[@data-shared-indicator]')[0]
+            for side, description, expected in (
+                    ('bull', 'Same interpretation', [['价格与价差'], ['库存'], []]),
+                    ('bear', 'Other interpretation', [['已删除维度'], []])):
+                section = shared.xpath(f'.//*[@data-hypothesis="{side}"]')[0]
+                paragraphs = section.xpath('./p')
+                evidence = paragraphs[:-1]
+                assert [item.text.strip() for item in evidence] == [description] * len(expected)
+                assert [[tag.text_content() for tag in item.xpath('./span[@data-dimension-label]')]
+                        for item in evidence] == (expected if tagged else [[] for _ in expected])
+                falsifier = paragraphs[-1]
+                assert falsifier.text.startswith('证伪：Original falsification condition ')
+                assert [tag.text_content() for tag in falsifier.xpath('./span[@data-dimension-label]')] == (
+                    ['价格与价差'] if tagged and side == 'bull' else [])
+            if not tagged:
+                assert not shared.xpath('.//*[@data-dimension-label]')
+            assert '未标注' not in shared.text_content()
+
+
+def test_threshold_tags_stay_in_name_cells_without_adding_a_column(facts):
+    row = saved(bull=[{'desc': 'Threshold observation', 'series_id': A}])
+    row.thresholds = [
+        {'id': 'tagged', 'name': 'Tagged threshold', 'series_id': A, 'operator': '>', 'value': 10,
+         'type': '观察位', 'horizon': '短期', 'dimension': 'price'},
+        {'id': 'plain', 'name': 'Plain threshold', 'series_id': A, 'operator': '<', 'value': 2,
+         'type': '风控线', 'horizon': '中长期'}]
+    view = judgment_research_view(facts, row, DAY)
+    assert view['threshold_dimensions'] == {'tagged': '价格与价差'}
+    radar = threshold_radar_values(row, {})
+    for restricted in (False, True):
+        document = fromstring(render(restricted_view=restricted, radar=radar, **view))
+        table = document.xpath('//*[@id="judgment-thresholds"]//table')[0]
+        assert len(table.xpath('./thead/tr/th')) == 7
+        assert not table.xpath('.//th[text()="维度"]')
+        rows = table.xpath('./tbody/tr[not(@data-rule-chart-row)]')
+        for cells, name, labels in ((rows[0].xpath('./td'), 'Tagged threshold', ['价格与价差']),
+                                    (rows[1].xpath('./td'), 'Plain threshold', [])):
+            assert len(cells) == 7
+            assert cells[0].text.strip() == name
+            assert [tag.text_content() for tag in cells[0].xpath('.//*[@data-dimension-label]')] == labels
+        assert all(cell.get('colspan') == '7' for cell in table.xpath('./tbody/tr[@data-rule-chart-row]/td'))
+        evidence = document.xpath('//*[@id="judgment-hypotheses"]//li[@data-research-item="evidence"]')[0]
+        conditions = evidence.xpath('.//*[@data-item-threshold]/span[1]')
+        assert len(conditions) == 2
+        for condition, name, labels in ((conditions[0], 'Tagged threshold', ['价格与价差']),
+                                        (conditions[1], 'Plain threshold', [])):
+            assert condition.xpath('./strong')[0].text_content() == name
+            assert [tag.text_content() for tag in condition.xpath('./span[@data-dimension-label]')] == labels
+        assert '未标注' not in document.text_content()
 
 
 def test_report_html_markdown_and_snapshot_keep_tag_ids_and_names_without_mutating():
