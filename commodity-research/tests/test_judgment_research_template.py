@@ -8,7 +8,7 @@ from tin.schemas.judgment import JudgmentIn
 from tin.web import app as web
 
 
-def render(*, restricted_view=False, **overrides):
+def render(*, restricted_view=False, radar=None, **overrides):
     payload = JudgmentIn(variety='XY', author='Synthetic', written_at=date(2026, 1, 2),
         contradiction={'bull': {'claim': 'Supply is constrained'},
                        'bear': {'claim': 'Demand is soft'}}).model_dump(mode='json')
@@ -31,7 +31,7 @@ def render(*, restricted_view=False, **overrides):
     env.globals.update(research_workbench=lambda: None, research_identity=lambda: None)
     return env.get_template('judgment.html').render(j=judgment, names={}, research=data,
         restricted_view=restricted_view, restricted_data={},
-        block={'expired_days': 0, 'blockers': []}, versions=[], radar=[], d=date(2026, 1, 2))
+        block={'expired_days': 0, 'blockers': []}, versions=[], radar=radar or [], d=date(2026, 1, 2))
 
 
 def test_hypotheses_precede_field_details_and_show_their_actual_evidence():

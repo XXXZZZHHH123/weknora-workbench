@@ -10,6 +10,7 @@ from tin.config import SHANGHAI
 from tin.judgments.service import _refs, to_payload
 from tin.models import Indicator
 from tin.schemas.judgment import EXPRESSION, binding_ids
+from tin.web.judgment_dimension_view import dimension_name
 from tin.web.report_watch import watch_items
 from tin.web.research_display import condition_text, human_text
 
@@ -212,10 +213,15 @@ def _falsifier(session, judgment, rule, day, metric):
         'condition': condition, 'gap_note': missing, 'metric': metric}
 
 
-def _item_view(item, metrics, names):
+def _dimension_tag(item, dimensions):
+    identifier = getattr(item, 'dimension', None)
+    return {'dimension': identifier, 'dimension_label': dimension_name(identifier, dimensions)} if identifier else {}
+
+
+def _item_view(item, metrics, names, dimensions):
     identifiers = binding_ids(item)
     return {'desc': human_text(item.desc, names), 'series_id': item.series_id,
-        **({'dimension': item.dimension} if getattr(item, 'dimension', None) is not None else {}),
+        **_dimension_tag(item, dimensions),
         'series_ids': identifiers, 'metric': metrics.get(item.series_id),
         'metrics': [metrics[identifier] for identifier in identifiers if identifier in metrics]}
 
@@ -227,7 +233,6 @@ def judgment_research_view(session, judgment, day):
     if judgment is None:
         return result
     from tin.web.research_dimensions import default_dimensions, read_dimensions, summaries
-    from tin.web.judgment_dimension_view import dimension_name, evidence_groups
     dimensions = read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()
     result['dimensions'] = summaries(dimensions)
     payload = to_payload(judgment)
@@ -244,7 +249,7 @@ def judgment_research_view(session, judgment, day):
                 original = getattr(payload.contradiction, side)
                 view['claim'] = human_text(original.claim, names)
                 for evidence in original.evidence:
-                    item = _item_view(evidence, metrics, names)
+                    item = _item_view(evidence, metrics, names, dimensions)
                     item['note'] = human_text(evidence.note, names)
                     view['evidence'].append(item)
                     references[side].update(item['series_ids'])
@@ -253,7 +258,7 @@ def judgment_research_view(session, judgment, day):
                         continue
                     value = _falsifier(session, judgment, rule.model_dump(mode='json'), day, metrics[rule.series_id])
                     value['rule']['desc'] = human_text(value['rule']['desc'], names)
-                    value['dimension_label'] = dimension_name(rule.dimension, dimensions)
+                    value.update(_dimension_tag(rule, dimensions))
                     value['metrics'] = [metrics[identifier] for identifier in binding_ids(rule)]
                     view['falsifiers'].append(value)
                     references[side].add(rule.series_id)
@@ -264,6 +269,8 @@ def judgment_research_view(session, judgment, day):
         if not all(identifier in references[side] for side in sides):
             continue
         shared.append({'metric': metrics[identifier],
+            **{side + '_evidence': [item for item in sides[side]['evidence'] if identifier in item['series_ids']]
+               for side in sides},
             **{side + '_texts': [item['desc'] for item in sides[side]['evidence'] if identifier in item['series_ids']]
                for side in sides},
             **{side + '_falsifiers': [item for item in sides[side]['falsifiers'] if item['rule']['series_id'] == identifier]
@@ -281,11 +288,10 @@ def judgment_research_view(session, judgment, day):
         triggered=sum(item['state'] == '触发' for side in sides.values() for item in side['falsifiers']),
         pending=len(pending))
     result.update(metrics=metrics, shared=shared, pending_conditions=pending,
-        dimension_groups=evidence_groups(sides, dimensions),
-        threshold_dimensions={rule.id: dimension_name(rule.dimension, dimensions) for rule in payload.thresholds},
-        falsifiers=[item for side in sides.values() for item in side['falsifiers']],
-        marginal_focus=[_item_view(item, metrics, names) for item in payload.marginal_focus],
-        cost_items=[_item_view(item, metrics, names) for item in (payload.cost_line.items if payload.cost_line else [])],
+        threshold_dimensions={rule.id: dimension_name(rule.dimension, dimensions)
+            for rule in payload.thresholds if rule.dimension},
+        marginal_focus=[_item_view(item, metrics, names, dimensions) for item in payload.marginal_focus],
+        cost_items=[_item_view(item, metrics, names, dimensions) for item in (payload.cost_line.items if payload.cost_line else [])],
         threshold_related={rule.id: [metrics[identifier] for identifier in rule.related_series_ids]
             for rule in payload.thresholds if rule.related_series_ids})
     return result
