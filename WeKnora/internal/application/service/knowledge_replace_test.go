@@ -231,6 +231,9 @@ func md5Hex(content string) string {
 
 func TestReplaceKnowledgeFilePreservesIDAndReparsesNewContent(t *testing.T) {
 	h := newReplaceFileHarness(t)
+	zero := 0
+	require.NoError(t, setContentProcessingMetadata(&h.repo.row, 8, &zero, false))
+	require.NoError(t, setIngestionState(&h.repo.row, knowledgeIngestionState{SourceHash: h.original.FileHash, Result: []byte(`{"accepted_count":1}`)}))
 	content := "# new body"
 
 	got, err := h.replace(t, content, "notes/sub/b.md",
@@ -252,6 +255,8 @@ func TestReplaceKnowledgeFilePreservesIDAndReparsesNewContent(t *testing.T) {
 	assert.Equal(t, "notes/a.md", metadata["external_id"])
 	assert.Equal(t, "2026-09-14T00:00:00Z", metadata["source_updated_at"])
 	assert.Equal(t, map[string]interface{}{"nested": true}, metadata["extra"], "unmanaged entries survive")
+	assert.NotContains(t, metadata, contentProcessingKey)
+	assert.NotContains(t, metadata, ingestionMetadataKey, "old original table counts cannot survive replacement")
 
 	require.Len(t, h.tasks.payloads, 1)
 	assert.Equal(t, h.original.ID, h.tasks.payloads[0].KnowledgeID)

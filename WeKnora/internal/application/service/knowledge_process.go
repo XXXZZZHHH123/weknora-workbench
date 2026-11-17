@@ -212,6 +212,10 @@ type ProcessChunksOptions struct {
 	QuestionCount            int
 	EnableMultimodel         bool
 	StoredImages             []docparser.StoredImage
+	// SourceImageCount counts all persisted extracted resources, including
+	// originals whose optional multimodal preview was deferred. Nil is unknown.
+	SourceImageCount *int
+	TextIsCatalog    bool
 	// ParentChunks holds parent chunk data when parent-child chunking is enabled.
 	// When set, the chunks passed to processChunks are child chunks, and each
 	// child's ParentIndex references an entry in this slice.
@@ -894,6 +898,9 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 
 	if err := setPPTXMediaProcessingMetadata(knowledge, options.Metadata); err != nil {
 		logger.Warnf(ctx, "Invalid PPTX preview receipt for %s: %v", knowledge.ID, err)
+	}
+	if err := setContentProcessingMetadata(knowledge, len(textChunks), options.SourceImageCount, options.TextIsCatalog); err != nil {
+		return fmt.Errorf("persist content processing counts: %w", err)
 	}
 
 	if err := s.updateKnowledgeUnlessSourceReplaced(ctx, knowledge); err != nil {
@@ -3395,6 +3402,7 @@ func (s *knowledgeService) reparseKnowledge(
 // new processing attempt rather than retaining terminal state from the
 // previous one.
 func resetKnowledgeForReparse(knowledge *types.Knowledge, kb *types.KnowledgeBase) {
+	clearContentProcessingMetadata(knowledge)
 	knowledge.ParseStatus = types.ParseStatusPending
 	knowledge.EnableStatus = "disabled"
 	knowledge.Description = ""
@@ -4437,12 +4445,15 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 	chunkStarted := time.Now()
 
 	multimodalImages := imagesForMultimodal(storedImages)
+	storedImageCount := len(storedImages)
 	processOpts := ProcessChunksOptions{
 		DocumentImageSources:     resolvedDocumentImageSources(convertResult, storedImages, knowledge.FileHash),
 		EnableQuestionGeneration: payload.EnableQuestionGeneration,
 		QuestionCount:            payload.QuestionCount,
 		EnableMultimodel:         payload.EnableMultimodel,
 		StoredImages:             multimodalImages,
+		SourceImageCount:         &storedImageCount,
+		TextIsCatalog:            knowledge.FileType == "xlsx",
 	}
 
 	if convertResult != nil {

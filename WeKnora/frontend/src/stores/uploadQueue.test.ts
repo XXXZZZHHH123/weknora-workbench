@@ -192,11 +192,16 @@ test('polls created rows until parsing settles', async () => {
   assert.equal(byName('a').parseStatus, 'pending', 'a failed request changes nothing')
 
   statusRows.set('kb1', [
-    { id: 'k-a', parse_status: 'completed' },
+    { id: 'k-a', parse_status: 'completed', metadata: {
+      _content_processing_v1: { text_chunk_count: 2, image_count: 0 },
+      _knowledge_ingestion: { result: { table_count: 0, accepted_count: 0, computable_value_count: 0 } },
+    } },
     { id: 'k-b', parse_status: 'failed', error_message: 'broken pdf' },
   ])
   await queue.pollNow()
   assert.equal(byName('a').parseStatus, 'completed')
+  assert.ok(byName('a').coverageSummary?.includes('正文：已保存 2 个文本分块'))
+  assert.ok(byName('a').coverageSummary?.includes('可计算数据：已入库 0 个有效数值'))
   assert.equal(byName('b').parseStatus, 'failed')
   assert.equal(byName('b').parseError, 'broken pdf')
   // Missing from one answer is not proof of deletion.

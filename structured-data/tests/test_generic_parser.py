@@ -36,7 +36,7 @@ def test_simple_auto_parse_provenance_blank_error(tmp_path):
 
 def test_unit_row_and_multi_header_require_review(tmp_path):
     p=book(tmp_path,[['日期','价格'],[None,'元/吨'],[datetime(2023,1,1),1],[datetime(2023,1,2),2]])
-    s=candidate(p);assert s['status']=='auto_ready';assert s['mapping']['blocks'][0]['columns'][0]['unit']=='元/吨'
+    s=candidate(p);assert s['status']=='auto_ready';assert s['mapping']['blocks'][0]['columns'][0]['unit'] is None  # Layout scan cannot decide semantic units.
     w=load_workbook(p);w.active['B2']='主力';w.save(p)
     assert candidate(p)['status']=='needs_review'
 

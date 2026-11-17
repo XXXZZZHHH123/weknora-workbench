@@ -4,7 +4,7 @@ import re
 
 _FIELDS = {'header_rows', 'data_start_row', 'data_end_row', 'date_column', 'date_cell',
            'category_column', 'category_name', 'metric', 'unit', 'column', 'period',
-           'row_label_column', 'columns', 'date_mode', 'date_format', 'header_cells', 'frequency', 'frequency_cells',
+           'row_label_column', 'columns', 'date_mode', 'date_format', 'header_cells', 'frequency', 'frequency_cells', 'unit_cells', 'field_role',
            'dimensions', 'row_rules', 'layout', 'name', 'header_expectations'}
 
 
@@ -23,7 +23,7 @@ def clean_target(target):
         out['column'] = target['column']
     cells = target.get('cells', [])
     if isinstance(cells, list):
-        out['cells'] = [x for x in cells[:16] if isinstance(x, str) and re.fullmatch(r'[A-Z]{1,3}[1-9][0-9]{0,6}', x)]
+        out['cells'] = [x for x in cells[:16] if isinstance(x, str) and (x == '$sheet_title' or re.fullmatch(r'[A-Z]{1,3}[1-9][0-9]{0,6}', x))]
     return out
 
 

@@ -1,4 +1,4 @@
-import { knowledgeIngestion } from '../utils/knowledgeIngestion'
+import { knowledgeCoverageSummary, knowledgeIngestion } from '../utils/knowledgeIngestion'
 /**
  * Framework-free rules behind the knowledge upload queue (stores/uploadTasks.ts):
  * how an item's transfer and parse states fold into one display phase, how a
@@ -29,6 +29,7 @@ export interface UploadItem {
   processingStatus?: string
   processingStage?: string
   attentionCount?: number
+  coverageSummary?: string[]
 }
 
 /**
@@ -223,7 +224,7 @@ export function pickNextToStart<T extends UploadItem>(
 }
 
 export type UploadOutcome =
-  | { kind: 'uploaded'; knowledgeId?: string; parseStatus?: string; processingStatus?: string; processingStage?: string; attentionCount?: number }
+  | { kind: 'uploaded'; knowledgeId?: string; parseStatus?: string; processingStatus?: string; processingStage?: string; attentionCount?: number; coverageSummary?: string[] }
   | { kind: 'duplicate'; knowledgeId?: string; message?: string }
   | { kind: 'failed'; message?: string }
 
@@ -240,6 +241,7 @@ export function classifyUploadResult(result: any): UploadOutcome {
   if (result?.success === true) {
     const processing = knowledgeIngestion(result.data?.metadata)
     return { kind: 'uploaded', knowledgeId: result?.data?.id, parseStatus: result?.data?.parse_status,
+      coverageSummary: knowledgeCoverageSummary(result.data?.metadata, result.data?.parse_status),
       ...(processing.status ? {processingStatus: processing.status, processingStage: processing.stage, attentionCount: processing.attentionCount} : {}) }
   }
   return { kind: 'failed', message: result?.error?.message || result?.message }

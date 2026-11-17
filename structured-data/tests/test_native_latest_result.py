@@ -175,6 +175,11 @@ def test_real_result_route_keeps_stored_identity_when_verified_native_display_na
     assert response.status_code == 200, response.text
     assert response.json()['import_result']['dataset_id'] == fresh['dataset_id']
     assert response.json()['import_result']['source_file'] == source['file_name']
+    downloaded = client.get(f"/api/datasets/{fresh['dataset_id']}/source",
+                            headers=headers(kb=source['knowledge_base_id']))
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.content == state['contents']
+    assert downloaded.headers['content-disposition'] == f'attachment; filename="{source["file_name"]}"'
     assert before == {str(p): p.read_bytes() for p in manager.root.rglob('*') if p.is_file()}
     assert not any(path.endswith('/download') for path, _ in state['calls'])
 

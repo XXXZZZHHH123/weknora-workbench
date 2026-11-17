@@ -93,6 +93,9 @@ def _request(scope, body):
                 or type(result.get('sources_revision')) is not int or result['sources_revision'] != scope.sources_revision
                 or not isinstance(result.get('version'), str) or not re.fullmatch('[0-9a-f]{64}',result['version'])):
             raise ValueError('Invalid current source response')
+        from tin.integration.field_metadata import validate_field_metadata
+        validate_field_metadata(result.get('series', []))
+        validate_field_metadata(result.get('indicators', []))
         return result
     except HTTPException:
         raise
@@ -188,6 +191,12 @@ def _raw_catalog_page(scope, offset=0, limit=200, search=None, series_ids=None, 
                 or field.get('knowledge_base_id') != source['knowledge_base_id']
                 or field.get('knowledge_base_tenant_id') != source['tenant_id']):
             raise HTTPException(503, '目录项超出当前直接来源授权')
+        from tin.integration.field_metadata import FieldMetadata
+        try:
+            if field.get('field_metadata') is not None:
+                FieldMetadata.model_validate(field['field_metadata'])
+        except ValueError:
+            raise HTTPException(503, '目录字段元数据格式无效') from None
     if cache is not None and len(cache) < 128:
         # Retain the scope too, so its object identity cannot be recycled while
         # a page remains memoized in this request.
@@ -254,6 +263,11 @@ def _legacy_catalog_page(scope, offset, limit, search, series_ids, requested, so
         finally: current_workbench.reset(marker)
         if page.get('catalog_only') is not True or not isinstance(page.get('indicators'),list):
             raise HTTPException(503,'知识库目录格式无效')
+        from tin.integration.field_metadata import validate_field_metadata
+        try:
+            validate_field_metadata(page['indicators'])
+        except ValueError:
+            raise HTTPException(503, '目录字段元数据格式无效') from None
         fields.extend({**field,'knowledge_base_id':source.knowledge_base_id,
             'knowledge_base_tenant_id':source.knowledge_base_tenant_id,'source_kind':next((item.get('kind') for item in scope.additional_knowledge_bases if item['knowledge_base_id']==source.knowledge_base_id),'primary'),
             'source_version':page['version']} for field in page['indicators'])

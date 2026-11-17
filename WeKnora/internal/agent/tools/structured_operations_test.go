@@ -74,6 +74,14 @@ func TestStructuredNamedToolsExposeRealSchemasAndRejectPublication(t *testing.T)
 	list := operationToolByName(t, reads, "structured_list_series")
 	require.NoError(t, json.Unmarshal(list.Parameters(), &schema))
 	require.Equal(t, "string", schema["properties"].(map[string]any)["sheet"].(map[string]any)["anyOf"].([]any)[0].(map[string]any)["type"])
+	inspect := operationToolByName(t, reads, "structured_inspect_source")
+	require.NoError(t, json.Unmarshal(inspect.Parameters(), &schema))
+	cells := schema["properties"].(map[string]any)["max_cells"].(map[string]any)
+	require.Equal(t, float64(400), cells["maximum"])
+	require.Equal(t, float64(1), cells["minimum"])
+	require.Contains(t, cells["description"], "按实际范围返回")
+	require.Contains(t, inspect.Description(), "effective_max_cells")
+	require.Equal(t, structuredDigest(json.RawMessage(inspect.Parameters())), inspect.(*structuredReadOperationTool).descriptor.SchemaSHA256)
 
 	unknown := map[string]any{"name": "delete_dataset", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}}
 	publication := map[string]any{"name": "publish_pdf_table", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}}

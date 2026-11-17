@@ -33,10 +33,8 @@ def discover_matrices(ws, max_rows=200):
                 vals=[c.value for c in rows[rj][ci:end]]
                 if not isinstance(label,str) or not label.strip() or all(period_label(v) for v in vals):break
                 if not any(isinstance(v,(int,float)) and not isinstance(v,bool) or isinstance(v,str) and v.startswith('#') for v in vals):break
-                # Only parse a unit actually written in the metric label.
-                match=re.search(r'[（(]([^（）()]+)[）)]',label)
-                unit=match.group(1) if match and match.group(1) in {'吨','万吨','千吨','元','元/吨','%','千英亩','公顷','千公顷','公斤/公顷'} else None
-                rules.append({'row':rj+1,'metric':label.strip(),'unit':unit})
+                # Layout discovery does not choose semantic units or field roles.
+                rules.append({'row':rj+1,'metric':label.strip(),'unit':None})
                 last=rj+1
             if rules:
                 title=str(row[ci-1].value).strip()
@@ -90,6 +88,12 @@ def validate_matrix(b, sheet):
         seen.add(r)
         if rule.get('metric') is not None and not isinstance(rule['metric'],str):raise ValueError('矩阵指标名称必须是文字')
         if rule.get('unit') is not None and (not isinstance(rule['unit'],str) or not rule['unit'].strip()):raise ValueError('矩阵单位必须为空或文字')
+        from .field_metadata import FieldMetadata
+        FieldMetadata(role=rule.get('field_role'), unit=rule.get('unit'), frequency=rule.get('frequency'))
+        for field in ('unit_cells', 'frequency_cells'):
+            if field in rule and (not isinstance(rule[field], list) or not 1 <= len(rule[field]) <= 16
+                    or any(not isinstance(ref, str) or not (ref == '$sheet_title' or re.fullmatch(r'[A-Z]{1,3}[1-9][0-9]*', ref)) for ref in rule[field])):
+                raise ValueError('矩阵元数据来源位置格式无效')
     b['date_mode']='period'
 
 
@@ -117,11 +121,41 @@ def parse_matrix(ws,fs,b,bi,sheet,result):
         dims={**b.get('dimensions',{}),'block':f'mapped_{bi+1}'}
         if b.get('name'):dims['data_region']=b['name']
         unit=rule.get('unit')
-        result['series'].append({'series_id':sid,'sheet':sheet,'metric':metric,'unit':unit,
+        from .field_metadata import FieldMetadata
+        from openpyxl.utils.cell import coordinate_to_tuple
+        evidence = {}
+        for field in ('unit', 'frequency'):
+            value = rule.get(field)
+            # A row-rule unit can be a saved human declaration. Retain it
+            # without inventing evidence when the row label has no such text.
+            default_locations = ([labelcell] if value and
+                                 (field != 'unit' or value in str(rawlabel)) else [])
+            locations = rule.get(field + '_cells', default_locations)
+            records = []
+            for ref in locations:
+                try:
+                    if ref == '$sheet_title':
+                        rawtext = ws.title
+                    else:
+                        rr, cc = coordinate_to_tuple(ref)
+                        rawtext = rows[rr - 1][cc - 1].value
+                except (ValueError, IndexError, TypeError):
+                    raise ValueError('矩阵元数据来源超出实际读取区域') from None
+                if value is None or rawtext is None or value not in str(rawtext):
+                    raise ValueError('矩阵元数据与原表文字不符')
+                records.append(dict(sheet=sheet, cell=ref, text=str(rawtext)))
+            evidence[field + '_evidence'] = records
+        unit_source = ('source' if evidence['unit_evidence'] else 'declared') if unit else None
+        metadata = FieldMetadata(role=rule.get('field_role'), unit=unit, unit_source=unit_source,
+                                 frequency=rule.get('frequency'), **evidence).model_dump()
+        result['series'].append({'field_metadata': metadata,
+            **({'frequency': rule['frequency'], 'frequency_cells': [e['cell'] for e in evidence['frequency_evidence']]} if rule.get('frequency') else {}),
+            'series_id':sid,'sheet':sheet,'metric':metric,'unit':unit,
             'unit_status':'explicit' if unit else 'needs_review','dimensions':dims,'date_mode':'period',
             'block_index':bi,'header_cells':[labelcell]+[p for c in b['columns'] for p in c['header_cells']],
             'periods':[c['period'] for c in b['columns']], 'region_name':b.get('name',''),
-            'description':f'{sheet} / {metric}；按原表期间或版本标签查询，不转换成具体日期。'})
+            'description':f'{sheet} / {metric}；按原表期间或版本标签查询，不转换成具体日期。'
+                + ('单位为人工确认，未在原表找到对应文字' if unit_source == 'declared' else '')})
         for c in b['columns']:
             ci=column_index_from_string(c['column']);cell=rows[rn-1][ci-1];fc=frows[rn-1][ci-1]
             raw=cell.value;formula=fc.value if fc.data_type=='f' else None
@@ -129,6 +163,8 @@ def parse_matrix(ws,fs,b,bi,sheet,result):
             elif cell.data_type=='e':status='excel_error';value=None
             elif isinstance(raw,(int,float)) and not isinstance(raw,bool) and isfinite(raw):status='valid';value=raw
             else:status='unexpected_text';value=None
+            if rule.get('field_role') in ('text_dimension', 'annotation') and raw is not None:
+                status = rule['field_role']; value = None
             result['observations'].append({'series_id':sid,'date':None,'period':c['period'],
                 'period_cell':c['header_cells'][-1],'metric_cell':labelcell,'date_cell':None,
                 'source_cell':f"{c['column']}{rn}",'value':value,'formula':formula,'value_status':status,

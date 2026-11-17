@@ -31,6 +31,13 @@ func TestParseGeneratedQuestions(t *testing.T) {
 			want:    []string{"2024年产量是多少？", "-5吨变化意味着什么？"},
 		},
 		{
+			name:    "cross-year and numeric question bodies survive text and list protocols",
+			content: "2023/24年度累计进度如何？\n12%的变化意味着什么？\n1. 2024年1月至3月的变化趋势如何？\n2) 2023/24年度累计进度如何？\n3、12%的变化意味着什么？",
+			count:   5,
+			want: []string{"2023/24年度累计进度如何？", "12%的变化意味着什么？",
+				"2024年1月至3月的变化趋势如何？", "2023/24年度累计进度如何？", "12%的变化意味着什么？"},
+		},
+		{
 			name:    "structured JSON array protocol",
 			content: `["2024年产量是多少？", "-5吨变化意味着什么？"]`,
 			count:   2,

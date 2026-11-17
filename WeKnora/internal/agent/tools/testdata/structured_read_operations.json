@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "inspect_source",
-      "description": "只读核验保留的原 Excel，包括 parsed_range 外区域。dataset_id 必须来自真实目录，文件 SHA256 必须与该版本一致。searches 是原值/公式的字面匹配（最多8词），可跨全部列；跨多表搜索可能截断，须看 scan/truncated 并缩小 sheet，不将未扫描说成没有数据。ranges 严格 A1，必须 sheet，最多8段、总格数不超过 max_cells(1..400)，返回每格原值、坐标及公式缓存。sums 最多8组、每组2..16个单一A1坐标，必须 sheet，由 Decimal 求和，缺失/错误/无缓存不补零。max_matches 1..30；邻域 padding_rows 0..3、padding_cols 0..4。只检视原件，不重解析、不重新计算公式、不猜单位或年度；年度小表可能与月度汇总/不同定义冲突，必须核对并展示，不能自行选优先表。",
+      "description": "只读核验原 Excel 的单元格、公式及相交原生图表的标题、轴标题和系列引用，追查字段目录未覆盖的来源证据；包括 parsed_range 外区域。dataset_id 必须来自真实目录，文件 SHA256 必须与该版本一致。searches 是原值/公式的字面匹配（最多8词），可跨全部列；未指定 sheet 时按原工作簿顺序扫描，预算可能耗在其他表，目标表根本未扫描。已定位字段后必须指定该字段的真实 sheet 定向检索。跨多表搜索截断时看 scan.unscanned_sheets/incomplete_sheets、truncated 和 next_step；matches=[] 不等于没有数据，继续目标表检索。ranges 支持 A1、$绝对坐标、大小写及同工作表前缀；给出 sheet，或每个引用都带同一真实工作表前缀，最多8段、与求和输入合计硬上限400格，返回每格原值、坐标及公式缓存。max_cells可选，取值1..400；显式请求不超过400时按实际范围返回，若max_cells低于请求格数会提升为effective_max_cells并说明requested_max_cells_below_range；超过400时拒绝并给出可执行的拆分范围。搜索邻域仍受effective_max_cells约束；coverage.<sheet>.source_used_range 是有界扫描所得的非空原件范围，source_extent_status=unknown_budget 时范围未知；ranges[].read_window 仅表示本次读取窗口，calculations[].input_ranges 表示实际计算输入范围，不能把读取窗口当作原表有效范围。sums 最多8组、每组1..16个A1引用（单格或有限矩形范围，如 C74:C85、D74:D85），展开后每组至少2格；组内重叠坐标拒绝，组间重复按实际输出格数计入400格硬上限。同样允许同表前缀与 $，不接受公式、整列、跨表或外部文件，由 Decimal 求和并返回全部展开原单元格；缺失/错误/无缓存不补零。max_matches 1..30；邻域 padding_rows 0..3、padding_cols 0..4。只检视原件，不重解析、不重新计算公式、不猜单位或年度；年度小表可能与月度汇总/不同定义冲突，必须核对并展示，不能自行选优先表。提供 ranges 时另返回最多20条与这些单元格相交的原生图表文本引用（标题、轴标题、曲线标签与原始范围）；chart_references_truncated 标明超限遗漏。图表返回的是原始文本及真实引用，不自动确认字段单位；模型须结合系列范围、轴对应、表头、公式和完整上下文判断适用性，不把其他系列或另一轴的单位套用。目录单位缺省不代表原件没有单位证据。",
       "inputSchema": {
         "properties": {
           "dataset_id": {
@@ -76,6 +76,9 @@
           },
           "max_cells": {
             "default": 200,
+            "description": "可选；显式范围及求和输入总格数不超过400时按实际范围返回，低于实际格数会提升并返回effective_max_cells；搜索邻域仍受此预算约束。",
+            "maximum": 400,
+            "minimum": 1,
             "title": "Max Cells",
             "type": "integer"
           },
@@ -99,7 +102,7 @@
     },
     {
       "name": "list_series",
-      "description": "字面查指标ID、单位、日期范围。dataset_id可省略，仅有一个当前文件时自动选择；多文件必须先取得真实ID，不猜ID。用户用别称、概念或连续追问时优先resolve_fields语义识别，不靠手写同义词。search空格分词AND。sheet严格过滤；context_sheet仅优先排序。partial_candidates须核对口径；truncated用next_offset分页。pending_scope只说明对应表未导入，不说明相关主题在其他已导入列中不存在。",
+      "description": "读取字段目录中的真实ID、原表头、维度、单位和日期覆盖，不读取业务观测值。field_quality统计真实观测的数值/文本类型与状态，不推断字段用途；文本观测不得作为数值输入，unit_status=needs_review时单位仍未确认；field_metadata.unit_source=declared表示单位为人工确认，未在原表找到对应文字，保留单位声明但不冒充原文证据。dataset_id可省略，仅有一个当前文件时自动选择；多文件必须先取得真实ID，不猜ID。模型依据完整问题、上下文和实际目录决定是否需要读取记录或计算；列举字段结构不要求额外查询时序。search空格分词AND，仅作字面召回；别名与partial_candidates也仅为候选，不决定业务口径。sheet严格过滤；context_sheet仅优先排序。catalog_summary按分页前实际匹配目录的sheet/metric精确分组计数，可作为实际字段结构列举的来源，不判断业务类别；groups_truncated表示分组展示也有截断。truncated与next_offset说明字段分页，不能将当前页当作全目录。按工作表分组的目录摘要也列出有界的待确认/未映射表状态、原因、已知范围与next_step；它们没有可查询字段，可用inspect_source读取经来源校验的原单元格。表名字面匹配只作候选召回排序。pending_scope只说明对应表未导入，不说明相关主题在其他已导入列中不存在。",
       "inputSchema": {
         "properties": {
           "dataset_id": {
@@ -160,7 +163,7 @@
     },
     {
       "name": "query_series",
-      "description": "确定性查询：dataset_id可省略，只有一个当前文件时自动选择；具体日期用YYYY-MM-DD，起止均包含。date_mode=period时用period精确匹配原标签，不可转为日期；date_mode=none不填时间。不带日期的系列不支持latest；期间统计须指定period。operation=rows/latest/mean/sum/min/max/count。min/max返回aggregate及真正取得极值的rows/extremum_rows，日期只能用其中的date，actual_first_date/actual_last_date仅是范围边界。并列极值的数量看extremum_count，超过limit会truncated。求最高/最低日期不需要用户先给日期；未限定时间则不填日期查询全范围。latest返回最新有效数值；mean为算术平均；count为有效值数。缺失不作零。mean/sum/count的rows仅示例来源，aggregate才是统计值。返回原文件、sheet/cell和公式缓存来源。",
+      "description": "单字段确定性查询。同一问题需同文件多个字段在相同日期或范围的值时，优先用analyze_table一次提交series_ids和SELECT；不要拆成多次并发query_series，逐列重复来源核验会增加等待。需要原值时选择series_id,date,value,source_cell等真实列，不必聚合。source_binding可选：涉及同名来源时，由你依据完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序校验后直接执行，不再另行调用来源模型；不提供时由独立来源核验。确定性查询：dataset_id可省略，只有一个当前文件时自动选择；具体日期用YYYY-MM-DD，起止均包含。date_mode=period时用period精确匹配原标签，不可转为日期；date_mode=none不填时间。不带日期的系列不支持latest；期间统计须指定period。operation=rows/latest/mean/sum/min/max/count。min/max返回aggregate及真正取得极值的rows/extremum_rows，日期只能用其中的date，actual_first_date/actual_last_date仅是范围边界。并列极值的数量看extremum_count，超过limit会truncated。求最高/最低日期不需要用户先给日期；未限定时间则不填日期查询全范围。latest返回最新有效数值；mean为算术平均；count为有效值数。缺失不作零。mean/sum/count的rows仅示例来源，aggregate才是统计值。返回原文件、sheet/cell和公式缓存来源。",
       "inputSchema": {
         "properties": {
           "series_id": {
@@ -224,6 +227,34 @@
             ],
             "default": null,
             "title": "Period"
+          },
+          "source_question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Question"
+          },
+          "source_binding": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Binding"
           }
         },
         "required": [
@@ -235,7 +266,7 @@
     },
     {
       "name": "get_result_evidence",
-      "description": "读取上次查询的事实而不重新理解问题：请求范围、各字段实际记录/有效值范围、数值、来源、缺失情况和公式。resolution_id来自真实历史工具结果，亦可填写analyze_table返回的result_id以读取该次分析。日期边界不是极值日期。旧结果没有保存证据时只重新执行原计划，不调用意图模型。",
+      "description": "读取已保存的字段计划或分析事实而不重新理解问题：请求范围、各字段实际记录/有效值范围、数值、来源、缺失情况和公式。参数名固定为resolution_id，其值只能来自字段计划返回的resolution_id或analyze_table返回的result_id。query_series的result_contract.result_id不是可读取的计划或分析编号；其rows/source_evidence已在查询结果中，可直接核对。日期边界不是极值日期。旧结果没有保存证据时只重新执行原计划，不调用意图模型。",
       "inputSchema": {
         "properties": {
           "resolution_id": {
@@ -252,7 +283,7 @@
     },
     {
       "name": "analyze_table",
-      "description": "只读通用分析SQL；先取得真实series_id并核验口径。dataset_id可省略，只有一个当前文件时自动选择；多文件先取得真实ID，不猜ID。隔离表data仅含指定字段/日期范围的全部记录（最多50000条），列series_id VARCHAR,date DATE,value DOUBLE,source_cell,date_cell,period,value_status,metric,sheet,unit均VARCHAR；缺失value为NULL。SQL方言为DuckDB，支持SELECT/WITH、四则、GROUP BY、JOIN、窗口/滚动与多阶段分析，无需预定义问题类型。优先使用原生聚合、窗口和日期函数，例如date_trunc(part,date)；不要自行拼日历算法，CAST小数到整数会舍入而非向下取整，向下取整用floor。输出columns和rows（按列顺序的二维数组）、SQL及输入覆盖/来源；输出截断不影响完整输入计算。所有聚合必须使用完整输入，按需WHERE value IS NOT NULL，SQL不自动排除零、换算单位或解释年度。输入过大/SQL错误时根据反馈修正，不让用户选字段。每个输入最多一个文件版本，不允许读取文件、联网、修改数据或多条语句。不要混加存量、累计值与当期流量。",
+      "description": "同文件多字段可一次读取原值或分析：series_ids提交1至16个真实字段，用SELECT series_id,date,value,source_cell等列读取同一日期/范围；无需逐字段并发query_series。source_binding可选：模型按完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序逐项验证后执行；不提供时由独立来源核验，不按字段名自动选源。DuckDB单条只读SELECT/WITH；先取得真实series_id并核验口径。唯一输入表名data，列series_id VARCHAR,date DATE,value DOUBLE，其余source_cell,date_cell,period,value_status,metric,sheet,unit均VARCHAR，缺失value为NULL。SELECT混合普通聚合与非聚合列时，须在同一层用GROUP BY列出分组键（含日期表达式）；窗口聚合遵循自身OVER作用域。表一旦定义别名，只能在该作用域使用该别名；CTE后续层只看见前层实际输出列。CTE/别名避免SQL保留字，必要时使用双引号标识符。分组后再排名或跨组统计时，用CTE分开相应阶段，不把原始date或已离开作用域的别名直接混入聚合。程序不会补分组、替换别名或改写业务SQL；错误时依据真实DuckDB反馈修正。dataset_id可省略，只有一个当前文件时自动选择；多文件先取得真实ID，不猜ID。data仅含指定字段/日期范围的全部记录（最多50000条）。支持四则、GROUP BY、JOIN、窗口/滚动与多阶段分析，无需预定义问题类型。优先用原生聚合、窗口和日期函数，例如date_trunc(part,date)；不要自行拼日历算法，CAST小数到整数会舍入，向下取整用floor。输出columns和rows（按列顺序的二维数组）、SQL及输入覆盖/来源；输出截断不影响完整输入计算。所有聚合必须使用完整输入，按需WHERE value IS NOT NULL，SQL不自动排除零、换算单位或解释年度。输入过大/SQL错误时修正，不让用户选字段。每个输入最多一个文件版本，不允许文件、联网、写入或多条语句。不要混加存量、累计值与当期流量。",
       "inputSchema": {
         "properties": {
           "series_ids": {
@@ -306,6 +337,34 @@
             "default": 200,
             "title": "Limit",
             "type": "integer"
+          },
+          "source_question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Question"
+          },
+          "source_binding": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Binding"
           }
         },
         "required": [

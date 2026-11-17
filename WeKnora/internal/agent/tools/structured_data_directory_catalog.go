@@ -185,6 +185,11 @@ func structuredDirectoryKeys(source map[string]any, keys ...string) map[string]a
 func compactStructuredDataset(source map[string]any, identityOnly bool) map[string]any {
 	result := structuredDirectoryKeys(source, "dataset_id", "source_file", "sha256", "imported_at", "is_latest_for_source", "import_id", "parent_dataset_id", "use_reviewed_mappings", "series_count", "sheet_count", "sheets_truncated", "pending_sheets_count", "pending_sheets_truncated", "pending_sheet_states_count", "pending_sheet_states_truncated", "empty_sheets_count", "empty_sheets_truncated")
 	result["directory_metadata_truncated"], result["next_operation"] = true, "list_series"
+	previewLimit := 8
+	if identityOnly {
+		previewLimit = 0
+	}
+	copyStructuredUnmappedSheets(source, result, previewLimit)
 	if identityOnly {
 		return result
 	}
@@ -203,4 +208,25 @@ func compactStructuredDataset(source map[string]any, identityOnly bool) map[stri
 		}
 	}
 	return result
+}
+
+// Review-only sheets are source navigation, never queryable field identities.
+// Keep counts and explicit omission when a smaller model output cannot fit them.
+func copyStructuredUnmappedSheets(source, result map[string]any, limit int) {
+	for _, key := range []string{"unmapped_sheet_count", "unmapped_sheets_truncated", "unmapped_sheet_limit"} {
+		if value, exists := source[key]; exists {
+			result[key] = value
+		}
+	}
+	entries := structuredRecallRows(source["unmapped_sheets"])
+	if entries == nil {
+		return
+	}
+	if _, exists := result["unmapped_sheet_count"]; !exists {
+		result["unmapped_sheet_count"] = len(entries)
+	}
+	result["unmapped_sheets"] = entries[:min(len(entries), limit)]
+	if len(entries) > limit {
+		result["unmapped_sheets_truncated"] = true
+	}
 }

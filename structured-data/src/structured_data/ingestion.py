@@ -31,6 +31,39 @@ MAX_BYTES = 100 * 1024 * 1024
 _logger = logging.getLogger(__name__)
 
 
+def published_numeric_value_count(store, result):
+    """Count saved decimal values only in this task's published PDF tables.
+
+    A text-only table or an accepted table full of missing values is queryable,
+    but contributes no calculable values. Automatic publication is not review.
+    """
+    total = 0
+    table_ids = {group['table_id'] for group in result.get('groups', [])
+                 if group.get('status') == 'accepted' and group.get('table_id')}
+    for table_id in table_ids:
+        table = store._read_table(table_id)
+        numeric = [column['name'] for column in table['columns'] if column['type'] == 'decimal']
+        total += sum(row['values'].get(name) is not None for row in table['rows'] for name in numeric)
+    return total
+
+
+def published_workbook_counts(store, doc):
+    """Count all saved fields, independently of catalog pagination and labels."""
+    dataset = doc.get('dataset_id')
+    if not dataset:
+        return {}
+    fields = json.loads((store._path(dataset) / 'series.json').read_text())
+    quality = store.series_quality(dataset)
+    counts = {'computable_value_count': sum(
+        quality.get(field['series_id'], {}).get('valid_numeric_count', 0)
+        for field in fields if (field.get('field_metadata') or {}).get('role') in {None, 'numeric'})}
+    published = [sheet for sheet in doc['sheets'] if sheet.get('published_in_dataset')]
+    if all(sheet.get('published_mapping') is not None for sheet in published):
+        counts['published_table_count'] = sum(
+            len(sheet['published_mapping'].get('blocks', [])) for sheet in published)
+    return counts
+
+
 def key_bytes():
     key = Path(os.environ['STRUCTURED_SERVICE_TOKEN_FILE']).read_bytes().strip()
     if len(key) < 32:
@@ -172,6 +205,7 @@ def install_ingestion_routes(app, registry):
                 result = {**result, 'dataset_id':doc.get('dataset_id'),
                           'sheets': [{'name': sheet['name'], 'status': sheet['status']} for sheet in sheets],
                           'attention_count': sum(sheet.get('status') not in {'auto_ready', 'template_ready', 'confirmed', 'trusted_existing', 'skip', 'chart_ready'} for sheet in sheets)}
+                result.update(published_workbook_counts(manager.store, doc))
             else:
                 from .pdf_tables import PDFTableStore
                 from .pdf_parser_bridge import normalize_parser_response
@@ -200,7 +234,7 @@ def install_ingestion_routes(app, registry):
                 if not bundle.get('fragments'):
                     page_attention = max(page_attention, int(bool(bundle.get('requires_review'))))
                     guard()
-                    result = {'draft_id':None,'table_count':0,'accepted_count':0,'attention_count':page_attention,
+                    result = {'draft_id':None,'table_count':0,'accepted_count':0,'computable_value_count':0,'attention_count':page_attention,
                               'message':'没有识别到表格，文字和图片仍保存在本知识库文件中。'}
                     save(claim, {'status':'completed','stage':result['message'],'result':result})
                     return
@@ -228,6 +262,8 @@ def install_ingestion_routes(app, registry):
                     result = process_draft(store, draft['draft_id'], directory, previous=previous,
                         save=lambda state: _write(auto, state), progress=progress, before_publish=guard)
                 result = {**result, 'draft_id': draft['draft_id'],
+                          'table_count': len(bundle['fragments']),
+                          'computable_value_count': published_numeric_value_count(store, result),
                           'attention_count':result.get('attention_count',0)+page_attention,
                           'page_attention_count':page_attention}
             guard()

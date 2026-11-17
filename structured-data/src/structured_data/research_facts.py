@@ -348,6 +348,10 @@ def read_facts(store,manager,body,*,_allow_partial=False,_prepare_only=False):
             if bounded is not None and identifier not in bounded['series_ids']:
                 continue
             mapping[field['series_id']]=identifier
+            from .field_metadata import FieldMetadata
+            metadata = field.get('field_metadata')
+            if metadata is not None:
+                FieldMetadata.model_validate(metadata)
             indicators.append({**field,'series_id':identifier,'source_series_id':field['series_id'],
                 'source_knowledge_id':source['knowledge_id'],'dataset_id':dataset,
                 'source_file':manifest.get('source_file'),'source_sha256':manifest['sha256']})
