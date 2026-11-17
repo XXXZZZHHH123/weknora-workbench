@@ -5,6 +5,8 @@ import hmac
 import json
 import math
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urlsplit
@@ -19,6 +21,26 @@ from tin.ownership import verified_actor
 from tin.provenance.service import artifact_path, preserve_blob, record_with_evidence, snapshot_workbook, stable_hash, start_batch, source_family, verified_artifact_bytes
 from tin.schemas.caliber import Caliber
 from tin.schemas.observation import ObservationIn
+
+
+_structured_transport = ContextVar('structured_read_transport', default=None)
+
+
+@contextmanager
+def structured_read_scope():
+    """Pool connections for one bounded read, never credentials or results.
+
+    Lazily create the client so metadata-only/empty reads do not load TLS roots.
+    Each call still validates the configured origin and signs fresh headers.
+    """
+    state = {}
+    marker = _structured_transport.set(state)
+    try:
+        yield
+    finally:
+        _structured_transport.reset(marker)
+        for client in state.values():
+            client.close()
 
 
 def structured_request(method, path, body=None, *, return_error_response=False, timeout=120):
@@ -56,8 +78,19 @@ def structured_request(method, path, body=None, *, return_error_response=False, 
                "X-Research-Identity": encoded, "X-Research-Signature": signature}
     if scope is not None:
         headers['Authorization'] = scope.authorization
-    response = httpx.request(method, base+path, content=content, headers=headers,
-        follow_redirects=False, trust_env=False, timeout=timeout)
+    transport = _structured_transport.get()
+    if transport is None:
+        response = httpx.request(method, base+path, content=content, headers=headers,
+            follow_redirects=False, trust_env=False, timeout=timeout)
+    else:
+        if base not in transport:
+            transport[base] = httpx.Client(follow_redirects=False, trust_env=False)
+        client = transport[base]
+        # Standalone requests did not carry cookies between calls. Keep that
+        # property even when the underlying TCP connection is reused.
+        client.cookies.clear()
+        response = client.request(method, base+path, content=content, headers=headers,
+            follow_redirects=False, timeout=timeout)
     if response.status_code != 200 and not return_error_response:
         raise ValueError(f"结构化服务读取失败（HTTP {response.status_code}）")
     return response

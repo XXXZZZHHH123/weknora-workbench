@@ -83,7 +83,7 @@ async function open(browser, pathname, html, handler, options = {}) {
     }
     errors.push('Unhandled ' + request.method() + ' ' + url.pathname); return route.abort();
   });
-  await page.goto(origin + pathname, {waitUntil: 'networkidle'});
+  await page.goto(origin + pathname, {waitUntil: options.waitUntil || 'networkidle'});
   return {page, context, errors, calls, get favorites() { return favorites; }, async close() { assert.deepEqual(errors, []); await context.close(); }};
 }
 function renderLibrary(config = {}, extra = {}) {

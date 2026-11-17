@@ -253,8 +253,9 @@ def _discard_private_record(session, meta, kind):
     _update_record(session, row, value)
 
 
-def cleanup_discarded(kind, index, purpose):
-    for meta in [row for row in index.discarded() if row.get('purpose', 'judgments') == purpose][:20]:
+def cleanup_discarded(kind, index, purpose, *, job_id=None):
+    for meta in [row for row in index.discarded() if row.get('purpose', 'judgments') == purpose
+            and (job_id is None or row['id'] == job_id)][:20]:
         factory = _storage_factory(meta)
         if factory is not None:
             with factory() as session:
@@ -473,25 +474,32 @@ def _discard_snapshot_key(scope, job_id):
         return (config.get('preview') or {}).get('analysis_snapshot') if config.get('state') == 'succeeded' else None
 
 
-def _forget_discarded(scope, key):
-    cleanup_discarded(KIND, registry, 'judgments')
+def _forget_discarded(scope, key, *, job_id=None):
+    cleanup_discarded(KIND, registry, 'judgments', job_id=job_id)
     from tin.web.judgment_analysis_cache import forget_snapshot
     forget_snapshot(scope, key)
 
 
-async def discard_job(scope, job_id):
-    verified = await fresh_scope(scope)
-    meta = await run_in_threadpool(registry.get, verified.identity, job_id, verified.workbench_id)
-    if meta.get('purpose', 'judgments') != 'judgments':
-        raise HTTPException(404, '分析任务不存在或无权访问')
-    key = await run_in_threadpool(_discard_snapshot_key, verified, job_id) if meta['state'] == 'succeeded' else None
-    meta = await run_in_threadpool(registry.discard_result, verified.identity, job_id, verified.workbench_id, 'judgments')
+async def discard_private_job(scope, job_id, *, verify, index, purpose, snapshot_key, forget, missing):
+    """Retire an owned result before deleting its private preview and reusable analysis."""
+    verified = await verify(scope)
+    meta = await run_in_threadpool(index.get, verified.identity, job_id, verified.workbench_id)
+    if meta.get('purpose', 'judgments') != purpose:
+        raise HTTPException(404, missing)
+    key = await run_in_threadpool(snapshot_key, verified, job_id) if meta['state'] == 'succeeded' else None
+    meta = await run_in_threadpool(index.discard_result, verified.identity, job_id, verified.workbench_id, purpose)
     try:
-        await run_in_threadpool(_forget_discarded, verified, key)
+        await run_in_threadpool(forget, verified, key, job_id=job_id)
     except (sqlite3.Error, OSError, HTTPException):
         # The result is already retired; the maintenance sweep prunes the private preview later.
         logging.getLogger(__name__).warning('Discarded analysis cleanup deferred')
     return {'job': metadata(meta)}
+
+
+async def discard_job(scope, job_id):
+    return await discard_private_job(scope, job_id, verify=fresh_scope, index=registry,
+        purpose='judgments', snapshot_key=_discard_snapshot_key, forget=_forget_discarded,
+        missing='分析任务不存在或无权访问')
 
 
 @router.post('', status_code=202)

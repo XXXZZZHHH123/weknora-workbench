@@ -331,3 +331,15 @@ def prune_after_success(scope, keep_key):
 
 
 mark_delivered = prune_after_success
+
+
+def forget_snapshot(scope, key):
+    """Delete only this actor's completed structure, so discarded input is analysed afresh."""
+    if key is None:
+        return
+    _authorize(scope)
+    _key(key)
+    with storage(scope) as session:
+        session.execute(delete(SourceMapping).where(SourceMapping.id == key, *_owner_filters(scope),
+            SourceMapping.config['state'].as_string() == 'ready'))
+        session.commit()

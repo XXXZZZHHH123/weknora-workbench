@@ -18,12 +18,15 @@
 
   async function anomalies() {
     const status = $('chart-anomalies-status'), table = $('chart-anomalies-table'), more = $('chart-anomalies-more');
+    const panel = $('chart-anomalies');
     const labels = {extreme_high: '同期前两高', extreme_low: '同期前两低', rank_change: '排名变化'};
     const controller = new AbortController();
     window.addEventListener('pagehide', () => controller.abort(), {once: true});
+    panel.setAttribute('aria-busy', 'true');
     U.notice(status, '正在读取同期位置…');
     try {
       const data = await U.api('/charts/anomalies' + dataDate, {signal: controller.signal});
+      if (controller.signal.aborted) return;
       let expanded = false;
       function render() {
         const items = expanded ? data.items : data.items.slice(0, 10);
@@ -49,12 +52,13 @@
       $('chart-anomalies-failed-summary').textContent = `${failed.length} 张图表读取或计算失败，未纳入本次清单，展开查看原因`;
       $('chart-anomalies-failed-list').innerHTML = failed.map(item => `<li>${E(item.title)}：${E(item.reason)}</li>`).join('');
     } catch (error) {
-      if (error.name !== 'AbortError') U.notice(status, '同期异动读取失败：' + error.message, 'error');
+      if (!controller.signal.aborted && error.name !== 'AbortError') U.notice(status, '同期异动读取失败：' + error.message, 'error');
+    } finally {
+      if (!controller.signal.aborted) panel.setAttribute('aria-busy', 'false');
     }
   }
 
   function library() {
-    anomalies();
     const cards = $('chart-cards'), status = $('charts-status'), more = $('charts-more'), groups = $('chart-groups');
     const knownGroups = new Set(), renderers = new Set(), controllers = new Set();
     let selectedGroup = null, nextOffset = null, generation = 0, busy = false, listController, searchTimer, closed = false;
@@ -147,7 +151,9 @@
     more.addEventListener('click', () => load(false));
     document.addEventListener('chart:saved', () => { load(true); indexGroups(); });
     window.addEventListener('pagehide', () => { closed = true; clearTimeout(searchTimer); listController?.abort(); controllers.forEach(c => c.abort()); observer?.disconnect(); renderers.forEach(c => c.destroy()); }, {once: true});
-    load(true); indexGroups();
+    // Start the visible list first. The independent anomaly request may take
+    // longer or fail without holding up cards, search, groups or pagination.
+    load(true); indexGroups(); anomalies();
   }
 
   function detail() {

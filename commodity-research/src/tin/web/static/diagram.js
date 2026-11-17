@@ -1320,7 +1320,9 @@ async function dgImportMarkdown(into) {
       "结构（分组、层级、绑定、静态标注）按文本重建，但**方框的位置和大小会重新排布**——" +
       "手工摆过的版面会丢。不确定就先用「导入为新布局」。")) return;
   msg.textContent = "处理中…";
-  const res = await researchFetch((window.RESEARCH_PREFIX || "") + "/api/sn/diagram/markdown", {
+  const generatedJobId = window.dgGeneratedJobId?.();
+  const importPath = generatedJobId ? "/api/sn/diagram/jobs/" + encodeURIComponent(generatedJobId) + "/apply" : "/api/sn/diagram/markdown";
+  const res = await researchFetch((window.RESEARCH_PREFIX || "") + importPath, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ markdown: document.getElementById("dg-md-text").value,
                            name: into ? "" : document.getElementById("dg-md-name").value,

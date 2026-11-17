@@ -18,7 +18,8 @@ async function library(data, {error, enabled = true, hidden = false} = {}) {
   const panel = {hidden}, events = {};
   page.closest = () => panel;
   const document = {getElementById: get, querySelector: () => page, createElement: () => new Element(), addEventListener(name, callback) { events[name] = callback; }};
-  const window = {addEventListener() {}, RESEARCH_PREFIX: '/research/workbenches/synthetic'};
+  const windowEvents = {};
+  const window = {addEventListener(name, callback) { (windowEvents[name] ||= []).push(callback); }, RESEARCH_PREFIX: '/research/workbenches/synthetic'};
   const context = vm.createContext({document, window, URLSearchParams, Headers, AbortController, setTimeout, clearTimeout});
   vm.runInContext(fs.readFileSync(path.join(assets, 'chart-ui.js'), 'utf8'), context);
   window.ChartUI = {...window.ChartUI, async api(url) {
@@ -29,7 +30,8 @@ async function library(data, {error, enabled = true, hidden = false} = {}) {
   }};
   vm.runInContext(fs.readFileSync(path.join(assets, 'charts.js'), 'utf8'), context);
   await new Promise(setImmediate);
-  return {get, requests, async show() { panel.hidden = false; events['indicator:tab'](); await new Promise(setImmediate); }};
+  return {get, requests, leave() { windowEvents.pagehide.forEach(callback => callback()); },
+    async show() { panel.hidden = false; events['indicator:tab'](); await new Promise(setImmediate); }};
 }
 function payload(count = 12) {
   return {as_of: '2029-09-15', total: count, failed: [], items: Array.from({length: count}, (_, i) => ({
@@ -104,4 +106,29 @@ test('指标页图表栏首次打开才读取异动和列表，多次切换不�
   await instance.show(); await instance.show();
   assert.equal(instance.requests.filter(url => url.startsWith('/charts/anomalies')).length, 1);
   assert.equal(instance.requests.filter(url => url.startsWith('/charts?')).length, 2, '列表和分组元数据各读一次');
+});
+
+test('异动未返回时列表先完成，异动失败只影响自己的状态', async () => {
+  let reject;
+  const pending = new Promise((_, no) => { reject = no; });
+  const {get, requests} = await library(pending);
+  assert.match(requests[0], /^\/charts\?/);
+  assert.equal(get('charts-status').textContent, '没有匹配图表。可从原表导入，或在单指标页另存为图表。');
+  assert.equal(get('chart-anomalies-status').textContent, '正在读取同期位置…');
+  assert.equal(get('chart-anomalies').attrs['aria-busy'], 'true');
+  reject(new Error('来源暂不可用'));
+  await new Promise(setImmediate);
+  assert.equal(get('chart-anomalies-status').textContent, '同期异动读取失败：来源暂不可用');
+  assert.equal(get('chart-anomalies').attrs['aria-busy'], 'false');
+  assert.match(get('charts-status').textContent, /^没有匹配图表/);
+});
+
+test('离开页面后到达的异动响应不再更新旧页面', async () => {
+  let resolve;
+  const pending = new Promise(yes => { resolve = yes; });
+  const instance = await library(pending);
+  instance.leave(); resolve(payload());
+  await new Promise(setImmediate);
+  assert.equal(instance.get('chart-anomalies-rows').innerHTML, undefined);
+  assert.equal(instance.get('chart-anomalies-status').textContent, '正在读取同期位置…');
 });

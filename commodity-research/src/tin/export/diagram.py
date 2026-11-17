@@ -395,6 +395,8 @@ def save_template(session: Session, variety: str, payload: dict) -> dict:
                                      .where(DiagramTemplate.variety == variety)):
             other.is_default = other is row
     session.flush()
+    from tin.web.diagram_jobs import mark_application
+    mark_application(session, row.id)
     if session.info.get('knowledge_facts') is True:
         from tin.web.restricted_views import remember_diagram
         remember_diagram(session, row)

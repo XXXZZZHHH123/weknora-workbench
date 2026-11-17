@@ -200,9 +200,11 @@ class Registry:
             if row['state'] == 'superseded':
                 return row
             if row['state'] in ACTIVE:
-                raise HTTPException(409, '分析仍在进行，完成后才能舍弃结果')
+                raise HTTPException(409, '产业图仍在生成，完成后才能舍弃结果' if purpose == 'diagram'
+                    else '分析仍在进行，完成后才能舍弃结果')
             if row['state'] == 'applied':
-                raise HTTPException(409, '此分析已保存为草稿，不能舍弃；可在版本记录中管理草稿')
+                raise HTTPException(409, '此产业图结果已应用，不能舍弃；可在布局管理中管理已保存的产业图'
+                    if purpose == 'diagram' else '此分析已保存为草稿，不能舍弃；可在版本记录中管理草稿')
             if row['state'] != 'succeeded':
                 raise HTTPException(410, '这份结果已过期或已失效，无需舍弃')
             row.update(state='superseded', phase='superseded', superseded_by=None, discarded=True,

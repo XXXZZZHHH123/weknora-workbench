@@ -276,12 +276,27 @@ def fact_pages(scope, sources=None, pinned_version=None):
         offset = next_offset
 
 
-def _insert(connection, table, rows):
+def _insert(connection, table, rows, *, columns=None):
     if not rows:
         return
-    columns = list(rows[0])
+    if columns is None:
+        columns = list(rows[0])
+        rows = [tuple(row.get(c) for c in columns) for row in rows]
     sql = 'INSERT INTO temp."_kb_' + table + '" (' + ','.join('"' + c + '"' for c in columns) + ') VALUES (' + ','.join('?' for _ in columns) + ')'
-    connection.exec_driver_sql(sql, [tuple(row.get(c) for c in columns) for row in rows])
+    connection.exec_driver_sql(sql, rows)
+
+
+def _json_raw_value(value):
+    """The JSON encoder's scalar spelling without constructing an encoder."""
+    if value is None:
+        return 'null'
+    if type(value) is bool:
+        return 'true' if value else 'false'
+    if type(value) is int:
+        return str(value)
+    if type(value) is float and math.isfinite(value):
+        return repr(value)
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _sql_time(value):
@@ -313,6 +328,26 @@ def install_projection(connection, scope, sources=None, pinned_version=None, *, 
     include_invalid = False
     fetched_at = _sql_time(datetime.now(timezone.utc))
     caliber = json.dumps({'time_type': '原表日期'})
+    indicator_caliber = json.dumps({'time_type': '原表日期', 'note': '原表日期只用于日期查询，不声明发布时间或当时可知性'}, ensure_ascii=False)
+    id_prefixes = {}
+    # Dates and cell locators repeat across metrics. Keep this small dictionary
+    # local to the projection: no raw source values or identities are cached.
+    encoded_strings = {}
+
+    def encoded(value):
+        if value is None:
+            return 'null'
+        if isinstance(value, str):
+            if value in encoded_strings:
+                return encoded_strings[value]
+            result = json.dumps(value, ensure_ascii=False)
+            if len(encoded_strings) < 8192:
+                encoded_strings[value] = result
+            return result
+        return json.dumps(value, ensure_ascii=False)
+
+    observation_columns = ('id', 'series_id', 'value', 'as_of', 'fetched_at', 'caliber_snapshot',
+        'source', 'source_url', 'revision', 'entered_by', 'note', 'status')
     for index, page in enumerate(fact_pages(scope, sources, pinned_version) if pages is None else pages):
         include_invalid = include_invalid or page.get('include_invalid') is True
         version = page['version']
@@ -329,8 +364,10 @@ def install_projection(connection, scope, sources=None, pinned_version=None, *, 
                 if not isinstance(name, str) or not name.strip():
                     raise HTTPException(503, '知识库真实字段缺少名称')
                 known[spec['series_id']] = spec
+                id_prefixes[spec['series_id']] = json.dumps([spec['source_knowledge_id'],
+                    spec['dataset_id'], spec['source_series_id']], ensure_ascii=False)[:-1] + ', '
                 indicators.append({'series_id': spec['series_id'], 'name': name, 'variety': '',
-                    'category': '知识库字段', 'caliber': json.dumps({'time_type': '原表日期', 'note': '原表日期只用于日期查询，不声明发布时间或当时可知性'}, ensure_ascii=False),
+                    'category': '知识库字段', 'caliber': indicator_caliber,
                     'unit': spec.get('unit') or '未注明', 'source': '知识库结构化',
                     'source_url': None, 'frequency': spec.get('frequency') or '未注明', 'fetch_mode': 'readonly',
                     'phase': '', 'owner': None, 'status': '可用', 'is_proxy': 0, 'vendor_code': None,
@@ -380,14 +417,14 @@ def install_projection(connection, scope, sources=None, pinned_version=None, *, 
                     raise HTTPException(409, '同一知识库字段日期存在冲突观测，请在结构化数据中处理')
                 continue
             seen[unique] = value
-            identifier = int(hashlib.sha256(json.dumps([spec['source_knowledge_id'], spec['dataset_id'], spec['source_series_id'], raw.get('source_cell'), when], ensure_ascii=False).encode()).hexdigest()[:15], 16)
-            rows.append({'id': identifier, 'series_id': raw['series_id'], 'value': value, 'as_of': stamp,
-                'fetched_at': fetched_at, 'caliber_snapshot': caliber,
-                'source': '知识库结构化', 'source_url': None, 'revision': 0, 'entered_by': None,
-                'note': '直接读取知识库已确认结构化数据，原表日期不表示发布时间', 'status': '数据缺失' if missing else '正常'})
+            identity_json = id_prefixes[raw['series_id']] + encoded(raw.get('source_cell')) + ', ' + encoded(when) + ']'
+            identifier = int(hashlib.sha256(identity_json.encode()).hexdigest()[:15], 16)
+            rows.append((identifier, raw['series_id'], value, stamp, fetched_at, caliber,
+                '知识库结构化', None, 0, None, '直接读取知识库已确认结构化数据，原表日期不表示发布时间',
+                '数据缺失' if missing else '正常'))
             evidence_rows.append((identifier,raw['series_id'],raw.get('source_cell'),raw.get('date_cell'),
-                json.dumps(raw.get('raw_value'),ensure_ascii=False),raw.get('formula'),when))
-        _insert(connection, 'observations', rows)
+                _json_raw_value(raw.get('raw_value')),raw.get('formula'),when))
+        _insert(connection, 'observations', rows, columns=observation_columns)
         if evidence_rows:
             connection.exec_driver_sql('INSERT INTO temp._kb_evidence VALUES (?,?,?,?,?,?,?)',evidence_rows)
     connection.exec_driver_sql('CREATE INDEX temp._kb_obs_lookup ON _kb_observations(series_id,as_of)')
