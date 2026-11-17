@@ -50,10 +50,12 @@ document.addEventListener("DOMContentLoaded", () => {
     target.style.width = width + "px"; target.style.height = height + "px"; document.body.append(target);
     let renderer;
     try {
-      let payload, definition, overlays = [], renderTitle = figure.title;
+      // The slide already shows the figure title; only a data notice goes inside the image.
+      let payload, definition, overlays = [], renderTitle = "";
       if (figure.kind === "chart") {
         if (!data.rendered?.payload) throw new Error("引用图表未返回可渲染数据。");
         ({payload, definition, overlays = []} = data.rendered);
+        definition = {...definition, title: ""};
       } else {
         const series = Array.isArray(data.series) ? data.series[0] : data.series;
         const limit = config.period === "weekly" ? 120 : 90;
@@ -63,10 +65,10 @@ document.addEventListener("DOMContentLoaded", () => {
         // Null separators keep every real observation as an isolated point,
         // matching the report's refusal to join incomparable observations.
         const points = disconnected ? series.points.flatMap(point => [point, {date: point.date, value: null}]) : series.points;
-        if (disconnected) renderTitle += "\n" + (series.notice || "观测不可连线，仅展示有效数据点");
+        if (disconnected) renderTitle = series.notice || "观测不可连线，仅展示有效数据点";
         payload = {unit: series.unit, curves: [{series_id: figure.series_id, label: series.name || figure.title,
           unit: series.unit, kind: "line", axis: "left", points}]};
-        definition = {title: figure.title};
+        definition = {title: ""};
       }
       renderer = window.ChartKit.render(target, payload, {width, height, exactSize: true, export: true, definition, overlays, title: renderTitle});
       const blob = await renderer.toPNGBlob(); aborted(signal);
