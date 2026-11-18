@@ -159,7 +159,7 @@
         {% for t in radar %}
         <tr id="judgment-threshold-{{ t.id }}">
           <td class="py-3 px-3 font-bold">{{ human_text(t.name, names) }}{{ dimension_tag((research.threshold_dimensions|default({})).get(t.id)) }}<div class="text-[10px] font-normal text-[var(--text-muted)]">{{ t.type }} · {{ t.horizon }}</div>
-            {% for note in (research.threshold_notes|default({})).get(t.id, []) %}<p class="judgment-rule-review">待核对：{{ human_text(note, names) }}</p>{% endfor %}
+            {% for note in (research.threshold_notes|default({})).get(t.id, []) %}<p class="judgment-rule-review judgment-rule-review-compact" title="待核对：{{ human_text(note, names) }}">待核对：{{ human_text(note, names) }}</p>{% endfor %}
             {% if not restricted_view %}<div data-chart-related-rule="{{ t.id }}"></div>{% endif %}</td>
           <td class="py-3 px-3"><span data-indicator-reference>{{ indicator_name(t.series_id, names) }}</span>
             {% set related = (research.threshold_related|default({})).get(t.id, []) %}
