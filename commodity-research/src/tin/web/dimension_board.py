@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
+from starlette.concurrency import run_in_threadpool
 
 from tin.integration.workbench_scope import artifact_session, current_workbench, require_shared_write
 from tin.models import Judgment, SourceMapping
@@ -53,7 +54,7 @@ def revision(session):
     return (row.version or 1) if row else 0
 
 
-def validate_config(values, previous, *, draft=False):
+def validate_config(values, previous, *, draft=False, admitted_ids=()):
     """Keep persisted/reserved ids; all other new ids are server authored.
 
     Template drafts may temporarily retain extra dimensions and sections for
@@ -61,6 +62,7 @@ def validate_config(values, previous, *, draft=False):
     """
     values = deepcopy(values)
     known = {item['id'] for item in previous}
+    known.update(admitted_ids)
     defaults = {item['id']: item['category'] for item in default_dimensions()}
     seen_client, seen_items, section_ids = set(), set(), set()
     total = 0
@@ -288,12 +290,12 @@ def describe_config(session, scope, dimensions=None):
             'evidence': extra, 'evidence_available': 'judgments' in scope.view_modules}
 
 
-def save_config(session, scope, body):
+def save_config(session, scope, body, *, admitted_ids=()):
     previous = read_dimensions(session)
     expected = revision(session)
     if expected != body.revision:
         raise HTTPException(409, {'reason': 'revision_conflict', 'message': '配置已由其他研究员修改，请刷新后重试', 'revision': expected})
-    dimensions = validate_config(body.dimensions, previous)
+    dimensions = validate_config(body.dimensions, previous, admitted_ids=admitted_ids)
     removed = {dim['id'] for dim in previous} - {dim['id'] for dim in dimensions}
     counts, _ = evidence_counts(session, previous, scope)
     referenced = {key: counts[key]['total'] for key in removed if counts[key]['total'] and key not in body.confirm_delete}
@@ -342,6 +344,24 @@ def put_config(body: DimensionConfig):
     scope = require_scope(write=True)
     with artifact_session(scope) as session:
         return save_config(session, scope, body)
+
+
+@router.put('/from-setup/{job_id}')
+async def put_setup_config(job_id: str, body: DimensionConfig):
+    from tin.web.workbench_setup_jobs import job_result
+    scope = require_scope(write=True)
+    result = await job_result(scope, job_id)
+    admitted_ids = {dimension['id'] for item in result['items']
+                    if item['part'] == 'dimensions' and item['state'] == 'succeeded'
+                    for dimension in item['data'].get('dimensions', [])}
+    if not admitted_ids:
+        raise HTTPException(409, '此任务没有可核对的维度草稿')
+
+    def save():
+        with artifact_session(scope) as session:
+            return save_config(session, scope, body, admitted_ids=admitted_ids)
+
+    return await run_in_threadpool(save)
 
 
 @router.get('/templates')
@@ -401,10 +421,12 @@ def build_page_router(templates):
 
     @pages.get('/sn/dimensions')
     def page(request: Request):
+        from tin.web.workbench_setup_entry import setup_enabled
         scope = require_scope()
         return templates.TemplateResponse(request, 'dimensions.html', {
             'nav': 'dimensions', 'ticker': [], 'names': {}, 'd': None,
-            'dimension_page': {'date': request.query_params.get('date'), 'can_write': scope.can_edit}})
+            'dimension_page': {'date': request.query_params.get('date'), 'can_write': scope.can_edit,
+                               'setup_enabled': setup_enabled(scope)}})
 
     return pages
 

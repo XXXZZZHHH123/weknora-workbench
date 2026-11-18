@@ -789,7 +789,7 @@
     field('save').disabled = false;
     field('save-copy').hidden = true; field('judgment-preview').hidden = true; field('judgment-preview').replaceChildren();
     field('dialog-title').textContent = cardSource ? '编辑策略方案' : '新建策略方案';
-    status('', false, field('form-status'));
+    status(draft?.historicalNotice || '', false, field('form-status'));
     if (!draft) drafts.set(key, {type: 'card', source: item, body, dirty: false});
     if (draft?.dirty) markDraft(key, true);
     syncDiscardDraft();
@@ -858,6 +858,7 @@
     if (!body.card.response_action.trim() && !body.acknowledge_observation) {
       status('请填写应对措施，或勾选保存为观察方案。', true, field('form-status')); field('response-action').focus(); return;
     }
+    if (drafts.get(key)?.historicalNotice && !window.confirm('请确认已按当前判断修改往期周报中的策略，再保存。')) return;
     if (copy) {
       delete body.revision;
       if (cardSource) body.card.reference = {kind: 'strategy', id: 'research:' + cardSource.id, revision: cardSource.revision};
@@ -964,11 +965,11 @@
   // Entry points for the text and Markdown tools: an organized draft opens as an unsaved new card, and
   // imported cards refresh the list without discarding drafts open in the editor.
   window.ResearchStrategyEditor = {
-    openDraft(body, label, notes = []) {
+    openDraft(body, label, notes = [], historicalNotice = '') {
       if (saving || !form) return false;
-      const key = draftKey(), draft = {type: 'card', source: null, body, dirty: true, importLabel: label || ''};
+      const key = draftKey(), draft = {type: 'card', source: null, body, dirty: true, importLabel: label || '', historicalNotice};
       drafts.set(key, draft); openCard(key, null, draft);
-      if (notes.length) status('请核对：' + notes.map(note => String(note).replace(/[。；;\s]+$/, '')).join('；') + '。', false, field('form-status'));
+      if (notes.length) status([historicalNotice, '请核对：' + notes.map(note => String(note).replace(/[。；;\s]+$/, '')).join('；') + '。'].filter(Boolean).join(' '), false, field('form-status'));
       return true;
     },
     imported(items) {

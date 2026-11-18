@@ -33,7 +33,7 @@
     if (!markdown) return null;
     const text = byId('strategy-markdown-text'), preview = byId('strategy-markdown-preview'), note = byId('strategy-markdown-status');
     const check = byId('strategy-markdown-check'), apply = byId('strategy-markdown-apply');
-    let checked = null, plan = null, busy = false, exported = false;
+    let checked = null, plan = null, busy = false, exported = false, historicalNotice = '';
     closeOn(markdown);
     function lock(value) {
       busy = value;
@@ -46,7 +46,7 @@
       lock(true); say(note, '正在导出…');
       try {
         const data = await request('/research-strategies/markdown');
-        text.value = data.markdown; exported = true; invalidate(); preview.hidden = true;
+        text.value = data.markdown; historicalNotice = ''; exported = true; invalidate(); preview.hidden = true;
         const extra = [data.truncated ? '只导出了最近 100 份' : '', data.skipped ? `${data.skipped} 份历史记录尚未整理，未导出` : ''].filter(Boolean);
         say(note, `已导出 ${data.count} 份方案` + (extra.length ? '（' + extra.join('；') + '）' : '') + '。');
       } catch (error) { say(note, error.message, true); } finally { lock(false); }
@@ -55,6 +55,7 @@
     function render(value) {
       preview.replaceChildren(); preview.hidden = false;
       const counts = value.counts;
+      if (historicalNotice) preview.append(element('p', historicalNotice, 'strategy-markdown-warning'));
       preview.append(element('p', `新建 ${counts.create} 份，修改 ${counts.update} 份，无变化 ${counts.unchanged} 份` +
         (counts.error ? `，${counts.error} 份需要修改后才能导入` : '') + (value.untouched ? `；文档里没有的 ${value.untouched} 份方案保持不变` : '') + '。', 'strategy-markdown-summary'));
       const list = element('ol', undefined, 'strategy-markdown-rows');
@@ -84,6 +85,7 @@
     async function runApply() {
       if (!plan || checked !== text.value) { if (!(await runCheck())?.can_apply) return; }
       const counts = plan.counts;
+      if (historicalNotice && !window.confirm('请确认已按当前判断修改这批往期周报策略，再导入。')) return;
       if (!window.confirm(`将新建 ${counts.create} 份、修改 ${counts.update} 份方案` + (plan.untouched ? `；文档里没有的 ${plan.untouched} 份保持不变` : '') + '。确认导入？')) return;
       lock(true); say(note, '正在导入…');
       try {
@@ -119,10 +121,10 @@
     });
     return {
       // Organized drafts arrive as new cards without identifiers; they are checked, never imported unseen.
-      load(value, message) {
+      load(value, message, notice = '') {
         if (!markdown.open) markdown.showModal();
-        text.value = value; exported = true; invalidate(); preview.hidden = true;
-        return runCheck().then(() => { if (message) say(note, message); });
+        text.value = value; historicalNotice = notice; exported = true; invalidate(); preview.hidden = true;
+        return runCheck().then(result => { if (result && message) say(note, message); });
       },
     };
   })();
@@ -158,22 +160,34 @@
       if (!dialog.open) dialog.showModal();
       loadModels(); sync(); input.focus();
     });
+    async function presentDraft(result, historicalNotice = '') {
+      const cards = result.cards || [];
+      if (cards.length === 1) {
+        const label = historicalNotice ? '往期周报 · 待核对' : '由文字整理 · 待核对';
+        if (!editor()?.openDraft(cards[0].body, label, cards[0].notes || [], historicalNotice)) throw new Error('正在保存其他方案，请稍后再试。');
+        dialog.close();
+      } else if (cards.length > 1 && markdownTool) {
+        dialog.close();
+        await markdownTool.load(result.markdown, `模型整理出 ${cards.length} 份方案，作为新方案列在下方；检查无误后再导入。`, historicalNotice);
+      } else throw new Error('模型没有整理出方案，请补充描述后重试。');
+      input.value = ''; say(note, '');
+    }
     run.addEventListener('click', async () => {
       if (running || !input.value.trim() || !model.value) return;
       running = true; sync(); input.readOnly = true; say(note, '正在整理，通常需要十几秒到一分钟…');
       try {
         const result = await post('/research-strategies/draft-from-text', {text: input.value, model_id: model.value});
-        const cards = result.cards || [];
-        if (cards.length === 1) {
-          if (!editor()?.openDraft(cards[0].body, '由文字整理 · 待核对', cards[0].notes || [])) throw new Error('正在保存其他方案，请稍后再试。');
-          dialog.close(); input.value = ''; say(note, '');
-        } else if (cards.length > 1 && markdownTool) {
-          dialog.close();
-          await markdownTool.load(result.markdown, `模型整理出 ${cards.length} 份方案，作为新方案列在下方；检查无误后再导入。`);
-          input.value = ''; say(note, '');
-        } else throw new Error('模型没有整理出方案，请补充描述后重试。');
+        await presentDraft(result);
       } catch (error) { say(note, error.message + ' 原文仍保留。', true); }
       finally { running = false; input.readOnly = false; sync(); }
     });
+    const setup = window.WorkbenchSetupReview;
+    if (setup?.is('strategy')) void (async () => {
+      try {
+        const result = await setup.load();
+        if (dialog.open || markdown?.open || !byId('research-card-dialog')?.hidden) throw new Error('请先结束当前编辑，再重新打开任务结果。');
+        await presentDraft(result, setup.historicalNotice);
+      } catch (error) { say(byId('strategy-workspace-status'), error.message, true); }
+    })();
   }
 })();

@@ -74,10 +74,16 @@ JOB_PHASES = {'judgments': {'queued': '等待分析', 'selecting': '核对资料
 
 
 def _analysis_jobs(scope, modules):
-    """Background 研判/产业图 analyses of this workbench that still need attention."""
+    """Background analyses of this workbench that still need attention."""
     import sqlite3
     from tin.web.judgment_job_registry import ACTIVE
     from tin.web.judgment_jobs import list_jobs
+    from tin.web.workbench_setup import PHASES, PURPOSE
+    phases = {**JOB_PHASES, PURPOSE: PHASES}
+    destinations = {'judgments': '/sn/judgment', 'diagram': '/sn/diagram', PURPOSE: '/'}
+    visible = {*modules, *([PURPOSE] if 'home' in modules else [])}
+    reviews = {'judgments': '分析已完成，核对后保存为研判草稿',
+               'diagram': '配置已生成，核对后导入产业图', PURPOSE: '建立候选已生成，请打开核对清单'}
     try:
         items = list_jobs(scope.identity, 20)['items']
     except (HTTPException, OSError, ValueError, sqlite3.Error):
@@ -86,9 +92,9 @@ def _analysis_jobs(scope, modules):
     for job in items:  # newest first
         purpose = job.get('purpose')
         if (job.get('workbench_id') != scope.workbench_id or job.get('dismissed')
-                or purpose not in JOB_PHASES or purpose not in modules):
+                or purpose not in phases or purpose not in visible):
             continue
-        state, page = job.get('state'), '/sn/judgment' if purpose == 'judgments' else '/sn/diagram'
+        state, page = job.get('state'), destinations[purpose]
         if state not in ACTIVE:
             # Only the newest finished analysis of each kind needs attention; a
             # later result or failure replaces what an older attempt reported.
@@ -96,10 +102,9 @@ def _analysis_jobs(scope, modules):
                 continue
             finished.add(purpose)
         if state in ACTIVE:
-            status, detail = '进行中', JOB_PHASES[purpose].get(job.get('phase'), '后台运行中')
+            status, detail = '进行中', phases[purpose].get(job.get('phase'), '后台运行中')
         elif state == 'succeeded' and job.get('result_available'):
-            status, detail = '待核对', ('分析已完成，核对后保存为研判草稿' if purpose == 'judgments'
-                                         else '配置已生成，核对后导入产业图')
+            status, detail = '待核对', reviews[purpose]
         elif state in {'failed', 'interrupted'}:
             status = '未完成'
             detail = (str(job.get('message') or '') or ('分析已中断' if state == 'interrupted' else '分析未完成'))[:200]

@@ -385,6 +385,7 @@
   }));
   get('save').addEventListener('click', () => void act(async () => {
     if (!tested || !get('confirm').checked) return;
+    if (draft.fromSetup && !window.confirm('请确认监测规则已经按当前判断调整，再保存并启用。')) return;
     const saved = editingItem
       ? await request('/monitors/' + encodeURIComponent(editingItem.id), {...body(), revision: editingItem.revision}, 'PATCH')
       : await request('/monitors', body(), 'POST');
@@ -401,7 +402,18 @@
   get('view-backtest').addEventListener('click', () => { if (viewedItem) void act(() => viewItem(viewedItem, {adjust: true})); });
   get('refresh').addEventListener('click', () => void act(loadList));
   window.addEventListener('affairs-checked', () => { void loadList().catch(error => status(error.message, true)); });
-  void loadList().catch(error => { get('list').replaceChildren(node('div', '监测读取失败，请刷新列表重试。', 'affairs-empty')); status(error.message, true); });
+  const setup = window.WorkbenchSetupReview;
+  const listReady = loadList().catch(error => { get('list').replaceChildren(node('div', '监测读取失败，请刷新列表重试。', 'affairs-empty')); status(error.message, true); });
+  if (setup?.is('monitors')) void listReady.then(() => act(async () => {
+    if (!canWrite || root.open) return;
+    openCreate(get('create-toggle'));
+    status('正在载入监测候选…');
+    const result = await setup.load();
+    if (!root.open) return;
+    get('sentence').value = result.sentence;
+    setDraft({...result, fromSetup: true, confirmations: [setup.historicalNotice, ...(result.confirmations || [])]});
+    status('监测候选已载入，请逐条调整并回测。');
+  }));
   void request('/strategies/models').then(result => {
     get('model').replaceChildren(...(result.models || []).map(model => new Option(model.name, model.id)));
     if (!get('model').options.length) get('model').append(new Option('暂无可用模型', ''));

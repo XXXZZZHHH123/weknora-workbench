@@ -8,6 +8,7 @@
   let managed, draft, displayed, busy = false, controller, panels = [], review = null, reviewEpoch = 0;
   let activeJob = null, jobTimer, jobEpoch = 0, submissionSerial = 0, submittingJob = false;
   let latestResultJob = null;
+  let setupDraftId = null;
   let itemConfirmation = null;
   let uncertainSubmission = null;
   let historyEntries = [], historical = null, historyEpoch = 0, historyPending = false;
@@ -33,7 +34,7 @@
   function invalidate() {
     closeItemConfirmation();
     stopJobMonitor(true); submissionSerial++;
-    stopSearches(); draft = null; review = null; reviewEdits.clear(); rememberedChoices.clear();
+    stopSearches(); draft = null; review = null; setupDraftId = null; reviewEdits.clear(); rememberedChoices.clear();
     byId('preview').hidden = true;
     if (byId('import')) byId('import').hidden = false;
     syncDiscard();
@@ -394,6 +395,11 @@
   function presentDraft(value, preserveEdits = false) {
     if (managed && (value.research_dimensions || value.review?.research_dimensions)) managed.research_dimensions = value.research_dimensions || value.review.research_dimensions;
     draft = value; byId('preview').hidden = false;
+    const setupNotice = byId('setup-notice');
+    if (setupNotice) {
+      setupNotice.hidden = !setupDraftId || value.draft_id !== setupDraftId;
+      setupNotice.textContent = setupNotice.hidden ? '' : window.WorkbenchSetupReview.historicalNotice;
+    }
     text('preview-md', value.markdown); text('generated-diff', value.diff?.markdown);
     text('coverage', `${(value.bindings || []).length} 个已绑定指标`);
     const bindings = byId('bindings'); bindings.replaceChildren();
@@ -990,7 +996,7 @@
       return false;
     } finally { edit.saving = false; edit.renderOutcome?.(); if (!holdBusy) { setBusy(false); restoreFocus(place); } }
   }
-  async function open(requestedJob) {
+  async function open(requestedJob, setup) {
     if (busy) return;
     controller = new AbortController();
     if (!dialog.open) dialog.showModal();
@@ -1016,6 +1022,19 @@
       await loadPanels();
       if (review && draft) renderReview();
       inform('');
+      if (setup && managed.can_write) {
+        const signal = controller.signal;
+        const value = await setup.load();
+        if (signal.aborted || !dialog.open) return;
+        invalidate(); setupDraftId = value.draft_id;
+        input.value = value.source_text || '';
+        if (value.variety) byId('variety').value = value.variety;
+        if (value.model_id) syncModelSelection(value.model_id);
+        if (value.source_name) text('file-name', value.source_name);
+        if (byId('new-panel-title')) byId('new-panel-title').value = value.panel_title || '';
+        presentDraft(value); await hydrateReview(value); tab('analyze'); inform(setup.historicalNotice);
+        return;
+      }
       await discoverLatestResult();
       if (dialog.dataset.prefill === 'true') { tab('analyze'); dialog.dataset.prefill = 'false'; }
       const selectedJob = jobId(requestedJob) || (['queued', 'running'].includes(activeJob?.state) ? activeJob.id : null);
@@ -1107,6 +1126,7 @@
   byId('apply').addEventListener('click', async () => {
     if (busy || !draft || !managed?.can_write) return;
     if (hasReviewEdits()) return inform('请先确认、保留文字或排除已修改的条目，再保存草稿。', true);
+    if (setupDraftId === draft.draft_id && !window.confirm('请确认已按当前判断修改这份往期周报草稿，再保存。')) return;
     const selected = draft; controller = new AbortController(); setBusy(true); inform('正在确认来源与版本并保存草稿…');
     try {
       const result = await api(selected.kind === 'structured' ? '/structured/apply' : '/apply', {draft_id: selected.draft_id, base_version: selected.base_version,
@@ -1248,6 +1268,8 @@
   document.querySelectorAll('[data-open-logic]').forEach(button => button.addEventListener('click', open));
   window.JudgmentManager = {open, close, openJob: identifier => open(jobId(identifier))};
   const requestedJob = jobId(new URL(location.href).searchParams.get('analysis_job'));
-  if (requestedJob) open(requestedJob);
+  const setup = window.WorkbenchSetupReview;
+  if (setup?.is('judgment')) open(null, setup);
+  else if (requestedJob) open(requestedJob);
   else if (dialog.dataset.prefill === 'true') open();
 })();

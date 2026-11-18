@@ -249,7 +249,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.querySelectorAll("[data-report-section]").forEach((button) => button.addEventListener("click", () => { writeSection(); selected = button.dataset.reportSection; readSection(); }));
   summaryInput.addEventListener("input", () => { draft.sections.summary.text = summaryInput.value; });
-  open.addEventListener("click", () => {
+  function editReport(layout) {
     extraCharts.clear(); draft = structuredClone(initial.draft); selected = "summary";
     draft.sections.summary ||= {visible: true, text: ""};
     draft.sections.summary.text ??= "";
@@ -259,8 +259,19 @@ document.addEventListener("DOMContentLoaded", () => {
     get("edit-title").value = draft.title;
     summaryInput.value = draft.sections.summary.text;
     summaryMessage.textContent = "";
+    window.ReportLayoutEditor?.render(get("layout-editor"), draft, dimensions, options, layout);
     status(""); renderDimensions(); readSection(); renderFigures(); dialog.showModal(); loadReferences(); loadModels();
-  });
+  }
+  open.addEventListener("click", () => editReport());
+  const setup = window.WorkbenchSetupReview;
+  if (initial.period === "weekly" && setup?.is("layout")) void (async () => {
+    try {
+      const layout = await setup.load();
+      if (dialog.open || saving) throw new Error("请先结束当前编辑，再重新打开任务结果。");
+      editReport(layout); status("版式已载入，请核对后保存本期周报草稿。");
+      get("layout-editor")?.scrollIntoView({block: "nearest"});
+    } catch (error) { window.showToast(error.message); }
+  })();
   const cancelDraft = () => {
     modelRequest++; draftController?.abort(); draftController = null; drafting = false;
     get("draft-generate").disabled = false; get("edit-save").disabled = false; dialog.removeAttribute("aria-busy");
@@ -285,7 +296,13 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       const saved = await response.json();
       if (!saved.id || !Number.isInteger(saved.revision)) throw new Error("保存响应不完整，暂不覆盖本地文字。");
-      status("已保存"); location.reload();
+      status("已保存");
+      if (setup?.is("layout")) {
+        const url = new URL(location.href);
+        url.searchParams.delete("setup_job"); url.searchParams.delete("setup_part");
+        history.replaceState(history.state, "", url);
+      }
+      location.reload();
     } catch (error) { status(error.message); } finally { saving = false; get("edit-save").disabled = false; }
   });
 });

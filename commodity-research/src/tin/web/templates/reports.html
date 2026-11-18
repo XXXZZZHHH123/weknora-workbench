@@ -4,6 +4,7 @@
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/reports.css?v={{ static_version() }}">
 <script defer src="{{ research_static_prefix() }}/static/chart-kit.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/report-figures.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/report-layout.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/report-drafts.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/report-ppt.js?v={{ static_version() }}"></script>
 {% endblock %}
@@ -49,6 +50,7 @@
 <p class="report-muted">起草以本期事实、维度结论与影响、研判和策略为依据。数字或来源核对通过后才会填入草稿。</p>
 <div class="report-conclusion-editor"><label for="report-edit-summary">{{ period_conclusion }}</label><textarea id="report-edit-summary" rows="3" maxlength="4000" placeholder="用 2–3 句写总体方向、最主要的一两个原因和接下来要关注的变化。"></textarea><p class="report-dimension-draft-status" id="report-summary-draft-status"></p></div>
 <div id="report-dimension-editors" class="report-dimension-editors"></div>
+<details class="report-editor-tools" id="report-layout-editor" hidden></details>
 <details class="report-editor-tools" id="report-legacy-editor"><summary>原有按语与完整记录显示设置</summary>
 <div class="report-editor-tabs" role="tablist" aria-label="报告段落">{% for key, label in [('summary',period_conclusion),('research','研判'),('dashboard','图表'),('watch','策略')] %}<button type="button" data-report-section="{{ key }}" role="tab" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ label }}</button>{% endfor %}</div><div class="report-edit-section"><label class="report-check"><input id="report-edit-visible" type="checkbox">显示本节</label><textarea id="report-edit-text" rows="4" maxlength="4000" placeholder="保留原有按语，显示在完整记录中。" aria-label="按语正文" hidden></textarea></div></details>
 <details class="report-editor-tools"><summary>引用已有研判或策略</summary><div class="report-reference-picker"><select id="report-ref-kind" aria-label="引用类型"><option value="judgment">研判</option><option value="strategy">策略</option></select><select id="report-ref-record" aria-label="选择已有记录"><option value="">选择记录与版本</option></select><button type="button" id="report-ref-add" class="report-button">引用</button></div><div id="report-ref-list"></div></details>

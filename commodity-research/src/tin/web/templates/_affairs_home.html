@@ -2,6 +2,19 @@
   <div class="affairs-shortcuts">{% for item in affairs.shortcuts %}<a href="{{ research_url(item.href) }}">{{ item.title }} ↗</a>{% endfor %}</div>
 </div></header>
 
+{% if affairs.setup_enabled %}
+{% if affairs.setup_empty %}
+<section class="workbench-setup-guide research-panel" id="workbench-setup-guide" aria-labelledby="workbench-setup-guide-title" hidden>
+  <div><h2 id="workbench-setup-guide-title">从往期周报建立工作台</h2>
+    <p>选择一份已授权的周报，生成研究结构和待核对的草稿。</p></div>
+  <button type="button" class="affairs-check" data-workbench-setup-open aria-haspopup="dialog" aria-controls="workbench-setup-dialog">选择周报</button>
+  <button type="button" class="affairs-check" id="workbench-setup-dismiss" aria-label="关闭周报建立引导">关闭</button>
+</section>
+{% endif %}
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/dimensions.css?v={{ static_version() }}">
+{% include '_workbench_setup_dialog.html' %}
+{% endif %}
+
 {% set show_monitors = not restricted_view and (not research_workbench() or not research_workbench().restricted) %}
 <section class="affairs-alerts" aria-labelledby="affairs-alert-title">
   <div class="affairs-section-head">

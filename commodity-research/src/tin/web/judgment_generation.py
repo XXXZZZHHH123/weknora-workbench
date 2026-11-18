@@ -88,8 +88,8 @@ class PreviewStore:
             return token
 
     def get(self, scope, token):
-        if isinstance(token, str) and token.startswith('job.'):
-            from tin.web.judgment_jobs import load_preview
+        from tin.web.judgment_jobs import is_job_token, load_preview
+        if is_job_token(token):
             return load_preview(scope, token)
         with self.lock:
             item = self.items.get(token)
@@ -122,8 +122,8 @@ class PreviewStore:
             return PreviewMutation(self.mutations.setdefault(token, threading.Lock()))
 
     def replace(self, scope, token, value, revision):
-        if isinstance(token, str) and token.startswith('job.'):
-            from tin.web.judgment_jobs import atomic_replace
+        from tin.web.judgment_jobs import atomic_replace, is_job_token
+        if is_job_token(token):
             return atomic_replace(scope, token, value, revision)
         with self.lock:
             item = self.items.get(token)
@@ -1005,6 +1005,9 @@ def persist(scope, preview):
             if preview.get('_job_id'):
                 from tin.web.judgment_jobs import mark_applied
                 mark_applied(session, scope, preview)
+            elif preview.get('_setup_job_id'):
+                from tin.web.workbench_setup_jobs import close_judgment
+                close_judgment(session, scope, preview['_draft_id'], preview['review']['revision'])
             from tin.web.judgment_review import trusted_calibers, trusted_numbers
             declarations = trusted_calibers(preview)
             result = validate_analysis(preview['document'], preview['text'], catalog, variety=preview.get('variety', settings.variety),
@@ -1057,6 +1060,12 @@ async def discard_preview(request: Request):
     if body.draft_id.startswith('job.'):
         from tin.web.judgment_jobs import discard_job, token_job_id
         return {'discarded': True, **(await discard_job(scope, token_job_id(body.draft_id)))}
+    if body.draft_id.startswith('setup.'):
+        from tin.web.workbench_setup_jobs import close_judgment
+        with artifact_session(scope) as session:
+            close_judgment(session, scope, body.draft_id)
+            session.commit()
+        return {'discarded': True}
     previews.discard(scope, body.draft_id)
     return {'discarded': True}
 
@@ -1073,6 +1082,9 @@ async def apply(request: Request):
                 and body.review_revision != preview.get('review', {}).get('revision')):
             raise HTTPException(409, '逐项确认已更新，请刷新预览后保存')
         await fresh(scope, preview)
+        if preview.get('_setup_job_id'):
+            from tin.web.workbench_setup_jobs import verified_config
+            await verified_config(scope, preview['_setup_job_id'])
         result = await run_in_threadpool(persist, scope, preview)
         if preview.get('_job_id'):
             from tin.web.judgment_jobs import acknowledge_applied

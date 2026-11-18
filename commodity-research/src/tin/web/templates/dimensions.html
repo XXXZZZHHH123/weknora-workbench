@@ -34,6 +34,7 @@
       <button id="dimensions-start-general" type="button"><strong>用“通用六维度”开始</strong><span>价格、供给、需求、库存、平衡与宏观，适合先搭起基本框架。</span></button>
       <button id="dimensions-start-industry" type="button"><strong>选择行业模板</strong><span>复用从真实研究报告中提炼的维度和环节。</span></button>
       <button id="dimensions-start-infer" type="button"><strong>从往期周报归纳</strong><span>让模型阅读本研究台已授权的报告，提出结构草稿。</span></button>
+      {% if dimension_page.setup_enabled %}<button type="button" data-workbench-setup-open aria-haspopup="dialog" aria-controls="workbench-setup-dialog"><strong>从周报建立整个工作台</strong><span>同时准备维度、图表、版式及分析草稿。</span></button>{% endif %}
     </div>
   </section>
   <div id="dimensions-template-notice" class="dimensions-template-notice" role="status" hidden>
@@ -67,4 +68,5 @@
   <div id="dimensions-suggestions" class="dimensions-choice-list"></div>
   <footer><button id="dimensions-model-close" type="button">关闭</button><button id="dimensions-model-adopt" class="dimensions-primary" type="button" disabled>采用所选到编辑草稿</button></footer>
 </dialog>
+{% if dimension_page.setup_enabled %}{% include '_workbench_setup_dialog.html' %}{% endif %}
 {% endblock %}

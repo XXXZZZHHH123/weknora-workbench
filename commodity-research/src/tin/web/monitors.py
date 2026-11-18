@@ -234,6 +234,9 @@ def validate_input(scope, body):
     with workbench_scope.artifact_session(scope) as session:
         draft = _owned(session, scope, body.draft_id, DRAFT_MODULE)
         saved = _body(draft)
+        if saved.get('setup_job_id'):
+            from tin.web.workbench_setup_jobs import owned_record
+            owned_record(session, scope, saved['setup_job_id'])
         if datetime.now(timezone.utc) - draft.created_at > timedelta(days=1):
             raise HTTPException(409, '草稿候选已超过24小时，请重新生成以核对目录')
         if saved.get('sentence') != body.sentence:
@@ -340,7 +343,7 @@ def _candidate_metadata(scope, candidates, rules):
             'overlap': rule_overlap(rules, coverage)}
 
 
-async def draft_from_text(scope, sentence, model_id):
+async def draft_from_text(scope, sentence, model_id, *, persist=True):
     from tin.web import judgment_recall, strategy_text
     dimensions, catalog = await run_in_threadpool(_draft_context, scope)
     first = await strategy_text.completion(scope, model_id, structure_prompt(sentence, dimensions), purpose='monitor_draft')
@@ -379,13 +382,28 @@ async def draft_from_text(scope, sentence, model_id):
     result = {'title': output.title, 'sentence': sentence, 'logic': output.logic,
               'rules': rules, 'confirmations': output.confirmations, 'candidates': candidates}
     result.update(await run_in_threadpool(_candidate_metadata, scope, candidates, rules))
+    return save_private_draft(scope, result) if persist else result
+
+
+def save_private_draft(scope, result, *, setup_job_id=None):
     with workbench_scope.artifact_session(scope) as session:
-        row = _new_artifact(scope, DRAFT_MODULE, output.title,
-            {**result, 'workbench_id': scope.workbench_id})
+        private = {}
+        identifier = None
+        if setup_job_id:
+            from tin.web.workbench_setup_jobs import owned_record
+            if session.get_bind().dialect.name == 'sqlite':
+                session.connection().exec_driver_sql('BEGIN IMMEDIATE')
+            owned_record(session, scope, setup_job_id)
+            identifier = str(uuid5(NAMESPACE_URL, 'workbench-setup-monitor:' + setup_job_id))
+            if session.get(WorkbenchArtifact, identifier) is not None:
+                _owned(session, scope, identifier, DRAFT_MODULE)
+                return {**result, 'draft_id': identifier}
+            private['setup_job_id'] = setup_job_id
+        row = _new_artifact(scope, DRAFT_MODULE, result['title'],
+            {**result, **private, 'workbench_id': scope.workbench_id}, identifier=identifier)
         session.add(row)
         session.commit()
-        result['draft_id'] = row.id
-    return result
+        return {**result, 'draft_id': row.id}
 
 
 def backtest(scope, rules, logic, *, start=None, end=None):

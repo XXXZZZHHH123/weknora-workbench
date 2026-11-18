@@ -564,7 +564,7 @@ def excerpt_prompt(text, name, request, content):
 >>>"""
 
 
-async def add_excerpts(scope, model_id, text, cards, excerpts):
+async def add_excerpts(scope, model_id, text, cards, excerpts, *, purpose=None):
     """Quote the requested passages; a passage is used only when it is verbatim in the file's verified text."""
     for request in excerpts[:MAX_EXCERPTS]:
         card, name = cards[request['card']], request['row']['name']
@@ -579,7 +579,8 @@ async def add_excerpts(scope, model_id, text, cards, excerpts):
             card['notes'].append(f'《{name}》不是能读取正文的文件（如表格或图片），未摘录原文，已保留文件引用。')
             continue
         try:
-            reply = await completion(scope, model_id, excerpt_prompt(text, name, request['request'], source))
+            prompt = excerpt_prompt(text, name, request['request'], source)
+            reply = await completion(scope, model_id, prompt, **({'purpose': purpose} if purpose else {}))
         except HTTPException as error:
             card['notes'].append(f'《{name}》的原文摘录未完成：' + (error.detail if isinstance(error.detail, str) else '模型暂不可用') + '；已保留文件引用。')
             continue
@@ -604,12 +605,13 @@ async def add_excerpts(scope, model_id, text, cards, excerpts):
         cards[0]['notes'].append(f'一次最多摘录 {MAX_EXCERPTS} 段原文，其余文件只保留引用。')
 
 
-async def draft_from_text(scope, text, model_id):
+async def draft_from_text(scope, text, model_id, *, purpose=None):
     today = _today()
     judgments, conditions = await run_in_threadpool(_context, scope)
     strategies = await run_in_threadpool(_strategies, scope)
     files = await _files(scope)
-    first = await completion(scope, model_id, structure_prompt(text, today, judgments, conditions, strategies, files))
+    audit = {'purpose': purpose} if purpose else {}
+    first = await completion(scope, model_id, structure_prompt(text, today, judgments, conditions, strategies, files), **audit)
     drafts = _parse(_Drafts, first, '模型返回的方案格式无效，原文保持不变，请重试或更换模型').cards
     dropped = []
     for draft in drafts:
@@ -626,13 +628,13 @@ async def draft_from_text(scope, text, model_id):
     if files is None and any(item.query for draft in drafts for item in draft.files):
         file_candidates = await _file_candidates(scope, drafts)
     if candidates or file_candidates:
-        second = _parse(_Picks, await completion(scope, model_id, selection_prompt(text, drafts, candidates, file_candidates)),
+        second = _parse(_Picks, await completion(scope, model_id, selection_prompt(text, drafts, candidates, file_candidates), **audit),
                         '模型返回的指标或文件选择格式无效，请重试或更换模型')
         picks = [pick for pick in drafts[0].items(_Pick, second.indicators, 40)[0] if pick.card < len(drafts)]
         file_picks = [pick for pick in drafts[0].items(_FilePick, second.files, 40)[0] if pick.card < len(drafts)]
     cards, excerpts = assemble(scope, text, today, drafts, judgments, conditions, candidates, picks, dropped,
                                strategies, files, file_candidates, file_picks)
-    await add_excerpts(scope, model_id, text, cards, excerpts)
+    await add_excerpts(scope, model_id, text, cards, excerpts, **audit)
     result = {'cards': cards}
     if len(cards) > 1:
         from tin.web.strategy_markdown import dump

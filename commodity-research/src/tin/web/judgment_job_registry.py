@@ -19,6 +19,8 @@ LEASE = 60
 GLOBAL_RUNNING = 2
 GLOBAL_PENDING = 10
 MAX_RECORDS = 512
+PURPOSE_TITLES = {'judgments': '研究逻辑分析', 'diagram': '产业图配置生成',
+                  'workbench_setup': '从周报建立工作台'}
 
 
 def iso(value=None):
@@ -101,7 +103,7 @@ class Registry:
         self.compact(connection)
 
     def create(self, scope, request_hash, idempotency_hash, worker_id, purpose='judgments'):
-        if purpose not in {'judgments', 'diagram'}:
+        if purpose not in PURPOSE_TITLES:
             raise ValueError('Unsupported analysis task purpose')
         with self.transaction() as connection:
             self.expire(connection)
@@ -122,7 +124,7 @@ class Registry:
                 raise HTTPException(429, '分析任务记录已达容量，请稍后重试')
             now = time.time()
             row = {'kind': 'judgment-analysis-index.v1', 'id': secrets.token_hex(16),
-                **({'purpose': 'diagram'} if purpose == 'diagram' else {}),
+                **({'purpose': purpose} if purpose != 'judgments' else {}),
                 'tenant_id': scope.identity.tenant_id, 'user_id': scope.identity.user_id,
                 'workbench_id': scope.workbench_id, 'storage_legacy': scope.metadata.get('workspace_mode') == 'legacy',
                 'request_hash': request_hash, 'idempotency_hash': idempotency_hash,
@@ -180,7 +182,7 @@ class Registry:
             return sorted(rows, key=self.order, reverse=True)[:limit]
 
     def latest(self, identity, workbench_id, purpose):
-        if purpose not in {'judgments', 'diagram'}:
+        if purpose not in PURPOSE_TITLES:
             raise ValueError('Unsupported analysis task purpose')
         with self.transaction() as connection:
             self.expire(connection)
@@ -248,7 +250,8 @@ class Registry:
             if row['state'] == 'queued':
                 if sum(other['state'] == 'running' for other in self.rows(connection)) >= GLOBAL_RUNNING:
                     return False
-                row.update(state='running', phase='selecting', updated_at=iso(), lease_until=time.time() + LEASE)
+                phase = 'reading_source' if row.get('purpose') == 'workbench_setup' else 'selecting'
+                row.update(state='running', phase=phase, updated_at=iso(), lease_until=time.time() + LEASE)
                 self.write(connection, row)
             return True
 
@@ -347,6 +350,6 @@ def metadata(row):
         if safe is not None:
             result['failure'] = safe
     return {**result, 'job_id': row['id'], 'purpose': purpose,
-        'title': '产业图配置生成' if purpose == 'diagram' else '研究逻辑分析',
+        'title': PURPOSE_TITLES.get(purpose, PURPOSE_TITLES['judgments']),
         'result_available': row['state'] == 'succeeded', 'dismissed': row.get('dismissed') is True,
         'discarded': row.get('discarded') is True}

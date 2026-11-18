@@ -44,7 +44,7 @@ def job_key(scope, job_id):
 
 
 def is_job_token(token):
-    return isinstance(token, str) and token.startswith('job.')
+    return isinstance(token, str) and token.startswith(('job.', 'setup.'))
 
 
 def token_job_id(token):
@@ -98,6 +98,9 @@ def available(config):
 
 
 def load_preview(scope, token):
+    if isinstance(token, str) and token.startswith('setup.'):
+        from tin.web.workbench_setup_jobs import load_judgment
+        return load_judgment(scope, token)
     job_id = token_job_id(token)
     with artifact_session(scope) as session:
         config = owned_record(session, scope, job_id, token=token).config
@@ -108,6 +111,9 @@ def load_preview(scope, token):
 
 
 def replace_preview(session, scope, token, preview, revision):
+    if isinstance(token, str) and token.startswith('setup.'):
+        from tin.web.workbench_setup_jobs import replace_judgment
+        return replace_judgment(session, scope, token, preview, revision)
     row = owned_record(session, scope, token_job_id(token), token=token)
     available(row.config)
     if row.config['preview']['review']['revision'] != revision:

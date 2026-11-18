@@ -8,7 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let config, current, draft, editing = false, saving = false, deleted = new Set(), generation = 0;
   let pickerTarget, pickerNext = null, pickerToken = 0, pickerTimer, drag, modelMode = 'suggest', running = false;
   let suggestions = [], inferred = [], selectedSources = new Map(), sourceNext = null, sourceToken = 0, sourceTimer;
-  let suggestionTargets = new Map();
+  let suggestionTargets = new Map(), setupDimensions, modelSetupJob, draftSetupJob;
   let templates, templateApplying = false, appliedTemplate, templateToken = 0;
   const renderers = new Set(), modelDialog = get('model-dialog'), picker = get('picker'), templateDialog = get('template-dialog');
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -122,7 +122,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (own !== generation) return;
       config = loaded; get('edit').hidden = !editable(); get('suggest').hidden = !editable();
       render(); await loadData(own);
-      if (own === generation) scrollToIndicator();
+      if (own === generation) {
+        scrollToIndicator();
+        await reviewSetup();
+      }
     } catch (error) { if (own === generation) status(error.message, true); }
   }
   async function loadData(own = ++generation) {
@@ -316,8 +319,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     saving = true; render(); status('正在保存…');
     try {
-      config = await request('/dimensions', {revision: config.revision,dimensions: serialized(),confirm_delete: [...deleted]}, 'PUT');
-      editing = false; draft = undefined; current = undefined; appliedTemplate = undefined; render(); status('已保存研究维度。'); await loadData();
+      const path = draftSetupJob ? '/dimensions/from-setup/' + encodeURIComponent(draftSetupJob) : '/dimensions';
+      config = await request(path, {revision: config.revision,dimensions: serialized(),confirm_delete: [...deleted]}, 'PUT');
+      editing = false; draft = undefined; draftSetupJob = undefined; current = undefined; appliedTemplate = undefined; render(); status('已保存研究维度。'); await loadData();
     } catch (error) { status(error.status === 409 ? `${error.message} 若配置已被其他人更新，请刷新页面后再修改；当前编辑尚未保存。` : error.message, true); }
     finally { saving = false; render(); }
   }
@@ -389,6 +393,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function openModels(mode) {
     if (!editable() || saving || templateApplying) return;
     if (mode === 'suggest' && editing && draftLimits().length) return status(draftLimits().join('；'), true);
+    setupDimensions = undefined; modelSetupJob = undefined; get('model').parentElement.hidden = false; get('model-run').hidden = false;
     modelMode = mode; suggestions = []; inferred = []; suggestionTargets = new Map(); selectedSources = new Map(); sourceNext = null;
     get('model-title').textContent = mode === 'infer' ? '从往期周报归纳维度' : '让模型建议指标';
     get('source-controls').hidden = mode !== 'infer'; get('suggestions').replaceChildren(); get('model-status').textContent = '';
@@ -434,51 +439,72 @@ document.addEventListener('DOMContentLoaded', () => {
         suggestionTargets = new Map(targets.map((target, index) => ['i' + (index + 1), target]));
       }
       const result = await request('/dimensions/' + (modelMode === 'infer' ? 'infer' : 'suggestions'), {model_id: get('model').value,...(modelMode === 'infer' ? {sources: [...selectedSources.values()]} : {...(get('date').value ? {date: get('date').value} : {}),...(editing ? {dimensions: serialized()} : {})})}, 'POST');
-      if (modelMode === 'infer') {
-        inferred = result.dimensions || [];
-        for (const d of inferred) {
-          const category = config.categories.find(c => (c.id || c) === d.category);
-          const card = node('div','dimensions-choice-body dimensions-choice'); const body = node('div'); body.append(node('strong','',d.label),node('small','',[category?.label || d.category,d.description].filter(Boolean).join(' · ')),node('small','',(d.sections || []).map(s => s.label).join(' / '))); card.append(body); get('suggestions').append(card);
-        }
-      } else {
-        suggestions = result.items || [];
-        const available = dims(), groups = new Map(), sections = result.sections || [];
-        for (const d of available) {
-          const group = node('section','dimensions-suggestion-group'); group.append(node('h3','',d.label)); groups.set(d.id,group);
-          for (const section of sections.filter(row => row.dimension === d.id)) {
-            const summary = node('p', 'dimensions-recall-summary dimensions-muted', `${section.section || d.label} · 候选 ${section.candidate_count} · 已选 ${section.selected_count}`);
-            if (section.item_id) summary.dataset.itemId = section.item_id;
-            if (section.section_id) summary.dataset.sectionId = section.section_id;
-            if (section.empty_reason) summary.append(node('span', 'dimensions-empty-reason', ` · 留空原因：${section.empty_reason}`));
-            group.append(summary);
-          }
-          if (suggestions.some(row => row.dimension === d.id) || sections.some(row => row.dimension === d.id)) get('suggestions').append(group);
-        }
-        const unresolved = node('section','dimensions-suggestion-group'); unresolved.append(node('h3','','待指定维度'));
-        for (const [index, row] of suggestions.entries()) {
-          const choice = node('label','dimensions-choice'), check = node('input'); check.type = 'checkbox'; check.checked = true; check.dataset.index = index;
-          const body = node('span','dimensions-choice-body'); body.append(node('strong','',row.name || row.series_id),node('small','dimensions-suggestion-reason',row.reason));
-          if (row.sheet) body.append(node('small','dimensions-sheet',row.sheet));
-          const target = node('select'); target.setAttribute('aria-label','建议指标的维度');
-          target.append(new Option('请选择维度','')); available.forEach((d, i) => target.append(new Option(d.label,String(i))));
-          const matched = available.findIndex(d => d.id === row.dimension); target.value = matched < 0 ? '' : String(matched); target.addEventListener('change',syncModel);
-          const stage = input(row.section || '', '建议指标的环节', () => {}); stage.placeholder = '环节名（可改放）'; stage.maxLength = 40;
-          body.append(target,stage); choice.append(check,body);
-          const group = groups.get(row.dimension); (group || unresolved).append(choice); check.addEventListener('change', syncModel);
-        }
-        if (unresolved.querySelector('.dimensions-choice')) get('suggestions').append(unresolved);
-      }
-      get('model-status').textContent = result.notice || (modelMode === 'infer' ? '这是模型草稿。采用后可以增删改；只有点击页面“保存”才会覆盖配置。' : '勾选条目并核对环节；采用后还需要保存研究维度。');
+      renderModelResult(result);
     } catch (error) { get('model-status').textContent = error.message; }
     finally { running = false; syncModel(); }
+  }
+  function renderModelResult(result) {
+    get('suggestions').replaceChildren();
+    if (modelMode === 'infer') {
+      inferred = result.dimensions || [];
+      for (const d of inferred) {
+        const category = config.categories.find(c => (c.id || c) === d.category);
+        const card = node('div','dimensions-choice-body dimensions-choice'); const body = node('div'); body.append(node('strong','',d.label),node('small','',[category?.label || d.category,d.description].filter(Boolean).join(' · ')),node('small','',(d.sections || []).map(s => s.label).join(' / '))); card.append(body); get('suggestions').append(card);
+      }
+    } else {
+      suggestions = result.items || [];
+      const available = setupDimensions || dims(), groups = new Map(), sections = result.sections || [];
+      for (const d of available) {
+        const group = node('section','dimensions-suggestion-group'); group.append(node('h3','',d.label)); groups.set(d.id,group);
+        for (const section of sections.filter(row => row.dimension === d.id)) {
+          const summary = node('p', 'dimensions-recall-summary dimensions-muted', `${section.section || d.label} · 候选 ${section.candidate_count} · 已选 ${section.selected_count}`);
+          if (section.item_id) summary.dataset.itemId = section.item_id;
+          if (section.section_id) summary.dataset.sectionId = section.section_id;
+          if (section.empty_reason) summary.append(node('span', 'dimensions-empty-reason', ` · 留空原因：${section.empty_reason}`));
+          group.append(summary);
+        }
+        if (suggestions.some(row => row.dimension === d.id) || sections.some(row => row.dimension === d.id)) get('suggestions').append(group);
+      }
+      const unresolved = node('section','dimensions-suggestion-group'); unresolved.append(node('h3','','待指定维度'));
+      for (const [index, row] of suggestions.entries()) {
+        const choice = node('label','dimensions-choice'), check = node('input'); check.type = 'checkbox'; check.checked = true; check.dataset.index = index;
+        const body = node('span','dimensions-choice-body'); body.append(node('strong','',row.name || row.series_id),node('small','dimensions-suggestion-reason',row.reason));
+        if (row.sheet) body.append(node('small','dimensions-sheet',row.sheet));
+        const target = node('select'); target.setAttribute('aria-label','建议指标的维度');
+        target.append(new Option('请选择维度','')); available.forEach((d, i) => target.append(new Option(d.label,String(i))));
+        const matched = available.findIndex(d => d.id === row.dimension); target.value = matched < 0 ? '' : String(matched); target.addEventListener('change',syncModel);
+        const stage = input(row.section || '', '建议指标的环节', () => {}); stage.placeholder = '环节名（可改放）'; stage.maxLength = 40;
+        body.append(target,stage); choice.append(check,body);
+        const group = groups.get(row.dimension); (group || unresolved).append(choice); check.addEventListener('change', syncModel);
+      }
+      if (unresolved.querySelector('.dimensions-choice')) get('suggestions').append(unresolved);
+    }
+    get('model-status').textContent = result.notice || (modelMode === 'infer' ? '这是模型草稿。采用后可以增删改；只有点击页面“保存”才会覆盖配置。' : '勾选条目并核对环节；采用后还需要保存研究维度。');
+  }
+  async function reviewSetup() {
+    const setup = window.WorkbenchSetupReview;
+    if (!editable() || !setup?.is('dimensions', 'indicators')) return;
+    try {
+      const result = await setup.load();
+      if (editing || saving || modelDialog.open) return status('请先结束当前编辑，再重新打开任务结果。', true);
+      modelMode = setup.part === 'dimensions' ? 'infer' : 'suggest';
+      setupDimensions = modelMode === 'suggest' && config.revision === 0 && result.dimensions?.length ? result.dimensions : undefined;
+      const newOutline = setupDimensions?.some(dimension => !config.dimensions.some(row => row.id === dimension.id));
+      modelSetupJob = modelMode === 'infer' || newOutline ? setup.id : undefined;
+      get('model-title').textContent = modelMode === 'infer' ? '核对周报研究维度' : '核对周报绑定指标';
+      get('source-controls').hidden = true; get('model').parentElement.hidden = true; get('model-run').hidden = true;
+      get('model-adopt').textContent = modelMode === 'infer' ? '将这套维度作为编辑草稿' : '采用所选到编辑草稿';
+      suggestionTargets = new Map();
+      renderModelResult(result); syncModel(); modelDialog.showModal();
+    } catch (error) { status(error.message, true); }
   }
   function adopt() {
     if (running || get('model-adopt').disabled) return;
     if (modelMode === 'infer') {
       if (!window.confirm('将这套维度放入编辑草稿？当前未保存的编辑会被替换，现有配置要点击“保存”后才会覆盖。')) return;
-      startEdit(); draft = clone(inferred); appliedTemplate = undefined; render(); modelDialog.close(); status('已放入编辑草稿，可增删改后保存。'); return;
+      startEdit(); draft = clone(inferred); draftSetupJob = modelSetupJob; appliedTemplate = undefined; render(); modelDialog.close(); status('已放入编辑草稿，可增删改后保存。'); return;
     }
-    const candidate = clone(editing ? draft : config.dimensions); let merged = 0;
+    const candidate = clone(setupDimensions || (editing ? draft : config.dimensions)); let merged = 0;
     for (const check of get('suggestions').querySelectorAll('input[type="checkbox"]:checked')) {
       const row = suggestions[Number(check.dataset.index)], choice = check.closest('.dimensions-choice');
       const selectedDimension = choice.querySelector('select').value;
@@ -493,10 +519,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (stage.items.length >= 12 || candidate.flatMap(d => (d.sections || []).flatMap(s => s.items)).length >= 96) { get('model-status').textContent = '采用后将超过每环节12条或总96条上限，请减少所选或调整环节。'; return; }
       stage.items.push({kind:'indicator',id:row.series_id,name:row.name,unit:row.unit,frequency:row.frequency,sheet:row.sheet,source:row.source}); merged++;
     }
-    startEdit(); draft = candidate; render(); modelDialog.close(); status(`已合并 ${merged} 个指标到编辑草稿，请核对并保存。`);
+    startEdit(); draft = candidate; draftSetupJob = modelSetupJob || draftSetupJob; render(); modelDialog.close(); status(`已合并 ${merged} 个指标到编辑草稿，请核对并保存。`);
   }
   get('edit').addEventListener('click', startEdit); get('save').addEventListener('click', save);
-  get('cancel').addEventListener('click', () => { if (saving || templateApplying) return; editing = false; draft = undefined; appliedTemplate = undefined; deleted = new Set(); render(); status('已取消未保存的编辑。'); });
+  get('cancel').addEventListener('click', () => { if (saving || templateApplying) return; editing = false; draft = undefined; draftSetupJob = undefined; appliedTemplate = undefined; deleted = new Set(); render(); status('已取消未保存的编辑。'); });
   get('add').addEventListener('click', () => { if (draft.length >= 12) return status('最多12个维度。',true); draft.push({id:freshId('d-'),label:'新维度',category:config.categories?.[0]?.id || config.categories?.[0] || '其他',description:'',sections:[]}); render(); });
   get('templates').addEventListener('click', () => void openTemplates());
   get('start-general').addEventListener('click', () => void applyTemplate('general-six'));

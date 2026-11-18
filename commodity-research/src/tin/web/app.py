@@ -245,6 +245,8 @@ app.include_router(judgment_jobs_router)
 app.include_router(judgment_jobs_global_router)
 from tin.web.diagram_jobs import router as diagram_jobs_router
 app.include_router(diagram_jobs_router)
+from tin.web.workbench_setup_jobs import router as workbench_setup_jobs_router
+app.include_router(workbench_setup_jobs_router)
 from tin.web.judgment_review import router as judgment_review_router
 app.include_router(judgment_review_router)
 from tin.web.judgment_radar import router as judgment_radar_router
@@ -299,6 +301,8 @@ async def _stop_judgment_jobs():
     await runtime.shutdown()
     from tin.web.diagram_jobs import runtime as diagram_runtime
     await diagram_runtime.shutdown()
+    from tin.web.workbench_setup_jobs import runtime as setup_runtime
+    await setup_runtime.shutdown()
 
 
 @app.on_event('startup')
@@ -308,6 +312,8 @@ async def _start_judgment_jobs():
         await runtime.startup()
         from tin.web.diagram_jobs import runtime as diagram_runtime
         await diagram_runtime.startup()
+        from tin.web.workbench_setup_jobs import runtime as setup_runtime
+        await setup_runtime.startup()
 
 
 @app.on_event('shutdown')
@@ -436,10 +442,12 @@ def home_page(request: Request, date: str | None = None, err: str | None = None)
     if scope is not None and not scope.restricted:
         from tin.integration.workbench_scope import artifact_session
         from tin.web.affairs import build_affairs
+        from tin.web.workbench_setup_entry import home_setup_context
         with artifact_session(scope) as session:
+            affairs = build_affairs(session, scope, today=datetime.now(SHANGHAI).date())
+            affairs.update(home_setup_context(session, scope))
             return templates.TemplateResponse(request, 'home.html', {
-                'nav': 'home', 'd': None, 'ticker': [],
-                'affairs': build_affairs(session, scope, today=datetime.now(SHANGHAI).date()), 'err': err})
+                'nav': 'home', 'd': None, 'ticker': [], 'affairs': affairs, 'err': err})
     with _page_session('home', day=date) as s:
         d = _page_date(s, date)
         researcher = seed_researcher(s)

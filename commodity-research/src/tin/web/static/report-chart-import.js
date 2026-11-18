@@ -273,7 +273,7 @@
       activeSource = source;
       document.dispatchEvent(new CustomEvent('chart-import:source', {detail: {source}}));
     }
-    if (source === 'report') loadReportSources();
+    if (source === 'report') return loadReportSources();
   }
   sourceTabs.forEach((tab, index) => {
     tab.addEventListener('click', () => chooseSource(tab.dataset.chartImportSource, true));
@@ -292,8 +292,30 @@
   function chooseLinkedSource() {
     chooseSource(window.location.hash === reportHash ? 'report' : 'native');
   }
+  async function reviewSetup(setup) {
+    await chooseSource('report', true);
+    if (closed || busy) return;
+    const own = ++generation; busy = true; controls();
+    U.notice($('status'), '正在载入周报图表候选…');
+    try {
+      const result = await setup.load();
+      if (closed || own !== generation) return;
+      jobId = result.job_id;
+      if (result.source) {
+        const key = JSON.stringify(result.source);
+        if (!sources.has(key)) {
+          const title = result.setupReport?.name || result.group || '所选周报';
+          sources.set(key, {citation: result.source, title}); $('file').append(new Option(title, key));
+        }
+        $('file').value = key;
+      }
+      if ([...$('model').options].some(option => option.value === result.model_id)) $('model').value = result.model_id;
+      await poll(own);
+    } catch (error) { if (!closed && own === generation) { busy = false; conflict(error); controls(); } }
+  }
   window.addEventListener('hashchange', chooseLinkedSource);
-  chooseLinkedSource();
+  const setup = window.WorkbenchSetupReview;
+  if (config.can_write && setup?.is('charts')) void reviewSetup(setup); else chooseLinkedSource();
   window.addEventListener('pagehide', () => { closed = true; generation++; clearTimeout(timer); clearTimeout(sourceTimer); controllers.forEach(controller => controller.abort()); clearCards(); }, {once: true});
   controls();
 })();

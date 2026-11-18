@@ -109,7 +109,7 @@ def load_state(scope, identifier):
         return deepcopy(owned(session, scope, identifier).config)
 
 
-def new_job(scope, body):
+def new_job(scope, body, *, expires_at=None):
     identifier, now = uuid4().hex, time.time()
     with artifact_session(scope) as session:
         if session.get_bind().dialect.name == 'sqlite':
@@ -131,7 +131,7 @@ def new_job(scope, body):
             raise HTTPException(429, '当前研究台已有周报识别任务，请等待完成')
         config = {'kind': KIND, 'id': identifier, 'owner': scope.identity.user_id,
             'tenant': scope.identity.tenant_id, 'workbench': scope.workbench_id, 'grant': grant(scope),
-            'started': now, 'updated': now, 'expires': now + TTL, 'status': 'queued',
+            'started': now, 'updated': now, 'expires': expires_at or now + TTL, 'status': 'queued',
             'source': body.source.model_dump(mode='json', exclude={'snapshot'}),
             'progress': {'completed': 0, 'total': 0, 'message': '正在读取已解析片段'},
             'charts': [], 'failures': [], 'applied': {}}
@@ -181,12 +181,13 @@ def annotate(scope, charts, group, identifier):
     return charts
 
 
-async def process(scope, identifier, body):
-    report, charts, failed, completed = None, [], [], 0
+async def process(scope, identifier, body, *, report=None):
+    charts, failed, completed = [], [], 0
     try:
         async with asyncio.timeout(TOTAL_SECONDS):
             await fresh_scope(scope)
-            report = await suggestions.read_report(scope, body.source)
+            if report is None:
+                report = await suggestions.read_report(scope, body.source)
             catalog = (await run_in_threadpool(catalog_snapshot, scope))['catalog']
             group = report['filename'][:80]
             batches = report['batches']
@@ -280,6 +281,8 @@ async def process(scope, identifier, body):
         except HTTPException:
             # Expired drafts are no longer writable or readable.
             pass
+        if isinstance(exc, asyncio.CancelledError) and asyncio.current_task().cancelling():
+            raise
 
 
 @router.get('/files')

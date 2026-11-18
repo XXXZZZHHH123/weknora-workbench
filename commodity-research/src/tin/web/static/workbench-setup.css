@@ -1,0 +1,32 @@
+.workbench-setup-guide,.workbench-setup-running {
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:16px;
+}
+.workbench-setup-guide>div,.workbench-setup-running>.workbench-setup-status {flex:1 1 240px}
+.workbench-setup-guide h2,.workbench-setup-dialog h3 {font-size:15px;font-weight:700}
+.workbench-setup-guide p,.workbench-setup-review-items p {margin:3px 0 0;color:var(--text-muted);font-size:12px}
+.workbench-setup-dialog {width:min(720px,calc(100vw - 32px))}
+.workbench-setup-fields,.workbench-setup-parts {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px}
+.workbench-setup-fields label {display:grid;gap:5px;min-width:0}
+.workbench-setup-fields :is(input,select) {width:100%;min-width:0}
+.workbench-setup-parts {margin-top:12px;border-top:1px solid var(--line);padding-top:8px}
+.workbench-setup-parts legend {padding-right:8px;font-weight:650;font-size:13px}
+.workbench-setup-parts label {display:flex;gap:8px;align-items:flex-start;line-height:1.5}
+.workbench-setup-parts label input {flex:none;margin-top:3px;accent-color:var(--primary)}
+.workbench-setup-parts small {display:block;color:var(--text-muted);font-size:11px}
+.workbench-setup-status {color:var(--text-muted);font-size:13px}
+.workbench-setup-status:not(:empty),#workbench-setup-more {margin-top:10px}
+.workbench-setup-running .workbench-setup-status {margin:0}
+.workbench-setup-status[data-error="true"] {color:var(--alert)}
+.workbench-setup-status[data-busy="true"]::before {
+  content:"";display:inline-block;vertical-align:middle;width:12px;height:12px;margin-right:7px;
+  border:1.5px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:workbench-setup-spin .7s linear infinite;
+}
+.workbench-setup-review-items>li {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}
+.workbench-setup-review-items strong {font-size:13px}
+.workbench-setup-link {color:var(--primary);font-size:13px;white-space:nowrap;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.dimensions-start-options:has([data-workbench-setup-open]) {grid-template-columns:repeat(2,minmax(0,1fr))}
+@keyframes workbench-setup-spin {to {transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce) {.workbench-setup-status[data-busy="true"]::before {animation:none}}
+@media (max-width:560px) {
+  .workbench-setup-fields,.workbench-setup-parts,.dimensions-start-options:has([data-workbench-setup-open]) {grid-template-columns:1fr}
+}

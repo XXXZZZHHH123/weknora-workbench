@@ -180,7 +180,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const suggestionStatus = message => { get('suggestions-status').textContent = message; };
   function syncSuggestions() { run.disabled = running || !model.value; adopt.disabled = running || !get('suggestions-list').querySelector('input:checked') || !metadata.can_edit_shared; }
   get('suggestions-open')?.addEventListener('click', async () => {
-    suggestions.showModal();
+    model.parentElement.hidden = false; run.hidden = false; suggestions.showModal();
     if (!models) {
       model.disabled = true;
       try {
@@ -198,17 +198,32 @@ document.addEventListener('DOMContentLoaded', () => {
     if (running || !model.value) return; running = true; suggested = []; get('suggestions-list').replaceChildren(); syncSuggestions(); suggestionStatus('正在根据研究框架核对工作表，再从真实字段中生成建议…');
     try {
       const data = await request('/market/core/suggestions', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({model_id: model.value})});
-      suggested = data.items || [];
-      for (const row of suggested) {
-        catalog.set(row.series_id, {series_id: row.series_id, name: row.name || row.series_id, unit: row.unit, source: row.sheet});
-        const label = document.createElement('label'), checkbox = document.createElement('input'), content = document.createElement('span'), name = document.createElement('b'), reason = document.createElement('small');
-        checkbox.type = 'checkbox'; checkbox.value = row.series_id; checkbox.checked = true; checkbox.addEventListener('change', syncSuggestions);
-        name.textContent = `${row.group} · ${row.name || row.series_id}`; reason.textContent = row.reason; content.append(name, reason); label.append(checkbox, content); get('suggestions-list').append(label);
-      }
-      suggestionStatus(data.notice || (suggested.length ? '请核对分组和理由，勾选后采用。' : '模型未给出可采用建议。'));
+      renderSuggestions(data);
     } catch (error) { suggestionStatus(error.message); }
     finally { running = false; syncSuggestions(); }
   });
+  function renderSuggestions(data) {
+    get('suggestions-list').replaceChildren();
+    suggested = data.items || [];
+    for (const row of suggested) {
+      catalog.set(row.series_id, {series_id: row.series_id, name: row.name || row.series_id, unit: row.unit, source: row.sheet});
+      const label = document.createElement('label'), checkbox = document.createElement('input'), content = document.createElement('span'), name = document.createElement('b'), reason = document.createElement('small');
+      checkbox.type = 'checkbox'; checkbox.value = row.series_id; checkbox.checked = true; checkbox.addEventListener('change', syncSuggestions);
+      name.textContent = `${row.group} · ${row.name || row.series_id}`; reason.textContent = row.reason; content.append(name, reason); label.append(checkbox, content); get('suggestions-list').append(label);
+    }
+    suggestionStatus(data.notice || (suggested.length ? '请核对分组和理由，勾选后采用。' : '模型未给出可采用建议。'));
+    syncSuggestions();
+  }
+  async function reviewSetup() {
+    const setup = window.WorkbenchSetupReview;
+    if (!metadata.can_edit_shared || !setup?.is('focus')) return;
+    try {
+      const data = await setup.load();
+      if (dialog.open || suggestions.open) return announce('请先结束当前编辑，再重新打开任务结果。');
+      model.parentElement.hidden = true; run.hidden = true;
+      suggestions.showModal(); renderSuggestions(data);
+    } catch (error) { announce(error.message); }
+  }
   adopt.addEventListener('click', async () => {
     const ids = new Set([...get('suggestions-list').querySelectorAll('input:checked')].map(input => input.value)); if (!ids.size || running) return;
     running = true; syncSuggestions();
@@ -216,7 +231,7 @@ document.addEventListener('DOMContentLoaded', () => {
     catch (error) { suggestionStatus(error.message); }
     finally { running = false; syncSuggestions(); }
   });
-  get('retry').addEventListener('click', loadCards); syncCount(); observeCharts();
+  get('retry').addEventListener('click', loadCards); syncCount(); observeCharts(); void reviewSetup();
   window.addEventListener('pagehide', () => { closed = true; generation++; controller?.abort(); directoryGeneration++; directoryController?.abort(); clearTimeout(directoryTimer); clearCharts(); });
   window.addEventListener('pageshow', event => { if (event.persisted) { closed = false; void loadCards(); } });
 });

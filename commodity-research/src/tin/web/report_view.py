@@ -329,6 +329,8 @@ def _workflow_view(view, payload, names):
             'figures': figures, 'references': []}
     for key in ('dimension_notes', 'figure_conclusions'):
         draft[key] = deepcopy((saved or {}).get(key) or {})
+    if (saved or {}).get('layout'):
+        draft['layout'] = deepcopy(saved['layout'])
     from tin.web.report_charts import collect_figures
     figures_manifest = deepcopy(payload.get('report_figures')) if isinstance(payload.get('report_figures'), list) else collect_figures(payload)
     automatic = [row for row in figures_manifest if row['kind'] == 'chart']
