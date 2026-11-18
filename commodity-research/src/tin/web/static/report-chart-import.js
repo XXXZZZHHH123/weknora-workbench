@@ -1,4 +1,4 @@
-/* Review report chart structures using the existing chart cards and renderer. */
+/* Switch import sources and review report charts with the shared renderer. */
 (function () {
   'use strict';
   const panel = document.getElementById('report-chart-import'), configNode = document.getElementById('chart-page-config');
@@ -239,8 +239,8 @@
   }
   $('search').addEventListener('input', () => { clearTimeout(sourceTimer); sourceTimer = setTimeout(() => loadFiles(true), 300); });
   $('more').addEventListener('click', () => { if (!sourcesBusy && !busy && sourceNext != null) loadFiles(); });
-  panel.addEventListener('toggle', async () => {
-    if (!panel.open || loaded) return;
+  async function loadReportSources() {
+    if (loaded) return;
     if (!config.can_write) { U.notice($('status'), config.write_reason); return; }
     loaded = true;
     await Promise.all([loadFiles(true), (async () => {
@@ -251,20 +251,49 @@
       } catch (error) { if (!closed) { loaded = false; conflict(error); } }
       controls();
     })()]);
-  });
-  const linkedPanel = () => window.location.hash === '#' + panel.id;
-  function openLinkedPanel() {
-    if (!linkedPanel()) return;
-    panel.open = true;
-    panel.scrollIntoView({block: 'start'});
   }
-  window.addEventListener('hashchange', openLinkedPanel);
-  // The preview above the report section can push it out of view after the initial scroll.
-  document.addEventListener('native-chart-preview-ready', () => {
-    if (linkedPanel() && panel.open) panel.scrollIntoView({block: 'start'});
-  }, {once: true});
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', openLinkedPanel, {once: true});
-  else openLinkedPanel();
+
+  const sourceTabs = [...document.querySelectorAll('[data-chart-import-source]')];
+  const reportHash = '#' + panel.id;
+  let activeSource;
+  function chooseSource(source, updateURL = false) {
+    for (const tab of sourceTabs) {
+      const selected = tab.dataset.chartImportSource === source;
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      document.getElementById(tab.getAttribute('aria-controls')).hidden = !selected;
+      document.getElementById(`chart-import-${tab.dataset.chartImportSource}-intro`).hidden = !selected;
+    }
+    if (updateURL) {
+      const url = new URL(window.location.href);
+      url.hash = source === 'report' ? reportHash : '';
+      if (url.href !== window.location.href) history.replaceState(history.state, '', url);
+    }
+    if (activeSource !== source) {
+      activeSource = source;
+      document.dispatchEvent(new CustomEvent('chart-import:source', {detail: {source}}));
+    }
+    if (source === 'report') loadReportSources();
+  }
+  sourceTabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => chooseSource(tab.dataset.chartImportSource, true));
+    tab.addEventListener('keydown', event => {
+      let next;
+      if (event.key === 'ArrowRight') next = (index + 1) % sourceTabs.length;
+      if (event.key === 'ArrowLeft') next = (index + sourceTabs.length - 1) % sourceTabs.length;
+      if (event.key === 'Home') next = 0;
+      if (event.key === 'End') next = sourceTabs.length - 1;
+      if (next === undefined) return;
+      event.preventDefault();
+      sourceTabs[next].focus();
+      sourceTabs[next].click();
+    });
+  });
+  function chooseLinkedSource() {
+    chooseSource(window.location.hash === reportHash ? 'report' : 'native');
+  }
+  window.addEventListener('hashchange', chooseLinkedSource);
+  chooseLinkedSource();
   window.addEventListener('pagehide', () => { closed = true; generation++; clearTimeout(timer); clearTimeout(sourceTimer); controllers.forEach(controller => controller.abort()); clearCards(); }, {once: true});
   controls();
 })();

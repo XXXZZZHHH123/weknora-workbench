@@ -200,6 +200,7 @@ def test_revision_compare_and_swap_rechecks_after_directory_validation(chart_cli
     ('POST', '/api/sn/charts/batch', {'series_ids': [SID], 'group': '图集'}),
     ('POST', '/api/sn/charts/batch/preview', {'series_ids': [SID], 'group': '图集'}),
     ('POST', '/api/sn/charts/import/native/apply', {'sheets': [{'knowledge_id': 'fixture-document', 'sheet': '测试表'}]}),
+    ('POST', '/api/sn/charts/import/native/apply-page', {'offset': 0, 'limit': 200}),
 ])
 def test_all_library_routes_reject_restricted_and_old_grants_without_reads(chart_client, headers, status, method, path, body):
     client, state = chart_client
@@ -218,6 +219,7 @@ def test_every_write_requires_shared_write_even_for_members_who_can_create_perso
     assert client.delete('/api/sn/charts/' + identifier + '?revision=1', headers=headers).status_code == 403
     assert client.post('/api/sn/cycle-templates', json={'kind': 'repeat', 'name': '模板', 'start': '01-01', 'period': 'year'}, headers=headers).status_code == 403
     assert client.post('/api/sn/charts/import/native/apply', json={'sheets': [{'knowledge_id': 'fixture-document', 'sheet': '测试表'}]}, headers=headers).status_code == 403
+    assert client.post('/api/sn/charts/import/native/apply-page', json={'offset': 0, 'limit': 200}, headers=headers).status_code == 403
     assert state.requests == []
 
 
@@ -460,12 +462,17 @@ def test_native_preview_groups_missing_curves_and_latest_period_notice_for_reade
 
 def test_native_apply_selected_sheet_override_dedup_deleted_origin_and_style_snapshot(chart_client):
     client, state = chart_client
-    state.native = [yearly_native(), native_chart(chart_key='nc-' + '2' * 32, sheet='未勾选')]
+    unavailable = native_chart(chart_key='nc-' + '3' * 32, curves=[native_curve(status='pending_source')])
+    state.native = [yearly_native(), native_chart(chart_key='nc-' + '2' * 32, sheet='未勾选'), unavailable]
     body = {'sheets': [{'knowledge_id': 'fixture-document', 'sheet': '测试表', 'start': '09-01'}]}
     response = client.post('/api/sn/charts/import/native/apply', json=body)
     assert response.status_code == 200, response.text
     result = response.json()
+    assert set(result) == {'created', 'skipped', 'unconvertible', 'sheets'}
     assert len(result['created']) == 1 and result['skipped'] == []
+    assert result['unconvertible'] == [{'chart_key': unavailable['chart_key'], 'reason': '没有可用曲线',
+                                       'missing_curves': [{'index': 0, 'label': '任意图例', 'reason': 'pending_source'}]}]
+    assert [sheet['sheet'] for sheet in result['sheets']] == ['测试表']
     saved = result['created'][0]
     assert saved['definition']['time']['template']['start'] == '09-01'
     assert len(saved['source_snapshots'][0]['curves']) == 3
@@ -479,6 +486,88 @@ def test_native_apply_selected_sheet_override_dedup_deleted_origin_and_style_sna
     assert len(recreated['created']) == 1 and recreated['created'][0]['id'] != saved['id']
     preview = client.post('/api/sn/charts/import/native/preview', json={}).json()
     assert preview['sheets'][0]['charts'][0]['already_imported'] is True
+
+
+def test_native_apply_page_processes_one_page_and_imports_curves_with_warnings(chart_client):
+    client, state = chart_client
+    apply_url = '/api/sn/charts/import/native/apply'
+    assert client.post(apply_url, json={'sheets': [{'knowledge_id': 'fixture-document', 'sheet': '测试表'}]}).status_code == 200
+    warning = native_chart(chart_key='nc-' + '2' * 32, sheet='另一个工作表')
+    unavailable = native_chart(chart_key='nc-' + '3' * 32, title='未确认图',
+                               curves=[native_curve(status='pending_source', reason='来源待确认')])
+    state.native.extend([warning, unavailable])
+    state.fields[SID]['unit'] = ''
+    preview = client.post('/api/sn/charts/import/native/preview', json={'limit': 2}).json()
+    assert preview['sheets'][1]['charts'][0]['warnings'][0]['code'] == 'unit_missing'
+    version = preview['version']
+    assert len(version) == 64
+
+    state.requests.clear()
+    response = client.post(apply_url + '-page', json={'offset': 0, 'limit': 2, 'version': version})
+    assert response.status_code == 200, response.text
+    assert response.json() == {'created_count': 1, 'skipped_count': 1, 'unconvertible': [],
+                               'next_offset': 2, 'total': 3, 'version': version}
+    assert [body for endpoint, body in state.requests if endpoint.endswith('/native-charts')] == [{'offset': 0, 'limit': 2}]
+    page_reads = [body for endpoint, body in state.requests if endpoint.endswith('/facts')]
+    assert page_reads and all(body['series_ids'] == [SID] for body in page_reads)
+    state.requests.clear()
+    selected = [{'knowledge_id': chart['knowledge_id'], 'sheet': chart['sheet'], 'chart_keys': [chart['chart_key']]}
+                for chart in state.native[:2]]
+    response = client.post(apply_url, json={'sheets': selected})
+    assert response.status_code == 200 and len(response.json()['skipped']) == 2
+    assert [body for endpoint, body in state.requests if endpoint.endswith('/facts')] == page_reads
+
+    state.requests.clear()
+    response = client.post(apply_url + '-page', json={'offset': 2, 'limit': 2, 'version': version})
+    assert response.status_code == 200, response.text
+    assert response.json() == {'created_count': 0, 'skipped_count': 0, 'next_offset': None,
+        'total': 3, 'version': version, 'unconvertible': [{
+            'chart_key': unavailable['chart_key'], 'title': unavailable['title'], 'sheet': unavailable['sheet'],
+            'source_file': unavailable['source_file'], 'reason': '没有可用曲线',
+            'missing_curves': [{'index': 0, 'label': '任意图例', 'reason': '来源待确认'}],
+        }]}
+    assert [body for endpoint, body in state.requests if endpoint.endswith('/native-charts')] == [{'offset': 2, 'limit': 2}]
+    assert [body['series_ids'] for endpoint, body in state.requests if endpoint.endswith('/facts')] == [[]]
+
+    saved = client.get('/api/sn/charts').json()['items']
+    assert len(saved) == 2
+    imported = next(item for item in saved if item['definition']['origin']['ref'] == warning['chart_key'])
+    assert imported['source_snapshots'] == [{'kind': 'native_chart', 'chart_key': warning['chart_key'],
+                                            'axes': warning['axes'], 'curves': warning['curves']}]
+
+
+@pytest.mark.parametrize('native_version_provided', [False, True])
+def test_native_apply_page_rejects_changed_version_and_keeps_previous_pages(chart_client, native_version_provided):
+    client, state = chart_client
+    endpoint = '/api/sn/charts/import/native/apply-page'
+    state.native.append(native_chart(chart_key='nc-' + '2' * 32))
+    if native_version_provided:
+        state.native_version = lambda offset: 'a' * 64
+    first = client.post(endpoint, json={'offset': 0, 'limit': 1}).json()
+    assert first['created_count'] == 1 and first['next_offset'] == 1
+
+    if native_version_provided:
+        state.native_version = lambda offset: 'b' * 64
+    else:
+        state.facts_version = 'e' * 64
+    response = client.post(endpoint, json={'offset': 1, 'limit': 1, 'version': first['version']})
+    assert response.status_code == 409
+    assert response.json() == {'detail': '原表图表目录已变化，请重新开始全部导入'}
+    assert client.get('/api/sn/charts').json()['total'] == 1
+
+    restarted = client.post(endpoint, json={'offset': 0, 'limit': 1}).json()
+    assert restarted['version'] != first['version']
+    assert restarted['created_count'] == 0 and restarted['skipped_count'] == 1
+    last = client.post(endpoint, json={'offset': restarted['next_offset'], 'limit': 1, 'version': restarted['version']}).json()
+    assert last['created_count'] == 1 and last['next_offset'] is None
+
+
+def test_native_apply_page_rejects_unbounded_or_invalid_pagination_without_reads(chart_client):
+    client, state = chart_client
+    for body in ({}, {'offset': 0}, {'offset': -1, 'limit': 1}, {'offset': 0, 'limit': 0},
+                 {'offset': 0, 'limit': 201}, {'offset': False, 'limit': 1}):
+        assert client.post('/api/sn/charts/import/native/apply-page', json=body).status_code == 422
+    assert state.requests == []
 
 
 def test_native_apply_pages_through_current_sources_and_only_creates_selected_chart_keys(chart_client):
@@ -672,6 +761,8 @@ def test_viewer_native_preview_passes_the_actual_scoped_auth_middleware(chart_cl
     assert response.status_code == 200, response.text
     assert client.post(root + '/api/sn/charts/import/native/apply',
         json={'sheets': [{'knowledge_id': 'fixture-document', 'sheet': '测试表'}]}, headers=headers).status_code == 403
+    assert client.post(root + '/api/sn/charts/import/native/apply-page',
+        json={'offset': 0, 'limit': 200}, headers=headers).status_code == 403
 
 
 def test_dates_cannot_be_coerced_from_timestamps_or_noncanonical_strings(chart_client):

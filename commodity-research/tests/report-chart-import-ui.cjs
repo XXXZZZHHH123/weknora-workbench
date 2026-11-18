@@ -9,6 +9,8 @@ const charts = [
   {id: 'report-5', page: null, page_label: '片段9', source_index: 8, title: '无页码图', chart_type: 'trend', evidence: '无页码片段', series: [{name: '原文图例', candidates, selected_id: 'kb-fixture-series'}]}
 ];
 const html = render('chart_import.html');
+const nativeTab = page => page.getByRole('tab', {name: '原表（Excel）'});
+const reportTab = page => page.getByRole('tab', {name: '往期周报（PPT / PDF）'});
 const base = ({path, reply}) => {
   if (path === '/charts/import/native/preview') return reply({total: 0, next_offset: null, sheets: []});
   if (path === '/strategies/models') return reply({models: [{id: 'model-fixture', name: '测试模型'}]});
@@ -17,23 +19,33 @@ const base = ({path, reply}) => {
 (async () => {
   const browser = await launch();
   try {
-    const linked = await open(browser, '/sn/charts/import#report-chart-import', html, async args => {
-      if (args.path === '/charts/import/native/preview') {
-        await new Promise(resolve => setTimeout(resolve, 150));
-        const sheets = Array.from({length: 18}, (_, index) => ({knowledge_id: 'native-fixture',
-          source_file: '合成原表.xlsx', sheet: `合成表${index}`, charts: []}));
-        return args.reply({total: 0, next_offset: null, sheets});
-      }
+    const linked = await open(browser, '/sn/charts/import?date=2029-09-15#report-chart-import', html, args => {
       if (args.path === '/charts/import/report/files') return args.reply({items: [], next_offset: null});
       return base(args);
     });
-    assert.equal(await linked.page.locator('#report-chart-import').evaluate(panel => panel.open), true);
-    await linked.page.locator('#report-chart-import > summary').waitFor({state: 'visible'});
-    assert.ok(await linked.page.locator('#report-chart-import > summary').evaluate(summary => {
-      const {top, bottom} = summary.getBoundingClientRect();
-      return window.scrollY > 0 && top >= 0 && bottom <= window.innerHeight;
-    }));
+    assert.equal(await reportTab(linked.page).getAttribute('aria-selected'), 'true');
+    assert.equal(await nativeTab(linked.page).getAttribute('aria-selected'), 'false');
+    await linked.page.getByRole('heading', {name: '从往期周报导入常用图'}).waitFor();
+    assert.equal(await linked.page.locator('#native-chart-import').isHidden(), true);
+    assert.equal(await linked.page.locator('#chart-import-report-intro').isVisible(), true);
     assert.equal(linked.calls.filter(call => call.path === '/charts/import/report/files').length, 1);
+    assert.equal(linked.calls.filter(call => call.path === '/charts/import/native/preview').length, 0);
+    await reportTab(linked.page).press('ArrowLeft');
+    await linked.page.locator('#chart-import-progress').filter({hasText: '已预览 0 / 0'}).waitFor();
+    assert.equal(await nativeTab(linked.page).getAttribute('aria-selected'), 'true');
+    assert.equal(await nativeTab(linked.page).evaluate(tab => document.activeElement === tab), true);
+    assert.equal(await linked.page.locator('#report-chart-import').isHidden(), true);
+    assert.equal(await linked.page.locator('#chart-import-native-intro').isVisible(), true);
+    assert.match(linked.page.url(), /\?date=2029-09-15$/);
+    await nativeTab(linked.page).press('ArrowRight');
+    assert.equal(await reportTab(linked.page).getAttribute('aria-selected'), 'true');
+    assert.match(linked.page.url(), /\?date=2029-09-15#report-chart-import$/);
+    assert.equal(linked.calls.filter(call => call.path === '/charts/import/report/files').length, 1);
+    await linked.page.evaluate(() => { window.location.hash = ''; });
+    await linked.page.locator('#native-chart-import').waitFor();
+    await linked.page.evaluate(() => { window.location.hash = '#report-chart-import'; });
+    await linked.page.locator('#report-chart-import').waitFor();
+    assert.equal(linked.calls.filter(call => call.path === '/charts/import/native/preview').length, 1);
     await linked.close();
 
     let applied, jobPolls = 0;
@@ -67,10 +79,17 @@ const base = ({path, reply}) => {
       return false;
     });
     const p = ui.page;
-    assert.equal(await p.locator('#report-chart-import').getAttribute('open'), null);
+    assert.equal(await nativeTab(p).getAttribute('aria-selected'), 'true');
+    assert.equal(await p.locator('#report-chart-import').isHidden(), true);
     assert.equal(ui.calls.filter(call => call.path.startsWith('/charts/import/report')).length, 0, '原表导入不主动读取周报');
-    await p.locator('#report-chart-import > summary').click();
+    await reportTab(p).click();
     await p.locator('#report-chart-file').selectOption(JSON.stringify(source));
+    await nativeTab(p).click();
+    assert.equal(await p.locator('#report-chart-file').isHidden(), true);
+    await reportTab(p).click();
+    assert.equal(await p.locator('#report-chart-file').inputValue(), JSON.stringify(source));
+    assert.equal(ui.calls.filter(call => call.path === '/charts/import/native/preview').length, 1);
+    assert.equal(ui.calls.filter(call => call.path === '/charts/import/report/files').length, 1);
     assert.equal(await p.locator('#report-chart-group').inputValue(), '合成周报.pptx');
     await p.locator('#report-chart-recognize').click();
     await p.locator('#report-chart-progress').filter({hasText: '正在识别'}).waitFor();
@@ -130,7 +149,7 @@ const base = ({path, reply}) => {
     await ui.close();
 
     const readonly = await open(browser, '/sn/charts/import', render('chart_import.html', {can_write: false, write_reason: '没有编辑权限'}), base);
-    await readonly.page.locator('#report-chart-import > summary').click();
+    await reportTab(readonly.page).click();
     await readonly.page.locator('#report-chart-status').filter({hasText: '没有编辑权限'}).waitFor();
     assert.equal(await readonly.page.locator('#report-chart-recognize').isDisabled(), true);
     assert.equal(await readonly.page.locator('#report-chart-apply').isDisabled(), true);
@@ -146,7 +165,7 @@ const base = ({path, reply}) => {
       if (args.path.endsWith('/preview')) return args.reply({detail: '文件版本已变化，请重新识别'}, 409);
       return false;
     });
-    await conflict.page.locator('#report-chart-import > summary').click();
+    await reportTab(conflict.page).click();
     await conflict.page.locator('#report-chart-file').selectOption(JSON.stringify(source));
     await conflict.page.locator('#report-chart-recognize').click();
     await conflict.page.locator('#report-chart-status').filter({hasText: '文件版本已变化'}).waitFor();
@@ -169,7 +188,7 @@ const base = ({path, reply}) => {
     });
     // Shorten only the request deadline to exercise an actual aborted preview.
     await retry.page.evaluate(() => { const delay = window.setTimeout.bind(window); window.setTimeout = (fn, ms, ...args) => delay(fn, ms === 60000 ? 100 : ms, ...args); });
-    await retry.page.locator('#report-chart-import > summary').click();
+    await reportTab(retry.page).click();
     await retry.page.locator('#report-chart-file').selectOption(JSON.stringify(source));
     await retry.page.locator('#report-chart-recognize').click();
     await retry.page.locator('[data-report-notice]').filter({hasText: '请求超时'}).waitFor();
@@ -192,7 +211,7 @@ const base = ({path, reply}) => {
       if (args.path.endsWith('/preview')) return args.reply(invalidPreview ? {errors: ['图表定义校验失败']} : {definition, payload: cycle(), errors: []});
       return false;
     });
-    await repair.page.locator('#report-chart-import > summary').click();
+    await reportTab(repair.page).click();
     await repair.page.locator('#report-chart-file').selectOption(JSON.stringify(source));
     await repair.page.locator('#report-chart-recognize').click();
     await repair.page.locator('[data-report-notice]').filter({hasText: '图表定义校验失败'}).waitFor();
@@ -216,7 +235,7 @@ const base = ({path, reply}) => {
         warnings: new Set(args.body.mappings).size < args.body.mappings.length ? [duplicateMappingWarning] : []});
       return false;
     });
-    await mappingRepair.page.locator('#report-chart-import > summary').click();
+    await reportTab(mappingRepair.page).click();
     await mappingRepair.page.locator('#report-chart-file').selectOption(JSON.stringify(source));
     await mappingRepair.page.locator('#report-chart-recognize').click();
     await mappingRepair.page.locator('[data-report-plot] svg').waitFor();

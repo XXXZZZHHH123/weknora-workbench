@@ -243,3 +243,9 @@ class NativeSheetSelection(ChartModel):
 
 class NativeApplyInput(ChartModel):
     sheets: list[NativeSheetSelection] = Field(min_length=1, max_length=200)
+
+
+class NativeApplyPageInput(ChartModel):
+    offset: int = Field(ge=0, strict=True)
+    limit: int = Field(ge=1, le=200, strict=True)
+    version: str | None = None

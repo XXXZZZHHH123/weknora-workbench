@@ -14,6 +14,7 @@
 .charts-notice { color: var(--text-muted); background: var(--surface-soft); border: 1px solid var(--line); border-radius: 7px; padding: 10px 12px; margin: 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .charts-notice.error { color: var(--alert); background: var(--alert-soft); }
 .charts-notice.warning { color: var(--amber); background: var(--amber-soft); }
+#charts-status a { color: var(--primary); text-decoration: underline; }
 .charts-layout { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 22px; }
 .charts-groups { display: flex; flex-direction: column; gap: 6px; align-self: start; }
 .charts-groups button { text-align: left; overflow-wrap: anywhere; }
@@ -68,12 +69,17 @@
 .charts-import-item ul { margin: 6px 0; padding-left: 20px; list-style: disc; font-size: 12px; }
 .charts-import-unavailable { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 12px; }
 .charts-import-unavailable > summary { cursor: pointer; color: var(--text-muted); }
+#chart-import-all-reasons { list-style: disc; padding-left: 20px; margin: 8px 0; overflow-wrap: anywhere; }
 .charts-export { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
 .charts-export [role=status] { font-size: 12px; color: var(--text-muted); }
 .chart-builder { width: min(1200px, 96vw); max-height: 94vh; overflow: auto; border: 1px solid var(--line-strong); border-radius: 12px; padding: 20px; color: var(--text); background: var(--surface); }
 .chart-builder::backdrop { background: #0008; }
 .chart-builder [hidden] { display: none !important; }
 .chart-builder > header { margin-bottom: 16px; }
+.chart-builder.charts-import-dialog { width: min(480px, 92vw); }
+.charts-import-dialog h2 { font-size: 16px; font-weight: 700; }
+.charts-import-dialog p { margin: 12px 0 18px; }
+.charts-import-dialog .charts-toolbar { justify-content: flex-end; }
 .chart-builder-layout { display: grid; grid-template-columns: minmax(210px, 1fr) minmax(0, 3fr); gap: 20px; }
 .builder-catalog-items { max-height: 410px; overflow: auto; margin: 12px 0; }
 .builder-catalog-item { display: flex; align-items: start; gap: 8px; border-bottom: 1px solid var(--line); padding: 9px 0; overflow-wrap: anywhere; }
