@@ -7,13 +7,15 @@ from fastapi import HTTPException, Request
 import pytest
 from tin.integration import page_facts
 from tin.integration.workbench_scope import current_workbench
+from tin.judgments.service import save_version
 from tin.models import Judgment, SourceMapping
 from tin.ownership import current_researcher
+from tin.schemas.judgment import JudgmentIn
 from tin.web import dimension_board as board, charts
 from tin.web.research_dimensions import DIMENSIONS_KEY, default_dimensions, read_dimensions
 from tin.web.restricted_views import mapping_key
 from tests.test_core_focus import focus, add_chart
-from tests.chart_fixtures import SID, OTHER
+from tests.chart_fixtures import SID, OTHER, THIRD
 
 
 @pytest.fixture
@@ -176,6 +178,70 @@ def test_data_route_preserves_date_period_revision_and_evidence(api, monkeypatch
     with pytest.raises(HTTPException): board.get_data(period='monthly')
 
 
+def test_judgment_card_references_follow_the_selected_saved_version(api, monkeypatch):
+    from sqlalchemy import event
+    from tin.web import dimension_data
+
+    dims = config([{'kind': 'indicator', 'id': identifier} for identifier in (SID, OTHER, THIRD)])
+    save(api, dims)
+    base = {'variety': 'TEST', 'author': 'fixture', 'written_at': '2026-09-18'}
+    judgment = JudgmentIn.model_validate({**base,
+        'contradiction': {'bull': {'evidence': [{'desc': '共用名称', 'series_id': SID, 'dimension': 'price'}]},
+                          'bear': {'evidence': [{'desc': '共用名称', 'series_id': OTHER, 'related_series_ids': [SID]}]}},
+        'thresholds': [{'id': 'watch', 'name': '观察值', 'series_id': SID, 'operator': '<', 'value': 30,
+                        'type': '观察位', 'horizon': '短期'}],
+        'falsifiers': [{'id': 'invalidate', 'desc': '证伪值', 'series_id': SID, 'expression': 'value > 50',
+                        'unit_confirmed': '件', 'consecutive_periods': 2, 'side': 'bull'}],
+        'unstructured': [
+            {'section': 'thresholds', 'text': '核对单位', 'reason': '口径', 'series_id': SID,
+             'rule_kind': 'threshold', 'business_condition': '参考值低于 30'},
+            {'section': 'thresholds', 'text': '核对频率', 'reason': '口径', 'series_id': SID,
+             'rule_kind': 'threshold', 'business_condition': '参考值低于 30'},
+            {'section': 'falsifiers', 'text': '另一条件', 'reason': '口径', 'series_id': OTHER,
+             'rule_kind': 'falsifier', 'business_condition': '另一来源下跌'},]})
+    current = save_version(api.session, judgment, actor='fixture')
+    current.status = '生效'
+    draft = save_version(api.session, JudgmentIn.model_validate({**base,
+        'contradiction': {'bull': {'evidence': [{'desc': '草稿依据', 'series_id': THIRD}]}}}), actor='fixture')
+    api.session.commit()
+
+    # The observation plan receives only the existing explicit bindings.
+    def calculate(scope, dimensions, day, period):
+        assert dimensions == read_dimensions(api.session)
+        return {'dimensions': dimensions}
+    monkeypatch.setattr(dimension_data, 'dimension_data', calculate)
+    statements = []
+    def record_sql(connection, cursor, statement, parameters, context, many):
+        statements.append(statement.lower())
+    event.listen(api.session.bind, 'before_cursor_execute', record_sql)
+    try:
+        result = board.get_data()
+        draft_result = board.get_data(judgment_id=draft.id)
+    finally:
+        event.remove(api.session.bind, 'before_cursor_execute', record_sql)
+
+    assert result['judgment_id'] == str(current.id)
+    assert result['dimensions'][0]['references'] == {'support': 1, 'oppose': 0, 'total': 1}
+    first, related, unused = result['dimensions'][0]['sections'][0]['items']
+    assert first['judgment_references'] == [
+        {'anchor': 'judgment-evidence-bull0', 'label': '多方依据'},
+        {'anchor': 'judgment-evidence-bear0', 'label': '空方依据'},
+        {'anchor': 'judgment-threshold-watch', 'label': '阈值 <30'},
+        {'anchor': 'judgment-falsifier-invalidate', 'label': '证伪 >50·连续2期'},
+        {'anchor': 'judgment-threshold-watch', 'label': '待核对 2'},
+    ]
+    assert related['judgment_references'] == [
+        {'anchor': 'judgment-evidence-bear0', 'label': '空方依据'},
+        {'anchor': 'judgment-note-2', 'label': '待核对 1'},
+    ]
+    assert 'judgment_references' not in unused
+    assert draft_result['judgment_id'] == str(draft.id)
+    first, related, draft_only = draft_result['dimensions'][0]['sections'][0]['items']
+    assert 'judgment_references' not in first and 'judgment_references' not in related
+    assert draft_only['judgment_references'] == [{'anchor': 'judgment-evidence-bull0', 'label': '多方依据'}]
+    assert not any('observations' in statement or 'signals' in statement for statement in statements)
+
+
 def test_atomic_revision_conflict_even_if_precheck_raced(api, monkeypatch):
     value = save(api, config())
     real_execute = api.session.execute
@@ -206,6 +272,36 @@ def test_restricted_page_reads_only_persisted_ids_and_hides_charts(api, monkeypa
     assert page['restricted'] and not page['can_write']
     assert page['data']['dimensions'][0]['sections'][0]['items'][0]['latest'] == 2
     assert page['data']['dimensions'][0]['sections'][0]['items'][1]['status'] == 'unavailable'
+
+
+def test_restricted_card_references_use_shared_owner_and_visible_fields(api, monkeypatch):
+    from tin.web import app as web
+
+    save(api, config([{'kind': 'indicator', 'id': SID}, {'kind': 'indicator', 'id': OTHER}]))
+    judgment = JudgmentIn.model_validate({'variety': 'SN', 'author': 'fixture', 'written_at': '2026-09-18',
+        'contradiction': {'bull': {'evidence': [{'desc': '可见', 'series_id': SID},
+                                               {'desc': '不可见', 'series_id': OTHER}]}}})
+    save_version(api.session, judgment, actor='fixture')
+    api.session.commit()
+    calls = []
+    def bounded(scope, identifiers, module, **kwargs):
+        calls.append((identifiers, module))
+        return {'indicators': [{'series_id': SID, 'name': '授权观测'}],
+                'rows': [{'series_id': SID, 'date': '2026-09-18', 'value': 2}]}
+    monkeypatch.setattr(page_facts, 'bounded_facts', bounded)
+    request = Request({'type': 'http', 'method': 'GET', 'path': '/sn/dimensions', 'headers': [], 'query_string': b''})
+    scope = replace(api.scope, identity=replace(api.scope.identity, user_id='visitor'),
+                    metadata={**api.scope.metadata, 'can_read_source': False})
+    def cards(view):
+        page = board.restricted_page(request, view, web.templates).context['dimension_page']
+        return page['data']['dimensions'][0]['sections'][0]['items']
+    visible, unavailable = cards(scope)
+    assert visible['judgment_references'] == [{'anchor': 'judgment-evidence-bull0', 'label': '多方依据'}]
+    assert 'judgment_references' not in unavailable
+    for limited in (replace(scope, view_modules=('indicators',)),
+                    replace(scope, metadata={**scope.metadata, 'owner_id': 'another-owner'})):
+        assert all('judgment_references' not in item for item in cards(limited))
+    assert calls == [([SID, OTHER], 'indicators')] * 3
 
 
 def test_restricted_page_update_window_uses_its_report_date(api, monkeypatch):

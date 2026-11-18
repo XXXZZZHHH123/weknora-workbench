@@ -87,7 +87,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     return result;
   }
-  function query() { const q = new URLSearchParams({period: get('period').value}); if (get('date').value) q.set('date', get('date').value); return q; }
+  function query() {
+    const q = new URLSearchParams({period: get('period').value});
+    if (get('date').value) q.set('date', get('date').value);
+    const judgmentId = params.get('judgment_id');
+    if (judgmentId) q.set('judgment_id', judgmentId);
+    return q;
+  }
   function freshId(prefix = 's-') { const bytes = new Uint8Array(4); crypto.getRandomValues(bytes); return prefix + [...bytes].map(v => v.toString(16).padStart(2, '0')).join(''); }
   const editable = () => config?.can_write === true;
   const dims = () => editing ? draft : config.dimensions;
@@ -98,6 +104,10 @@ document.addEventListener('DOMContentLoaded', () => {
     return dimensions.map(d => ({...(d.id ? {id: d.id} : {}),label: d.label,category: d.category,description: d.description || '',
       sections: (d.sections || []).map(s => ({id: s.id, label: s.label,items: (s.items || []).map(i => ({kind: i.kind,id: i.id,...(i.kind === 'chart' ? {revision: i.revision} : {})}))}))}));
   }
+  function scrollToIndicator() {
+    const anchor = location.hash.slice(1);
+    if (anchor.startsWith('dimension-indicator-')) document.getElementById(anchor)?.scrollIntoView();
+  }
   async function load() {
     const own = ++generation; status('正在读取研究维度…');
     try {
@@ -106,12 +116,13 @@ document.addEventListener('DOMContentLoaded', () => {
         get('period').value = current.period || 'daily';
         if (!get('date').value) get('date').value = current.latest_data_date || current.as_of || '';
         get('date').disabled = true; get('period').disabled = true;
-        render(); status('受限视角 · 仅显示已授权最新观测。'); return;
+        render(); scrollToIndicator(); status('受限视角 · 仅显示已授权最新观测。'); return;
       }
       const loaded = await request('/dimensions');
       if (own !== generation) return;
       config = loaded; get('edit').hidden = !editable(); get('suggest').hidden = !editable();
       render(); await loadData(own);
+      if (own === generation) scrollToIndicator();
     } catch (error) { if (own === generation) status(error.message, true); }
   }
   async function loadData(own = ++generation) {
@@ -194,11 +205,31 @@ document.addEventListener('DOMContentLoaded', () => {
     for (const dim of draft) if ((dim.sections || []).length > 8) warnings.push(`“${dim.label}”有 ${dim.sections.length} 个环节，请删减至8个以内再保存`);
     return warnings;
   }
+  function judgmentReferences(item) {
+    if (config.evidence_available === false || !item.judgment_references?.length) return null;
+    const row = node('footer', 'dimensions-judgment-references');
+    row.append(node('span', '', '研判引用'));
+    const query = new URLSearchParams();
+    if (!initial.restricted && current?.judgment_id) {
+      query.set('judgment_id', current.judgment_id);
+      if (get('date').value) query.set('date', get('date').value);
+    }
+    const path = prefix + '/sn/judgment' + (query.size ? '?' + query : '');
+    for (const reference of item.judgment_references) {
+      const link = node('a', '', reference.label);
+      link.href = path + '#' + encodeURIComponent(reference.anchor);
+      row.append(link);
+    }
+    return row;
+  }
   function renderCard(item) {
     const card = node('article', 'dimensions-card'), body = node(initial.restricted ? 'div' : 'a', 'dimensions-card-main');
     if (!initial.restricted) body.href = prefix + (item.kind === 'chart' ? '/sn/charts/' : '/sn/indicators/') + encodeURIComponent(item.id) + (get('date').value ? '?date=' + get('date').value : '');
     card.dataset.itemId = item.id; body.append(node('h4', '', itemName(item))); card.append(body);
+    if (item.kind === 'indicator') card.id = 'dimension-indicator-' + item.id;
     const info = cardInfo(item); if (info) card.append(info);
+    const references = item.kind === 'indicator' ? judgmentReferences(item) : null;
+    if (references) card.append(references);
     if (item.status === 'unavailable' || item.status === 'missing' || item.reason) { body.append(node('p', 'dimensions-error', item.reason || item.notice || '条目暂不可用')); return card; }
     if (item.kind === 'chart') {
       const plot = node('div', 'dimensions-chart-plot'); body.append(plot);

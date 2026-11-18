@@ -18,7 +18,7 @@ function observations(config) {
     ? {...i,status:'ok',name:'合成图表',definition:{title:'合成图表',time:{mode:'cycle'}},payload:cycle()}
     : {...indicator(i.id),...i,status:'ok',latest:25,date:'2029-09-14',change:1.5,change_pct:.06,direction:'up',baseline:{label:'较 09-07',date:'2029-09-07'},display:{latest:'25',change:'+1.5',change_pct:'+6%'},position:{n:4,rank:4,rank_low:2,text:'近 5 年同期第 2 低'},freshness:{age_days:8,stale:true},points:[{date:'2029-09-07',value:23.5},{date:'2029-09-14',value:25}],...(config.card_overrides || {}),...(config.no_update ? {direction:'no_update',update_status:'no_update',update_notice:'本期无新数据（最新 2029-09-14）'} : {})};
   const dimensions = config.dimensions.map(d => ({...d,summary:{up:config.no_update ? 0 : 1,down:0,flat:0,no_update:config.no_update ? 1 : 0,extreme:1},sections:d.sections.map(s => ({...s,items:s.items.map(observed)}))}));
-  return {as_of:date,latest_data_date:date,period:'weekly',failed:[],warnings:config.warnings || ['history_limited'],history_coverage_limited:config.history_coverage_limited,dimensions};
+  return {as_of:date,latest_data_date:date,period:'weekly',failed:[],warnings:config.warnings || ['history_limited'],history_coverage_limited:config.history_coverage_limited,dimensions,judgment_id:config.judgment_id};
 }
 function html(boot = {}) {
   return render('dimensions.html',{}, {dimension_page:{date,...boot}}).replace('</head>','<script defer src="/static/catalog-client.js"></script></head>');
@@ -38,9 +38,9 @@ except HTTPException as error:
 `],{input:JSON.stringify(input),encoding:'utf8'});
   assert.equal(result.status,0,result.stderr); return JSON.parse(result.stdout);
 }
-async function fixture(browser, config = initial(), boot = {}) {
+async function fixture(browser, config = initial(), boot = {}, pathname = '/sn/dimensions') {
   let stored = structuredClone(config), conflict = false;
-  const view = await open(browser,'/sn/dimensions',html(boot),({path,method,body,reply,url}) => {
+  const view = await open(browser,pathname,html(boot),({path,method,body,reply,url}) => {
     if (path === '/dimensions' && method === 'GET') return reply(stored);
     if (path === '/dimensions' && method === 'PUT') {
       if (conflict) return reply({detail:'配置已更新，请刷新后重试'},409);
@@ -362,12 +362,35 @@ print(env.get_template('base.html').render(nav='dimensions',restricted_view=rest
     assert.equal(await readonly.page.locator('.dimensions-evidence-link').count(),0);
     assert.match(await readonly.page.locator('.dimensions-heading').first().innerText(),/研判依据统计未授权/);
     assert.equal(await readonly.page.locator('.dimensions-card').count(),1); await readonly.close();
+    const referencedConfig = {...initial(true), judgment_id:'42'};
+    referencedConfig.dimensions[0].sections[0].items[0].judgment_references = [
+      {anchor:'judgment-evidence-bull0',label:'多方依据'},
+      {anchor:'judgment-evidence-bear0',label:'空方依据'},
+      {anchor:'judgment-threshold-watch',label:'阈值 <30'},
+      {anchor:'judgment-falsifier-invalidate',label:'证伪 >50·连续2期'},
+      {anchor:'judgment-threshold-watch',label:'待核对 2'}
+    ];
+    referencedConfig.dimensions[0].sections[1].items.push(indicator('kb-2'));
+    const referenced = await fixture(browser,referencedConfig,{},'/sn/dimensions?judgment_id=42#dimension-indicator-kb-1');
+    const references = referenced.page.locator('#dimension-indicator-kb-1 .dimensions-judgment-references');
+    assert.equal(await references.locator('span').innerText(),'研判引用');
+    assert.deepEqual(await references.locator('a').allTextContents(),['多方依据','空方依据','阈值 <30','证伪 >50·连续2期','待核对 2']);
+    assert.deepEqual(await references.locator('a').evaluateAll(links => links.map(link => link.getAttribute('href'))),
+      ['judgment-evidence-bull0','judgment-evidence-bear0','judgment-threshold-watch','judgment-falsifier-invalidate','judgment-threshold-watch']
+        .map(anchor => prefix + '/sn/judgment?judgment_id=42&date=' + date + '#' + anchor));
+    assert.equal(await referenced.page.locator('#dimension-indicator-kb-2 .dimensions-judgment-references').count(),0);
+    assert.equal(referenced.calls.find(call => call.path === '/dimensions/data').url.searchParams.get('judgment_id'),'42');
+    await referenced.close();
     const restrictedConfig = {...initial(true),can_write:false}, restricted = await fixture(browser,restrictedConfig,{restricted:true,config:restrictedConfig,data:{...observations(restrictedConfig),period:'daily'}});
     assert.equal(await restricted.page.locator('#dimensions-date').isDisabled(),true);
     assert.equal(await restricted.page.locator('#dimensions-period').inputValue(),'daily');
     assert.equal(await restricted.page.locator('.dimensions-card a, a.dimensions-card').count(),0);
     assert.equal(await restricted.page.locator('#dimensions-start').isVisible(),false); assert.equal(await restricted.page.locator('#dimensions-template-suggest').isVisible(),false);
     assert.equal(restricted.calls.length,0); await restricted.close();
+    const sharedConfig = {...referencedConfig,can_write:false};
+    const shared = await fixture(browser,sharedConfig,{restricted:true,config:sharedConfig,data:{...observations(sharedConfig),period:'daily'}});
+    assert.equal(await shared.page.locator('#dimension-indicator-kb-1 .dimensions-judgment-references a').first().getAttribute('href'),prefix + '/sn/judgment#judgment-evidence-bull0');
+    assert.equal(shared.calls.length,0); await shared.close();
     console.log('dimensions-ui: passed');
   } finally { await browser.close(); }
 })().catch(error => {console.error(error);process.exitCode=1;});

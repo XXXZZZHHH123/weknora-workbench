@@ -177,6 +177,48 @@ def test_each_batch_budget_does_not_shrink_history_with_page_size(chart_client):
     assert len(reads) == 30
 
 
+def test_saved_judgment_labels_leave_dimension_route_observation_budget_unchanged(chart_client):
+    from tin.integration.workbench_scope import isolated_session_factory
+    from tin.judgments.service import save_version
+    from tin.schemas.judgment import JudgmentIn
+    from tin.web import dimension_board
+    from tests.test_workbench_sources_v2 import WB
+
+    client, state = chart_client
+    state.app.include_router(dimension_board.router)
+    config = {'revision': 0, 'dimensions': dimensions(
+        {'kind': 'indicator', 'id': SID}, {'kind': 'indicator', 'id': OTHER})}
+    assert client.put('/api/sn/dimensions', json=config).status_code == 200
+    state.requests.clear()
+    path = '/api/sn/dimensions/data?date=2023-01-04'
+    baseline = client.get(path)
+    assert baseline.status_code == 200, baseline.text
+    requests = state.requests[:]
+    assert any(body.get('points_per_series') for _, body in requests)
+
+    with isolated_session_factory(17, WB)() as session:
+        session.info.update(weknora_user_id='first', workbench_id=WB,
+                            knowledge_facts=True, knowledge_facts_catalog=state.fields)
+        judgment = save_version(session, JudgmentIn.model_validate({
+            'variety': 'TEST', 'author': 'fixture', 'written_at': '2023-01-04',
+            'contradiction': {'bull': {'evidence': [{'desc': '合成证据', 'series_id': SID}]}},
+            'thresholds': [{'id': 'other-rule', 'name': '未绑定至维度的阈值', 'series_id': THIRD,
+                            'operator': '<', 'value': 20, 'type': '观察位', 'horizon': '短期'}],
+        }), actor='fixture')
+        identifier = str(judgment.id)
+        session.commit()
+    state.requests.clear()
+    response = client.get(path)
+    assert response.status_code == 200, response.text
+    output = response.json()
+    assert output['judgment_id'] == identifier
+    referenced, unused = output['dimensions'][0]['sections'][0]['items']
+    assert referenced['judgment_references'] == [{'anchor': 'judgment-evidence-bull0', 'label': '多方依据'}]
+    assert 'judgment_references' not in unused
+    assert state.requests == requests
+    assert output['point_budget'] == baseline.json()['point_budget']
+
+
 @pytest.mark.parametrize('frequency,interval', [('日度', 1), ('weekly', 7), ('月', 30),
                                                ('季度', 91), ('年', 365), ('未知', 1)])
 def test_frequency_sized_reads_retain_five_real_comparable_cycles(chart_client, frequency, interval):
