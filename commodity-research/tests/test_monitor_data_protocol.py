@@ -13,9 +13,10 @@ import pytest
 from tin.config import settings
 from tin.integration.identity import current_identity
 from tin.integration.workbench_scope import WorkbenchScope, artifact_session, current_workbench
-from tin.web import monitors
+from tin.web import analysis_jobs, judgment_jobs, monitors
 from tin.web.monitor_data import backtest_monitor
 from tests.chart_fixtures import SID, OTHER
+from tests.test_monitors import draft_request
 from tests.test_workbench_sources_v2 import IDENTITY, WB, source
 
 
@@ -98,7 +99,7 @@ def protocol_client(tmp_path, monkeypatch, validate_request):
     direct = source(1)
     scope = WorkbenchScope(IDENTITY, WB, '', 0,
         {'workspace_mode': 'isolated', 'can_edit': True, 'can_read_source': True},
-        authorization='synthetic-protocol-fixture', scope_version=2, sources_revision=7,
+        authorization='Bearer synthetic-protocol-fixture', scope_version=2, sources_revision=7,
         sources=(direct,), view_modules=('home',))
     state = SimpleNamespace(requests=[], observations={SID: [], OTHER: []},
                             frequencies={SID: '日', OTHER: '日'}, on_read=None, reads=0, scope=scope,
@@ -164,8 +165,12 @@ def protocol_client(tmp_path, monkeypatch, validate_request):
 
     monkeypatch.setattr('tin.provenance.bridge.structured_request', transport)
     monkeypatch.setattr('tin.web.monitor_data.cutoff', lambda: END)
+    async def resolve(*args):
+        return scope
+    monkeypatch.setattr(judgment_jobs, 'resolve_workbench', resolve)
     app = FastAPI()
     app.include_router(monitors.router)
+    app.include_router(analysis_jobs.router)
 
     @app.middleware('http')
     async def scoped(request, call_next):
@@ -582,7 +587,7 @@ def test_candidate_coverage_does_not_request_invalid_observation_order(protocol_
     state.observations[SID] = state.observations[OTHER] = observation_window(size=40)
     state.read_error = lambda body, count: (409, '未确认日期不能确定观测顺序') if body.get('include_invalid') else None
     offer_protocol_draft(monkeypatch)
-    response = client.post(URL + '/draft', json={'sentence': '隔离协议字段增加时提醒', 'model_id': 'fixture'})
+    response = draft_request(client, {'sentence': '隔离协议字段增加时提醒', 'model_id': 'fixture'})
     assert response.status_code == 200, response.text
     draft = response.json()
     assert draft['rules'][0]['series_id'] == SID
@@ -604,7 +609,7 @@ def test_failed_candidate_coverage_keeps_draft_and_candidate_selectable(
     detail = '所选指标含未确认日期，请先核对原表日期；' + '覆盖读取的可读原因' * 30
     state.read_error = lambda body, count: (status, detail) if SID in body['series_ids'] else None
     offer_protocol_draft(monkeypatch)
-    response = client.post(URL + '/draft', json={'sentence': '隔离协议字段增加时提醒', 'model_id': 'fixture'})
+    response = draft_request(client, {'sentence': '隔离协议字段增加时提醒', 'model_id': 'fixture'})
     assert response.status_code == 200, response.text
     draft = response.json()
     candidates = {item['series_id']: item for item in draft['candidates']}

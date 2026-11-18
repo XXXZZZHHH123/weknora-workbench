@@ -63,6 +63,8 @@
   <label class="dimensions-model-label">平台模型 <select id="dimensions-model" disabled><option value="">正在读取模型…</option></select></label>
   <div id="dimensions-source-controls" hidden><p class="dimensions-muted">选择本研究台已授权的 1–3 份往期周报或资料。</p><label><span class="sr-only">搜索往期周报</span><input id="dimensions-source-search" type="search" placeholder="搜索往期周报或资料"></label><div id="dimensions-source-list" class="dimensions-choice-list"></div><button id="dimensions-source-more" type="button" hidden>更多资料</button></div>
   <button id="dimensions-model-run" type="button" disabled>生成建议</button>
+  <span id="dimensions-inference-restore" hidden><button id="dimensions-inference-result" type="button" hidden>取回上次归纳</button></span>
+  <span id="dimensions-suggestions-restore" hidden><button id="dimensions-suggestions-result" type="button" hidden>取回上次建议</button></span>
   <p id="dimensions-model-status" class="dimensions-muted" role="status" aria-live="polite"></p>
   <div id="dimensions-suggestions" class="dimensions-choice-list"></div>
   <footer><button id="dimensions-model-close" type="button">关闭</button><button id="dimensions-model-adopt" class="dimensions-primary" type="button" disabled>采用所选到编辑草稿</button></footer>

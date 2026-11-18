@@ -1,5 +1,5 @@
 /* The actual report template and shipped editor, exercised without a running service. */
-const {assert, render, launch, open, prefix} = require('./chart-ui-fixture.cjs');
+const {assert, render, launch, open, origin, prefix} = require('./chart-ui-fixture.cjs');
 const day = '2029-09-15';
 const longName = '备注：合成数据中的原表说明与指标口径'.repeat(12);
 const dimensions = [{id: 'custom-demand', label: '下游跟踪'}, {id: 'custom-stock', label: '库存观察'}, {id: 'custom-empty', label: '备选维度'}];
@@ -30,16 +30,26 @@ const html = (config = {}, value = report(), period = 'weekly') => render('repor
 (async () => {
   const browser = await launch();
   try {
-    let saved, generated = 0, received;
+    let saved, generated = 0, received, released = false;
+    const jobID = () => 'report-job-fixture-00' + generated;
+    const metadata = state => ({id: jobID(), purpose: 'report_dimension_draft', workbench_id: 'fixture',
+      state, phase_label: '正在起草', message: state === 'failed' ? '合成模型调用失败' : undefined,
+      context: {day, period: 'weekly'}});
     const fixture = await open(browser, prefix + '/sn/reports', html(), async ({path, body, reply}) => {
       if (path === '/research-references') return reply({items: []});
       if (path === '/judgment/models') return reply({models: [{id: 'synthetic', name: '合成模型'}]});
       if (path.startsWith('/reports/figures/')) return reply({figure, status: 'unavailable', notice: '隔离夹具未绘图'});
       if (path.endsWith('/draft-dimensions')) {
         received = body; generated++;
-        if (generated === 2) return reply({dimensions: [], summary: {text: '', status: 'numbers_unverified', reason: '总体数字待核对', suggestion: '合成数字999。'}});
-        if (generated === 3) return reply({detail: '合成模型调用失败'}, 503);
-        return reply({dimensions: [
+        return reply(metadata('queued'), 202);
+      }
+      if (path === '/analysis-jobs/' + jobID()) {
+        return reply(metadata(generated === 3 ? 'failed' : generated === 4 && !released ? 'running' : 'succeeded'));
+      }
+      if (path === '/analysis-jobs/' + jobID() + '/result') {
+        const ready = {request: received, job: metadata('succeeded')};
+        if (generated === 2) return reply({...ready, dimensions: [], summary: {text: '', status: 'numbers_unverified', reason: '总体数字待核对', suggestion: '合成数字999。'}});
+        return reply({...ready, dimensions: [
           {id: 'custom-demand', text: '合成指标变为12吨，较上期增加2吨，建议继续观察。', impact: 'neutral', status: 'ok'},
           {id: 'custom-stock', text: '', suggestion: '虚构数字999', impact: 'bullish', status: 'numbers_unverified', reason: '数字待核对'}
         ], figures: [{key: figure.key, text: '合成图结论草稿', status: 'ok'}],
@@ -113,8 +123,17 @@ const html = (config = {}, value = report(), period = 'weekly') => render('repor
     await p.getByRole('button', {name: '让模型起草', exact: true}).click();
     await p.locator('#report-edit-status').filter({hasText: '合成模型调用失败'}).waitFor();
     assert.match(await p.getByLabel('下游跟踪的本期结论').inputValue(), /变为12吨/, '失败保留当前编辑');
-    await p.getByLabel('备选维度的本期结论').fill('研究员新增的一句话');
+    await p.getByRole('button', {name: '让模型起草', exact: true}).click();
+    await p.locator('#report-edit-status[data-analysis-busy=true]').filter({hasText: '可关闭窗口'}).waitFor();
+    assert.equal(await p.locator('#report-draft-generate').isDisabled(), true);
     await summaryInput.fill('研究员确认总体结论。');
+    await p.locator('#report-edit-close').click();
+    released = true;
+    await p.locator('#report-edit-open').click();
+    await p.locator('#report-summary-draft-status').filter({hasText: '已保留起草期间修改'}).waitFor();
+    assert.equal(await summaryInput.inputValue(), '研究员确认总体结论。');
+    assert.equal(saved, undefined, '关闭后取回报告草稿不会提交保存');
+    await p.getByLabel('备选维度的本期结论').fill('研究员新增的一句话');
     await p.getByLabel('备选维度的影响').selectOption('neutral');
     await p.getByLabel('合成证据图的一句结论').fill('研究员修订图结论');
     await p.locator('#report-edit-save').click();
@@ -125,6 +144,11 @@ const html = (config = {}, value = report(), period = 'weekly') => render('repor
     await p.locator('#report-edit-cancel').click(); await p.locator('#report-edit-open').click();
     assert.equal(await p.getByLabel('备选维度的本期结论').inputValue(), '', '取消后重新打开恢复已保存内容');
     assert.equal(await summaryInput.inputValue(), '旧草稿导语');
+    const saveCalls = fixture.calls.filter(call => call.path.startsWith('/report-drafts')).length;
+    await p.goto(origin + prefix + '/sn/reports?analysis_job=' + jobID());
+    await p.locator('#report-edit-status').filter({hasText: '已填入 3 条草稿'}).waitFor();
+    assert.equal(await summaryInput.inputValue(), '本周维持观察。后续关注下游能否改善。');
+    assert.equal(fixture.calls.filter(call => call.path.startsWith('/report-drafts')).length, saveCalls);
     await fixture.close();
     const legacy = report();
     delete legacy.panels.summary.text;

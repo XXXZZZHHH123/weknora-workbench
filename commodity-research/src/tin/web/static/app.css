@@ -613,3 +613,19 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
 .rw-btn.dg-delete-btn{color:var(--text-muted)}.rw-btn.dg-delete-btn:hover:not(:disabled){color:var(--alert)}
 .judgment-research-header.rw-page-head{padding-bottom:0;border-bottom:0;align-items:flex-start}
 .judgment-section-title{font-size:15px;font-weight:650;margin:0}
+
+[data-analysis-busy=true]::before {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--line);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  margin-right: 7px;
+  animation: research-analysis-spin .7s linear infinite;
+}
+@keyframes research-analysis-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  [data-analysis-busy=true]::before { animation: none; }
+}

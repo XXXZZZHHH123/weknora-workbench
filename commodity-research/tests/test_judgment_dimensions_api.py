@@ -6,6 +6,7 @@ from fastapi import HTTPException
 import pytest
 from sqlalchemy import select
 
+from tests.analysis_job_fixtures import detached_loop, finished_job
 from tests.test_judgment_generation import generator, generate, apply, endpoint, rows
 from tests.test_judgment_review import update, all_items
 from tests.test_judgment_panels import panels, seed
@@ -53,8 +54,17 @@ def model_suggestions(monkeypatch, *, dimension='inventory', failure=False):
 
 
 def suggest(client, headers, row):
-    return client.post(endpoint('/dimension-suggestions'), headers=headers,
+    return client.post(endpoint('/dimension-suggestions'), headers={**headers, 'Idempotency-Key': 'dimension-suggestion-fixture'},
         json={'judgment_id': row.id, 'version': row.version, 'model_id': 'synthetic-chat'})
+
+
+def finish_suggestion(client, headers, source):
+    with detached_loop(client):
+        response = suggest(client, headers, source)
+        assert response.status_code == 202, response.text
+        value = response.json()
+        assert value['phase'] == 'queued' and value['purpose'] == 'judgment_dimensions'
+        return finished_job(client, page(FIRST, '/api/sn/analysis-jobs/' + value['id']), headers)
 
 
 @pytest.mark.parametrize('custom', [False, True])
@@ -65,7 +75,7 @@ def test_suggestions_are_model_only_audited_and_unsaved_until_explicit_dimension
     identifier = 'desk-flow' if custom else 'inventory'
     calls = model_suggestions(monkeypatch, dimension=identifier)
     before = to_payload(original).model_dump(mode='json')
-    response = suggest(client, headers, original)
+    _, response = finish_suggestion(client, headers, original)
     assert response.status_code == 200, response.text
     suggestions = response.json()['suggestions']
     assert all(item['dimension'] == identifier for item in suggestions)
@@ -75,7 +85,7 @@ def test_suggestions_are_model_only_audited_and_unsaved_until_explicit_dimension
     with isolated_session_factory(17, FIRST)() as session:
         audit = session.scalar(select(AuditLog).where(AuditLog.action == '研判维度建议'))
         assert audit.detail['status'] == 'succeeded' and audit.detail['model_id'] == 'synthetic-chat'
-        assert audit.detail['suggestions'] == suggestions
+        assert audit.detail['suggestion_count'] == len(suggestions) and 'suggestions' not in audit.detail
     edits = [{key: value for key, value in item.items() if key != 'reason'} for item in suggestions]
     result = client.post(endpoint('/dimensions'), headers=headers,
         json={'judgment_id': original.id, 'base_version': original.version, 'items': edits})
@@ -93,7 +103,7 @@ def test_suggestions_are_model_only_audited_and_unsaved_until_explicit_dimension
 def test_invalid_model_dimension_is_unannotated_without_keyword_fallback(generator, monkeypatch):
     client, headers, original = saved(generator)
     model_suggestions(monkeypatch, dimension='not-a-current-dimension')
-    response = suggest(client, headers, original)
+    _, response = finish_suggestion(client, headers, original)
     assert response.status_code == 200, response.text
     assert all(item['dimension'] is None for item in response.json()['suggestions'])
     assert len(rows()) == 1
@@ -102,8 +112,8 @@ def test_invalid_model_dimension_is_unannotated_without_keyword_fallback(generat
 def test_model_failure_is_reported_and_audited_without_saving_or_fixed_classification(generator, monkeypatch):
     client, headers, original = saved(generator)
     model_suggestions(monkeypatch, failure=True)
-    response = suggest(client, headers, original)
-    assert response.status_code == 503 and response.json()['detail'] == 'Synthetic model failure'
+    status, response = finish_suggestion(client, headers, original)
+    assert status['state'] == 'failed' and response.status_code == 409 and response.json()['detail'] == 'Synthetic model failure'
     assert len(rows()) == 1
     with isolated_session_factory(17, FIRST)() as session:
         audit = session.scalar(select(AuditLog).where(AuditLog.action == '研判维度建议'))
@@ -127,8 +137,8 @@ def test_suggestion_protocol_refuses_content_and_mismatched_target_list(generato
     async def complete(*args):
         return value
     monkeypatch.setattr(generation, 'completion', complete)
-    response = suggest(client, headers, original)
-    assert response.status_code == 422, response.text
+    status, response = finish_suggestion(client, headers, original)
+    assert status['state'] == 'failed' and response.status_code == 409, response.text
     assert len(rows()) == 1
 
 

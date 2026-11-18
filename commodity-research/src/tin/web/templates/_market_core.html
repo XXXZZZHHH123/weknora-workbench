@@ -1,7 +1,7 @@
 <section id="market-core" class="space-y-3" aria-labelledby="market-core-title">
   <div class="market-core-heading">
     <div><h2 id="market-core-title">核心关注 <span id="market-core-count" class="market-core-muted">{{ cards | length }}</span></h2></div>
-    {% if not restricted_view %}<button id="market-core-open" type="button" class="market-core-button" aria-haspopup="dialog">选择与排序</button>{% endif %}
+    {% if not restricted_view %}<div>{% if market_catalog.can_edit_shared %}<button id="market-core-suggestions-manage" type="button" class="market-core-button" aria-haspopup="dialog"{% if not cards %} hidden{% endif %}>生成建议</button>{% endif %}<button id="market-core-open" type="button" class="market-core-button" aria-haspopup="dialog">选择与排序</button></div>{% endif %}
   </div>
   {% if restricted_view and restricted_data.core_charts_hidden %}<p class="market-core-notice">图表条目暂不对受限视角开放</p>{% endif %}
   <p id="market-core-notice" class="market-core-notice" role="status" hidden></p>
@@ -17,7 +17,7 @@
     <p>暂无核心关注</p>
     {% if market_catalog.has_selectable_items is sameas false %}{% include '_source_status_hint.html' %}{% endif %}
     {% endif %}
-    <button id="market-core-suggestions-open" type="button" class="market-core-button market-core-primary" aria-haspopup="dialog">生成建议</button>
+    {% if market_catalog.can_edit_shared %}<button id="market-core-suggestions-open" type="button" class="market-core-button market-core-primary" aria-haspopup="dialog">生成建议</button>{% endif %}
     {% if market_catalog.has_selectable_items %}<button id="market-core-empty-open" type="button" class="market-core-button" aria-haspopup="dialog">选择与排序</button>{% endif %}
     {% endif %}
   </div>
@@ -38,6 +38,7 @@
   <h2 id="market-core-suggestions-title">生成核心关注建议</h2>
   <label class="market-core-source"><span>平台模型</span><select id="market-core-suggestions-model" disabled><option value="">正在读取模型…</option></select></label>
   <button id="market-core-suggestions-run" type="button" class="market-core-button" disabled>生成建议</button>
+  <button id="market-core-suggestions-restore" type="button" class="market-core-button" hidden>查看后台建议</button>
   <p id="market-core-suggestions-status" class="market-core-notice" role="status"></p>
   <div id="market-core-suggestions-list" class="market-core-choices market-core-suggestions-list"></div>
   <footer class="market-core-footer"><button id="market-core-suggestions-close" type="button" class="market-core-button">关闭</button><button id="market-core-suggestions-adopt" type="button" class="market-core-button market-core-primary" disabled>采用所选</button></footer>

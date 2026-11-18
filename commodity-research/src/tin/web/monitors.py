@@ -2,6 +2,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
+import re
 from typing import Literal
 from uuid import uuid4, uuid5, NAMESPACE_URL
 
@@ -15,12 +16,14 @@ from starlette.concurrency import run_in_threadpool
 from tin.config import SHANGHAI
 from tin.integration import workbench_scope
 from tin.models.workbench import WorkbenchArtifact, WorkbenchArtifactRevision
+from tin.web import analysis_jobs
 from tin.web.affairs import affairs_scope
 from tin.web.workbench_artifacts import record_revision
 
 router = APIRouter(prefix='/api/sn/monitors')
 MODULE = 'monitors'
 DRAFT_MODULE = 'monitor_drafts'
+DRAFT_PURPOSE = 'monitor_draft'
 STATE_MODULE = 'monitor_checks'
 MAX_MONITORS = 100
 
@@ -78,6 +81,14 @@ class BacktestInput(MonitorInput):
 class DraftInput(Strict):
     sentence: str = Field(min_length=1, max_length=4000, strict=True)
     model_id: str = Field(min_length=1, max_length=128, strict=True)
+    monitor_id: str | None = Field(default=None, min_length=1, max_length=64, strict=True)
+    revision: int | None = Field(default=None, ge=1, strict=True)
+
+    @model_validator(mode='after')
+    def target_revision(self):
+        if (self.monitor_id is None) != (self.revision is None):
+            raise ValueError('修订监测需提供记录与版本')
+        return self
 
 
 class DraftRule(Strict):
@@ -232,10 +243,16 @@ def _validate_catalog(scope, rules):
 def validate_input(scope, body):
     rules = [rule.model_dump() for rule in body.rules]
     with workbench_scope.artifact_session(scope) as session:
-        draft = _owned(session, scope, body.draft_id, DRAFT_MODULE)
-        saved = _body(draft)
-        if datetime.now(timezone.utc) - draft.created_at > timedelta(days=1):
-            raise HTTPException(409, '草稿候选已超过24小时，请重新生成以核对目录')
+        if re.fullmatch('[0-9a-f]{32}', body.draft_id):
+            record = analysis_jobs.owned_record(session, scope, body.draft_id, DRAFT_PURPOSE)
+            saved = record.config.get('result')
+            if not isinstance(saved, dict):
+                raise HTTPException(409, '请等待监测草稿生成后再核对')
+        else:
+            draft = _owned(session, scope, body.draft_id, DRAFT_MODULE)
+            saved = _body(draft)
+            if datetime.now(timezone.utc) - draft.created_at > timedelta(days=1):
+                raise HTTPException(409, '草稿候选已超过24小时，请重新生成以核对目录')
         if saved.get('sentence') != body.sentence:
             raise HTTPException(422, '原话已改变，请重新生成草稿')
         allowed = {row['series_id'] for row in saved.get('candidates', [])}
@@ -340,9 +357,11 @@ def _candidate_metadata(scope, candidates, rules):
             'overlap': rule_overlap(rules, coverage)}
 
 
-async def draft_from_text(scope, sentence, model_id):
+async def draft_from_text(scope, sentence, model_id, progress):
     from tin.web import judgment_recall, strategy_text
+    await progress('loading_catalog')
     dimensions, catalog = await run_in_threadpool(_draft_context, scope)
+    await progress('analyzing')
     first = await strategy_text.completion(scope, model_id, structure_prompt(sentence, dimensions), purpose='monitor_draft')
     try:
         output = DraftOutput.model_validate(first)
@@ -358,7 +377,9 @@ async def draft_from_text(scope, sentence, model_id):
     by_id = {row['id']: row for row in catalog}
     prompt, refs = judgment_recall.pick_request(sentence, groups, by_id)
     prompt += '\n每个条目必须只选一个首选候选，不得输出实际ID；返回{"picks":{"条目id":["候选ref"]}}。没有一致口径请填空数组，不得猜测。'
+    await progress('selecting')
     second = await strategy_text.completion(scope, model_id, prompt, purpose='monitor_selection')
+    await progress('validating')
     picks = second.get('picks') if isinstance(second, dict) else None
     if not isinstance(picks, dict) or set(picks) != {item['id'] for item in inventory['items']}:
         raise HTTPException(422, '模型未返回完整有效的指标首选，请重试')
@@ -379,13 +400,38 @@ async def draft_from_text(scope, sentence, model_id):
     result = {'title': output.title, 'sentence': sentence, 'logic': output.logic,
               'rules': rules, 'confirmations': output.confirmations, 'candidates': candidates}
     result.update(await run_in_threadpool(_candidate_metadata, scope, candidates, rules))
-    with workbench_scope.artifact_session(scope) as session:
-        row = _new_artifact(scope, DRAFT_MODULE, output.title,
-            {**result, 'workbench_id': scope.workbench_id})
-        session.add(row)
-        session.commit()
-        result['draft_id'] = row.id
     return result
+
+
+def verify_monitor_target(scope, body):
+    if body.get('monitor_id') is None:
+        return
+    with workbench_scope.artifact_session(scope) as session:
+        row = _owned(session, scope, body['monitor_id'])
+        if row.revision != body['revision']:
+            raise HTTPException(409, '监测已更新，请刷新后重新生成草稿')
+
+
+async def run_draft(scope, body, progress, job_id):
+    try:
+        result = await asyncio.wait_for(
+            draft_from_text(scope, body['sentence'], body['model_id'], progress), timeout=300)
+    except TimeoutError:
+        raise HTTPException(503, '模型生成监测草稿超时，请稍后重试') from None
+    return {**result, 'draft_id': job_id}
+
+
+async def verify_draft_result(scope, body, result):
+    await run_in_threadpool(verify_monitor_target, scope, body)
+    try:
+        await run_in_threadpool(_validate_catalog, scope, result['candidates'])
+    except HTTPException as exc:
+        if exc.status_code == 422:
+            raise HTTPException(409, '监测候选指标已变化，请重新生成草稿') from None
+        raise
+
+
+analysis_jobs.result_checks[DRAFT_PURPOSE] = verify_draft_result
 
 
 def backtest(scope, rules, logic, *, start=None, end=None):
@@ -510,16 +556,16 @@ def list_route():
     return list_monitors(require_scope())
 
 
-@router.post('/draft')
+@router.post('/draft', status_code=202)
 async def draft_route(request: Request):
     scope = require_scope(write=True)
     body = await read_body(request, DraftInput)
     if not body.sentence.strip() or not body.model_id.strip():
         raise HTTPException(422, '请填写监测原话并选择模型')
-    try:
-        return await asyncio.wait_for(draft_from_text(scope, body.sentence.strip(), body.model_id), timeout=300)
-    except TimeoutError:
-        raise HTTPException(503, '模型生成监测草稿超时，请稍后重试') from None
+    payload = body.model_dump(exclude_none=True)
+    payload['sentence'] = body.sentence.strip()
+    await run_in_threadpool(verify_monitor_target, scope, payload)
+    return await analysis_jobs.start_job(scope, DRAFT_PURPOSE, payload, request.headers.get('idempotency-key'), run_draft)
 
 
 @router.post('/backtest')

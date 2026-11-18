@@ -23,6 +23,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   function syncCount() {
     get('count').textContent = String(selected.length); get('empty').hidden = !!selected.length;
+    const manageSuggestions = get('suggestions-manage');
+    if (manageSuggestions) manageSuggestions.hidden = !selected.length;
     const total = get('total'); if (total) total.textContent = String(selected.length);
   }
   const observer = 'IntersectionObserver' in window ? new IntersectionObserver(entries => {
@@ -176,43 +178,80 @@ document.addEventListener('DOMContentLoaded', () => {
     finally { get('save').disabled = !metadata.can_edit_shared; }
   });
   const suggestions = get('suggestions-dialog'), model = get('suggestions-model'), run = get('suggestions-run'), adopt = get('suggestions-adopt');
-  let models, running = false, suggested = [];
+  let models, running = false, suggested = [], suggestedJobId;
   const suggestionStatus = message => { get('suggestions-status').textContent = message; };
-  function syncSuggestions() { run.disabled = running || !model.value; adopt.disabled = running || !get('suggestions-list').querySelector('input:checked') || !metadata.can_edit_shared; }
-  get('suggestions-open')?.addEventListener('click', async () => {
-    suggestions.showModal();
+  const checkedSuggestions = () => [...get('suggestions-list').querySelectorAll('input:checked')].map(input => input.value);
+  function syncSuggestions() {
+    run.disabled = suggestionJob.busy || running || !model.value;
+    adopt.disabled = running || !checkedSuggestions().length || !metadata.can_edit_shared;
+  }
+  async function openSuggestions() {
+    if (!suggestions.open) suggestions.showModal();
+    void suggestionJob.discover();
     if (!models) {
       model.disabled = true;
       try {
         const data = await request('/strategies/models'); models = data.models || []; model.replaceChildren();
         models.forEach(item => model.append(new Option(item.name, item.id)));
-        if (!models.length) { model.append(new Option('暂无可用通用模型', '')); suggestionStatus('当前空间没有可用的通用模型，请先在模型设置中配置。'); }
-        else { model.disabled = false; try { const remembered = localStorage.getItem('research-strategy-text-model'); if (models.some(item => item.id === remembered)) model.value = remembered; } catch (_) {} }
-      } catch (error) { suggestionStatus('模型列表未读取：' + error.message); }
+        if (!models.length) {
+          model.append(new Option('暂无可用通用模型', ''));
+          if (!suggestionJob.busy) suggestionStatus('当前空间没有可用的通用模型，请先在模型设置中配置。');
+        } else {
+          model.disabled = false;
+          try { const remembered = localStorage.getItem('research-strategy-text-model'); if (models.some(item => item.id === remembered)) model.value = remembered; } catch (_) {}
+        }
+      } catch (error) { if (!suggestionJob.busy) suggestionStatus('模型列表未读取：' + error.message); }
     }
     syncSuggestions();
-  });
-  model.addEventListener('change', () => { try { localStorage.setItem('research-strategy-text-model', model.value); } catch (_) {} syncSuggestions(); });
-  get('suggestions-close').addEventListener('click', () => suggestions.close());
-  run.addEventListener('click', async () => {
-    if (running || !model.value) return; running = true; suggested = []; get('suggestions-list').replaceChildren(); syncSuggestions(); suggestionStatus('正在根据研究框架核对工作表，再从真实字段中生成建议…');
-    try {
-      const data = await request('/market/core/suggestions', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({model_id: model.value})});
+  }
+  const restore = get('suggestions-restore');
+  get('suggestions-open')?.addEventListener('click', openSuggestions);
+  get('suggestions-manage')?.addEventListener('click', openSuggestions);
+  const suggestionJob = ResearchAnalysisJobs.create({
+    purpose: 'focus_suggestions',
+    button: run,
+    status: get('suggestions-status'),
+    restoreButton: restore,
+    disabled: () => running || !model.value,
+    isOpen: () => suggestions.open,
+    snapshot: () => [selected, checkedSuggestions()],
+    present(data, {restored}) {
+      if (restored && suggested.length !== checkedSuggestions().length) {
+        suggestionStatus('建议已生成，保留研究员当前的勾选。'); return;
+      }
       suggested = data.items || [];
+      suggestedJobId = data.job.id;
+      const list = get('suggestions-list'); list.replaceChildren();
       for (const row of suggested) {
         catalog.set(row.series_id, {series_id: row.series_id, name: row.name || row.series_id, unit: row.unit, source: row.sheet});
         const label = document.createElement('label'), checkbox = document.createElement('input'), content = document.createElement('span'), name = document.createElement('b'), reason = document.createElement('small');
         checkbox.type = 'checkbox'; checkbox.value = row.series_id; checkbox.checked = true; checkbox.addEventListener('change', syncSuggestions);
-        name.textContent = `${row.group} · ${row.name || row.series_id}`; reason.textContent = row.reason; content.append(name, reason); label.append(checkbox, content); get('suggestions-list').append(label);
+        name.textContent = `${row.group} · ${row.name || row.series_id}`; reason.textContent = row.reason; content.append(name, reason); label.append(checkbox, content); list.append(label);
       }
       suggestionStatus(data.notice || (suggested.length ? '请核对分组和理由，勾选后采用。' : '模型未给出可采用建议。'));
-    } catch (error) { suggestionStatus(error.message); }
-    finally { running = false; syncSuggestions(); }
+      syncSuggestions();
+    },
+  });
+  model.addEventListener('change', () => { try { localStorage.setItem('research-strategy-text-model', model.value); } catch (_) {} syncSuggestions(); });
+  get('suggestions-close').addEventListener('click', () => suggestions.close());
+  run.addEventListener('click', () => suggestionJob.submit('/api/sn/market/core/suggestions', {model_id: model.value}));
+  if (metadata.can_edit_shared) void ResearchAnalysisJobs.requested('focus_suggestions').then(job => {
+    if (!job) return;
+    void openSuggestions();
+    return suggestionJob.restore(job.id, {explicit: true});
   });
   adopt.addEventListener('click', async () => {
-    const ids = new Set([...get('suggestions-list').querySelectorAll('input:checked')].map(input => input.value)); if (!ids.size || running) return;
+    const ids = new Set(checkedSuggestions()); if (!ids.size || running) return;
     running = true; syncSuggestions();
-    try { await saveItems(suggested.filter(row => ids.has(row.series_id)).map(row => ({kind: 'indicator', id: row.series_id}))); suggestions.close(); }
+    try {
+      await saveItems(suggested.filter(row => ids.has(row.series_id)).map(row => ({kind: 'indicator', id: row.series_id})));
+      const url = new URL(location.href);
+      if (url.searchParams.get('analysis_job') === suggestedJobId) {
+        url.searchParams.delete('analysis_job');
+        history.replaceState(history.state, '', url);
+      }
+      suggestions.close();
+    }
     catch (error) { suggestionStatus(error.message); }
     finally { running = false; syncSuggestions(); }
   });

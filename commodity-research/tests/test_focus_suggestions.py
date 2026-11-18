@@ -10,8 +10,11 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+from tin.config import settings
+from tin.integration.identity import Identity
+from tin.integration.workbench_scope import WorkbenchScope, current_workbench
 from tin.models import LlmCall
-from tin.web import focus_suggestions as suggestions, strategy_text
+from tin.web import analysis_jobs, focus_suggestions as suggestions, judgment_jobs, strategy_text
 from tin.web.diagram_outline import outline_prompt
 from tin.web.research_framework import RESEARCH_FRAMEWORK, RESEARCH_GROUPS
 
@@ -158,29 +161,67 @@ def test_empty_model_worksheet_selection_does_not_fall_back_or_make_second_call(
     assert len(calls) == 1 and result['items'] == [] and '未使用固定列表' in result['notice']
 
 
-def test_endpoint_requires_platform_model_and_writable_unrestricted_source_scope(monkeypatch):
+def test_endpoint_requires_platform_model_and_writable_unrestricted_source_scope(monkeypatch, tmp_path):
     app = FastAPI()
     app.include_router(suggestions.router)
-    active = [scope()]
+    app.include_router(analysis_jobs.router)
+    valid = WorkbenchScope(Identity('fixture', '', 'Fixture', 7, 'owner'),
+        '10000000-0000-4000-8000-000000000124', 'fixture-kb', 7,
+        {'workspace_mode': 'isolated', 'can_edit': True}, 'Bearer fixture', view_modules=('market',))
+    active = [valid]
     monkeypatch.setattr(suggestions, 'current_workbench', SimpleNamespace(get=lambda: active[0]))
-
-    async def generate(active, model_id):
-        return {'items': [choice()], 'model_id': model_id}
-
-    monkeypatch.setattr(suggestions, 'generate_suggestions', generate)
     monkeypatch.setattr(suggestions, 'require_shared_write', lambda active: None)
+    monkeypatch.setattr(settings, 'data_dir', tmp_path)
+    release = None
+    version = ['initial']
+    async def resolve(*args):
+        return active[0]
+    async def generate(active, model_id, progress):
+        await progress('analyzing')
+        await release.wait()
+        return {'items': [choice()], 'model_id': model_id, '_catalog_version': 'initial'}
+    monkeypatch.setattr(judgment_jobs, 'resolve_workbench', resolve)
+    monkeypatch.setattr(suggestions, 'generate_suggestions', generate)
+    monkeypatch.setattr(suggestions, 'catalog_snapshot', lambda scope: {'version': version[0]})
     path = '/api/sn/market/core/suggestions'
 
     async def check():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
-            assert (await client.post(path, json={})).status_code == 422
-            assert (await client.post(path, json={'model_id': 'platform-model', 'api_key': 'forbidden'})).status_code == 422
-            response = await client.post(path, json={'model_id': 'platform-model'})
-            assert response.status_code == 200 and response.json()['model_id'] == 'platform-model'
-            for denied in (scope(restricted=True), scope(metadata={'can_read_source': False}),
-                           scope(identity=SimpleNamespace(can_write=False)), scope(authorization='')):
-                active[0] = denied
-                assert (await client.post(path, json={'model_id': 'platform-model'})).status_code == 403
+        nonlocal release
+        release = asyncio.Event()
+        token = current_workbench.set(valid)
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+                assert (await client.post(path, json={})).status_code == 422
+                assert (await client.post(path, json={'model_id': 'platform-model', 'api_key': 'forbidden'})).status_code == 422
+                response = await client.post(path, json={'model_id': 'platform-model'},
+                    headers={'Idempotency-Key': 'focus-start-request'})
+                assert response.status_code == 202, response.text
+                job = response.json()
+                assert job['purpose'] == 'focus_suggestions' and job['phase'] == 'queued'
+                job_path = '/api/sn/analysis-jobs/' + job['id']
+                for target in ('analyzing', 'succeeded'):
+                    for _ in range(250):
+                        status = await client.get(job_path)
+                        assert status.status_code == 200, status.text
+                        if status.json()['phase'] == target:
+                            assert status.json()['phase_label']
+                            break
+                        await asyncio.sleep(.01)
+                    else:
+                        pytest.fail(f'focus task did not reach {target}')
+                    release.set()
+                result = await client.get(job_path + '/result')
+                assert result.status_code == 200 and result.json()['model_id'] == 'platform-model'
+                assert '_catalog_version' not in result.json()
+                version[0] = 'changed'
+                assert (await client.get(job_path + '/result')).status_code == 409
+                for denied in (scope(restricted=True), scope(metadata={'can_read_source': False}),
+                               scope(identity=SimpleNamespace(can_write=False)), scope(authorization='')):
+                    active[0] = denied
+                    assert (await client.post(path, json={'model_id': 'platform-model'})).status_code == 403
+        finally:
+            release.set()
+            current_workbench.reset(token)
     asyncio.run(check())
 
 

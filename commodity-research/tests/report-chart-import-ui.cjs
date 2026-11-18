@@ -8,6 +8,16 @@ const charts = [
   {id: 'report-4', page: 2, source_index: 1, title: '定义失败的图', chart_type: 'trend', evidence: '原文图例', definition_failed: true, errors: ['定义校验不通过'], series: [{name: '原文图例', candidates, selected_id: 'kb-fixture-series'}]},
   {id: 'report-5', page: null, page_label: '片段9', source_index: 8, title: '无页码图', chart_type: 'trend', evidence: '无页码片段', series: [{name: '原文图例', candidates, selected_id: 'kb-fixture-series'}]}
 ];
+const jobID = slug => 'report-chart-job-' + slug;
+const meta = (slug, state) => ({id: jobID(slug), purpose: 'report_chart_import', workbench_id: 'fixture',
+  state, phase_label: '正在识别图表'});
+const result = (slug, fields) => ({...fields, request: {source, model_id: 'model-fixture'}, job: meta(slug, 'succeeded')});
+function jobRoutes(args, slug, fields) {
+  if (args.path.endsWith('/recognize')) return args.reply(meta(slug, 'queued'), 202);
+  if (args.path === '/analysis-jobs/' + jobID(slug)) return args.reply(meta(slug, 'succeeded'));
+  if (args.path === '/analysis-jobs/' + jobID(slug) + '/result') return args.reply(result(slug, fields));
+  return false;
+}
 const html = render('chart_import.html');
 const nativeTab = page => page.getByRole('tab', {name: '原表（Excel）'});
 const reportTab = page => page.getByRole('tab', {name: '往期周报（PPT / PDF）'});
@@ -58,13 +68,15 @@ const base = ({path, reply}) => {
         assert.equal(url.searchParams.get('search'), '');
         return reply({items: [{citation: source, title: '合成周报.pptx', subtitle: '已解析'}], next_offset: null});
       }
-      if (path === '/charts/import/report/recognize') { assert.deepEqual(body, {source, model_id: 'model-fixture'}); return reply({job_id: 'job-fixture'}); }
-      if (path === '/charts/import/report/jobs/job-fixture') {
-        jobPolls++;
-        return reply(jobPolls === 1 ? {status: 'running', progress: {completed: 1, total: 2, message: '正在识别'}} :
-          {status: 'complete', progress: {completed: 2, total: 2, message: '识别完成'}, group: '合成周报.pptx', charts: [charts[1], charts[4], charts[3], charts[2], charts[0]],
-            failures: [{page: 5, source_index: 10, reason: '本页识别超时'}, {batch: 3, reason: '本批处理超时'}, {title: '缺少依据的图', reason: '缺少依据片段'}]});
+      if (path === '/charts/import/report/recognize') {
+        assert.deepEqual(body, {source, model_id: 'model-fixture'}); return reply(meta('fixture', 'queued'), 202);
       }
+      if (path === '/analysis-jobs/' + jobID('fixture')) return reply(meta('fixture', ++jobPolls === 1 ? 'running' : 'succeeded'));
+      if (path === '/analysis-jobs/' + jobID('fixture') + '/result') return reply(result('fixture', {
+        progress: {completed: 2, total: 2, message: '识别完成'}, group: '合成周报.pptx',
+        charts: [charts[1], charts[4], charts[3], charts[2], charts[0]],
+        failures: [{page: 5, source_index: 10, reason: '本页识别超时'}, {batch: 3, reason: '本批处理超时'}, {title: '缺少依据的图', reason: '缺少依据片段'}],
+      }));
       if (path === '/charts/import/report/preview') {
         previews.push(body);
         if (body.chart_id === 'report-4' && body.mappings[0] !== 'kb-alternate') return reply({errors: ['定义校验不通过']});
@@ -140,7 +152,7 @@ const base = ({path, reply}) => {
     await p.locator('#report-chart-group').fill('研究员的常用图');
     await p.locator('#report-chart-apply').click();
     await p.locator('#report-chart-result').filter({hasText: '新建 1 张，失败 1 张'}).waitFor();
-    assert.deepEqual(applied, {job_id: 'job-fixture', group: '研究员的常用图', charts: [
+    assert.deepEqual(applied, {job_id: jobID('fixture'), group: '研究员的常用图', charts: [
       {chart_id: 'report-1', mappings: ['kb-alternate'], chart_type: 'trend'},
       {chart_id: 'report-2', mappings: ['kb-fixture-series'], chart_type: 'trend'}]});
     assert.equal(await p.locator('#report-chart-result a').getAttribute('href'), prefix + '/sn/charts/new-chart-fixture');
@@ -160,8 +172,8 @@ const base = ({path, reply}) => {
     const conflict = await open(browser, '/sn/charts/import', html, async args => {
       if (await base(args) !== false) return;
       if (args.path.endsWith('/files')) return args.reply({items: [{citation: source, title: '合成周报.pdf'}], next_offset: null});
-      if (args.path.endsWith('/recognize')) return args.reply({job_id: 'job-conflict'});
-      if (args.path.endsWith('/jobs/job-conflict')) return args.reply({status: 'complete', charts: charts.slice(0, 1)});
+      const jobReply = jobRoutes(args, 'conflict', {charts: charts.slice(0, 1)});
+      if (jobReply !== false) return jobReply;
       if (args.path.endsWith('/preview')) return args.reply({detail: '文件版本已变化，请重新识别'}, 409);
       return false;
     });
@@ -177,8 +189,8 @@ const base = ({path, reply}) => {
     const retry = await open(browser, '/sn/charts/import', html, async args => {
       if (await base(args) !== false) return;
       if (args.path.endsWith('/files')) return args.reply({items: [{citation: source, title: '合成周报.pdf'}], next_offset: null});
-      if (args.path.endsWith('/recognize')) return args.reply({job_id: 'job-retry'});
-      if (args.path.endsWith('/jobs/job-retry')) return args.reply({status: 'complete', charts: charts.slice(0, 1)});
+      const jobReply = jobRoutes(args, 'retry', {charts: charts.slice(0, 1)});
+      if (jobReply !== false) return jobReply;
       if (args.path.endsWith('/preview')) {
         previewAttempt++;
         if (previewAttempt === 1) return new Promise(resolve => setTimeout(() => resolve(args.reply({definition, payload: cycle(), errors: []})), 500));
@@ -206,8 +218,8 @@ const base = ({path, reply}) => {
     const repair = await open(browser, '/sn/charts/import', html, async args => {
       if (await base(args) !== false) return;
       if (args.path.endsWith('/files')) return args.reply({items: [{citation: source, title: '合成周报.pdf'}], next_offset: null});
-      if (args.path.endsWith('/recognize')) return args.reply({job_id: 'job-repair'});
-      if (args.path.endsWith('/jobs/job-repair')) return args.reply({status: 'complete', charts: charts.slice(0, 1)});
+      const jobReply = jobRoutes(args, 'repair', {charts: charts.slice(0, 1)});
+      if (jobReply !== false) return jobReply;
       if (args.path.endsWith('/preview')) return args.reply(invalidPreview ? {errors: ['图表定义校验失败']} : {definition, payload: cycle(), errors: []});
       return false;
     });
@@ -229,8 +241,8 @@ const base = ({path, reply}) => {
     const mappingRepair = await open(browser, '/sn/charts/import', html, async args => {
       if (await base(args) !== false) return;
       if (args.path.endsWith('/files')) return args.reply({items: [{citation: source, title: '合成周报.pdf'}], next_offset: null});
-      if (args.path.endsWith('/recognize')) return args.reply({job_id: 'job-mapping'});
-      if (args.path.endsWith('/jobs/job-mapping')) return args.reply({status: 'complete', charts: [mappingChart]});
+      const jobReply = jobRoutes(args, 'mapping', {charts: [mappingChart]});
+      if (jobReply !== false) return jobReply;
       if (args.path.endsWith('/preview')) return args.reply({definition, payload: cycle(), errors: [],
         warnings: new Set(args.body.mappings).size < args.body.mappings.length ? [duplicateMappingWarning] : []});
       return false;
@@ -245,6 +257,25 @@ const base = ({path, reply}) => {
     assert.doesNotMatch(await mappingRepair.page.locator('[data-report-notice]').innerText(), /重复映射/);
     assert.match(await mappingRepair.page.locator('[data-report-notice]').innerText(), /已按依据位置修正/, '映射修正保留静态依据提示');
     await mappingRepair.close();
+    let returned = false;
+    const linkedJob = await open(browser, '/sn/charts/import?analysis_job=' + jobID('deep-link'), html, async args => {
+      if (await base(args) !== false) return;
+      if (args.path.endsWith('/files')) return args.reply({items: [{citation: source, title: '合成周报.pdf'}], next_offset: null});
+      if (args.path === '/analysis-jobs/' + jobID('deep-link')) return args.reply(meta('deep-link', returned ? 'succeeded' : 'running'));
+      if (args.path === '/analysis-jobs/' + jobID('deep-link') + '/result') {
+        return args.reply(result('deep-link', {charts: [charts[0]], group: '后台识别分组'}));
+      }
+      return false;
+    });
+    const restored = linkedJob.page;
+    await restored.locator('#report-chart-progress[data-analysis-busy=true]').filter({hasText: '可关闭窗口'}).waitFor();
+    await restored.locator('#report-chart-group').fill('研究员先修改分组');
+    returned = true;
+    await restored.locator('#report-chart-progress').filter({hasText: '编辑内容已改动'}).waitFor();
+    assert.equal(await restored.locator('#report-chart-group').inputValue(), '研究员先修改分组');
+    assert.equal(await restored.locator('[data-report-chart]').count(), 0);
+    assert.equal(linkedJob.calls.some(call => /\/charts\/import\/report\/(recognize|apply)$/.test(call.path)), false);
+    await linkedJob.close();
     console.log('report-chart-import-ui: passed');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

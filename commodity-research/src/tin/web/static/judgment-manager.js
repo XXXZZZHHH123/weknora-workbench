@@ -13,7 +13,6 @@
   let historyEntries = [], historical = null, historyEpoch = 0, historyPending = false;
   let chartReferences = [];
   let dimensionEdits = new Map(), dimensionSuggestions = new Map(), dimensionDirty = false;
-  let dimensionSuggesting = false, dimensionSuggestEpoch = 0;
   const reviewEdits = new Map();
   const rememberedChoices = new Set();
   let reviewControls = [], searchSessions = [], selectedSection = '', reviewView = 'all';
@@ -187,11 +186,13 @@
     renderHistory(result.has_more);
   }
   function text(id, value) { byId(id).textContent = display.text(value || ''); }
-  function showVersion(row) {
+  function showVersion(row, preserveDimensions = false) {
     displayed = row;
     chartReferences = JSON.parse(JSON.stringify(row?.chart_references || []));
-    dimensionEdits = new Map((row?.dimension_items || []).map(item => [dimensionKey(item), item.dimension || '']));
-    dimensionSuggestions.clear(); dimensionDirty = false; dimensionSuggesting = false; dimensionSuggestEpoch++;
+    if (!preserveDimensions) {
+      dimensionEdits = new Map((row?.dimension_items || []).map(item => [dimensionKey(item), item.dimension || '']));
+      dimensionSuggestions.clear(); dimensionDirty = false;
+    }
     renderDimensionEditor();
     renderChartEditor();
     text('current-md', row?.markdown || '尚无研究逻辑。可在“导入与分析”添加原文。');
@@ -217,7 +218,7 @@
   function syncDimensionControls() {
     const writing = managed?.can_write === true;
     for (const node of byId('dimension-items')?.querySelectorAll?.('select,button') || []) node.disabled = busy || !writing;
-    if (byId('dimension-suggest')) byId('dimension-suggest').disabled = busy || dimensionSuggesting || !writing || !displayed;
+    if (byId('dimension-suggest')) byId('dimension-suggest').disabled = busy || !!dimensionJob?.busy || !writing || !displayed;
     if (byId('dimension-model')) byId('dimension-model').disabled = busy || !writing;
     if (byId('dimension-save')) byId('dimension-save').disabled = busy || !writing || !displayed || !dimensionDirty;
   }
@@ -246,19 +247,35 @@
     }
     syncDimensionControls();
   }
-  byId('dimension-suggest')?.addEventListener('click', async () => {
-    if (busy || dimensionSuggesting || !displayed || !managed?.can_write) return;
-    const modelId = (byId('dimension-model') || byId('model')).value;
-    if (!modelId) return inform('请选择补标模型；暂无可用模型时请先配置对话模型。', true);
-    const record = displayed, epoch = ++dimensionSuggestEpoch; dimensionSuggesting = true; syncDimensionControls(); inform('正在建议研究维度，可继续手动编辑…');
-    try {
-      const result = await api('/dimension-suggestions', {judgment_id: record.id, version: record.version, model_id: modelId});
-      if (displayed !== record || epoch !== dimensionSuggestEpoch) return;
+  const dimensionJob = byId('dimension-status') && window.ResearchAnalysisJobs?.create({
+    purpose: 'judgment_dimensions',
+    status: byId('dimension-status'),
+    button: byId('dimension-suggest'),
+    restoreButton: byId('dimension-result'),
+    disabled: () => busy || !managed?.can_write || !displayed,
+    isOpen: () => dialog.open,
+    snapshot: () => JSON.stringify([displayed?.id, displayed?.version, [...dimensionEdits]]),
+    async present(result, {current}) {
+      if (result.judgment_id !== displayed?.id || result.version !== displayed?.version) {
+        if (dimensionDirty) throw new Error('当前研判维度已有编辑，已保留。请保存或切换后再取回。');
+        const selected = await api('/manage?judgment_id=' + encodeURIComponent(result.judgment_id));
+        if (!current() || dimensionDirty) return;
+        if (!selected.current || selected.current.id !== result.judgment_id || selected.current.version !== result.version)
+          throw new Error('补标建议与当前研判版本不一致，请重新补标。');
+        managed = selected; dialog.dataset.judgmentId = String(result.judgment_id); showVersion(selected.current);
+      }
       if (result.research_dimensions) managed.research_dimensions = result.research_dimensions;
       dimensionSuggestions = new Map((result.suggestions || []).map(item => [dimensionKey(item), item]));
-      renderDimensionEditor(); inform('维度建议已生成，请逐条采纳或修改后保存。');
-    } catch (error) { if (error.name !== 'AbortError' && epoch === dimensionSuggestEpoch) inform(error.message, true); }
-    finally { if (epoch === dimensionSuggestEpoch) { dimensionSuggesting = false; syncDimensionControls(); } }
+      tab('current'); renderDimensionEditor();
+      byId('dimension-status').textContent = '维度建议已生成，请逐条采纳或修改后保存。';
+    },
+  });
+  byId('dimension-suggest')?.addEventListener('click', async () => {
+    if (!dimensionJob || busy || dimensionJob.busy || !displayed || !managed?.can_write) return;
+    const modelId = (byId('dimension-model') || byId('model')).value;
+    if (!modelId) return inform('请选择补标模型；暂无可用模型时请先配置对话模型。', true);
+    await dimensionJob.submit('/api/sn/judgment/dimension-suggestions',
+      {judgment_id: displayed.id, version: displayed.version, model_id: modelId});
   });
   byId('dimension-save')?.addEventListener('click', async () => {
     if (busy || !displayed || !managed?.can_write || !dimensionDirty) return;
@@ -990,14 +1007,15 @@
       return false;
     } finally { edit.saving = false; edit.renderOutcome?.(); if (!holdBusy) { setBusy(false); restoreFocus(place); } }
   }
-  async function open(requestedJob) {
+  async function open(requestedJob, requestedDimensionJob) {
     if (busy) return;
     controller = new AbortController();
     if (!dialog.open) dialog.showModal();
     if (parent !== window) parent.postMessage({type: 'research-drawer-state', open: true}, location.origin);
     inform('正在读取当前逻辑与版本…');
     try {
-      managed = await api(managePath()); showVersion(managed.current);
+      managed = await api(managePath());
+      showVersion(managed.current, displayed?.id === managed.current?.id && displayed?.version === managed.current?.version);
       byId('variety').value = managed.current || managed.latest ? managed.variety || '' : '';
       text('version-label', `${managed.current ? display.reference(managed.current) : '暂无当前逻辑'}。后续保存仍为草稿，原记录保留。`);
       historical = null; historyEpoch++;
@@ -1019,14 +1037,17 @@
       await discoverLatestResult();
       if (dialog.dataset.prefill === 'true') { tab('analyze'); dialog.dataset.prefill = 'false'; }
       const selectedJob = jobId(requestedJob) || (['queued', 'running'].includes(activeJob?.state) ? activeJob.id : null);
-      if (selectedJob) { tab('analyze'); await followJob(selectedJob); }
+      if (requestedDimensionJob) { tab('current'); await dimensionJob.restore(requestedDimensionJob, {explicit: true}); }
+      else if (selectedJob) { tab('analyze'); await followJob(selectedJob); }
       else if (submittingJob) { setBusy(true); inform('正在提交后台分析，可关闭窗口。'); }
+      else if (managed.can_write) await dimensionJob?.discover();
     } catch (error) { inform(error.message, true); }
   }
   function close() {
     closeItemConfirmation();
     historyEpoch++; historyPending = false;
     stopJobMonitor();
+    dimensionJob?.pause();
     controller?.abort(); stopSearches(); setBusy(false); dialog.close();
     if (byId('restore-result')) byId('restore-result').hidden = true;
     if (byId('discard-result')) byId('discard-result').hidden = true;
@@ -1246,8 +1267,17 @@
   dialog.querySelector('[data-logic-close]').addEventListener('click', close);
   dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
   document.querySelectorAll('[data-open-logic]').forEach(button => button.addEventListener('click', open));
-  window.JudgmentManager = {open, close, openJob: identifier => open(jobId(identifier))};
+  const openJob = async identifier => {
+    const other = dimensionJob && await window.ResearchAnalysisJobs.requested('judgment_dimensions', identifier);
+    if (other) {
+      if (!dimensionDirty && Number.isSafeInteger(other.context?.judgment_id))
+        dialog.dataset.judgmentId = String(other.context.judgment_id);
+      return open(null, other.id);
+    }
+    return open(jobId(identifier));
+  };
+  window.JudgmentManager = {open, close, openJob};
   const requestedJob = jobId(new URL(location.href).searchParams.get('analysis_job'));
-  if (requestedJob) open(requestedJob);
+  if (requestedJob) void openJob(requestedJob);
   else if (dialog.dataset.prefill === 'true') open();
 })();

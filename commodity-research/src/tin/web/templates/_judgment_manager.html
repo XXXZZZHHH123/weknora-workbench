@@ -14,7 +14,8 @@
   </div>
     <div class="logic-toolbar"><span id="logic-current-state">尚无研究逻辑</span><button type="button" id="logic-reuse">复用当前 MD</button><button type="button" id="logic-reuse-original">复用原文</button><button type="button" id="logic-download">导出 MD</button><button type="button" id="logic-current-delete" class="logic-danger">删除当前研判</button></div>
     <section id="logic-dimension-editor" class="logic-dimension-editor" aria-label="编辑研判维度" hidden>
-      <div class="logic-toolbar"><strong>研究维度</strong><label for="logic-dimension-model">补标模型</label><select id="logic-dimension-model" aria-label="维度补标模型"><option value="">正在读取模型…</option></select><button type="button" id="logic-dimension-suggest">模型补标</button><button type="button" id="logic-dimension-save">保存维度为新版本</button></div>
+      <div class="logic-toolbar"><strong>研究维度</strong><label for="logic-dimension-model">补标模型</label><select id="logic-dimension-model" aria-label="维度补标模型"><option value="">正在读取模型…</option></select><button type="button" id="logic-dimension-suggest">模型补标</button><button type="button" id="logic-dimension-result" hidden>取回上次补标建议</button><button type="button" id="logic-dimension-save">保存维度为新版本</button></div>
+      <p id="logic-dimension-status" role="status" aria-live="polite"></p>
       <p class="logic-hint">模型仅建议维度；逐条采纳或修改后，确认保存为新版本。</p>
       <div id="logic-dimension-items"></div>
     </section>

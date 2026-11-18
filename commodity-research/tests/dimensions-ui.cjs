@@ -40,6 +40,7 @@ except HTTPException as error:
 }
 async function fixture(browser, config = initial(), boot = {}, pathname = '/sn/dimensions') {
   let stored = structuredClone(config), conflict = false;
+  const jobs = new Map();
   const view = await open(browser,pathname,html(boot),({path,method,body,reply,url}) => {
     if (path === '/dimensions' && method === 'GET') return reply(stored);
     if (path === '/dimensions' && method === 'PUT') {
@@ -60,10 +61,21 @@ async function fixture(browser, config = initial(), boot = {}, pathname = '/sn/d
     if (path === '/indicators/catalog') return reply({indicators:[{series_id:'kb-1',name:unsafe,unit:'吨',source:'合成来源'},{series_id:'kb-2',name:'第二项指标',unit:'吨'}],total:2,offset:0,next_offset:null});
     if (path === '/charts') return reply({items:[{id:'chart-1',revision:3,definition:{title:'合成图表',group:'合成分组'}}],total:1,next_offset:null});
     if (path === '/strategies/models') return reply({models:[{id:'model-1',name:'合成模型'}]});
+    const submit = (purpose, result) => {
+      const id = 'dimension-fixture-job-' + (jobs.size + 1);
+      const job = {id, purpose, workbench_id:'fixture', state:'succeeded'};
+      jobs.set(id,{...result,job,request:body});
+      return reply({...job,state:'queued'},202);
+    };
+    if (path === '/analysis-jobs/latest') return reply({job: null});
+    if (path.startsWith('/analysis-jobs/')) {
+      const [, , id, result] = path.split('/');
+      return reply(result ? jobs.get(id) : jobs.get(id).job);
+    }
     if (path === '/dimensions/suggestions') {
       if (stored.duplicate_sections) {
         const dimension = (body.dimensions || stored.dimensions)[0], sections = dimension.sections.map((s, index) => ({dimension:dimension.id,section:s.label,section_id:s.id,item_id:'i'+(index+1),candidate_count:10+index,selected_count:1,empty_reason:''}));
-        return reply({sections,items:sections.map((s,index) => ({...s,...(index ? {section_id:undefined} : {}),series_id:'kb-'+(index+2),name:'环节指标'+(index+1),reason:'合成选择理由',unit:'吨'}))});
+        return submit('dimension_fields',{sections,items:sections.map((s,index) => ({...s,...(index ? {section_id:undefined} : {}),series_id:'kb-'+(index+2),name:'环节指标'+(index+1),reason:'合成选择理由',unit:'吨'}))});
       }
       const dimensions = body.dimensions || stored.dimensions, dimension = stored.suggested_dimension || dimensions[1].id;
       const section = dimensions[1].sections[0]?.label || '';
@@ -71,12 +83,12 @@ async function fixture(browser, config = initial(), boot = {}, pathname = '/sn/d
         const picked = d.id === dimension && s.label === section;
         return {dimension:d.id,section:s.label,candidate_count:20,selected_count:picked ? 1 : 0,empty_reason:picked ? '' : '没有口径一致的候选 ' + unsafe};
       }));
-      return reply({as_of:body.date,sections,items:[{series_id:'kb-2',dimension,section,reason:unsafe,name:'第二项指标',unit:'吨',sheet:'合成候选工作表'}]});
+      return submit('dimension_fields',{as_of:body.date,sections,items:[{series_id:'kb-2',dimension,section,reason:unsafe,name:'第二项指标',unit:'吨',sheet:'合成候选工作表'}]});
     }
     if (path === '/dimensions/sources') return reply({items:[{title:'合成往期周报',citation:{kind:'knowledge_file',field:'source_quote',source_binding_id:'source-1',knowledge_id:'knowledge-1',file_version:'a'.repeat(64)}}],next_offset:null});
     if (path === '/dimensions/infer') {
       assert.equal(body.sources.length,1); assert.equal(body.sources[0].knowledge_id,'knowledge-1');
-      return reply({dimensions:[{id:'d-inferred',label:'产业链',category:'其他',description:'由所选原文归纳',sections:[{id:'s-inferred',label:'加工',items:[]}]}]});
+      return submit('dimension_inference',{dimensions:[{id:'d-inferred',label:'产业链',category:'其他',description:'由所选原文归纳',sections:[{id:'s-inferred',label:'加工',items:[]}]}]});
     }
     if (path === '/indicators/kb-1/cycle') return reply(cycle());
     return false;

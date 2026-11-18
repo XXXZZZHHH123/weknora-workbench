@@ -10,6 +10,7 @@ import time
 from fastapi import HTTPException
 
 from tin.config import settings
+from tin.web.analysis_job_purposes import PURPOSES, TERMINAL_LABELS
 
 ACTIVE = frozenset({'queued', 'running'})
 TERMINAL = frozenset({'succeeded', 'failed', 'interrupted', 'expired', 'applied', 'superseded'})
@@ -101,7 +102,7 @@ class Registry:
         self.compact(connection)
 
     def create(self, scope, request_hash, idempotency_hash, worker_id, purpose='judgments'):
-        if purpose not in {'judgments', 'diagram'}:
+        if purpose not in PURPOSES:
             raise ValueError('Unsupported analysis task purpose')
         with self.transaction() as connection:
             self.expire(connection)
@@ -122,7 +123,7 @@ class Registry:
                 raise HTTPException(429, '分析任务记录已达容量，请稍后重试')
             now = time.time()
             row = {'kind': 'judgment-analysis-index.v1', 'id': secrets.token_hex(16),
-                **({'purpose': 'diagram'} if purpose == 'diagram' else {}),
+                **({'purpose': purpose} if purpose != 'judgments' else {}),
                 'tenant_id': scope.identity.tenant_id, 'user_id': scope.identity.user_id,
                 'workbench_id': scope.workbench_id, 'storage_legacy': scope.metadata.get('workspace_mode') == 'legacy',
                 'request_hash': request_hash, 'idempotency_hash': idempotency_hash,
@@ -179,14 +180,15 @@ class Registry:
                 and row.get('user_id') == identity.user_id and row.get('kind') == 'judgment-analysis-index.v1']
             return sorted(rows, key=self.order, reverse=True)[:limit]
 
-    def latest(self, identity, workbench_id, purpose):
-        if purpose not in {'judgments', 'diagram'}:
+    def latest(self, identity, workbench_id, purpose, *, include_active=False):
+        if purpose not in PURPOSES:
             raise ValueError('Unsupported analysis task purpose')
+        states = ACTIVE | {'succeeded'} if include_active else {'succeeded'}
         with self.transaction() as connection:
             self.expire(connection)
             rows = [row for row in self.rows(connection) if self.scope_key(row) == (
                 identity.tenant_id, identity.user_id, workbench_id, purpose)
-                and row['state'] == 'succeeded']
+                and row['state'] in states]
             return max(rows, key=self.order, default=None)
 
     def discard_result(self, identity, job_id, workbench_id, purpose):
@@ -346,7 +348,8 @@ def metadata(row):
         result['message'] = render_failure(safe)
         if safe is not None:
             result['failure'] = safe
-    return {**result, 'job_id': row['id'], 'purpose': purpose,
-        'title': '产业图配置生成' if purpose == 'diagram' else '研究逻辑分析',
+    task = PURPOSES.get(purpose, PURPOSES['judgments'])
+    return {**result, 'job_id': row['id'], 'purpose': purpose, 'title': task.title,
+        'phase_label': task.phases.get(row['phase']) or TERMINAL_LABELS.get(row['state'], '后台运行中'),
         'result_available': row['state'] == 'succeeded', 'dismissed': row.get('dismissed') is True,
         'discarded': row.get('discarded') is True}

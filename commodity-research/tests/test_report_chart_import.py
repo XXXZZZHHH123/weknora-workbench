@@ -3,7 +3,7 @@ import asyncio
 from collections import Counter
 from copy import deepcopy
 import json
-from time import perf_counter
+from time import perf_counter, sleep
 
 from fastapi import HTTPException
 import httpx
@@ -13,12 +13,13 @@ from sqlalchemy import select
 from tin.integration.workbench_scope import current_workbench, isolated_session_factory
 from tin.models import LlmCall, SourceMapping
 from tin.models.workbench import WorkbenchArtifact
-from tin.web import report_chart_import as imports
+from tin.web import analysis_jobs, judgment_jobs, report_chart_import as imports
 from tin.web.report_chart_suggestions import recognize_batch as actual_recognize_batch
 from tests.chart_fixtures import SID, OTHER, THIRD
 from tests.test_chart_api import chart_client, WB  # noqa: F401
 
 BASE = '/api/sn/charts/import/report'
+JOBS = '/api/sn/analysis-jobs'
 SOURCE = {'kind': 'knowledge_file', 'source_binding_id': 'binding', 'knowledge_id': 'report',
           'file_version': 'a' * 64}
 
@@ -35,12 +36,12 @@ def candidate(identifier='chart', selected=SID):
 def report_client(chart_client, monkeypatch):
     client, state = chart_client
     state.app.include_router(imports.router)
+    state.app.include_router(analysis_jobs.router)
     state.report_verify = 0
     state.report_changed = False
     state.recognition_error = None
     state.report_batches = 2
     state.report_result = [candidate()]
-    state.progress = []
     async def fresh(scope): return scope
     async def read(scope, citation):
         return {'filename': 'Synthetic weekly.pptx', 'file_version': SOURCE['file_version'],
@@ -59,36 +60,50 @@ def report_client(chart_client, monkeypatch):
     monkeypatch.setattr(imports.suggestions, 'read_report', read)
     monkeypatch.setattr(imports.suggestions, 'verify_report', verify)
     monkeypatch.setattr(imports.suggestions, 'recognize_batch', recognize)
-    save = imports.save_state
-    def progress(scope, identifier, **changes):
-        if 'progress' in changes: state.progress.append(deepcopy(changes['progress']))
-        return save(scope, identifier, **changes)
-    monkeypatch.setattr(imports, 'save_state', progress)
-
-    @state.app.post('/fixture/report-job')
-    async def fixture_job():
-        scope = imports.writable_scope()
-        body = imports.RecognizeInput.model_validate({'source': SOURCE, 'model_id': 'model'})
-        identifier = imports.new_job(scope, body)
-        await imports.process(scope, identifier, body)
-        return {'job_id': identifier}
+    async def resolve(*args):
+        return current_workbench.get()
+    monkeypatch.setattr(judgment_jobs, 'resolve_workbench', resolve)
 
     @state.app.post('/fixture/expire/{identifier}')
     def fixture_expire(identifier: str):
         scope = imports.writable_scope()
-        with imports.artifact_session(scope) as session:
-            row = imports.owned(session, scope, identifier)
-            row.config = {**row.config, 'expires': 0}
-            session.commit()
+        with analysis_jobs.registry.transaction() as connection:
+            row = analysis_jobs.registry.owned(analysis_jobs.registry.fetch(connection, identifier),
+                scope.identity, scope.workbench_id)
+            analysis_jobs.registry.write(connection, {**row, 'expires_unix': 0})
         return {}
-    return client, state
+
+    with client:
+        yield client, state
+
+
+def submit(client):
+    from uuid import uuid4
+    response = client.post(BASE + '/recognize', json={'source': SOURCE, 'model_id': 'model'},
+                           headers={'Idempotency-Key': uuid4().hex})
+    assert response.status_code == 202, response.text
+    job = response.json()
+    assert job['phase'] == 'queued' and job['purpose'] == 'report_chart_import'
+    return job['id']
+
+
+def wait(client, identifier):
+    for _ in range(500):
+        response = client.get(f'{JOBS}/{identifier}')
+        assert response.status_code == 200, response.text
+        job = response.json()
+        if job['state'] not in {'queued', 'running'}:
+            return job
+        assert job['phase_label']
+        sleep(.01)
+    pytest.fail('report chart job did not complete')
 
 
 def complete(client):
-    response = client.post('/fixture/report-job')
-    assert response.status_code == 200, response.text
-    identifier = response.json()['job_id']
-    response = client.get(BASE + '/jobs/' + identifier)
+    identifier = submit(client)
+    job = wait(client, identifier)
+    assert job['state'] == 'succeeded', job
+    response = client.get(f'{JOBS}/{identifier}/result')
     assert response.status_code == 200, response.text
     return identifier, response.json()
 
@@ -110,8 +125,8 @@ def apply(client, identifier, charts=None, **kwargs):
 def test_end_to_end_drafts_mapping_real_preview_explicit_import_and_retry_receipt(report_client):
     client, state = report_client
     identifier, result = complete(client)
-    assert result['status'] == 'complete' and len(result['charts']) == 2
-    assert state.progress[-1]['completed'] == state.progress[-1]['total'] == 2
+    assert result['job']['state'] == 'succeeded' and len(result['charts']) == 2
+    assert result['progress']['completed'] == result['progress']['total'] == 2
     assert client.get('/api/sn/charts').json()['total'] == 0, 'Recognizing must not import'
     changed = selection(mappings=[OTHER])
     response = preview(client, identifier, changed)
@@ -138,7 +153,7 @@ def test_source_revision_change_409_blocks_confirmed_actions(report_client, oper
     client, state = report_client
     identifier, _ = complete(client)
     state.report_changed = True
-    response = (client.get(BASE + '/jobs/' + identifier) if operation == 'jobs' else
+    response = (client.get(f'{JOBS}/{identifier}/result') if operation == 'jobs' else
                 preview(client, identifier) if operation == 'preview' else apply(client, identifier))
     # Completed results, previews and writes must all reject revised evidence.
     assert response.status_code == 409
@@ -147,12 +162,11 @@ def test_source_revision_change_409_blocks_confirmed_actions(report_client, oper
 
 @pytest.mark.parametrize('headers,status', [({'x-can-edit': 'false'}, 403), ({'x-role': 'viewer'}, 403),
     ({'x-restricted': 'true'}, 403), ({'x-scope-version': '1'}, 409)])
-@pytest.mark.parametrize('operation', ['files', 'recognize', 'job', 'preview', 'apply'])
+@pytest.mark.parametrize('operation', ['files', 'recognize', 'preview', 'apply'])
 def test_every_report_route_requires_write_unrestricted_current_source(report_client, headers, status, operation):
     client, state = report_client
     paths = {'files': ('GET', BASE + '/files', None),
              'recognize': ('POST', BASE + '/recognize', {'source': SOURCE, 'model_id': 'model'}),
-             'job': ('GET', BASE + '/jobs/unknown', None),
              'preview': ('POST', BASE + '/preview', {'job_id': 'unknown', **selection()}),
              'apply': ('POST', BASE + '/apply', {'job_id': 'unknown', 'group': '', 'charts': [selection()]})}
     method, url, body = paths[operation]
@@ -164,12 +178,12 @@ def test_every_report_route_requires_write_unrestricted_current_source(report_cl
 def test_drafts_private_to_owner_and_workbench_and_expire(report_client):
     client, _ = report_client
     identifier, _ = complete(client)
-    assert client.get(BASE + '/jobs/' + identifier, headers={'x-actor': 'second'}).status_code == 404
+    assert client.get(f'{JOBS}/{identifier}/result', headers={'x-actor': 'second'}).status_code == 404
     assert apply(client, identifier, headers={'x-actor': 'second'}).status_code == 404
-    assert client.get(BASE + '/jobs/' + identifier,
+    assert client.get(f'{JOBS}/{identifier}/result',
         headers={'x-workbench': '10000000-0000-4000-8000-000000000099'}).status_code == 404
     assert client.post('/fixture/expire/' + identifier).status_code == 200
-    assert client.get(BASE + '/jobs/' + identifier).status_code == 409
+    assert client.get(f'{JOBS}/{identifier}/result').status_code == 410
 
 
 def test_one_failed_batch_does_not_discard_other_pages_and_409_is_fatal(report_client):
@@ -179,8 +193,9 @@ def test_one_failed_batch_does_not_discard_other_pages_and_409_is_fatal(report_c
     assert len(result['charts']) == 1 and result['charts'][0]['id'] == 'b2-chart'
     assert result['failures'] == [{'batch': 1, 'reason': 'Synthetic malformed model output'}]
     state.recognition_error = HTTPException(409, 'Synthetic source changed')
-    identifier = client.post('/fixture/report-job').json()['job_id']
-    assert client.get(BASE + '/jobs/' + identifier).status_code == 409
+    identifier = submit(client)
+    assert wait(client, identifier)['state'] == 'failed'
+    assert client.get(f'{JOBS}/{identifier}/result').status_code == 409
 
 
 def test_timeout_isolated_to_batch(report_client, monkeypatch):
@@ -335,13 +350,11 @@ def test_bounded_concurrency_progress_order_failure_isolation_and_serial_equival
     for concurrency in (1, 3):
         monkeypatch.setattr(imports.settings, 'report_chart_import_concurrency', concurrency)
         peak, finished = 0, []
-        state.progress.clear()
         started = perf_counter()
         _, result = complete(client)
         timing.append(perf_counter() - started)
         assert active == 0 and peak == concurrency
-        assert [p['completed'] for p in state.progress] == [0, *range(1, 13), 12]
-        assert all(p['total'] == 12 for p in state.progress)
+        assert result['progress']['completed'] == result['progress']['total'] == 12
         assert len(result['charts']) == 11
         assert result['failures'] == [{'batch': 5, 'reason': 'Synthetic malformed model output'}]
         assert [chart['id'] for chart in result['charts']] == [f'b{i + 1}-chart' for i in range(12) if i != 4]
@@ -349,7 +362,7 @@ def test_bounded_concurrency_progress_order_failure_isolation_and_serial_equival
             assert finished[0] != 0, 'Exercise completion in a different order from source'
         for chart in result['charts']:
             chart['definition']['origin']['ref'] = 'normalized-job-id'
-        results.append(result)
+        results.append({key: value for key, value in result.items() if key not in {'id', 'job'}})
     assert results[0] == results[1]
     print('report-chart benchmark ' + json.dumps({'batches': 12, 'stages_per_batch': 3,
         'serial_seconds': round(timing[0], 4), 'parallel_seconds': round(timing[1], 4),
@@ -372,8 +385,9 @@ def test_fatal_revision_change_cancels_and_drains_other_batches(report_client, m
         finally:
             cancelled.append(index)
     monkeypatch.setattr(imports.suggestions, 'recognize_batch', recognize)
-    identifier = client.post('/fixture/report-job').json()['job_id']
-    assert client.get(BASE + '/jobs/' + identifier).status_code == 409
+    identifier = submit(client)
+    assert wait(client, identifier)['state'] == 'failed'
+    assert client.get(f'{JOBS}/{identifier}/result').status_code == 409
     assert entered == [0, 1, 2] and sorted(cancelled) == [1, 2]
     assert client.get('/api/sn/charts').json()['total'] == 0
 

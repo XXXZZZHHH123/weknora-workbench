@@ -6,13 +6,13 @@ code only preserves order and checks identities, protocol groups and limits.
 import asyncio
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from tin.integration.page_facts import catalog_snapshot
 from tin.integration.workbench_scope import current_workbench, require_shared_write
-from tin.web import strategy_text
+from tin.web import analysis_jobs, strategy_text
 from tin.web.research_framework import RESEARCH_FRAMEWORK, RESEARCH_GROUPS
 
 router = APIRouter(prefix='/api/sn/market/core')
@@ -20,6 +20,7 @@ MAX_FIELDS = 400
 MAX_SUGGESTIONS = 12
 SAMPLE_FIELDS = 3
 SECONDS = 240
+PURPOSE = 'focus_suggestions'
 
 
 class SuggestionInput(BaseModel):
@@ -125,19 +126,28 @@ def validate_suggestions(document, catalog):
     return items[:MAX_SUGGESTIONS], len(items)
 
 
-async def generate_suggestions(scope, model_id):
+async def generate_suggestions(scope, model_id, progress=None):
+    if progress:
+        await progress('loading_catalog')
     metadata = await run_in_threadpool(catalog_snapshot, scope)
     catalog = metadata['catalog']
     if not catalog:
         raise HTTPException(422, '当前目录没有可用指标，请先确认知识库工作表')
     sheets = worksheets(catalog)
+    if progress:
+        await progress('selecting')
     first = await strategy_text.completion(scope, model_id, worksheet_prompt(sheets), purpose='core_focus_sheets')
     fields, field_count, associations = selected_fields(first, sheets)
     if not fields:
-        return {'items': [], 'notice': '模型未选出相关工作表，未使用固定列表；可调整资料后重试。',
+        return {'items': [], '_catalog_version': metadata.get('version'),
+                'notice': '模型未选出相关工作表，未使用固定列表；可调整资料后重试。',
                 'truncated': False, 'field_count': 0, 'selected_field_count': 0, 'model_id': model_id}
+    if progress:
+        await progress('analyzing')
     second = await strategy_text.completion(scope, model_id, indicator_prompt(fields, associations, field_count),
                                             purpose='core_focus_fields')
+    if progress:
+        await progress('validating')
     items, returned = validate_suggestions(second, catalog)
     notes = []
     if field_count > len(fields):
@@ -146,12 +156,29 @@ async def generate_suggestions(scope, model_id):
         notes.append(f'模型建议超过 {MAX_SUGGESTIONS} 项，已仅保留前 {MAX_SUGGESTIONS} 项。')
     if not items:
         notes.append('模型未给出合适的指标建议，未使用固定列表。')
-    return {'items': items, 'notice': ' '.join(notes), 'truncated': field_count > len(fields),
+    return {'items': items, 'notice': ' '.join(notes), '_catalog_version': metadata.get('version'),
+            'truncated': field_count > len(fields),
             'field_count': field_count, 'selected_field_count': len(fields), 'model_id': model_id}
 
 
-@router.post('/suggestions')
-async def suggest(body: SuggestionInput):
+async def verify_suggestions(scope, body, result):
+    current = await run_in_threadpool(catalog_snapshot, scope)
+    if current.get('version') != result['_catalog_version']:
+        raise HTTPException(409, '指标目录已变化，请重新生成核心关注建议')
+
+
+analysis_jobs.result_checks[PURPOSE] = verify_suggestions
+
+
+async def run_suggestions(scope, body, progress, job_id):
+    try:
+        return await asyncio.wait_for(generate_suggestions(scope, body['model_id'], progress), timeout=SECONDS)
+    except TimeoutError:
+        raise HTTPException(503, f'生成建议超过 {SECONDS} 秒，请稍后重试；核心关注尚未修改') from None
+
+
+@router.post('/suggestions', status_code=202)
+async def suggest(body: SuggestionInput, request: Request):
     scope = current_workbench.get()
     if scope is None:
         raise HTTPException(409, '请从已绑定知识库的研究台生成核心关注建议')
@@ -159,7 +186,5 @@ async def suggest(body: SuggestionInput):
             or not scope.identity.can_write or not str(scope.authorization or '').startswith('Bearer ')):
         raise HTTPException(403, '当前权限不能生成核心关注建议')
     require_shared_write(scope)
-    try:
-        return await asyncio.wait_for(generate_suggestions(scope, body.model_id), timeout=SECONDS)
-    except TimeoutError:
-        raise HTTPException(503, f'生成建议超过 {SECONDS} 秒，请稍后重试；核心关注尚未修改') from None
+    return await analysis_jobs.start_job(scope, PURPOSE, body.model_dump(),
+        request.headers.get('idempotency-key'), run_suggestions)

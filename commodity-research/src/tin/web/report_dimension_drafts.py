@@ -12,15 +12,17 @@ import re
 import unicodedata
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from tin.web import strategy_text
+from tin.web import analysis_jobs, judgment_jobs, strategy_text
 from tin.web.report_drafts import DimensionNote, ReportDraft, _no_duplicates, require_scope, validate_period
 
 router = APIRouter(prefix='/api/sn/reports')
 SECONDS = 240
 MAX_BYTES = 64 * 1024
+PURPOSE = 'report_dimension_draft'
 # These recognize numeric/date syntax only; no label, metric or question words
 # are used to choose research meaning, sources or a direction.
 NUMBER = re.compile(r'(?<![A-Za-z0-9_.])[+−-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+−-]?\d+)?')
@@ -36,6 +38,7 @@ class DraftInput(BaseModel):
     model_id: str = Field(min_length=1, max_length=128)
     dimension_notes: dict[str, DimensionNote] = Field(default_factory=dict, max_length=36)
     figure_conclusions: dict[str, str] = Field(default_factory=dict, max_length=100)
+    summary_text: str = Field(default='', max_length=4000)
 
 
 def writable_scope():
@@ -411,8 +414,17 @@ async def draft_summary(scope, model_id, period, view, rows, results):
                                   summary=True, allowed_text=condition_text)
 
 
-async def draft_dimensions(scope, day, period, body):
+def report_fingerprint(view):
+    values = {key: view.get(key) for key in ('dimension_overview', 'evidence_groups', 'manual_report',
+                                           'editable_dimensions', 'dimension_data', 'logic_strategy',
+                                           'strategy_overview', 'panels')}
+    return judgment_jobs.digest(jsonable_encoder(values))
+
+
+async def draft_dimensions(scope, day, period, body, progress):
+    await progress('reading_source')
     view = await run_in_threadpool(read_report, scope, day, period)
+    fingerprint = report_fingerprint(view)
     overview = {row['id']: row for row in view.get('dimension_overview') or []}
     rows = []
     configured = view.get('editable_dimensions') or list(overview.values())
@@ -448,6 +460,7 @@ async def draft_dimensions(scope, day, period, body):
                 body.figure_conclusions.get(key, figure.get('conclusion', '')), figure)))
     # Independent dimensions share a small concurrency limit; every call still
     # follows the same model interpretation, validation and audit path.
+    await progress('analyzing')
     results = await asyncio.gather(*(job for _, job in jobs), return_exceptions=True)
     for (destination, _), result in zip(jobs, results):
         if isinstance(result, BaseException):
@@ -456,21 +469,37 @@ async def draft_dimensions(scope, day, period, body):
     summary = await draft_summary(scope, body.model_id, period, view, rows, dimensions)
     # Detect fact/config/draft changes during generation, so a valid result never
     # becomes a preview of an obsolete or now unreadable source projection.
-    after = await run_in_threadpool(read_report, scope, day, period)
-    def comparable(current):
-        return {key: current.get(key) for key in ('dimension_overview', 'evidence_groups', 'manual_report',
-                                                 'editable_dimensions', 'dimension_data', 'logic_strategy',
-                                                 'strategy_overview', 'panels')}
-    if comparable(after) != comparable(view):
-        raise HTTPException(409, '报告事实或来源已变化，请刷新后重新起草；草稿尚未保存')
+    await progress('validating')
     response = {'dimensions': dimensions, 'figures': figures, 'model_id': body.model_id,
+                '_report_fingerprint': fingerprint,
                 'notice': '起草结果仅供研究员核对；保存后才生效。'}
     if summary is not None:
         response['summary'] = summary
     return response
 
 
-@router.post('/{day}/{period}/draft-dimensions')
+async def verify_draft_result(scope, body, result):
+    after = await run_in_threadpool(read_report, scope, body['day'], body['period'])
+    if report_fingerprint(after) != result['_report_fingerprint']:
+        raise HTTPException(409, '报告事实或来源已变化，请刷新后重新起草；草稿尚未保存')
+
+
+analysis_jobs.result_checks[PURPOSE] = verify_draft_result
+
+
+async def run_draft(scope, payload, progress, job_id):
+    day, period = payload['day'], payload['period']
+    body = DraftInput.model_validate({key: value for key, value in payload.items() if key not in {'day', 'period'}})
+    try:
+        async with asyncio.timeout(SECONDS):
+            result = await draft_dimensions(scope, day, period, body, progress)
+            await verify_draft_result(scope, payload, result)
+            return result
+    except TimeoutError:
+        raise HTTPException(503, f'起草超过{SECONDS}秒，当前报告未修改，请稍后重试') from None
+
+
+@router.post('/{day}/{period}/draft-dimensions', status_code=202)
 async def generate(day: str, period: str, request: Request):
     scope = writable_scope()
     validate_period(day, period)
@@ -486,7 +515,5 @@ async def generate(day: str, period: str, request: Request):
                     figure_conclusions=body.figure_conclusions)
     except (UnicodeError, ValueError, TypeError, ValidationError, RecursionError):
         raise HTTPException(422, '请填写有效模型、每维度200字以内的文字与影响选择') from None
-    try:
-        return await asyncio.wait_for(draft_dimensions(scope, day, period, body), timeout=SECONDS)
-    except TimeoutError:
-        raise HTTPException(503, f'起草超过{SECONDS}秒，当前报告未修改，请稍后重试') from None
+    payload = {**body.model_dump(mode='json'), 'day': day, 'period': period}
+    return await analysis_jobs.start_job(scope, PURPOSE, payload, request.headers.get('idempotency-key'), run_draft)

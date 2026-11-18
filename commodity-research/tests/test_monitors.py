@@ -2,6 +2,8 @@
 from dataclasses import replace
 from datetime import date
 import json
+from time import sleep
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -13,8 +15,9 @@ from tin.config import settings
 from tin.integration.identity import Identity, current_identity
 from tin.integration.workbench_scope import WorkbenchScope, artifact_session, current_workbench
 from tin.models.workbench import WorkbenchArtifactRevision
-from tin.web import monitors
+from tin.web import analysis_jobs, judgment_jobs, monitors
 
+JOBS = '/api/sn/analysis-jobs'
 URL = '/api/sn/monitors'
 SID = 'KB.fixture.warehouse'
 OTHER_SID = 'KB.fixture.basis'
@@ -41,13 +44,15 @@ def monitor_client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, 'data_dir', tmp_path)
     app, state = FastAPI(), {}
     app.include_router(monitors.router)
+    app.include_router(analysis_jobs.router)
     @app.middleware('http')
     async def scoped(request, call_next):
         identity = Identity(request.headers.get('x-actor', 'first'), '', 'Fixture', 17,
             request.headers.get('x-role', 'owner'))
         scope = WorkbenchScope(identity, request.headers.get('x-workbench', '9e761d83-5abe-4adf-859d-6cd57816ddaf'),
             'fixture-kb', 17, {'workspace_mode': 'isolated', 'can_edit': True,
-            'can_read_source': request.headers.get('x-restricted') != 'true'}, 'Bearer fixture', view_modules=('home',), scope_version=2)
+            'can_read_source': request.headers.get('x-restricted') != 'true'}, 'Bearer fixture', view_modules=('home',), scope_version=2,
+            sources_revision=int(request.headers.get('x-revision', '1')))
         state['scope'] = scope
         token, actor = current_workbench.set(scope), current_identity.set(identity)
         try:
@@ -55,11 +60,31 @@ def monitor_client(tmp_path, monkeypatch):
         finally:
             current_workbench.reset(token)
             current_identity.reset(actor)
+    async def resolve(*args):
+        return current_workbench.get()
+    monkeypatch.setattr(judgment_jobs, 'resolve_workbench', resolve)
     monkeypatch.setattr(monitors, '_validate_catalog', lambda scope, rules: {})
     monkeypatch.setattr(monitors, '_candidate_metadata', lambda *args: {})
     with TestClient(app) as client:
         client.get(URL)
         yield client, state
+
+
+def draft_request(client, payload):
+    started = client.post(URL + '/draft', json=payload, headers={'Idempotency-Key': uuid4().hex})
+    assert started.status_code == 202, started.text
+    job = started.json()
+    assert job['phase'] == 'queued' and job['purpose'] == 'monitor_draft'
+    path = JOBS + '/' + job['id']
+    for _ in range(250):
+        response = client.get(path)
+        assert response.status_code == 200, response.text
+        metadata = response.json()
+        if metadata['state'] not in {'queued', 'running'}:
+            return client.get(path + '/result')
+        assert metadata['phase_label']
+        sleep(.01)
+    pytest.fail('monitor job did not complete')
 
 
 def seed_draft(state, candidates=None):
@@ -132,7 +157,7 @@ def test_model_draft_recall_and_per_rule_candidate_validation(monitor_client, mo
         calls.append((prompt, kwargs))
         return model_output() if len(calls) == 1 else {'picks': {'0': ['r1']}}
     monkeypatch.setattr(strategy_text, 'completion', completion)
-    response = client.post(URL + '/draft', json={'sentence': '连续增加时提醒我', 'model_id': 'fixture'})
+    response = draft_request(client, {'sentence': '连续增加时提醒我', 'model_id': 'fixture'})
     assert response.status_code == 200, response.text
     draft = response.json()
     assert draft['rules'][0]['series_id'] == SID
@@ -172,7 +197,7 @@ def test_draft_displays_real_candidate_coverage_without_changing_model_selection
         calls.append(1)
         return model_output() if len(calls) == 1 else {'picks': {'0': ['r1']}}
     monkeypatch.setattr(strategy_text, 'completion', completion)
-    response = client.post(URL + '/draft', json={'sentence': '连续增加时提醒我', 'model_id': 'fixture'})
+    response = draft_request(client, {'sentence': '连续增加时提醒我', 'model_id': 'fixture'})
     assert response.status_code == 200, response.text
     draft = response.json()
     assert draft['rules'][0]['series_id'] == SID
@@ -180,8 +205,11 @@ def test_draft_displays_real_candidate_coverage_without_changing_model_selection
     assert {item['series_id']: item['coverage'] for item in draft['candidates']} == coverage
     assert draft['default_window']['end'] == coverage[SID]['end']
     with artifact_session(state['scope']) as session:
-        stored = monitors._body(monitors._owned(session, state['scope'], draft['draft_id'], monitors.DRAFT_MODULE))
+        row = analysis_jobs.owned_record(session, state['scope'], draft['draft_id'], 'monitor_draft')
+        stored = row.config['result']
         assert stored['candidates'] == draft['candidates']
+    assert client.get(JOBS + '/' + draft['draft_id'] + '/result',
+                      headers={'x-revision': '2'}).status_code == 409
 
 
 @pytest.mark.parametrize('output', [
@@ -199,7 +227,7 @@ def test_illegal_model_draft_is_rejected_without_selection_or_fallback(monitor_c
         calls.append(1)
         return output
     monkeypatch.setattr(strategy_text, 'completion', completion)
-    assert client.post(URL + '/draft', json={'sentence': '请提醒', 'model_id': 'fixture'}).status_code == 422
+    assert draft_request(client, {'sentence': '请提醒', 'model_id': 'fixture'}).status_code == 409
     assert calls == [1]
     assert client.get(URL).json()['items'] == []
 
@@ -217,8 +245,8 @@ def test_model_failure_is_reported_without_fallback(monitor_client, monkeypatch)
     async def failed(*args, **kwargs):
         raise HTTPException(503, 'fixture model unavailable')
     monkeypatch.setattr(strategy_text, 'completion', failed)
-    result = client.post(URL + '/draft', json={'sentence': '请提醒', 'model_id': 'fixture'})
-    assert result.status_code == 503 and result.json()['detail'] == 'fixture model unavailable'
+    result = draft_request(client, {'sentence': '请提醒', 'model_id': 'fixture'})
+    assert result.status_code == 409 and result.json()['detail'] == 'fixture model unavailable'
     assert client.get(URL).json()['items'] == []
 
 
@@ -233,7 +261,7 @@ def test_unshown_model_candidate_rejected(monitor_client, monkeypatch, picks):
         calls.append(1)
         return model_output() if len(calls) == 1 else {'picks': picks}
     monkeypatch.setattr(strategy_text, 'completion', completion)
-    assert client.post(URL + '/draft', json={'sentence': '请提醒', 'model_id': 'fixture'}).status_code == 422
+    assert draft_request(client, {'sentence': '请提醒', 'model_id': 'fixture'}).status_code == 409
 
 
 def test_checks_alert_only_on_transition_and_persist(monitor_client, monkeypatch):
@@ -361,7 +389,7 @@ def test_model_cannot_pick_candidate_shown_only_for_another_rule(monitor_client,
         return model_output(rules=[model_rule(), model_rule(indicator_description='基差')]) if len(calls) == 1 else {
             'picks': {'0': ['r2'], '1': ['r1']}}
     monkeypatch.setattr(strategy_text, 'completion', completion)
-    assert client.post(URL + '/draft', json={'sentence': '仓单与基差', 'model_id': 'fixture'}).status_code == 422
+    assert draft_request(client, {'sentence': '仓单与基差', 'model_id': 'fixture'}).status_code == 409
 
 
 def test_same_condition_toggle_does_not_repeat_alert_and_keeps_history(monitor_client, monkeypatch):
