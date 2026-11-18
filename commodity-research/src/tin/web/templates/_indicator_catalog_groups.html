@@ -8,7 +8,7 @@
         <tbody>{% for r in group.rows %}
           {% if restricted_view %}
           <tr data-indicator-row data-series-id="{{ r.series_id }}" data-name="{{ r.name }}" data-search="{{ r.name }} {{ r.series_id }} {{ r.unit }}">
-            <td><div class="indicator-name-line"><b>{{ r.name }}</b></div><div class="indicator-code">{{ r.series_id }}</div></td>
+            <td class="indicator-name-cell"><div class="indicator-name-line"><b class="indicator-name" title="{{ r.name }}">{{ r.name }}</b></div><div class="indicator-code">{{ r.series_id }}</div></td>
             <td>{{ r.unit or '—' }}</td>
             <td class="tabular">{% if r.value is not none %}{{ r.value | num(decimals=r.display_decimals) }}{% else %}<span class="indicator-muted">暂无有效值</span>{% endif %}</td>
             <td class="tabular {% if r.change is not none and r.change > 0 %}text-[var(--up)]{% elif r.change is not none and r.change < 0 %}text-[var(--down)]{% endif %}">{% if r.change is not none %}{{ r.change | num(r.unit, true, decimals=r.display_decimals) }}{% if r.change_pct is not none %} <span>({{ r.change_pct | num('%', true) }}%)</span>{% endif %}{% else %}<span class="indicator-muted">—</span>{% endif %}</td>
@@ -18,11 +18,12 @@
           <tr data-indicator-row data-series-id="{{ r.series_id }}" data-name="{{ r.name }}" data-macro="{{ 'true' if r.macro else 'false' }}"
               data-search="{{ r.name }} {{ r.series_id }} {{ r.vendor_code or '' }} {{ r.category }} {{ r.source }} {{ r.caliber.values() | map('string') | join(' ') }}">
             <td class="indicator-action-cell"><input type="checkbox" data-compare="{{ r.series_id }}" aria-label="对比 {{ r.name }}"></td>
-            <td><div class="indicator-name-line"><b>{% if r.registered %}<a href="{{ research_prefix() }}/sn/indicators/{{ r.series_id }}{% if d %}?date={{ d }}{% endif %}">{{ r.name }}</a>{% else %}{{ r.name }}{% endif %}</b>{% if r.is_proxy %} <span class="indicator-warning">代理</span>{% endif %}{% if r.status == '停用' %} <span class="indicator-warning">已停用</span>{% endif %}
+            <td class="indicator-name-cell"><div class="indicator-name-line">{% if r.registered %}<b><a class="indicator-name" title="{{ r.name }}" aria-label="{{ r.name }}" href="{{ research_prefix() }}/sn/indicators/{{ r.series_id }}{% if d %}?date={{ d }}{% endif %}">{{ r.name }}</a></b>{% else %}<b class="indicator-name" title="{{ r.name }}">{{ r.name }}</b>{% endif %}{% if r.is_proxy %} <span class="indicator-warning">代理</span>{% endif %}{% if r.status == '停用' %} <span class="indicator-warning">已停用</span>{% endif %}
               <button type="button" class="indicator-bookmark" data-favorite="{{ r.series_id }}" data-favorite-kind="indicator" data-favorite-label="{{ r.name }}" disabled aria-pressed="false" aria-label="加入自选 {{ r.name }}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.8 5.7 6.3.9-4.6 4.5 1.1 6.3-5.6-3-5.6 3 1.1-6.3L3 9.6l6.2-.9z"/></svg></button></div>
               <div class="indicator-code">{{ r.series_id }} <button type="button" data-copy-series="{{ r.series_id }}" aria-label="复制 {{ r.series_id }}" title="复制代码">⧉</button>{% if r.vendor_code %} · {{ r.vendor_code }}{% endif %}</div>
+              {% if r.note %}<div class="indicator-muted indicator-quality-note" title="{{ r.note }}">{{ r.note }}</div>{% endif %}
               {% if r.dedup_status == 'pending' %}<a class="indicator-warning" data-dedup-badge="pending" href="{{ research_prefix() }}/sn/indicator-dedup">可能重复，待确认</a>{% elif r.dedup_status == 'confirmed_default' %}<span class="indicator-muted" data-dedup-badge="confirmed_default">已与个人库对应</span>{% endif %}</td>
-            <td>{{ r.unit }}{% if r.note %}<div class="indicator-muted">{{ r.note }}</div>{% endif %}</td><td>{{ r.source }}</td><td>{{ r.frequency }} · {{ '自动' if r.fetch_mode == 'auto' else '人工' }}</td>
+            <td>{{ r.unit }}</td><td>{{ r.source }}</td><td>{{ r.frequency }} · {{ '自动' if r.fetch_mode == 'auto' else '人工' }}</td>
             <td class="indicator-row-links"><button type="button" data-series-chart="{{ r.series_id }}" data-chart-date="{{ d or '' }}" aria-haspopup="dialog">走势</button>
               {% if r.registered %}<a href="{{ research_prefix() }}/sn/indicators/{{ r.series_id }}{% if d %}?date={{ d }}{% endif %}">详情</a>{% else %}<span class="indicator-muted">待采集</span>{% endif %}</td>
           </tr>

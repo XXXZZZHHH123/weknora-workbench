@@ -6,6 +6,7 @@
 .indicator-page-heading h1 { font-size: 26px; font-weight: 900; margin: 4px 0; }
 .indicator-eyebrow { font-size: 10px; letter-spacing: .12em; font-weight: 700; color: var(--primary); }
 .indicator-section-heading { margin-bottom: 12px; }
+#indicator-catalog > [data-source-status-hint] { margin-bottom: 12px; }
 .indicator-section-heading h2 { font-size: 15px; font-weight: 700; }
 .indicator-muted { color: var(--text-muted); font-size: 11px; font-weight: 400; }
 .indicator-warning { color: var(--amber); }
@@ -51,6 +52,10 @@
 .indicator-text-button { border: 0; background: transparent; color: var(--text-muted); font-size: 12px; font-weight: 650; padding: 6px 4px; cursor: pointer; }
 .indicator-text-button:hover { color: var(--text); }
 .indicator-name-line { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; }
+.indicator-name-line > b { min-width: 0; }
+.indicator-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.indicator-name-line > .indicator-warning { white-space: nowrap; }
+.indicator-quality-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .indicator-bookmark { width: 28px; height: 28px; flex: 0 0 auto; display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); opacity: .45; cursor: pointer; }
 .indicator-bookmark svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 tbody tr:hover .indicator-bookmark:not([aria-pressed="true"]),
@@ -69,6 +74,7 @@ tbody tr:has(.indicator-bookmark[aria-pressed="true"]) { box-shadow: inset 3px 0
 .indicator-table th, .indicator-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .indicator-table tr:last-child td { border-bottom: 0; }
 .indicator-table tbody tr:hover { background: var(--surface-soft); }
+.indicator-table .indicator-name-cell { max-width: min(40vw, 560px); }
 .indicator-table td:nth-child(2) { min-width: 210px; }
 .indicator-workspace[data-readonly="true"] .indicator-table td:nth-child(2) { min-width: 0; }
 .indicator-workspace[data-readonly="true"] .indicator-table td:first-child { min-width: 210px; }
