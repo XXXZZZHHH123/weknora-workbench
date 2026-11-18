@@ -230,6 +230,20 @@ def test_header_suggestion_falls_back_when_source_samples_push_payload_over_limi
     assert result['renamed_fields'] == width - 1
 
 
+def test_wide_header_note_without_name_rows_keeps_confirmed_remaining_headers(wide_header_workbook, monkeypatch):
+    manager, import_id, sheet_name, width, _ = wide_header_workbook
+    calls = []
+    suggestion = {'block_updates': [{'block_index': 0, 'header_note_cells': ['B1'], 'metric_header_rows': []}],
+                  'evidence': [{'block_index': 0, 'field': 'header_note_cells', 'cells': ['B1']}]}
+    mock_model(monkeypatch, [suggestion], calls)
+    result = manager.suggest(import_id, sheet_name)
+    block, = result['mapping']['blocks']
+    assert block['header_note_cells'] == ['B1']
+    assert block['columns'][0]['metric'] == '产量 / S0002 / 百万包'
+    assert all('B1' not in column['header_cells'] for column in block['columns'])
+    assert result['renamed_fields'] == width - 1
+
+
 @pytest.mark.parametrize(('note', 'has_evidence', 'error'), [
     ('A5', True, '表头行|证据'),
     ('XFD1', True, '范围|证据'),

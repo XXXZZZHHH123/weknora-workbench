@@ -941,8 +941,10 @@ def _apply_header_suggestion(original, normalized, suggestion, values, shown, sh
                 # Name rows substantiate the edit. Existing columns retain every other header ref
                 # and use the same composition rule as the scanner, including unit handling.
                 metric = header_metric(values.get(ref) for ref in headers)
-                if not metric or not header_metric(values.get(ref) for ref in headers
-                                                  if _cell_position(ref)[0] in name_rows):
+                # Without declared name rows the remaining header refs are the ones the
+                # researcher already confirmed; only declared rows need new evidence.
+                if not metric or (name_rows and not header_metric(values.get(ref) for ref in headers
+                                                                  if _cell_position(ref)[0] in name_rows)):
                     raise ReviewValidationError('移出说明后，指标名称仍须有已核对的真实表头。',
                                                 **column_target, field='metric')
                 changed += int(metric != old['metric'])
