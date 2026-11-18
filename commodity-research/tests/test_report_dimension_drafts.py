@@ -433,7 +433,7 @@ def test_no_update_prompt_retains_latest_reference_without_authorizing_historica
     assert facts[0]['display'] == {'latest': '16,865'}
     prompt = drafts.drafting_prompt({}, facts, '')
     assert 'no_update' in prompt and '本期无新数据' in prompt and '不写+0或持平' in prompt
-    assert '先写判断方向与原因' in prompt and '最多引用一到两个关键数字' in prompt
+    assert '第一句直接给出结论' in prompt and '一到两个关键数字作为依据' in prompt and '不逐项复述' in prompt
     assert '不按名称或关键词套句式' in prompt and '已有结论是否仍成立或无法判断' in prompt
     assert not drafts.numbers_verified('郑棉05合约下降0', facts)
     assert '不能据历史差值声称本期变化或持平' in drafts.review_prompt(facts, [], example['text'])
