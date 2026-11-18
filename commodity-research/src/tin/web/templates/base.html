@@ -97,7 +97,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
         ('dimensions', '研究维度', '/sn/dimensions'), ('judgment', '研究判断', '/sn/judgment'), ('strategies', '策略', '/sn/strategies'),
         ('diagram', '产业图', '/sn/diagram'), ('reports', '日报周报', '/sn/reports')] %}
       {% set view_module = {'variety': 'market', 'dimensions': 'indicators', 'judgment': 'judgments'}.get(key, key) %}
-      {% if (key not in ('charts',) or (not restricted_view and (not research_workbench() or not research_workbench().restricted))) and (not restricted_view or key == 'home' or view_module in research_workbench().view_modules) %}<a href="{{ research_url(href) }}{% if key in ('home', 'variety', 'indicators') and d and not restricted_view %}?date={{ d }}{% endif %}"
+      {% if (key not in ('charts',) or (not restricted_view and (not research_workbench() or not research_workbench().restricted))) and (not restricted_view or key == 'home' or view_module in research_workbench().view_modules) %}<a href="{{ research_url(href) }}{% if not restricted_view %}{% if key == 'dimensions' and nav == 'judgment' and selected_judgment_id %}?judgment_id={{ selected_judgment_id }}{% elif key in ('home', 'variety', 'indicators') and d %}?date={{ d }}{% endif %}{% endif %}"
          class="nav-btn {{ 'active' if nav == key }}" {% if nav == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endif %}
       {% endfor %}

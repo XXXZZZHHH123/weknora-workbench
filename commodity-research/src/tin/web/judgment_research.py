@@ -1,6 +1,7 @@
 """A read-only research comparison over the selected saved judgment."""
-from copy import deepcopy
 import math
+from collections import defaultdict
+from copy import deepcopy
 
 from fastapi import HTTPException
 
@@ -10,8 +11,7 @@ from tin.config import SHANGHAI
 from tin.judgments.service import _refs, to_payload
 from tin.models import Indicator
 from tin.schemas.judgment import EXPRESSION, binding_ids
-from tin.web.judgment_dimension_view import dimension_name
-from tin.web.report_watch import watch_items
+from tin.web.judgment_dimension_view import dimension_name, pending_note_entries
 from tin.web.research_display import condition_text, human_text
 
 
@@ -226,6 +226,21 @@ def _item_view(item, metrics, names, dimensions):
         'metrics': [metrics[identifier] for identifier in identifiers if identifier in metrics]}
 
 
+def _merge_equal_evidence(item):
+    primary = item['metric']
+    if not primary or not primary['point_count']:
+        return
+    displayed, same_value = [primary], []
+    for related in item['metrics'][1:]:
+        if related['timeline'] == primary['timeline']:
+            same_value.append(related['name'])
+        else:
+            displayed.append(related)
+    if same_value:
+        item['metrics'] = displayed
+        item['same_value_sources'] = same_value
+
+
 def judgment_research_view(session, judgment, day):
     sides = {side: {'claim': '', 'evidence': [], 'falsifiers': []} for side in ('bull', 'bear')}
     counts = {'bound': 0, 'available': 0, 'thresholds': 0, 'falsifiers': 0, 'triggered': 0, 'pending': 0}
@@ -233,9 +248,22 @@ def judgment_research_view(session, judgment, day):
     if judgment is None:
         return result
     from tin.web.research_dimensions import default_dimensions, read_dimensions, summaries
+    from tin.integration.workbench_scope import current_workbench
     dimensions = read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()
     result['dimensions'] = summaries(dimensions)
+    scope = current_workbench.get()
+    if scope is not None and scope.scope_version == 2 and 'indicators' in scope.view_modules:
+        result['dimension_series'] = [item['id'] for dimension in dimensions
+            for section in dimension.get('sections', []) for item in section.get('items', [])
+            if item['kind'] == 'indicator']
     payload = to_payload(judgment)
+    notes_by_rule = defaultdict(list)
+    pending_notes = []
+    for index, note, condition, target in pending_note_entries(payload):
+        if target:
+            notes_by_rule[target].append(note.text)
+        else:
+            pending_notes.append((index, note, condition))
     wanted = _windows(payload)
     with session.no_autoflush:
         metrics = {identifier: _metric(session, identifier, day, wanted[identifier]) for identifier in wanted}
@@ -250,6 +278,7 @@ def judgment_research_view(session, judgment, day):
                 view['claim'] = human_text(original.claim, names)
                 for evidence in original.evidence:
                     item = _item_view(evidence, metrics, names, dimensions)
+                    _merge_equal_evidence(item)
                     item['note'] = human_text(evidence.note, names)
                     view['evidence'].append(item)
                     references[side].update(item['series_ids'])
@@ -260,6 +289,7 @@ def judgment_research_view(session, judgment, day):
                     value['rule']['desc'] = human_text(value['rule']['desc'], names)
                     value.update(_dimension_tag(rule, dimensions))
                     value['metrics'] = [metrics[identifier] for identifier in binding_ids(rule)]
+                    value['review_notes'] = notes_by_rule.get(('falsifier', rule.id), [])
                     view['falsifiers'].append(value)
                     references[side].add(rule.series_id)
         finally:
@@ -275,19 +305,17 @@ def judgment_research_view(session, judgment, day):
                for side in sides},
             **{side + '_falsifiers': [item for item in sides[side]['falsifiers'] if item['rule']['series_id'] == identifier]
                for side in sides}})
-    pending = []
-    for note in payload.unstructured:
-        for item in watch_items({'unstructured': [note.model_dump(mode='json')]}):
-            if item['kind'] == 'observation':
-                pending.append({**item, 'text': human_text(item['text'], names),
-                    'metrics': [metrics[identifier] for identifier in binding_ids(note)]})
-    from tin.web.report_watch import without_aggregates
-    pending = without_aggregates(pending)
+    pending = [{'kind': 'observation', 'text': human_text(condition, names), 'note_text': human_text(note.text, names),
+                'anchor': f'judgment-note-{index}', 'requires_manual_observation': True,
+                'metrics': [metrics[identifier] for identifier in binding_ids(note)]}
+               for index, note, condition in pending_notes]
     counts.update(bound=len(metrics), available=sum(metric['latest'] is not None for metric in metrics.values()),
         thresholds=len(payload.thresholds), falsifiers=len(payload.falsifiers),
         triggered=sum(item['state'] == '触发' for side in sides.values() for item in side['falsifiers']),
         pending=len(pending))
     result.update(metrics=metrics, shared=shared, pending_conditions=pending,
+        threshold_notes={identifier: notes for (kind, identifier), notes in notes_by_rule.items()
+            if kind == 'threshold'},
         threshold_dimensions={rule.id: dimension_name(rule.dimension, dimensions)
             for rule in payload.thresholds if rule.dimension},
         marginal_focus=[_item_view(item, metrics, names, dimensions) for item in payload.marginal_focus],

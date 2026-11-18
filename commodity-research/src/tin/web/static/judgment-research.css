@@ -45,3 +45,9 @@
 .judgment-chart-toolbar .indicator-view-switch{font-size:11px}.judgment-chart-toolbar .indicator-view-switch button{padding:1px 8px}.judgment-chart-plot[hidden],.judgment-chart-cycle[hidden]{display:none}.judgment-chart-cycle{min-height:120px;margin-top:4px;font-size:11px;color:var(--text-muted)}
 .judgment-metric .judgment-chart-cycle svg{height:auto;margin:0}
 .judgment-dimension-tag{display:inline-block;max-width:100%;margin-inline-start:6px;padding:1px 5px;border-radius:3px;background:var(--surface-soft);color:var(--text-muted);font-size:10px;font-weight:400;line-height:1.5;vertical-align:baseline;white-space:normal;overflow-wrap:anywhere}
+.judgment-item-card[id],.judgment-pending-list>li[id],#judgment-thresholds tr[id]{scroll-margin-top:calc(var(--research-nav-height, 0px) + 16px)}
+.judgment-metric-compact{display:flex;align-items:baseline;flex-wrap:wrap;gap:3px 8px;min-width:0;margin-top:8px;padding:5px 8px;border-radius:5px;background:var(--surface-soft);color:var(--text-muted);font-size:11px;line-height:1.6;overflow-wrap:anywhere}
+.judgment-metric-compact strong{color:var(--text);font-weight:550}
+.judgment-metric-compact a{margin-inline-start:auto;color:var(--primary);text-decoration:underline;text-underline-offset:2px}
+.judgment-metric-compact[data-compact-preview]:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.judgment-same-value,.judgment-rule-review,.judgment-pending-condition{display:block;margin:4px 0 0;color:var(--text-muted);font-size:11px;font-weight:400;line-height:1.6;overflow-wrap:anywhere}

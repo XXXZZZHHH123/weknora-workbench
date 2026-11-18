@@ -1,13 +1,13 @@
 {% extends "base.html" %}
-{% from "_judgment_metric.html" import metric_view with context %}
+{% from "_judgment_metric.html" import metric_view, compact_metric with context %}
 {% block title %}研究判断 · {{ research_workbench().metadata.name if research_workbench() else '商品研究' }}{% endblock %}
 {% block head %}
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/charts.css?v={{ static_version() }}">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/judgment-manager.css?v={{ static_version() }}">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/judgment-research.css?v={{ static_version() }}">
-{% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/chart-kit.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/chart-kit.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/chart-hover.js?v={{ static_version() }}"></script>
-<script defer src="{{ research_static_prefix() }}/static/chart-references.js?v={{ static_version() }}"></script>{% endif %}
+{% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/chart-references.js?v={{ static_version() }}"></script>{% endif %}
 <script defer src="{{ research_static_prefix() }}/static/judgment-chart.js?v={{ static_version() }}"></script>
 {% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/judgment-manager.js?v={{ static_version() }}"></script>{% endif %}
 {% endblock %}
@@ -15,24 +15,37 @@
 <script id="research-display-names" type="application/json">{{ names|default({})|tojson }}</script>
 <script src="{{ research_static_prefix() }}/static/research-display.js?v={{ static_version() }}"></script>
 {% set research = research|default({}) %}
+{% set chart_owners = {} %}
 {% macro dimension_tag(label) -%}
 {%- if label -%}<span class="judgment-dimension-tag" data-dimension-label>{{ label }}</span>{%- endif -%}
 {%- endmacro %}
-{% macro item_thresholds(metric) %}
-{% if metric and metric.series_id %}
-  {% set related = radar|selectattr('series_id', 'equalto', metric.series_id)|list %}
-  {% if related %}<div class="judgment-item-conditions">
-    {% for item in related %}<div class="judgment-item-condition" data-item-threshold>
+{% macro item_thresholds(thresholds) %}
+  {% if thresholds %}<div class="judgment-item-conditions">
+    {% for item in thresholds %}<div class="judgment-item-condition" data-item-threshold>
       <span><strong>{{ human_text(item.name, names) }}</strong>{{ dimension_tag((research.threshold_dimensions|default({})).get(item.id)) }} · {{ human_text(item.condition, names) }}</span>
       <span class="judgment-item-condition-state" data-state="{{ item.state }}">{{ item.state }}</span>
     </div>{% endfor %}
   </div>{% endif %}
-{% endif %}
 {% endmacro %}
-{% macro item_metrics(item) %}
+{% macro reserve_charts(item, anchor) -%}
+  {% for metric in item.metrics|default([item.metric] if item.metric else []) if metric.series_id %}
+    {% set _ = chart_owners.setdefault(metric.series_id, anchor) %}
+  {% endfor %}
+{%- endmacro %}
+{% macro evidence_anchor(side, index) %}judgment-evidence-{{ side }}{{ index }}{% endmacro %}
+{% macro falsifier_anchor(item, side, index) %}judgment-falsifier-{{ item.rule.id|default(side ~ index) }}{% endmacro %}
+{% macro metric_entry(metric, anchor, show_thresholds, state=none, same_value_sources=[]) %}
+  {% set thresholds = radar|selectattr('series_id', 'equalto', metric.series_id)|list if show_thresholds and metric.series_id else [] %}
+  {% if not metric.series_id or chart_owners.setdefault(metric.series_id, anchor) == anchor %}
+    {{ metric_view(metric, same_value_sources) }}{{ item_thresholds(thresholds) }}
+  {% else %}
+    {{ compact_metric(metric, thresholds if not state else [], state, metric.series_id in research.dimension_series|default([]), same_value_sources) }}
+  {% endif %}
+{% endmacro %}
+{% macro item_metrics(item, anchor, show_thresholds=true) %}
   {% set values = item.metrics|default([item.metric] if item.metric else []) %}
   {% if values %}<div class="judgment-item-metrics">
-    {% for metric in values %}<div>{{ metric_view(metric) }}{{ item_thresholds(metric) }}</div>{% endfor %}
+    {% for metric in values %}<div>{{ metric_entry(metric, anchor, show_thresholds, item.state if item.metric and item.metric.series_id == metric.series_id else none, item.same_value_sources|default([]) if loop.first else []) }}</div>{% endfor %}
   </div>{% elif item.series_id %}<span class="judgment-evidence-unbound">{{ indicator_name(item.series_id, names) }} · 暂无可用数值</span>{% else %}<span class="judgment-evidence-unbound">文字依据 · 尚未关联指标</span>{% endif %}
 {% endmacro %}
 <div class="judgment-research">
@@ -44,6 +57,21 @@
 {% if j is none %}
 <section id="judgment-empty" class="judgment-research-section"><h2>尚未登记判断</h2><p>{{ '主人尚未分享已保存研究逻辑。' if restricted_view else '导入研究原文，核对多空依据与监测条件后保存。' }}</p></section>
 {% else %}
+{# Reserve full charts in reading order across the two columns. #}
+{% for side in ['bull', 'bear'] %}
+  {% set hypothesis = (research.sides|default({})).get(side, {}) %}
+  {% for item in hypothesis.evidence|default(j.contradiction[side].evidence) %}
+    {% set _ = reserve_charts(item, evidence_anchor(side, loop.index0)) %}
+  {% endfor %}
+{% endfor %}
+{% for side in ['bull', 'bear'] %}
+  {% for item in (research.sides|default({})).get(side, {}).falsifiers|default([]) %}
+    {% set _ = reserve_charts(item, falsifier_anchor(item, side, loop.index0)) %}
+  {% endfor %}
+{% endfor %}
+{% for item in research.pending_conditions %}
+  {% set _ = reserve_charts(item, item.anchor|default('judgment-note-' ~ loop.index0)) %}
+{% endfor %}
 <div class="judgment-research-summary"><strong class="judgment-research-tone">{{ j.tone or '方向待明确' }}</strong>
   {% if research.counts %}<span>{{ research.counts.available }}/{{ research.counts.bound }} 项依据有数值</span><span>{{ j.thresholds|length }} 条可计算阈值 · {{ j.falsifiers|length }} 条证伪条件</span>{% endif %}
   <span>复核日 {{ j.review_due }}</span>
@@ -72,17 +100,20 @@
       <h4 class="judgment-support-heading">支持依据与变化</h4>
       <ul class="judgment-evidence-list">
       {% for evidence in hypothesis.evidence|default(original.evidence) %}
-        <li class="judgment-item-card" data-research-item="evidence"><p class="judgment-evidence-desc">{{ human_text(evidence.desc, names) }}{{ dimension_tag(evidence.dimension_label) }}</p>
-          {{ item_metrics(evidence) }}
+        {% set anchor = evidence_anchor(side, loop.index0) %}
+        <li id="{{ anchor }}" class="judgment-item-card" data-research-item="evidence"><p class="judgment-evidence-desc">{{ human_text(evidence.desc, names) }}{{ dimension_tag(evidence.dimension_label) }}</p>
+          {{ item_metrics(evidence, anchor) }}
           {% if not restricted_view %}<div data-judgment-library-target="evidence:{{ side }}:{{ loop.index0 }}"></div>{% endif %}
         </li>
       {% else %}<li class="judgment-research-empty">尚待补充支持依据</li>{% endfor %}
       </ul>
       <h4 class="judgment-falsifier-section" style="grid-row:{{ 4 + rows.evidence }}">什么变化会证伪{{ label }}判断</h4>
       {% for item in hypothesis.falsifiers|default([]) %}
-        <div class="judgment-falsifier judgment-item-card" data-research-item="falsifier" style="grid-row:{{ 5 + rows.evidence + loop.index0 }}"><div class="judgment-falsifier-heading"><strong>{{ human_text(item.rule.desc, names) }}{{ dimension_tag(item.dimension_label) }}</strong><span class="judgment-falsifier-state" data-state="{{ item.state }}">{{ item.state }}</span></div>
+        {% set anchor = falsifier_anchor(item, side, loop.index0) %}
+        <div id="{{ anchor }}" class="judgment-falsifier judgment-item-card" data-research-item="falsifier" style="grid-row:{{ 5 + rows.evidence + loop.index0 }}"><div class="judgment-falsifier-heading"><strong>{{ human_text(item.rule.desc, names) }}{{ dimension_tag(item.dimension_label) }}</strong><span class="judgment-falsifier-state" data-state="{{ item.state }}">{{ item.state }}</span></div>
           {% if item.condition %}<p>{{ item.condition }}</p>{% endif %}
-          {{ item_metrics(item) }}
+          {% for note in item.review_notes %}<p class="judgment-rule-review">待核对：{{ human_text(note, names) }}</p>{% endfor %}
+          {{ item_metrics(item, anchor) }}
           {% if not restricted_view %}<div data-judgment-library-target="falsifier:{{ item.rule.id }}"></div><div data-chart-related-rule="{{ item.rule.id }}"></div>{% endif %}
           {% if item.gap_note %}<p>{{ human_text(item.gap_note, names) }}</p>{% endif %}
         </div>
@@ -95,7 +126,7 @@
 <section class="judgment-research-section" id="judgment-shared"><h2>多空分歧对照</h2>
   <div class="judgment-shared-list">{% for row in research.shared %}
     <article class="judgment-shared" data-shared-indicator>
-      {{ metric_view(row.metric) }}
+      {{ metric_entry(row.metric, 'shared:' ~ loop.index0, false) }}
       <div class="judgment-shared-explanations">
       {% for side,label in [('bull','多方'),('bear','空方')] %}
         <div data-hypothesis="{{ side }}"><b>{{ label }}依据</b>
@@ -126,12 +157,14 @@
       </thead>
       <tbody class="divide-y divide-[var(--line)]">
         {% for t in radar %}
-        <tr>
-          <td class="py-3 px-3 font-bold">{{ human_text(t.name, names) }}{{ dimension_tag((research.threshold_dimensions|default({})).get(t.id)) }}<div class="text-[10px] font-normal text-[var(--text-muted)]">{{ t.type }} · {{ t.horizon }}</div>{% if not restricted_view %}<div data-chart-related-rule="{{ t.id }}"></div>{% endif %}</td>
+        <tr id="judgment-threshold-{{ t.id }}">
+          <td class="py-3 px-3 font-bold">{{ human_text(t.name, names) }}{{ dimension_tag((research.threshold_dimensions|default({})).get(t.id)) }}<div class="text-[10px] font-normal text-[var(--text-muted)]">{{ t.type }} · {{ t.horizon }}</div>
+            {% for note in (research.threshold_notes|default({})).get(t.id, []) %}<p class="judgment-rule-review">待核对：{{ human_text(note, names) }}</p>{% endfor %}
+            {% if not restricted_view %}<div data-chart-related-rule="{{ t.id }}"></div>{% endif %}</td>
           <td class="py-3 px-3"><span data-indicator-reference>{{ indicator_name(t.series_id, names) }}</span>
             {% set related = (research.threshold_related|default({})).get(t.id, []) %}
             {% if related %}<details class="judgment-threshold-related"><summary>关联观察 · {{ related|length }} 项</summary>
-              <div class="judgment-item-metrics">{% for metric in related %}<div>{{ metric_view(metric) }}</div>{% endfor %}</div>
+              <div class="judgment-item-metrics">{% for metric in related %}<div>{{ metric_entry(metric, 'threshold-related:' ~ t.id, false) }}</div>{% endfor %}</div>
             </details>{% endif %}
           </td>
           <td class="py-3 px-3 tabular font-bold {{ 'text-[var(--alert)]' if t.type == '风控线' else 'text-[var(--primary)]' }}">{{ human_text(t.condition, names) }}</td>
@@ -164,7 +197,17 @@
 
 {% if research.pending_conditions %}
 <section class="judgment-research-section" id="judgment-pending"><h2>待验证条件</h2>
-  <ul class="judgment-pending-list">{% for item in research.pending_conditions %}<li><span>待核对</span><div>{{ plain_item(item.text, names) }}{% if item.metrics %}{{ item_metrics(item) }}{% endif %}</div></li>{% endfor %}</ul>
+  <ul class="judgment-pending-list">{% for item in research.pending_conditions %}
+    {% set anchor = item.anchor|default('judgment-note-' ~ loop.index0) %}
+    <li id="{{ anchor }}"><span>待核对</span><div>
+      {% set separate_note = item.note_text and item.note_text != item.text %}
+      {% if separate_note %}<div>{{ plain_item(item.note_text, names) }}</div>{% endif %}
+      {% if item.metrics %}{{ item_metrics(item, anchor, false) }}{% endif %}
+      {% if item.metrics or separate_note %}
+        <div class="judgment-pending-condition">{{ plain_item(item.text, names) }}</div>
+      {% else %}{{ plain_item(item.text, names) }}{% endif %}
+    </div></li>
+  {% endfor %}</ul>
   {% if not restricted_view %}<p>在“管理研究逻辑”中核对指标与条件后，可纳入监测。</p>{% endif %}
 </section>
 {% endif %}
@@ -172,8 +215,8 @@
   <div class="judgment-context-grid">
     {% if j.contradiction.text %}<div class="judgment-context-wide"><h3>研究背景</h3><p>{{ human_text(j.contradiction.text, names) }}</p></div>{% endif %}
     {% if j.time_dimension %}<div><h3>观察周期</h3><p>{{ human_text(j.time_dimension.short, names) }}</p><p>{{ human_text(j.time_dimension.long, names) }}</p></div>{% endif %}
-    {% if j.marginal_focus %}<div><h3>下一步关注的变化</h3>{% for item in research.marginal_focus|default(j.marginal_focus) %}<p>{{ human_text(item.desc, names) }}</p>{% if item.metrics %}{{ item_metrics(item) }}{% endif %}{% endfor %}</div>{% endif %}
-    {% if j.cost_line %}<div><h3>成本与估值边界</h3>{% for item in research.cost_items|default(j.cost_line.get('items',[])) %}<p>{{ human_text(item.desc, names) }}</p>{% if item.metrics %}{{ item_metrics(item) }}{% endif %}{% endfor %}<p>{{ human_text(j.cost_line.note, names) }}</p></div>{% endif %}
+    {% if j.marginal_focus %}<div><h3>下一步关注的变化</h3>{% for item in research.marginal_focus|default(j.marginal_focus) %}<p>{{ human_text(item.desc, names) }}</p>{% if item.metrics %}{{ item_metrics(item, 'marginal:' ~ loop.index0) }}{% endif %}{% endfor %}</div>{% endif %}
+    {% if j.cost_line %}<div><h3>成本与估值边界</h3>{% for item in research.cost_items|default(j.cost_line.get('items',[])) %}<p>{{ human_text(item.desc, names) }}</p>{% if item.metrics %}{{ item_metrics(item, 'cost:' ~ loop.index0) }}{% endif %}{% endfor %}<p>{{ human_text(j.cost_line.note, names) }}</p></div>{% endif %}
     {% if j.pricing_power %}<div><h3>价格驱动</h3><p>{{ human_text(j.pricing_power.key, names) }}</p><p>{{ human_text(j.pricing_power.short|join('；'), names) }}</p><p>{{ human_text(j.pricing_power.long|join('；'), names) }}</p></div>{% endif %}
     {% if j.survey_notes %}<div class="judgment-context-wide"><h3>调研补充</h3><p>{{ human_text(j.survey_notes, names) }}</p></div>{% endif %}
   </div>

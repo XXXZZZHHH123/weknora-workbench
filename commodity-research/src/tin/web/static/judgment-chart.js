@@ -123,17 +123,17 @@
     if (key) try { preference = JSON.parse(window.localStorage.getItem(key) || '{}') || {}; } catch { /* Presentation stays available without local storage. */ }
     if ((metric.boundaries || []).some(item => item.kind === 'sma')) select.options[0].textContent = '按规则';
     semantic.value = ['change', 'inventory'].includes(preference.semantics) ? preference.semantics : metric.trend_semantics === 'inventory' ? 'inventory' : 'change';
-    function semantics() { if (streak) streak.textContent = streakText(metric.streak, semantic.value); }
+    function semantics() {
+      const label = streakText(metric.streak, semantic.value);
+      if (streak) streak.textContent = label;
+      document.querySelectorAll('[data-judgment-compact]').forEach(other => {
+        if (other.dataset.judgmentCompact !== root.dataset.chartSeries) return;
+        const badge = other.querySelector('[data-chart-streak]');
+        if (badge) badge.textContent = label;
+      });
+    }
     function savePreference() {
       if (key) try { window.localStorage.setItem(key, JSON.stringify({semantics: semantic.value, view: preference.view === 'cycle' ? 'cycle' : 'trend'})); } catch { /* Presentation preference is optional. */ }
-      document.querySelectorAll('[data-judgment-chart]').forEach(other => {
-        if (root.dataset.chartSeries && other !== root && other.dataset.chartSeries === root.dataset.chartSeries) {
-          const control = other.querySelector('[data-chart-semantics]');
-          const badge = other.querySelector('[data-chart-streak]');
-          if (control) control.value = semantic.value;
-          if (badge) badge.textContent = streakText(metric.streak, semantic.value);
-        }
-      });
     }
     semantic.addEventListener('change', () => { semantics(); savePreference(); });
     semantics();
@@ -348,7 +348,27 @@
       if (!(data.references || []).length) status.textContent = '在“管理研究逻辑”中插入图表，可作为整条研判或某条规则、证据的依据。';
     } catch (error) { if (status) status.textContent = error.message; }
   }
-  function boot() { document.querySelectorAll('[data-judgment-chart]').forEach(initialize); bootLibrary(); }
+  function boot() {
+    const sources = new Map();
+    document.querySelectorAll('[data-judgment-chart]').forEach(card => {
+      initialize(card);
+      if (card.dataset.chartSeries) sources.set(card.dataset.chartSeries, card.querySelector('[data-chart-values]'));
+    });
+    document.querySelectorAll('[data-compact-preview]').forEach(row => {
+      const source = sources.get(row.dataset.judgmentCompact);
+      if (!source) return;
+      window.ChartHover?.attach(row, {
+        key: 'judgment-trend:' + row.dataset.judgmentCompact,
+        title: row.dataset.compactPreview,
+        load() {
+          const metric = JSON.parse(source.textContent);
+          const points = (metric.timeline || metric.points || []).map(({date, value}) => ({date: date.slice(0, 10), value}));
+          return {data: {curves: [{label: metric.name, unit: metric.unit, points}]}};
+        }
+      });
+    });
+    bootLibrary();
+  }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, {once: true});
   else boot();
 })();
