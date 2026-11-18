@@ -3,19 +3,18 @@
 </div></header>
 
 {% set show_monitors = not restricted_view and (not research_workbench() or not research_workbench().restricted) %}
-<section{% if show_monitors %} id="monitors"{% endif %} class="affairs-alerts" aria-labelledby="affairs-alert-title">
+<section class="affairs-alerts" aria-labelledby="affairs-alert-title">
   <div class="affairs-section-head">
-    <h2 id="affairs-alert-title">预警与监测</h2>
+    <h2 id="affairs-alert-title">预警与触发</h2>
     <div class="affairs-section-actions">
       {% if show_monitors %}
-      <button id="monitor-create-toggle" type="button" class="affairs-check" aria-expanded="false" aria-controls="monitor-create-panel">一句话建监测</button>
-      <button id="monitor-list-toggle" type="button" class="affairs-check" aria-expanded="false" aria-controls="monitor-list-panel">我的监测 {{ affairs.monitor_count | default(0) }}</button>
+      <button id="monitor-create-toggle" type="button" class="affairs-check" aria-haspopup="dialog" aria-controls="monitors">新建监测</button>
+      <button id="monitor-list-toggle" type="button" class="affairs-check" aria-haspopup="dialog" aria-controls="monitors">监测 {{ affairs.monitor_count | default(0) }}</button>
       {% endif %}
       <button id="affairs-check" type="button" class="affairs-check" data-can-check-rules="{{ 'true' if affairs.can_check_rules else 'false' }}" {% if not affairs.can_check %}disabled{% endif %}>重新检查</button>
     </div>
   </div>
   <p id="affairs-check-status" class="affairs-status" role="status" aria-live="polite"></p>
-  {% if show_monitors %}{% include '_monitors.html' %}{% endif %}
   <div id="affairs-alert-list">
     {% for item in affairs.alerts %}
     <a class="affairs-row"{% if item.kind == 'monitor' %} data-kind="monitor"{% endif %} href="{{ research_url(item.href) }}"><div><div class="affairs-row-title"><span class="affairs-row-kind">{{ '监测触发' if item.kind == 'monitor' else item.kind }}</span>{{ item.title }}</div><div class="affairs-row-detail">{{ item.detail }}{% if item.trade_date %} · 计算日期 {{ item.trade_date }}{% endif %}{% if item.recorded_at %} · 记录于 {{ item.recorded_at }}{% endif %} · 非实时记录</div></div><span class="affairs-row-arrow">查看 →</span></a>
@@ -38,3 +37,4 @@
   {% endfor %}
 </div>
 {% if affairs.partial %}<p class="affairs-notice">部分结果</p>{% endif %}
+{% if show_monitors %}{% include '_monitors.html' %}{% endif %}

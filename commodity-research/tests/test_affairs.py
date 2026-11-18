@@ -183,10 +183,13 @@ def test_affairs_template_has_alerts_and_real_deep_links_without_fake_health_cla
     environment.globals.update(research_url=lambda value: '/wb' + value, research_static_prefix=lambda: '/static',
         static_version=lambda: 'fixture', research_workbench=lambda: scope, research_prefix=lambda: '/wb')
     html = environment.get_template('home.html').render(affairs=result, err=None)
-    assert '事务中心' in html and html.count('预警与监测') == 1
-    assert '预警与触发' not in html and '>监测</h2>' not in html
-    assert '一句话建监测</button>' in html and '我的监测 0</button>' in html
-    assert html.index('id="monitor-list-panel"') < html.index('id="affairs-alert-list"') < html.index('class="affairs-grid"')
+    assert '事务中心' in html and html.count('预警与触发') == 1
+    assert '预警与监测' not in html and '一句话建监测' not in html
+    assert '新建监测</button>' in html and '监测 0</button>' in html
+    alert_card = html[html.index('<section class="affairs-alerts"'):html.index('</section>')]
+    assert 'id="affairs-alert-list"' in alert_card and 'id="affairs-check-status"' in alert_card
+    assert '<dialog' not in alert_card and 'monitor-create-panel' not in alert_card and 'monitor-list-panel' not in alert_card
+    assert html.index('class="affairs-grid"') < html.index('<dialog id="monitors"') < html.index('id="monitor-list-panel"')
     assert '/wb/?monitor=fixture-monitor#monitors' in html and '>监测触发</span>Saved monitor' in html
     assert '已记录预警' not in html
     assert 'affairs-check' in html and 'period=weekly' in html

@@ -14,7 +14,7 @@ class Element {
   querySelector(){return this.children.find(row=>row.dataset?.kind==='monitor');}
 }
 function setup({failure=false,zeroRules=false,checkable=true,monitoring=false,persisted=false,wait}={}) {
-  const nodes=Object.fromEntries(['affairs-check','affairs-check-status','affairs-alert-list'].map(id=>[id,new Element()]));
+  const nodes=Object.fromEntries(['affairs-check','affairs-check-status','affairs-alert-list','monitor-list-toggle'].map(id=>[id,new Element()]));
   nodes['affairs-check'].disabled=!checkable;
   nodes['affairs-alert-list'].children.push('Original persisted alert');
   const requests=[];
@@ -67,10 +67,11 @@ const settle=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(history.nodes['affairs-alert-list'].children.length,1,'Repeated checks retain one copy of the persisted reminder');
   let completeCheck;
   const delayed=setup({monitoring:true,persisted:true,wait:new Promise(resolve=>{completeCheck=resolve;})});
-  delayed.listeners['monitors-changed']({detail:{enabled:false,alerts:[]}});
+  delayed.listeners['monitors-changed']({detail:{count:0,enabled:false,alerts:[]}});
   completeCheck();await settle();
   assert.equal(delayed.nodes['affairs-alert-list'].children[0].className,'affairs-empty','An older check result cannot restore a deleted reminder');
   assert.equal(delayed.nodes['affairs-alert-list'].children[0].textContent,'暂无可检查规则');
   assert.equal(delayed.nodes['affairs-check'].disabled,true);
+  assert.equal(delayed.nodes['monitor-list-toggle'].textContent,'监测 0');
   console.log('10 isolated affairs UI interaction checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

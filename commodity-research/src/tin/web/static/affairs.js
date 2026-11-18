@@ -3,6 +3,7 @@
   if (!button) return;
   const status = document.getElementById('affairs-check-status');
   const list = document.getElementById('affairs-alert-list');
+  const monitorCount = document.getElementById('monitor-list-toggle');
   const prefix = window.RESEARCH_PREFIX || '';
   let busy = false, canCheck = !button.disabled;
   let currentMonitorAlerts;
@@ -56,7 +57,8 @@
   }
   button.addEventListener('click', check);
   if (typeof window.addEventListener === 'function') window.addEventListener('monitors-changed', event => {
-    const {enabled, alerts} = event.detail || {};
+    const {count, enabled, alerts} = event.detail || {};
+    if (monitorCount && Number.isInteger(count)) monitorCount.textContent = '监测 ' + count;
     canCheck = button.dataset.canCheckRules === 'true' || enabled === true;
     if (!busy) button.disabled = !canCheck;
     if (!Array.isArray(alerts)) return;

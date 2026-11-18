@@ -6,19 +6,32 @@
   const api = (window.RESEARCH_PREFIX || '') + '/api/sn';
   let draft = null, busy = false, canWrite = false, tested = false, listToken = 0;
   let viewedItem = null, customDraftWindow = false;
+  let opener = null, editingItem = null, highlightedId = null, deepLinkId = null;
   const overlapWarning = '规则之间重叠数据不足，建议更换覆盖更长的指标';
-  const selected = new URLSearchParams(window.location.search).get('monitor');
-  let selectedOpened = false;
   const displays = new Map();
-  function showPanel(name, visible) {
-    get(name + '-panel').hidden = !visible;
-    get(name + '-toggle').setAttribute('aria-expanded', String(visible));
-    get('panels').hidden = get('create-panel').hidden && get('list-panel').hidden;
+  function showMode(mode, trigger) {
+    const create = mode === 'create';
+    get('create-panel').hidden = !create;
+    get('list-panel').hidden = create;
+    get('dialog-create').hidden = create;
+    get('refresh').hidden = create;
+    get('dialog-list').hidden = !create;
+    get('mode-title').textContent = create ? (editingItem ? '修订监测' : '新建监测') : '我的监测';
+    if (trigger && !root.open) {
+      opener = trigger;
+      root.showModal();
+    }
+    if (root.open) {
+      root.scrollTop = 0;
+      (create ? get('sentence') : get('mode-title')).focus({preventScroll: true});
+    }
   }
   function openDeepLink() {
-    if (window.location.hash !== '#monitors' && !selected) return;
-    showPanel('list', true);
-    root.scrollIntoView({block: 'start'});
+    const id = new URLSearchParams(window.location.search).get('monitor');
+    if (window.location.hash !== '#monitors' && !id) return false;
+    highlightedId = deepLinkId = id;
+    showMode('list', get('list-toggle'));
+    return true;
   }
   function node(tag, text, className) {
     const element = document.createElement(tag);
@@ -42,6 +55,8 @@
     get('backtest').disabled = busy || !draft || !draft.rules.length;
     get('save').disabled = busy || !canWrite || !tested || !get('confirm').checked;
     get('refresh').disabled = busy;
+    get('dialog-create').disabled = busy;
+    get('dialog-list').disabled = busy;
     for (const control of get('draft').querySelectorAll('input,select,button')) {
       if (!['monitor-save', 'monitor-backtest'].includes(control.id)) control.disabled = busy;
     }
@@ -58,9 +73,22 @@
     tested = false; get('confirm').checked = false;
     clearDisplay(get('backtest-result')); get('backtest-result').hidden = true; sync();
   }
+  function clearDraft() {
+    get('draft').hidden = true;
+    draft = null;
+    invalidate();
+  }
+  function openCreate(trigger, item = null) {
+    if (!busy && item !== editingItem) {
+      editingItem = item;
+      get('sentence').value = item?.sentence || '';
+      clearDraft();
+    }
+    showMode('create', trigger);
+  }
   function body() {
     return {draft_id: draft.draft_id, title: get('title').value.trim(), sentence: draft.sentence,
-      logic: get('logic').value, enabled: true, rules: draft.rules.map(rule => {
+      logic: get('logic').value, enabled: editingItem?.enabled ?? true, rules: draft.rules.map(rule => {
         const result = {};
         for (const key of ['series_id', 'metric', 'operator', 'value', 'consecutive_periods', 'label', 'definition']) result[key] = rule[key];
         return result;
@@ -183,7 +211,7 @@
   function setDraft(result) {
     draft = {...result, rules: result.rules.map((rule, index) => ({...rule,
       _candidates: result.candidates.filter(item => item.rule_index === index)}))};
-    get('title').value = result.title; get('logic').value = result.logic;
+    get('title').value = editingItem?.title || result.title; get('logic').value = result.logic;
     customDraftWindow = false; setWindow('', result.default_window || {});
     get('confirmation-list').replaceChildren(...(result.confirmations || []).map(text => node('li', text)));
     if (!(result.confirmations || []).length) get('confirmation-list').append(node('li', '请核对所选指标、比较方式和连续期数是否符合原意。'));
@@ -258,10 +286,15 @@
     if (scroll) get('view').scrollIntoView({block: 'nearest'});
     status('历史回测已更新。');
   }
+  function closeView() {
+    viewedItem = null;
+    get('view').hidden = true;
+    clearDisplay(get('view-result'));
+  }
   function renderList(items) {
     const rows = items.map(item => {
       const row = node('div', undefined, 'affairs-row monitor-list-row'); row.dataset.monitorId = item.id;
-      if (item.id === selected) row.setAttribute('aria-current', 'true');
+      if (item.id === highlightedId) row.setAttribute('aria-current', 'true');
       const copy = node('div', undefined, 'monitor-list-copy');
       const title = node('div', undefined, 'affairs-row-title'); title.append(node('span', item.current_state || '未检查', 'affairs-row-kind'), node('span', item.title));
       copy.append(title, node('div', item.sentence, 'affairs-row-detail'), node('div',
@@ -278,26 +311,32 @@
       actions.append(field('启用', enabled));
       const view = node('button', '查看', 'affairs-check'); view.type = 'button';
       view.addEventListener('click', () => void act(() => viewItem(item)));
+      const revise = node('button', '修订', 'affairs-check'); revise.type = 'button'; revise.dataset.write = 'true';
+      revise.addEventListener('click', () => openCreate(null, item));
       const remove = node('button', '删除', 'affairs-check'); remove.type = 'button'; remove.dataset.write = 'true';
       remove.addEventListener('click', () => void act(async () => {
         await request('/monitors/' + encodeURIComponent(item.id) + '?revision=' + item.revision, undefined, 'DELETE');
-        get('view').hidden = true; clearDisplay(get('view-result')); await loadList(); status('监测已删除，版本记录已保留。');
-      })); actions.append(view, remove); row.append(copy, actions); return row;
+        if (viewedItem?.id === item.id) closeView();
+        await loadList(); status('监测已删除，版本记录已保留。');
+      })); actions.append(view, revise, remove); row.append(copy, actions); return row;
     });
-    get('list').replaceChildren(...(rows.length ? rows : [node('div', '还没有保存监测。先用一句话生成草稿。', 'affairs-empty')]));
+    get('list').replaceChildren(...(rows.length ? rows : [node('div', '还没有保存监测。', 'affairs-empty')]));
     sync();
   }
-  async function loadList() {
+  async function loadList({reveal = false} = {}) {
     const token = ++listToken, result = await request('/monitors');
     if (token !== listToken) return;
     const items = result.items || [];
     canWrite = result.can_write === true; renderList(items);
-    get('list-toggle').textContent = '我的监测 ' + items.length;
     window.dispatchEvent(new CustomEvent('monitors-changed', {detail: {
-      enabled: items.some(item => item.enabled), alerts: result.alerts}}));
-    if (selected && !selectedOpened && !busy) {
-      const item = items.find(item => item.id === selected);
-      if (item) { selectedOpened = true; void act(() => viewItem(item, {scroll: false})); }
+      count: items.length, enabled: items.some(item => item.enabled), alerts: result.alerts}}));
+    if (root.open && !get('list-panel').hidden) {
+      if (reveal || deepLinkId) get('list').querySelector('[aria-current=true]')?.scrollIntoView({block: 'nearest'});
+      if (deepLinkId && !busy) {
+        const item = items.find(item => item.id === deepLinkId);
+        deepLinkId = null;
+        if (item) void act(() => viewItem(item, {scroll: false}));
+      }
     }
   }
   async function act(action, failure) {
@@ -305,10 +344,28 @@
     try { await action(); } catch (error) { failure?.(); status(error.message, true); }
     finally { busy = false; sync(); }
   }
-  for (const name of ['create', 'list']) {
-    get(name + '-toggle').addEventListener('click', () => showPanel(name, get(name + '-panel').hidden));
+  get('create-toggle').addEventListener('click', () => openCreate(get('create-toggle')));
+  get('list-toggle').addEventListener('click', () => showMode('list', get('list-toggle')));
+  get('dialog-create').addEventListener('click', () => openCreate());
+  get('dialog-list').addEventListener('click', () => showMode('list'));
+  get('close').addEventListener('click', () => root.close());
+  root.addEventListener('close', () => {
+    if (root.open) return;
+    deepLinkId = null;
+    opener?.focus({preventScroll: true});
+  });
+  function followDeepLink() {
+    if (openDeepLink()) void loadList().catch(error => status(error.message, true));
   }
-  window.addEventListener('hashchange', openDeepLink);
+  window.addEventListener('hashchange', followDeepLink);
+  // Following the current URL does not fire hashchange after the dialog closes.
+  document.getElementById('affairs-alert-list').addEventListener('click', event => {
+    if (event.defaultPrevented || event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const link = event.target.closest('a[data-kind="monitor"]');
+    if (link?.href !== window.location.href) return;
+    event.preventDefault();
+    followDeepLink();
+  });
   openDeepLink();
   get('sentence').addEventListener('input', sync); get('model').addEventListener('change', sync);
   get('title').addEventListener('input', invalidate); get('logic').addEventListener('change', invalidate);
@@ -328,11 +385,19 @@
   }));
   get('save').addEventListener('click', () => void act(async () => {
     if (!tested || !get('confirm').checked) return;
-    await request('/monitors', body(), 'POST'); await loadList(); get('draft').hidden = true;
-    draft = null; tested = false; clearDisplay(get('backtest-result')); status('监测已保存并启用。重新检查时会判断是否触发。');
+    const saved = editingItem
+      ? await request('/monitors/' + encodeURIComponent(editingItem.id), {...body(), revision: editingItem.revision}, 'PATCH')
+      : await request('/monitors', body(), 'POST');
+    const message = editingItem ? '监测修订已保存。' : '监测已保存并启用。重新检查时会判断是否触发。';
+    highlightedId = saved.id;
+    if (viewedItem?.id === saved.id) closeView();
+    editingItem = null; get('sentence').value = ''; clearDraft();
+    showMode('list');
+    await loadList({reveal: true});
+    status(message);
   }));
-  get('cancel').addEventListener('click', () => { get('draft').hidden = true; clearDisplay(get('backtest-result')); draft = null; tested = false; sync(); });
-  get('view-close').addEventListener('click', () => { get('view').hidden = true; clearDisplay(get('view-result')); });
+  get('cancel').addEventListener('click', clearDraft);
+  get('view-close').addEventListener('click', closeView);
   get('view-backtest').addEventListener('click', () => { if (viewedItem) void act(() => viewItem(viewedItem, {adjust: true})); });
   get('refresh').addEventListener('click', () => void act(loadList));
   window.addEventListener('affairs-checked', () => { void loadList().catch(error => status(error.message, true)); });
