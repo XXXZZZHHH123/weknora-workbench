@@ -111,6 +111,13 @@ def test_templates_and_page_projection(pages, path, marker):
     assert html.xpath('//a[@href="/workbenches/fixture-workbench/sn/indicators?tab=charts&date=2030-01-02" and text()="返回图表库"]')
     if path.endswith('/import'):
         assert config(response)['id'] is None, '静态导入路由优先于动态ID'
+        panel = html.get_element_by_id('report-chart-import')
+        assert panel.tag == 'details' and 'open' not in panel.attrib
+        assert panel.find('summary').text == '从往期周报导入常用图'
+        native_result = html.get_element_by_id('chart-import-result')
+        assert native_result.getnext() is panel, '新入口追加在原表导入结果后，原有内容不重新包裹'
+        assert html.get_element_by_id('chart-import-sheets').getparent() is panel.getparent()
+        assert html.get_element_by_id('chart-import-apply').text == '确认导入所选工作表'
     if path.endswith('chart-1'):
         assert config(response)['id'] == 'chart-1'
         assert 'disabled' in html.get_element_by_id('chart-editor-fields').attrib
