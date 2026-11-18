@@ -23,6 +23,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   function syncCount() {
     get('count').textContent = String(selected.length); get('empty').hidden = !!selected.length;
+    const manageSuggestions = get('suggestions-manage');
+    if (manageSuggestions) manageSuggestions.hidden = !selected.length;
     const total = get('total'); if (total) total.textContent = String(selected.length);
   }
   const observer = 'IntersectionObserver' in window ? new IntersectionObserver(entries => {
@@ -176,33 +178,62 @@ document.addEventListener('DOMContentLoaded', () => {
     finally { get('save').disabled = !metadata.can_edit_shared; }
   });
   const suggestions = get('suggestions-dialog'), model = get('suggestions-model'), run = get('suggestions-run'), adopt = get('suggestions-adopt');
-  let models, running = false, suggested = [];
+  let models, running = false, suggested = [], suggestedJobId;
   const suggestionStatus = message => { get('suggestions-status').textContent = message; };
-  function syncSuggestions() { run.disabled = running || !model.value; adopt.disabled = running || !get('suggestions-list').querySelector('input:checked') || !metadata.can_edit_shared; }
-  get('suggestions-open')?.addEventListener('click', async () => {
-    model.parentElement.hidden = false; run.hidden = false; suggestions.showModal();
+  const checkedSuggestions = () => [...get('suggestions-list').querySelectorAll('input:checked')].map(input => input.value);
+  function syncSuggestions() {
+    run.disabled = suggestionJob.busy || running || !model.value;
+    adopt.disabled = running || !checkedSuggestions().length || !metadata.can_edit_shared;
+  }
+  async function openSuggestions(requestedId) {
+    model.parentElement.hidden = false; run.hidden = false;
+    if (!suggestions.open) suggestions.showModal();
+    if (requestedId) void suggestionJob.restore(requestedId, {explicit: true});
+    else void suggestionJob.discover();
     if (!models) {
       model.disabled = true;
       try {
         const data = await request('/strategies/models'); models = data.models || []; model.replaceChildren();
         models.forEach(item => model.append(new Option(item.name, item.id)));
-        if (!models.length) { model.append(new Option('暂无可用通用模型', '')); suggestionStatus('当前空间没有可用的通用模型，请先在模型设置中配置。'); }
-        else { model.disabled = false; try { const remembered = localStorage.getItem('research-strategy-text-model'); if (models.some(item => item.id === remembered)) model.value = remembered; } catch (_) {} }
-      } catch (error) { suggestionStatus('模型列表未读取：' + error.message); }
+        if (!models.length) {
+          model.append(new Option('暂无可用通用模型', ''));
+          if (!suggestionJob.busy) suggestionStatus('当前空间没有可用的通用模型，请先在模型设置中配置。');
+        } else {
+          model.disabled = false;
+          try { const remembered = localStorage.getItem('research-strategy-text-model'); if (models.some(item => item.id === remembered)) model.value = remembered; } catch (_) {}
+        }
+      } catch (error) { if (!suggestionJob.busy) suggestionStatus('模型列表未读取：' + error.message); }
     }
     syncSuggestions();
+  }
+  const restore = get('suggestions-restore');
+  get('suggestions-open')?.addEventListener('click', () => void openSuggestions());
+  get('suggestions-manage')?.addEventListener('click', () => void openSuggestions());
+  const suggestionJob = ResearchAnalysisJobs.create({
+    purpose: 'focus_suggestions',
+    button: run,
+    status: get('suggestions-status'),
+    restoreButton: restore,
+    disabled: () => running || !model.value,
+    isOpen: () => suggestions.open,
+    snapshot: () => [selected, checkedSuggestions()],
+    present(data, {restored}) {
+      if (restored && suggested.length !== checkedSuggestions().length) {
+        suggestionStatus('建议已生成，保留研究员当前的勾选。'); return;
+      }
+      renderSuggestions(data, data.job.id);
+    },
   });
   model.addEventListener('change', () => { try { localStorage.setItem('research-strategy-text-model', model.value); } catch (_) {} syncSuggestions(); });
   get('suggestions-close').addEventListener('click', () => suggestions.close());
-  run.addEventListener('click', async () => {
-    if (running || !model.value) return; running = true; suggested = []; get('suggestions-list').replaceChildren(); syncSuggestions(); suggestionStatus('正在根据研究框架核对工作表，再从真实字段中生成建议…');
-    try {
-      const data = await request('/market/core/suggestions', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({model_id: model.value})});
-      renderSuggestions(data);
-    } catch (error) { suggestionStatus(error.message); }
-    finally { running = false; syncSuggestions(); }
+  run.addEventListener('click', () => suggestionJob.submit('/api/sn/market/core/suggestions', {model_id: model.value}));
+  if (metadata.can_edit_shared) void ResearchAnalysisJobs.requested('focus_suggestions').then(job => {
+    if (closed || dialog.open || suggestions.open || suggested.length) return;
+    if (job) return openSuggestions(job.id);
+    return reviewSetup();
   });
-  function renderSuggestions(data) {
+  function renderSuggestions(data, jobId) {
+    suggestedJobId = jobId;
     get('suggestions-list').replaceChildren();
     suggested = data.items || [];
     for (const row of suggested) {
@@ -216,22 +247,34 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   async function reviewSetup() {
     const setup = window.WorkbenchSetupReview;
-    if (!metadata.can_edit_shared || !setup?.is('focus')) return;
+    if (!metadata.can_edit_shared || !await setup?.appliesTo('focus')) return;
+    const before = JSON.stringify(selected);
     try {
       const data = await setup.load();
-      if (dialog.open || suggestions.open) return announce('请先结束当前编辑，再重新打开任务结果。');
-      model.parentElement.hidden = true; run.hidden = true;
+      if (closed) return;
+      if (dialog.open || suggestions.open || suggested.length || before !== JSON.stringify(selected)) {
+        return announce('请先结束当前编辑，再重新打开任务结果。');
+      }
+      model.parentElement.hidden = true; run.hidden = true; restore.hidden = true;
       suggestions.showModal(); renderSuggestions(data);
     } catch (error) { announce(error.message); }
   }
   adopt.addEventListener('click', async () => {
-    const ids = new Set([...get('suggestions-list').querySelectorAll('input:checked')].map(input => input.value)); if (!ids.size || running) return;
+    const ids = new Set(checkedSuggestions()); if (!ids.size || running) return;
     running = true; syncSuggestions();
-    try { await saveItems(suggested.filter(row => ids.has(row.series_id)).map(row => ({kind: 'indicator', id: row.series_id}))); suggestions.close(); }
+    try {
+      await saveItems(suggested.filter(row => ids.has(row.series_id)).map(row => ({kind: 'indicator', id: row.series_id})));
+      const url = new URL(location.href);
+      if (url.searchParams.get('analysis_job') === suggestedJobId) {
+        url.searchParams.delete('analysis_job');
+        history.replaceState(history.state, '', url);
+      }
+      suggestions.close();
+    }
     catch (error) { suggestionStatus(error.message); }
     finally { running = false; syncSuggestions(); }
   });
-  get('retry').addEventListener('click', loadCards); syncCount(); observeCharts(); void reviewSetup();
+  get('retry').addEventListener('click', loadCards); syncCount(); observeCharts();
   window.addEventListener('pagehide', () => { closed = true; generation++; controller?.abort(); directoryGeneration++; directoryController?.abort(); clearTimeout(directoryTimer); clearCharts(); });
   window.addEventListener('pageshow', event => { if (event.persisted) { closed = false; void loadCards(); } });
 });

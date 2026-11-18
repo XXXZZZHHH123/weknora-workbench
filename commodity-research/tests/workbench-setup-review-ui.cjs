@@ -1,14 +1,19 @@
 /* Isolated browser review flow with a precomputed model result. */
 const {assert, launch, open, prefix, render} = require('./chart-ui-fixture.cjs');
 
-const resultPath = '/workbench-setup/jobs/setup-fixture/result';
-const query = part => `setup_job=setup-fixture&setup_part=${part}`;
+const setupId = 'setup-fixture-00001';
+const resultPath = `/analysis-jobs/${setupId}/result`;
+const query = part => `setup_job=${setupId}&setup_part=${part}`;
 const script = html => html.replace('</head>', '<script src="/static/workbench-setup-review.js"></script></head>');
 const day = '2029-09-15';
 const proposed = {id: 'custom-stock', label: '合成库存维度', category: '库存', sections: [{id: 's-test', label: '合成环节', items: []}]};
 const item = {series_id: 'kb-fixture-series', name: '合成指标', dimension: proposed.id,
   section: proposed.sections[0].label, section_id: proposed.sections[0].id, reason: '合成候选理由'};
-const result = (part, data) => ({report: {name: '合成往期周报'}, items: [{part, data, state: 'succeeded'}]});
+const result = (part, data) => ({
+  job: {id: setupId, purpose: 'workbench_setup', workbench_id: 'fixture', state: 'succeeded'},
+  report: {name: '合成往期周报'},
+  items: [{part, data, state: 'succeeded'}]
+});
 
 async function dimensionReview(browser) {
   const stored = {dimensions: [], revision: 0, can_write: true, categories: [{id: '库存', label: '库存'}]};
@@ -18,7 +23,7 @@ async function dimensionReview(browser) {
     if (path === '/dimensions') return reply(stored);
     if (path === '/dimensions/data') return reply({dimensions: [], revision: 0});
     if (path === resultPath) return reply(result('indicators', {dimensions: [proposed], items: [item], sections: []}));
-    if (path === '/dimensions/from-setup/setup-fixture') { attemptedSave = body; return reply({detail: '本次保存仅捕获请求'}, 409); }
+    if (path === '/dimensions/from-setup/' + setupId) { attemptedSave = body; return reply({detail: '本次保存仅捕获请求'}, 409); }
     return false;
   });
   const p = fixture.page;
@@ -69,8 +74,58 @@ async function layoutReview(browser) {
   await fixture.close();
 }
 
+async function explicitDimensionReview(browser) {
+  const job = {id: 'inference-job-00001', purpose: 'dimension_inference', workbench_id: 'fixture', state: 'succeeded'};
+  const url = prefix + '/sn/dimensions?' + query('indicators') + '&analysis_job=' + job.id;
+  const page = script(render('dimensions.html', {}, {dimension_page: {date: day}}));
+  const fixture = await open(browser, url, page, ({path, reply}) => {
+    if (path === '/dimensions') return reply({dimensions: [], revision: 0, can_write: true, categories: []});
+    if (path === '/dimensions/data') return reply({dimensions: [], revision: 0});
+    if (path === '/strategies/models' || path === '/dimensions/sources') return reply({models: [], items: []});
+    if (path === '/analysis-jobs/' + job.id) return reply(job);
+    if (path === '/analysis-jobs/' + job.id + '/result') return reply({job, dimensions: [proposed]});
+    return false;
+  });
+  const dialog = fixture.page.locator('#dimensions-model-dialog');
+  await dialog.getByText(proposed.label).waitFor();
+  assert.equal(await dialog.locator('#dimensions-model-title').textContent(), '从往期周报归纳维度');
+  assert.ok(fixture.calls.every(call => !call.path.includes(setupId)));
+  await fixture.close();
+}
+
+async function chartReview(browser) {
+  const page = script(render('chart_import.html'));
+  const source = {kind: 'knowledge_file', knowledge_id: 'weekly', source_binding_id: 'fixture', file_version: 'a'.repeat(64)};
+  const chart = {id: 'setup-chart', title: '合成周报图', chart_type: 'trend',
+    series: [{name: item.name, selected_id: item.series_id, candidates: [{id: item.series_id, name: item.name}]}]};
+  let preview;
+  const fixture = await open(browser, prefix + '/sn/charts/import?' + query('charts'), page, ({path, body, reply}) => {
+    if (path === '/charts/import/report/files') return reply({items: [], next_offset: null});
+    if (path === '/strategies/models') return reply({models: [{id: 'model-fixture', name: '合成模型'}]});
+    if (path === resultPath) return reply(result('charts', {
+      job_id: setupId, group: '合成周报图组', source, model_id: 'model-fixture', charts: [chart]}));
+    if (path === '/charts/import/report/preview') {
+      preview = body;
+      return reply({errors: ['本次预览仅捕获请求']});
+    }
+    return false;
+  });
+  const p = fixture.page;
+  await p.getByText('本次预览仅捕获请求').waitFor();
+  assert.equal(await p.locator('#report-chart-group').inputValue(), '合成周报图组');
+  assert.deepEqual(preview, {job_id: setupId, group: '合成周报图组', chart_id: chart.id,
+    mappings: [item.series_id], chart_type: 'trend'});
+  assert.deepEqual(fixture.calls.filter(call => call.method !== 'GET').map(call => call.path), ['/charts/import/report/preview']);
+  await fixture.close();
+}
+
 (async () => {
   const browser = await launch();
-  try { await dimensionReview(browser); await layoutReview(browser); }
+  try {
+    await dimensionReview(browser);
+    await layoutReview(browser);
+    await explicitDimensionReview(browser);
+    await chartReview(browser);
+  }
   finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

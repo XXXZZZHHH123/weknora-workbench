@@ -47,6 +47,19 @@ test('workbench setup keeps only known phases and uses a fixed title', () => {
   assert.equal(jobs[2]!.phase, '')
 })
 
+test('draft task metadata exposes recognized purposes and phases without retaining provider data', () => {
+  const purposes = ['monitor_draft', 'report_dimension_draft', 'report_chart_import', 'dimension_inference',
+    'dimension_fields', 'focus_suggestions', 'judgment_dimensions', 'strategy_text', 'strategy_generation']
+  const jobs = readAnalysisJobs({ items: purposes.map((purpose, index) => ({
+    id: `job-${index}`, workbench_id: 'wb-a', purpose, state: 'running',
+    phase: purpose === 'dimension_fields' ? 'dimension_queries' : 'generating', title: 'provider data', result: 'provider output',
+  })) })
+  assert.deepEqual(jobs.map(job => job.purpose), purposes)
+  assert.equal(jobs.find(job => job.purpose === 'dimension_fields')!.phase, 'dimension_queries')
+  assert.equal(jobs.find(job => job.purpose === 'report_chart_import')!.title, '往期周报图表识别')
+  assert.doesNotMatch(JSON.stringify(jobs), /provider/)
+})
+
 test('dismiss metadata is explicit and cannot hide running work', () => {
   const jobs = readAnalysisJobs({ items: [
     { id: 'done', workbench_id: 'wb-a', state: 'succeeded', dismissed: true, result_available: true },

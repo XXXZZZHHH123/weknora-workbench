@@ -22,7 +22,7 @@ from starlette.concurrency import run_in_threadpool
 
 from tin.config import SHANGHAI, settings
 from tin.integration.workbench_scope import require_shared_write
-from tin.web import strategy_citations as citations
+from tin.web import analysis_jobs, strategy_citations as citations
 from tin.web.research_display import human_text
 
 router = APIRouter()
@@ -605,11 +605,13 @@ async def add_excerpts(scope, model_id, text, cards, excerpts, *, purpose=None):
         cards[0]['notes'].append(f'一次最多摘录 {MAX_EXCERPTS} 段原文，其余文件只保留引用。')
 
 
-async def draft_from_text(scope, text, model_id, *, purpose=None):
+async def draft_from_text(scope, text, model_id, *, progress=None, purpose=None):
     today = _today()
     judgments, conditions = await run_in_threadpool(_context, scope)
     strategies = await run_in_threadpool(_strategies, scope)
     files = await _files(scope)
+    if progress:
+        await progress('generating')
     audit = {'purpose': purpose} if purpose else {}
     first = await completion(scope, model_id, structure_prompt(text, today, judgments, conditions, strategies, files), **audit)
     drafts = _parse(_Drafts, first, '模型返回的方案格式无效，原文保持不变，请重试或更换模型').cards
@@ -632,6 +634,8 @@ async def draft_from_text(scope, text, model_id, *, purpose=None):
                         '模型返回的指标或文件选择格式无效，请重试或更换模型')
         picks = [pick for pick in drafts[0].items(_Pick, second.indicators, 40)[0] if pick.card < len(drafts)]
         file_picks = [pick for pick in drafts[0].items(_FilePick, second.files, 40)[0] if pick.card < len(drafts)]
+    if progress:
+        await progress('validating')
     cards, excerpts = assemble(scope, text, today, drafts, judgments, conditions, candidates, picks, dropped,
                                strategies, files, file_candidates, file_picks)
     await add_excerpts(scope, model_id, text, cards, excerpts, **audit)
@@ -645,7 +649,38 @@ async def draft_from_text(scope, text, model_id, *, purpose=None):
     return result
 
 
-@router.post('/draft-from-text')
+async def verify_text_draft(scope, body, result):
+    from tin.integration.workbench_scope import artifact_session
+    from tin.web.research_references import resolve_reference
+
+    def check_references(cards):
+        with artifact_session(scope) as session:
+            for card in cards:
+                for key in ('judgment_reference', 'reference'):
+                    if reference := card.get(key):
+                        resolve_reference(session, scope, reference['kind'], reference['id'], revision=reference['revision'])
+
+    cards = [row['body']['card'] for row in result['cards']]
+    if any(card.get('reference') or card.get('judgment_reference') for card in cards):
+        await run_in_threadpool(check_references, cards)
+    for card in cards:
+        if card.get('citations'):
+            await citations.resolve_citations(scope, card['citations'])
+
+
+analysis_jobs.result_checks['strategy_text'] = verify_text_draft
+
+
+async def run_text_draft(scope, body, progress, job_id):
+    await progress('reading_source')
+    try:
+        return await asyncio.wait_for(draft_from_text(scope, body['text'], body['model_id'], progress=progress),
+                                      timeout=SECONDS)
+    except TimeoutError:
+        raise HTTPException(503, f'整理超过 {SECONDS} 秒，原文保持不变，请缩短文字或稍后重试') from None
+
+
+@router.post('/draft-from-text', status_code=202)
 async def draft(request: Request):
     from tin.web.research_strategy import require_card_scope
     scope = require_card_scope()
@@ -664,7 +699,5 @@ async def draft(request: Request):
         raise HTTPException(422, f'请填写 {TEXT_LIMIT} 字以内的方案文字并选择模型') from None
     if not body.text.strip():
         raise HTTPException(422, '请填写方案文字')
-    try:
-        return await asyncio.wait_for(draft_from_text(scope, body.text.strip(), body.model_id), timeout=SECONDS)
-    except TimeoutError:
-        raise HTTPException(503, f'整理超过 {SECONDS} 秒，原文保持不变，请缩短文字或稍后重试') from None
+    return await analysis_jobs.start_job(scope, 'strategy_text', {'text': body.text.strip(), 'model_id': body.model_id},
+                                         request.headers.get('idempotency-key'), run_text_draft)

@@ -13,7 +13,8 @@ from starlette.concurrency import run_in_threadpool
 from tin.integration.workbench_scope import artifact_session
 from tin.judgments.service import JudgmentError, save_version, to_payload
 from tin.models import AuditLog
-from tin.web import judgment_generation as generation
+from tin.web import analysis_jobs, judgment_generation as generation
+from tin.web.judgment_jobs import digest
 from tin.web.judgment_panels import panel_scope, register_panel, selected_judgment
 from tin.web.research_dimensions import checked_dimension, dimension_prompt, read_dimensions, summaries
 
@@ -113,28 +114,40 @@ def audit_suggestion(scope, body, *, suggestions=None, error=None):
             action='研判维度建议', target_type='judgment', target_id=str(body.judgment_id), detail={
                 'workbench_id': scope.workbench_id, 'version': body.version, 'model_id': body.model_id,
                 'prompt_version': SUGGESTION_VERSION, 'status': 'failed' if error else 'succeeded',
-                **({'error_status': error.status_code} if error else {'suggestions': suggestions})}))
+                **({'error_status': error.status_code} if error else {'suggestion_count': len(suggestions)})}))
         session.commit()
 
 
-@router.post('/dimension-suggestions')
-async def suggest_dimensions(request: Request):
-    scope = generation.scope_for_analysis(write=True)
-    panel_scope(write=True)
-    body = await generation.read_body(request, SuggestionRequest)
+def context_stamp(payload, dimensions):
+    return digest([payload.model_dump(mode='json'), summaries(dimensions)])
+
+
+async def verify_suggestions(scope, body, result):
+    current, dimensions = await run_in_threadpool(suggestion_context, scope, SuggestionRequest.model_validate(body))
+    if context_stamp(current, dimensions) != result['_verification']:
+        raise HTTPException(409, '研判或研究维度已变化，请刷新后补标')
+
+
+analysis_jobs.result_checks['judgment_dimensions'] = verify_suggestions
+
+
+async def run_suggestions(scope, request_body, progress, job_id):
+    body = SuggestionRequest.model_validate(request_body)
     payload, dimensions = await run_in_threadpool(suggestion_context, scope, body)
     prompt = suggestion_prompt(payload, dimensions)
     try:
         await generation.current_model(scope, body.model_id)
+        await progress('analyzing')
         response = await asyncio.wait_for(generation.completion(scope, body.model_id, prompt), generation.GENERATION_SECONDS)
+        await progress('validating')
         verified = await generation.resolve_workbench(scope.identity, scope.workbench_id, scope.authorization)
         if (verified.restricted or not verified.can_edit or 'judgments' not in verified.view_modules
                 or generation.scope_key(verified) != generation.scope_key(scope)):
             raise HTTPException(403, '当前研究台权限已变化，请刷新后补标')
-        current, current_dimensions = await run_in_threadpool(suggestion_context, verified, body)
-        if current != payload or summaries(current_dimensions) != summaries(dimensions):
-            raise HTTPException(409, '研判或研究维度已变化，请刷新后补标')
         suggestions = checked_suggestions(response, payload, dimensions)
+        result = {'judgment_id': body.judgment_id, 'version': body.version, 'suggestions': suggestions,
+                  'research_dimensions': summaries(dimensions), '_verification': context_stamp(payload, dimensions)}
+        await verify_suggestions(verified, request_body, result)
     except asyncio.TimeoutError:
         error = HTTPException(504, '模型维度补标超时，请重试；未更改研判')
         await run_in_threadpool(audit_suggestion, scope, body, error=error)
@@ -143,8 +156,17 @@ async def suggest_dimensions(request: Request):
         await run_in_threadpool(audit_suggestion, scope, body, error=error)
         raise
     await run_in_threadpool(audit_suggestion, scope, body, suggestions=suggestions)
-    return {'judgment_id': body.judgment_id, 'version': body.version, 'suggestions': suggestions,
-        'research_dimensions': summaries(dimensions)}
+    return result
+
+
+@router.post('/dimension-suggestions', status_code=202)
+async def suggest_dimensions(request: Request):
+    scope = generation.scope_for_analysis(write=True)
+    panel_scope(write=True)
+    body = await generation.read_body(request, SuggestionRequest)
+    await run_in_threadpool(suggestion_context, scope, body)
+    return await analysis_jobs.start_job(scope, 'judgment_dimensions', body.model_dump(mode='json'),
+                                         request.headers.get('idempotency-key'), run_suggestions)
 
 
 def persist_dimensions(scope, body):

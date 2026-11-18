@@ -3,7 +3,10 @@
 from datetime import date, datetime
 
 from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy import update
+from starlette.concurrency import run_in_threadpool
 
 from tin.compute.engine import latest_trade_date
 from tin.config import SHANGHAI, settings
@@ -12,7 +15,9 @@ from tin.jobs.seed import seed_researcher
 from tin.integration.identity import verified_actor
 from tin.schemas.strategy import ExecutionIn, StrategyPlan
 from tin.strategy import service
-from tin.integration.workbench_scope import current_workbench, go_request, require_shared_write
+from tin.integration.workbench_scope import artifact_session, current_workbench, go_request, require_shared_write
+from tin.models import SourceMapping
+from tin.web import analysis_jobs, judgment_jobs
 
 
 class StrategyGenerationInput(BaseModel):
@@ -26,6 +31,40 @@ class StrategyDraftInput(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     base_version: int = Field(ge=1)
     plan: StrategyPlan
+
+class GeneratedStrategyInput(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    candidate: int = Field(ge=0, lt=3)
+
+
+def generation_scope():
+    scope = current_workbench.get()
+    if scope is None:
+        raise HTTPException(409, '请进入已授权的研究台生成策略')
+    require_shared_write(scope)
+    if (scope.restricted or scope.metadata.get('can_read_source') is False
+            or 'strategies' not in scope.view_modules
+            or not str(scope.authorization or '').startswith('Bearer ')):
+        raise HTTPException(403, '当前权限不能生成策略')
+    return scope
+
+
+def strategy_fact_stamp(scope, version=None):
+    if scope.scope_version != 2:
+        return None
+    if version is None:
+        from tin.integration.kb_facts import catalog_snapshot
+        version = catalog_snapshot(scope)['version']
+    return judgment_jobs.digest([version, {item['id']: item['knowledge'] for item in scope.sources}])
+
+
+async def verify_generation(scope, body, result):
+    if result['strategies'] and await run_in_threadpool(strategy_fact_stamp, scope) != result['_verification']:
+        raise HTTPException(409, '策略依据的来源版本已变化，请重新生成草稿')
+
+
+analysis_jobs.result_checks['strategy_generation'] = verify_generation
+
 
 STATUS_LABELS = {"draft": "草稿", "watching": "等待入场", "open": "跟踪中",
                  "closed": "已退出", "cancelled": "已作废"}
@@ -181,22 +220,20 @@ def build_router(session_factory, templates, shell) -> APIRouter:
                 session.rollback()
                 raise HTTPException(400, str(exc)) from None
 
-    @router.post("/api/sn/strategies/generate")
-    def generate_strategy(body: StrategyGenerationInput):
-        from tin.strategy.generate import generate_candidates
-        from tin.integration.kb_facts import page_read_scope
+    def generation_day(body):
         try:
             requested_day = date.fromisoformat(body.date) if body.date else None
         except (TypeError, ValueError):
             raise HTTPException(400, '研究日期应为 YYYY-MM-DD') from None
         if requested_day is not None and requested_day > datetime.now(SHANGHAI).date():
             raise HTTPException(400, '研究日期不能晚于今天')
-        scope = current_workbench.get()
+        return requested_day
+
+    def generate_strategy(body, requested_day, scope=None):
+        from tin.strategy.generate import generate_candidates
+        from tin.integration.kb_facts import page_read_scope
         provider = None
         if scope is not None:
-            require_shared_write(scope)
-            if not body.model_id:
-                raise HTTPException(400, '请选择已配置的通用模型')
             from tin.llm.platform_provider import PlatformStrategyProvider
             from tin.llm.base import ProviderUnavailable
             try:
@@ -211,10 +248,66 @@ def build_router(session_factory, templates, shell) -> APIRouter:
             result = generate_candidates(session, research_variety(session), day,
                                          researcher_id=seed_researcher(session).id,
                                          provider=provider,
-                                         research_question=body.research_question.strip())
+                                         research_question=body.research_question.strip(),
+                                         persist_strategies=scope is None)
+            if scope is not None:
+                if result.status == 'error':
+                    raise HTTPException(503, '策略生成未完成，请核对来源和模型配置后重试')
+                return {'status': result.status, 'gaps': result.gaps, 'call_id': result.call_id,
+                        'strategies': [plan.model_dump(mode='json') for plan in result.strategies],
+                        '_verification': strategy_fact_stamp(scope, provider.source_version)}
             session.commit()
             return {"status": result.status, "gaps": result.gaps, "call_id": result.call_id,
                     "strategies": [service.serialize_strategy(session, row) for row in result.strategies]}
+
+    async def run_generation(scope, body, progress, job_id):
+        parsed = StrategyGenerationInput.model_validate(body)
+        await progress('generating')
+        result = await run_in_threadpool(generate_strategy, parsed, generation_day(parsed), scope)
+        await progress('validating')
+        await verify_generation(scope, body, result)
+        return result
+
+    @router.post("/api/sn/strategies/generate")
+    async def submit_generation(request: Request, body: StrategyGenerationInput):
+        if current_workbench.get() is None and not settings.weknora_api_url:
+            return await run_in_threadpool(generate_strategy, body, generation_day(body))
+        scope = generation_scope()
+        generation_day(body)
+        if not body.model_id:
+            raise HTTPException(400, '请选择已配置的通用模型')
+        value = await analysis_jobs.start_job(scope, 'strategy_generation', body.model_dump(mode='json'),
+                                              request.headers.get('idempotency-key'), run_generation)
+        return JSONResponse(value, status_code=202)
+
+    def save_generated_candidate(scope, job_id, index, plan):
+        with artifact_session(scope) as session:
+            # Serialize competing saves before reading the private receipt.
+            session.execute(update(SourceMapping).where(SourceMapping.id == analysis_jobs.job_key(scope, job_id))
+                .values(version=SourceMapping.version), execution_options={'synchronize_session': False})
+            row = analysis_jobs.owned_record(session, scope, job_id, 'strategy_generation')
+            receipts = row.config.get('saved_candidates', {})
+            if str(index) in receipts:
+                return service.serialize_strategy(session, find(session, receipts[str(index)]))
+            try:
+                seed_researcher(session)
+                saved = service.create_strategy(session, StrategyPlan.model_validate(plan),
+                    actor=scope.identity.user_id, reason='研究员核对并保存模型策略草稿')
+                judgment_jobs._update_record(session, row, {**row.config,
+                    'saved_candidates': {**receipts, str(index): saved.id}})
+                session.commit()
+            except (ValidationError, ValueError):
+                raise HTTPException(422, '策略草稿校验失败，请重新生成并核对') from None
+            return service.serialize_strategy(session, saved)
+
+    @router.post('/api/sn/strategies/generated/{job_id}')
+    async def save_generated(job_id: str, body: GeneratedStrategyInput):
+        scope = generation_scope()
+        result = await analysis_jobs.job_result(scope, job_id, 'strategy_generation')
+        if body.candidate >= len(result['strategies']):
+            raise HTTPException(404, '策略候选不存在')
+        return await run_in_threadpool(save_generated_candidate, scope, job_id, body.candidate,
+                                       result['strategies'][body.candidate])
 
     @router.get('/api/sn/strategies/models')
     async def strategy_models():

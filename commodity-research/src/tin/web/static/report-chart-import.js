@@ -7,8 +7,8 @@
   if (!config.enabled) return;
   const $ = id => document.getElementById('report-chart-' + id), E = U.esc;
   const path = '/charts/import/report', states = new Map(), sources = new Map(), controllers = new Set();
-  let loaded = false, busy = false, invalidated = false, jobId, generation = 0, timer, closed = false;
-  let sourceNext = null, sourceToken = 0, sourceTimer, sourcesBusy = false;
+  let loaded = false, busy = false, invalidated = false, jobId, generation = 0, closed = false;
+  let sourceNext = null, sourceToken = 0, sourceTimer, sourcesBusy = false, modelEdits = 0;
   async function api(url, options = {}) {
     const controller = new AbortController(); controllers.add(controller);
     const timeout = setTimeout(() => controller.abort(), 60000);
@@ -26,7 +26,7 @@
     $('model').disabled = !config.can_write || busy || !$('model').options.length;
     $('group').disabled = !config.can_write || busy;
     $('more').disabled = busy || sourcesBusy;
-    $('recognize').disabled = !config.can_write || busy || !$('file').value || !$('model').value;
+    $('recognize').disabled = chartJob.busy || recognitionDisabled();
     const selected = [...states.values()].filter(state => state.selected && state.valid && !state.imported);
     $('apply').disabled = !config.can_write || busy || invalidated || !selected.length;
     $('selection').textContent = states.size ? `已选 ${selected.length} / ${states.size} 张；可能重复、未找到指标、定义失败的图默认不勾选。` : '';
@@ -164,28 +164,65 @@
       while (queue.length && own === generation && !closed && !invalidated) await preview(queue.shift());
     }));
   }
-  async function poll(own) {
-    try {
-      const data = await api('/jobs/' + encodeURIComponent(jobId));
-      if (closed || own !== generation) return;
-      const progress = data.progress;
-      $('progress').textContent = typeof progress === 'string' ? progress : [progress?.message, progress?.total ? `${progress.completed || 0} / ${progress.total}` : ''].filter(Boolean).join(' · ');
-      if (['complete', 'completed', 'done', 'success'].includes(data.status)) {
-        busy = false; await renderResult(data, own); return;
-      }
-      if (['failed', 'error'].includes(data.status)) throw new Error(data.reason || data.error || '识别失败，请重试');
-      timer = setTimeout(() => poll(own), 1000);
-    } catch (error) { if (!closed && own === generation) { busy = false; conflict(error); controls(); } }
+  function recognitionDisabled() {
+    return !config.can_write || busy || !$('file').value || !$('model').value;
   }
-  $('recognize').addEventListener('click', async () => {
-    if (!config.can_write || busy || !$('file').value) return;
-    const own = ++generation; clearTimeout(timer); clearCards(); invalidated = false; busy = true;
-    U.notice($('result'), ''); U.notice($('failures'), ''); U.notice($('status'), '正在读取已解析片段并识别图表…'); controls();
-    try {
-      const data = await post('/recognize', {source: sources.get($('file').value).citation, model_id: $('model').value});
-      if (own !== generation || closed) return;
-      jobId = data.job_id; await poll(own);
-    } catch (error) { if (!closed && own === generation) { busy = false; conflict(error); controls(); } }
+  function candidateSnapshot() {
+    return [...states.values()].map(state => [selection(state), state.selected, state.imported]);
+  }
+  const reviewSnapshot = () => [generation, $('file').value, $('group').value, candidateSnapshot()];
+  const chartJob = ResearchAnalysisJobs.create({
+    purpose: 'report_chart_import',
+    button: $('recognize'),
+    status: $('progress'),
+    restoreButton: $('restore'),
+    disabled: recognitionDisabled,
+    isOpen: () => !closed && !panel.hidden,
+    snapshot: reviewSnapshot,
+    present: presentChartResult,
+  });
+  function presentChartResult(data, {restored}) {
+    if (restored && states.size) {
+      ResearchAnalysisJobs.message($('progress'), '识别已完成，保留研究员当前的候选图和映射。');
+      return;
+    }
+    const source = data.request.source;
+    const selected = sources.get($('file').value);
+    if (restored && $('file').value) {
+      if (!selected || ['source_binding_id', 'knowledge_id', 'file_version'].some(key => selected.citation[key] !== source[key])) {
+        ResearchAnalysisJobs.message($('progress'), '识别已完成，保留研究员当前选择的周报。');
+        return;
+      }
+    }
+    if (restored && $('group').value && $('group').value !== (selected?.title || '').slice(0, 80)
+        && $('group').value !== data.group) {
+      ResearchAnalysisJobs.message($('progress'), '识别已完成，保留研究员当前的图表分组。');
+      return;
+    }
+    if (restored && !$('file').value) {
+      const key = JSON.stringify(source);
+      if (!sources.has(key)) {
+        const title = data.setupReport?.name || data.group || '已识别的周报';
+        sources.set(key, {citation: source, title});
+        $('file').append(new Option(title, key));
+      }
+      $('file').value = key;
+    }
+    if (data.setupReport && [...$('model').options].some(option => option.value === data.model_id)) {
+      $('model').value = data.model_id;
+    }
+    jobId = data.job?.id || data.job_id; invalidated = false;
+    U.notice($('result'), '');
+    const progress = data.progress;
+    ResearchAnalysisJobs.message($('progress'), [progress?.message,
+      progress?.total ? `${progress.completed || 0} / ${progress.total}` : ''].filter(Boolean).join(' · '));
+    return renderResult(data, ++generation);
+  }
+  $('recognize').addEventListener('click', () => {
+    if (recognitionDisabled() || chartJob.busy) return;
+    void chartJob.submit('/api/sn' + path + '/recognize', {
+      source: sources.get($('file').value).citation, model_id: $('model').value,
+    });
   });
   $('apply').addEventListener('click', async () => {
     if (!config.can_write || busy || invalidated) return;
@@ -209,16 +246,16 @@
     finally { busy = false; controls(); }
   });
   $('file').addEventListener('change', () => {
-    generation++; clearTimeout(timer); clearCards(); jobId = null; invalidated = false;
+    generation++; clearCards(); jobId = null; invalidated = false;
     $('group').value = (sources.get($('file').value)?.title || '').slice(0, 80);
     $('progress').textContent = ''; U.notice($('status'), ''); U.notice($('result'), ''); U.notice($('failures'), ''); controls();
   });
-  $('model').addEventListener('change', controls);
+  $('model').addEventListener('change', () => { modelEdits++; controls(); });
   async function loadFiles(reset = false) {
     const own = ++sourceToken;
     if (reset) {
       sources.clear(); $('file').replaceChildren(new Option('请选择周报', '')); sourceNext = 0;
-      generation++; clearTimeout(timer); clearCards(); jobId = null; invalidated = false;
+      generation++; clearCards(); jobId = null; invalidated = false;
       $('group').value = ''; $('progress').textContent = ''; U.notice($('result'), ''); U.notice($('failures'), '');
     }
     sourcesBusy = true; controls(); U.notice($('status'), '正在读取已授权周报…');
@@ -243,7 +280,7 @@
     if (loaded) return;
     if (!config.can_write) { U.notice($('status'), config.write_reason); return; }
     loaded = true;
-    await Promise.all([loadFiles(true), (async () => {
+    await Promise.all([loadFiles(), (async () => {
       try {
         const data = await U.api('/strategies/models'); $('model').replaceChildren();
         for (const model of data.models || []) $('model').append(new Option(model.name, model.id));
@@ -256,7 +293,7 @@
   const sourceTabs = [...document.querySelectorAll('[data-chart-import-source]')];
   const reportHash = '#' + panel.id;
   let activeSource;
-  function chooseSource(source, updateURL = false) {
+  function chooseSource(source, updateURL = false, discover = true) {
     for (const tab of sourceTabs) {
       const selected = tab.dataset.chartImportSource === source;
       tab.setAttribute('aria-selected', String(selected));
@@ -273,7 +310,10 @@
       activeSource = source;
       document.dispatchEvent(new CustomEvent('chart-import:source', {detail: {source}}));
     }
-    if (source === 'report') return loadReportSources();
+    if (source === 'report') {
+      if (config.can_write && discover) void chartJob.discover();
+      return loadReportSources();
+    }
   }
   sourceTabs.forEach((tab, index) => {
     tab.addEventListener('click', () => chooseSource(tab.dataset.chartImportSource, true));
@@ -293,29 +333,40 @@
     chooseSource(window.location.hash === reportHash ? 'report' : 'native');
   }
   async function reviewSetup(setup) {
-    await chooseSource('report', true);
-    if (closed || busy) return;
-    const own = ++generation; busy = true; controls();
+    const snapshot = () => JSON.stringify([...reviewSnapshot(), modelEdits, $('search').value]);
+    const before = snapshot();
+    await chooseSource('report', true, false);
+    if (closed || busy || panel.hidden) return;
     U.notice($('status'), '正在载入周报图表候选…');
     try {
       const result = await setup.load();
-      if (closed || own !== generation) return;
-      jobId = result.job_id;
-      if (result.source) {
-        const key = JSON.stringify(result.source);
-        if (!sources.has(key)) {
-          const title = result.setupReport?.name || result.group || '所选周报';
-          sources.set(key, {citation: result.source, title}); $('file').append(new Option(title, key));
-        }
-        $('file').value = key;
+      if (closed || busy || panel.hidden) return;
+      if (chartJob.busy || before !== snapshot()) {
+        U.notice($('status'), '编辑内容已改动，保留当前候选图和映射。', 'warning');
+        return;
       }
-      if ([...$('model').options].some(option => option.value === result.model_id)) $('model').value = result.model_id;
-      await poll(own);
-    } catch (error) { if (!closed && own === generation) { busy = false; conflict(error); controls(); } }
+      await presentChartResult({...result, request: {source: result.source}}, {restored: true});
+    } catch (error) {
+      if (!closed && !panel.hidden && before === snapshot()) U.notice($('status'), error.message, 'error');
+    }
   }
   window.addEventListener('hashchange', chooseLinkedSource);
   const setup = window.WorkbenchSetupReview;
-  if (config.can_write && setup?.is('charts')) void reviewSetup(setup); else chooseLinkedSource();
-  window.addEventListener('pagehide', () => { closed = true; generation++; clearTimeout(timer); clearTimeout(sourceTimer); controllers.forEach(controller => controller.abort()); clearCards(); }, {once: true});
+  const explicit = new URLSearchParams(location.search).has('analysis_job');
+  if (config.can_write && (explicit || setup?.part === 'charts')) {
+    void ResearchAnalysisJobs.requested('report_chart_import').then(async job => {
+      if (closed || activeSource !== undefined) return;
+      if (job) {
+        void chooseSource('report', true, false);
+        return chartJob.restore(job.id, {explicit: true});
+      }
+      if (await setup?.appliesTo('charts')) return reviewSetup(setup);
+      chooseLinkedSource();
+    });
+  } else chooseLinkedSource();
+  window.addEventListener('pagehide', () => {
+    closed = true; generation++; chartJob.pause(); clearTimeout(sourceTimer);
+    controllers.forEach(controller => controller.abort()); clearCards();
+  }, {once: true});
   controls();
 })();

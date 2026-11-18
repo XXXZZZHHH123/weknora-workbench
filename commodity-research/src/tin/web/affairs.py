@@ -10,6 +10,7 @@ from tin.config import SHANGHAI
 from tin.integration.workbench_scope import current_workbench
 from tin.models import Judgment, Researcher, Signal, Strategy
 from tin.models.workbench import WorkbenchArtifact
+from tin.web.analysis_job_purposes import PURPOSES
 from tin.web.research_references import record_in_workbench
 
 router = APIRouter(prefix='/api/sn/affairs')
@@ -67,10 +68,7 @@ def _artifacts(session, scope, module):
         session, scope, 'artifact', row['id'], record=row)], len(rows) > RECORD_BUDGET
 
 
-JOB_PHASES = {'judgments': {'queued': '等待分析', 'selecting': '核对资料范围', 'analyzing': '正在分析',
-                             'validating': '核对分析结果'},
-              'diagram': {'queued': '等待生成', 'reading_source': '读取原件', 'loading_catalog': '读取指标目录',
-                          'selecting': '匹配指标', 'generating': '生成图结构', 'validating': '核对配置'}}
+JOB_PHASES = {purpose: task.phases for purpose, task in PURPOSES.items()}
 
 
 def _analysis_jobs(scope, modules):
@@ -78,12 +76,6 @@ def _analysis_jobs(scope, modules):
     import sqlite3
     from tin.web.judgment_job_registry import ACTIVE
     from tin.web.judgment_jobs import list_jobs
-    from tin.web.workbench_setup import PHASES, PURPOSE
-    phases = {**JOB_PHASES, PURPOSE: PHASES}
-    destinations = {'judgments': '/sn/judgment', 'diagram': '/sn/diagram', PURPOSE: '/'}
-    visible = {*modules, *([PURPOSE] if 'home' in modules else [])}
-    reviews = {'judgments': '分析已完成，核对后保存为研判草稿',
-               'diagram': '配置已生成，核对后导入产业图', PURPOSE: '建立候选已生成，请打开核对清单'}
     try:
         items = list_jobs(scope.identity, 20)['items']
     except (HTTPException, OSError, ValueError, sqlite3.Error):
@@ -91,10 +83,11 @@ def _analysis_jobs(scope, modules):
     rows, finished = [], set()
     for job in items:  # newest first
         purpose = job.get('purpose')
+        task = PURPOSES.get(purpose)
         if (job.get('workbench_id') != scope.workbench_id or job.get('dismissed')
-                or purpose not in phases or purpose not in visible):
+                or task is None or task.module not in modules):
             continue
-        state, page = job.get('state'), destinations[purpose]
+        state = job.get('state')
         if state not in ACTIVE:
             # Only the newest finished analysis of each kind needs attention; a
             # later result or failure replaces what an older attempt reported.
@@ -102,9 +95,12 @@ def _analysis_jobs(scope, modules):
                 continue
             finished.add(purpose)
         if state in ACTIVE:
-            status, detail = '进行中', phases[purpose].get(job.get('phase'), '后台运行中')
+            status, detail = '进行中', JOB_PHASES[purpose].get(job.get('phase'), '后台运行中')
         elif state == 'succeeded' and job.get('result_available'):
-            status, detail = '待核对', reviews[purpose]
+            status = '待核对'
+            detail = {'judgments': '分析已完成，核对后保存为研判草稿',
+                      'diagram': '配置已生成，核对后导入产业图',
+                      'workbench_setup': '建立候选已生成，请打开核对清单'}.get(purpose, '后台分析已完成，打开结果核对')
         elif state in {'failed', 'interrupted'}:
             status = '未完成'
             detail = (str(job.get('message') or '') or ('分析已中断' if state == 'interrupted' else '分析未完成'))[:200]
@@ -115,8 +111,11 @@ def _analysis_jobs(scope, modules):
             stamp = _stamp(datetime.fromisoformat(stamp)) if isinstance(stamp, str) else ''
         except ValueError:
             stamp = ''
-        rows.append({'title': job.get('title') or '后台分析', 'status': status,
-            'detail': detail + (' · ' + stamp if stamp else ''), 'href': page + '?analysis_job=' + str(job['id'])})
+        href = task.path + '?analysis_job=' + str(job['id'])
+        if task.fragment:
+            href += '#' + task.fragment
+        rows.append({'title': job.get('title') or task.title, 'status': status,
+            'detail': detail + (' · ' + stamp if stamp else ''), 'href': href})
     return rows
 
 
@@ -265,7 +264,7 @@ def build_affairs(session, scope, *, today=None, limit=8):
     review.sort(key=lambda item: item['due_date'])
     counts = {'progress': len(progress), 'review': len(review), 'approvals': len(approvals) + len(observations),
               'reports': len(reports)}
-    sections = ['progress'] if modules.intersection({'judgments', 'diagram'}) else []
+    sections = ['progress'] if any(task.module in modules for task in PURPOSES.values()) else []
     sections += ['review'] if modules.intersection({'judgments', 'strategies'}) else []
     sections += ['approvals'] if 'strategies' in modules else []
     sections += ['reports'] if 'reports' in modules else []

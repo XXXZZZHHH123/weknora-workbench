@@ -42,7 +42,10 @@ const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'},
       coverage: {start: '2025-01-01', end: '2030-01-20', frequency: '周', point_count: 5}}]};
 (async () => {
   const browser = await f.launch(); let env;
-  let offeredDraft = draft;
+  let offeredDraft = draft, taskRequest, monitorPhase = 'succeeded';
+  const jobId = 'monitor-job-fixture-001';
+  const metadata = state => ({id: jobId, purpose: 'monitor_draft', workbench_id: 'fixture', state,
+    phase_label: '正在匹配监测指标'});
   let returnedBacktest = backtest;
   let savedAlerts = [];
   let finishRevision;
@@ -53,7 +56,14 @@ const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'},
     env = await f.open(browser, f.prefix + '/', html, async ({path, method, body, url, reply}) => {
       if (path === '/strategies/models') return reply({models: [{id: 'fixture-model', name: '合成模型'}]});
       if (path === '/monitors' && method === 'GET') return reply({items: saved, can_write: true, alerts: savedAlerts});
-      if (path === '/monitors/draft') { assert.equal(body.sentence, offeredDraft.sentence); assert.equal(body.model_id, 'fixture-model'); return reply(offeredDraft); }
+      if (path === '/monitors/draft') {
+        assert.equal(body.sentence, offeredDraft.sentence); assert.equal(body.model_id, 'fixture-model');
+        taskRequest = body; return reply(metadata('queued'), 202);
+      }
+      if (path === '/analysis-jobs/' + jobId) return reply(metadata(monitorPhase));
+      if (path === '/analysis-jobs/' + jobId + '/result') {
+        return reply({...offeredDraft, request: taskRequest, job: metadata('succeeded')});
+      }
       if (path === '/monitors/backtest') {
         tests.push(body); assert.equal(body.draft_id, draft.draft_id); assert.equal(body.rules[0].series_id, 'synthetic-b');
         assert.equal(body.rules[0].value, 7); return reply({...returnedBacktest, start: body.start || returnedBacktest.start, end: body.end || returnedBacktest.end});
@@ -288,6 +298,21 @@ const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'},
     assert.match(await page.locator('#monitor-backtest-result .monitor-summary').innerText(), /当前状态.*数据停更.*组合条件.*触发/s);
     assert.match(await page.locator('[data-monitor-chart="0"] .monitor-chart-note').innerText(), /规则状态 无法判断.*所选指标含未确认日期/s);
     assert.equal(await page.evaluate(() => window.__monitorXss), undefined);
+    const savedCount = saved.length;
+    monitorPhase = 'running';
+    await page.getByRole('button', {name: '生成草稿', exact: true}).click();
+    await page.locator('#monitor-status[data-analysis-busy=true]').filter({hasText: '可关闭窗口'}).waitFor();
+    assert.equal(await page.locator('#monitor-generate').isDisabled(), true);
+    await page.getByLabel('监测需求原话').fill('研究员编辑期间留下的原话');
+    await dialog.getByRole('button', {name: '关闭', exact: true}).click();
+    monitorPhase = 'succeeded';
+    await page.locator('#monitor-create-toggle').click();
+    await page.locator('#monitor-status').filter({hasText: '编辑内容已改动'}).waitFor();
+    assert.equal(await page.getByLabel('监测需求原话').inputValue(), '研究员编辑期间留下的原话');
+    await page.goto(f.origin + f.prefix + '/?analysis_job=' + jobId);
+    await page.locator('#monitor-draft:not([hidden])').waitFor();
+    assert.equal(await page.getByLabel('监测需求原话').inputValue(), offeredDraft.sentence);
+    assert.equal(saved.length, savedCount, '取回只打开监测草稿');
     assert.deepEqual(env.errors, []);
     const restrictedHtml = f.render('home.html', {restricted: true}, {affairs});
     assert.ok(!restrictedHtml.includes('id="monitors"'), 'The restricted view does not expose monitoring controls');

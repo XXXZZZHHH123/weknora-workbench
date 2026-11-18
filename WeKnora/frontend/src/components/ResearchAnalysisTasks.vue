@@ -4,8 +4,7 @@ import { useRouter } from 'vue-router'
 import { NotifyPlugin } from 'tdesign-vue-next'
 import { useAnalysisTasksStore } from '@/stores/analysisTasks'
 import { analysisPhaseLabel } from '@/stores/analysisTasksState'
-import type { AnalysisJob } from '@/api/researchAnalysisTasks'
-import { workbenchSetupTask } from '@/api/workbenchSetupTask'
+import { analysisJobPresentation, type AnalysisJob } from '@/api/researchAnalysisTasks'
 
 const store = useAnalysisTasksStore(), router = useRouter(), expanded = ref(false)
 const rows = computed(() => store.jobs.filter(job => job.state !== 'applied' && job.state !== 'superseded' && !job.dismissed))
@@ -24,8 +23,7 @@ function openTask(job: AnalysisJob) {
   if (!store.jobs.some(row => row.id === job.id && row.workbench_id === job.workbench_id && !row.dismissed && row.state !== 'superseded' && row.state !== 'applied')) return
   closeNotice(job.id)
   store.markRead(job.id); expanded.value = false
-  const view = job.purpose === workbenchSetupTask.purpose ? workbenchSetupTask.view : job.purpose === 'diagram' ? 'diagram' : 'judgment'
-  void router.push({ name: 'researchWorkbenchDetail', params: { workbenchId: job.workbench_id }, query: { view, analysis_job: job.id } })
+  void router.push({ name: 'researchWorkbenchDetail', params: { workbenchId: job.workbench_id }, query: { view: analysisJobPresentation[job.purpose ?? 'judgments'].view, analysis_job: job.id } })
 }
 async function ignoreTask(job: AnalysisJob) {
   if (store.dismissingAll || isRunning(job) || !rows.value.some(row => row.id === job.id && row.workbench_id === job.workbench_id)) return
@@ -49,8 +47,8 @@ function notifyCompleted() {
   for (const job of completed) {
     if (notifications.has(job.id)) continue
     const forget = (): void => { if (notifications.get(job.id) === notification) notifications.delete(job.id) }
-    const title = job.purpose === workbenchSetupTask.purpose ? workbenchSetupTask.completionTitle : job.purpose === 'diagram' ? '产业图配置已生成' : '研究分析已完成'
-    const notification = NotifyPlugin.success({ title,
+    const presentation = analysisJobPresentation[job.purpose ?? 'judgments']
+    const notification = NotifyPlugin.success({ title: 'completed' in presentation ? presentation.completed : `${presentation.title}已完成`,
       content: () => h('div', { class: 'analysis-completion' }, [h('span', '结果已暂存，尚未保存。'),
         h('button', { type: 'button', onClick: () => openTask(job) }, '查看结果'),
         h('button', { type: 'button', disabled: store.dismissingAll || store.dismissingIds.includes(job.id), onClick: () => ignoreTask(job) }, '忽略')]),

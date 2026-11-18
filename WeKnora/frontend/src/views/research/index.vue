@@ -41,7 +41,7 @@ import { useTheme } from '@/composables/useTheme'
 import { useRoute, useRouter } from 'vue-router'
 import { getResearchWorkbench, type ResearchWorkbench } from '@/api/workspaces'
 import IsolatedResearchWorkbench from './IsolatedResearchWorkbench.vue'
-import { analysisJobId, analysisJudgmentId, authenticateResearchFrame, researchFramePath } from './researchFrameSession'
+import { analysisJobId, analysisJudgmentId, authenticateResearchFrame, isAnalysisJobView, isResearchView, researchFramePath } from './researchFrameSession'
 import { useAnalysisTasksStore } from '@/stores/analysisTasks'
 import WorkbenchActions from '@/views/workspaces/WorkbenchActions.vue'
 import ResearchFeatureGuides from './ResearchFeatureGuides.vue'
@@ -85,11 +85,8 @@ function makeResearchChatPanel(): ReturnType<typeof defineAsyncComponent> {
 const ResearchChatPanel = shallowRef(makeResearchChatPanel())
 function requestedResearchView() {
   if (analysisJudgmentId(route.query.judgment_id)) return 'judgment'
-  if (analysisJobId(route.query.analysis_job)) {
-    if (route.query.view === 'home' || route.query.view === 'diagram') return route.query.view
-    return 'judgment'
-  }
-  return typeof route.query.view === 'string' && ['home', 'diagram', 'indicators', 'judgment', 'strategies', 'reports'].includes(route.query.view) ? route.query.view : 'home'
+  if (analysisJobId(route.query.analysis_job)) return isAnalysisJobView(route.query.view) ? route.query.view : 'judgment'
+  return isResearchView(route.query.view) ? route.query.view : 'home'
 }
 const researchView = ref(requestedResearchView())
 const nativeDrawerOpen = ref(false), frameIsHome = ref(true)
@@ -103,9 +100,8 @@ const sourceLabel = computed(() => workbench.value ? workbenchSourceLabel(workbe
 const chatSourceIds = computed(() => workbench.value ? directKnowledgeBaseIds(workbench.value) : [])
 const frameUrl = computed(() => {
   if (!canShowResearch.value) return ''
-  const matchesHomeTask = (route.query.view === 'home') === (researchView.value === 'home')
-  const analysisJob = matchesHomeTask ? route.query.analysis_job : undefined
-  return researchFramePath(workbenchId.value,researchView.value,analysisJob,route.query.judgment_id,route.query.diagram_template)
+  const job = researchView.value === requestedResearchView() ? route.query.analysis_job : undefined
+  return researchFramePath(workbenchId.value,researchView.value,job,route.query.judgment_id,route.query.diagram_template)
 })
 function restartSession() { generation.value += 1 }
 async function prepareFrameSession() {
@@ -124,7 +120,7 @@ async function reauthenticateFrame() {
 }
 function openChat() { if (canReadSource.value) { chatMounted.value = true; chatVisible.value = true } }
 function navigateResearch(view: string) {
-  if (!canShowResearch.value || !['home', 'diagram', 'indicators', 'judgment', 'strategies', 'reports'].includes(view)) return
+  if (!canShowResearch.value || !isResearchView(view)) return
   researchView.value = view
   nativeDrawerOpen.value = false
   frameIsHome.value = view === 'home'

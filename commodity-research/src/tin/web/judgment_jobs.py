@@ -260,7 +260,8 @@ def _discard_private_record(session, meta, kind):
 
 
 def cleanup_discarded(kind, index, purpose, *, job_id=None):
-    for meta in [row for row in index.discarded() if row.get('purpose', 'judgments') == purpose
+    purposes = {purpose} if isinstance(purpose, str) else purpose
+    for meta in [row for row in index.discarded() if row.get('purpose', 'judgments') in purposes
             and (job_id is None or row['id'] == job_id)][:20]:
         factory = _storage_factory(meta)
         if factory is not None:

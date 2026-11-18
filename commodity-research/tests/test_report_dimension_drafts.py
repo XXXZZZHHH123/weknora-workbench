@@ -5,13 +5,16 @@ from decimal import Decimal
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 import httpx
 import pytest
 
-from tin.integration.workbench_scope import current_workbench
-from tin.web import report_dimension_drafts as drafts
+from tin.config import settings
+from tin.integration.identity import Identity
+from tin.integration.workbench_scope import WorkbenchScope, current_workbench
+from tin.web import analysis_jobs, judgment_jobs, report_dimension_drafts as drafts
 
 URL = '/api/sn/reports/2026-01-09/weekly/draft-dimensions'
 
@@ -49,20 +52,46 @@ def review(**changes):
 
 
 @pytest.fixture(autouse=True)
-def synchronous_read(monkeypatch):
+def synchronous_read(monkeypatch, tmp_path):
     async def thread(function, *args, **kwargs):
         return function(*args, **kwargs)
+    async def resolve(*args):
+        return current_workbench.get()
     monkeypatch.setattr(drafts, 'run_in_threadpool', thread)
+    monkeypatch.setattr(judgment_jobs, 'resolve_workbench', resolve)
+    monkeypatch.setattr(settings, 'data_dir', tmp_path)
 
 
 def request(body, *, active=None, url=URL):
     app = FastAPI()
     app.include_router(drafts.router)
+    app.include_router(analysis_jobs.router)
+    if (active and active.can_edit and not active.restricted and active.authorization
+            and active.view_modules and active.metadata.get('can_read_source') is not False):
+        active = WorkbenchScope(Identity('fixture', '', 'Fixture', 7, 'owner'),
+            '10000000-0000-4000-8000-000000000123', 'fixture-kb', 7,
+            {'workspace_mode': 'isolated', 'can_edit': True}, active.authorization, view_modules=('reports',))
+
     async def run():
         marker = current_workbench.set(active)
         try:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
-                return await client.post(url, json=body)
+                response = await client.post(url, json=body, headers={'Idempotency-Key': uuid4().hex})
+                if response.status_code != 202:
+                    return response
+                job = response.json()
+                assert job['phase'] == 'queued' and job['purpose'] == 'report_dimension_draft'
+                path = '/api/sn/analysis-jobs/' + job['id']
+                for _ in range(250):
+                    status = await client.get(path)
+                    assert status.status_code == 200, status.text
+                    current = status.json()
+                    assert current['phase_label'] and current['context'] == {
+                        'day': '2026-01-09', 'period': 'daily' if '/daily/' in url else 'weekly'}
+                    if current['state'] not in {'queued', 'running'}:
+                        return await client.get(path + '/result')
+                    await asyncio.sleep(.01)
+                pytest.fail('report draft job did not complete')
         finally:
             current_workbench.reset(marker)
     return asyncio.run(run())
@@ -267,7 +296,7 @@ def test_model_failures_report_actual_error_without_fixed_prose(monkeypatch, fai
         raise failure
     monkeypatch.setattr(drafts.strategy_text, 'completion', complete)
     response = request({'model_id': 'model'}, active=scope())
-    assert response.status_code == failure.status_code and response.json()['detail'] == failure.detail
+    assert response.status_code == 409 and response.json()['detail'] == failure.detail
     assert 'dimensions' not in response.json()
 
 

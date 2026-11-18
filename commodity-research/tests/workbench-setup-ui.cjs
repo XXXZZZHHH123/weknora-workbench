@@ -7,9 +7,10 @@ const markup = JSON.parse(fs.readFileSync(0, 'utf8'));
 const prefix = '/research/workbenches/fixture';
 const id = 'setup-fixture-00001';
 const source = {kind: 'knowledge_file', knowledge_id: 'weekly', source_binding_id: 'binding', file_version: 'a'.repeat(64)};
-const job = {id, purpose: 'workbench_setup', workbench_id: 'fixture', state: 'running', phase: 'dimensions'};
+const job = {id, purpose: 'workbench_setup', workbench_id: 'fixture', state: 'running', phase: 'dimensions',
+  phase_label: '归纳维度'};
 const origin = 'http://localhost';
-const jobs = '/api/sn/workbench-setup/jobs';
+const jobs = '/api/sn/analysis-jobs';
 
 (async () => {
   const browser = await chromium.launch({headless: true, executablePath: process.env.SHEET_REVIEW_BROWSER,
@@ -21,7 +22,7 @@ const jobs = '/api/sn/workbench-setup/jobs';
     function shell(content) {
       const bootstrap = `<script>window.RESEARCH_PREFIX=${JSON.stringify(prefix)};
         window.RESEARCH_CONTEXT={tenant:1,user:${JSON.stringify(actor)},workbench:'fixture'};
-        window.researchFetch = window.fetch.bind(window);</script>`;
+        window.researchFetch = window.fetch.bind(window);</script><script src="/static/analysis-jobs.js"></script>`;
       return {contentType: 'text/html; charset=utf-8', body: '<!doctype html>' + bootstrap + content};
     }
     await page.route('**/*', async route => {
@@ -40,14 +41,14 @@ const jobs = '/api/sn/workbench-setup/jobs';
         searched.push(url.searchParams.get('search'));
         return reply({items: [{title: '<往期周报>', citation: source}], next_offset: null});
       }
-      if (endpoint === jobs && request.method() === 'POST') {
+      if (endpoint === '/api/sn/workbench-setup/jobs' && request.method() === 'POST') {
         assert.match(request.headers()['idempotency-key'], /^[a-f0-9]{32}$/);
         assert.deepEqual(request.postDataJSON(), {source, model_id: 'fixture-model', parts: ['dimensions', 'charts', 'layout', 'judgment']});
         submitted = true;
         return reply(job, 202);
       }
       if (endpoint === `${jobs}/${id}`) return reply(finished ? {...job, state: 'succeeded', result_available: true} : job);
-      if (endpoint === `${jobs}/${id}/result`) return reply({report: {name: '<往期周报>'}, items: [
+      if (endpoint === `${jobs}/${id}/result`) return reply({job: {...job, state: 'succeeded'}, report: {name: '<往期周报>'}, items: [
         {part: 'dimensions', state: 'succeeded', counts: {dimensions: 8, sections: 24}, data: {dimensions: []}},
         {part: 'charts', state: 'succeeded', counts: {ready: 8, needs_mapping: 12, failed: 3}, data: {job_id: 'charts'}},
         {part: 'layout', state: 'failed', message: '证据读取失败'},
@@ -76,7 +77,7 @@ const jobs = '/api/sn/workbench-setup/jobs';
       await part.uncheck();
     }
     await dialog.getByRole('button', {name: '开始建立'}).click();
-    await dialog.getByText('正在归纳维度，可关闭窗口。').waitFor();
+    await dialog.getByText('正在后台分析 · 归纳维度，可关闭窗口。').waitFor();
     assert.equal(await dialog.locator('#workbench-setup-status').getAttribute('data-busy'), 'true');
     await dialog.getByRole('button', {name: '关闭', exact: true}).click();
     await page.getByRole('button', {name: '查看任务'}).waitFor();

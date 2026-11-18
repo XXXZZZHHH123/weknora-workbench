@@ -16,14 +16,11 @@ from tin.web import (
     monitors, report_chart_import, report_chart_suggestions, report_one_page, strategy_citations, strategy_text,
 )
 from tin.web.chart_data import catalog_fields
+from tin.web.analysis_job_purposes import PURPOSES, WORKBENCH_SETUP
 
-PURPOSE = 'workbench_setup'
+PURPOSE = WORKBENCH_SETUP
 Part = Literal['dimensions', 'indicators', 'charts', 'layout', 'focus', 'diagram', 'judgment', 'strategy', 'monitors']
-PHASES = {
-    'queued': '等待建立', 'reading_source': '读取周报', 'dimensions': '归纳维度', 'indicators': '建议指标',
-    'charts': '识别图表', 'layout': '整理周报版式', 'focus': '生成核心关注建议', 'diagram': '生成产业图骨架',
-    'judgment': '生成研判草稿', 'strategy': '生成策略草稿', 'monitors': '生成监测候选',
-}
+PHASES = PURPOSES[PURPOSE].phases
 HISTORICAL = '以下是所选往期周报的当期原文。只整理为历史观点候选，保存前需由研究员更新为当前判断。'
 
 
@@ -71,7 +68,7 @@ def original_identity(report):
 class Setup:
     scope: WorkbenchScope
     body: SetupInput
-    expires_at: float
+    job_id: str
     report: dict
     evidence: str = field(init=False)
     dimensions_result: dict | None = None
@@ -105,13 +102,10 @@ class Setup:
     async def charts(self):
         report_chart_import.writable_scope()
         body = report_chart_import.RecognizeInput(source=self.body.source, model_id=self.body.model_id)
-        identifier = await run_in_threadpool(report_chart_import.new_job, self.scope, body, expires_at=self.expires_at)
-        await report_chart_import.process(self.scope, identifier, body, report=self.report)
-        state = await run_in_threadpool(report_chart_import.load_state, self.scope, identifier)
-        if state['status'] != 'complete':
-            raise HTTPException(state.get('error_status', 503), '周报图表识别没有完成')
+        state = await report_chart_import.recognize_report(self.scope, body, self.job_id, report=self.report)
+        state.pop('_original')
         self.chart_candidates = state.get('charts', [])
-        return {'job_id': identifier, 'source': body.source.model_dump(mode='json', exclude={'snapshot'}),
+        return {**state, 'job_id': self.job_id, 'source': body.source.model_dump(mode='json', exclude={'snapshot'}),
                 'model_id': body.model_id}, {
             'ready': sum(bool(chart.get('definition')) for chart in self.chart_candidates),
             'needs_mapping': sum(bool(chart.get('missing_indicators')) for chart in self.chart_candidates),
@@ -164,6 +158,7 @@ class Setup:
     async def focus(self):
         result = await focus_suggestions.generate_suggestions(
             self.scope, self.body.model_id, report_evidence=self.evidence)
+        result.pop('_catalog_version', None)
         return result, {'suggestions': len(result['items'])}
 
     async def diagram(self):
@@ -212,7 +207,7 @@ class Setup:
     async def monitors(self):
         monitors.require_scope(self.scope, write=True)
         text = await self.historical_text('当期可复核的监测关注点与阈值', 4000)
-        result = await monitors.draft_from_text(self.scope, text, self.body.model_id, persist=False)
+        result = await monitors.draft_from_text(self.scope, text, self.body.model_id)
         return result, {'candidates': 1, 'rules': len(result['rules'])}
 
 
@@ -231,10 +226,10 @@ STEPS = (
 )
 
 
-async def generate(scope, body, expires_at, progress):
+async def generate(scope, body, job_id, progress):
     await progress('reading_source')
     report = await asyncio.wait_for(report_chart_suggestions.read_report(scope, body.source), timeout=120)
-    setup = Setup(scope, body, expires_at, report)
+    setup = Setup(scope, body, job_id, report)
     output = []
     for part, module, seconds, step in STEPS:
         if part not in body.parts:

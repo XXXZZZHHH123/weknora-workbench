@@ -5,7 +5,8 @@ from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -14,7 +15,7 @@ from tin.integration.identity import Identity, current_identity
 from tin.integration.workbench_scope import WorkbenchScope, artifact_session, current_workbench
 from tin.models import AuditLog, DiagramTemplate, Judgment, SourceMapping
 from tin.models.workbench import WorkbenchArtifact
-from tin.web import judgment_generation, judgment_jobs, report_chart_import, workbench_setup as setup
+from tin.web import analysis_jobs, judgment_generation, judgment_jobs, report_chart_import, workbench_setup as setup
 from tin.web import workbench_setup_jobs as jobs
 from tin.web.judgment_job_registry import Registry
 
@@ -46,8 +47,8 @@ def workbench(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, 'weknora_api_url', 'http://synthetic.invalid')
     registry = Registry(tmp_path / 'analysis-index.sqlite')
     monkeypatch.setattr(judgment_jobs, 'registry', registry)
-    monkeypatch.setattr(jobs, 'registry', registry)
-    monkeypatch.setattr(jobs, 'runtime', jobs.Runtime())
+    monkeypatch.setattr(analysis_jobs, 'registry', registry)
+    monkeypatch.setattr(analysis_jobs, 'runtime', analysis_jobs.Runtime())
     state = {'revision': 1, 'edited_report': False, 'model_failure': False, 'phases': [], 'model_calls': []}
     fragments = [{'id': 'chunk1', 'index': 0, 'page': 1, 'content': TEXT}]
     report = {'filename': '样例周报.pptx', 'knowledge_id': 'report-1', 'source_binding_id': 'binding-1',
@@ -122,8 +123,8 @@ def workbench(tmp_path, monkeypatch):
 async def completed(workbench, *parts):
     job = await jobs.start_job(workbench.scope, body(*parts), 'fixture-setup-idempotency-' + '-'.join(parts))
     assert job['state'] == 'queued' and job['purpose'] == 'workbench_setup'
-    await jobs.runtime.tasks[job['id']]
-    status = await jobs.job_status(workbench.scope, job['id'])
+    await analysis_jobs.runtime.tasks[job['id']]
+    status = await analysis_jobs.status(workbench.scope, job['id'])
     assert status['state'] == 'succeeded', status
     return job['id'], await jobs.job_result(workbench.scope, job['id'])
 
@@ -148,10 +149,23 @@ def test_selected_steps_have_fixed_phases_and_publish_only_private_candidates(wo
             assert session.scalars(select(WorkbenchArtifact)).all() == []
             assert session.scalars(select(Judgment)).all() == []
             assert session.scalars(select(DiagramTemplate)).all() == []
-            assert [row.config['kind'] for row in session.scalars(select(SourceMapping))] == [jobs.KIND]
+            assert [row.config['kind'] for row in session.scalars(select(SourceMapping))] == [analysis_jobs.KIND]
             audit = list(session.scalars(select(AuditLog).order_by(AuditLog.id)))
             assert [row.target_id for row in audit] == [identifier, identifier]
             assert all(TEXT not in str(row.detail) for row in audit)
+        app = FastAPI()
+        app.include_router(analysis_jobs.router)
+        app.include_router(judgment_jobs.global_router)
+        base = '/api/sn/analysis-jobs'
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test.invalid') as client:
+            with active(workbench.scope):
+                latest = await client.get(base + '/latest', params={'purpose': jobs.PURPOSE})
+                assert latest.json()['job']['id'] == identifier
+                fetched = await client.get(f'{base}/{identifier}/result')
+                assert fetched.status_code == 200
+                assert fetched.json()['items'] == result['items'] and '_source_identity' not in fetched.json()
+                dismissed = await client.post(f'/api/research/analysis-jobs/{identifier}/dismiss')
+                assert dismissed.json()['dismissed'] is True
     asyncio.run(run())
 
 
@@ -191,7 +205,7 @@ def test_scope_owner_report_revision_and_write_grant_are_required(workbench):
     asyncio.run(run())
 
 
-def test_chart_counts_and_child_prefill_use_original_recognition_and_setup_expiry(workbench, monkeypatch):
+def test_chart_counts_and_prefill_use_the_same_private_setup_result(workbench, monkeypatch):
     ready, pending, invalid = [
         {'id': name, 'title': name, 'chart_type': 'trend', 'series': [{'selected_id': SERIES}]}
         for name in ('mapped', 'pending', 'invalid')]
@@ -215,15 +229,22 @@ def test_chart_counts_and_child_prefill_use_original_recognition_and_setup_expir
         row, = result['items']
         assert row['counts'] == {'ready': 1, 'needs_mapping': 1, 'failed': 2}
         assert row['data']['source']['source_binding_id'] == 'binding-1'
-        meta = workbench.registry.get(workbench.scope.identity, identifier, WB)
-        chart_job_id = row['data']['job_id']
-        private = report_chart_import.load_state(workbench.scope, chart_job_id)
-        assert private['expires'] == meta['expires_unix']
+        assert row['data']['job_id'] == identifier
+        assert [job['id'] for job in workbench.registry.listing(workbench.scope.identity)] == [identifier]
         with active(workbench.scope):
-            review = await report_chart_import.job(chart_job_id)
+            review, purpose = await report_chart_import.verified_state(workbench.scope, identifier)
+        assert purpose == 'workbench_setup'
+        assert review == row['data']
         assert [chart['id'] for chart in review['charts']] == ['b1-mapped', 'b1-pending', 'b1-invalid']
         with artifact_session(workbench.scope) as session:
             assert session.scalars(select(WorkbenchArtifact)).all() == []
+            assert len(session.scalars(select(SourceMapping)).all()) == 1
+        with workbench.registry.transaction() as connection:
+            meta = workbench.registry.fetch(connection, identifier)
+            workbench.registry.write(connection, {**meta, 'expires_unix': 0})
+        with active(workbench.scope), pytest.raises(HTTPException) as expired:
+            await report_chart_import.verified_state(workbench.scope, identifier)
+        assert expired.value.status_code == 410
     asyncio.run(run())
 
 
@@ -232,8 +253,8 @@ def test_judgment_uses_native_durable_review_and_monitor_is_private_until_review
         assert request.source_name == '样例周报.pptx' and TEXT in request.text and '当前判断' in request.text
         return {'review': {'revision': 1}, 'text': request.text}, {}
 
-    async def candidate(scope, sentence, model_id, *, persist):
-        assert not persist and TEXT in sentence
+    async def candidate(scope, sentence, model_id):
+        assert TEXT in sentence
         return {'title': '监测草稿', 'sentence': sentence, 'rules': [{'series_id': SERIES}], 'candidates': []}
 
     monkeypatch.setattr(judgment_generation, '_analyze', analyze)
@@ -246,7 +267,7 @@ def test_judgment_uses_native_durable_review_and_monitor_is_private_until_review
         assert result['items'][1]['counts'] == {'candidates': 1, 'rules': 1}
         with artifact_session(workbench.scope) as session:
             assert session.scalars(select(WorkbenchArtifact)).all() == []
-        token = jobs.load_config(workbench.scope, identifier)['judgment_token']
+        token = jobs.load_config(workbench.scope, identifier)['result']['_judgment_token']
         preview = judgment_generation.previews.get(workbench.scope, token)
         preview['review']['revision'] = 2
         judgment_jobs.atomic_replace(workbench.scope, token, preview, 1)

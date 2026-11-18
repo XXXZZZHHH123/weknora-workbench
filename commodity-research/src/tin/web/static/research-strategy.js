@@ -23,7 +23,7 @@
   for (const item of state.plans || []) metadata.set(item.key, item);
   if (research.selected) cache.set('research:' + research.selected.id, research.selected);
   if (state.initial_plan) cache.set('plan:' + state.initial_plan.id, state.initial_plan);
-  let selected = state.selected || null, activeEditor = null, selectSequence = 0, editSequence = 0;
+  let selected = state.selected || null, activeEditor = null, selectSequence = 0, editSequence = 0, editRevision = 0;
   let selectedSources = new Set(), fileSequence = 0;
   let sourceNames = new Map();
   let cardSource = null, cardReference = null, judgmentReference = null, planSource = null, saving = false;
@@ -121,6 +121,7 @@
   }
   function dirty() {
     if (!activeEditor) return;
+    editRevision++;
     const draft = drafts.get(activeEditor); if (draft) { draft.dirty = true; stash(); markDraft(activeEditor, true); }
     syncDiscardDraft();
   }
@@ -965,6 +966,8 @@
   // Entry points for the text and Markdown tools: an organized draft opens as an unsaved new card, and
   // imported cards refresh the list without discarding drafts open in the editor.
   window.ResearchStrategyEditor = {
+    editStamp() { return [activeEditor, editSequence, editRevision, saving]; },
+    hasUnsavedChanges() { return saving || Boolean(activeEditor && drafts.get(activeEditor)?.dirty); },
     openDraft(body, label, notes = [], historicalNotice = '') {
       if (saving || !form) return false;
       const key = draftKey(), draft = {type: 'card', source: null, body, dirty: true, importLabel: label || '', historicalNotice};
@@ -975,6 +978,11 @@
     imported(items) {
       for (const item of items) { cache.delete('research:' + item.id); updateEntry('research:' + item.id, item, 'card'); }
       if (items.length && !activeEditor) select('research:' + items[0].id, false);
+    },
+    savedPlan(item) {
+      const key = 'plan:' + item.id;
+      updateEntry(key, item, 'plan');
+      if (!activeEditor) select(key, false);
     },
   };
   select(selected);

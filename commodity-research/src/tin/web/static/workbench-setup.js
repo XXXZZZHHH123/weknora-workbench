@@ -6,18 +6,10 @@
   if (!dialog) return;
 
   const prefix = window.RESEARCH_PREFIX || '', scope = window.RESEARCH_CONTEXT;
-  const jobs = '/workbench-setup/jobs';
+  const jobs = window.ResearchAnalysisJobs;
   const form = get('form'), report = get('report'), model = get('model'), search = get('search');
   const parts = [...form.querySelectorAll('input[name="part"]')];
   const guide = get('guide');
-  const jobId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{16,128}$/.test(value) ? value : '';
-  const active = new Set(['queued', 'running']);
-  const phaseLabels = {
-    queued: '正在等待后台任务', reading_source: '正在读取周报', dimensions: '正在归纳维度',
-    indicators: '正在建议指标', charts: '正在识别图表', layout: '正在准备周报版式',
-    focus: '正在生成核心关注建议', diagram: '正在生成产业图骨架', judgment: '正在生成研判草稿',
-    strategy: '正在生成策略草稿', monitors: '正在生成监测候选', validating: '正在核对任务范围',
-  };
   const reviewPages = {
     dimensions: ['研究维度', '/sn/dimensions'], indicators: ['维度绑定指标', '/sn/dimensions'],
     charts: ['图表库', '/sn/charts/import'], layout: ['周报版式', '/sn/reports?period=weekly'],
@@ -34,7 +26,7 @@
     judgment: {drafts: ['研判草稿', '份']}, strategy: {drafts: ['策略草稿', '份']},
     monitors: {candidates: ['监测候选', '项'], rules: ['候选条件', '条']},
   };
-  let stage = 'form', currentJob = '', submission, pollTimer, searchTimer, fileController;
+  let stage = 'form', currentJob = '', searchTimer, fileController;
   let modelLoading = false, filesLoading = false, nextOffset = null, modelError = '', fileStatus = '';
   let loadedFiles = false, loadedModels = false;
 
@@ -48,16 +40,6 @@
       throw error;
     }
     return value;
-  }
-
-  function checkJob(job, expected) {
-    if (!jobId(job?.id) || job.purpose !== 'workbench_setup' || job.workbench_id !== scope?.workbench
-        || (expected && expected !== job.id)) {
-      const error = new Error('后台任务范围已改变，请重新打开工作台');
-      error.status = 409;
-      throw error;
-    }
-    return job;
   }
 
   function status(message, busy = false, error = false) {
@@ -82,7 +64,7 @@
     get('more').disabled = locked || filesLoading;
     get('parts').disabled = locked;
     get('submit').hidden = !configuring;
-    get('submit').disabled = locked || filesLoading || !report.value || !model.value || !parts.some(part => part.checked);
+    get('submit').disabled = locked || submissionDisabled();
     get('reopen').hidden = !['results', 'terminal'].includes(stage);
     get('review').hidden = stage !== 'results';
     get('running').hidden = dialog.open || (stage === 'form' || stage === 'discovering');
@@ -197,69 +179,55 @@
     controls();
   }
 
-  function terminal(message) {
-    stage = 'terminal';
-    status(message, false, true);
-    controls();
+  function submissionDisabled() {
+    return filesLoading || !report.value || !model.value || !parts.some(part => part.checked);
   }
 
-  async function follow(identifier) {
-    clearTimeout(pollTimer);
-    currentJob = identifier;
-    stage = 'waiting';
-    status('正在读取后台任务，可关闭窗口。', true);
-    controls();
-    async function poll() {
-      try {
-        const job = checkJob(await api(`${jobs}/${identifier}`), identifier);
-        if (currentJob !== identifier) return;
-        if (active.has(job.state)) {
-          status((phaseLabels[job.phase] || '正在后台建立') + '，可关闭窗口。', true);
-          pollTimer = setTimeout(poll, 1400);
-        } else if (job.state === 'succeeded' && job.result_available) {
-          const result = await api(`${jobs}/${identifier}/result`);
-          if (currentJob === identifier) showResult(result);
-        } else terminal(job.message || '后台任务未完成，请重新建立。');
-      } catch (error) {
-        if (currentJob !== identifier) return;
-        if (error.status >= 400 && error.status < 500 && error.status !== 429) {
-          terminal(error.message);
-        } else {
-          status('正在重试读取后台任务，可关闭窗口。', true);
-          pollTimer = setTimeout(poll, 3000);
-        }
+  const setupJob = jobs.create({
+    purpose: 'workbench_setup',
+    disabled: submissionDisabled,
+    snapshot: () => null,
+    present(data) {
+      currentJob = data.job.id;
+      showResult(data);
+    },
+    onStatus(message, busy, failed) {
+      if (failed) stage = stage === 'submitting' ? 'form' : 'terminal';
+      else if (busy && stage !== 'submitting') stage = 'waiting';
+      status(message, busy, failed);
+      controls();
+    },
+    onAccepted(job) {
+      currentJob = job.id;
+      stage = 'waiting';
+      if (location.pathname === prefix + '/') {
+        const url = new URL(location.href);
+        url.searchParams.set('analysis_job', job.id);
+        history.replaceState(history.state, '', url);
       }
-    }
-    await poll();
-  }
+    },
+  });
 
   function forget() {
-    clearTimeout(pollTimer);
-    currentJob = '';
-    submission = undefined;
     const url = new URL(location.href);
-    if (url.searchParams.has('analysis_job')) {
+    if (url.searchParams.get('analysis_job') === currentJob) {
       url.searchParams.delete('analysis_job');
       history.replaceState(history.state, '', url);
     }
+    currentJob = '';
     showForm();
   }
 
-  function open() {
+  async function open() {
     if (!dialog.open) dialog.showModal();
     controls();
     if (stage !== 'form') return;
-    if (loadedFiles || filesLoading) {
-      showForm();
-      return;
-    }
+    if (loadedFiles || filesLoading) return showForm();
     stage = 'discovering';
     status('正在读取后台任务…', true);
     controls();
-    void api(jobs + '/latest').then(({job}) => {
-      if (job?.result_available || active.has(job?.state)) void follow(checkJob(job).id);
-      else showForm();
-    }).catch(() => showForm());
+    await setupJob.discover();
+    if (stage === 'discovering') showForm();
   }
 
   for (const entry of document.querySelectorAll('[data-workbench-setup-open]')) entry.addEventListener('click', open);
@@ -280,34 +248,14 @@
   });
   get('more').addEventListener('click', () => void loadFiles());
 
-  form.addEventListener('submit', async event => {
+  form.addEventListener('submit', event => {
     event.preventDefault();
     if (get('submit').disabled) return;
-    const body = JSON.stringify({source: JSON.parse(report.value), model_id: model.value,
-      parts: parts.filter(part => part.checked).map(part => part.value)});
-    if (body !== submission?.body) {
-      const bytes = crypto.getRandomValues(new Uint8Array(16));
-      submission = {body, key: Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')};
-    }
     stage = 'submitting';
-    status('正在提交后台任务，可关闭窗口。', true);
-    controls();
-    try {
-      const job = checkJob(await api(jobs, {method: 'POST', keepalive: true,
-        headers: {'Content-Type': 'application/json', 'Idempotency-Key': submission.key}, body}));
-      if (window.parent !== window) window.parent.postMessage({type: 'research-analysis-job-started',
-        purpose: 'workbench_setup', workbenchId: job.workbench_id, jobId: job.id}, location.origin);
-      if (location.pathname === prefix + '/') {
-        const url = new URL(location.href);
-        url.searchParams.set('analysis_job', job.id);
-        history.replaceState(history.state, '', url);
-      }
-      void follow(job.id);
-    } catch (error) {
-      stage = 'form';
-      status(error.message, false, true);
-      controls();
-    }
+    void setupJob.submit('/api/sn/workbench-setup/jobs', {
+      source: JSON.parse(report.value), model_id: model.value,
+      parts: parts.filter(part => part.checked).map(part => part.value),
+    });
   });
 
   if (guide) {
@@ -319,9 +267,10 @@
       try { localStorage.setItem(key, 'dismissed'); } catch { /* Storage can be disabled. */ }
     });
   }
-  const requested = jobId(new URL(location.href).searchParams.get('analysis_job'));
-  if (requested && location.pathname === prefix + '/') {
-    dialog.showModal();
-    void follow(requested);
-  }
+  if (location.pathname === prefix + '/') void jobs.requested('workbench_setup').then(job => {
+    if (!job || stage !== 'form') return;
+    currentJob = job.id;
+    if (!dialog.open) dialog.showModal();
+    return setupJob.restore(job.id, {explicit: true});
+  });
 })();

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
-import { analysisJobId, analysisJudgmentId, researchFramePath } from './researchFrameSession'
+import { analysisJobId, analysisJudgmentId, isAnalysisJobView, isResearchView, researchFramePath } from './researchFrameSession'
 import { computed, defineAsyncComponent, effectScope, h, nextTick, reactive, ref, shallowRef, watch } from 'vue'
 import { directKnowledgeBaseIds, workbenchSourceLabel } from './workbenchDataSources'
 
@@ -30,7 +30,7 @@ function fixture() {
     useTheme: () => ({ effectiveTheme: ref('light'), setTheme() {} }),
     onMounted() {}, onBeforeUnmount: (fn: () => void) => unmounts.push(fn),
     window: { location: { origin: 'https://test.local' }, removeEventListener() {} },
-    authenticateResearchFrame: async () => true, researchFramePath, analysisJobId, analysisJudgmentId,
+    authenticateResearchFrame: async () => true, researchFramePath, analysisJobId, analysisJudgmentId, isAnalysisJobView, isResearchView,
     directKnowledgeBaseIds, workbenchSourceLabel,
     getResearchWorkbench: (id: string) => new Promise(resolve => requests.push({ id, tenant: header, resolve })),
   }))
@@ -387,5 +387,25 @@ test('workbench setup task links pass the job ID to the scoped home frame', asyn
     await nextTick()
     f.view.navigateResearch('home')
     assert.equal(f.view.frameUrl.value, '/research/workbenches/workbench-a/')
+  } finally { f.close() }
+})
+
+test('draft task routes keep the requested native view and pass only the validated job identifier', async () => {
+  const f = fixture()
+  try {
+    await nextTick(); f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'isolated' } }); await new Promise(setImmediate)
+    const query = f.route.query as Record<string, unknown>
+    for (const [view, path] of Object.entries({ monitors: '/', reports: '/sn/reports', 'chart-import': '/sn/charts/import',
+      dimensions: '/sn/dimensions', market: '/sn', judgment: '/sn/judgment', strategies: '/sn/strategies' })) {
+      query.view = view; query.analysis_job = 'draft-job'; await nextTick()
+      const url = new URL(f.view.frameUrl.value, 'https://test.local')
+      assert.equal(url.pathname, '/research/workbenches/workbench-a' + path)
+      assert.equal(url.searchParams.get('analysis_job'), 'draft-job')
+      if (view === 'chart-import') assert.equal(url.hash, '#report-chart-import')
+    }
+    query.view = 'reports'; query.analysis_job = '../invalid'; await nextTick()
+    assert.equal(f.view.frameUrl.value, '/research/workbenches/workbench-a/sn/reports')
+    query.view = 'toString'; query.analysis_job = 'legacy-link'; await nextTick()
+    assert.equal(f.view.frameUrl.value, '/research/workbenches/workbench-a/sn/judgment?analysis_job=legacy-link')
   } finally { f.close() }
 })

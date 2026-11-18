@@ -14,6 +14,7 @@ from tin.models import SourceMapping
 from tin.web import dimension_suggestions as suggestions
 from tin.web.research_dimensions import default_dimensions, dimension_prompt
 from tests.test_chart_api import chart_client  # noqa: F401
+from tests.analysis_job_fixtures import detached_loop, finished_job
 
 
 def scope(**changes):
@@ -117,16 +118,9 @@ def test_unsaved_template_structure_drives_recall_without_saving(monkeypatch, se
             return {'queries': {'i1': ['Synthetic']}}
         return response_for(groups_of(prompt), [choice(dimension='d-template', section='Draft stage')])
     monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
-    app = FastAPI()
-    app.include_router(suggestions.router)
-    async def check():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
-            response = await client.post('/api/sn/dimensions/suggestions', json={
-                'model_id': 'model', 'dimensions': dimensions, 'date': '2024-03-29'})
-        assert response.status_code == 200
-        assert response.json()['items'][0]['section'] == 'Draft stage'
-        assert response.json()['as_of'] == '2024-03-29'
-    asyncio.run(check())
+    result = asyncio.run(suggestions.generate_suggestions(active, 'model', dimensions, '2024-03-29'))
+    assert result['items'][0]['section'] == 'Draft stage'
+    assert result['as_of'] == '2024-03-29'
     assert calls == ['dimension_queries', 'dimension_fields'] and dimensions == before
     assert list(session.scalars(select(SourceMapping))) == []
 
@@ -336,7 +330,12 @@ def test_candidate_latest_date_through_real_bounded_source_projection(chart_clie
     from tin.integration.page_facts import bounded_facts, page_read_scope
     from tests.chart_fixtures import SID, OTHER
     client, state = chart_client
+    from tin.web import analysis_jobs
     state.app.include_router(suggestions.router)
+    state.app.include_router(analysis_jobs.router)
+    async def fresh(scope, _purpose):
+        return scope
+    monkeypatch.setattr(analysis_jobs, 'fresh_scope', fresh)
     monkeypatch.setattr(suggestions, 'bounded_facts', bounded_facts)
     monkeypatch.setattr(suggestions, 'page_read_scope', page_read_scope)
     state.observations[SID] = [('2024-03-20', 10), ('2024-03-22', 11), ('2024-04-01', 12)]
@@ -351,8 +350,12 @@ def test_candidate_latest_date_through_real_bounded_source_projection(chart_clie
         assert fields[OTHER]['latest_date'] is None
         return response_for(groups_of(prompt), [choice(SID, 'supply', section='')])
     monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
-    response = client.post('/api/sn/dimensions/suggestions', json={'model_id': 'model', 'date': '2024-03-29',
-        'dimensions': [{'id': 'supply', 'label': '字段', 'category': '供给'}]})
+    with detached_loop(client):
+        response = client.post('/api/sn/dimensions/suggestions', headers={'Idempotency-Key': 'dimension-fields-fixture'},
+            json={'model_id': 'model', 'date': '2024-03-29',
+            'dimensions': [{'id': 'supply', 'label': '字段', 'category': '供给'}]})
+        assert response.status_code == 202 and response.json()['purpose'] == 'dimension_fields', response.text
+        _, response = finished_job(client, '/api/sn/analysis-jobs/' + response.json()['id'])
     assert response.status_code == 200, response.text
     assert response.json()['items'][0]['latest_date'] == '2024-03-22'
     bounded = [body for _, body in state.requests if not body.get('catalog_only')]
@@ -406,17 +409,8 @@ def test_inference_reads_selected_versioned_digests_and_never_saves(monkeypatch,
         return {'dimensions': [{'label': 'Custom', 'category': '其他', 'sections': ['Stage']}]}
     monkeypatch.setattr(suggestions.strategy_citations, 'read_structure_digest', content)
     monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
-    monkeypatch.setattr(suggestions, 'current_workbench', SimpleNamespace(get=lambda: active))
-    monkeypatch.setattr(suggestions, 'require_shared_write', lambda value: None)
-    app = FastAPI()
-    app.include_router(suggestions.router)
-    async def invoke():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
-            response = await client.post('/api/sn/dimensions/infer',
-                json={'model_id': 'model', 'sources': [source('first'), source('second')]})
-            assert response.status_code == 200, response.text
-            return response.json()
-    result = asyncio.run(invoke())
+    body = suggestions.InferenceInput(model_id='model', sources=[source('first'), source('second')])
+    result = asyncio.run(suggestions.infer_dimensions(active, body))
     assert len(result['dimensions']) == 1 and len(calls) == 4
     assert calls[:2] == calls[2:]
     assert all(row['truncated'] and '已按摘要读取（全文 12 段，摘要 443 段）' in row['notice']
@@ -444,6 +438,39 @@ def test_inference_refuses_unreadable_or_changed_originals(monkeypatch):
     assert caught.value.status_code == 422
 
 
+def test_inference_job_rechecks_document_at_result_retrieval(chart_client, monkeypatch):
+    from tin.web import analysis_jobs
+    client, state = chart_client
+    state.app.include_router(suggestions.router)
+    state.app.include_router(analysis_jobs.router)
+    revision = ['a']
+
+    async def fresh(scope, _purpose):
+        return scope
+
+    async def content(scope, binding, identifier, version):
+        return {'knowledge_id': identifier, 'filename': 'synthetic.md', 'file_version': version,
+                'supported': True, 'text': 'Synthetic source', 'sha256': revision[0]}
+
+    async def complete(*args, **kwargs):
+        assert kwargs['purpose'] == 'dimension_inference'
+        return {'dimensions': [{'label': 'Inferred draft', 'category': '其他'}]}
+
+    monkeypatch.setattr(analysis_jobs, 'fresh_scope', fresh)
+    monkeypatch.setattr(suggestions.strategy_citations, 'read_structure_digest', content)
+    monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
+    with detached_loop(client):
+        response = client.post('/api/sn/dimensions/infer', headers={'Idempotency-Key': 'dimension-infer-fixture'},
+                               json={'model_id': 'model', 'sources': [source()]})
+        assert response.status_code == 202 and response.json()['purpose'] == 'dimension_inference', response.text
+        path = '/api/sn/analysis-jobs/' + response.json()['id']
+        status, result = finished_job(client, path)
+        assert status['state'] == 'succeeded' and result.json()['dimensions'][0]['label'] == 'Inferred draft'
+        revision[0] = 'b'
+        changed = client.get(path + '/result')
+        assert changed.status_code == 409 and '资料在归纳期间更新' in changed.json()['detail']
+
+
 def test_inference_rechecks_all_chunk_provenance_when_visible_digest_is_unchanged(monkeypatch):
     replies = [{'supported': True, 'text': 'same digest', 'sha256': 'same',
                 'provenance': {'chunks': [{'id': 'outside-digest', 'revision': revision}]}}
@@ -467,9 +494,12 @@ def test_api_scope_permissions_input_limits_and_model_failures(monkeypatch):
     monkeypatch.setattr(suggestions, 'current_workbench', SimpleNamespace(get=lambda: active[0]))
     monkeypatch.setattr(suggestions, 'require_shared_write', lambda value: None)
 
-    async def generate(*args):
-        raise HTTPException(503, 'Model unavailable; no fixed fallback')
-    monkeypatch.setattr(suggestions, 'generate_suggestions', generate)
+    async def start(scope, purpose, body, key, run):
+        assert scope is active[0] and body['model_id'] == 'model'
+        assert (purpose, run) in {('dimension_fields', suggestions.run_suggestions),
+                                  ('dimension_inference', suggestions.run_inference)}
+        return {'purpose': purpose, 'id': 'synthetic-dimension-job'}
+    monkeypatch.setattr(suggestions.analysis_jobs, 'start_job', start)
     async def files(*args):
         return {'items': [{'title': 'Selected file', 'citation': source()}], 'next_offset': None}
     monkeypatch.setattr(suggestions.strategy_citations, '_file_options', files)
@@ -479,7 +509,9 @@ def test_api_scope_permissions_input_limits_and_model_failures(monkeypatch):
             assert (await client.post('/api/sn/dimensions/suggestions', json={})).status_code == 422
             assert (await client.post('/api/sn/dimensions/suggestions', json={'model_id': 'model', 'token': 'extra'})).status_code == 422
             response = await client.post('/api/sn/dimensions/suggestions', json={'model_id': 'model'})
-            assert response.status_code == 503 and 'fallback' in response.json()['detail']
+            assert response.status_code == 202 and response.json()['purpose'] == 'dimension_fields'
+            response = await client.post('/api/sn/dimensions/infer', json={'model_id': 'model', 'sources': [source()]})
+            assert response.status_code == 202 and response.json()['purpose'] == 'dimension_inference'
             for files in ([], [source()] * 2, [source(str(i)) for i in range(4)]):
                 assert (await client.post('/api/sn/dimensions/infer', json={'model_id': 'model', 'sources': files})).status_code == 422
             assert (await client.get('/api/sn/dimensions/sources')).json()['items'][0]['title'] == 'Selected file'

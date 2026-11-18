@@ -6,9 +6,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const initial = JSON.parse(bootstrap.textContent), get = id => document.getElementById('dimensions-' + id);
   const prefix = window.RESEARCH_PREFIX || '', key = item => item.kind + ':' + item.id;
   let config, current, draft, editing = false, saving = false, deleted = new Set(), generation = 0;
-  let pickerTarget, pickerNext = null, pickerToken = 0, pickerTimer, drag, modelMode = 'suggest', running = false;
+  let pickerTarget, pickerNext = null, pickerToken = 0, pickerTimer, drag, modelMode;
   let suggestions = [], inferred = [], selectedSources = new Map(), sourceNext = null, sourceToken = 0, sourceTimer;
-  let suggestionTargets = new Map(), setupDimensions, modelSetupJob, draftSetupJob;
+  let suggestionTargets = new Map(), modelReviewDirty = false, setupDimensions, modelSetupJob, draftSetupJob;
   let templates, templateApplying = false, appliedTemplate, templateToken = 0;
   const renderers = new Set(), modelDialog = get('model-dialog'), picker = get('picker'), templateDialog = get('template-dialog');
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -124,7 +124,6 @@ document.addEventListener('DOMContentLoaded', () => {
       render(); await loadData(own);
       if (own === generation) {
         scrollToIndicator();
-        await reviewSetup();
       }
     } catch (error) { if (own === generation) status(error.message, true); }
   }
@@ -390,14 +389,43 @@ document.addEventListener('DOMContentLoaded', () => {
       get('picker-status').textContent = list.children.length ? `已显示 ${list.children.length} / ${data.total ?? list.children.length} 个条目；已绑定条目不可重复添加。` : '没有匹配的条目。';
     } catch (error) { if (own === pickerToken) get('picker-status').textContent = error.message; }
   }
-  async function openModels(mode) {
+  const modelJobs = Object.fromEntries([
+    ['infer', 'dimension_inference', 'inference'],
+    ['suggest', 'dimension_fields', 'suggestions'],
+  ].map(([mode, purpose, key]) => [mode, window.ResearchAnalysisJobs.create({
+    purpose,
+    status: get('model-status'),
+    button: get('model-run'),
+    restoreButton: get(key + '-result'),
+    isOpen: () => modelDialog.open && modelMode === mode,
+    disabled: () => modelMode !== mode || modelRunDisabled(),
+    snapshot: () => [editing, config?.revision, config && serialized(dims()),
+      mode === 'infer' ? [...selectedSources.values()] : get('date').value],
+    present: result => presentModelResult(result, mode),
+  })]));
+  const jobControl = () => modelJobs[modelMode];
+  function modelRunDisabled() {
+    return !get('model').value || (modelMode === 'infer' && (selectedSources.size < 1 || selectedSources.size > 3));
+  }
+  async function openModels(mode, requestedJob) {
     if (!editable() || saving || templateApplying) return;
-    if (mode === 'suggest' && editing && draftLimits().length) return status(draftLimits().join('；'), true);
-    setupDimensions = undefined; modelSetupJob = undefined; get('model').parentElement.hidden = false; get('model-run').hidden = false;
-    modelMode = mode; suggestions = []; inferred = []; suggestionTargets = new Map(); selectedSources = new Map(); sourceNext = null;
+    if (!requestedJob && mode === 'suggest' && editing && draftLimits().length) return status(draftLimits().join('；'), true);
+    if (mode !== modelMode || modelSetupJob || get('model-run').hidden) {
+      jobControl()?.pause();
+      modelMode = mode; suggestions = []; inferred = []; suggestionTargets = new Map();
+      sourceNext = null; sourceToken++; modelReviewDirty = false;
+      setupDimensions = undefined; modelSetupJob = undefined;
+      get('suggestions').replaceChildren(); get('model-status').textContent = '';
+    }
+    get('model').parentElement.hidden = false; get('model-run').hidden = false;
     get('model-title').textContent = mode === 'infer' ? '从往期周报归纳维度' : '让模型建议指标';
-    get('source-controls').hidden = mode !== 'infer'; get('suggestions').replaceChildren(); get('model-status').textContent = '';
-    get('model-adopt').textContent = mode === 'infer' ? '将这套维度作为编辑草稿' : '采用所选到编辑草稿'; modelDialog.showModal(); syncModel();
+    get('source-controls').hidden = mode !== 'infer';
+    get('inference-restore').hidden = mode !== 'infer';
+    get('suggestions-restore').hidden = mode !== 'suggest';
+    get('model-adopt').textContent = mode === 'infer' ? '将这套维度作为编辑草稿' : '采用所选到编辑草稿';
+    if (!modelDialog.open) modelDialog.showModal();
+    syncModel();
+    if (requestedJob) void jobControl().restore(requestedJob, {explicit: true});
     try {
       if (!get('model').dataset.loaded) {
         const result = await request('/strategies/models'); get('model').replaceChildren();
@@ -405,15 +433,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!get('model').options.length) get('model').append(new Option('暂无可用模型',''));
         get('model').disabled = false; get('model').dataset.loaded = 'true';
       }
-      if (mode === 'infer') { get('source-search').value = ''; await loadSources(); }
+      if (mode === 'infer' && modelMode === mode && modelDialog.open) { get('source-search').value = ''; await loadSources(); }
     } catch (error) { get('model-status').textContent = error.message; }
     syncModel();
+    if (!requestedJob && modelDialog.open && modelMode === mode) await jobControl().discover();
   }
   function syncModel() {
     const chosen = [...get('suggestions').querySelectorAll('input[type="checkbox"]:checked')];
     const validTargets = chosen.every(check => check.closest('.dimensions-choice').querySelector('select')?.value !== '');
-    get('model-run').disabled = running || !get('model').value || (modelMode === 'infer' && (selectedSources.size < 1 || selectedSources.size > 3));
-    get('model-adopt').disabled = running || (modelMode === 'infer' ? !inferred.length : !chosen.length || !validTargets); get('model-close').disabled = running;
+    get('model-run').disabled = !!jobControl()?.busy || modelRunDisabled();
+    get('model-adopt').disabled = modelMode === 'infer' ? !inferred.length : !chosen.length || !validTargets;
   }
   async function loadSources(append = false) {
     const own = ++sourceToken; if (!append) get('source-list').replaceChildren();
@@ -430,18 +459,26 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) { get('model-status').textContent = error.message; } syncModel();
   }
   async function generate() {
-    if (running || get('model-run').disabled) return; running = true; suggestions = []; inferred = []; suggestionTargets = new Map(); get('suggestions').replaceChildren(); syncModel();
-    get('model-status').textContent = modelMode === 'infer' ? '正在读取所选原文并归纳维度…' : '正在为每个环节召回并核对真实指标…';
-    try {
-      if (modelMode === 'suggest' && editing) for (const dim of draft) if (!dim.id) dim.id = freshId('d-');
-      if (modelMode === 'suggest') {
-        const targets = dims().flatMap(d => (d.sections?.length ? d.sections : [{label:''}]).map(s => ({dimension:d.id,section:s.label,section_id:s.id})));
-        suggestionTargets = new Map(targets.map((target, index) => ['i' + (index + 1), target]));
-      }
-      const result = await request('/dimensions/' + (modelMode === 'infer' ? 'infer' : 'suggestions'), {model_id: get('model').value,...(modelMode === 'infer' ? {sources: [...selectedSources.values()]} : {...(get('date').value ? {date: get('date').value} : {}),...(editing ? {dimensions: serialized()} : {})})}, 'POST');
-      renderModelResult(result);
-    } catch (error) { get('model-status').textContent = error.message; }
-    finally { running = false; syncModel(); }
+    if (jobControl().busy || get('model-run').disabled) return;
+    suggestions = []; inferred = []; suggestionTargets = new Map(); modelReviewDirty = false;
+    get('suggestions').replaceChildren(); syncModel();
+    if (modelMode === 'suggest' && editing) for (const dim of draft) if (!dim.id) dim.id = freshId('d-');
+    const inference = modelMode === 'infer';
+    await jobControl().submit('/api/sn/dimensions/' + (inference ? 'infer' : 'suggestions'), {
+      model_id: get('model').value,
+      ...(inference ? {sources: [...selectedSources.values()]} : {
+        ...(get('date').value ? {date: get('date').value} : {}), ...(editing ? {dimensions: serialized()} : {}),
+      }),
+    });
+  }
+  function presentModelResult(result, mode) {
+    if (modelReviewDirty) throw new Error('候选选择已经编辑，已保留当前内容。');
+    if (mode === 'suggest') {
+      const sourceDimensions = result.request?.dimensions || dims();
+      const targets = sourceDimensions.flatMap(d => (d.sections?.length ? d.sections : [{label:''}]).map(s => ({dimension:d.id,section:s.label,section_id:s.id})));
+      suggestionTargets = new Map(targets.map((target, index) => ['i' + (index + 1), target]));
+    }
+    renderModelResult(result); syncModel();
   }
   function renderModelResult(result) {
     get('suggestions').replaceChildren();
@@ -483,23 +520,26 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   async function reviewSetup() {
     const setup = window.WorkbenchSetupReview;
-    if (!editable() || !setup?.is('dimensions', 'indicators')) return;
+    if (!editable() || !await setup?.appliesTo('dimensions', 'indicators')) return;
+    const revision = config.revision;
     try {
       const result = await setup.load();
-      if (editing || saving || modelDialog.open) return status('请先结束当前编辑，再重新打开任务结果。', true);
+      if (config.revision !== revision || editing || saving || modelDialog.open || modelReviewDirty) return status('请先结束当前编辑，再重新打开任务结果。', true);
       modelMode = setup.part === 'dimensions' ? 'infer' : 'suggest';
       setupDimensions = modelMode === 'suggest' && config.revision === 0 && result.dimensions?.length ? result.dimensions : undefined;
       const newOutline = setupDimensions?.some(dimension => !config.dimensions.some(row => row.id === dimension.id));
       modelSetupJob = modelMode === 'infer' || newOutline ? setup.id : undefined;
       get('model-title').textContent = modelMode === 'infer' ? '核对周报研究维度' : '核对周报绑定指标';
       get('source-controls').hidden = true; get('model').parentElement.hidden = true; get('model-run').hidden = true;
+      get('inference-restore').hidden = true; get('suggestions-restore').hidden = true;
+      get('inference-result').hidden = true; get('suggestions-result').hidden = true;
       get('model-adopt').textContent = modelMode === 'infer' ? '将这套维度作为编辑草稿' : '采用所选到编辑草稿';
       suggestionTargets = new Map();
       renderModelResult(result); syncModel(); modelDialog.showModal();
     } catch (error) { status(error.message, true); }
   }
   function adopt() {
-    if (running || get('model-adopt').disabled) return;
+    if (jobControl().busy || get('model-adopt').disabled) return;
     if (modelMode === 'infer') {
       if (!window.confirm('将这套维度放入编辑草稿？当前未保存的编辑会被替换，现有配置要点击“保存”后才会覆盖。')) return;
       startEdit(); draft = clone(inferred); draftSetupJob = modelSetupJob; appliedTemplate = undefined; render(); modelDialog.close(); status('已放入编辑草稿，可增删改后保存。'); return;
@@ -535,10 +575,21 @@ document.addEventListener('DOMContentLoaded', () => {
   get('picker-search').addEventListener('input', () => { pickerToken++; clearTimeout(pickerTimer); pickerTimer = setTimeout(() => void loadChoices(),180); });
   get('suggest').addEventListener('click', () => void openModels('suggest')); get('infer').addEventListener('click', () => void openModels('infer'));
   get('model').addEventListener('change', syncModel); get('model-run').addEventListener('click', () => void generate()); get('model-adopt').addEventListener('click', adopt); get('model-close').addEventListener('click', () => modelDialog.close());
+  get('suggestions').addEventListener('input', () => { modelReviewDirty = true; });
   get('source-search').addEventListener('input', () => { sourceToken++; clearTimeout(sourceTimer); sourceTimer = setTimeout(() => void loadSources(),180); }); get('source-more').addEventListener('click', () => void loadSources(true));
-  modelDialog.addEventListener('cancel', event => { if (running) event.preventDefault(); });
+  modelDialog.addEventListener('close', () => { jobControl()?.pause(); sourceToken++; });
   templateDialog.addEventListener('cancel', event => { if (templateApplying) event.preventDefault(); });
   const params = new URLSearchParams(location.search); if (params.get('period') === 'daily') get('period').value = 'daily';
   if (params.get('date')) get('date').value = params.get('date'); else if (initial.date) get('date').value = initial.date;
-  window.addEventListener('pagehide', clearRenderers); void load();
+  window.addEventListener('pagehide', clearRenderers);
+  void load().then(async () => {
+    if (!editable()) return;
+    const view = [generation, config.revision, get('date').value, get('period').value].join(':');
+    const job = await window.ResearchAnalysisJobs.requested();
+    if (view !== [generation, config.revision, get('date').value, get('period').value].join(':')
+        || editing || saving || modelMode || templateApplying || templateDialog.open) return;
+    if (job?.purpose === 'dimension_inference') return openModels('infer', job.id);
+    if (job?.purpose === 'dimension_fields') return openModels('suggest', job.id);
+    return reviewSetup();
+  });
 });

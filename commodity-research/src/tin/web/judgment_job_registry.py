@@ -10,6 +10,7 @@ import time
 from fastapi import HTTPException
 
 from tin.config import settings
+from tin.web.analysis_job_purposes import PURPOSES, TERMINAL_LABELS, WORKBENCH_SETUP
 
 ACTIVE = frozenset({'queued', 'running'})
 TERMINAL = frozenset({'succeeded', 'failed', 'interrupted', 'expired', 'applied', 'superseded'})
@@ -19,8 +20,6 @@ LEASE = 60
 GLOBAL_RUNNING = 2
 GLOBAL_PENDING = 10
 MAX_RECORDS = 512
-PURPOSE_TITLES = {'judgments': '研究逻辑分析', 'diagram': '产业图配置生成',
-                  'workbench_setup': '从周报建立工作台'}
 
 
 def iso(value=None):
@@ -103,7 +102,7 @@ class Registry:
         self.compact(connection)
 
     def create(self, scope, request_hash, idempotency_hash, worker_id, purpose='judgments'):
-        if purpose not in PURPOSE_TITLES:
+        if purpose not in PURPOSES:
             raise ValueError('Unsupported analysis task purpose')
         with self.transaction() as connection:
             self.expire(connection)
@@ -181,14 +180,15 @@ class Registry:
                 and row.get('user_id') == identity.user_id and row.get('kind') == 'judgment-analysis-index.v1']
             return sorted(rows, key=self.order, reverse=True)[:limit]
 
-    def latest(self, identity, workbench_id, purpose):
-        if purpose not in PURPOSE_TITLES:
+    def latest(self, identity, workbench_id, purpose, *, include_active=False):
+        if purpose not in PURPOSES:
             raise ValueError('Unsupported analysis task purpose')
+        states = ACTIVE | {'succeeded'} if include_active else {'succeeded'}
         with self.transaction() as connection:
             self.expire(connection)
             rows = [row for row in self.rows(connection) if self.scope_key(row) == (
                 identity.tenant_id, identity.user_id, workbench_id, purpose)
-                and row['state'] == 'succeeded']
+                and row['state'] in states]
             return max(rows, key=self.order, default=None)
 
     def discard_result(self, identity, job_id, workbench_id, purpose):
@@ -250,7 +250,7 @@ class Registry:
             if row['state'] == 'queued':
                 if sum(other['state'] == 'running' for other in self.rows(connection)) >= GLOBAL_RUNNING:
                     return False
-                phase = 'reading_source' if row.get('purpose') == 'workbench_setup' else 'selecting'
+                phase = 'reading_source' if row.get('purpose') == WORKBENCH_SETUP else 'selecting'
                 row.update(state='running', phase=phase, updated_at=iso(), lease_until=time.time() + LEASE)
                 self.write(connection, row)
             return True
@@ -349,7 +349,8 @@ def metadata(row):
         result['message'] = render_failure(safe)
         if safe is not None:
             result['failure'] = safe
-    return {**result, 'job_id': row['id'], 'purpose': purpose,
-        'title': PURPOSE_TITLES.get(purpose, PURPOSE_TITLES['judgments']),
+    task = PURPOSES.get(purpose, PURPOSES['judgments'])
+    return {**result, 'job_id': row['id'], 'purpose': purpose, 'title': task.title,
+        'phase_label': task.phases.get(row['phase']) or TERMINAL_LABELS.get(row['state'], '后台运行中'),
         'result_available': row['state'] == 'succeeded', 'dismissed': row.get('dismissed') is True,
         'discarded': row.get('discarded') is True}

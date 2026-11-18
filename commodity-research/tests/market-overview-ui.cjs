@@ -67,6 +67,10 @@ const report = {mode: 'isolated_market_focus_ui_fixture', real_model_calls: 0, r
     ...(process.env.SHEET_REVIEW_BROWSER ? {executablePath: process.env.SHEET_REVIEW_BROWSER} : {}),
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-background-networking', '--renderer-process-limit=1', '--js-flags=--max-old-space-size=128']});
   try {
+    const jobID = 'market-focus-fixture-001';
+    let jobState = 'running';
+    const meta = state => ({id: jobID, purpose: 'focus_suggestions', workbench_id: 'a0000000-0000-4000-8000-000000000001',
+      state, phase_label: '正在生成建议'});
     const page = await browser.newPage({viewport: {width: 1400, height: 950}, reducedMotion: 'reduce'}), errors = [];
     page.on('pageerror', error => errors.push(error.message));
     let fail = false, core = [], favorites = {format: 'favorites.v1', revision: 1,
@@ -102,7 +106,14 @@ const report = {mode: 'isolated_market_focus_ui_fixture', real_model_calls: 0, r
       if (pathName === prefix + '/api/sn/strategies/models') return route.fulfill({json: {models: [{id: 'fixture-model', name: '隔离模型'}]}});
       if (pathName === prefix + '/api/sn/market/core/suggestions') {
         assert.equal(request.postDataJSON().model_id, 'fixture-model');
-        return route.fulfill({json: {items: [0, 2].map((index, i) => ({series_id: ids[index], name: '隔离指标' + String(index + 1).padStart(2, '0'), group: i ? '供给' : '核心标的', reason: '隔离模型给出的研究理由'})), notice: '共读取 18 个字段。', truncated: false}});
+        return route.fulfill({status: 202, json: meta('queued')});
+      }
+      if (pathName === prefix + '/api/sn/analysis-jobs/latest') return route.fulfill({json: {job: null}});
+      if (pathName === prefix + '/api/sn/analysis-jobs/' + jobID) return route.fulfill({json: meta(jobState)});
+      if (pathName === prefix + '/api/sn/analysis-jobs/' + jobID + '/result') {
+        return route.fulfill({json: {job: meta('succeeded'), request: {model_id: 'fixture-model'},
+          items: [0, 2].map((index, i) => ({series_id: ids[index], name: '隔离指标' + String(index + 1).padStart(2, '0'), group: i ? '供给' : '核心标的', reason: '隔离模型给出的研究理由'})),
+          notice: '共读取 18 个字段。', truncated: false}});
       }
       if (pathName === prefix + '/api/sn/indicators/catalog') {
         const requested = url.searchParams.getAll('series_id'), search = url.searchParams.get('search') || '';
@@ -151,13 +162,24 @@ const report = {mode: 'isolated_market_focus_ui_fixture', real_model_calls: 0, r
     await page.locator('#market-core-suggestions-open').click();
     await page.waitForFunction(() => !document.getElementById('market-core-suggestions-run').disabled);
     await page.locator('#market-core-suggestions-run').click();
+    await page.locator('#market-core-suggestions-status[data-analysis-busy=true]').filter({hasText: '可关闭窗口'}).waitFor();
+    assert.equal(await page.locator('#market-core-suggestions-run').isDisabled(), true);
+    await page.locator('#market-core-suggestions-close').click();
+    jobState = 'succeeded';
+    await page.goto('http://market.fixture' + prefix + '/sn?analysis_job=' + jobID);
     await page.waitForSelector('#market-core-suggestions-list input');
+    assert.equal(core.length, 0, '关闭后取回仅展示候选建议');
+
     assert.equal(await page.locator('#market-core-suggestions-list label').count(), 2);
     assert.match(await page.locator('#market-core-suggestions-list').innerText(), /核心标的.*隔离指标01/s);
     await page.locator('#market-core-suggestions-list input').nth(1).uncheck();
     await page.locator('#market-core-suggestions-adopt').click();
     await page.waitForFunction(() => document.querySelectorAll('[data-market-card-series]').length === 1);
     assert.deepEqual(core, [{kind: 'indicator', id: ids[0]}]);
+    await page.locator('#market-core-suggestions-dialog').waitFor({state: 'hidden'});
+    await page.locator('#market-core-suggestions-manage').click();
+    await page.locator('#market-core-suggestions-dialog[open]').waitFor();
+    await page.locator('#market-core-suggestions-close').click();
     report.assertions.push('empty_focus_with_catalog_opens_picker_and_supports_adopting_checked_suggestions');
     await page.evaluate(([key, value]) => localStorage.setItem(key, JSON.stringify(value)), [favoritesKey, [ids[17]]]);
     const box = index => page.locator(`#market-core-choices input[value="${ids[index]}"]`);

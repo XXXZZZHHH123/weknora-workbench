@@ -245,6 +245,8 @@ app.include_router(judgment_jobs_router)
 app.include_router(judgment_jobs_global_router)
 from tin.web.diagram_jobs import router as diagram_jobs_router
 app.include_router(diagram_jobs_router)
+from tin.web.analysis_jobs import router as analysis_jobs_router
+app.include_router(analysis_jobs_router)
 from tin.web.workbench_setup_jobs import router as workbench_setup_jobs_router
 app.include_router(workbench_setup_jobs_router)
 from tin.web.judgment_review import router as judgment_review_router
@@ -301,8 +303,8 @@ async def _stop_judgment_jobs():
     await runtime.shutdown()
     from tin.web.diagram_jobs import runtime as diagram_runtime
     await diagram_runtime.shutdown()
-    from tin.web.workbench_setup_jobs import runtime as setup_runtime
-    await setup_runtime.shutdown()
+    from tin.web.analysis_jobs import runtime as draft_runtime
+    await draft_runtime.shutdown()
 
 
 @app.on_event('startup')
@@ -312,8 +314,8 @@ async def _start_judgment_jobs():
         await runtime.startup()
         from tin.web.diagram_jobs import runtime as diagram_runtime
         await diagram_runtime.startup()
-        from tin.web.workbench_setup_jobs import runtime as setup_runtime
-        await setup_runtime.startup()
+        from tin.web.analysis_jobs import runtime as draft_runtime
+        await draft_runtime.startup()
 
 
 @app.on_event('shutdown')
@@ -447,7 +449,8 @@ def home_page(request: Request, date: str | None = None, err: str | None = None)
             affairs = build_affairs(session, scope, today=datetime.now(SHANGHAI).date())
             affairs.update(home_setup_context(session, scope))
             return templates.TemplateResponse(request, 'home.html', {
-                'nav': 'home', 'd': None, 'ticker': [], 'affairs': affairs, 'err': err})
+                'nav': 'home', 'd': None, 'ticker': [],
+                'affairs': affairs, 'err': err})
     with _page_session('home', day=date) as s:
         d = _page_date(s, date)
         researcher = seed_researcher(s)
@@ -965,6 +968,13 @@ def reports_page(request: Request, date: str | None = None, period: str = 'daily
     from tin.integration.research_profile import research_variety
     from tin.web.report_period import build_period, period_start
     from tin.web.report_view import present_snapshot
+    from tin.web.analysis_jobs import navigation_context
+    analysis_job = request.query_params.get('analysis_job')
+    job_context = navigation_context(current_workbench.get(), analysis_job, 'report_dimension_draft')
+    if {'day', 'period'} <= job_context.keys() and (date != job_context['day'] or period != job_context['period']):
+        return RedirectResponse(research_url('/sn/reports?' + urlencode({
+            'date': job_context['day'], 'period': job_context['period'], 'analysis_job': analysis_job})),
+            status_code=307)
     if period not in {'daily', 'weekly'}:
         raise HTTPException(400, '报告周期应为 daily 或 weekly')
     if date is not None:

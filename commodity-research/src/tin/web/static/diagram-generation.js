@@ -319,15 +319,24 @@ window.addEventListener('pagehide',dgCancelGeneration);
 window.addEventListener('pageshow',()=>{if(dgGeneratorJob&&dgGeneratorOpen())void dgFollowJob(dgGeneratorJob.id);});
 async function dgRestoreGeneration() {
   const setup = window.WorkbenchSetupReview;
-  if (setup?.is('diagram') && document.getElementById('dg-generator')) {
+  const identifier = dgJobId(new URL(location.href).searchParams.get('analysis_job'));
+  if (document.getElementById('dg-generator') && await setup?.appliesTo('diagram')) {
     try {
       const result = await setup.load();
       if (dg.dirty || dgGeneratorOpen()) throw new Error('请先结束当前编辑，再重新打开任务结果。');
-      if (await dgOpenMarkdown()) dgPresentGeneration(result, true);
+      const edits = new AbortController();
+      let edited = false;
+      const markEdited = () => { edited = true; };
+      dgGeneratorDrawer.addEventListener('input', markEdited, {signal: edits.signal});
+      dgGeneratorDrawer.addEventListener('change', markEdited, {signal: edits.signal});
+      try {
+        if (await dgOpenMarkdown() && dgGeneratorOpen() && !dg.dirty && !edited && !dgHasBackgroundGeneration()) {
+          dgPresentGeneration(result, true);
+        }
+      } finally { edits.abort(); }
     } catch (error) { showToast(error.message); }
     return;
   }
-  const identifier=dgJobId(new URL(location.href).searchParams.get('analysis_job'));
   if (!identifier || !document.getElementById('dg-generator')) return;
   dgGeneratorJob={id:identifier,purpose:'diagram'};dgGenerationContext=null;
   await dgOpenMarkdown();
