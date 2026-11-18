@@ -183,7 +183,7 @@ def test_independent_model_review_rejects_undeclared_metric_and_ungrounded_expla
     ('真实指标为12.35吨。其他指标预期转强。', ['真实指标'],
      {'grounded': False, 'metric_names': ['真实指标', '其他指标']}, 'sources_unverified', True),
 ])
-def test_summary_is_grounded_only_in_dimension_facts_and_never_prefills_rejected_text(
+def test_summary_never_prefills_unsupported_observations_or_sources(
         monkeypatch, text, names, review_changes, expected, reviewed):
     item = {**row(), 'sentence': '已保存维度结论', 'impact': 'bearish'}
     projection = {'dimension_overview': [item], 'logic_strategy': {'tone': '研判文字提到9999'}}
@@ -207,6 +207,46 @@ def test_summary_is_grounded_only_in_dimension_facts_and_never_prefills_rejected
     summary = response.json()['summary']
     assert summary['text'] == '' and summary['suggestion'] == text and summary['status'] == expected
     assert '未预填' in summary['reason'] and ('report_summary_review' in purposes) == reviewed
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('接下来重点看真实指标能否连续两周转正。', 'ok'),
+    ('接下来重点看真实指标能否达到2吨。', 'ok'),
+    ('真实指标减少2吨。', 'numbers_unverified'),
+    ('真实指标减少两吨。', 'numbers_unverified'),
+    ('接下来重点看真实指标能否连续三周转正。', 'numbers_unverified'),
+    ('接下来重点看真实指标能否达到7吨。', 'numbers_unverified'),
+])
+def test_only_summary_can_quote_observation_condition_numbers(monkeypatch, text, expected):
+    projection = {'dimension_overview': [row()], 'logic_strategy': {'conditions': [
+        {'name': '连续两周转正', 'condition': '达到2吨', 'stale_note': '曾达到7吨'}]}}
+    monkeypatch.setattr(drafts, 'read_report', lambda *_: deepcopy(projection))
+    purposes = []
+
+    async def complete(_scope, _model, prompt, *, purpose):
+        purposes.append(purpose)
+        if purpose == 'report_summary_draft':
+            assert '接下来要看什么' in prompt and '阈值' in prompt and '期数' in prompt
+            assert '连续两周转正' in prompt and '达到2吨' in prompt
+        if purpose == 'report_summary_review':
+            assert '后续观察的阈值与期数可引用evidence.research.conditions' in prompt
+        if purpose.endswith('_review'):
+            return review()
+        return candidate(text)
+
+    monkeypatch.setattr(drafts.strategy_text, 'completion', complete)
+    response = request({'model_id': 'model'}, active=scope())
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['dimensions'][0]['status'] == 'numbers_unverified'
+    assert result['dimensions'][0]['text'] == ''
+    assert result['summary']['status'] == expected
+    if expected == 'ok':
+        assert result['summary']['text'] == text
+        assert purposes == ['report_dimension_draft', 'report_summary_draft', 'report_summary_review']
+    else:
+        assert result['summary']['text'] == '' and result['summary']['suggestion'] == text
+        assert purposes == ['report_dimension_draft', 'report_summary_draft']
 
 
 def test_all_grouped_figure_conclusions_are_unsaved_previews(monkeypatch):
@@ -319,6 +359,15 @@ def test_written_numerals_cannot_bypass_program_number_check():
     assert drafts.numbers_verified('一方面变化仍待观察。', facts)
 
 
+def test_written_zero_can_match_numeric_zero():
+    text = '仓单及有效预报降至零且处近6年同期最低。'
+    fact = {'name': '仓单及有效预报', 'latest': 0, 'position': {'total': 6}}
+    assert drafts.numbers_verified(text, [fact])
+    assert not drafts.numbers_verified(text, [{**fact, 'latest': 1}])
+    assert not drafts.numbers_verified(text.replace('零', '〇'), [fact])
+    assert not drafts.numbers_verified('仓单及有效预报减少零', [fact])
+
+
 @pytest.mark.parametrize('text', ['合成指标最新+12吨', '合成指标变化+2吨',
     '合成指标最新2026吨', '合成指标最新9吨', '合成指标最新1吨'])
 def test_sign_changes_and_date_fragments_do_not_pass_number_check(text):
@@ -384,6 +433,39 @@ def test_reversed_change_cannot_borrow_a_latest_value_or_another_metric(text):
              {'name': '乙指标', 'latest': 36.12, 'change': 2.91},
              {'name': '丙指标', 'latest': 135.7, 'change': 35.7}]
     assert not drafts.numbers_verified(text, facts)
+
+
+def test_change_uses_full_name_over_shorter_alias_ending_at_the_same_position():
+    facts = [{'name': '仓单和有效预报:合计', 'unit': '万吨', 'latest': 0, 'change': -23.06},
+             {'name': '棉花进口:当月值:万吨 / 合计', 'aliases': ['进口'], 'latest': 10.97, 'change': -1.25}]
+    assert drafts.numbers_verified('仓单和有效预报:合计降至0万吨（较09-15减少23.06）', facts)
+    assert not drafts.numbers_verified(
+        '仓单和有效预报:合计降至0万吨，棉花进口:当月值:万吨 / 合计减少23.06', facts)
+    assert not drafts.numbers_verified('仓单和有效预报:合计降至0万吨，进口减少23.06', facts)
+
+
+def test_change_keeps_metrics_with_equally_close_alias_matches():
+    facts = [{'name': '甲指标 / 合计', 'change': -1}, {'name': '乙指标 / 合计', 'change': -2}]
+    assert drafts.numbers_verified('合计减少1', facts)
+    assert drafts.numbers_verified('合计减少2', facts)
+    assert not drafts.numbers_verified('合计减少3', facts)
+
+
+def test_scale_suffix_can_come_from_name_without_unit_conversion():
+    fact = {'name': '棉花进口:当月值:万吨 / 合计', 'unit': '', 'latest': 10.974, 'previous': 1.2,
+            'display': {'latest': '10.97'}}
+    assert drafts.numbers_verified('棉花进口:当月值:万吨 / 合计最新10.97万吨', [fact])
+    assert not drafts.numbers_verified('棉花进口:当月值 / 合计最新10.97万吨',
+                                       [{**fact, 'name': '棉花进口:当月值 / 合计'}])
+    assert not drafts.numbers_verified('合计最新109700万吨', [fact])
+    assert not drafts.numbers_verified('合计前期1.2万', [fact])
+    assert drafts.numbers_verified('合计前期1.2万', [{**fact, 'text': '前期1.2万'}])
+
+
+def test_scale_suffix_can_come_from_an_explicit_alias():
+    facts = [{'name': '合成指标', 'aliases': ['别名:亿千瓦时'], 'unit': '', 'latest': 3.5}]
+    assert drafts.numbers_verified('合成指标最新3.5亿千瓦时左右', facts)
+    assert not drafts.numbers_verified('合成指标最新3.5亿千瓦秒', facts)
 
 
 def test_names_and_alias_digits_are_removed_but_do_not_authorize_values():
