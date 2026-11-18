@@ -243,12 +243,15 @@ def validate_suggestions(document, catalog, dimensions, groups):
     kept, ignored = filter_series_suggestions(proposed, catalog,
         '模型返回的指标 ID 不存在于本环节展示的候选目录，请重新生成建议；未使用固定列表',
         allowed_for=lambda row: allowed[row['item_id']])
+    duplicates = 0
     for row in kept:
         key = row['item_id']
         target_item = by_id[key]
         identifier = row['series_id']
         if identifier in seen:
-            raise HTTPException(422, '模型重复建议了同一指标，请重新生成建议')
+            # A repeated indicator keeps its first suggestion; the repeat is counted.
+            duplicates += 1
+            continue
         seen.add(identifier)
         counts[key] += 1
         if counts[key] > MAX_PER_SECTION or len(seen) > MAX_SUGGESTIONS:
@@ -278,7 +281,7 @@ def validate_suggestions(document, catalog, dimensions, groups):
                  'item_id': item['id'], 'section_id': item['section_id'], 'candidate_count': len(found),
                  'selected_count': counts[item['id']], 'empty_reason': empty.get(item['id'], '')}
                 for item, found in groups]
-    return items, sections, len(ignored)
+    return items, sections, len(ignored), duplicates
 
 
 async def generate_suggestions(scope, model_id, dimensions=None, day=None, *, progress=None):
@@ -312,11 +315,16 @@ async def generate_suggestions(scope, model_id, dimensions=None, day=None, *, pr
     if progress:
         await progress('dimension_fields')
     document = await strategy_text.completion(scope, model_id, prompt, purpose='dimension_fields')
-    items, sections, ignored_count = validate_suggestions(document, fields, dimensions, groups)
+    items, sections, ignored_count, duplicates = validate_suggestions(document, fields, dimensions, groups)
+    ignored = ignored_series_summary(ignored_count)
+    if duplicates:
+        ignored = {'ignored_count': ignored_count + duplicates,
+                   'ignored_reason': '；'.join(part for part in (ignored['ignored_reason'],
+                                               f'模型重复建议了 {duplicates} 个指标，已只保留第一次') if part)}
     shown = {identifier for _, found in groups for identifier in found}
     return {'items': items, 'sections': sections, 'as_of': day.isoformat(),
             'notice': '模型未给出合适的指标建议，留空原因见各环节；未使用固定列表。' if not items else '',
-            **ignored_series_summary(ignored_count),
+            **ignored,
             'truncated': False, 'field_count': len(catalog), 'selected_field_count': len(shown),
             'recall_per_section': per_item, 'model_id': model_id,
             **({'_verification': {'catalog': metadata.get('version'), 'dimensions': dimensions}} if progress else {})}

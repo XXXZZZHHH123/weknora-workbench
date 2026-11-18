@@ -235,12 +235,12 @@ def test_picks_preserve_model_order_without_name_or_date_filtering():
     document = response_for([item for item, _ in groups], [choice('field-2', 'inventory', section=''),
                                                         choice('field-0', section='Synthetic upstream')])
     renamed = {identifier: {**field, 'metric': 'unrelated', 'latest_date': '1990-01-01'} for identifier, field in data.items()}
-    before, sections, ignored = suggestions.validate_suggestions(document, data, dimensions, groups)
-    after, _, _ = suggestions.validate_suggestions(document, renamed, dimensions, groups)
+    before, sections, ignored, duplicates = suggestions.validate_suggestions(document, data, dimensions, groups)
+    after, _, _, _ = suggestions.validate_suggestions(document, renamed, dimensions, groups)
     assert [(row['series_id'], row['dimension'], row['section']) for row in before] == [
         (row['series_id'], row['dimension'], row['section']) for row in after]
     assert sections[1]['empty_reason'] == 'No representative evidence'
-    assert ignored == 0
+    assert ignored == 0 and duplicates == 0
 
 
 @pytest.mark.parametrize('document', [None, {'items': []}, {'items': 'invalid', 'empty_reasons': []},
@@ -351,7 +351,7 @@ def test_duplicate_section_labels_keep_each_real_section_identity(with_ids):
     document = {'items': [choice('field-0', section='Same label', item_id='i2')],
                 'empty_reasons': [{'dimension': 'supply', 'section': 'Same label', 'item_id': 'i1',
                                    'reason': 'No matching evidence'}]}
-    items, sections, _ = suggestions.validate_suggestions(document, catalog(), clean, groups)
+    items, sections, _, _ = suggestions.validate_suggestions(document, catalog(), clean, groups)
     assert items[0]['item_id'] == 'i2' and items[0]['section_id'] == ('s-second' if with_ids else '')
     assert sections[0]['empty_reason'] == 'No matching evidence' and sections[1]['selected_count'] == 1
     document['items'][0].pop('item_id')
@@ -559,3 +559,13 @@ def test_api_scope_permissions_input_limits_and_model_failures(monkeypatch):
                     assert (await client.post('/api/sn/dimensions/' + path, json=body)).status_code == 403
                 assert (await client.get('/api/sn/dimensions/sources')).status_code == 403
     asyncio.run(check())
+
+
+def test_repeated_indicator_keeps_first_suggestion_and_is_counted():
+    dimensions, data = axes(), catalog()
+    groups = validation_groups(dimensions, data)
+    document = response_for([item for item, _ in groups], [choice('field-0', section='Synthetic upstream'),
+                                                        choice('field-0', section='Synthetic upstream')])
+    items, sections, ignored, duplicates = suggestions.validate_suggestions(document, data, dimensions, groups)
+    assert [row['series_id'] for row in items] == ['field-0']
+    assert ignored == 0 and duplicates == 1 and sections[0]['selected_count'] == 1
