@@ -275,8 +275,12 @@ def validate_suggestions(document, catalog, dimensions, groups):
         key = row['item_id']
         if not counts[key]:
             empty.setdefault(key, '本环节返回的指标均不在候选目录，已忽略')
-    if any(not counts[key] and key not in empty for key in allowed):
+    missing = [key for key in allowed if not counts[key] and key not in empty]
+    if missing and not items:
         raise HTTPException(422, '模型未说明每个空环节的留空原因，请重新生成建议')
+    # With usable suggestions, an omitted reason only marks that section for review.
+    for key in missing:
+        empty[key] = '模型未说明留空原因'
     sections = [{'dimension': item['dimension'], 'section': item['section'],
                  'item_id': item['id'], 'section_id': item['section_id'], 'candidate_count': len(found),
                  'selected_count': counts[item['id']], 'empty_reason': empty.get(item['id'], '')}

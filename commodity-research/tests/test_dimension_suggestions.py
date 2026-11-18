@@ -569,3 +569,12 @@ def test_repeated_indicator_keeps_first_suggestion_and_is_counted():
     items, sections, ignored, duplicates = suggestions.validate_suggestions(document, data, dimensions, groups)
     assert [row['series_id'] for row in items] == ['field-0']
     assert ignored == 0 and duplicates == 1 and sections[0]['selected_count'] == 1
+
+
+def test_missing_empty_reason_with_usable_items_marks_the_section():
+    dimensions, data = axes(), catalog()
+    groups = validation_groups(dimensions, data)
+    document = {'items': [choice('field-0', section='Synthetic upstream')], 'empty_reasons': []}
+    items, sections, ignored, duplicates = suggestions.validate_suggestions(document, data, dimensions, groups)
+    assert [row['series_id'] for row in items] == ['field-0']
+    assert all(row['empty_reason'] == '模型未说明留空原因' for row in sections if not row['selected_count'])
