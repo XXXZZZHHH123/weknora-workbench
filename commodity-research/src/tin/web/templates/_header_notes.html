@@ -1,0 +1,14 @@
+{% macro render_header_notes(notes) -%}
+{% for note in notes or [] %}
+  {% if note.text | length > 120 %}
+    <details class="header-note">
+      <summary>表头说明 {{ note.cell }}<span class="header-note-preview">{{ note.text[:120] }}…</span></summary>
+      <p class="header-note-text">{{ note.text }}</p>
+    </details>
+  {% else %}
+    <div class="header-note">
+      <span>表头说明 {{ note.cell }}</span><p class="header-note-text">{{ note.text }}</p>
+    </div>
+  {% endif %}
+{% endfor %}
+{%- endmacro %}

@@ -21,7 +21,11 @@ document.addEventListener('DOMContentLoaded', () => {
     activeInfo.panel.hidden = true; activeInfo.trigger.setAttribute('aria-expanded', 'false'); activeInfo = null;
   }
   document.addEventListener('pointerdown', event => { if (activeInfo && !activeInfo.root.contains(event.target)) closeInfo(); });
-  document.addEventListener('keydown', event => { if (event.key === 'Escape' && activeInfo) { closeInfo(); event.preventDefault(); event.stopPropagation(); } });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || !activeInfo) return;
+    if (activeInfo.panel.contains(document.activeElement)) activeInfo.trigger.focus();
+    closeInfo(); event.preventDefault(); event.stopPropagation();
+  });
   function globalNotice(data) {
     const warnings = new Set(data.warnings || []), messages = [];
     if (data.history_coverage_limited ?? (warnings.has('history_limited') || warnings.has('observation_window_limited'))) messages.push('部分指标的历史观测已达到读取上限，同期统计覆盖不足');
@@ -51,18 +55,26 @@ document.addEventListener('DOMContentLoaded', () => {
     return rows;
   }
   function cardInfo(item) {
-    const rows = cardNotes(item);
-    if (!rows.length) return null;
+    const rows = cardNotes(item), notes = item.field_metadata?.header_notes || [];
+    if (!rows.length && !notes.length) return null;
     const root = node('div', 'dimensions-info'), trigger = button('ⓘ', () => {
       if (activeInfo?.root === root && activeInfo.pinned) closeInfo(); else show(true);
     }), panel = node('div', 'dimensions-tooltip');
     trigger.className = 'dimensions-info-trigger'; trigger.setAttribute('aria-label', '查看' + itemName(item) + '的说明与来源');
-    panel.id = 'dimensions-info-' + ++infoSequence; panel.setAttribute('role', 'tooltip'); panel.hidden = true;
-    trigger.setAttribute('aria-controls', panel.id); trigger.setAttribute('aria-describedby', panel.id); trigger.setAttribute('aria-expanded', 'false');
+    panel.id = 'dimensions-info-' + ++infoSequence; panel.hidden = true;
+    trigger.setAttribute('aria-controls', panel.id); trigger.setAttribute('aria-expanded', 'false');
+    if (notes.length) {
+      panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', '说明与来源');
+      trigger.setAttribute('aria-haspopup', 'dialog');
+    } else {
+      panel.setAttribute('role', 'tooltip'); trigger.setAttribute('aria-describedby', panel.id);
+    }
     for (const row of rows) panel.append(node('p', row.css || '', row.text));
+    if (notes.length) panel.append(renderHeaderNotes(notes));
     function show(pinned = false) {
       const wasPinned = activeInfo?.root === root && activeInfo.pinned;
-      closeInfo(); window.ChartHover?.close(); panel.hidden = false; trigger.setAttribute('aria-expanded', 'true');
+      if (activeInfo?.root !== root) closeInfo();
+      window.ChartHover?.close(); panel.hidden = false; trigger.setAttribute('aria-expanded', 'true');
       panel.style.transform = '';
       const box = panel.getBoundingClientRect(), viewportWidth = document.documentElement.clientWidth;
       const shift = Math.max(8 - box.left, Math.min(0, viewportWidth - 8 - box.right));

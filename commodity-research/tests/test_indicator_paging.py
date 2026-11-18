@@ -89,6 +89,19 @@ def test_catalog_name_and_quality_note_keep_their_full_text_and_leave_units_alon
     assert note not in row.text_content()
 
 
+def test_catalog_shows_notes_only_in_the_expandable_caliber_section():
+    note = {'cell': 'C2', 'text': '原始范围说明\n' + '长说明文字' * 40 + '<b>原文</b>'}
+    row = {'name': '指标单位', 'header_notes': [note]}
+    html = render_page(first_row=row)
+    indicator, = html.xpath('//tr[@data-indicator-row and @data-series-id="fixture.0"]')
+    assert indicator.get('data-name') == row['name'] and note['text'] not in indicator.get('data-search')
+    details, = indicator.xpath('.//details[@class="indicator-card-notes"]')
+    assert 'open' not in details.attrib and details.xpath('./summary/text()') == ['口径 ⓘ']
+    assert details.xpath('.//p[@class="header-note-text"]/text()') == [note['text']]
+    assert not details.xpath('.//p[@class="header-note-text"]/b')
+    assert note['text'] not in render_page(restricted=True, first_row=row).text_content()
+
+
 def test_actual_catalog_scripts_keep_pagers_synced_without_preloading_the_directory():
     node = shutil.which('node')
     assert node, 'Node is required for the directory interaction checks'

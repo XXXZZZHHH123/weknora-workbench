@@ -5,6 +5,7 @@ from tin.integration.kb_facts import catalog_page
 def indicator_row(spec):
     macro = spec.get('source_kind') == 'macro'
     metadata = spec.get('field_metadata') or {}
+    header_notes = metadata.get('header_notes')
     role = metadata.get('role')
     labels = {'numeric': '数值指标', 'text_dimension': '文本维度', 'annotation': '说明列'}
     quality = '; '.join(part for part in [labels.get(role),
@@ -17,6 +18,7 @@ def indicator_row(spec):
             'unit': spec.get('unit') or '—', 'source': spec.get('source_file') or '知识库结构化', 'sheet': spec.get('sheet') or '',
             'frequency': spec.get('frequency') or '未注明', 'fetch_mode': 'readonly', 'status': '可用',
             'registered': True, 'vendor_code': None, 'is_proxy': False, 'note': quality, 'field_metadata': spec.get('field_metadata'),
+            **({'header_notes': header_notes} if header_notes else {}),
             'knowledge_base_id': spec.get('knowledge_base_id'), 'source_kind': spec.get('source_kind'),
             'dedup_status': spec.get('dedup_status'), 'dedup_pairs': spec.get('dedup_pairs', [])}
 

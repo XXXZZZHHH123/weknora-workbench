@@ -63,6 +63,72 @@ def can_confirm(scope):
                         and item.get('permission') in {'viewer', 'editor', 'admin'} for item in scope.sources))
 
 
+def _is_remap(candidate):
+    return candidate.get('kind') == 'remap'
+
+
+def _can_remap(scope, source=None):
+    return (scope.can_edit and scope.identity.role in {'owner', 'admin'}
+            and any(item['tenant_id'] == scope.identity.tenant_id
+                    and item.get('permission') in {'editor', 'admin'}
+                    for item in ([source] if source else sources(scope).values())))
+
+
+def remap_pairs(scope, catalog):
+    from tin.integration.page_facts import SERIES
+    from tin.provenance.bridge import structured_request
+    source_map = sources(scope)
+    if not any(item['tenant_id'] == scope.identity.tenant_id for item in source_map.values()):
+        return []
+    response = structured_request('POST', '/api/research/indicator-remaps', {}, return_error_response=True)
+    if response.status_code != 200:
+        status = response.status_code if response.status_code in {403, 409, 413} else 503
+        raise HTTPException(status, '重映射候选无法读取，请重新打开研究台后核对')
+    try:
+        items = response.json()['items']
+        if not isinstance(items, list) or len(items) > 10000:
+            raise ValueError
+        pairs = {}
+        for item in items:
+            old = item['old']
+            new = catalog.get(item['new_series_id'])
+            source = source_map.get(old['knowledge_base_id'])
+            if new is None or source is None or not SERIES.fullmatch(old['series_id']):
+                raise ValueError
+            if (old['series_id'] in catalog or source['tenant_id'] != scope.identity.tenant_id
+                    or source['tenant_id'] != old['knowledge_base_tenant_id']
+                    or source['id'] != old['source_binding_id']
+                    or any(old[key] != new.get(key) for key in ('knowledge_base_id', 'knowledge_base_tenant_id',
+                           'source_binding_id', 'source_knowledge_id', 'source_sha256'))
+                    or item['source_version'] != new.get('source_version')
+                    or item['new_dataset_id'] != new.get('dataset_id')
+                    or item['sheet'] != new.get('sheet') or old['dataset_id'] == new['dataset_id']
+                    or item['block_index'] != new.get('block_index')
+                    or type(item['matching_periods']) is not int or item['matching_periods'] <= 0):
+                raise ValueError
+            old = {**old, 'sheet': item['sheet'], 'column': item['column']}
+            new = {**new, 'column': item['column']}
+            identifier = pair_id(old, new)
+            if identifier in pairs:
+                raise ValueError
+            points = item['matching_periods']
+            pairs[identifier] = {'id': identifier, 'personal': old, 'default': new, 'candidate': {
+                'kind': 'remap', 'strength': 'strong', 'codes': [], 'reason': '同一原件、工作表、区块、列与类别',
+                'block_index': item['block_index'], 'column': item['column'], 'category': item['category']},
+                'evidence': {'exact_remap': True, 'matching_periods': points, 'mismatching_periods': 0,
+                    'overlap_periods': points, 'personal_as_of': item['latest_date'], 'default_as_of': item['latest_date'],
+                    'personal_unit': old.get('unit'), 'default_unit': new.get('unit'),
+                    'personal_frequency': old.get('frequency'), 'default_frequency': new.get('frequency'),
+                    'unit_match': old.get('unit') == new.get('unit'),
+                    'frequency_match': old.get('frequency') == new.get('frequency'),
+                    'precision_complete': True, 'limited': False, 'version': item['source_version'],
+                    'checked_points': points, 'previous_dataset_id': old['dataset_id'],
+                    'current_dataset_id': new['dataset_id'], 'notice': '全部观测日期与数值逐点一致，无舍入或容差'}}
+        return list(pairs.values())
+    except (ValueError, KeyError, AttributeError, TypeError):
+        raise HTTPException(409, '指标目录或重映射候选已变化，请重新读取') from None
+
+
 @contextmanager
 def correspondence_session(scope):
     require_scope(scope)
@@ -130,6 +196,9 @@ def candidate_pairs(scope, fields):
 def _authorized(scope, row):
     available = sources(scope)
     own, default = available.get(row.personal_kb_id), available.get(row.default_kb_id)
+    if _is_remap(row.candidate):
+        return bool(own and own is default and own['tenant_id'] == scope.identity.tenant_id
+                    and row.personal_tenant_id == row.default_tenant_id == own['tenant_id'])
     return bool(own and default and own['source_type'] == 'knowledge_base'
                 and default['source_type'] == 'central_dataset'
                 and own['tenant_id'] == row.personal_tenant_id
@@ -139,6 +208,11 @@ def _authorized(scope, row):
 def _current_pair(row, catalog):
     """Stored KB grants alone never authorize a withdrawn document's metadata."""
     own, default = catalog.get(row.personal_id), catalog.get(row.default_id)
+    if _is_remap(row.candidate):
+        if own or not default or any(row.personal.get(key) != default.get(key)
+                for key in ('knowledge_base_id', 'knowledge_base_tenant_id', 'source_knowledge_id', 'source_sha256')):
+            return None
+        return {'personal': row.personal, 'default': default, 'candidate': row.candidate}
     if not own or not default:
         return None
     if (own.get('knowledge_base_id') != row.personal_kb_id
@@ -198,23 +272,35 @@ def raw_metadata(scope):
         offset = following
 
 
-def discover(scope, fields=None):
+def discover(scope, fields=None, *, include_remaps=False):
     require_scope(scope)
     if fields is None:
         fields = list(raw_metadata(scope)['catalog'].values())
     candidates = candidate_pairs(scope, fields)
+    if include_remaps:
+        candidates.extend(remap_pairs(scope, {field['series_id']: field for field in fields}))
     now = datetime.now(timezone.utc)
     with correspondence_session(scope) as session:
         existing = {row.id: row for row in session.scalars(select(IndicatorCorrespondence))}
+        confirmed = {row.personal_id: row.id for row in existing.values() if row.state == 'confirmed_default'}
+        candidates = [item for item in candidates if not _is_remap(item['candidate'])
+                      or confirmed.get(item['personal']['series_id'], item['id']) == item['id']]
         for item in candidates:
-            if item['id'] in existing:
+            row = existing.get(item['id'])
+            if row is not None:
+                if (row.state == 'pending' and _is_remap(item['candidate'])
+                        and row.evidence != item['evidence']):
+                    session.execute(update(IndicatorCorrespondence).where(
+                        IndicatorCorrespondence.id == row.id, IndicatorCorrespondence.revision == row.revision
+                    ).values(evidence=item['evidence'], personal=item['personal'], default=item['default'],
+                             revision=row.revision+1, updated_at=now))
                 continue
             own, default = item['personal'], item['default']
             session.add(IndicatorCorrespondence(id=item['id'], personal_id=own['series_id'],
                 default_id=default['series_id'], personal_kb_id=own['knowledge_base_id'],
                 default_kb_id=default['knowledge_base_id'], personal_tenant_id=own['knowledge_base_tenant_id'],
                 default_tenant_id=default['knowledge_base_tenant_id'], personal=own, default=default,
-                candidate=item['candidate'], state='pending', evidence=None, history=[], revision=1,
+                candidate=item['candidate'], state='pending', evidence=item.get('evidence'), history=[], revision=1,
                 created_at=now, updated_at=now))
         try:
             session.commit()
@@ -225,6 +311,8 @@ def discover(scope, fields=None):
 
 
 def batch_eligible(candidate, evidence):
+    if _is_remap(candidate):
+        return bool(evidence and evidence.get('exact_remap'))
     return bool(candidate.get('strength') == 'strong' and evidence
         and evidence.get('overlap_periods', 0) > 0 and evidence.get('mismatching_periods') == 0
         and evidence.get('matching_periods') == evidence.get('overlap_periods')
@@ -234,6 +322,8 @@ def batch_eligible(candidate, evidence):
 
 def serialize(row, current=None):
     result = {key: getattr(row, key) for key in ('id', 'state', 'evidence', 'revision', 'history', 'confirmed_by', 'confirmed_at')}
+    result['history'] = [{key: value for key, value in event.items() if key != 'workbench_ids'}
+                         for event in row.history]
     result.update(personal=current['personal'] if current else row.personal,
                   default=current['default'] if current else row.default,
                   candidate=current['candidate'] if current else row.candidate)
@@ -241,28 +331,35 @@ def serialize(row, current=None):
     return result
 
 
-def list_mappings(scope, *, discover_current=True):
+def list_mappings(scope, *, discover_current=True, include_remaps=False):
     require_scope(scope)
     # Fresh document-level source inventory is authoritative on every read.
     catalog = raw_metadata(scope)['catalog']
-    candidates = discover(scope, fields=list(catalog.values())) if discover_current else []
+    candidates = discover(scope, fields=list(catalog.values()), include_remaps=include_remaps) if discover_current else []
     current = {item['id']: item for item in candidates}
     with correspondence_session(scope) as session:
         rows = session.scalars(select(IndicatorCorrespondence).order_by(IndicatorCorrespondence.created_at, IndicatorCorrespondence.id)).all()
         items = []
         for row in rows:
+            remap = _is_remap(row.candidate)
+            if remap and not include_remaps:
+                continue
             if not _authorized(scope, row):
                 continue
             pair = _current_pair(row, catalog)
             if pair is None:
-                if (row.state != 'pending' and can_confirm(scope)
+                if (row.state != 'pending' and (_can_remap(scope, sources(scope)[row.personal_kb_id]) if remap else can_confirm(scope))
                         and row.default_tenant_id == scope.identity.tenant_id):
-                    items.append(_unavailable_decision(row, catalog))
+                    item = _unavailable_decision(row, catalog)
+                    items.append({**item, **({'remap': True} if remap else {})})
                 continue
             if row.id not in current and row.state == 'pending':
                 continue
-            items.append(serialize(row, current.get(row.id, pair)))
-        return {'items': items, 'can_confirm': can_confirm(scope),
+            item = serialize(row, current.get(row.id, pair))
+            if remap:
+                item['can_confirm'] = _can_remap(scope, sources(scope)[row.personal_kb_id])
+            items.append(item)
+        return {'items': items, 'can_confirm': can_confirm(scope) or (include_remaps and _can_remap(scope)),
                 'sources_revision': scope.sources_revision,
                 'pending_count': sum(item['state'] == 'pending' for item in items)}
 
@@ -276,7 +373,7 @@ def confirmed_replacements(scope, identifiers=None):
             query = query.where(IndicatorCorrespondence.personal_id.in_(list(identifiers)))
         result = {}
         for row in session.scalars(query):
-            if _authorized(scope, row):
+            if not _is_remap(row.candidate) and _authorized(scope, row):
                 if row.personal_id in result and result[row.personal_id] != row.default_id:
                     raise HTTPException(409, '个人库指标存在冲突对应，请撤销后重新确认')
                 result[row.personal_id] = row.default_id
@@ -298,7 +395,7 @@ def catalog_annotations(scope, fields, *, current_fields=None):
         rows = session.scalars(select(IndicatorCorrespondence).where(
             IndicatorCorrespondence.personal_id.in_(identifiers) | IndicatorCorrespondence.default_id.in_(identifiers))).all()
         for row in rows:
-            if (not _authorized(scope, row) or _current_pair(row, catalog) is None
+            if (_is_remap(row.candidate) or not _authorized(scope, row) or _current_pair(row, catalog) is None
                     or row.state not in {'pending', 'confirmed_default'}):
                 continue
             if row.state == 'pending' and row.id not in current_ids:
@@ -373,6 +470,14 @@ def compare_series(personal, default, rows, *, version=None, source_versions=Non
 
 
 def _fresh_pair(scope, identifier):
+    with correspondence_session(scope) as session:
+        row = session.get(IndicatorCorrespondence, identifier)
+        remap = row is not None and _is_remap(row.candidate)
+    if remap:
+        candidate = next((item for item in discover(scope, include_remaps=True) if item['id'] == identifier), None)
+        if candidate is None:
+            raise HTTPException(409, '重映射来源或逐点证据已变化，请重新读取候选')
+        return candidate
     candidate = next((item for item in discover(scope) if item['id'] == identifier), None)
     if candidate is None:
         # Decisions remain traceable if source metadata no longer meets recall.
@@ -391,6 +496,9 @@ def _fresh_pair(scope, identifier):
 
 
 def _verify(scope, candidate):
+    if _is_remap(candidate['candidate']):
+        # The signed historical read already compared every persisted point.
+        return candidate['evidence']
     from tin.integration.page_facts import bounded_facts
     own, default = candidate['personal'], candidate['default']
     origins = {field['series_id']: {'knowledge_base_id': field['knowledge_base_id'],
@@ -428,24 +536,37 @@ def verify_candidate(scope, identifier):
         return serialize(row, candidate)
 
 
-def decide(scope, identifiers, revisions, state, *, batch=False):
+def decide(scope, identifiers, revisions, state, *, batch=False, apply_remaps=None):
     require_scope(scope)
-    if not can_confirm(scope):
+    if not can_confirm(scope) and not _can_remap(scope):
         raise HTTPException(403, '仅有中心来源读取权限的本空间管理员可确认指标对应；当前为只读')
-    if state not in STATES - {'pending'} or not identifiers or len(identifiers) > 20 or len(set(identifiers)) != len(identifiers):
-        raise HTTPException(422, '指标对应决定无效，每次最多20组')
+    if state not in STATES - {'pending'} or not identifiers or len(identifiers) > 10000 or len(set(identifiers)) != len(identifiers):
+        raise HTTPException(422, '指标对应决定无效')
     if len(identifiers) > 1 and not batch or batch and state != 'confirmed_default':
         raise HTTPException(422, '其余候选需逐条确认')
-    current = {item['id']: item for item in discover(scope)}
+    with correspondence_session(scope) as session:
+        stored = session.scalars(select(IndicatorCorrespondence).where(IndicatorCorrespondence.id.in_(identifiers))).all()
+        remaps = sum(_is_remap(row.candidate) for row in stored)
+    if remaps and remaps != len(identifiers):
+        raise HTTPException(422, '重映射与中心库对应请分别确认')
+    if not remaps:
+        if not can_confirm(scope):
+            raise HTTPException(403, '当前为只读')
+        if len(identifiers) > 20:
+            raise HTTPException(422, '中心库指标对应每次最多20组')
+    current = {item['id']: item for item in (discover(scope, include_remaps=True) if remaps else discover(scope))}
     now = datetime.now(timezone.utc)
     with correspondence_session(scope) as session:
         rows = []
+        available = sources(scope)
         for identifier in identifiers:
             row = session.get(IndicatorCorrespondence, identifier)
             if row is None or not _authorized(scope, row) or identifier not in current:
                 raise HTTPException(404, '指标对应候选不存在或来源已移除')
-            if row.default_tenant_id != scope.identity.tenant_id:
+            if not remaps and row.default_tenant_id != scope.identity.tenant_id:
                 raise HTTPException(403, '只能维护本空间中心来源的指标对应')
+            if remaps and not _can_remap(scope, available[row.personal_kb_id]):
+                raise HTTPException(403, '重映射确认需要本空间管理员的工作台与原件来源编辑权限')
             if row.revision != revisions.get(identifier):
                 raise HTTPException(409, '指标对应记录已更新，请刷新后确认')
             if row.state != 'pending':
@@ -470,10 +591,11 @@ def decide(scope, identifiers, revisions, state, *, batch=False):
                     IndicatorCorrespondence.personal_id == row.personal_id,
                     IndicatorCorrespondence.state == 'confirmed_default', IndicatorCorrespondence.id != row.id)).all()
                 if conflicts:
-                    raise HTTPException(409, '个人库指标已有其他default对应，请先撤销')
+                    raise HTTPException(409, '旧指标已确认对应，请先撤销' if remaps else '个人库指标已有其他default对应，请先撤销')
             history = [*row.history, {'action': 'decide', 'previous_state': row.state, 'state': state,
                 'actor': scope.identity.user_id, 'at': now.isoformat(), 'evidence': evidence,
-                'candidate': candidate['candidate'], 'personal': candidate['personal'], 'default': candidate['default']}]
+                'candidate': candidate['candidate'], 'personal': candidate['personal'], 'default': candidate['default'],
+                **({'confirmation_revision': row.revision + 1} if remaps and state == 'confirmed_default' else {})}]
             result = session.execute(update(IndicatorCorrespondence).where(IndicatorCorrespondence.id == row.id,
                 IndicatorCorrespondence.revision == revisions[row.id]).values(state=state, evidence=evidence,
                 personal=candidate['personal'], default=candidate['default'], candidate=candidate['candidate'],
@@ -481,13 +603,20 @@ def decide(scope, identifiers, revisions, state, *, batch=False):
                 revision=row.revision+1, updated_at=now))
             if result.rowcount != 1:
                 raise HTTPException(409, '指标对应记录已更新，请刷新后确认')
+        if remaps and state == 'confirmed_default':
+            if apply_remaps is None:
+                raise HTTPException(409, '重映射确认缺少引用改写入口')
+            affected = apply_remaps(scope, [serialize(row, current[row.id]) for row in rows]) or {}
+            for row in rows:
+                if row.id in affected:
+                    row.history = [*row.history[:-1], {**row.history[-1], 'workbench_ids': affected[row.id]}]
         session.commit()
         return {'items': [serialize(session.get(IndicatorCorrespondence, row.id), current[row.id]) for row in rows]}
 
 
-def undo(scope, identifier, revision):
+def undo(scope, identifier, revision, *, undo_remap=None):
     require_scope(scope)
-    if not can_confirm(scope):
+    if not can_confirm(scope) and not _can_remap(scope):
         raise HTTPException(403, '仅有中心来源读取权限的本空间管理员可撤销指标对应')
     catalog = raw_metadata(scope)['catalog']
     with correspondence_session(scope) as session:
@@ -495,10 +624,21 @@ def undo(scope, identifier, revision):
         pair = _current_pair(row, catalog) if row is not None else None
         if row is None or not _authorized(scope, row):
             raise HTTPException(404, '指标对应不存在或当前来源字段无读取授权')
+        remap = _is_remap(row.candidate)
+        if not (_can_remap(scope, sources(scope)[row.personal_kb_id]) if remap else can_confirm(scope)):
+            raise HTTPException(403, '当前账号无权撤销此指标对应')
         if row.default_tenant_id != scope.identity.tenant_id:
             raise HTTPException(403, '只能维护本空间中心来源的指标对应')
         if row.revision != revision or row.state == 'pending':
             raise HTTPException(409, '指标对应已更新或已撤销，请刷新')
+        restore = remap and row.state == 'confirmed_default'
+        if restore and undo_remap is None:
+            raise HTTPException(409, '重映射撤销缺少引用恢复入口')
+        undo_item = None
+        if restore:
+            decision = row.history[-1]
+            undo_item = {**serialize(row), 'workbench_ids': decision.get('workbench_ids', []),
+                         'revision': decision.get('confirmation_revision', revision)}
         now = datetime.now(timezone.utc)
         history = [*row.history, {'action': 'undo', 'previous_state': row.state, 'state': 'pending',
             'actor': scope.identity.user_id, 'at': now.isoformat(), 'evidence': row.evidence,
@@ -508,6 +648,8 @@ def undo(scope, identifier, revision):
             confirmed_by=None, confirmed_at=None, revision=revision+1, updated_at=now))
         if changed.rowcount != 1:
             raise HTTPException(409, '指标对应记录已更新，请刷新')
+        if restore:
+            undo_remap(scope, undo_item)
         session.commit()
         session.refresh(row)
         return serialize(row, pair) if pair is not None else _unavailable_decision(row, catalog)

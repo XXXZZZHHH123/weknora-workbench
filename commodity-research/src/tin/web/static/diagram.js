@@ -1617,6 +1617,7 @@ async function dgOpenDetail(nodeId) {
         : '<div class="text-[var(--text-muted)]">未标注口径维度</div>'}
       ${d.expression ? row("计算式", dgEsc(d.expression)) : ""}
       ${d.tolerance ? row("容差", dgEsc(d.tolerance)) : ""}
+      ${d.header_notes?.length ? '<div data-diagram-header-notes></div>' : ''}
     </div>
 
     <div class="py-3 border-b border-[var(--line)] text-[11px]">
@@ -1653,6 +1654,7 @@ async function dgOpenDetail(nodeId) {
       <button type="button" onclick="dgCopy('${dgEsc(d.series_id)}')"
          class="px-2.5 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">复制代码</button>
     </div>`;
+  if (d.header_notes?.length) box.querySelector('[data-diagram-header-notes]').append(renderHeaderNotes(d.header_notes));
   dgBindChartHover();
 }
 
