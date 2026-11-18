@@ -458,3 +458,16 @@ def test_annotation_and_text_dimensions_never_enter_model_source_facts():
     assert len(facts) == 1
     assert not drafts.metric_names_verified(['说明列', '文本维度', '旧归档说明列'], facts)
     assert not drafts.numbers_verified('数值777', facts)
+
+
+def test_direction_words_cover_rise_and_fall_with_absolute_values():
+    from tin.web import report_dimension_drafts as drafts
+    facts = [{'name': '郑棉05合约', 'unit': '元/吨', 'latest': 16865, 'change': -110,
+              'display': {'latest': '16,865', 'change': '-110'}},
+             {'name': '中国棉花价格指数:328', 'unit': '元/吨', 'latest': 18220, 'change': 54,
+              'display': {'latest': '18,220', 'change': '+54'}}]
+    assert drafts.numbers_verified('郑棉05合约报16,865元/吨，较上期下跌110', facts)
+    assert drafts.numbers_verified('中国棉花价格指数:328上涨54', facts)
+    assert not drafts.numbers_verified('郑棉05合约较上期上涨110', facts)
+    prompt = drafts.drafting_prompt({}, facts, '')
+    assert '方向词只用' in prompt and '不自行改写或缩写名称' in prompt
