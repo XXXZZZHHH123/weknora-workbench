@@ -1,6 +1,6 @@
 """Explicit chart pins for personal research; shared charts keep their own ACL."""
 from copy import deepcopy
-from datetime import date, timedelta
+from datetime import date
 import math
 
 from fastapi import APIRouter, HTTPException, Query
@@ -127,35 +127,8 @@ def _dedup_notice(scope, identifiers):
 
 def moving_observations(scope, identifiers, day, limit):
     """Page backward over real dates; invalid windows allow at most 121 rows."""
-    from tin.integration.page_facts import bounded_facts
-    rows = {sid: [] for sid in identifiers}
-    pending = {sid: day for sid in identifiers}
-    versions = {}
-    while pending:
-        groups = {}
-        for sid, boundary in pending.items():
-            size = min(121, limit - len(rows[sid]))
-            groups.setdefault((boundary, size), []).append(sid)
-        following = {}
-        for (boundary, size), ids in groups.items():
-            facts = bounded_facts(scope, ids, 'judgments', day=boundary.isoformat(),
-                                  points=size, include_invalid=True)
-            for binding, version in facts.get('source_versions', {}).items():
-                if binding in versions and versions[binding] != version:
-                    raise HTTPException(409, '均线来源在分页期间变化，请刷新')
-                versions[binding] = version
-            for sid in ids:
-                page = sorted([point for point in facts['rows'] if point.get('series_id') == sid],
-                              key=lambda point: point['date'])
-                # bounded_facts validates IDs, unique dates, statuses and cutoff.
-                # Invalid observations remain in every moving window.
-                rows[sid].extend(page)
-                if len(page) == size and len(rows[sid]) < limit:
-                    earliest = date.fromisoformat(page[0]['date'])
-                    if earliest > date.min:
-                        following[sid] = earliest - timedelta(days=1)
-        pending = following
-    return {sid: sorted(points, key=lambda point: point['date']) for sid, points in rows.items()}
+    from tin.integration.observation_windows import paged_observations
+    return paged_observations(scope, identifiers, day, limit)
 
 
 def overlay_plan(definition, rules):

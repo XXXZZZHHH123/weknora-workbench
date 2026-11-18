@@ -16,7 +16,7 @@ from tin.web.research_references import record_in_workbench
 def check_current(scope, *, day=None):
     modules = set(scope.view_modules) if scope is not None else set()
     if (scope is None or not scope.authorization or scope.restricted
-            or 'home' not in modules or not modules & {'judgments', 'strategies'}):
+            or 'home' not in modules or scope.metadata.get('can_read_source') is False):
         raise HTTPException(403, '当前授权不开放研判预警检查')
     if scope.scope_version != 2:
         raise HTTPException(409, '请重新打开研究台以更新来源授权后检查预警')
@@ -34,6 +34,16 @@ def check_current(scope, *, day=None):
         result['partial'] = result['partial'] or strategy['partial']
         if strategy['notice']:
             result['notice'] = (result['notice'] + ' ' if result['notice'] else '') + strategy['notice']
+    from tin.web.monitors import check_monitors
+    monitors = check_monitors(scope, cutoff, checked)
+    result['alerts'].extend(monitors['alerts'])
+    result['checked_monitors'] = monitors['checked']
+    from tin.web.monitors import recorded_monitor_alerts
+    with workbench_scope.artifact_session(scope) as session:
+        result['monitor_alerts'] = recorded_monitor_alerts(session, scope)
+    result['partial'] = result['partial'] or monitors['partial']
+    if monitors['notice']:
+        result['notice'] += ' ' + monitors['notice']
     return result
 
 

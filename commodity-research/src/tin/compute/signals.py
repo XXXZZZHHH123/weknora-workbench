@@ -8,7 +8,6 @@ LLM 只在下游 compose_brief 出现，而它看到的 signals 已经是算好�
 规则今天安全，这正是 L1「不写 NULL 行、但把缺口摆上台面」的同一条纪律。
 """
 
-import operator
 from contextvars import ContextVar
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -17,7 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tin.compute.engine import day_end, latest_obs
-from tin.compute.rule_values import decimal_difference, decimal_value
+from tin.compute.rule_values import decimal_value
+from tin.compute.condition_backtest import OPS, condition_quantities, evaluate_window
 from tin.config import SHANGHAI
 from tin.export.board import threshold_radar
 from tin.judgments.service import current as current_judgment
@@ -35,7 +35,6 @@ TRIGGER_FALSIFIED, TRIGGER_EXPIRED = "证伪触发", "判断到期"
 # 否则下游（简报、首屏待办）要认两套词；区间命中同样是「触发」。
 RADAR_STATE = {"已触发": "触发", "在区间内": "触发", "未触发": "未触发", "数据缺失": "数据缺失"}
 
-OPS = {">": operator.gt, ">=": operator.ge, "<": operator.lt, "<=": operator.le}
 _transient_signals = ContextVar('research_transient_signals', default=False)
 
 
@@ -140,10 +139,8 @@ def _threshold_signals(session: Session, j: Judgment, variety: str, d: date) -> 
 def _quantities(kind: str, points: list[Observation]) -> list[tuple[Observation, Decimal]]:
     """把观测序列折成被比较的量。change 的语义是与上一个数据点的差值，
     因此 n 期 change 要 n+1 个点，首个点只当基期不参与判定。"""
-    if kind == "change":
-        return [(cur, decimal_difference(cur.value, prev.value))
-                for prev, cur in zip(points, points[1:], strict=False)]
-    return [(p, decimal_value(p.value)) for p in points]
+    compared = points[1:] if kind == 'change' else points
+    return list(zip(compared, condition_quantities(kind, [point.value for point in points]), strict=True))
 
 
 def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal:
@@ -191,8 +188,10 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
             and point.caliber_snapshot['unit'] != confirmed for point in points):
         return _upsert(session, j.id, f['id'], FALSIFIER, d, '数据缺失', None, [],
             '观测窗口的真实单位与本条确认口径不一致，未进行数值换算')
-    quantities = _quantities(kind, points)
-    hits = [OPS[op](q, target) for _p, q in quantities]
+    evaluated = evaluate_window(kind, op, target, [point.value for point in points], need)
+    compared = points[1:] if kind == 'change' else points
+    quantities = list(zip(compared, evaluated['quantities'], strict=True))
+    hits = evaluated['hits']
     evidence = []
     if kind == "change":
         evidence.append(_evidence(points[0], f"基期 {_iso(points[0].as_of)[:10]}：{points[0].value}",
@@ -201,7 +200,7 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
         moved = f"较上一数据点变化 {q:+g}" if kind == "change" else f"实际值 {q:g}"
         evidence.append(_evidence(p, f"{_iso(p.as_of)[:10]} {moved}", p.value,
                                   note=f"{f['expression']} {'成立' if hit else '不成立'}"))
-    state = "触发" if all(hits) else "未触发"
+    state = "触发" if evaluated["triggered"] else "未触发"
     return _upsert(session, j.id, f["id"], FALSIFIER, d, state, float(quantities[-1][1]), evidence, None)
 
 
