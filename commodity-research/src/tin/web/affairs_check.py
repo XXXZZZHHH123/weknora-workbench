@@ -122,7 +122,7 @@ def _judgment_alerts(scope, cutoff, checked):
                 raise HTTPException(409, '当前生效研判已变化，请刷新后重新检查')
             from tin.compute.signals import evaluate_preview
             try:
-                signals = evaluate_preview(session, variety, cutoff)
+                signals = evaluate_preview(session, variety, cutoff, display_precision=True)
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from None
             if len(signals) != expected or any(row.judgment_id != identifier for row in signals):

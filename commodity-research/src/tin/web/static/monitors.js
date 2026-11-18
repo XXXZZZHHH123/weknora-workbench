@@ -10,6 +10,16 @@
   const selected = new URLSearchParams(window.location.search).get('monitor');
   let selectedOpened = false;
   const displays = new Map();
+  function showPanel(name, visible) {
+    get(name + '-panel').hidden = !visible;
+    get(name + '-toggle').setAttribute('aria-expanded', String(visible));
+    get('panels').hidden = get('create-panel').hidden && get('list-panel').hidden;
+  }
+  function openDeepLink() {
+    if (window.location.hash !== '#monitors' && !selected) return;
+    showPanel('list', true);
+    root.scrollIntoView({block: 'start'});
+  }
   function node(tag, text, className) {
     const element = document.createElement(tag);
     if (text !== undefined) element.textContent = String(text);
@@ -239,19 +249,19 @@
       if (typeof ResizeObserver === 'function') { view.observer = new ResizeObserver(draw); view.observer.observe(plot); }
     }
   }
-  function signalList(items) {
-    window.dispatchEvent(new CustomEvent('monitors-changed', {detail: {enabled: items.some(item => item.enabled)}}));
-  }
-  async function viewItem(item, adjust = false) {
+  async function viewItem(item, {adjust = false, scroll = true} = {}) {
     const query = adjust ? new URLSearchParams(windowParams('view-')).toString() : '';
     const result = await request('/monitors/' + encodeURIComponent(item.id) + '/backtest' + (query ? '?' + query : ''));
     viewedItem = item; setWindow('view-', result);
     get('view').hidden = false; get('view-title').textContent = item.title + ' · 历史回测';
-    display(get('view-result'), result); get('view').scrollIntoView({block: 'nearest'}); status('历史回测已更新。');
+    display(get('view-result'), result);
+    if (scroll) get('view').scrollIntoView({block: 'nearest'});
+    status('历史回测已更新。');
   }
   function renderList(items) {
     const rows = items.map(item => {
       const row = node('div', undefined, 'affairs-row monitor-list-row'); row.dataset.monitorId = item.id;
+      if (item.id === selected) row.setAttribute('aria-current', 'true');
       const copy = node('div', undefined, 'monitor-list-copy');
       const title = node('div', undefined, 'affairs-row-title'); title.append(node('span', item.current_state || '未检查', 'affairs-row-kind'), node('span', item.title));
       copy.append(title, node('div', item.sentence, 'affairs-row-detail'), node('div',
@@ -275,15 +285,19 @@
       })); actions.append(view, remove); row.append(copy, actions); return row;
     });
     get('list').replaceChildren(...(rows.length ? rows : [node('div', '还没有保存监测。先用一句话生成草稿。', 'affairs-empty')]));
-    signalList(items); sync();
+    sync();
   }
   async function loadList() {
     const token = ++listToken, result = await request('/monitors');
     if (token !== listToken) return;
-    canWrite = result.can_write === true; renderList(result.items || []);
-    if (selected && !selectedOpened) {
-      const item = (result.items || []).find(item => item.id === selected);
-      if (item) { selectedOpened = true; void act(() => viewItem(item)); }
+    const items = result.items || [];
+    canWrite = result.can_write === true; renderList(items);
+    get('list-toggle').textContent = '我的监测 ' + items.length;
+    window.dispatchEvent(new CustomEvent('monitors-changed', {detail: {
+      enabled: items.some(item => item.enabled), alerts: result.alerts}}));
+    if (selected && !selectedOpened && !busy) {
+      const item = items.find(item => item.id === selected);
+      if (item) { selectedOpened = true; void act(() => viewItem(item, {scroll: false})); }
     }
   }
   async function act(action, failure) {
@@ -291,6 +305,11 @@
     try { await action(); } catch (error) { failure?.(); status(error.message, true); }
     finally { busy = false; sync(); }
   }
+  for (const name of ['create', 'list']) {
+    get(name + '-toggle').addEventListener('click', () => showPanel(name, get(name + '-panel').hidden));
+  }
+  window.addEventListener('hashchange', openDeepLink);
+  openDeepLink();
   get('sentence').addEventListener('input', sync); get('model').addEventListener('change', sync);
   get('title').addEventListener('input', invalidate); get('logic').addEventListener('change', invalidate);
   for (const key of ['start', 'end']) get(key).addEventListener('input', () => { customDraftWindow = true; invalidate(); });
@@ -314,7 +333,7 @@
   }));
   get('cancel').addEventListener('click', () => { get('draft').hidden = true; clearDisplay(get('backtest-result')); draft = null; tested = false; sync(); });
   get('view-close').addEventListener('click', () => { get('view').hidden = true; clearDisplay(get('view-result')); });
-  get('view-backtest').addEventListener('click', () => { if (viewedItem) void act(() => viewItem(viewedItem, true)); });
+  get('view-backtest').addEventListener('click', () => { if (viewedItem) void act(() => viewItem(viewedItem, {adjust: true})); });
   get('refresh').addEventListener('click', () => void act(loadList));
   window.addEventListener('affairs-checked', () => { void loadList().catch(error => status(error.message, true)); });
   void loadList().catch(error => { get('list').replaceChildren(node('div', '监测读取失败，请刷新列表重试。', 'affairs-empty')); status(error.message, true); });

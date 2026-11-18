@@ -173,6 +173,8 @@ def test_affairs_template_has_alerts_and_real_deep_links_without_fake_health_cla
     with artifact_session(scope) as session:
         result = build_affairs(session, scope, today=TODAY)
     result['alerts'][0]['title'] = '<img src=x onerror=unsafe>'
+    result['alerts'].append({'kind': 'monitor', 'title': 'Saved monitor', 'detail': 'Entered trigger',
+                             'href': '/?monitor=fixture-monitor#monitors'})
     templates = Path(__file__).parents[1] / 'src/tin/web/templates'
     environment = Environment(loader=ChoiceLoader([DictLoader({'base.html': '{% block head %}{% endblock %}{% block main %}{% endblock %}'}),
         FileSystemLoader(templates)]), autoescape=select_autoescape(['html']))
@@ -181,7 +183,11 @@ def test_affairs_template_has_alerts_and_real_deep_links_without_fake_health_cla
     environment.globals.update(research_url=lambda value: '/wb' + value, research_static_prefix=lambda: '/static',
         static_version=lambda: 'fixture', research_workbench=lambda: scope, research_prefix=lambda: '/wb')
     html = environment.get_template('home.html').render(affairs=result, err=None)
-    assert '事务中心' in html and '预警与触发' in html
+    assert '事务中心' in html and html.count('预警与监测') == 1
+    assert '预警与触发' not in html and '>监测</h2>' not in html
+    assert '一句话建监测</button>' in html and '我的监测 0</button>' in html
+    assert html.index('id="monitor-list-panel"') < html.index('id="affairs-alert-list"') < html.index('class="affairs-grid"')
+    assert '/wb/?monitor=fixture-monitor#monitors' in html and '>监测触发</span>Saved monitor' in html
     assert '已记录预警' not in html
     assert 'affairs-check' in html and 'period=weekly' in html
     assert '<img src=x' not in html and '&lt;img' in html

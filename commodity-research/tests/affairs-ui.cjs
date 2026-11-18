@@ -10,21 +10,24 @@ class Element {
   fire(kind){return this.listeners[kind]?.();}
   append(...items){this.children.push(...items);}
   replaceChildren(...items){this.children=items;}
+  querySelectorAll(){return this.children.filter(row=>row.className==='affairs-row'&&row.dataset.kind!=='monitor');}
+  querySelector(){return this.children.find(row=>row.dataset?.kind==='monitor');}
 }
-function setup({failure=false,zeroRules=false,checkable=true,monitoring=false,persisted=false}={}) {
+function setup({failure=false,zeroRules=false,checkable=true,monitoring=false,persisted=false,wait}={}) {
   const nodes=Object.fromEntries(['affairs-check','affairs-check-status','affairs-alert-list'].map(id=>[id,new Element()]));
   nodes['affairs-check'].disabled=!checkable;
   nodes['affairs-alert-list'].children.push('Original persisted alert');
   const requests=[];
-  const context={window:{RESEARCH_PREFIX:'/research/workbenches/fixture'},
+  const listeners={};
+  const context={window:{RESEARCH_PREFIX:'/research/workbenches/fixture',addEventListener(kind,callback){listeners[kind]=callback;}},
     document:{getElementById:id=>nodes[id],createElement:()=>new Element()},
-    async researchFetch(url,options){requests.push({url,options});return {ok:!failure,json:async()=>failure?{detail:'Source access changed'}:{
+    async researchFetch(url,options){requests.push({url,options});if(wait)await wait;return {ok:!failure,json:async()=>failure?{detail:'Source access changed'}:{
       alerts:zeroRules?[]:[{kind:monitoring?'monitor':'triggered',title:'<img onerror=unsafe>',detail:'Actual bounded result',href:monitoring?'/?monitor=fixture-id#monitors':'/sn/judgment?judgment_id=7',trade_date:'2026-01-01',evidence_dates:['2025-12-30']}],
       ...(persisted?{monitor_alerts:[{kind:'monitor',title:'Persistent monitor',detail:'Entered trigger',href:'/?monitor=fixture-id#monitors'}]}:{}),
       checked_monitors:monitoring?1:0,
       checked_at:'2026-01-02 10:00',checked_rules:zeroRules?0:1,partial:false,notice:zeroRules?'尚未保存可检查规则':'Read-only check; no signal written'}};}};
   vm.runInNewContext(source,context);
-  return {nodes,requests};
+  return {nodes,requests,listeners};
 }
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
@@ -62,5 +65,12 @@ const settle=()=>new Promise(resolve=>setImmediate(resolve));
   assert.match(JSON.stringify(history.nodes['affairs-alert-list'].children),/Persistent monitor/);
   await history.nodes['affairs-check'].fire('click');
   assert.equal(history.nodes['affairs-alert-list'].children.length,1,'Repeated checks retain one copy of the persisted reminder');
-  console.log('9 isolated affairs UI interaction checks passed');
+  let completeCheck;
+  const delayed=setup({monitoring:true,persisted:true,wait:new Promise(resolve=>{completeCheck=resolve;})});
+  delayed.listeners['monitors-changed']({detail:{enabled:false,alerts:[]}});
+  completeCheck();await settle();
+  assert.equal(delayed.nodes['affairs-alert-list'].children[0].className,'affairs-empty','An older check result cannot restore a deleted reminder');
+  assert.equal(delayed.nodes['affairs-alert-list'].children[0].textContent,'暂无可检查规则');
+  assert.equal(delayed.nodes['affairs-check'].disabled,true);
+  console.log('10 isolated affairs UI interaction checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

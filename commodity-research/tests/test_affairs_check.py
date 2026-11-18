@@ -35,7 +35,7 @@ def test_warning_check_uses_saved_rule_ids_and_is_readonly(panels, monkeypatch):
     document = payload()
     identifier = document['whitelist'][0]
     document['falsifiers'] = [{'id': 'fixture_warning', 'desc': 'Measured condition',
-        'series_id': identifier, 'expression': 'value > 2', 'unit_confirmed': '吨',
+        'series_id': identifier, 'expression': 'value > 116.58', 'unit_confirmed': '吨',
         'consecutive_periods': 2, 'side': 'bull'}]
     with workbench_scope.artifact_session(scope) as session:
         session.info.update(knowledge_facts=True, knowledge_facts_catalog={identifier: {'unit': '吨'}})
@@ -45,7 +45,7 @@ def test_warning_check_uses_saved_rule_ids_and_is_readonly(panels, monkeypatch):
         session.add(Indicator(series_id=identifier, name='A real fixture series', unit='吨', variety='XY',
             category='fixture', frequency='日', source='Fixture', caliber={}, fetch_mode='readonly'))
         session.flush()
-        for day, value in [(1, 3), (2, 4)]:
+        for day, value in [(1, 117.2), (2, 116.58000000000001)]:
             session.add(Observation(series_id=identifier, as_of=datetime(2026, 1, day, tzinfo=SHANGHAI),
                 value=value, status='正常', revision=0, source='Fixture', caliber_snapshot={},
                 fetched_at=datetime(2026, 1, 2, tzinfo=SHANGHAI)))
@@ -57,6 +57,7 @@ def test_warning_check_uses_saved_rule_ids_and_is_readonly(panels, monkeypatch):
         assert received == scope
         requests.append(dict(page_facts._page.get()))
         with workbench_scope.artifact_session(scope) as session:
+            session.info['knowledge_facts_display_precision'] = {identifier: {'2026-01-01': 2}}
             yield session
     def watch(_conn, _cursor, sql, *_):
         if sql.lstrip().upper().startswith(('INSERT', 'UPDATE', 'DELETE')):
@@ -73,6 +74,7 @@ def test_warning_check_uses_saved_rule_ids_and_is_readonly(panels, monkeypatch):
     assert result['checked_rules'] == 1
     assert result['alerts'][0]['kind'] == 'triggered'
     assert result['alerts'][0]['trade_date'] == '2026-01-02'
+    assert result['alerts'][0]['detail'] == '2026-01-01 实际值 117.20；2026-01-02 实际值 116.58'
     assert 'judgment_id=' + str(judgment_id) in result['alerts'][0]['href']
     with workbench_scope.artifact_session(scope) as session:
         assert session.scalar(select(func.count()).select_from(Signal)) == 0

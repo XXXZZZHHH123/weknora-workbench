@@ -44,12 +44,13 @@ const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'},
   const browser = await f.launch(); let env;
   let offeredDraft = draft;
   let returnedBacktest = backtest;
+  let savedAlerts = [];
   const saved = [], checks = [], tests = [], savedWindows = [];
   try {
     const html = f.render('home.html', {}, {affairs});
     env = await f.open(browser, f.prefix + '/', html, async ({path, method, body, url, reply}) => {
       if (path === '/strategies/models') return reply({models: [{id: 'fixture-model', name: '合成模型'}]});
-      if (path === '/monitors' && method === 'GET') return reply({items: saved, can_write: true});
+      if (path === '/monitors' && method === 'GET') return reply({items: saved, can_write: true, alerts: savedAlerts});
       if (path === '/monitors/draft') { assert.equal(body.sentence, offeredDraft.sentence); assert.equal(body.model_id, 'fixture-model'); return reply(offeredDraft); }
       if (path === '/monitors/backtest') {
         tests.push(body); assert.equal(body.draft_id, draft.draft_id); assert.equal(body.rules[0].series_id, 'synthetic-b');
@@ -67,11 +68,14 @@ const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'},
       if (path === '/monitors/monitor-fixture' && method === 'PATCH') {
         assert.equal(body.revision, saved[0].revision); Object.assign(saved[0], {enabled: body.enabled, revision: saved[0].revision + 1}); return reply(saved[0]);
       }
-      if (path === '/monitors/monitor-fixture' && method === 'DELETE') { saved.splice(0); return reply({deleted: true}); }
+      if (path === '/monitors/monitor-fixture' && method === 'DELETE') {
+        saved.splice(0); savedAlerts = []; return reply({deleted: true});
+      }
       if (path === '/affairs/check') {
         checks.push(true); Object.assign(saved[0], {current_state: '触发', last_trigger: '2030-01-15'});
         const alert = {kind: 'monitor', title: '合成监测', detail: '组合条件进入触发', href: '/?monitor=monitor-fixture#monitors'};
-        return reply({alerts: checks.length === 1 ? [alert] : [], monitor_alerts: [alert],
+        savedAlerts = [alert];
+        return reply({alerts: checks.length === 1 ? [alert] : [], monitor_alerts: savedAlerts,
           checked_monitors: 1, checked_rules: 0, checked_at: '2030-01-20T10:00:00', partial: false});
       }
       return false;
@@ -79,9 +83,23 @@ const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'},
     const {page} = env;
     await page.waitForFunction(() => !document.getElementById('monitor-model').disabled);
     assert.equal(await page.locator('#affairs-check').isDisabled(), true);
+    assert.equal(await page.getByRole('heading', {name: '预警与监测', exact: true}).count(), 1);
     assert.deepEqual(await page.locator('main > section, main > .affairs-grid').evaluateAll(elements => elements.map(element => element.id || element.className)),
-      ['affairs-alerts', 'affairs-grid', 'monitors'], 'The monitor section is appended after all existing groups');
+      ['monitors', 'affairs-grid'], 'Only the combined alert and monitoring card precedes the existing groups');
+    const createToggle = page.getByRole('button', {name: '一句话建监测', exact: true});
+    const listToggle = page.getByRole('button', {name: /^我的监测 \d+$/});
+    assert.equal(await listToggle.innerText(), '我的监测 0');
+    for (const [toggle, panel] of [[createToggle, '#monitor-create-panel'], [listToggle, '#monitor-list-panel']]) {
+      assert.equal(await page.locator(panel).isHidden(), true);
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+      await toggle.click();
+      assert.equal(await page.locator(panel).isVisible(), true);
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
+      await toggle.click();
+      assert.equal(await page.locator(panel).isHidden(), true);
+    }
     const previousLayout = await page.locator('.affairs-grid').evaluate(element => ({html: element.innerHTML, width: element.getBoundingClientRect().width}));
+    await createToggle.click();
     await page.getByLabel('监测需求原话').fill(draft.sentence);
     await page.getByRole('button', {name: '生成草稿', exact: true}).click();
     await page.locator('#monitor-draft:not([hidden])').waitFor();
@@ -128,6 +146,7 @@ const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'},
     assert.match(await page.locator('#monitor-backtest-result').innerText(), /回测范围 2029-12-01 至 2030-01-18/);
     await page.locator('#monitor-confirm').check();
     await page.getByRole('button', {name: '保存监测', exact: true}).click();
+    await page.getByRole('button', {name: '我的监测 1', exact: true}).click();
     await page.locator('[data-monitor-id="monitor-fixture"]').waitFor();
     assert.match(await page.locator('#monitor-list').innerText(), /合成监测 <script>unsafe<\/script>.*未检查|未检查.*合成监测 <script>unsafe<\/script>/s);
     assert.equal(await page.locator('#affairs-check').isEnabled(), true, 'Saving the first enabled monitor makes the existing check button usable');
@@ -140,6 +159,23 @@ const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'},
     assert.equal(await page.locator('#affairs-alert-list .affairs-row-kind').filter({hasText: '监测触发'}).count(), 1,
       'A repeated check retains exactly one persisted monitor reminder');
     assert.equal(checks.length, 2);
+    await listToggle.click();
+    await page.evaluate(() => {
+      document.body.style.paddingTop = '480px';
+      document.body.style.paddingBottom = '1000px';
+      window.scrollTo({top: document.body.scrollHeight, behavior: 'instant'});
+      window.location.hash = '#monitors';
+    });
+    await page.locator('#monitor-list-panel:not([hidden])').waitFor();
+    await page.waitForFunction(() => {
+      const card = document.getElementById('monitors');
+      return Math.abs(card.getBoundingClientRect().top - parseFloat(getComputedStyle(card).scrollMarginTop)) < 2;
+    });
+    assert.equal(await page.locator('[data-monitor-id][aria-current="true"]').count(), 0);
+    await page.locator('#affairs-alert-list a').click();
+    await page.waitForURL('**/?monitor=monitor-fixture#monitors');
+    await page.locator('#monitor-list-panel:not([hidden]) [data-monitor-id="monitor-fixture"][aria-current="true"]').waitFor();
+    assert.notEqual(await page.locator('[data-monitor-id="monitor-fixture"]').evaluate(element => getComputedStyle(element).boxShadow), 'none');
     Object.assign(saved[0], {current_state: '无法判断', rule_states: [
       {rule_index: 0, label: rule.label, state: '无法判断', notice: sourceError},
       {rule_index: 1, label: monthly.label, state: '触发', notice: ''}]});
@@ -167,7 +203,13 @@ const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'},
     await page.waitForFunction(() => document.getElementById('monitor-list').textContent.includes('v2'));
     await page.locator('[data-monitor-id="monitor-fixture"]').getByRole('button', {name: '删除', exact: true}).click();
     await page.getByText('还没有保存监测。先用一句话生成草稿。', {exact: true}).waitFor();
+    assert.equal(await listToggle.innerText(), '我的监测 0');
+    assert.equal(await page.locator('#affairs-alert-list [data-kind="monitor"]').count(), 0);
+    assert.equal(checks.length, 2, 'Removing a monitor refreshes saved alerts without running a new source check');
+    assert.equal(await page.locator('#affairs-check').isDisabled(), true);
     offeredDraft = sparseDraft;
+    await createToggle.click();
+    await page.getByLabel('监测需求原话').fill(draft.sentence);
     await page.getByRole('button', {name: '生成草稿', exact: true}).click();
     await page.locator('#monitor-draft:not([hidden])').waitFor();
     assert.equal(await page.getByLabel('第1条规则指标', {exact: true}).inputValue(), 'synthetic-sparse');

@@ -215,9 +215,9 @@ def serialize(row, state=None):
 def list_monitors(scope):
     with workbench_scope.artifact_session(scope) as session:
         rows = _rows(session, scope)
-        states = {_body(row).get('monitor_id'): _body(row) for row in _state_rows(session, scope, [item.id for item in rows])}
+        states = _monitor_states(session, scope, {row.id for row in rows})
         return {'items': [serialize(row, states.get(row.id)) for row in rows],
-                'can_write': scope.can_edit}
+                'can_write': scope.can_edit, 'alerts': _alerts_from_states(states)}
 
 
 def _validate_catalog(scope, rules):
@@ -410,14 +410,20 @@ def _check_state(data):
     return f'数据停更（最新 {latest}）' if latest else '数据停更'
 
 
-def recorded_monitor_alerts(session, scope):
-    active = {row.id for row in _rows(session, scope)}
-    alerts = []
-    for row in _state_rows(session, scope, active):
-        body = _body(row)
-        if body.get('monitor_id') in active:
-            alerts.extend(body.get('alerts') or [])
+def _monitor_states(session, scope, monitor_ids):
+    states = [_body(row) for row in _state_rows(session, scope, monitor_ids)]
+    return {state['monitor_id']: state for state in states if state.get('monitor_id') in monitor_ids}
+
+
+def _alerts_from_states(states):
+    alerts = [alert for state in states.values() for alert in state.get('alerts') or []]
     return sorted(alerts, key=lambda row: row.get('recorded_at', ''), reverse=True)[:30]
+
+
+def recorded_monitor_alerts(session, scope, *, monitor_ids=None):
+    if monitor_ids is None:
+        monitor_ids = {row.id for row in _rows(session, scope)}
+    return _alerts_from_states(_monitor_states(session, scope, monitor_ids))
 
 
 def check_monitors(scope, cutoff, checked):

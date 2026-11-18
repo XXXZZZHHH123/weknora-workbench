@@ -258,14 +258,17 @@ def test_checks_alert_only_on_transition_and_persist(monitor_client, monkeypatch
     assert check()['alerts'] == []
     current['state'] = '触发'
     assert len(check()['alerts']) == 1
-    listed = client.get(URL).json()['items'][0]
-    assert listed['current_state'] == '触发' and listed['last_trigger'] == '2026-01-02'
+    listed = client.get(URL).json()
+    assert listed['items'][0]['current_state'] == '触发' and listed['items'][0]['last_trigger'] == '2026-01-02'
     with artifact_session(scope) as session:
-        assert len(monitors.recorded_monitor_alerts(session, scope)) == 2
+        assert listed['alerts'] == monitors.recorded_monitor_alerts(session, scope)
+        assert len(listed['alerts']) == 2
         assert len(list(session.scalars(select(WorkbenchArtifactRevision).where(
             WorkbenchArtifactRevision.artifact_id == saved['id'])))) == 1
-    client.patch(URL + '/' + saved['id'], json={'revision': 1, 'enabled': False})
+    updated = client.patch(URL + '/' + saved['id'], json={'revision': 1, 'enabled': False})
     assert check()['checked'] == 0
+    assert client.delete(URL + '/' + saved['id'], params={'revision': updated.json()['revision']}).status_code == 200
+    assert client.get(URL).json()['alerts'] == []
 
 
 def test_home_only_monitor_is_included_in_affairs_check(monitor_client, monkeypatch):
