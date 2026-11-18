@@ -40,6 +40,71 @@ const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'},
       coverage: {start: '2025-01-01', end: '2030-01-20', frequency: '周', point_count: null}},
     {rule_index: 0, series_id: 'synthetic-five', name: '长跨度五个观测', unit: '吨', frequency: '周',
       coverage: {start: '2025-01-01', end: '2030-01-20', frequency: '周', point_count: 5}}]};
+
+async function setupMonitorReview(browser) {
+  const titles = ['需补指标的候选', '已匹配的候选'];
+  const note = '原文区间 58–63，交易单位需确认';
+  const reviews = [
+    {...draft, draft_id: 'report-review-1', title: titles[0], rules: [{...rule, series_id: null,
+      needs_indicator: true, value: 58, definition: note}], candidates: [], confirmations: [note]},
+    {...draft, draft_id: 'report-review-2', title: titles[1]},
+  ];
+  const setupId = 'monitor-setup-fixture-001';
+  const html = f.render('home.html', {}, {affairs}).replace('</head>',
+    '<script src="/static/workbench-setup-review.js"></script><script defer src="/static/catalog-client.js"></script></head>');
+  let tested, saved;
+  const review = await f.open(browser, f.prefix + '/?setup_job=' + setupId + '&setup_part=monitors', html,
+    async ({path, method, url, body, reply}) => {
+      if (path === '/strategies/models') return reply({models: [{id: 'fixture-model', name: '合成模型'}]});
+      if (path === '/monitors' && method === 'GET') return reply({items: [], can_write: true});
+      if (path === `/workbench-setup/jobs/${setupId}/monitor-preview`) {
+        const index = Number(url.searchParams.get('candidate') || 0);
+        return reply({...reviews[index], report_candidate: true, setup_candidate: index, setup_titles: titles,
+          setup_failures: [{index: 2, reason: '监测规则格式无效'}]});
+      }
+      if (path === '/indicators/catalog') return reply({offset: 0, next_offset: null, total: 1,
+        indicators: [{series_id: 'synthetic-manual', name: '手工指定观测', unit: '吨', sheet: '观测表'}]});
+      if (path === '/monitors/backtest') { tested = body; return reply(backtest); }
+      if (path === '/monitors' && method === 'POST') { saved = body; return reply({id: 'saved-report-monitor'}); }
+      return false;
+    });
+  try {
+    const p = review.page;
+    await p.getByRole('dialog', {name: '新建监测'}).waitFor();
+    await p.locator('#monitor-confirmation-list').getByText(note, {exact: true}).waitFor();
+    assert.match(await p.locator('#monitor-setup-failures').innerText(), /第 2 个候选未保留：监测规则格式无效/);
+    assert.equal(await p.locator('#monitor-backtest').isDisabled(), true);
+    assert.equal(await p.locator('#monitor-save').isDisabled(), true);
+    assert.equal(await p.getByLabel('第1条规则指标', {exact: true}).inputValue(), '');
+    assert.match(await p.locator('[data-coverage]').innerText(), /需研究员指定指标/);
+    await p.getByLabel('标题', {exact: true}).fill('研究员已编辑标题');
+    await p.getByLabel('周报监测候选').selectOption('1');
+    await p.waitForFunction(title => document.getElementById('monitor-title').value === title, titles[1]);
+    await p.getByLabel('周报监测候选').selectOption('0');
+    await p.waitForFunction(() => document.getElementById('monitor-title').value === '研究员已编辑标题');
+    await p.getByText('在授权指标目录中选取', {exact: true}).click();
+    await p.getByLabel('第1条规则目录搜索结果').selectOption('synthetic-manual');
+    assert.equal(await p.getByLabel('第1条规则指标', {exact: true}).inputValue(), 'synthetic-manual');
+    await p.locator('#monitor-backtest').click();
+    await p.locator('#monitor-backtest-result:not([hidden])').waitFor();
+    assert.deepEqual(tested.report_rule_indexes, [0]);
+    assert.equal(tested.rules[0].series_id, 'synthetic-manual');
+    assert.equal(tested.rules[0].value, 58);
+    assert.equal(tested.rules[0].definition, note);
+    assert.equal(await p.locator('#monitor-save').isDisabled(), true);
+    await p.locator('#monitor-confirm').check();
+    assert.equal(await p.locator('#monitor-save').isEnabled(), true);
+    assert.ok(!review.calls.some(call => call.path === '/monitors' && call.method === 'POST'));
+    p.once('dialog', dialog => dialog.accept());
+    await p.locator('#monitor-save').click();
+    await p.locator('#monitor-status').filter({hasText: '可继续选择其他周报监测候选'}).waitFor();
+    assert.deepEqual(saved, tested);
+    assert.equal(await p.locator('#monitor-setup-choice option[value="0"]').evaluate(option => option.disabled), true);
+    await p.getByLabel('周报监测候选').selectOption('1');
+    await p.waitForFunction(title => document.getElementById('monitor-title').value === title, titles[1]);
+  } finally { await review.close(); }
+}
+
 (async () => {
   const browser = await f.launch(); let env;
   let offeredDraft = draft, taskRequest, monitorPhase = 'succeeded';
@@ -316,6 +381,7 @@ const sparseDraft = {...draft, rules: [{...rule, series_id: 'synthetic-sparse'},
     assert.deepEqual(env.errors, []);
     const restrictedHtml = f.render('home.html', {restricted: true}, {affairs});
     assert.ok(!restrictedHtml.includes('id="monitors"'), 'The restricted view does not expose monitoring controls');
+    await setupMonitorReview(browser);
     console.log('PASS: monitor sentence → draft → candidate coverage and overlap warning → adjusted draft/saved windows → actual ChartKit trigger marker → save → personal list → check/toggle/delete; existing layout preserved at 1280px and 390px.');
   } finally { await env?.context.close(); await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

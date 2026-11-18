@@ -21,6 +21,7 @@ from tin.web.judgment_job_registry import Registry
 
 WB = '10000000-0000-4000-8000-000000000683'
 SERIES = 'kb-' + 'a' * 48
+CHART_SERIES = 'kb-' + 'b' * 48
 TEXT = '过去观察到本期采购和销售发生变化。'
 
 
@@ -97,7 +98,8 @@ def workbench(tmp_path, monkeypatch):
             return {'worksheets': [{'worksheet_id': 'w1', 'group': '供给'}]}
         if purpose == 'core_focus_fields':
             assert TEXT in prompt
-            return {'items': [{'series_id': SERIES, 'group': '供给', 'reason': '持续跟踪采购变化'}]}
+            item = {'series_id': SERIES, 'group': '供给', 'reason': '持续跟踪采购变化'}
+            return {'items': [item, {**item, 'series_id': 'unknown'}] if state.get('invalid_focus_id') else [item]}
         if purpose == 'workbench_setup_report_excerpts':
             return {'quotes': [TEXT]}
         raise AssertionError(purpose)
@@ -130,11 +132,13 @@ async def completed(workbench, *parts):
 
 
 def test_selected_steps_have_fixed_phases_and_publish_only_private_candidates(workbench, monkeypatch):
-    async def diagram(body):
-        assert TEXT in body.instructions and '历史' in body.instructions
+    async def diagram(body, *, series_ids):
+        assert TEXT in body.instructions and '历史' in body.instructions and series_ids == {SERIES}
         return {'markdown': '# fixture', 'nodes': 4, 'version': 'fixture-facts'}
 
     monkeypatch.setattr(setup.diagram_generation, 'generate', diagram)
+    monkeypatch.setattr(setup.dimension_suggestions, 'dimensions_for_scope', lambda scope: [
+        {'sections': [{'items': [{'kind': 'indicator', 'id': SERIES}, {'kind': 'chart', 'id': 'saved-chart'}]}]}])
 
     async def run():
         identifier, result = await completed(workbench, 'diagram', 'focus', 'dimensions')
@@ -176,8 +180,119 @@ def test_failure_blocks_dependent_indicators_and_independent_steps_run(workbench
         _, result = await completed(workbench, 'focus', 'indicators', 'dimensions')
         assert [(row['part'], row['state']) for row in result['items']] == [
             ('dimensions', 'failed'), ('indicators', 'blocked'), ('focus', 'succeeded')]
-        assert result['items'][0]['message'] and result['items'][1]['message']
+        assert result['items'][0]['message'] and result['items'][0]['detail'] == '模型不可用'
+        assert result['items'][1]['message']
         assert workbench.state['phases'] == ['reading_source', 'dimensions', 'focus']
+    asyncio.run(run())
+
+
+def test_diagram_uses_current_step_bindings_and_partially_mapped_chart_series(workbench, monkeypatch):
+    async def indicators(scope, model_id, dimensions):
+        return {'items': [{'series_id': SERIES}], 'sections': [{'selected_count': 1}],
+                'ignored_count': 2, 'ignored_reason': '模型返回 2 个不在候选目录的指标，已忽略'}
+
+    async def charts(scope, body, job_id, *, report):
+        return {'_original': setup.original_identity(report), 'charts': [
+            {'missing_indicators': True, 'series': [{'selected_id': CHART_SERIES}, {'selected_id': None}]},
+            {'definition': {'curves': [{'series_id': SERIES}]}, 'series': [{'selected_id': SERIES}]}]}
+
+    async def diagram(body, *, series_ids):
+        assert series_ids == {SERIES, CHART_SERIES}
+        return {'nodes': 4}
+
+    def no_fallback(scope):
+        pytest.fail('已有本次候选时无需读取已保存的维度绑定')
+
+    workbench.state['invalid_focus_id'] = True
+    monkeypatch.setattr(setup.dimension_suggestions, 'generate_suggestions', indicators)
+    monkeypatch.setattr(setup.dimension_suggestions, 'dimensions_for_scope', no_fallback)
+    monkeypatch.setattr(setup.report_chart_import, 'recognize_report', charts)
+    monkeypatch.setattr(setup.diagram_generation, 'generate', diagram)
+
+    async def run():
+        _, result = await completed(workbench, 'dimensions', 'indicators', 'charts', 'focus', 'diagram')
+        _, bindings, _, focus, diagram_item = result['items']
+        assert all(row['state'] == 'succeeded' for row in result['items'])
+        assert bindings['counts']['ignored_count'] == 2
+        assert focus['counts']['ignored_count'] == 1
+        assert diagram_item['counts'] == {'nodes': 4}
+    asyncio.run(run())
+
+
+def test_diagram_skips_without_current_or_saved_bindings(workbench, monkeypatch):
+    async def no_diagram(*args, **kwargs):
+        pytest.fail('空指标范围无需调用产业图生成')
+
+    monkeypatch.setattr(setup.diagram_generation, 'generate', no_diagram)
+
+    async def run():
+        _, result = await completed(workbench, 'dimensions', 'diagram')
+        assert result['items'][0]['state'] == 'succeeded'
+        assert result['items'][1] == {'part': 'diagram', 'state': 'skipped', 'counts': {},
+                                      'message': '跳过', 'detail': '没有可用于产业图的指标'}
+        assert workbench.state['phases'] == ['reading_source', 'dimensions', 'diagram']
+    asyncio.run(run())
+
+
+def test_diagram_reports_exact_scoped_catalog_capacity_before_any_model_call(workbench, monkeypatch):
+    generation = setup.diagram_generation
+    fields = [{'id': 'kb-' + format(i, '048x'), 'name': '相同长度'} for i in range(6)]
+
+    async def charts(scope, body, job_id, *, report):
+        return {'_original': setup.original_identity(report), 'charts': [
+            {'series': [{'selected_id': row['id']} for row in fields[:5]]}]}
+
+    async def no_model(*args, **kwargs):
+        pytest.fail('超过容量的目录不进入生成流程')
+
+    def scoped_catalog(scope, series_ids):
+        return 'report.fixture', [row for row in fields if row['id'] in series_ids]
+
+    monkeypatch.setattr(setup.report_chart_import, 'recognize_report', charts)
+    monkeypatch.setattr(generation, 'report_catalog_snapshot', scoped_catalog)
+    monkeypatch.setattr(generation, 'CATALOG_BYTES', len(generation.catalog_json(fields[:1]).encode()))
+    monkeypatch.setattr(generation, 'CATALOG_MAX_BATCHES', 4)
+    monkeypatch.setattr(generation, 'current_model', no_model)
+
+    async def run():
+        _, result = await completed(workbench, 'charts', 'diagram')
+        assert result['items'][1] == {'part': 'diagram', 'state': 'failed', 'counts': {},
+            'message': '资料或生成结果超过处理容量', 'detail': '本次识别出的指标有 5 个，超过产业图生成上限 4 个'}
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(('detail', 'expected'), [
+    ('原' * 121, '原' * 120),
+    ({'message': '研究规则数字超出当前存储精度', 'issues': [{'path': '/private/rule'}]}, '研究规则数字超出当前存储精度'),
+    ('模型服务失败：Bearer synthetic-token', '模型服务失败'),
+    ('模型服务失败：api_key=fixture-value', '模型服务失败'),
+    ('模型服务失败：sk-synthetic', '模型服务失败'),
+    ('模型服务失败：/private/config', '模型服务失败'),
+    ('模型服务失败：C:\\private\\config', '模型服务失败'),
+    ('模型服务失败：relative/config.py', '模型服务失败'),
+    ('模型服务失败。File "config.py", line 13, in call', '模型服务失败'),
+    ('模型服务失败\nTraceback (most recent call last):\n详见配置', '模型服务失败'),
+    ('The model failed', ''),
+    (['非文本明细'], ''),
+])
+def test_step_http_detail_is_bounded_and_excludes_private_diagnostics(detail, expected):
+    assert setup.result_detail(HTTPException(422, detail)) == expected
+
+
+def test_monitor_step_retains_reasons_when_all_candidates_are_rejected(workbench, monkeypatch):
+    failures = [{'index': 1, 'reason': '每个关注点须包含 1 至 6 条规则'},
+                {'index': 2, 'reason': '建议阈值缺少明确说明或确认项'}]
+
+    async def candidates(scope, sentence, model_id):
+        raise setup.monitors.ReportMonitorCandidatesError(failures)
+
+    monkeypatch.setattr(setup.monitors, 'draft_candidates_from_report', candidates)
+
+    async def run():
+        _, result = await completed(workbench, 'monitors')
+        item, = result['items']
+        assert item['state'] == 'failed' and item['failures'] == failures
+        assert '全部 2 个监测候选未通过校验' in item['detail']
     asyncio.run(run())
 
 
@@ -253,18 +368,21 @@ def test_judgment_uses_native_durable_review_and_monitor_is_private_until_review
         assert request.source_name == '样例周报.pptx' and TEXT in request.text and '当前判断' in request.text
         return {'review': {'revision': 1}, 'text': request.text}, {}
 
-    async def candidate(scope, sentence, model_id):
+    async def candidates(scope, sentence, model_id):
         assert TEXT in sentence
-        return {'title': '监测草稿', 'sentence': sentence, 'rules': [{'series_id': SERIES}], 'candidates': []}
+        draft = {'title': '监测草稿', 'sentence': sentence, 'rules': [{'series_id': SERIES}], 'candidates': []}
+        return {'candidates': [draft, {**draft, 'title': '另一监测草稿'}],
+                'failures': [{'index': 2, 'reason': '监测规则超过上限'}]}
 
     monkeypatch.setattr(judgment_generation, '_analyze', analyze)
     monkeypatch.setattr(judgment_generation, 'snapshot', lambda: {'base_version': 0})
-    monkeypatch.setattr(setup.monitors, 'draft_from_text', candidate)
+    monkeypatch.setattr(setup.monitors, 'draft_candidates_from_report', candidates)
 
     async def run():
         identifier, result = await completed(workbench, 'judgment', 'monitors')
         assert result['items'][0]['review_available'] and 'data' not in result['items'][0]
-        assert result['items'][1]['counts'] == {'candidates': 1, 'rules': 1}
+        assert result['items'][1]['counts'] == {'candidates': 2, 'rules': 2, 'ignored_count': 1}
+        assert result['items'][1]['data']['failures'] == [{'index': 2, 'reason': '监测规则超过上限'}]
         with artifact_session(workbench.scope) as session:
             assert session.scalars(select(WorkbenchArtifact)).all() == []
         token = jobs.load_config(workbench.scope, identifier)['result']['_judgment_token']
@@ -278,10 +396,16 @@ def test_judgment_uses_native_durable_review_and_monitor_is_private_until_review
         with active(workbench.scope):
             first = await jobs.monitor_preview(identifier)
             second = await jobs.monitor_preview(identifier)
+            another = await jobs.monitor_preview(identifier, candidate=1)
+            with pytest.raises(HTTPException) as missing:
+                await jobs.monitor_preview(identifier, candidate=2)
         assert first['draft_id'] == second['draft_id']
+        assert first['draft_id'] != another['draft_id'] and another['title'] == '另一监测草稿'
+        assert first['setup_titles'] == ['监测草稿', '另一监测草稿'] and missing.value.status_code == 404
         with artifact_session(workbench.scope) as session:
-            draft, = session.scalars(select(WorkbenchArtifact)).all()
-            assert draft.module == setup.monitors.DRAFT_MODULE and draft.status == 'draft'
+            drafts = session.scalars(select(WorkbenchArtifact)).all()
+            assert {draft.id for draft in drafts} == {first['draft_id'], another['draft_id']}
+            assert all(draft.module == setup.monitors.DRAFT_MODULE and draft.status == 'draft' for draft in drafts)
             jobs.close_judgment(session, workbench.scope, token, 2)
             session.commit()
         assert (await jobs.job_result(workbench.scope, identifier))['items'][0]['review_available'] is False

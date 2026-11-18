@@ -19,6 +19,7 @@ from tin.web.research_display import indicator_name
 from tin.web.research_dimensions import (
     CATEGORIES, dimension_prompt, read_dimensions, validate_dimension_list,
 )
+from tin.web.suggestion_ids import filter_series_suggestions, ignored_series_summary
 
 router = APIRouter(prefix='/api/sn/dimensions')
 MAX_SUGGESTIONS = 96
@@ -234,14 +235,18 @@ def validate_suggestions(document, catalog, dimensions, groups):
             raise HTTPException(422, '模型建议缺少有效的文字理由')
         return value.strip()
 
+    proposed = []
     for row in document['items']:
         if not isinstance(row, dict):
             raise HTTPException(422, '模型建议条目格式无效')
-        target_item = target(row)
-        key = target_item['id']
-        identifier = row.get('series_id')
-        if not isinstance(identifier, str) or identifier not in allowed[key] or identifier not in catalog:
-            raise HTTPException(422, '模型返回的指标 ID 不存在于本环节展示的候选目录，请重新生成建议；未使用固定列表')
+        proposed.append({**row, 'item_id': target(row)['id']})
+    kept, ignored = filter_series_suggestions(proposed, catalog,
+        '模型返回的指标 ID 不存在于本环节展示的候选目录，请重新生成建议；未使用固定列表',
+        allowed_for=lambda row: allowed[row['item_id']])
+    for row in kept:
+        key = row['item_id']
+        target_item = by_id[key]
+        identifier = row['series_id']
         if identifier in seen:
             raise HTTPException(422, '模型重复建议了同一指标，请重新生成建议')
         seen.add(identifier)
@@ -263,13 +268,17 @@ def validate_suggestions(document, catalog, dimensions, groups):
         if counts[key] or key in empty:
             raise HTTPException(422, '模型留空原因与环节选择不一致，请重新生成建议')
         empty[key] = reason(row)
+    for row in ignored:
+        key = row['item_id']
+        if not counts[key]:
+            empty.setdefault(key, '本环节返回的指标均不在候选目录，已忽略')
     if any(not counts[key] and key not in empty for key in allowed):
         raise HTTPException(422, '模型未说明每个空环节的留空原因，请重新生成建议')
     sections = [{'dimension': item['dimension'], 'section': item['section'],
                  'item_id': item['id'], 'section_id': item['section_id'], 'candidate_count': len(found),
                  'selected_count': counts[item['id']], 'empty_reason': empty.get(item['id'], '')}
                 for item, found in groups]
-    return items, sections
+    return items, sections, len(ignored)
 
 
 async def generate_suggestions(scope, model_id, dimensions=None, day=None, *, progress=None):
@@ -303,10 +312,11 @@ async def generate_suggestions(scope, model_id, dimensions=None, day=None, *, pr
     if progress:
         await progress('dimension_fields')
     document = await strategy_text.completion(scope, model_id, prompt, purpose='dimension_fields')
-    items, sections = validate_suggestions(document, fields, dimensions, groups)
+    items, sections, ignored_count = validate_suggestions(document, fields, dimensions, groups)
     shown = {identifier for _, found in groups for identifier in found}
     return {'items': items, 'sections': sections, 'as_of': day.isoformat(),
             'notice': '模型未给出合适的指标建议，留空原因见各环节；未使用固定列表。' if not items else '',
+            **ignored_series_summary(ignored_count),
             'truncated': False, 'field_count': len(catalog), 'selected_field_count': len(shown),
             'recall_per_section': per_item, 'model_id': model_id,
             **({'_verification': {'catalog': metadata.get('version'), 'dimensions': dimensions}} if progress else {})}

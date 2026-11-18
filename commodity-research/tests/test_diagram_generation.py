@@ -299,6 +299,66 @@ def test_complete_catalog_over_256_fields_reaches_model_without_keyword_filter(g
     assert result.json()['candidates_truncated'] is False
 
 
+@pytest.mark.parametrize('outside_scope', [False, True])
+def test_report_scope_only_offers_and_accepts_current_requested_fields(generator, monkeypatch, outside_scope):
+    from fastapi import HTTPException
+    from tin.integration.identity import Identity
+    from tin.integration.workbench_scope import WorkbenchScope, current_workbench
+    from tin.web import chart_data
+
+    scope = WorkbenchScope(Identity('researcher', '', '', 17, 'owner'), FIRST, KB, 17,
+        {'workspace_mode': 'isolated', 'can_edit': True}, 'Bearer synthetic', scope_version=2)
+    fields = catalog_fields(4)
+    selected = fields[1:3]
+    target = fields[0] if outside_scope else selected[0]
+    prompts = []
+    version = 'd' * 64
+    reads = []
+
+    async def resolve(identity, workbench_id, authorization):
+        return scope
+
+    def only_requested(scope, identifiers):
+        reads.append(identifiers)
+        return {row['id']: {**row, 'series_id': row['id']} for row in fields if row['id'] in identifiers}, version
+
+    def no_full_catalog(*args):
+        pytest.fail('周报产业图使用明确 ID 读取和核对目录')
+
+    async def complete(scope, model, prompt, image=None):
+        prompts.append(prompt)
+        return model_outline() if is_outline(prompt) else model_graph(target['id'])
+
+    monkeypatch.setattr(generation, 'catalog_snapshot', no_full_catalog)
+    monkeypatch.setattr(generation, 'resolve_workbench', resolve)
+    monkeypatch.setattr(chart_data, 'catalog_fields_with_version', only_requested)
+    monkeypatch.setattr(generation, 'completion', complete)
+    monkeypatch.setattr(generation, 'candidate_status', lambda scope, identifiers: {})
+    scope_marker = current_workbench.set(scope)
+    try:
+        body = generation.GenerateRequest(model_id='configured-model', instructions='Study scoped evidence')
+        ids = {item['id'] for item in selected} | {'kb-' + 'f' * 48}
+        if outside_scope:
+            with pytest.raises(HTTPException) as rejected:
+                asyncio.run(generation.generate(body, series_ids=ids))
+            assert rejected.value.status_code == 422
+            assert len(prompts) == 3
+        else:
+            result = asyncio.run(generation.generate(body, series_ids=ids))
+            assert result['catalog_total'] == 2 and result['candidates_truncated'] is False
+            assert result['bindings'][0]['series_id'] == target['id']
+            _, bindings = generation.validate_generated_configuration(result['markdown'], result['version'])
+            assert bindings == result['bindings'] and reads.pop() == [target['id']]
+            version = 'f' * 64
+            with pytest.raises(HTTPException) as changed:
+                generation.validate_generated_configuration(result['markdown'], result['version'])
+            assert changed.value.status_code == 409 and reads.pop() == [target['id']]
+        assert reads[0] == sorted(ids) and all(read == [] for read in reads[1:])
+        assert all(shown(prompt) == plain(selected) for prompt in prompts[1:])
+    finally:
+        current_workbench.reset(scope_marker)
+
+
 def test_catalog_selection_covers_all_byte_bounded_batches_with_full_input(generator,monkeypatch):
     client,headers,_,_,calls=generator
     fields=catalog_fields(5,'统计范围'*40)

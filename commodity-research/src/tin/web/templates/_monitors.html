@@ -10,6 +10,10 @@
 </header>
 <p id="monitor-status" class="affairs-status" role="status" aria-live="polite"></p>
 <div id="monitor-create-panel" hidden>
+  <div id="monitor-setup-candidates" class="monitor-content" hidden>
+    <label>周报监测候选 <select id="monitor-setup-choice"></select></label>
+    <ul id="monitor-setup-failures" class="affairs-row-detail" hidden></ul>
+  </div>
   <div class="monitor-content">
     <label for="monitor-sentence" class="affairs-row-title">监测需求原话</label>
     <p class="affairs-description">把需要关注的变化写下来，核对模型草稿和历史回测后保存。数据需研究员更新，仅提供站内提醒。</p>

@@ -14,6 +14,7 @@ from tin.integration.page_facts import catalog_snapshot
 from tin.integration.workbench_scope import current_workbench, require_shared_write
 from tin.web import analysis_jobs, strategy_text
 from tin.web.research_framework import RESEARCH_FRAMEWORK, RESEARCH_GROUPS
+from tin.web.suggestion_ids import filter_series_suggestions, ignored_series_summary
 
 router = APIRouter(prefix='/api/sn/market/core')
 MAX_FIELDS = 400
@@ -106,10 +107,10 @@ def indicator_prompt(fields, associations, field_count):
 def validate_suggestions(document, catalog):
     if not isinstance(document, dict) or not isinstance(document.get('items'), list):
         raise HTTPException(422, '模型第二步未返回有效的建议 JSON 列表，请重新生成建议')
+    kept, ignored = filter_series_suggestions(document['items'], catalog,
+        '模型返回的指标 ID 不存在于当前目录，请重新生成建议；未使用固定列表')
     items, seen = [], set()
-    for item in document['items']:
-        if not isinstance(item, dict) or not isinstance(item.get('series_id'), str) or item['series_id'] not in catalog:
-            raise HTTPException(422, '模型返回的指标 ID 不存在于当前目录，请重新生成建议；未使用固定列表')
+    for item in kept:
         if item.get('group') not in RESEARCH_GROUPS:
             raise HTTPException(422, '模型返回了无效的研究分组，请重新生成建议')
         if not isinstance(item.get('reason'), str):
@@ -123,7 +124,7 @@ def validate_suggestions(document, catalog):
                       'name': field.get('metric') or field.get('name') or identifier,
                       'unit': field.get('unit') or '', 'frequency': field.get('frequency') or '',
                       'sheet': field.get('sheet') or ''})
-    return items[:MAX_SUGGESTIONS], len(items)
+    return items[:MAX_SUGGESTIONS], len(items), len(ignored)
 
 
 async def generate_suggestions(scope, model_id, progress=None, *, report_evidence=''):
@@ -144,6 +145,7 @@ async def generate_suggestions(scope, model_id, progress=None, *, report_evidenc
     if not fields:
         return {'items': [], '_catalog_version': metadata.get('version'),
                 'notice': '模型未选出相关工作表，未使用固定列表；可调整资料后重试。',
+                **ignored_series_summary(0),
                 'truncated': False, 'field_count': 0, 'selected_field_count': 0, 'model_id': model_id}
     if progress:
         await progress('analyzing')
@@ -151,7 +153,7 @@ async def generate_suggestions(scope, model_id, progress=None, *, report_evidenc
                                             purpose='core_focus_fields')
     if progress:
         await progress('validating')
-    items, returned = validate_suggestions(second, catalog)
+    items, returned, ignored_count = validate_suggestions(second, catalog)
     notes = []
     if field_count > len(fields):
         notes.append(f'相关工作表共有 {field_count} 个字段，已按第一步工作表顺序截断为前 {MAX_FIELDS} 个字段供模型选择。')
@@ -160,6 +162,7 @@ async def generate_suggestions(scope, model_id, progress=None, *, report_evidenc
     if not items:
         notes.append('模型未给出合适的指标建议，未使用固定列表。')
     return {'items': items, 'notice': ' '.join(notes), '_catalog_version': metadata.get('version'),
+            **ignored_series_summary(ignored_count),
             'truncated': field_count > len(fields),
             'field_count': field_count, 'selected_field_count': len(fields), 'model_id': model_id}
 

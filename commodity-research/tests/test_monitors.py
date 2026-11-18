@@ -1,4 +1,5 @@
 """Monitor authorization, model protocol, provenance, revisions, and edge-triggered alerts."""
+import asyncio
 from dataclasses import replace
 from datetime import date
 import json
@@ -236,6 +237,95 @@ def test_suggested_threshold_requires_visible_confirmation():
     output = monitors.DraftOutput.model_validate(model_output(rules=[model_rule(value=123,
         value_source='suggested', definition='建议值，请确认：本期值大于123')], confirmations=['确认建议阈值123']))
     assert output.rules[0].value == 123
+
+
+def test_report_monitors_validate_individual_candidates_and_leave_unknown_rules_unbound(monitor_client, monkeypatch):
+    from tin.web import chart_data, strategy_text
+    _, state = monitor_client
+    catalog = [{'id': SID, 'series_id': SID, 'name': '仓单'},
+               {'id': OTHER_SID, 'series_id': OTHER_SID, 'name': '基差'}]
+    monkeypatch.setattr(monitors, '_draft_context', lambda scope: ([], catalog))
+    monkeypatch.setattr(chart_data, 'catalog_fields', lambda scope, ids: {SID: catalog[0]} if SID in ids else {})
+    note = '原文区间 58–63，交易单位需确认'
+    calls = []
+
+    async def completion(scope, model, prompt, *, purpose):
+        calls.append(purpose)
+        if purpose == 'monitor_draft':
+            assert '分别为每个关注点' in prompt and '勿擅自换算' in prompt
+            return {'candidates': [
+                model_output(rules=[model_rule(), model_rule(indicator_description=None),
+                                    model_rule(indicator_description='基差')]),
+                model_output(logic='any', rules=[model_rule()] * 9),
+                model_output(title='价格观察', confirmations=[note], rules=[
+                    model_rule(value=58, definition=note), model_rule()]),
+            ]}
+        assert '1-1' not in prompt
+        return {'picks': {'1-0': ['r1'], '1-2': ['r2'], '3-0': ['r1'], '3-1': ['unshown']}}
+
+    monkeypatch.setattr(strategy_text, 'completion', completion)
+    result = asyncio.run(monitors.draft_candidates_from_report(state['scope'], '合成周报原文', 'fixture'))
+    assert calls == ['monitor_draft', 'monitor_selection']
+    assert result['failures'] == [{'index': 2, 'reason': '每个关注点须包含 1 至 6 条规则'}]
+    first, second = result['candidates']
+    assert [row['series_id'] for row in first['rules']] == [SID, None, None]
+    assert [row.get('needs_indicator', False) for row in first['rules']] == [False, True, True]
+    assert [row['series_id'] for row in second['rules']] == [SID, None]
+    assert second['rules'][0]['value'] == 58
+    assert second['rules'][0]['definition'] == note and second['confirmations'] == [note]
+
+
+def test_report_monitors_fail_when_all_candidates_are_invalid(monitor_client, monkeypatch):
+    from tin.web import strategy_text
+    client, state = monitor_client
+    monkeypatch.setattr(monitors, '_draft_context', lambda scope: ([], []))
+
+    async def completion(scope, model, prompt, *, purpose):
+        assert purpose == 'monitor_draft'
+        return {'candidates': [model_output(rules=[]), model_output(rules=[model_rule(value_source='suggested')])]}
+
+    monkeypatch.setattr(strategy_text, 'completion', completion)
+    with pytest.raises(monitors.ReportMonitorCandidatesError) as invalid:
+        asyncio.run(monitors.draft_candidates_from_report(state['scope'], '合成周报原文', 'fixture'))
+    assert invalid.value.status_code == 422 and '全部 2 个监测候选' in invalid.value.detail
+    assert invalid.value.failures == [
+        {'index': 1, 'reason': '每个关注点须包含 1 至 6 条规则'},
+        {'index': 2, 'reason': '建议阈值缺少明确说明或确认项'},
+    ]
+    assert client.get(URL).json()['items'] == []
+
+
+def test_report_manual_indicator_must_fill_its_own_rule_and_be_currently_authorized(monitor_client, monkeypatch):
+    client, state = monitor_client
+    scope = state['scope']
+    sentence = '合成周报原文'
+    with artifact_session(scope) as session:
+        draft = monitors._new_artifact(scope, monitors.DRAFT_MODULE, '周报草稿', {
+            'workbench_id': scope.workbench_id, 'report_candidate': True, 'sentence': sentence,
+            'rules': [rule(), rule(series_id=None, needs_indicator=True)],
+            'candidates': [{'rule_index': 0, 'series_id': SID}],
+        })
+        session.add(draft)
+        session.commit()
+        identifier = draft.id
+
+    def valid_catalog(scope, rules):
+        if any(item['series_id'] not in {SID, OTHER_SID} for item in rules):
+            raise HTTPException(422, '指标不在当前研究台授权目录中')
+
+    monkeypatch.setattr(monitors, '_validate_catalog', valid_catalog)
+    monkeypatch.setattr(monitors, 'backtest', lambda *args, **kwargs: {'current_state': '未触发'})
+    request = {'draft_id': identifier, 'title': '周报草稿', 'sentence': sentence, 'logic': 'all',
+               'rules': [rule(), rule(series_id=OTHER_SID)], 'report_rule_indexes': [0, 1]}
+    for endpoint in (URL + '/backtest', URL):
+        assert client.post(endpoint, json={**request, 'rules': [rule()], 'report_rule_indexes': [0]}).status_code == 422
+        assert client.post(endpoint, json={**request, 'report_rule_indexes': [1, 0]}).status_code == 422
+        assert client.post(endpoint, json={**request, 'rules': [rule(series_id=OTHER_SID), rule()]}).status_code == 422
+        assert client.post(endpoint, json={**request, 'rules': [rule(), rule(series_id='unauthorized')]}).status_code == 422
+    assert client.post(URL + '/backtest', json=request).status_code == 200
+    assert client.get(URL).json()['items'] == []
+    saved = client.post(URL, json=request)
+    assert saved.status_code == 201 and [item['series_id'] for item in saved.json()['rules']] == [SID, OTHER_SID]
 
 
 def test_model_failure_is_reported_without_fallback(monitor_client, monkeypatch):

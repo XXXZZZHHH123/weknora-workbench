@@ -27,6 +27,7 @@ CATALOG_MAX_BATCHES = 4
 CANDIDATES_PER_CONCEPT = 3
 CATALOG_SELECTION_LIMIT = 96
 PROMPT_VERSION = 'diagram-outline-v3'
+REPORT_CATALOG_PREFIX = 'report.'
 MODEL_PROMPT_BYTES = 160 * 1024
 INVALID_OUTPUT_MESSAGE = '模型没有返回完整有效的配置，请调整资料后重试'
 STATUS_POINTS = 24
@@ -57,6 +58,18 @@ class SelectionPlanError(ValueError):
         message = SELECTION_ISSUES[code]
         super().__init__(message)
         self.code, self.message = code, message
+
+
+class CatalogCapacityError(HTTPException):
+    """The current byte and shard limits could fit only this prefix."""
+
+    def __init__(self, detail, fitting_count):
+        super().__init__(413, detail)
+        self.fitting_count = fitting_count
+
+
+class EmptyScopedCatalog(Exception):
+    pass
 
 
 def selection_ids(result, batch, concepts=None):
@@ -170,6 +183,13 @@ def catalog_snapshot(scope=None):
         return session.info['knowledge_facts_version'], catalog_fields(session.info['knowledge_facts_catalog'])
 
 
+def report_catalog_snapshot(scope, series_ids):
+    """Reuse the authorized real-ID read, including saved bindings hidden by dedup."""
+    from tin.web.chart_data import catalog_fields_with_version
+    fields, version = catalog_fields_with_version(scope, sorted(series_ids))
+    return REPORT_CATALOG_PREFIX + version, catalog_fields(fields)
+
+
 def catalog_fields(catalog):
     return [{'id':spec['series_id'],'name':spec.get('metric') or spec.get('name'),
              'unit':spec.get('unit'),'frequency':spec.get('frequency'),
@@ -186,13 +206,24 @@ async def verify_generation_scope(scope, expected_version):
         raise HTTPException(403, '当前权限不能生成或复用产业图结构')
     if scope_key(fresh) != scope_key(scope):
         raise HTTPException(409, '工作台数据来源或授权已改变，请重新生成')
-    version, _ = await run_in_threadpool(catalog_snapshot, fresh)
+    if isinstance(expected_version, str) and expected_version.startswith(REPORT_CATALOG_PREFIX):
+        version, _ = await run_in_threadpool(report_catalog_snapshot, fresh, ())
+    else:
+        version, _ = await run_in_threadpool(catalog_snapshot, fresh)
     if version != expected_version:
         raise HTTPException(409, '生成期间知识库来源已改变，请重新生成')
 
 
 def validate_generated_configuration(markdown, expected_version):
-    """Recheck the full catalog marker, independent of a page's fact window."""
+    """Recheck the generation catalog marker and current indicator authorization."""
+    if isinstance(expected_version, str) and expected_version.startswith(REPORT_CATALOG_PREFIX):
+        layout = _generated_layout(markdown)
+        ids = {node['binding']['series_id'] for node in layout['nodes']
+               if node.get('binding', {}).get('kind') == 'series'}
+        version, catalog = report_catalog_snapshot(current_workbench.get(), ids)
+        if expected_version != version:
+            raise HTTPException(409, '知识库来源已改变，请重新生成或核对产业图配置')
+        return _validate_bindings(layout, catalog)
     version, catalog = catalog_snapshot()
     if expected_version != version:
         raise HTTPException(409, '知识库来源已改变，请重新生成或核对产业图配置')
@@ -211,14 +242,14 @@ def catalog_json(fields):
 
 def catalog_batches(catalog):
     batches,current,size = [],[],2
-    for field in catalog:
+    for index, field in enumerate(catalog):
         field_size = len(catalog_json(field).encode('utf-8'))
         if field_size+2>CATALOG_BYTES:
-            raise HTTPException(413,'单个指标的目录信息过大，请缩小资料或指标范围后重试')
+            raise CatalogCapacityError('单个指标的目录信息过大，请缩小资料或指标范围后重试', index)
         if current and size+1+field_size>CATALOG_BYTES:
             batches.append(current)
             if len(batches)>=CATALOG_MAX_BATCHES:
-                raise HTTPException(413,'指标目录超过本次生成容量，请缩小研究范围后重试')
+                raise CatalogCapacityError('指标目录超过本次生成容量，请缩小研究范围后重试', index)
             current,size = [],2
         size += field_size+(1 if current else 0)
         current.append(field)
@@ -485,7 +516,7 @@ async def completion(scope,model_id,prompt,image=None):
         raise HTTPException(503,'模型服务暂时不可用，现有产业图保持原样') from None
 
 
-def validate_draft(markdown,catalog):
+def _generated_layout(markdown):
     if not isinstance(markdown,str) or not markdown.strip() or len(markdown.encode('utf-8'))>64000:
         raise HTTPException(422,'产业图 Markdown 为空或过大')
     try:
@@ -494,6 +525,14 @@ def validate_draft(markdown,catalog):
         raise HTTPException(422,'产业图配置无法解析，请核对分组、节点和连线') from None
     if len(layout['nodes'])>256 or len(layout['edges'])>512:
         raise HTTPException(422,'产业图超过256个节点或512条连线，请缩小范围')
+    return layout
+
+
+def validate_draft(markdown, catalog):
+    return _validate_bindings(_generated_layout(markdown), catalog)
+
+
+def _validate_bindings(layout, catalog):
     known = {spec['id']:spec for spec in catalog}
     bindings = []
     for node in layout['nodes']:
@@ -632,8 +671,12 @@ def final_constraint_schema():
         selection_context(), final_constraint()]
 
 
-@router.post('')
-async def generate(body:GenerateRequest):
+@router.post('', name='generate')
+async def generate_route(body: GenerateRequest):
+    return await generate(body)
+
+
+async def generate(body: GenerateRequest, *, series_ids: set[str] | None = None):
     scope = scope_for_generation()
     await notify_progress('reading_source')
     text,image = body.instructions.strip(),body.image
@@ -671,10 +714,21 @@ async def generate(body:GenerateRequest):
         except (ValueError,TypeError):
             raise HTTPException(400,'请选择5 MiB以内的PNG、JPEG、WebP或GIF图片') from None
     await notify_progress('loading_catalog')
-    version, catalog = await run_in_threadpool(catalog_snapshot)
+    if series_ids is None:
+        version, catalog = await run_in_threadpool(catalog_snapshot)
+    else:
+        version, catalog = await run_in_threadpool(report_catalog_snapshot, scope, series_ids)
+        if not catalog:
+            raise EmptyScopedCatalog()
     # Stable ordering makes shard boundaries independent of database iteration.
     catalog = sorted(catalog, key=lambda item: item['id'])
-    catalog_batches(catalog)  # Capacity preflight before any model invocation.
+    try:
+        catalog_batches(catalog)  # Capacity preflight before any model invocation.
+    except CatalogCapacityError as error:
+        if series_ids is None:
+            raise
+        raise HTTPException(413,
+            f'本次识别出的指标有 {len(catalog)} 个，超过产业图生成上限 {error.fitting_count} 个') from None
     from tin.web import diagram_analysis_cache as cache
     from tin.web.diagram_outline import (outline_prompt, validate_outline,
         final_constraint, validate_final)

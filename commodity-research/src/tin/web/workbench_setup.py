@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 import json
 import logging
+import re
 from typing import Literal
 
 from fastapi import HTTPException
@@ -22,6 +23,12 @@ PURPOSE = WORKBENCH_SETUP
 Part = Literal['dimensions', 'indicators', 'charts', 'layout', 'focus', 'diagram', 'judgment', 'strategy', 'monitors']
 PHASES = PURPOSES[PURPOSE].phases
 HISTORICAL = '以下是所选往期周报的当期原文。只整理为历史观点候选，保存前需由研究员更新为当前判断。'
+PRIVATE_DETAIL = re.compile(
+    r'(?<![a-z])(?:traceback|stack\s*trace|(?:bearer|basic)\s+|file\s+[\'\"]|line\s+\d+,\s*in\b)'
+    r'|(?:authorization|api[ _-]?key|token|secret|password|密码|令牌|凭据|订阅链接)\s*[:：=]'
+    r'|(?:sk-|gh[pousr]_)[a-z0-9_-]+'
+    r'|(?:[A-Za-z][A-Za-z0-9+.-]*://|[A-Za-z]:[\\/]|[A-Za-z0-9_.~\-]*[\\/])\S'
+    r'|[A-Za-z0-9_.+=-]{24,}', re.IGNORECASE)
 
 
 class SetupInput(BaseModel):
@@ -48,6 +55,20 @@ def result_message(error):
             422: '本步资料或模型输出未通过校验，请在对应页面核对后重试',
             429: '任务或模型请求已达上限，请稍后重试'}.get(error.status_code, '相关服务暂不可用，请稍后重试')
     return '本步未完成，可在对应页面重试'
+
+
+def result_detail(error):
+    if not isinstance(error, HTTPException):
+        return ''
+    detail = error.detail.get('message') if isinstance(error.detail, dict) else error.detail
+    if not isinstance(detail, str) or not detail.strip():
+        return ''
+    # Keep the public message and cut off any appended diagnostic data.
+    line = detail.strip().splitlines()[0]
+    match = PRIVATE_DETAIL.search(line)
+    if match:
+        line = line[:match.start()].rstrip(' ，。；：,;:\'"（(')
+    return line[:120] if re.search(r'[\u3400-\u9fff]', line[:120]) else ''
 
 
 def evidence_digest(report):
@@ -96,8 +117,11 @@ class Setup:
         dimensions = await self.base_dimensions()
         result = await dimension_suggestions.generate_suggestions(self.scope, self.body.model_id, dimensions)
         self.indicator_items = result['items']
-        return {**result, 'dimensions': dimensions}, {'bindings': len(self.indicator_items),
+        counts = {'bindings': len(self.indicator_items),
             'pending_sections': sum(not section['selected_count'] for section in result['sections'])}
+        if result.get('ignored_count'):
+            counts['ignored_count'] = result['ignored_count']
+        return {**result, 'dimensions': dimensions}, counts
 
     async def charts(self):
         report_chart_import.writable_scope()
@@ -159,13 +183,25 @@ class Setup:
         result = await focus_suggestions.generate_suggestions(
             self.scope, self.body.model_id, report_evidence=self.evidence)
         result.pop('_catalog_version', None)
-        return result, {'suggestions': len(result['items'])}
+        counts = {'suggestions': len(result['items'])}
+        if result.get('ignored_count'):
+            counts['ignored_count'] = result['ignored_count']
+        return result, counts
 
     async def diagram(self):
+        series_ids = {item['series_id'] for item in self.indicator_items}
+        series_ids.update(series['selected_id'] for chart in self.chart_candidates
+                          for series in chart['series'] if series.get('selected_id'))
+        if not series_ids:
+            dimensions = await run_in_threadpool(dimension_suggestions.dimensions_for_scope, self.scope)
+            series_ids = {item['id'] for dimension in dimensions for section in dimension.get('sections', [])
+                          for item in section.get('items', []) if item['kind'] == 'indicator'}
+        if not series_ids:
+            raise diagram_generation.EmptyScopedCatalog()
         text = '依据以下所选往期周报的研究结构提取产业链骨架；只保留结构，不把历史观点或数值当成当前事实。\n'
         body = diagram_generation.GenerateRequest(model_id=self.body.model_id,
             instructions=text + self.evidence[:12000 - len(text)])
-        result = await diagram_generation.generate(body)
+        result = await diagram_generation.generate(body, series_ids=series_ids)
         return result, {'nodes': result['nodes']}
 
     async def historical_text(self, subject, maximum):
@@ -207,8 +243,12 @@ class Setup:
     async def monitors(self):
         monitors.require_scope(self.scope, write=True)
         text = await self.historical_text('当期可复核的监测关注点与阈值', 4000)
-        result = await monitors.draft_from_text(self.scope, text, self.body.model_id)
-        return result, {'candidates': 1, 'rules': len(result['rules'])}
+        result = await monitors.draft_candidates_from_report(self.scope, text, self.body.model_id)
+        counts = {'candidates': len(result['candidates']),
+                  'rules': sum(len(candidate['rules']) for candidate in result['candidates'])}
+        if result['failures']:
+            counts['ignored_count'] = len(result['failures'])
+        return result, counts
 
 
 # A missing dimension draft blocks only its dependent indicator suggestions.
@@ -243,9 +283,17 @@ async def generate(scope, body, job_id, progress):
             if module not in scope.view_modules:
                 raise HTTPException(403, '该功能未授权')
             data, counts = await asyncio.wait_for(step(setup), timeout=seconds)
+        except diagram_generation.EmptyScopedCatalog:
+            output.append({'part': part, 'state': 'skipped', 'counts': {},
+                           'message': '跳过', 'detail': '没有可用于产业图的指标'})
         except Exception as error:
             logging.getLogger(__name__).info('Setup step %s did not finish (%s)', part, type(error).__name__)
-            output.append({'part': part, 'state': 'failed', 'counts': {}, 'message': result_message(error)})
+            item = {'part': part, 'state': 'failed', 'counts': {}, 'message': result_message(error)}
+            if detail := result_detail(error):
+                item['detail'] = detail
+            if isinstance(error, monitors.ReportMonitorCandidatesError):
+                item['failures'] = error.failures
+            output.append(item)
         else:
             output.append({'part': part, 'state': 'succeeded', 'data': data, 'counts': counts})
     original = original_identity(report)

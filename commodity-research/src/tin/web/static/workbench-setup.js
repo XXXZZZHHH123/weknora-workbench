@@ -144,10 +144,21 @@
 
   function countsFor(item) {
     const labels = countLabels[item.part];
-    return Object.entries(labels).flatMap(([key, [label, unit]]) => {
+    const counts = Object.entries(labels).flatMap(([key, [label, unit]]) => {
       const count = item.counts?.[key];
       return Number.isSafeInteger(count) && count >= 0 ? [`${label} ${count} ${unit}`] : [];
-    }).join('，');
+    });
+    const ignored = item.counts?.ignored_count;
+    if (Number.isSafeInteger(ignored) && ignored > 0) counts.push(`已忽略 ${ignored} 项`);
+    return counts.join('，');
+  }
+
+  function summaryFor(item) {
+    if (item.state === 'skipped') return [item.message || '跳过', item.detail].filter(Boolean).join('：');
+    const summary = item.state === 'succeeded' ? countsFor(item)
+      : (item.state === 'blocked' ? '依赖步骤未完成' : '未生成');
+    const message = [item.message, item.detail].filter(Boolean).join('：');
+    return [summary, message].filter(Boolean).join(' · ');
   }
 
   function showResult(result) {
@@ -160,8 +171,7 @@
       const [label, path] = reviewPages[item.part];
       const row = document.createElement('li'), text = document.createElement('div');
       const done = item.state === 'succeeded';
-      const summary = done ? countsFor(item) : (item.state === 'blocked' ? '依赖步骤未完成' : '未生成');
-      text.append(safeText('strong', label), safeText('p', [summary, item.message].filter(Boolean).join(' · ')));
+      text.append(safeText('strong', label), safeText('p', summaryFor(item)));
       row.append(text);
       if (done && (item.review_available ?? Boolean(item.data))) {
         const link = safeText('a', '去核对', 'workbench-setup-link');

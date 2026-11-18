@@ -234,13 +234,20 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   function renderSuggestions(data, jobId) {
     suggestedJobId = jobId;
-    get('suggestions-list').replaceChildren();
+    const list = get('suggestions-list');
+    list.replaceChildren();
     suggested = data.items || [];
+    if (data.ignored_reason) {
+      const notice = document.createElement('p');
+      notice.className = 'market-core-notice';
+      notice.textContent = data.ignored_reason;
+      list.append(notice);
+    }
     for (const row of suggested) {
       catalog.set(row.series_id, {series_id: row.series_id, name: row.name || row.series_id, unit: row.unit, source: row.sheet});
       const label = document.createElement('label'), checkbox = document.createElement('input'), content = document.createElement('span'), name = document.createElement('b'), reason = document.createElement('small');
       checkbox.type = 'checkbox'; checkbox.value = row.series_id; checkbox.checked = true; checkbox.addEventListener('change', syncSuggestions);
-      name.textContent = `${row.group} · ${row.name || row.series_id}`; reason.textContent = row.reason; content.append(name, reason); label.append(checkbox, content); get('suggestions-list').append(label);
+      name.textContent = `${row.group} · ${row.name || row.series_id}`; reason.textContent = row.reason; content.append(name, reason); label.append(checkbox, content); list.append(label);
     }
     suggestionStatus(data.notice || (suggested.length ? '请核对分组和理由，勾选后采用。' : '模型未给出可采用建议。'));
     syncSuggestions();

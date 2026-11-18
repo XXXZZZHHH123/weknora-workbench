@@ -15,6 +15,35 @@ const result = (part, data) => ({
   items: [{part, data, state: 'succeeded'}]
 });
 
+async function setupChecklist(browser) {
+  const state = result('indicators', {items: [item]});
+  state.items[0].counts = {bindings: 1, pending_sections: 0, ignored_count: 3};
+  state.items.push(
+    {part: 'focus', state: 'failed', message: '本步资料或模型输出未通过校验', detail: '模型返回的指标 ID 不存在于当前目录'},
+    {part: 'diagram', state: 'skipped', message: '跳过', detail: '没有可用于产业图的指标'},
+    {part: 'strategy', state: 'succeeded', data: {}, counts: {drafts: 1, ignored_count: 0}},
+  );
+  const html = render('home.html', {}, {affairs: {setup_enabled: true, sections: []}});
+  const fixture = await open(browser, prefix + '/?analysis_job=' + setupId, html, ({path, reply}) => {
+    if (path === `/analysis-jobs/${setupId}`) return reply(state.job);
+    if (path === resultPath) return reply(state);
+    if (path === '/monitors') return reply({items: []});
+    if (path === '/strategies/models') return reply({models: []});
+    return false;
+  });
+  const review = fixture.page.locator('#workbench-setup-review');
+  await review.waitFor();
+  const row = label => review.locator('li').filter({hasText: label});
+  assert.match(await row('维度绑定指标').textContent(), /绑定指标 1 个，待确认环节 0 个，已忽略 3 项/);
+  assert.match(await row('核心关注').textContent(), /本步资料或模型输出未通过校验：模型返回的指标 ID 不存在于当前目录/);
+  assert.match(await row('产业图骨架').textContent(), /跳过：没有可用于产业图的指标/);
+  assert.doesNotMatch(await row('策略草稿').textContent(), /已忽略/);
+  assert.equal(await row('核心关注').getByRole('link').count(), 0);
+  assert.equal(await row('产业图骨架').getByRole('link').count(), 0);
+  assert.match(await row('维度绑定指标').getByRole('link').getAttribute('href'), new RegExp(query('indicators')));
+  await fixture.close();
+}
+
 async function dimensionReview(browser) {
   const stored = {dimensions: [], revision: 0, can_write: true, categories: [{id: '库存', label: '库存'}]};
   const page = script(render('dimensions.html', {}, {dimension_page: {date: day}}));
@@ -122,6 +151,7 @@ async function chartReview(browser) {
 (async () => {
   const browser = await launch();
   try {
+    await setupChecklist(browser);
     await dimensionReview(browser);
     await layoutReview(browser);
     await explicitDimensionReview(browser);

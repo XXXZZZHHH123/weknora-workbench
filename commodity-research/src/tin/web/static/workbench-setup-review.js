@@ -18,12 +18,15 @@
     id: job,
     part,
     historicalNotice: '来自所选周报的当期观点，请修改为当前判断后再保存。',
-    async load() {
+    async load({candidate} = {}) {
       if (!await isSelected()) {
         throw new Error('当前后台任务没有周报核对结果。');
       }
       if (part === 'judgment') return request('/judgment-preview', {method: 'POST'});
-      if (part === 'monitors') return request('/monitor-preview', {method: 'POST'});
+      if (part === 'monitors') {
+        const query = candidate === undefined ? '' : '?' + new URLSearchParams({candidate});
+        return request('/monitor-preview' + query, {method: 'POST'});
+      }
       const result = await jobs.result('workbench_setup', job);
       const entry = result.items?.find(item => item.part === part);
       if (entry?.state !== 'succeeded' || !entry.data) throw new Error('这个任务没有可供核对的结果。');

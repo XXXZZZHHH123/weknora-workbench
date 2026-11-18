@@ -83,7 +83,8 @@ async function fixture(browser, config = initial(), boot = {}, pathname = '/sn/d
         const picked = d.id === dimension && s.label === section;
         return {dimension:d.id,section:s.label,candidate_count:20,selected_count:picked ? 1 : 0,empty_reason:picked ? '' : '没有口径一致的候选 ' + unsafe};
       }));
-      return submit('dimension_fields',{as_of:body.date,sections,items:[{series_id:'kb-2',dimension,section,reason:unsafe,name:'第二项指标',unit:'吨',sheet:'合成候选工作表'}]});
+      return submit('dimension_fields',{as_of:body.date,sections,ignored_count:3,ignored_reason:'模型返回 3 个不在候选目录的指标，已忽略',
+        items:[{series_id:'kb-2',dimension,section,reason:unsafe,name:'第二项指标',unit:'吨',sheet:'合成候选工作表'}]});
     }
     if (path === '/dimensions/sources') return reply({items:[{title:'合成往期周报',citation:{kind:'knowledge_file',field:'source_quote',source_binding_id:'source-1',knowledge_id:'knowledge-1',file_version:'a'.repeat(64)}}],next_offset:null});
     if (path === '/dimensions/infer') {
@@ -161,6 +162,7 @@ print(env.get_template('base.html').render(nav='dimensions',restricted_view=rest
     const saved = empty.calls.filter(c => c.method === 'PUT').length;
     await p.locator('#dimensions-suggest').click(); await p.locator('#dimensions-model-run').click();
     await p.locator('#dimensions-model-adopt:not([disabled])').waitFor();
+    assert.equal(await p.locator('#dimensions-suggestions > :first-child').innerText(),'模型返回 3 个不在候选目录的指标，已忽略');
     assert.equal(await p.locator('#dimensions-suggestions .dimensions-suggestion-reason').innerText(),unsafe);
     assert.match(await p.locator('.dimensions-recall-summary').first().innerText(),/价格与价差 · 候选 20 · 已选 0 · 留空原因：没有口径一致的候选/);
     assert.equal(await p.locator('.dimensions-empty-reason').first().innerText(),' · 留空原因：没有口径一致的候选 ' + unsafe);

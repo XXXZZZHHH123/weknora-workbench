@@ -113,6 +113,7 @@ const report = {mode: 'isolated_market_focus_ui_fixture', real_model_calls: 0, r
       if (pathName === prefix + '/api/sn/analysis-jobs/' + jobID + '/result') {
         return route.fulfill({json: {job: meta('succeeded'), request: {model_id: 'fixture-model'},
           items: [0, 2].map((index, i) => ({series_id: ids[index], name: '隔离指标' + String(index + 1).padStart(2, '0'), group: i ? '供给' : '核心标的', reason: '隔离模型给出的研究理由'})),
+          ignored_count: 2, ignored_reason: '模型返回 2 个不在候选目录的指标，已忽略',
           notice: '共读取 18 个字段。', truncated: false}});
       }
       if (pathName === prefix + '/api/sn/indicators/catalog') {
@@ -171,6 +172,7 @@ const report = {mode: 'isolated_market_focus_ui_fixture', real_model_calls: 0, r
     assert.equal(core.length, 0, '关闭后取回仅展示候选建议');
 
     assert.equal(await page.locator('#market-core-suggestions-list label').count(), 2);
+    assert.equal(await page.locator('#market-core-suggestions-list > :first-child').innerText(), '模型返回 2 个不在候选目录的指标，已忽略');
     assert.match(await page.locator('#market-core-suggestions-list').innerText(), /核心标的.*隔离指标01/s);
     await page.locator('#market-core-suggestions-list input').nth(1).uncheck();
     await page.locator('#market-core-suggestions-adopt').click();

@@ -160,8 +160,14 @@ async def judgment_preview(job_id: str):
 
 
 @router.post('/{job_id}/monitor-preview')
-async def monitor_preview(job_id: str):
+async def monitor_preview(job_id: str, candidate: int = 0):
     scope = monitors.require_scope(report_chart_import.writable_scope(), write=True)
     config = await verified_config(scope, job_id)
-    return await run_in_threadpool(monitors.save_private_draft, scope, part_data(config, 'monitors'),
-                                   setup_job_id=job_id)
+    result = part_data(config, 'monitors')
+    candidates = result['candidates'] if 'failures' in result else [result]
+    if not 0 <= candidate < len(candidates):
+        raise HTTPException(404, '本次建立没有该监测候选')
+    draft = await run_in_threadpool(monitors.save_private_draft, scope, candidates[candidate],
+                                   setup_job_id=job_id, setup_candidate=candidate)
+    return {**draft, 'setup_candidate': candidate, 'setup_titles': [item['title'] for item in candidates],
+            'setup_failures': result.get('failures', [])}

@@ -196,17 +196,51 @@ def test_picks_cannot_authorize_unshown_id_or_another_sections_candidate():
         assert caught.value.status_code == 422
 
 
+@pytest.mark.parametrize('all_invalid', [False, True])
+def test_dimension_generation_ignores_only_ids_outside_their_own_section(monkeypatch, all_invalid):
+    monkeypatch.setattr(suggestions, 'catalog_snapshot', lambda active: {'catalog': catalog()})
+    monkeypatch.setattr(suggestions, 'recall_sections', lambda index, inventory, phrased, per_item:
+                        list(zip(inventory['items'], [['field-0'], ['field-1'], ['field-2']], strict=True)))
+
+    async def complete(active, model_id, prompt, *, purpose):
+        if purpose == 'dimension_queries':
+            return {'queries': {}}
+        wrong_section = choice('field-0', section='Synthetic downstream')
+        absent = choice('same-name-id', section='Synthetic downstream')
+        malformed = choice([], section='Synthetic downstream')
+        items = [wrong_section, absent, malformed]
+        if not all_invalid:
+            items.append(choice('field-0', section='Synthetic upstream'))
+        return response_for(groups_of(prompt), items)
+
+    monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
+    if all_invalid:
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(suggestions.generate_suggestions(scope(), 'model', axes()))
+        assert caught.value.status_code == 422 and '本环节展示的候选目录' in caught.value.detail
+        return
+
+    result = asyncio.run(suggestions.generate_suggestions(scope(), 'model', axes()))
+    assert [row['series_id'] for row in result['items']] == ['field-0']
+    assert result['ignored_count'] == 3
+    assert result['ignored_reason'] == '模型返回 3 个不在候选目录的指标，已忽略'
+    assert [row['selected_count'] for row in result['sections']] == [1, 0, 0]
+    assert result['sections'][1]['empty_reason'] == '本环节返回的指标均不在候选目录，已忽略'
+    assert result['sections'][2]['empty_reason'] == 'No representative evidence'
+
+
 def test_picks_preserve_model_order_without_name_or_date_filtering():
     dimensions, data = axes(), catalog()
     groups = validation_groups(dimensions, data)
     document = response_for([item for item, _ in groups], [choice('field-2', 'inventory', section=''),
                                                         choice('field-0', section='Synthetic upstream')])
     renamed = {identifier: {**field, 'metric': 'unrelated', 'latest_date': '1990-01-01'} for identifier, field in data.items()}
-    before, sections = suggestions.validate_suggestions(document, data, dimensions, groups)
-    after, _ = suggestions.validate_suggestions(document, renamed, dimensions, groups)
+    before, sections, ignored = suggestions.validate_suggestions(document, data, dimensions, groups)
+    after, _, _ = suggestions.validate_suggestions(document, renamed, dimensions, groups)
     assert [(row['series_id'], row['dimension'], row['section']) for row in before] == [
         (row['series_id'], row['dimension'], row['section']) for row in after]
     assert sections[1]['empty_reason'] == 'No representative evidence'
+    assert ignored == 0
 
 
 @pytest.mark.parametrize('document', [None, {'items': []}, {'items': 'invalid', 'empty_reasons': []},
@@ -317,7 +351,7 @@ def test_duplicate_section_labels_keep_each_real_section_identity(with_ids):
     document = {'items': [choice('field-0', section='Same label', item_id='i2')],
                 'empty_reasons': [{'dimension': 'supply', 'section': 'Same label', 'item_id': 'i1',
                                    'reason': 'No matching evidence'}]}
-    items, sections = suggestions.validate_suggestions(document, catalog(), clean, groups)
+    items, sections, _ = suggestions.validate_suggestions(document, catalog(), clean, groups)
     assert items[0]['item_id'] == 'i2' and items[0]['section_id'] == ('s-second' if with_ids else '')
     assert sections[0]['empty_reason'] == 'No matching evidence' and sections[1]['selected_count'] == 1
     document['items'][0].pop('item_id')

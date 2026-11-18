@@ -72,8 +72,8 @@ def test_validation_deduplicates_in_model_order_and_caps_twelve_without_adding_f
     data = catalog(18)
     document = {'items': [choice('field-4'), choice('field-4', '需求'),
                           *[choice(f'field-{i}') for i in range(18) if i != 4]]}
-    items, total = suggestions.validate_suggestions(document, data)
-    assert total == 18 and len(items) == 12
+    items, total, ignored = suggestions.validate_suggestions(document, data)
+    assert total == 18 and len(items) == 12 and ignored == 0
     assert [item['series_id'] for item in items] == ['field-4', 'field-0', 'field-1', 'field-2', 'field-3',
                                                    'field-5', 'field-6', 'field-7', 'field-8', 'field-9', 'field-10', 'field-11']
     assert items[0]['group'] == '供给'
@@ -88,12 +88,12 @@ def test_field_and_worksheet_names_never_select_filter_reorder_or_supplement_ind
         field.update(metric='Unrelated label' if i in {1, 4} else '国内价格 海外价格 现货升贴水 期限结构 内外比价 库存 供给',
                      sheet='Entirely different worksheet' if i in {1, 4} else '核心标的 宏观 平衡 需求')
     document = {'items': [choice('field-4', '宏观'), choice('field-1', '核心标的')]}
-    a, _ = suggestions.validate_suggestions(document, ordinary)
-    b, _ = suggestions.validate_suggestions(document, changed)
+    a, _, _ = suggestions.validate_suggestions(document, ordinary)
+    b, _, _ = suggestions.validate_suggestions(document, changed)
     assert [(row['series_id'], row['group'], row['reason']) for row in a] == [
         (row['series_id'], row['group'], row['reason']) for row in b]
     assert [row['series_id'] for row in b] == ['field-4', 'field-1']
-    assert suggestions.validate_suggestions({'items': []}, changed) == ([], 0)
+    assert suggestions.validate_suggestions({'items': []}, changed) == ([], 0, 0)
 
 
 @pytest.mark.parametrize(('document', 'message'), [
@@ -107,6 +107,32 @@ def test_invalid_model_suggestions_report_reason_and_never_fall_back(document, m
     with pytest.raises(HTTPException) as caught:
         suggestions.validate_suggestions(document, catalog())
     assert caught.value.status_code == 422 and message in caught.value.detail
+
+
+@pytest.mark.parametrize('all_invalid', [False, True])
+def test_focus_generation_ignores_only_ids_outside_the_current_catalog(monkeypatch, all_invalid):
+    monkeypatch.setattr(suggestions, 'catalog_snapshot', lambda active: {'catalog': catalog()})
+
+    async def complete(active, model_id, prompt, *, purpose):
+        if purpose == 'core_focus_sheets':
+            return {'worksheets': [{'worksheet_id': 'w1', 'group': '供给'}]}
+        items = [choice('Synthetic measure 0'), choice(['field-1'])]
+        if not all_invalid:
+            items.insert(1, choice('field-2'))
+            items.append(choice('field-1', group='需求'))
+        return {'items': items}
+
+    monkeypatch.setattr(strategy_text, 'completion', complete)
+    if all_invalid:
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(suggestions.generate_suggestions(scope(), 'platform-model'))
+        assert caught.value.status_code == 422 and '不存在于当前目录' in caught.value.detail
+        return
+
+    result = asyncio.run(suggestions.generate_suggestions(scope(), 'platform-model'))
+    assert [row['series_id'] for row in result['items']] == ['field-2', 'field-1']
+    assert result['ignored_count'] == 2
+    assert result['ignored_reason'] == '模型返回 2 个不在候选目录的指标，已忽略'
 
 
 @pytest.mark.parametrize('document', [None, {'worksheets': 'bad'},

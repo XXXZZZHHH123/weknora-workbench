@@ -490,6 +490,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } else {
       suggestions = result.items || [];
+      if (result.ignored_reason) get('suggestions').append(node('p', 'dimensions-muted', result.ignored_reason));
       const available = setupDimensions || dims(), groups = new Map(), sections = result.sections || [];
       for (const d of available) {
         const group = node('section','dimensions-suggestion-group'); group.append(node('h3','',d.label)); groups.set(d.id,group);
