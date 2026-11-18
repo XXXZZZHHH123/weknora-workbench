@@ -60,6 +60,51 @@ def test_ai_receives_current_draft_and_error_cell_evidence_without_publishing(tm
     assert manager.get(record['import_id'])['dataset_id'] == record['dataset_id']
 
 
+def test_ai_classifies_header_note_from_source_and_reassigns_header(tmp_path, monkeypatch):
+    note = 'Preliminary results pending reconciliation.'
+    manager, record, sheet, candidate = fixture(tmp_path, annotation=note)
+    column = candidate['blocks'][0]['columns'][0]
+    column['metric'] = f'{note} / Amount'
+    column['header_cells'].insert(0, 'F1')
+    calls = []
+    mock_model(monkeypatch, [{
+        'block_updates': [{'block_index': 0, 'header_note_cells': ['F1']}],
+        'column_updates': [{'block_index': 0, 'column': 'B', 'metric': 'Amount', 'header_cells': ['B1', 'B2']}],
+        'evidence': [{'block_index': 0, 'field': 'header_note_cells', 'cells': ['F1']},
+                     {'block_index': 0, 'field': 'header_cells', 'column': 'B', 'cells': ['B1', 'B2']},
+                     {'block_index': 0, 'field': 'metric', 'column': 'B', 'cells': ['B1']}],
+    }], calls)
+    result = suggest_mapping(manager, record['import_id'], sheet['name'], mapping=candidate, strict=True)
+    assert result['diagnostics'] == []
+    block = result['mapping']['blocks'][0]
+    assert block['header_note_cells'] == ['F1']
+    assert block['columns'][0]['metric'] == 'Amount'
+    prompt = calls[0]['messages'][0]['content']
+    assert '请由模型根据原单元格的实际内容及相邻表头的关系' in prompt
+    assert '不按字面关键词或格式判断' in prompt
+    assert '以“备注”开头' not in prompt
+    assert any(cell['cell'] == 'F1' and cell['value'] == note
+               for cell in json.loads(calls[0]['messages'][1]['content'])['source_cells'])
+    assert manager.sheet(record['import_id'], sheet['name'])['mapping'] == sheet['mapping']
+
+
+@pytest.mark.parametrize(('ref', 'evidence', 'error'), [
+    ('F1', [], '证据'), ('F1', ['D1'], '证据'), ('F1', ['F1'], '非空'),
+    ('A3', ['A3'], '表头行'), ('B1', ['B1'], '重叠'),
+])
+def test_ai_rejects_unsupported_header_note_drafts(tmp_path, monkeypatch, ref, evidence, error):
+    manager, record, sheet, candidate = fixture(tmp_path, annotation=' ')
+    suggestion = {'block_updates': [{'block_index': 0, 'header_note_cells': [ref]}]}
+    if evidence:
+        suggestion['evidence'] = [{'block_index': 0, 'field': 'header_note_cells', 'cells': evidence}]
+    mock_model(monkeypatch, [suggestion, suggestion], [])
+    with pytest.raises(ValueError, match=error) as rejection:
+        suggest_mapping(manager, record['import_id'], sheet['name'], mapping=candidate)
+    assert rejection.value.review_target['field'] == 'header_note_cells'
+    strict = suggest_mapping(manager, record['import_id'], sheet['name'], mapping=candidate, strict=True)
+    assert any(item['field'] == 'header_note_cells' and error in item['message'] for item in strict['diagnostics'])
+
+
 def test_assist_only_changes_failed_block_and_checks_before_becoming_ready(tmp_path, monkeypatch):
     manager, record, sheet, candidate = fixture(tmp_path)
     candidate['blocks'][1]['columns'][0]['metric'] = ''

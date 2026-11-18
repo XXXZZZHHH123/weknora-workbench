@@ -468,6 +468,11 @@ def create_app(data_dir: str | Path | None = None):
         from .research_source_status import read_current
         return await read_research_metadata(request, read_current)
 
+    @app.post('/api/research/indicator-remaps')
+    async def research_indicator_remaps(request: Request):
+        from .research_indicator_remaps import read_current
+        return await read_research_metadata(request, read_current)
+
     @app.post('/api/research/export')
     async def research_export(request: Request):
         body = await request.json()
