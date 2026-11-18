@@ -8,10 +8,17 @@
   {% if not restricted_view %}<aside class="market-core-notice" data-dedup-references="core" hidden></aside>{% endif %}
   <div id="market-core-grid" class="market-core-grid" aria-live="polite">{% include '_market_cards.html' %}</div>
   <div id="market-core-empty" class="market-core-empty" {% if cards %}hidden{% endif %}>
-    <p>{{ '暂无授权指标' if restricted_view else '暂无核心关注' }}</p>
-    {% if not restricted_view %}
-    {% include '_source_status_hint.html' %}
+    {% if restricted_view %}
+    <p>暂无授权指标</p>
+    {% else %}
+    {% if market_catalog.has_selectable_items %}
+    <p>从指标目录、图表库或账号自选中挑选，或按研究框架生成建议</p>
+    {% else %}
+    <p>暂无核心关注</p>
+    {% if market_catalog.has_selectable_items is sameas false %}{% include '_source_status_hint.html' %}{% endif %}
+    {% endif %}
     <button id="market-core-suggestions-open" type="button" class="market-core-button market-core-primary" aria-haspopup="dialog">生成建议</button>
+    {% if market_catalog.has_selectable_items %}<button id="market-core-empty-open" type="button" class="market-core-button" aria-haspopup="dialog">选择与排序</button>{% endif %}
     {% endif %}
   </div>
   <div id="market-core-error" class="market-core-error" role="alert" hidden><span></span> <button id="market-core-retry" type="button" class="market-core-button">重试</button></div>

@@ -20,7 +20,7 @@ from tin.web import app as web
 from tin.export.board import _obs_card
 from tin.export.indicators import previews
 identity=Identity('fixture-user','fixture@example.invalid','隔离测试',17,'owner')
-scope=WorkbenchScope(identity,'a0000000-0000-4000-8000-000000000001','b0000000-0000-4000-8000-000000000001',17,{'name':'隔离市场工作台','workspace_mode':'isolated','can_edit':True},scope_version=2,sources_revision=1)
+scope=WorkbenchScope(identity,'a0000000-0000-4000-8000-000000000001','b0000000-0000-4000-8000-000000000001',17,{'name':'隔离市场工作台','workspace_mode':'isolated','can_edit':True},scope_version=2,sources_revision=1,sources=({'delegated':False,'source_type':'knowledge_base'},))
 current_identity.set(identity);current_workbench.set(scope)
 engine=make_engine('sqlite://',poolclass=StaticPool,connect_args={'check_same_thread':False});Base.metadata.create_all(engine)
 factory=sessionmaker(engine,expire_on_commit=False)
@@ -37,8 +37,10 @@ web.SessionLocal=session
 from tin.integration import source_status
 source_status.source_status_hint=lambda *args,**kwargs:{'pending':2,'pending_fields':7,'message':'知识库还有 2 张工作表待确认（含 7 个字段），确认后才能在这里使用','links':[{'url':'/platform/knowledge-bases/fixture-kb/structured-data?mode=import&source_knowledge_id=fixture-original','source_file':'隔离来源'}]}
 from tin.web import catalog as catalog_api
+from tin.integration import page_facts
 with session() as database:
  directory_rows=web.indicator_data.catalog(database)
+page_facts.catalog_page=lambda scope,limit,apply_dedup:{'series':directory_rows[:limit],'total':len(directory_rows)}
 def directory(scope,offset=0,**kwargs):
  return {'indicators':directory_rows,'offset':offset,'total':len(directory_rows),'next_offset':None}
 catalog_api.indicator_page=directory
@@ -140,7 +142,12 @@ const report = {mode: 'isolated_market_focus_ui_fixture', real_model_calls: 0, r
     await page.goto('http://market.fixture' + prefix + '/sn');
     await page.waitForSelector('#market-core-open');
     assert.match(await page.locator('#market-core-title').innerText(), /核心关注/);
-    assert.match(await page.locator('#market-core-empty [data-source-status-hint]').innerText(), /2 张工作表待确认（含 7 个字段）/);
+    assert.equal(await page.locator('#market-core-empty [data-source-status-hint]').count(), 0);
+    assert.match(await page.locator('#market-core-empty').innerText(), /从指标目录、图表库或账号自选中挑选，或按研究框架生成建议/);
+    await page.locator('#market-core-empty-open').click();
+    await page.locator('#market-core-dialog[open]').waitFor();
+    await page.locator('#market-core-cancel').click();
+    await page.waitForFunction(() => document.activeElement.id === 'market-core-empty-open');
     await page.locator('#market-core-suggestions-open').click();
     await page.waitForFunction(() => !document.getElementById('market-core-suggestions-run').disabled);
     await page.locator('#market-core-suggestions-run').click();
@@ -151,7 +158,7 @@ const report = {mode: 'isolated_market_focus_ui_fixture', real_model_calls: 0, r
     await page.locator('#market-core-suggestions-adopt').click();
     await page.waitForFunction(() => document.querySelectorAll('[data-market-card-series]').length === 1);
     assert.deepEqual(core, [{kind: 'indicator', id: ids[0]}]);
-    report.assertions.push('empty_focus_review_hint_model_picker_and_adopt_checked_suggestions');
+    report.assertions.push('empty_focus_with_catalog_opens_picker_and_supports_adopting_checked_suggestions');
     await page.evaluate(([key, value]) => localStorage.setItem(key, JSON.stringify(value)), [favoritesKey, [ids[17]]]);
     const box = index => page.locator(`#market-core-choices input[value="${ids[index]}"]`);
     await page.locator('#market-core-open').click();

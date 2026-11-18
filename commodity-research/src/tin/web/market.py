@@ -28,11 +28,57 @@ def market_catalog(session, cards, day):
         'defaults': [card.series_id for card in cards if not isinstance(card, dict) and card.series_id in available][:16],
         'core_items': items,
         'charts': [{'id': row.id, 'title': row.title} for row in charts.values()],
+        'has_selectable_items': (bool(charts) or _has_selectable_items(session, scope, available))
+                                if scope and not scope.restricted else None,
         'date': day.isoformat() if day else None,
         'catalog_paged': bool(scope and scope.scope_version == 2),
         'can_edit_shared': bool(scope and scope.can_edit and not scope.restricted),
         'history': history_config(session),
     }
+
+
+def _has_selectable_items(session, scope, available):
+    if scope.scope_version != 2:
+        return bool(available)
+
+    from tin.integration.page_facts import catalog_page
+    from tin.models.workbench import WorkbenchArtifact
+    from tin.web.charts import artifact_query
+
+    if session.scalar(artifact_query().with_only_columns(WorkbenchArtifact.id).limit(1)) is not None:
+        return True
+    if not scope.sources:
+        return False
+    try:
+        # The market projection only contains bound rows. Ask the same authorized
+        # metadata directory as the picker without loading its pages or observations.
+        page = catalog_page(scope, limit=1, apply_dedup=False)
+        if not page['total']:
+            return False
+        if not any(source.get('source_type') == 'central_dataset' for source in scope.sources):
+            return True
+
+        from tin.integration.indicator_dedup import confirmed_replacements
+        replacements = confirmed_replacements(scope)
+        # Each current decision hides at most one field from the picker.
+        if page['total'] > len(replacements) or any(field['series_id'] not in replacements for field in page['series']):
+            return True
+
+        from tin.web.favorites import owned_query, stored_items
+        favorites = {item.id for item in stored_items(session.scalar(owned_query(scope))) if item.kind == 'indicator'}
+        version = page['version']
+        while True:
+            if any(field['series_id'] not in replacements or field['series_id'] in favorites for field in page['series']):
+                return True
+            offset = page['next_offset']
+            if offset is None:
+                return False if page['offset'] + len(page['series']) == page['total'] else None
+            if not page['series'] or offset != page['offset'] + len(page['series']) or offset >= page['total']:
+                return None
+            page = catalog_page(scope, offset=offset, limit=200, version=version, apply_dedup=False)
+    except HTTPException:
+        # A failed metadata read does not establish that the workbench is empty.
+        return None
 
 
 class CoreItem(BaseModel):

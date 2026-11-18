@@ -153,11 +153,22 @@ document.addEventListener('DOMContentLoaded', () => {
     if (JSON.stringify(saved.items) !== JSON.stringify(plan.core)) throw new Error('保存的核心关注范围不一致，请刷新后重试。');
     selected = plan.core; announce('已保存'); await loadCards();
   }
-  get('open').addEventListener('click', () => { draft = selected.map(item => ({...item})); get('search').value = ''; get('dialog-error').hidden = true; renderSelected(); void renderCatalog(); dialog.showModal(); get('search').focus(); });
+  let dialogTrigger;
+  function openDialog(event) {
+    dialogTrigger = event.currentTarget;
+    draft = selected.map(item => ({...item}));
+    get('search').value = ''; get('dialog-error').hidden = true;
+    renderSelected(); void renderCatalog(); dialog.showModal(); get('search').focus();
+  }
+  get('open').addEventListener('click', openDialog);
+  get('empty-open')?.addEventListener('click', openDialog);
   get('source').addEventListener('change', () => { source = get('source').value; get('search').value = ''; void renderCatalog(); });
   get('search').addEventListener('input', () => { clearTimeout(directoryTimer); directoryGeneration++; directoryController?.abort(); directoryTimer = setTimeout(() => renderCatalog(), 240); });
   get('cancel').addEventListener('click', () => dialog.close());
-  dialog.addEventListener('close', () => { directoryGeneration++; directoryController?.abort(); clearTimeout(directoryTimer); get('open').focus(); });
+  dialog.addEventListener('close', () => {
+    directoryGeneration++; directoryController?.abort(); clearTimeout(directoryTimer);
+    (dialogTrigger === get('empty-open') && get('empty').hidden ? get('open') : dialogTrigger || get('open')).focus();
+  });
   get('save').addEventListener('click', async () => {
     if (get('save').disabled) return; get('save').disabled = true;
     try { await saveItems(draft); dialog.close(); }
