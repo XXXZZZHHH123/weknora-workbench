@@ -500,7 +500,6 @@ def readable_markdown(payload, *, title='研究报告', names=None, dimensions=N
     lines += ['<details><summary>完整记录</summary>', '']
     if panels['summary']['visible']:
         lines += ['## 导语', '']
-        lines += _md_lines(panels['summary']['text']) + ([''] if panels['summary']['text'] else [])
         conclusion = view['conclusion']
         lines += ['- 研判结论：' + (_md((conclusion['tone'] + '，' if conclusion['tone'] else '') + conclusion['text'])
                                     + '（' + conclusion['source'] + '）' if conclusion else '暂无已保存研究结论'),
@@ -540,7 +539,10 @@ def _one_page_lines(view):
     panels = view['panels']
     lines = []
     if panels['summary']['visible']:
-        lines += ['## 本期综述', '', '| 维度 | 本期变化 | 研究员一句话 | 影响 | 研判依据 |',
+        summary_label = '本周结论' if (view.get('period') or {}).get('kind') == 'weekly' else '本日结论'
+        lines += ['## 本期综述', '', '### ' + summary_label, '',
+                  *_md_lines(panels['summary']['text'] or '待研究员填写'), '',
+                  '| 维度 | 本期变化 | 本期结论 | 影响 | 研判依据 |',
                   '| --- | --- | --- | --- | --- |']
         for row in view['dimension_overview']:
             facts = '；'.join(fact.get('latest_text', fact['text']) if row.get('no_update') else fact['text']

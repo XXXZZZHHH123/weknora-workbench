@@ -6,7 +6,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const get = (suffix) => document.getElementById(`report-${suffix}`);
   const status = (value) => { get("edit-status").textContent = value; };
   const node = (tag, text, cls) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; };
-  const labels = { summary: "导语", research: "研判", dashboard: "图表", watch: "策略" };
+  const labels = { summary: initial.period === "weekly" ? "本周结论" : "本日结论", research: "研判", dashboard: "图表", watch: "策略" };
+  const summaryInput = get("edit-summary"), summaryMessage = get("summary-draft-status");
   let draft, selected = "summary", saving = false, records = [], generation = 0;
   const titles = new Map(), options = new Map((initial.all_figure_options || initial.figure_options || []).map((x) => [x.series_id, x]));
   const initialAutomatic = initial.all_automatic_figures || initial.automatic_figures || [], extraCharts = new Map();
@@ -28,7 +29,8 @@ document.addEventListener("DOMContentLoaded", () => {
       label.append(influence); heading.append(title, label); row.append(heading);
       if (dimension.facts?.length) row.append(node("p", dimension.facts.map(fact => fact.text).join("；"), "report-muted"));
       const input = node("textarea"); input.rows = 2; input.maxLength = 200; input.value = saved.text || "";
-      input.placeholder = "本期怎么变，以及意味着什么（≤200字）"; input.setAttribute("aria-label", `${dimension.label}的一句话`);
+      input.placeholder = "该维度本期的结论：变化意味着什么、对价格偏多还是偏空、原因（≤200字）";
+      input.setAttribute("aria-label", `${dimension.label}的本期结论`);
       const update = () => { draft.dimension_notes[dimension.id] = {text: input.value, impact: influence.value}; };
       input.addEventListener("input", update); influence.addEventListener("change", update);
       const message = node("p", "", "report-dimension-draft-status"); message.dataset.draftStatus = dimension.id;
@@ -75,9 +77,11 @@ document.addEventListener("DOMContentLoaded", () => {
     drafting = true; const own = ++modelRequest; draftController = new AbortController();
     get("draft-generate").disabled = true; get("edit-save").disabled = true; dialog.setAttribute("aria-busy", "true");
     const before = structuredClone(draft.dimension_notes), beforeFigures = structuredClone(draft.figure_conclusions);
+    const beforeSummary = draft.sections.summary.text;
+    summaryMessage.textContent = "";
     for (const item of dimensionInputs.values()) item.message.textContent = "";
     for (const item of conclusionInputs.values()) item.message.textContent = "";
-    status("模型正在按维度起草，结果核对后仅填入编辑框…");
+    status("模型正在起草维度结论和总体结论，核对后将填入编辑框…");
     try {
       const result = await responseJSON(await fetch(`${prefix}/api/sn/reports/${encodeURIComponent(initial.date || draft.date)}/${encodeURIComponent(initial.period || draft.period)}/draft-dimensions`, {
         method: "POST", credentials: "same-origin", signal: draftController.signal, headers: {"Content-Type": "application/json"},
@@ -101,17 +105,36 @@ document.addEventListener("DOMContentLoaded", () => {
         if (typeof item.text !== "string" || item.text.length > 200) { rejected++; continue; }
         editor.input.value = item.text; draft.figure_conclusions[item.key] = item.text; filled++;
       }
+      const summary = result.summary;
+      if (summary) {
+        if (summary.status !== "ok") {
+          summaryMessage.textContent = summary.reason || "总体结论待核对，未填入。";
+          rejected++;
+        } else if (draft.sections.summary.text !== beforeSummary) {
+          summaryMessage.textContent = "已保留起草期间修改的总体结论。";
+          changed++;
+        } else if (typeof summary.text !== "string" || !summary.text.trim() || summary.text.length > summaryInput.maxLength) {
+          summaryMessage.textContent = "模型返回格式无效，未填入。";
+          rejected++;
+        } else {
+          summaryInput.value = summary.text;
+          draft.sections.summary.text = summary.text;
+          filled++;
+        }
+      }
       status(`已填入 ${filled} 条草稿，请修改并确认影响后保存。` + (rejected ? `${rejected} 条待核对，未填入。` : "") + (changed ? `${changed} 条保留起草期间的修改。` : ""));
     } catch (error) { if (own === modelRequest && error.name !== "AbortError") status(error.message || "模型起草失败。"); }
     finally { if (own === modelRequest) { drafting = false; draftController = null; get("draft-generate").disabled = false; get("edit-save").disabled = false; dialog.removeAttribute("aria-busy"); } }
   });
   function writeSection() {
     if (!draft) return;
-    draft.sections[selected].text = get("edit-text").value;
+    if (selected !== "summary") draft.sections[selected].text = get("edit-text").value;
     draft.sections[selected].visible = get("edit-visible").checked;
   }
   function readSection() {
-    get("edit-text").value = draft.sections[selected].text;
+    const text = get("edit-text");
+    text.hidden = selected === "summary";
+    text.value = text.hidden ? "" : draft.sections[selected].text;
     get("edit-visible").checked = draft.sections[selected].visible;
     document.querySelectorAll("[data-report-section]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.reportSection === selected)));
     renderReferences(); renderFigures();
@@ -225,12 +248,17 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (error) { status(error.message); } finally { button.disabled = false; }
   });
   document.querySelectorAll("[data-report-section]").forEach((button) => button.addEventListener("click", () => { writeSection(); selected = button.dataset.reportSection; readSection(); }));
+  summaryInput.addEventListener("input", () => { draft.sections.summary.text = summaryInput.value; });
   open.addEventListener("click", () => {
     extraCharts.clear(); draft = structuredClone(initial.draft); selected = "summary";
+    draft.sections.summary ||= {visible: true, text: ""};
+    draft.sections.summary.text ??= "";
     draft.dimension_notes = draft.dimension_notes || {}; draft.figure_conclusions = draft.figure_conclusions || {};
     for (const dimension of dimensions) if (!draft.dimension_notes[dimension.id]) draft.dimension_notes[dimension.id] = {text: "", impact: "undecided"};
     if (!initial.id && typeof initial.default_title === "string" && initial.default_title.trim()) draft.title = initial.default_title.trim().slice(0, 120);
     get("edit-title").value = draft.title;
+    summaryInput.value = draft.sections.summary.text;
+    summaryMessage.textContent = "";
     status(""); renderDimensions(); readSection(); renderFigures(); dialog.showModal(); loadReferences(); loadModels();
   });
   const cancelDraft = () => {
