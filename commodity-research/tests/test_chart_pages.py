@@ -217,6 +217,12 @@ def test_indicator_three_tabs_share_chart_library_content_and_accessible_stars(p
     assert len(html.xpath('//script[contains(@src,"/static/charts.js")]')) == 1
     assert len(html.xpath('//script[contains(@src,"/static/chart-hover.js?v=") and @defer]')) == 1
     assert html.xpath('//a[contains(@href,"/sn/charts/import")]')
+    report_import = html.xpath('//a[text()="从往期周报导入"]')
+    assert len(report_import) == 1
+    assert report_import[0].get('href') == '/workbenches/fixture-workbench/sn/charts/import#report-chart-import'
+    assert report_import[0].getparent().get('class') == 'charts-toolbar'
+    unavailable = fromstring(client.get('/sn/indicators?tab=charts', headers={'x-version': '1'}).text)
+    assert not unavailable.xpath('//a[text()="从往期周报导入"]')
     assert config(response)['date'] == '2030-01-02'
     for path in ('/fixture-indicator', '/sn/charts/chart-1'):
         page = fromstring(client.get(path).text)

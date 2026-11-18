@@ -252,6 +252,19 @@
       controls();
     })()]);
   });
+  const linkedPanel = () => window.location.hash === '#' + panel.id;
+  function openLinkedPanel() {
+    if (!linkedPanel()) return;
+    panel.open = true;
+    panel.scrollIntoView({block: 'start'});
+  }
+  window.addEventListener('hashchange', openLinkedPanel);
+  // The preview above the report section can push it out of view after the initial scroll.
+  document.addEventListener('native-chart-preview-ready', () => {
+    if (linkedPanel() && panel.open) panel.scrollIntoView({block: 'start'});
+  }, {once: true});
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', openLinkedPanel, {once: true});
+  else openLinkedPanel();
   window.addEventListener('pagehide', () => { closed = true; generation++; clearTimeout(timer); clearTimeout(sourceTimer); controllers.forEach(controller => controller.abort()); clearCards(); }, {once: true});
   controls();
 })();

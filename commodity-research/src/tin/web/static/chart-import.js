@@ -77,5 +77,5 @@
     finally { busy = false; controls(); }
   }
   $('chart-import-more').addEventListener('click', load); $('chart-import-apply').addEventListener('click', apply);
-  load();
+  load().then(() => document.dispatchEvent(new Event('native-chart-preview-ready')));
 })();

@@ -17,6 +17,25 @@ const base = ({path, reply}) => {
 (async () => {
   const browser = await launch();
   try {
+    const linked = await open(browser, '/sn/charts/import#report-chart-import', html, async args => {
+      if (args.path === '/charts/import/native/preview') {
+        await new Promise(resolve => setTimeout(resolve, 150));
+        const sheets = Array.from({length: 18}, (_, index) => ({knowledge_id: 'native-fixture',
+          source_file: '合成原表.xlsx', sheet: `合成表${index}`, charts: []}));
+        return args.reply({total: 0, next_offset: null, sheets});
+      }
+      if (args.path === '/charts/import/report/files') return args.reply({items: [], next_offset: null});
+      return base(args);
+    });
+    assert.equal(await linked.page.locator('#report-chart-import').evaluate(panel => panel.open), true);
+    await linked.page.locator('#report-chart-import > summary').waitFor({state: 'visible'});
+    assert.ok(await linked.page.locator('#report-chart-import > summary').evaluate(summary => {
+      const {top, bottom} = summary.getBoundingClientRect();
+      return window.scrollY > 0 && top >= 0 && bottom <= window.innerHeight;
+    }));
+    assert.equal(linked.calls.filter(call => call.path === '/charts/import/report/files').length, 1);
+    await linked.close();
+
     let applied, jobPolls = 0;
     const previews = [];
     const ui = await open(browser, '/sn/charts/import', html, async args => {
