@@ -765,6 +765,12 @@
       ui.checkSignature=signature;mappingConfirmed=true;$('mappingFeedback').textContent=`全部选定数据检查通过：${result.series_count} 个指标、${result.observation_count} 条记录。${result.notice||''}完整检查结果可展开查看。`;$('mappingPreview').innerHTML=mappingIdentityHTML(result.mapping)+blockPreviewHTML(result);$('mappingPreview').closest('details').open=true;saveDraft();
     }catch(e){e.reviewBlockIds=blockIds;throw e;}finally{if(version===reviewVersion)setMappingBusy(false);}
   };
+  function appendHeaderOnlyNotice(feedback,result,sheetName) {
+    if(result.scope!=='header_only'||!result.header_notice)return;
+    const notice=document.createElement('p');
+    notice.textContent=sheetName?`${sheetName}：${result.header_notice}`:result.header_notice;
+    feedback.append(notice);
+  }
   suggestMapping = async function(confirmed) {
     if(!confirmed){
       const scopeEpoch=authEpoch,version=reviewVersion,importId=currentImport?.import_id,sheetName=currentSheet?.name;
@@ -792,7 +798,9 @@
       ui.editable=false;
       await refreshReviewResult(importId,sheetName,result,scopeEpoch);
       if(scopeEpoch!==authEpoch||currentSheet?.name!==sheetName)return;
-      $('mappingFeedback').textContent=result.notice||(isPublished(currentSheet)?'辅助确认完成，校验通过的工作表已自动导入。':'辅助核对完成；缺少可靠依据的区块仍标红，请补齐后导入。');
+      const feedback=$('mappingFeedback');
+      feedback.textContent=result.notice||(isPublished(currentSheet)?'辅助确认完成，校验通过的工作表已自动导入。':'辅助核对完成；缺少可靠依据的区块仍标红，请补齐后导入。');
+      appendHeaderOnlyNotice(feedback,result);
     }catch(error){
       if(activeJob?.cancelRequested||version!==reviewVersion||scopeEpoch!==authEpoch){
         if(activeJob)finishAIJob(activeJob,'cancelled','AI 任务已取消；当前草稿保留，未继续自动导入。');
@@ -857,9 +865,11 @@
     await refreshReviewResult(importId,sheetName,result,scopeEpoch);
     if(scopeEpoch!==authEpoch||currentImport?.import_id!==importId)return;
     const summary=`已导入 ${(result?.sheets_imported||[]).length} 张 · 待确认 ${(result?.sheets_pending||[]).length} 张 · 跳过 ${(result?.sheets_skipped||[]).length} 张 · 模型请求 ${result?.requests_used||0} 次`;
-    $('mappingFeedback').textContent=(result?.notice||'批量辅助已结束。')+' '+summary;
+    const feedback=$('mappingFeedback');
+    feedback.textContent=(result?.notice||'批量辅助已结束。')+' '+summary;
+    for(const detail of result?.details||[])appendHeaderOnlyNotice(feedback,detail,detail.sheet);
     const rows=[...(result?.sheets_skipped||[]).map(item=>typeof item==='string'?{sheet:item,message:'没有可导入的指标数据。'}:item),...(result?.sheets_failed||[]),...(result?.details||[]).filter(item=>item.status==='needs_review'||item.status==='not_started')];
-    if(rows.length){const details=document.createElement('details'),caption=document.createElement('summary');caption.textContent='查看跳过与待确认原因';details.append(caption);for(const item of rows){const p=document.createElement('p');p.textContent=`${item.sheet}：${item.message||item.reason||'请打开工作表继续核对。'}`;details.append(p);}$('mappingFeedback').append(details);}
+    if(rows.length){const details=document.createElement('details'),caption=document.createElement('summary');caption.textContent='查看跳过与待确认原因';details.append(caption);for(const item of rows){const p=document.createElement('p');p.textContent=`${item.sheet}：${item.message||item.reason||'请打开工作表继续核对。'}`;details.append(p);}feedback.append(details);}
   }
   function applyAssistResult(result) {
     const proposed=copy(result.mapping),prior=ui.mapping,included=enabledBlocks();

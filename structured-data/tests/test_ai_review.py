@@ -272,7 +272,9 @@ def test_assist_only_changes_failed_block_and_checks_before_becoming_ready(tmp_p
                              'evidence': [{'block_index': 0, 'column': 'D', 'field': 'metric', 'cells': ['D1']}]}], calls)
     result = assist_mapping(manager, record['import_id'], sheet['name'], mapping=candidate)
     assert len(calls) == result['model_requests'] == 1
+    assert {'scope', 'renamed_fields', 'header_notice'}.isdisjoint(result)
     payload = json.loads(calls[0]['messages'][1]['content'])
+    assert payload['source_cells']
     assert payload['repair_scope'] == {'mode': 'repair_existing_blocks', 'allowed_block_indices': [0],
                                      'columns_by_block': [{'block_index': 0, 'columns': ['D']}]}
     assert result['mapping']['blocks'][0] == good

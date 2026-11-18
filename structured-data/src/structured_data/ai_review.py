@@ -435,6 +435,7 @@ def _boundary_evidence_ok(block, row, refs, available):
 def _evidence_checks(candidate, proposed, suggestion, cells, sheet, *, strict):
     available = {c['cell']: c for c in cells}
     evidence = []
+    column_evidence = {}
     for item in suggestion.get('evidence', []):
         if not isinstance(item, dict):
             raise ValueError('AI 来源证据格式无效。')
@@ -442,6 +443,13 @@ def _evidence_checks(candidate, proposed, suggestion, cells, sheet, *, strict):
         if not target.get('cells') or any(c not in available for c in target['cells']):
             raise ReviewValidationError('AI 引用了本次证据未覆盖的原单元格，仍需人工确认。', **target)
         evidence.append(target)
+        if 'column' in target:
+            key = (target.get('block_index', 0), target.get('field'), target['column'])
+            column_evidence.setdefault(key, []).extend(target['cells'])
+
+    def column_refs(block_index, field, column):
+        return list(dict.fromkeys(column_evidence.get((block_index, field, column), [])))
+
     unresolved = []
     for item in suggestion.get('unresolved', []):
         if not isinstance(item, dict):
@@ -676,7 +684,7 @@ def _evidence_checks(candidate, proposed, suggestion, cells, sheet, *, strict):
                         field='dimensions', column=column_name)
 
             if _changed(old, column, 'header_cells'):
-                refs = _evidence_refs(evidence, bi, 'header_cells', column=column_name)
+                refs = column_refs(bi, 'header_cells', column_name)
                 headers = column.get('header_cells') if isinstance(column.get('header_cells'), list) else []
                 rows = set(block.get('header_rows', []))
                 removed = set(old.get('header_cells', [])) - set(headers)
@@ -701,7 +709,7 @@ def _evidence_checks(candidate, proposed, suggestion, cells, sheet, *, strict):
                 if not _changed(old, column, field):
                     continue
                 value = column.get(field)
-                refs = _evidence_refs(evidence, bi, field, column=column_name)
+                refs = column_refs(bi, field, column_name)
                 if value in (None, {}, '', []):
                     require('AI 不能自动删除已有业务字段或来源位置，请人工确认。', bi,
                             field=field, column=column_name, cells=refs)
@@ -714,7 +722,7 @@ def _evidence_checks(candidate, proposed, suggestion, cells, sheet, *, strict):
                     if ((field == 'field_role' and not set(refs) <= set(column.get('header_cells', [])))
                             or any(not _header_ref_covers_column(ref, column_name, sheet) for ref in refs)
                             or (field == 'unit_cells' and (set(refs) != set(column.get('unit_cells', []))
-                                or set(refs) != set(_evidence_refs(evidence, bi, 'unit', column=column_name))
+                                or set(refs) != set(column_refs(bi, 'unit', column_name))
                                 or not _verbatim_supported(column.get('unit'), refs, available)))):
                         require('字段角色与单位来源须引用本列真实表头。', bi,
                                 field=field, column=column_name, cells=refs)
@@ -786,7 +794,7 @@ def _header_source_values(path, sheet_name, header_rows, width):
     return values
 
 
-def _header_payload(path, sheet, mapping, cancelled):
+def _header_payload(path, sheet, mapping, cancelled, *, whole_sheet):
     payload = {'mode': 'header_only', 'sheet': sheet['name'], 'blocks': [], 'source_cells_truncated': False}
     spans = []
     header_rows = set()
@@ -802,7 +810,7 @@ def _header_payload(path, sheet, mapping, cancelled):
                          [*block.get('header_note_cells', []),
                           *(ref for c in block['columns'] for ref in c['header_cells'])]
                          if (position := _coordinate(ref, sheet)))
-        left, right = (1, sheet['columns']) if len(blocks) == 1 else (min(positions), max(positions))
+        left, right = (1, sheet['columns']) if whole_sheet and len(blocks) == 1 else (min(positions), max(positions))
         spans.append((left, right))
         payload['blocks'].append({'block_index': bi, 'layout': block.get('layout', 'row'),
                                   'header_rows': rows, 'merged_ranges': [],
@@ -867,7 +875,7 @@ def _header_payload(path, sheet, mapping, cancelled):
     return payload, values, shown
 
 
-def _apply_header_suggestion(original, normalized, suggestion, values, shown, sheet):
+def _apply_header_suggestion(original, normalized, suggestion, values, shown, sheet, *, strict):
     if set(suggestion) - {'block_updates', 'evidence', 'unresolved', 'notice'}:
         raise ValueError('仅表头建议只能提交表头说明和名称行。')
     updates = suggestion.get('block_updates')
@@ -893,10 +901,18 @@ def _apply_header_suggestion(original, normalized, suggestion, values, shown, sh
                                         sheet=sheet['name'], block_index=bi, field=field, cells=refs)
         evidence.setdefault((bi, field), set()).update(refs)
 
-    proposed = deepcopy(original)
+    # Compare the automatic proposal against the same normalized baseline used
+    # to recompute it, so defaulted fields do not count as changes by the model.
+    baseline = normalized if strict else original
+    proposed = deepcopy(baseline)
     seen = set()
     changed = 0
-    note_evidence = []
+    verified_evidence = []
+
+    def add_evidence(bi, field, refs, **target):
+        verified_evidence.extend({'block_index': bi, 'field': field, 'cells': refs[i:i + 16], **target}
+                                 for i in range(0, len(refs), 16))
+
     for update in updates:
         bi = block_index(update, {'block_index', 'header_note_cells', 'metric_header_rows'})
         if bi in seen:
@@ -947,30 +963,47 @@ def _apply_header_suggestion(original, normalized, suggestion, values, shown, sh
                                                                   if _cell_position(ref)[0] in name_rows)):
                     raise ReviewValidationError('移出说明后，指标名称仍须有已核对的真实表头。',
                                                 **column_target, field='metric')
-                changed += int(metric != old['metric'])
+                if metric != old['metric']:
+                    changed += 1
+                    if strict:
+                        # Use one source per distinct label, in the same order
+                        # as header_metric, to prove the exact recomputed name.
+                        label_refs = {}
+                        for ref in headers:
+                            label = header_metric([values.get(ref)])
+                            if label:
+                                label_refs.setdefault(label, ref)
+                        add_evidence(bi, 'metric', list(label_refs.values()), column=old['column'])
                 column['metric'] = metric
             column['header_cells'] = headers
+            if strict:
+                add_evidence(bi, 'header_cells', [ref for ref in headers if ref in values], column=old['column'])
         if notes:
             block['header_note_cells'] = notes
-        note_evidence.extend({'block_index': bi, 'field': 'header_note_cells', 'cells': notes[i:i + 16]}
-                             for i in range(0, len(notes), 16))
+        add_evidence(bi, 'header_note_cells', notes)
     if evidence:
         raise ValueError('仅表头建议包含未对应区块修改的证据。')
 
-    diagnostics = _evidence_checks(original, proposed, {**suggestion, 'evidence': note_evidence},
-                                   [{'cell': ref, 'value': values[ref]} for item in note_evidence
-                                    for ref in item['cells']], sheet, strict=False)
+    refs = dict.fromkeys(ref for item in verified_evidence for ref in item['cells'])
+    diagnostics = _evidence_checks(baseline, proposed, {**suggestion, 'evidence': verified_evidence},
+                                   [{'cell': ref, 'value': values[ref]} for ref in refs], sheet, strict=strict)
     validate_mapping(proposed, sheet)
     return proposed, diagnostics, changed
 
 
-def _suggest_headers(path, cfg, original, normalized, sheet, budget, cancelled):
-    payload, values, shown = _header_payload(path, sheet, normalized, cancelled)
-    suggestion = _request(cfg, payload, budget, cancelled)
-    proposed, diagnostics, changed = _apply_header_suggestion(original, normalized, suggestion, values, shown, sheet)
-    notice = f'仅表头建议：确认后将有 {changed} 个字段的名称改变。'
+def _header_change_notice(changed):
+    notice = f'仅表头建议：{changed} 个字段的名称会改变'
     if changed:
-        notice += '这些字段 ID 也会改变。请在确认后到研究台「指标对应确认」处理引用延续。'
+        notice += '，字段 ID 也会改变；导入后请到研究台「指标对应确认」处理引用延续'
+    return notice + '。'
+
+
+def _suggest_headers(path, cfg, original, normalized, sheet, budget, cancelled, *, strict, whole_sheet):
+    payload, values, shown = _header_payload(path, sheet, normalized, cancelled, whole_sheet=whole_sheet)
+    suggestion = _request(cfg, payload, budget, cancelled)
+    proposed, diagnostics, changed = _apply_header_suggestion(original, normalized, suggestion, values, shown, sheet,
+                                                               strict=strict)
+    notice = _header_change_notice(changed)
     if diagnostics:
         notice += ' 未解决的内容保留待确认。'
     notice += ' 建议尚未确认或导入。'
@@ -979,7 +1012,8 @@ def _suggest_headers(path, cfg, original, normalized, sheet, budget, cancelled):
 
 
 def suggest_mapping(manager, import_id, sheet_name, *, mapping=None, review_errors=None,
-                    budget=None, cancelled=None, strict=False, source_document=None, metadata_only=False):
+                    budget=None, cancelled=None, strict=False, source_document=None, metadata_only=False,
+                    header_fallback=False, whole_sheet=True):
     """Return one proposal without saving; strict mode gates automatic confirmation."""
     _check_cancelled(cancelled)
     doc = source_document if source_document is not None else manager.get(import_id)
@@ -989,7 +1023,7 @@ def suggest_mapping(manager, import_id, sheet_name, *, mapping=None, review_erro
     allow_header_fallback = False
     try:
         candidate = validate_mapping(candidate, sheet)
-        allow_header_fallback = not strict and not metadata_only
+        allow_header_fallback = not metadata_only and (not strict or header_fallback)
     except ValueError:
         pass
     payload = {'sheet': sheet_name, 'fingerprint': sheet['fingerprint'], 'rows': sheet['rows'],
@@ -1007,7 +1041,8 @@ def suggest_mapping(manager, import_id, sheet_name, *, mapping=None, review_erro
     # A wide mapping can exceed the limit before any observation window is added.
     if allow_header_fallback and len(_encode_payload(payload).encode('utf-8')) > MAX_INPUT_BYTES:
         path = _verified_source_path(manager, doc)
-        return _suggest_headers(path, read_model(manager.root), original, candidate, sheet, budget, cancelled)
+        return _suggest_headers(path, read_model(manager.root), original, candidate, sheet, budget, cancelled,
+                                strict=strict, whole_sheet=whole_sheet)
     cells, truncated = (_metadata_source_evidence(manager, doc, sheet, candidate) if metadata_only
                         else _source_evidence(manager, doc, sheet, candidate, review_errors))
     if strict and not candidate['blocks'] and not any(
@@ -1022,7 +1057,8 @@ def suggest_mapping(manager, import_id, sheet_name, *, mapping=None, review_erro
     except _EvidenceTooLarge:
         if not allow_header_fallback:
             raise
-        return _suggest_headers(manager.source_path(doc), cfg, original, candidate, sheet, budget, cancelled)
+        return _suggest_headers(manager.source_path(doc), cfg, original, candidate, sheet, budget, cancelled,
+                                strict=strict, whole_sheet=whole_sheet)
     proposed, restored = apply_suggestion(candidate, suggestion)
     notice = str(suggestion.get('notice', ''))[:1500]
     if proposed is None:
@@ -1094,6 +1130,7 @@ def assist_mapping(manager, import_id, sheet_name, *, mapping=None, budget=None,
     if not pending and state.get('status') != 'confirmed':
         pending = [{'block_index': 0, 'diagnostics': state.get('diagnostics', [])}]
     unresolved = []; notices = []
+    header_renames = None
     for completed, item in enumerate(pending):
         _check_cancelled(cancelled)
         bi = item['block_index']
@@ -1111,9 +1148,13 @@ def assist_mapping(manager, import_id, sheet_name, *, mapping=None, budget=None,
         errors = [{**d, 'block_index': 0} for d in item.get('diagnostics', [])]
         try:
             result = suggest_mapping(manager, import_id, sheet_name, mapping=focus,
-                                     review_errors=errors, budget=budget, cancelled=cancelled, strict=True)
+                                     review_errors=errors, budget=budget, cancelled=cancelled, strict=True,
+                                     header_fallback=True, whole_sheet=len(current['blocks']) == 1)
             _check_cancelled(cancelled)
-            notices.append(result['notice'])
+            if result.get('scope') == 'header_only':
+                header_renames = (header_renames or 0) + result['renamed_fields']
+            else:
+                notices.append(result['notice'])
             errors = [{**d, 'block_index': bi, 'block_id': f'block-{bi}'} for d in result.get('diagnostics', [])]
             if result.get('mapping') is None or errors:
                 unresolved.extend(errors or [_diagnostic('未获得可靠的区块映射。', sheet_name, bi)])
@@ -1145,5 +1186,14 @@ def assist_mapping(manager, import_id, sheet_name, *, mapping=None, budget=None,
                           'stage': f'已辅助核对区块 {completed + 1}/{len(pending)}'})
     _check_cancelled(cancelled)
     state = _with_diagnostics(review(current), unresolved)
+    header_result = {}
+    if header_renames is not None:
+        header_result = {'scope': 'header_only', 'renamed_fields': header_renames,
+                         'header_notice': _header_change_notice(header_renames)}
+        if state['status'] != 'confirmed':
+            notices.append('未解决的内容保留待确认。')
+    notice = ' '.join(dict.fromkeys(notices))[:3000]
+    if not notice and not header_result:
+        notice = '已完成现有区块检查，无需模型补全。'
     return {'mapping': current, 'review_state': state, 'model_requests': budget.used - used_before,
-            'notice': ' '.join(dict.fromkeys(notices))[:3000] or '已完成现有区块检查，无需模型补全。'}
+            'notice': notice, **header_result}
