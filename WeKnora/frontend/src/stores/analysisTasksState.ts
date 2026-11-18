@@ -1,5 +1,6 @@
 import { computed, ref, watch } from 'vue'
 import { analysisJobId, readDismissedAnalysisJobIds, type AnalysisJob, type AnalysisTaskOwner } from '../api/researchAnalysisTasks'
+import { workbenchSetupPhases, workbenchSetupTask } from '../api/workbenchSetupTask'
 
 interface Timers { setTimer: (callback: () => void, delay: number) => unknown; clearTimer: (handle: unknown) => void }
 interface Dependencies {
@@ -17,6 +18,10 @@ const keyFor = (owner: AnalysisTaskOwner | null) => owner?.token && owner.userId
   && Number.isSafeInteger(Number(owner.tenantId)) ? `weknora:analysis-tasks:${encodeURIComponent(owner.userId)}:${owner.tenantId}` : ''
 
 export function analysisPhaseLabel(job: AnalysisJob): string {
+  if (job.purpose === workbenchSetupTask.purpose) {
+    const phase = active(job) ? job.phase : job.state
+    return Object.hasOwn(workbenchSetupPhases, phase) ? workbenchSetupPhases[phase]! : '后台建立中'
+  }
   if (job.purpose === 'diagram') {
     const diagramPhases: Record<string, string> = { queued: '等待生成', reading_source: '读取原件', loading_catalog: '读取指标目录',
       selecting: '匹配指标', generating: '生成图结构', validating: '核对配置', succeeded: '配置已生成',

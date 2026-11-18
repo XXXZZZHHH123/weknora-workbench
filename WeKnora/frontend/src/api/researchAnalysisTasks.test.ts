@@ -34,6 +34,19 @@ test('diagram task metadata keeps its fixed purpose and generation phases withou
   assert.equal(jobs[1]!.purpose, 'judgments')
 })
 
+test('workbench setup keeps only known phases and uses a fixed title', () => {
+  const jobs = readAnalysisJobs({ items: [
+    { id: 'setup-job', workbench_id: 'wb-a', purpose: 'workbench_setup', state: 'running', phase: 'focus', title: 'private title' },
+    { id: 'unknown-phase', workbench_id: 'wb-a', purpose: 'workbench_setup', state: 'running', phase: 'constructor' },
+    { id: 'wrong-purpose', workbench_id: 'wb-a', purpose: 'diagram', state: 'running', phase: 'focus' },
+  ] })
+  assert.equal(jobs[0]!.purpose, 'workbench_setup')
+  assert.equal(jobs[0]!.title, '从周报建立工作台')
+  assert.equal(jobs[0]!.phase, 'focus')
+  assert.equal(jobs[1]!.phase, '')
+  assert.equal(jobs[2]!.phase, '')
+})
+
 test('dismiss metadata is explicit and cannot hide running work', () => {
   const jobs = readAnalysisJobs({ items: [
     { id: 'done', workbench_id: 'wb-a', state: 'succeeded', dismissed: true, result_available: true },

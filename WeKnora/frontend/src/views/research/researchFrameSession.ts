@@ -31,6 +31,7 @@ export function researchFramePath(workbenchId: string, view: string, analysisJob
     judgment: '/sn/judgment', strategies: '/sn/strategies', reports: '/sn/reports' }
   if (!workbenchId || !Object.hasOwn(paths,view)) return ''
   const query = new URLSearchParams()
+  if (view === 'home' && analysisJobId(analysisJob)) query.set('analysis_job', analysisJobId(analysisJob))
   if (view === 'judgment' || view === 'diagram') {
     if (analysisJobId(analysisJob)) query.set('analysis_job', analysisJobId(analysisJob))
     if (view === 'judgment' && analysisJudgmentId(judgment)) query.set('judgment_id', analysisJudgmentId(judgment))

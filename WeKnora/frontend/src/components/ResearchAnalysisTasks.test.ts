@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm'
 import { computed, effectScope, h, nextTick, reactive, ref, watch } from 'vue'
 import ts from 'typescript'
 import { parse, compileTemplate } from '@vue/compiler-sfc'
+import { workbenchSetupTask } from '../api/workbenchSetupTask'
 const source = readFileSync(process.env.ANALYSIS_WIDGET_TEST_SOURCE || new URL('./ResearchAnalysisTasks.vue', import.meta.url), 'utf8')
 const script = source.split('<script setup lang="ts">')[1]!.split('</script>')[0]!.replace(/^import .*$/gm, '')
 const code = ts.transpileModule(script + '\n;({ expanded, label, openTask, notifyCompleted, wake, rows, notificationCount: () => notifications.size, ignoreTask: typeof ignoreTask === "function" ? ignoreTask : undefined, ignoreAll: typeof ignoreAll === "function" ? ignoreAll : undefined, canIgnoreAll: typeof canIgnoreAll !== "undefined" ? canIgnoreAll : undefined })', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
@@ -24,7 +25,7 @@ function fixture() {
   const document = { visibilityState: 'visible', addEventListener: (name: string, callback: unknown) => listeners.set(name, callback), removeEventListener: (name: string) => listeners.delete(name) }
   const scope = effectScope(), view = scope.run(() => runInNewContext(code, { computed, h, ref, watch, useAnalysisTasksStore: () => store, useRouter: () => ({ push: async (target: unknown) => { calls.opens.push(target) } }),
     onMounted: (fn: () => void) => mounted.push(fn), onBeforeUnmount: (fn: () => void) => cleanup.push(fn), NotifyPlugin: { success: (notice: unknown) => { calls.notices.push(notice); const handle = Promise.resolve({ close() {} }); calls.handles.push(handle); return handle }, close: (handle: unknown) => { calls.closed++; calls.closedHandles.push(handle) } },
-    analysisPhaseLabel: () => '', document, window: { addEventListener: document.addEventListener, removeEventListener: document.removeEventListener } })) as any
+    analysisPhaseLabel: () => '', workbenchSetupTask, document, window: { addEventListener: document.addEventListener, removeEventListener: document.removeEventListener } })) as any
   mounted.forEach(fn => fn())
   return { store, calls, view, document, listeners, bulkReplies, close() { cleanup.forEach(fn => fn()); scope.stop() } }
 }
@@ -74,6 +75,27 @@ test('a diagram completion opens the diagram view rather than the judgment manag
     f.calls.notices[0].content().children[1].props.onClick()
     assert.equal(f.calls.opens[0].query.view, 'diagram')
     assert.equal(f.calls.opens[0].query.analysis_job, 'diagram-job')
+  } finally { f.close() }
+})
+
+test('a setup task opens the workbench home for progress and draft review', async () => {
+  const f = fixture()
+  try {
+    const job = { id: 'setup-job', workbench_id: 'wb-a', purpose: 'workbench_setup', state: 'running' }
+    f.store.jobs.push(job)
+    f.view.openTask(job)
+    const completed = { ...job, state: 'succeeded', result_available: true }
+    f.store.jobs = [completed]
+    f.store.pendingNotifications.push(completed)
+    await nextTick()
+    assert.equal(f.calls.notices[0].title, '工作台草稿已生成')
+    f.calls.notices[0].content().children[1].props.onClick()
+    assert.equal(f.calls.opens.length, 2)
+    for (const target of f.calls.opens) {
+      assert.equal(target.params.workbenchId, 'wb-a')
+      assert.equal(target.query.view, 'home')
+      assert.equal(target.query.analysis_job, 'setup-job')
+    }
   } finally { f.close() }
 })
 

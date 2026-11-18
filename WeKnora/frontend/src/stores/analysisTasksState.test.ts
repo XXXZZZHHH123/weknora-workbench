@@ -110,6 +110,14 @@ test('diagram jobs share discovery and report generation stages without being la
   } finally { f.close() }
 })
 
+test('workbench setup lets researchers distinguish the running stage and drafts ready for review', () => {
+  const setup = { ...job(), purpose: 'workbench_setup', phase: 'focus' } as const
+  assert.equal(analysisPhaseLabel(setup), '核心关注建议')
+  assert.equal(analysisPhaseLabel({ ...setup, phase: 'reading_source' }), '读取周报')
+  assert.equal(analysisPhaseLabel({ ...setup, state: 'succeeded' }), '草稿待核对')
+  assert.equal(analysisPhaseLabel({ ...setup, state: 'failed' }), '建立未完成')
+})
+
 test('ignore waits for the server then hides the notice while keeping the recoverable result', async () => {
   const f = fixture()
   try {

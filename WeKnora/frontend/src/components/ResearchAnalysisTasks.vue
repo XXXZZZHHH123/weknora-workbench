@@ -5,6 +5,7 @@ import { NotifyPlugin } from 'tdesign-vue-next'
 import { useAnalysisTasksStore } from '@/stores/analysisTasks'
 import { analysisPhaseLabel } from '@/stores/analysisTasksState'
 import type { AnalysisJob } from '@/api/researchAnalysisTasks'
+import { workbenchSetupTask } from '@/api/workbenchSetupTask'
 
 const store = useAnalysisTasksStore(), router = useRouter(), expanded = ref(false)
 const rows = computed(() => store.jobs.filter(job => job.state !== 'applied' && job.state !== 'superseded' && !job.dismissed))
@@ -23,7 +24,8 @@ function openTask(job: AnalysisJob) {
   if (!store.jobs.some(row => row.id === job.id && row.workbench_id === job.workbench_id && !row.dismissed && row.state !== 'superseded' && row.state !== 'applied')) return
   closeNotice(job.id)
   store.markRead(job.id); expanded.value = false
-  void router.push({ name: 'researchWorkbenchDetail', params: { workbenchId: job.workbench_id }, query: { view: job.purpose === 'diagram' ? 'diagram' : 'judgment', analysis_job: job.id } })
+  const view = job.purpose === workbenchSetupTask.purpose ? workbenchSetupTask.view : job.purpose === 'diagram' ? 'diagram' : 'judgment'
+  void router.push({ name: 'researchWorkbenchDetail', params: { workbenchId: job.workbench_id }, query: { view, analysis_job: job.id } })
 }
 async function ignoreTask(job: AnalysisJob) {
   if (store.dismissingAll || isRunning(job) || !rows.value.some(row => row.id === job.id && row.workbench_id === job.workbench_id)) return
@@ -47,7 +49,8 @@ function notifyCompleted() {
   for (const job of completed) {
     if (notifications.has(job.id)) continue
     const forget = (): void => { if (notifications.get(job.id) === notification) notifications.delete(job.id) }
-    const notification = NotifyPlugin.success({ title: job.purpose === 'diagram' ? '产业图配置已生成' : '研究分析已完成',
+    const title = job.purpose === workbenchSetupTask.purpose ? workbenchSetupTask.completionTitle : job.purpose === 'diagram' ? '产业图配置已生成' : '研究分析已完成'
+    const notification = NotifyPlugin.success({ title,
       content: () => h('div', { class: 'analysis-completion' }, [h('span', '结果已暂存，尚未保存。'),
         h('button', { type: 'button', onClick: () => openTask(job) }, '查看结果'),
         h('button', { type: 'button', disabled: store.dismissingAll || store.dismissingIds.includes(job.id), onClick: () => ignoreTask(job) }, '忽略')]),
@@ -72,7 +75,7 @@ onBeforeUnmount(() => { closeNotice(); store.stop(); document.removeEventListene
         <li v-for="job in rows" :key="job.id">
           <button type="button" class="analysis-task-row" @click="openTask(job)">
             <t-icon :name="job.state === 'queued' || job.state === 'running' ? 'loading' : job.state === 'succeeded' ? 'check-circle' : 'info-circle'" :class="{ 'is-running': job.state === 'queued' || job.state === 'running' }" />
-            <span><strong>{{ job.purpose === 'diagram' ? '产业图配置生成' : '研究逻辑分析' }}</strong><small>{{ analysisPhaseLabel(job) }}</small></span>
+            <span><strong>{{ job.title }}</strong><small>{{ analysisPhaseLabel(job) }}</small></span>
             <span class="analysis-task-action">{{ job.result_available ? '查看结果' : '查看进度' }}</span>
             <i v-if="store.unreadIds.includes(job.id)" class="analysis-unread" aria-label="未读" />
           </button>

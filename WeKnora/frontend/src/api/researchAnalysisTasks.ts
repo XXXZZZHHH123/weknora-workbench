@@ -1,7 +1,8 @@
 import { fetchWithAuthRetry } from '../utils/authFetch'
+import { workbenchSetupPhases, workbenchSetupTask } from './workbenchSetupTask'
 
 export type AnalysisJobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'expired' | 'applied' | 'superseded'
-export type AnalysisJobPurpose = 'judgments' | 'diagram'
+export type AnalysisJobPurpose = 'judgments' | 'diagram' | typeof workbenchSetupTask.purpose
 export interface AnalysisJob {
   id: string
   workbench_id: string
@@ -32,10 +33,14 @@ export function readAnalysisJobs(value: unknown): AnalysisJob[] {
     const item = row as Record<string, unknown>, id = analysisJobId(item.id || item.job_id), workbench = analysisJobId(item.workbench_id)
     if (!id || !workbench || !states.has(item.state as AnalysisJobState)) continue
     const purpose = item.purpose === undefined ? 'judgments' : item.purpose
-    if (purpose !== 'judgments' && purpose !== 'diagram') continue
+    if (purpose !== 'judgments' && purpose !== 'diagram' && purpose !== workbenchSetupTask.purpose) continue
+    const phase = item.phase
+    const hasPhase = typeof phase === 'string' && (phases.has(phase)
+      || purpose === workbenchSetupTask.purpose && Object.hasOwn(workbenchSetupPhases, phase))
+    const title = purpose === workbenchSetupTask.purpose ? workbenchSetupTask.title : purpose === 'diagram' ? '产业图配置生成' : '研究逻辑分析'
     const timestamp = (name: string) => typeof item[name] === 'string' && String(item[name]).length <= 64 ? String(item[name]) : ''
     jobs.set(id, { id, workbench_id: workbench, state: item.state as AnalysisJobState, purpose,
-      phase: typeof item.phase === 'string' && phases.has(item.phase) ? item.phase : '', title: purpose === 'diagram' ? '产业图配置生成' : '研究逻辑分析',
+      phase: hasPhase ? phase : '', title,
       created_at: timestamp('created_at'), updated_at: timestamp('updated_at'),
       ...(timestamp('finished_at') ? { finished_at: timestamp('finished_at') } : {}),
       ...(timestamp('expires_at') ? { expires_at: timestamp('expires_at') } : {}),

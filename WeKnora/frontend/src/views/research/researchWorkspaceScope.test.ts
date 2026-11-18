@@ -12,7 +12,7 @@ const script = source.split('<script setup lang="ts">')[1]!.split('</script>')[0
 const updateBinding = source.match(/@update-workbench="([^"]+)"/)![1]!
 // Vue unwraps setup refs in template assignments; preserve that behavior in the setup harness.
 const updateEvent = updateBinding.includes('$event') ? updateBinding.replace('workbench =', 'workbench.value =') : `${updateBinding}($event)`
-const code = ts.transpileModule(`${script}\n;const applyUpdateEvent = ($event) => { ${updateEvent} };({ workbench, workbenchError, canShowResearch, chatMounted, chatVisible, frame, isolatedView, frameUrl, generation, scopeGeneration, nativeDrawerOpen, frameIsHome, receive, applyUpdateEvent })`, {
+const code = ts.transpileModule(`${script}\n;const applyUpdateEvent = ($event) => { ${updateEvent} };({ workbench, workbenchError, canShowResearch, chatMounted, chatVisible, frame, isolatedView, frameUrl, generation, scopeGeneration, nativeDrawerOpen, frameIsHome, receive, applyUpdateEvent, navigateResearch })`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText
 
@@ -368,5 +368,24 @@ test('diagram task links reopen its native page and only the scoped applied mess
     assert.equal(f.replacements[0].query.diagram_template, '23')
     Object.assign(query, f.replacements[0].query); delete query.analysis_job; await nextTick()
     assert.equal(new URL(f.view.frameUrl.value, 'https://test.local').searchParams.get('template'), '23')
+  } finally { f.close() }
+})
+
+test('workbench setup task links pass the job ID to the scoped home frame', async () => {
+  const f = fixture()
+  try {
+    await nextTick(); f.requests[0]!.resolve({ success: true, data: { id: 'workbench-a', knowledge_base_id: 'kb-a', workspace_mode: 'isolated' } }); await new Promise(setImmediate)
+    const query = f.route.query as Record<string, unknown>
+    Object.assign(query, { view: 'home', analysis_job: 'setup-job' })
+    await nextTick()
+    const frameUrl = new URL(f.view.frameUrl.value, 'https://test.local')
+    assert.equal(frameUrl.pathname, '/research/workbenches/workbench-a/')
+    assert.equal(frameUrl.searchParams.get('analysis_job'), 'setup-job')
+    f.view.navigateResearch('judgment')
+    assert.equal(f.view.frameUrl.value, '/research/workbenches/workbench-a/sn/judgment')
+    Object.assign(query, { view: 'judgment', analysis_job: 'judgment-job' })
+    await nextTick()
+    f.view.navigateResearch('home')
+    assert.equal(f.view.frameUrl.value, '/research/workbenches/workbench-a/')
   } finally { f.close() }
 })

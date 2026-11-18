@@ -85,7 +85,10 @@ function makeResearchChatPanel(): ReturnType<typeof defineAsyncComponent> {
 const ResearchChatPanel = shallowRef(makeResearchChatPanel())
 function requestedResearchView() {
   if (analysisJudgmentId(route.query.judgment_id)) return 'judgment'
-  if (analysisJobId(route.query.analysis_job)) return route.query.view === 'diagram' ? 'diagram' : 'judgment'
+  if (analysisJobId(route.query.analysis_job)) {
+    if (route.query.view === 'home' || route.query.view === 'diagram') return route.query.view
+    return 'judgment'
+  }
   return typeof route.query.view === 'string' && ['home', 'diagram', 'indicators', 'judgment', 'strategies', 'reports'].includes(route.query.view) ? route.query.view : 'home'
 }
 const researchView = ref(requestedResearchView())
@@ -100,7 +103,9 @@ const sourceLabel = computed(() => workbench.value ? workbenchSourceLabel(workbe
 const chatSourceIds = computed(() => workbench.value ? directKnowledgeBaseIds(workbench.value) : [])
 const frameUrl = computed(() => {
   if (!canShowResearch.value) return ''
-  return researchFramePath(workbenchId.value,researchView.value,route.query.analysis_job,route.query.judgment_id,route.query.diagram_template)
+  const matchesHomeTask = (route.query.view === 'home') === (researchView.value === 'home')
+  const analysisJob = matchesHomeTask ? route.query.analysis_job : undefined
+  return researchFramePath(workbenchId.value,researchView.value,analysisJob,route.query.judgment_id,route.query.diagram_template)
 })
 function restartSession() { generation.value += 1 }
 async function prepareFrameSession() {
