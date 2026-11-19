@@ -94,6 +94,25 @@ def _validate_header_note_cells(block, sheet):
     block[field] = list(dict.fromkeys(refs))
 
 
+def _validate_column_header_metadata(block, sheet):
+    from .ai_review import _coordinate, _header_ref_covers_column
+
+    notes = set(block.get('header_note_cells', []))
+    for column in block['columns']:
+        attached = column.get('header_note_cells', [])
+        if not isinstance(attached, list) or any(not isinstance(ref, str) or ref not in notes for ref in attached):
+            raise ReviewValidationError('指标的说明格须引用区块的表头说明。',
+                                        field='header_note_cells', column=column['column'])
+        codes = column.get('source_code_cells', [])
+        if not isinstance(codes, list) or any(
+            not (position := _coordinate(ref, sheet)) or position[0] not in block['header_rows']
+            or not _header_ref_covers_column(ref, column['column'], sheet)
+            or ref in notes or ref in column['header_cells'] for ref in codes
+        ):
+            raise ReviewValidationError('代码来源须位于本列覆盖的原表头，且与名称和说明分开。',
+                                        field='source_code_cells', column=column['column'])
+
+
 def _header_values(ws, refs):
     coordinates = {coordinate_to_tuple(ref): ref for ref in refs if ref != '$sheet_title'}
     values = {'$sheet_title': ws.title}
@@ -222,7 +241,6 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                         if not match or not 1 <= int(match.group(2)) < start:
                             raise ReviewValidationError('频率来源必须位于数据起始行之前的原表元数据中。', field='frequency_cells', cells=locations)
                         _column(match.group(1), sheet_scan['columns'], field='frequency_cells')
-                    c['frequency'] = frequency.strip()
                     c['frequency_cells'] = list(dict.fromkeys(locations))
                 dims=c.get('dimensions',{})
                 if not isinstance(dims,dict) or any(not isinstance(k,str) or not isinstance(v,(str,int,float,bool)) for k,v in dims.items()):
@@ -243,6 +261,7 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                     if currency_pair(c) is None:
                         raise ValueError('汇率元数据须含不同的三字母 base_currency/quote_currency 和真实表头 evidence_cells')
             _validate_header_note_cells(b,sheet_scan)
+            _validate_column_header_metadata(b,sheet_scan)
         except ValueError as exc:
             label = b.get('name') if isinstance(b, dict) else None
             raise ReviewValidationError(f"工作表「{sheet_scan['name']}」· 区块 {bi+1}{'（'+str(label)+'）' if label else ''}：{exc}", target=getattr(exc, "review_target", {}), sheet=sheet_scan["name"], block_index=bi) from exc
@@ -372,14 +391,24 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
             # Read declared header/date anchors once; templates verify local headers too.
             refs={cell for bi,b in rowblocks for c in b['columns'] for cell in c['header_cells']}
             refs.update(cell for bi,b in rowblocks for c in b['columns'] for field in ('frequency_cells', 'unit_cells') for cell in c.get(field, []))
+            refs.update(cell for bi,b in rowblocks for c in b['columns'] for cell in c.get('source_code_cells', []))
             refs.update(b['date_cell'] for bi,b in rowblocks if b['date_mode']=='shared_cell')
             refs.update(cell for bi,b in rowblocks for cell in b.get('header_expectations',{}))
             refs.update(cell for bi,b in rowblocks for cell in b.get('header_note_cells', []))
             refvalues = _header_values(ws, refs)
             notes_by_block = {bi: _header_notes(b, refvalues, name, bi) for bi, b in rowblocks}
             anchor_dates={}
+            codes_by_column = {}
             for bi,b in rowblocks:
                 for column in b['columns']:
+                    codes = []
+                    for cell in column.get('source_code_cells', []):
+                        raw = refvalues.get(cell)
+                        if raw is None or not str(raw).strip():
+                            raise ReviewValidationError('代码须引用原件中的非空表头格。',
+                                sheet=name, block_index=bi, column=column['column'], field='source_code_cells', cells=[cell])
+                        codes.append({'cell': cell, 'text': str(raw)})
+                    codes_by_column[bi, column['column']] = codes
                     if column.get('unit') and not column.get('unit_cells'):
                         # Existing/researcher declarations remain valid without
                         # verbatim evidence. Only label actual source text as evidence;
@@ -423,12 +452,17 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                         'region_name':b.get('name',f'区块{bi+1}'),'block_index':bi,
                         'description':f"{name} / {c['metric']}；{date_note}；"+('单位：'+c['unit'] if c.get('unit') else '单位待确认')}
                     from .field_metadata import FieldMetadata
+                    notes = notes_by_block[bi]
+                    if 'header_note_cells' in c:
+                        chosen = set(c['header_note_cells'])
+                        notes = [note for note in notes if note['cell'] in chosen]
                     metadata = FieldMetadata(role=c.get('field_role'), unit=c.get('unit'), frequency=c.get('frequency'),
                         unit_source=('source' if c.get('unit_cells') else 'declared') if c.get('unit') else None,
-                        header_notes=notes_by_block[bi] or None,
+                        header_notes=notes or None, source_codes=codes_by_column[bi, c['column']] or None,
                         **{field + '_evidence': [dict(sheet=name, cell=cell, text=str(refvalues[cell]))
                            for cell in c.get(field + '_cells', [])] for field in ('unit', 'frequency')})
-                    item['field_metadata'] = metadata.model_dump(exclude={'header_notes'} if metadata.header_notes is None else None)
+                    item['field_metadata'] = metadata.model_dump(exclude={
+                        field for field in ('header_notes', 'source_codes') if getattr(metadata, field) is None})
                     if metadata.unit_source == 'declared':
                         item['description'] += '；单位为人工确认，未在原表找到对应文字'
                     if c.get('exchange_rate'):item['exchange_rate']=deepcopy(c['exchange_rate'])

@@ -187,7 +187,11 @@ dialog p{font-size:13px;line-height:1.7;margin:0 0 10px}
 .header-cleanup-sheet{padding:8px 10px;border:1px solid var(--line);border-radius:6px}
 .header-cleanup-sheet label{flex-direction:row;align-items:baseline;gap:6px;min-width:0;font-weight:600}
 .header-cleanup-sheet details{margin-top:4px}
-.header-cleanup-notes{color:var(--muted);white-space:pre-wrap}
+.header-cleanup-fields,.header-cleanup-diagnostics{color:var(--muted);white-space:pre-wrap}
+.header-cleanup-fields .header-cleanup-value{margin:0}
+.header-cleanup-value[open] .header-cleanup-preview{display:none}
+.header-cleanup-conflict{color:#8c571d;font-weight:600}
+.header-cleanup-diagnostics{margin-top:4px}
 #headerCleanupNotice{margin-top:12px}
 .save-template{flex-direction:row;align-items:center;gap:7px;font-size:12px;min-width:0}
 #confirmList p{border-top:1px solid #e5eee7;padding:7px 0;margin:0;font-size:13px}

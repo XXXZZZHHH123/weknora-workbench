@@ -15,19 +15,22 @@ from tin.web.catalog import indicator_row
 
 
 HEADER_NOTE = {'cell': 'B2', 'text': '  原表数据范围。\n' + '以首次公布口径为准。' * 22 + '末尾 <原文>  '}
+SOURCE_CODES = [{'cell': 'B4', 'text': 'S5329490'}, {'cell': 'B5', 'text': '  <原始代码>  '}]
 
 
-def test_header_notes_round_trip_between_strict_service_models():
+def test_header_metadata_round_trip_between_strict_service_models():
     path = Path(__file__).resolve().parents[2] / 'structured-data/src/structured_data/field_metadata.py'
     spec = spec_from_file_location('structured_field_metadata_contract', path)
     producer = module_from_spec(spec)
     spec.loader.exec_module(producer)
     for sender, receiver in ((producer.FieldMetadata, FieldMetadata), (FieldMetadata, producer.FieldMetadata)):
-        for payload in ({}, {'header_notes': [HEADER_NOTE]}):
+        for payload in ({}, {'header_notes': [HEADER_NOTE], 'source_codes': SOURCE_CODES}):
             outbound = sender.model_validate(payload).model_dump_json(exclude_unset=True)
             assert receiver.model_validate_json(outbound).model_dump(exclude_unset=True) == payload
         with pytest.raises(ValidationError):
             receiver.model_validate({'header_notes': [{**HEADER_NOTE, 'unrecognized': True}]})
+        with pytest.raises(ValidationError):
+            receiver.model_validate({'source_codes': [{'cell': '$sheet_title', 'text': 'S5329490'}]})
 
 
 def test_published_header_note_is_raw_expandable_text_in_indicator_caliber_and_previews(session):
@@ -37,11 +40,13 @@ def test_published_header_note_is_raw_expandable_text_in_indicator_caliber_and_p
     identifier = 'SMM.SN.spot.1'
     through = date(2026, 1, 3)
     short = {'cell': 'B3', 'text': '  来源资料 <样本>  '}
-    session.info['knowledge_facts_catalog'] = {identifier: {'field_metadata': {'header_notes': [HEADER_NOTE, short]}}}
+    session.info['knowledge_facts_catalog'] = {identifier: {'field_metadata': {
+        'header_notes': [HEADER_NOTE, short], 'source_codes': SOURCE_CODES}}}
 
     detail = diagram.detail(session, identifier, through)
     preview = indicators.previews(session, [identifier], through)[0]
     assert detail['header_notes'] == preview['header_notes'] == [HEADER_NOTE, short]
+    assert detail['source_codes'] == preview['source_codes'] == SOURCE_CODES
     assert detail['caliber'] and all(entry['value'] != HEADER_NOTE['text'] for entry in detail['caliber'])
     for template, context in (('_indicator_caliber.html', {'d': detail}),
                               ('_indicator_cards.html', {'cards': [preview], 'd': through})):
@@ -51,6 +56,8 @@ def test_published_header_note_is_raw_expandable_text_in_indicator_caliber_and_p
         assert section.xpath('./summary/text()') == ['表头说明 B2']
         assert section.xpath('./summary/span/text()') == [HEADER_NOTE['text'][:120] + '…']
         assert html.xpath('.//p[@class="header-note-text"]/text()') == [HEADER_NOTE['text'], short['text']]
+        assert html.xpath('.//div[@class="header-note-text"]/text()') == [
+            '代码：S5329490', '代码：  <原始代码>  ']
         assert not section.xpath('./p/*')
 
 
@@ -95,7 +102,8 @@ def test_published_metadata_projects_with_real_source_identity(monkeypatch, unit
              'unit': unit, 'frequency': '周', 'field_metadata': {
                  'unit': unit, 'unit_source': unit_source, 'frequency': '周',
                  'unit_evidence': [evidence] if unit_source == 'source' else [],
-                 'frequency_evidence': [evidence], 'header_notes': [HEADER_NOTE]}}
+                 'frequency_evidence': [evidence], 'header_notes': [HEADER_NOTE],
+                 'source_codes': SOURCE_CODES}}
     response = {'catalog_only': True, 'series': [field], 'total': 1, 'offset': 0,
                 'datasets': [], 'next_offset': None, 'truncated': False}
     scope = SimpleNamespace(scope_version=2, sources=[{'id': 'binding', 'delegated': False,
@@ -113,6 +121,7 @@ def test_published_metadata_projects_with_real_source_identity(monkeypatch, unit
     assert row['knowledge_base_id'] == 'kb-fixture'
     assert row['source'] == 'metadata.xlsx' and row['sheet'] == 'Observations'
     assert row['header_notes'] == [HEADER_NOTE]
+    assert row['source_codes'] == SOURCE_CODES
     assert row['field_metadata']['unit_source'] == unit_source
     assert row['field_metadata']['frequency_evidence'] == [evidence]
     if unit_source == 'source':

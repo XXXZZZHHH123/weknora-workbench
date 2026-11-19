@@ -1,9 +1,11 @@
 {% from "_card.html" import trend %}
-{% from "_header_notes.html" import render_header_notes %}
+{% from "_header_notes.html" import render_header_notes, render_source_codes %}
 {% for m in cards %}
 <div class="indicator-favorite" data-favorite-card="{{ m.series_id }}">
   {{ trend(m, d) }}
-  {% if m.header_notes %}<details class="indicator-card-notes"><summary>口径 ⓘ</summary>{{ render_header_notes(m.header_notes) }}</details>{% endif %}
+  {% if m.header_notes or m.source_codes %}<details class="indicator-card-notes"><summary>口径 ⓘ</summary>
+    {{ render_source_codes(m.source_codes) }}{{ render_header_notes(m.header_notes) }}
+  </details>{% endif %}
   <div class="indicator-card-actions">
     <span class="indicator-muted">{% if m.retired %}<b class="indicator-warning">已停用</b> · {% endif %}{% if m.stale %}<b class="indicator-warning">更新滞后</b> · {% endif %}{{ m.frequency }}频</span>
     {% if m.registered %}<a href="{{ research_prefix() }}/sn/indicators/{{ m.series_id }}">口径与来源</a>{% endif %}

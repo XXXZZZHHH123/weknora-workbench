@@ -54,9 +54,8 @@ def catalog(session: Session) -> list[dict]:
             row['macro'] = source.get('source_kind') == 'macro'
             row['knowledge_base_id'] = source.get('knowledge_base_id')
             row['source_kind'] = source.get('source_kind')
-            header_notes = (source.get('field_metadata') or {}).get('header_notes')
-            if header_notes:
-                row['header_notes'] = header_notes
+            metadata = source.get('field_metadata') or {}
+            row.update({key: metadata[key] for key in ('header_notes', 'source_codes') if metadata.get(key)})
             if row['macro']:
                 row['category'] = '宏观数据'
         else:
@@ -98,9 +97,8 @@ def previews(session: Session, series_ids: list[str], through: date) -> list[dic
                 "retired": bool(ind and ind.status == "停用"), "registered": ind is not None,
                 "note": "截至所选日期尚无数据"}
         field = session.info.get('knowledge_facts_catalog', {}).get(sid, {})
-        header_notes = (field.get('field_metadata') or {}).get('header_notes')
-        if header_notes:
-            card['header_notes'] = header_notes
+        metadata = field.get('field_metadata') or {}
+        card.update({key: metadata[key] for key in ('header_notes', 'source_codes') if metadata.get(key)})
         if points:
             decimals = data["decimals"]
             card.update(status="ok", value=f"{values[-1]:,.{decimals}f}",

@@ -141,9 +141,9 @@ def test_header_cleanup_exposes_each_renamed_column_in_research(
         calls = []
         note_cells = [f'{column}2' for column in renamed]
         mock_model(monkeypatch, [{
-            'block_updates': [{'block_index': 0, 'header_note_cells': note_cells, 'metric_header_rows': [1]}],
-            'evidence': [{'block_index': 0, 'field': 'header_note_cells', 'cells': note_cells},
-                         {'block_index': 0, 'field': 'metric', 'cells': ['B1', 'C1', 'E1']}],
+            'block_updates': [{'block_index': 0, 'header_roles': [{'row': 1, 'role': 'name'}, {'row': 2, 'role': 'note'}]}],
+            'evidence': [{'block_index': 0, 'field': 'note', 'cells': note_cells},
+                         {'block_index': 0, 'field': 'name', 'cells': ['A1', 'B1', 'C1', 'D1', 'E1']}],
         }], calls)
 
         url = f'/api/imports/{import_id}/header-cleanup'

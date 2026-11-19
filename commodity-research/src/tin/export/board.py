@@ -84,11 +84,11 @@ def _obs_card(session: Session, key: str, label: str, series_id: str, d: date) -
     o = latest_obs(session, series_id, day_end(d))
     exp = expected_date(ind, d)
     field = session.info.get('knowledge_facts_catalog', {}).get(series_id, {})
-    header_notes = (field.get('field_metadata') or {}).get('header_notes')
+    metadata = field.get('field_metadata') or {}
     card = Card(key=key, label=label, unit=ind.unit, status="missing", manual=ind.fetch_mode == "manual",
                 proxy=ind.is_proxy, source=SOURCE_ABBR.get(ind.source, ind.source),
                 series_id=series_id, badge=ind.source,
-                detail={'header_notes': header_notes} if header_notes else {},
+                detail={key: metadata[key] for key in ('header_notes', 'source_codes') if metadata.get(key)},
                 expected_by=exp.isoformat() if exp else None)
     if o is None:
         card.note = "尚无数据"
