@@ -23,7 +23,7 @@ from tin.web import analysis_jobs, judgment_jobs, report_chart_suggestions as su
 from tin.web.chart_data import cutoff
 from tin.web.charts import artifact_query, create_row, decode_definition, definition_data, require_scope, serialize
 from tin.web.report_chart_definitions import (build_definition, duplicate_ids, duplicate_signature,
-                                              mapping_warnings, range_warning, shape_warnings)
+                                              has_observations, mapping_warnings, range_warning, shape_warnings)
 
 router = APIRouter(prefix='/api/sn/charts/import/report')
 PURPOSE = 'report_chart_import'
@@ -31,6 +31,7 @@ BATCH_SECONDS = 360
 TOTAL_SECONDS = 1800
 VERIFY_SECONDS = 120
 MISSING_INDICATORS = '指标库中未找到，请手动选择或跳过'
+NO_OBSERVATIONS = '重画窗口内没有观测'
 
 
 class RecognizeInput(ChartModel):
@@ -113,6 +114,7 @@ def annotate(scope, charts, group, identifier):
     for chart in charts:
         chart['errors'] = []
         chart.pop('definition', None)
+        chart.pop('has_observations', None)
         mappings = [s.get('selected_id') for s in chart['series']]
         chart.setdefault('warnings', [])
         chart['shape_warnings'] = shape_warnings(chart)
@@ -126,7 +128,9 @@ def annotate(scope, charts, group, identifier):
         try:
             value = build_definition(scope, chart, mappings,
                                      chart['chart_type'], group, f"report:{identifier}:{chart['id']}")
-            warning = range_warning(scope, chart, value)
+            payload = definition_data(scope, value, cutoff(), details=False)
+            chart['has_observations'] = has_observations(value, payload)
+            warning = range_warning(scope, chart, value, payload=payload)
             if warning:
                 chart['range_mismatch'] = True
                 chart['shape_warnings'].append(warning)
@@ -142,6 +146,29 @@ def annotate(scope, charts, group, identifier):
     return charts
 
 
+def readiness(chart):
+    if chart.get('missing_indicators'):
+        message = MISSING_INDICATORS
+    elif chart.get('definition_failed') or not chart.get('definition'):
+        message = '图表定义失败'
+    elif chart.get('has_observations') is False:
+        message = NO_OBSERVATIONS
+    elif chart.get('errors'):
+        message = '候选图存在错误'
+    elif chart.get('range_mismatch'):
+        message = '数值范围与原图刻度不符'
+    elif chart.get('possible_duplicate'):
+        message = '图表库已有同指标、同图型的图'
+    elif chart.get('duplicate_of'):
+        message = '与本次识别中的候选图重复'
+    elif not chart.get('has_observations'):
+        # Earlier drafts may have a definition but lack this observation check.
+        message = '尚未确认重画窗口内是否有观测，请预览'
+    else:
+        message = None
+    return {'ready': message is None, 'ready_reason': message}
+
+
 def annotate_duplicates(scope, charts):
     with artifact_session(scope) as session:
         mark_duplicates(session, charts)
@@ -153,14 +180,14 @@ def mark_duplicates(session, charts):
     for chart in charts:
         chart.pop('duplicate_of', None)
         chart['possible_duplicate'] = False
-        if not chart.get('definition'):
-            continue
-        signature = duplicate_signature(ChartDefinition.model_validate(chart['definition']))
-        chart['possible_duplicate'] = signature in saved
-        if signature in first:
-            chart['duplicate_of'] = first[signature]
-        else:
-            first[signature] = {key: chart.get(key) for key in ('id', 'page', 'title')}
+        if chart.get('definition'):
+            signature = duplicate_signature(ChartDefinition.model_validate(chart['definition']))
+            chart['possible_duplicate'] = signature in saved
+            if signature in first:
+                chart['duplicate_of'] = first[signature]
+            else:
+                first[signature] = {key: chart.get(key) for key in ('id', 'page', 'title')}
+        chart.update(readiness(chart))
 
 
 def review_state(scope, state, applied):
@@ -404,10 +431,17 @@ async def preview(body: PreviewInput):
         warnings = shape_warnings(chart, body.chart_type)
         if warning:
             warnings.append(warning)
-        return {'definition': value.model_dump(mode='json'), 'payload': payload,
-                'possible_duplicate': bool(duplicate_ids(scope, value)), 'errors': [],
-                'range_mismatch': bool(warning), 'shape_warnings': warnings,
-                'warnings': mapping_warnings(body.mappings)}
+        duplicate_of = chart.get('duplicate_of')
+        if duplicate_of and duplicate_signature(value) != duplicate_signature(
+                ChartDefinition.model_validate(chart['definition'])):
+            duplicate_of = None
+        observed = has_observations(value, payload)
+        result = {'definition': value.model_dump(mode='json'), 'payload': payload,
+                  'possible_duplicate': bool(duplicate_ids(scope, value)), 'duplicate_of': duplicate_of,
+                  'has_observations': observed, 'errors': [] if observed else [NO_OBSERVATIONS],
+                  'range_mismatch': bool(warning), 'shape_warnings': warnings,
+                  'warnings': mapping_warnings(body.mappings)}
+        return {**result, **readiness(result)}
     result = await run_in_threadpool(render)
     await verified_state(scope, body.job_id)
     return result
@@ -460,7 +494,8 @@ def apply_selections(scope, body, definitions, failed, purpose):
         mark_duplicates(session, charts)
         session.commit()
     return {'created': created, 'failed': failed,
-            'possible_duplicates': {chart['id']: chart['possible_duplicate'] for chart in charts}}
+            'possible_duplicates': {chart['id']: chart['possible_duplicate'] for chart in charts},
+            'readiness': {chart['id']: {key: chart[key] for key in ('ready', 'ready_reason')} for chart in charts}}
 
 
 @router.post('/apply')

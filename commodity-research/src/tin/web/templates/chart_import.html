@@ -8,7 +8,7 @@
     <a class="charts-muted" href="{{ library_url }}">返回图表库</a>
     <h1>导入图表</h1>
     <p id="chart-import-native-intro" class="charts-muted">按工作表核对周期、曲线和缺失原因，确认后保存为共享图表。</p>
-    <p id="chart-import-report-intro" class="charts-muted" hidden>只导入图表结构并映射真实指标，后续按最新数据绘制。往期结论不会保存；请核对映射和预览后再导入。</p>
+    <p id="chart-import-report-intro" class="charts-muted" hidden>导入的图表结构将按映射指标的最新数据绘制。请核对指标映射，按需预览。</p>
   </div></header>
   {% if not chart_page.enabled %}<p class="charts-notice error" role="alert">{{ chart_page.reason }}</p>{% else %}
   <div class="indicator-tabs" role="tablist" aria-label="图表导入来源">
@@ -64,7 +64,7 @@
     <div id="report-chart-toolbar">
       <p id="report-chart-progress" class="charts-muted" aria-live="polite"></p>
       <div class="charts-toolbar">
-        <span id="report-chart-selection" class="charts-muted"></span>
+        <span id="report-chart-selection" class="charts-muted" aria-live="polite"></span>
         <div class="report-chart-actions">
           <button type="button" id="report-chart-rematch" class="charts-button" hidden>重新匹配未对上的图</button>
           <button type="button" id="report-chart-apply" class="charts-button primary" disabled>导入所选</button>

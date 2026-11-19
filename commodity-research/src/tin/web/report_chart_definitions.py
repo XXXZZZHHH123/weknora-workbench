@@ -110,10 +110,10 @@ def build_definition(scope, chart, mappings, chart_type, group, origin_ref):
     return definition
 
 
-def _left_axis_points(definition, payload):
+def _redraw_points(definition, payload, *, axis=None):
     if definition.time.mode != 'cycle':
         for curve in payload['curves']:
-            if curve['axis'] == 'left':
+            if axis is None or curve['axis'] == axis:
                 yield from curve['points']
     elif len(definition.curves) == 1:
         for segment in payload['segments']:
@@ -122,10 +122,21 @@ def _left_axis_points(definition, payload):
         # Multi-curve seasonal imports show only each curve's common current
         # period. Historical segments are kept in the payload for statistics.
         for curve in payload['curves']:
-            if curve['axis'] == 'left':
+            if axis is None or curve['axis'] == axis:
                 for segment in curve['cycle']['segments']:
                     if segment['current']:
                         yield from segment['points']
+
+
+def _redraw_values(definition, payload, *, axis=None):
+    for point in _redraw_points(definition, payload, axis=axis):
+        value = point['value']
+        if type(value) in (float, int) and isfinite(value):
+            yield value
+
+
+def has_observations(definition, payload):
+    return next(_redraw_values(definition, payload), None) is not None
 
 
 def range_warning(scope, chart, definition, *, payload=None):
@@ -135,8 +146,7 @@ def range_warning(scope, chart, definition, *, payload=None):
     lower, upper = (tick_number(ticks[key]) for key in ('min', 'max'))
     if payload is None:
         payload = definition_data(scope, definition, cutoff(), details=False)
-    values = [point['value'] for point in _left_axis_points(definition, payload)
-              if type(point['value']) in (float, int) and isfinite(point['value'])]
+    values = list(_redraw_values(definition, payload, axis='left'))
     if not values:
         return None
     minimum, maximum = min(values), max(values)

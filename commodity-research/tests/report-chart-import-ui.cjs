@@ -2,11 +2,11 @@ const {assert, render, launch, open, definition, cycle, prefix} = require('./cha
 const source = {kind: 'knowledge_file', source_binding_id: 'binding-fixture', knowledge_id: 'report-fixture', file_version: 3};
 const candidates = [{id: 'kb-fixture-series', name: '合成指标', unit: '吨', sheet: '数据表'}, {id: 'kb-alternate', name: '另一个真实候选', unit: '吨'}];
 const charts = [
-  {id: 'report-1', page: 2, source_index: 1, title: '<img src=x onerror=window.__reportXss=1>', chart_type: 'seasonal', legend_semantics: 'periods', evidence: '原文图例：合成指标', warnings: ['模型页码与依据不一致，已按依据位置修正'], shape: {season_start_month: 9, period_labels: ['19/20', '20/21'], period_kind: 'crop_year', y_ticks: {min: '20', max: '100'}}, series: [{name: '合成指标', legends: ['2019', '2020'], unit: '吨', candidates, selected_id: 'kb-fixture-series'}]},
-  {id: 'report-2', page: 3, source_index: 5, title: '另一张合成图', chart_type: 'trend', evidence: '另一张图的图例', possible_duplicate: true, duplicate_of: {id: 'report-4', page: 2, title: '定义失败的图'}, series: [{name: '图例二', candidates, selected_id: 'kb-fixture-series'}]},
-  {id: 'report-3', page: 4, source_index: 6, title: '缺少指标的图', chart_type: 'comparison', evidence: '待核对的图例片段', missing_indicators: true, series: [{name: '待核对图例', candidates, selected_id: null}]},
-  {id: 'report-4', page: 2, source_index: 1, title: '定义失败的图', chart_type: 'trend', evidence: '原文图例', definition_failed: true, errors: ['定义校验不通过'], series: [{name: '原文图例', candidates, selected_id: 'kb-fixture-series'}]},
-  {id: 'report-5', page: null, page_label: '片段9', source_index: 8, title: '无页码图', chart_type: 'trend', evidence: '无页码片段', range_mismatch: true, shape_warnings: ['数值范围与原图刻度不符（原图 1–5，当前数据 100–120），请核对指标口径或单位'], series: [{name: '原文图例', candidates, selected_id: 'kb-fixture-series'}]}
+  {id: 'report-1', page: 2, source_index: 1, title: '<img src=x onerror=window.__reportXss=1>', chart_type: 'seasonal', ready: true, legend_semantics: 'periods', evidence: '原文图例：合成指标', warnings: ['模型页码与依据不一致，已按依据位置修正'], shape: {season_start_month: 9, period_labels: ['19/20', '20/21'], period_kind: 'crop_year', y_ticks: {min: '20', max: '100'}}, series: [{name: '合成指标', legends: ['2019', '2020'], unit: '吨', candidates, selected_id: 'kb-fixture-series'}]},
+  {id: 'report-2', page: 3, source_index: 5, title: '另一张合成图', chart_type: 'trend', ready: false, ready_reason: '图表库已有同类图表', evidence: '另一张图的图例', possible_duplicate: true, duplicate_of: {id: 'report-4', page: 2, title: '定义失败的图'}, series: [{name: '图例二', candidates, selected_id: 'kb-fixture-series'}]},
+  {id: 'report-3', page: 4, source_index: 6, title: '缺少指标的图', chart_type: 'comparison', ready: false, ready_reason: '未找到指标', evidence: '待核对的图例片段', missing_indicators: true, series: [{name: '待核对图例', candidates, selected_id: null}]},
+  {id: 'report-4', page: 2, source_index: 1, title: '定义失败的图', chart_type: 'trend', ready: false, ready_reason: '图表定义校验失败', evidence: '原文图例', definition_failed: true, errors: ['定义校验不通过'], series: [{name: '原文图例', candidates, selected_id: 'kb-fixture-series'}]},
+  {id: 'report-5', page: null, page_label: '片段9', source_index: 8, title: '无页码图', chart_type: 'trend', ready: false, ready_reason: '数值范围与原图刻度不符', evidence: '无页码片段', range_mismatch: true, shape_warnings: ['数值范围与原图刻度不符（原图 1–5，当前数据 100–120），请核对指标口径或单位'], series: [{name: '原文图例', candidates, selected_id: 'kb-fixture-series'}]}
 ];
 const jobID = slug => 'report-chart-job-' + slug;
 const meta = (slug, state) => ({id: jobID(slug), purpose: 'report_chart_import', workbench_id: 'fixture',
@@ -26,6 +26,22 @@ const base = ({path, reply}) => {
   if (path === '/strategies/models') return reply({models: [{id: 'model-fixture', name: '测试模型'}]});
   return false;
 };
+const previewPath = '/charts/import/report/preview';
+const card = (page, id) => page.locator(`[data-report-chart="${id}"]`);
+const checkbox = (page, id) => card(page, id).locator('[data-report-select]');
+const count = (page, selected, ready) => page.locator('#report-chart-selection')
+  .filter({hasText: `已选 ${selected} 张 · 可直接导入 ${ready} 张`}).waitFor();
+const frames = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+const belowViewport = html.replace('</head>', `<style>
+  #report-chart-cards { margin-top: 1500px; }
+  #report-chart-cards .charts-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  #report-chart-cards > section + section { margin-top: 1600px; }
+</style></head>`);
+async function recognize(page) {
+  await reportTab(page).click();
+  await page.locator('#report-chart-file').selectOption(JSON.stringify(source));
+  await page.locator('#report-chart-recognize').click();
+}
 (async () => {
   const browser = await launch();
   try {
@@ -58,6 +74,92 @@ const base = ({path, reply}) => {
     assert.equal(linked.calls.filter(call => call.path === '/charts/import/native/preview').length, 1);
     await linked.close();
 
+    const immediate = await open(browser, '/sn/charts/import', belowViewport, async args => {
+      if (await base(args) !== false) return;
+      if (args.path.endsWith('/files')) return args.reply({items: [{citation: source, title: '合成周报.pdf'}], next_offset: null});
+      if (args.path.endsWith('/apply')) return args.reply({created: [{id: 'direct-chart', title: '直接导入'}], failed: []});
+      return jobRoutes(args, 'immediate', {charts: [charts[0], charts[2]]});
+    });
+    await recognize(immediate.page);
+    await count(immediate.page, 1, 1);
+    await frames(immediate.page);
+    assert.equal(await checkbox(immediate.page, 'report-1').isChecked(), true);
+    assert.equal(await checkbox(immediate.page, 'report-1').isEnabled(), true);
+    assert.equal(await checkbox(immediate.page, 'report-3').isChecked(), false);
+    await immediate.page.locator('#report-chart-apply').click();
+    await immediate.page.locator('#report-chart-result').filter({hasText: '新建 1 张，失败 0 张'}).waitFor();
+    assert.equal(immediate.calls.filter(call => call.path === previewPath).length, 0, '直接导入全程无需预览');
+    assert.deepEqual(immediate.calls.find(call => call.path.endsWith('/apply')).body.charts,
+      [{chart_id: 'report-1', mappings: ['kb-fixture-series'], chart_type: 'seasonal'}]);
+    await count(immediate.page, 0, 0);
+    await immediate.close();
+
+    const nearIds = ['range-changed', 'data-arrived', 'manual-unchecked', 'manual-checked', 'mapping-edited'];
+    const farId = 'offscreen';
+    const lazyCharts = [...nearIds, farId].map((id, i) => ({...charts[0], id, source_index: i, page: i < nearIds.length ? 2 : 3,
+      title: id, ready: id !== 'data-arrived', ready_reason: id === 'data-arrived' ? '重画窗口内无观测' : ''}));
+    let releasePreviews, releaseEdit, activePreviews = 0, maxActivePreviews = 0;
+    const previewGate = new Promise(resolve => { releasePreviews = resolve; });
+    const editGate = new Promise(resolve => { releaseEdit = resolve; });
+    const lazy = await open(browser, '/sn/charts/import', belowViewport, async args => {
+      if (await base(args) !== false) return;
+      if (args.path.endsWith('/files')) return args.reply({items: [{citation: source, title: '合成周报.pdf'}], next_offset: null});
+      if (args.path !== previewPath) return jobRoutes(args, 'lazy', {charts: lazyCharts});
+      const {chart_id: id, mappings} = args.body;
+      const mismatch = id === 'range-changed' || id === 'manual-checked';
+      activePreviews++;
+      maxActivePreviews = Math.max(maxActivePreviews, activePreviews);
+      try {
+        await (mappings[0] === 'kb-alternate' ? editGate : previewGate);
+        const readyReason = mismatch ? '数值范围与原图刻度不符' : '';
+        return await args.reply({definition, payload: cycle(), errors: [], ready: !mismatch, ready_reason: readyReason,
+          range_mismatch: mismatch, shape_warnings: mismatch ? [readyReason] : []});
+      } finally { activePreviews--; }
+    });
+    const lazyPage = lazy.page;
+    await recognize(lazyPage);
+    await count(lazyPage, 5, 5);
+    await frames(lazyPage);
+    assert.deepEqual(lazy.calls.filter(call => call.path === previewPath), []);
+    let started = 0;
+    const firstThree = lazyPage.waitForEvent('request', request => request.url().endsWith(previewPath) && ++started === 3);
+    await card(lazyPage, nearIds[0]).evaluate(node => node.scrollIntoView({block: 'center'}));
+    await firstThree;
+    await frames(lazyPage);
+    assert.equal(lazy.calls.filter(call => call.path === previewPath).length, 3, '其他可见卡片等待并发槽位');
+    await count(lazyPage, 5, 5);
+    await checkbox(lazyPage, 'manual-unchecked').uncheck();
+    await checkbox(lazyPage, 'manual-checked').uncheck();
+    await checkbox(lazyPage, 'manual-checked').check();
+    releasePreviews();
+    await Promise.all(nearIds.map(id => card(lazyPage, id).locator('[data-report-plot] svg').waitFor()));
+    assert.equal(maxActivePreviews, 3);
+    assert.deepEqual(lazy.calls.filter(call => call.path === previewPath).map(call => call.body.chart_id).sort(), [...nearIds].sort());
+    assert.equal(await checkbox(lazyPage, 'range-changed').isChecked(), false);
+    assert.match(await card(lazyPage, 'range-changed').innerText(), /数值范围与原图刻度不符/);
+    assert.equal(await checkbox(lazyPage, 'data-arrived').isChecked(), true);
+    assert.doesNotMatch(await card(lazyPage, 'data-arrived').innerText(), /重画窗口内无观测/);
+    assert.equal(await checkbox(lazyPage, 'manual-unchecked').isChecked(), false);
+    assert.equal(await checkbox(lazyPage, 'manual-checked').isChecked(), true);
+    await count(lazyPage, 4, 4);
+
+    const edited = card(lazyPage, 'mapping-edited');
+    const editRequest = lazyPage.waitForRequest(request => request.url().endsWith(previewPath)
+      && request.postDataJSON().mappings[0] === 'kb-alternate');
+    await edited.locator('[data-report-mapping]').selectOption('kb-alternate');
+    await editRequest;
+    assert.equal(await checkbox(lazyPage, 'mapping-edited').isDisabled(), true);
+    await count(lazyPage, 3, 3);
+    releaseEdit();
+    await edited.locator('[data-report-plot] svg').waitFor();
+    assert.equal(await checkbox(lazyPage, 'mapping-edited').isEnabled(), true);
+    await count(lazyPage, 4, 4);
+    assert.equal(lazy.calls.some(call => call.path === previewPath && call.body.chart_id === farId), false);
+    await card(lazyPage, farId).locator('[data-report-preview]').evaluate(button => button.click());
+    await card(lazyPage, farId).locator('[data-report-plot] svg').waitFor();
+    assert.equal(lazy.calls.filter(call => call.path === previewPath && call.body.chart_id === farId).length, 1);
+    await lazy.close();
+
     let applied, jobPolls = 0;
     const previews = [];
     const ui = await open(browser, '/sn/charts/import', html, async args => {
@@ -83,7 +185,9 @@ const base = ({path, reply}) => {
         if (body.chart_id === 'report-4' && body.mappings[0] !== 'kb-alternate') return reply({errors: ['定义校验不通过']});
         const def = {...definition, title: charts.find(item => item.id === body.chart_id).title, curves: [{...definition.curves[0], series_id: body.mappings[0]}]};
         const payload = body.chart_type === 'seasonal' ? cycle() : {mode: 'recent', curves: [{series_id: body.mappings[0], label: '合成指标', unit: '吨', axis: 'left', points: [{date: '2029-09-01', value: 10}, {date: '2029-09-02', value: 12}]}]};
-        return reply({definition: def, payload, possible_duplicate: body.chart_id === 'report-2', errors: []});
+        const rangeMismatch = body.chart_id === 'report-5';
+        return reply({definition: def, payload, possible_duplicate: body.chart_id === 'report-2',
+          range_mismatch: rangeMismatch, shape_warnings: rangeMismatch ? charts[4].shape_warnings : [], errors: []});
       }
       if (path === '/charts/import/report/apply') {
         applied = body;
@@ -156,15 +260,19 @@ const base = ({path, reply}) => {
     assert.equal(await failedDefinition.locator('[data-report-select]').isDisabled(), false);
     assert.equal(await failedDefinition.locator('[data-report-select]').isChecked(), false, '修复初始定义失败仍不自动勾选');
     const rangeMismatch = p.locator('[data-report-chart="report-5"]');
+    await rangeMismatch.scrollIntoViewIfNeeded();
     await rangeMismatch.locator('[data-report-plot] svg').waitFor();
     assert.equal(await rangeMismatch.locator('[data-report-select]').isChecked(), false);
     assert.match(await rangeMismatch.locator('[data-report-notice]').innerText(), /数值范围与原图刻度不符/);
     await first.locator('[data-report-mapping]').selectOption('kb-alternate');
-    await p.waitForFunction(() => document.querySelector('[data-report-chart="report-1"] [data-report-select]').checked);
-    assert.equal(previews.at(-1).mappings[0], 'kb-alternate');
+    await first.locator('[data-report-plot] svg').waitFor();
+    assert.equal(previews.filter(body => body.chart_id === 'report-1').at(-1).mappings[0], 'kb-alternate');
     await first.locator('[data-report-type]').selectOption('trend');
-    await p.waitForFunction(() => document.querySelector('[data-report-chart="report-1"] [data-report-select]').checked);
-    assert.equal(previews.at(-1).chart_type, 'trend');
+    await first.locator('[data-report-plot] svg').waitFor();
+    assert.equal(previews.filter(body => body.chart_id === 'report-1').at(-1).chart_type, 'trend');
+    await duplicate.scrollIntoViewIfNeeded();
+    await duplicate.locator('[data-report-plot] svg').waitFor();
+    assert.equal(await first.locator('[data-report-select]').isChecked(), true);
     await duplicate.locator('[data-report-select]').check();
     await p.locator('#report-chart-group').fill('研究员的常用图');
     await p.locator('#report-chart-apply').click();
@@ -222,14 +330,13 @@ const base = ({path, reply}) => {
     await retry.page.locator('#report-chart-file').selectOption(JSON.stringify(source));
     await retry.page.locator('#report-chart-recognize').click();
     await retry.page.locator('[data-report-notice]').filter({hasText: '请求超时'}).waitFor();
-    assert.equal(await retry.page.locator('[data-report-select]').isDisabled(), true);
+    assert.equal(await retry.page.locator('[data-report-select]').isEnabled(), true);
+    assert.equal(await retry.page.locator('[data-report-select]').isChecked(), true);
     assert.equal(await retry.page.locator('[data-report-preview]').isDisabled(), false);
     await retry.page.locator('[data-report-preview]').click();
     await retry.page.locator('[data-report-plot] svg').waitFor();
     assert.equal(await retry.page.locator('[data-report-select]').isDisabled(), false);
-    assert.equal(await retry.page.locator('[data-report-select]').isChecked(), false, '预览失败后重试成功仍需手动勾选');
-    await retry.page.locator('[data-report-select]').check();
-    assert.equal(await retry.page.locator('[data-report-select]').isChecked(), true);
+    assert.equal(await retry.page.locator('[data-report-select]').isChecked(), true, '预览超时不会取消已就绪的勾选');
     await retry.close();
 
     let invalidPreview = true;
@@ -251,7 +358,7 @@ const base = ({path, reply}) => {
     await repair.page.locator('[data-report-preview]').click();
     await repair.page.locator('[data-report-plot] svg').waitFor();
     assert.equal(await repair.page.locator('[data-report-select]').isDisabled(), false);
-    assert.equal(await repair.page.locator('[data-report-select]').isChecked(), false, '运行时定义校验失败后修复也不自动勾选');
+    assert.equal(await repair.page.locator('[data-report-select]').isChecked(), true, '新预览恢复就绪后重新勾选未手动操作的图');
     await repair.close();
 
     const duplicateMappingWarning = '重复映射已在定义中去重';
@@ -295,7 +402,7 @@ const base = ({path, reply}) => {
     assert.equal(linkedJob.calls.some(call => /\/charts\/import\/report\/(recognize|apply)$/.test(call.path)), false);
     await linkedJob.close();
 
-    const rematched = {...charts[2], missing_indicators: false,
+    const rematched = {...charts[2], ready: true, ready_reason: '', missing_indicators: false,
       series: [{...charts[2].series[0], selected_id: 'kb-alternate'}]};
     const detachedRematch = await open(browser, '/sn/charts/import?analysis_job=' + jobID('rematch'), html, async args => {
       if (await base(args) !== false) return;
@@ -315,6 +422,7 @@ const base = ({path, reply}) => {
       return false;
     });
     const detachedPage = detachedRematch.page;
+    await card(detachedPage, rematched.id).scrollIntoViewIfNeeded();
     await detachedPage.locator(`[data-report-chart="${rematched.id}"] [data-report-plot] svg`).waitFor();
     const imported = detachedPage.locator('[data-report-chart="report-1"]');
     assert.equal(await imported.locator('[data-report-select]').isDisabled(), true);

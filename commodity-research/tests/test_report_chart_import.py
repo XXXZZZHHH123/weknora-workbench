@@ -2,6 +2,7 @@
 import asyncio
 from collections import Counter
 from copy import deepcopy
+from datetime import date
 import json
 from time import perf_counter, sleep
 
@@ -145,6 +146,8 @@ def test_end_to_end_drafts_mapping_real_preview_explicit_import_and_retry_receip
         assert result['job']['state'] == 'succeeded'
     assert len(result['charts']) == 2
     assert result['progress']['completed'] == result['progress']['total'] == 2
+    assert result['charts'][0]['ready'] is True
+    assert result['charts'][1]['ready'] is False
     assert client.get('/api/sn/charts').json()['total'] == 0, 'Recognizing must not import'
     changed = selection(mappings=[OTHER])
     response = preview(client, identifier, changed)
@@ -166,22 +169,100 @@ def test_end_to_end_drafts_mapping_real_preview_explicit_import_and_retry_receip
     assert client.get('/api/sn/charts').json()['total'] == 1
 
 
+@pytest.mark.parametrize('selected,chart_changes,observations,reason,reads', [
+    pytest.param(SID, {}, None, None, 1, id='ready-without-ticks'),
+    pytest.param(SID, {'shape': {'y_ticks': {'min': '10', 'max': '15'}}}, None, None, 1,
+                 id='range-check-shares-observation-read'),
+    pytest.param(SID, {'chart_type': 'seasonal', 'shape': {'period_kind': 'contract'}},
+                 [('2023-01-04', 0)], None, 1, id='non-blocking-shape-warning'),
+    pytest.param(None, {}, None, '未找到', 0, id='missing-indicators'),
+    pytest.param(THIRD, {}, None, '定义失败', 0, id='definition-failed'),
+    pytest.param(SID, {'shape': {'y_ticks': {'min': '100', 'max': '120'}}}, None, '刻度不符', 1,
+                 id='range-mismatch'),
+    pytest.param(SID, {}, [('2023-01-05', 13)], '没有观测', 1, id='outside-redraw-window'),
+])
+def test_result_readiness_uses_the_redraw_observation_read(
+        report_client, monkeypatch, selected, chart_changes, observations, reason, reads):
+    client, state = report_client
+    monkeypatch.setattr(imports, 'cutoff', lambda: date(2023, 1, 4))
+    state.report_batches = 1
+    state.report_result = [{**candidate(selected=selected), **chart_changes}]
+    if observations is not None:
+        state.observations[SID] = observations
+
+    identifier, result = complete(client)
+    chart, = result['charts']
+    assert chart['ready'] is (reason is None)
+    if reason is None:
+        assert chart['ready_reason'] is None
+    else:
+        assert reason in chart['ready_reason']
+    if chart_changes.get('chart_type') == 'seasonal':
+        assert chart['shape_warnings']
+    restored = client.get(f'{JOBS}/{identifier}/result')
+    assert restored.status_code == 200 and restored.json()['charts'] == [chart]
+    assert sum(not request.get('catalog_only') for _, request in state.requests) == reads
+
+
+def test_candidate_errors_block_default_selection_even_with_a_definition(report_client, monkeypatch):
+    client, state = report_client
+    state.report_batches = 1
+    annotate = imports.annotate
+
+    def annotate_with_error(*args):
+        charts = annotate(*args)
+        charts[0]['errors'].append('候选图核验失败')
+        return charts
+
+    monkeypatch.setattr(imports, 'annotate', annotate_with_error)
+    _, result = complete(client)
+    chart, = result['charts']
+    assert chart['definition'] and chart['errors'] == ['候选图核验失败']
+    assert chart['ready'] is False and '错误' in chart['ready_reason']
+
+
+def test_preview_reports_observations_and_range_after_data_changes(report_client):
+    client, state = report_client
+    state.report_batches = 1
+    state.report_result = [{**candidate(), 'shape': {'y_ticks': {'min': '10', 'max': '15'}}}]
+    identifier, result = complete(client)
+    assert result['charts'][0]['ready'] is True
+
+    state.observations[SID] = [('2023-01-01', 20), ('2023-01-02', 25)]
+    mismatch = preview(client, identifier)
+    assert mismatch.status_code == 200, mismatch.text
+    assert mismatch.json()['ready'] is False and mismatch.json()['range_mismatch'] is True
+    assert '刻度不符' in mismatch.json()['ready_reason']
+
+    state.observations[SID] = []
+    empty = preview(client, identifier)
+    assert empty.status_code == 200, empty.text
+    assert empty.json()['ready'] is False and '没有观测' in empty.json()['ready_reason']
+
+
 def test_duplicate_of_preserves_source_order_and_library_flags_refresh_after_apply(report_client):
     client, state = report_client
     state.report_batches = 1
-    state.report_result = [candidate('first'), {**candidate('second'), 'page': 5}]
+    state.report_result = [candidate('first'), {**candidate('second'), 'page': 5},
+                           candidate('alternate', selected=OTHER)]
     identifier, result = complete(client)
-    first, second = result['charts']
-    assert 'duplicate_of' not in first and not first['possible_duplicate']
+    first, second, alternate = result['charts']
+    assert 'duplicate_of' not in first and not first['possible_duplicate'] and first['ready'] is True
     assert second['duplicate_of'] == {'id': first['id'], 'page': 3, 'title': first['title']}
     assert not second['possible_duplicate']
-    response = apply(client, identifier, [selection(first['id'])])
+    assert second['ready'] is False and '重复' in second['ready_reason']
+    assert alternate['ready'] is True
+    response = apply(client, identifier, [selection(first['id'], mappings=[OTHER])])
     assert response.status_code == 200, response.text
-    assert response.json()['possible_duplicates'] == {first['id']: True, second['id']: True}
+    assert response.json()['possible_duplicates'] == {first['id']: False, second['id']: False, alternate['id']: True}
     restored = client.get(f'{JOBS}/{identifier}/result').json()
-    assert all(chart['possible_duplicate'] for chart in restored['charts'])
+    updated = restored['charts'][2]
+    assert updated['id'] == alternate['id'] and updated['possible_duplicate']
+    assert updated['ready'] is False and '图表库' in updated['ready_reason']
+    assert response.json()['readiness'][alternate['id']] == {
+        'ready': updated['ready'], 'ready_reason': updated['ready_reason']}
     assert restored['applied'][first['id']]['id'] == response.json()['created'][0]['id']
-    response = apply(client, identifier, [selection(second['id'])])
+    response = apply(client, identifier, [selection(alternate['id'], mappings=[OTHER])])
     assert len(response.json()['created']) == 1
     assert client.get('/api/sn/charts').json()['total'] == 2
 
@@ -257,6 +338,7 @@ def test_rematch_retrieves_original_draft_and_preserves_confirmations(report_cli
         assert after['charts'][0] == before['charts'][0]
         resolved = after['charts'][1]
         assert not resolved['missing_indicators'] and after['source_status_hint'] is None
+        assert before['charts'][1]['ready'] is False and resolved['ready'] is True
         assert resolved['series'][0]['selected_id'] == OTHER
         for field in ('id', 'title', 'chart_type', 'evidence'):
             assert resolved[field] == before['charts'][1][field]
@@ -329,16 +411,32 @@ def test_timeout_isolated_to_batch(report_client, monkeypatch):
     assert len(result['charts']) == 1 and '超过' in result['failures'][0]['reason']
 
 
-def test_apply_lists_invalid_definitions_and_imports_other_selected_charts(report_client):
-    client, _ = report_client
-    identifier, _ = complete(client)
-    response = apply(client, identifier, [selection(mappings=[THIRD]), selection('b2-chart')])
+@pytest.mark.parametrize('mapping,removed,expected_reason', [
+    pytest.param(THIRD, False, '展示', id='outside-shown-candidates'),
+    pytest.param(None, False, '未找到', id='missing-submitted-mapping'),
+    pytest.param(SID, True, '来源目录', id='removed-current-indicator'),
+])
+def test_apply_lists_invalid_definitions_and_imports_other_selected_charts(
+        report_client, mapping, removed, expected_reason):
+    client, state = report_client
+    job_id, result = complete(client)
+    assert result['charts'][0]['ready'] is True
+    if removed:
+        state.fields.pop(SID)
+    invalid = selection(mappings=[mapping])
+    valid = selection('b2-chart', mappings=[OTHER], chart_type='seasonal')
+    response = apply(client, job_id, [invalid, valid])
     assert response.status_code == 200, response.text
-    assert len(response.json()['created']) == 1 and len(response.json()['failed']) == 1
-    assert '展示' in response.json()['failed'][0]['reason']
-    assert preview(client, identifier, selection(mappings=[THIRD])).status_code == 422
-    assert preview(client, identifier, selection('unknown')).status_code == 422
-    assert apply(client, identifier, [selection(), selection()]).status_code == 422
+    created, = response.json()['created']
+    failed, = response.json()['failed']
+    assert failed['chart_id'] == invalid['chart_id'] and expected_reason in failed['reason']
+    assert created['definition']['origin']['ref'] == f'report:{job_id}:b2-chart'
+    assert created['definition']['curves'][0]['series_id'] == OTHER
+    assert created['definition']['time']['mode'] == 'cycle'
+    assert client.get('/api/sn/charts').json()['total'] == 1
+    assert preview(client, job_id, invalid).status_code == 422
+    assert preview(client, job_id, selection('unknown')).status_code == 422
+    assert apply(client, job_id, [selection(), selection()]).status_code == 422
 
 
 def test_write_failure_isolated_and_retry_only_adds_missing_chart(report_client, monkeypatch):
