@@ -83,7 +83,14 @@ def _validate_header_note_cells(block, sheet):
     field = 'header_note_cells'
     if not isinstance(refs, list):
         raise ReviewValidationError('表头说明来源须填写为单元格坐标列表。', field=field)
-    headers = {ref for column in block['columns'] for ref in column['header_cells']}
+    headers = set()
+    for column in block['columns']:
+        attached = column.get(field)
+        if block.get('layout') == 'matrix' or not isinstance(attached, list):
+            headers.update(column['header_cells'])
+        else:
+            # A shared source can be a name in one column and a note in another.
+            headers.update(ref for ref in column['header_cells'] if ref in attached)
     for ref in refs:
         match = re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]*)', ref) if isinstance(ref, str) else None
         if not match or int(match[2]) not in block['header_rows']:
@@ -107,7 +114,7 @@ def _validate_column_header_metadata(block, sheet):
         if not isinstance(codes, list) or any(
             not (position := _coordinate(ref, sheet)) or position[0] not in block['header_rows']
             or not _header_ref_covers_column(ref, column['column'], sheet)
-            or ref in notes or ref in column['header_cells'] for ref in codes
+            or ref in column.get('header_note_cells', notes) or ref in column['header_cells'] for ref in codes
         ):
             raise ReviewValidationError('代码来源须位于本列覆盖的原表头，且与名称和说明分开。',
                                         field='source_code_cells', column=column['column'])

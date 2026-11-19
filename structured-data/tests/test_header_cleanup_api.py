@@ -206,6 +206,38 @@ def test_cleanup_applied_mapping_is_unchanged_on_repeat(client, monkeypatch, wor
     assert repeated['mapping'] == saved
 
 
+def test_cleanup_apply_rejects_rename_collision_from_saved_suggestion(client, monkeypatch, workbook_import):
+    url, review_path = workbook_import
+    review_before = review_path.read_bytes()
+    dataset_id = json.loads(review_before)['dataset_id']
+    catalog_before = read_series(client, dataset_id)
+
+    def suggest(path, cfg, sheet, mapping, budget, cancelled, *, deadline):
+        proposed = deepcopy(mapping)
+        changes = []
+        if sheet['name'] == '本期数据':
+            amount, price = proposed['blocks'][0]['columns']
+            changes.append({'old_name': amount['metric'], 'new_name': price['metric']})
+            amount['metric'] = price['metric']
+            for column in (amount, price):
+                column['dimensions'] = {'原表列': column['column'], 'block': column['column']}
+        return {'changes': changes, 'diagnostics': [], 'notices': [], 'mapping': proposed}
+
+    monkeypatch.setattr(header_cleanup, 'suggest_header_cleanup', suggest)
+    monkeypatch.setattr(header_cleanup, 'read_model', lambda _: {})
+    started = start_cleanup(client, url)
+    proposed = next(row for row in poll(client, started)['sheets'] if row['sheet_name'] == '本期数据')
+    assert proposed['status'] == 'rename'
+
+    applied = apply_cleanup(client, url, started.json()['id'], '本期数据')
+    assert applied['sheets'] == [{'sheet_name': '本期数据', 'status': 'failed',
+                                  'error': '改名后出现重名，请重新整理'}]
+    assert applied['renamed_fields'] == 0
+    assert applied['dataset_id'] == dataset_id
+    assert review_path.read_bytes() == review_before
+    assert read_series(client, dataset_id) == catalog_before
+
+
 @pytest.mark.parametrize('changed', ['fingerprint', 'mapping', 'published_snapshot'])
 def test_cleanup_apply_skips_changed_sheet_and_continues(client, monkeypatch, workbook_import, changed):
     import_url, review_path = workbook_import
@@ -393,6 +425,44 @@ def publish_fixture(client, book, blocks):
 def fixture_block(rows, columns, **extra):
     return {'header_rows': rows, 'data_start_row': rows[-1] + 1, 'data_end_row': rows[-1] + 2,
             'date_mode': 'none', 'columns': columns, **extra}
+
+
+def test_cleanup_publishes_restored_station_names_without_duplicating_notes(client, monkeypatch):
+    book = Workbook()
+    sheet = book.active
+    sheet.title = '气象数据'
+    stations = ['阿克苏:阿拉尔', '喀什:喀什']
+    measure = 'Ave. T. (ºC)'
+    sheet.append([None, *stations])
+    sheet.append(['日期', measure, measure])
+    sheet.append([None, NOTE])
+    sheet.merge_cells('B3:C3')
+    for day in (1, 2):
+        sheet.append([datetime(2024, 1, day), 10, 11])
+    block = fixture_block([1, 2, 3], [
+        {'column': col, 'metric': f'{station} / {measure} / {NOTE}',
+         'header_cells': [f'{col}1', f'{col}2', 'B3']}
+        for col, station in zip('BC', stations)
+    ], date_mode='date', date_column='A')
+    url, _ = publish_fixture(client, book, [block])
+    suggestion = suggest_roles(
+        [{'row': 1, 'role': 'note'}, {'row': 2, 'role': 'name'}, {'row': 3, 'role': 'note'}],
+        {'name': ['A2', 'B2', 'C2'], 'note': ['B1', 'C1', 'B3']},
+    )
+    mock_header_model(monkeypatch, lambda _: suggestion)
+
+    started = start_cleanup(client, url)
+    proposed, = poll(client, started)['sheets']
+    names = [f'{station} / {measure}' for station in stations]
+    assert [change['new_name'] for change in proposed['changes']] == names
+    assert proposed['mapping']['blocks'][0]['header_note_cells'] == ['B3']
+    applied = apply_cleanup(client, url, started.json()['id'], sheet.title)
+    assert applied['renamed_fields'] == 2
+    catalogue = read_series(client, applied['dataset_id'])
+    for col, name in zip('BC', names):
+        field = catalogue[sheet.title, name]
+        assert field['header_cells'] == [f'{col}1', f'{col}2']
+        assert field['field_metadata']['header_notes'] == [{'cell': 'B3', 'text': NOTE}]
 
 
 def test_cleanup_keeps_steel_note_suggestion_and_unresolved_other_block(client, monkeypatch):

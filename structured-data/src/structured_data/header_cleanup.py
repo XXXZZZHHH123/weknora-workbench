@@ -3,7 +3,7 @@ from hashlib import sha256
 import time
 
 from .ai_review import (AIRequestBudget, HeaderCleanupModelError, _EvidenceTooLarge, _header_change_notice,
-                        _verified_source_path, suggest_header_cleanup)
+                        _verified_source_path, header_name_conflicts, suggest_header_cleanup)
 from .batch_ai_import import BATCH_AI_TIMEOUT
 from .model_settings import read_model
 from .review_errors import ReviewValidationError
@@ -153,6 +153,9 @@ def apply(manager, import_id, result, sheets, *, task, check_write):
             row['error'] = STALE_SHEET
             continue
         mapping = proposal['mapping']
+        if header_name_conflicts(_mapping(sheet), mapping):
+            row['error'] = '改名后出现重名，请重新整理'
+            continue
         try:
             check_write()
             review = task('review', import_id=import_id, mapping=mapping)
