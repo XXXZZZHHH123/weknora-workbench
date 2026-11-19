@@ -97,6 +97,7 @@
   }
   function body() {
     return {draft_id: draft.draft_id, title: get('title').value.trim(), sentence: draft.sentence,
+      summary: get('summary').value.trim(),
       logic: get('logic').value, enabled: editingItem?.enabled ?? true,
       ...(draft.report_candidate ? {report_rule_indexes: draft.rules.map(rule => rule._originalIndex)} : {}),
       rules: draft.rules.map(rule => {
@@ -293,6 +294,7 @@
         _candidates: rule._candidates || result.candidates.filter(item => item.rule_index === index)}))};
     get('setup-candidates').hidden = !result.fromSetup;
     get('title').value = edits?.title ?? (editingItem?.title || result.title);
+    get('summary').value = edits?.summary ?? editingItem?.summary ?? result.summary ?? '';
     get('logic').value = edits?.logic ?? result.logic;
     customDraftWindow = edits?.customWindow || false;
     setWindow('', edits?.window || result.default_window || {});
@@ -382,6 +384,8 @@
   async function viewItem(item, {adjust = false, scroll = true} = {}) {
     const query = adjust ? new URLSearchParams(windowParams('view-')).toString() : '';
     const result = await request('/monitors/' + encodeURIComponent(item.id) + '/backtest' + (query ? '?' + query : ''));
+    if (viewedItem?.id !== item.id) get('view-source').open = false;
+    get('view-sentence').textContent = item.sentence;
     viewedItem = item; setWindow('view-', result);
     get('view').hidden = false; get('view-title').textContent = item.title + ' · 历史回测';
     display(get('view-result'), result);
@@ -399,7 +403,9 @@
       if (item.id === highlightedId) row.setAttribute('aria-current', 'true');
       const copy = node('div', undefined, 'monitor-list-copy');
       const title = node('div', undefined, 'affairs-row-title'); title.append(node('span', item.current_state || '未检查', 'affairs-row-kind'), node('span', item.title));
-      copy.append(title, node('div', item.sentence, 'affairs-row-detail'), node('div',
+      const description = item.summary || item.rules.map(rule => rule.label).join(item.logic === 'any' ? ' 或 ' : ' 且 ');
+      const detail = node('div', description, 'affairs-row-detail monitor-description'); detail.title = description;
+      copy.append(title, detail, node('div',
         `最近触发 ${item.last_trigger || '无'} · v${item.revision}` + (item.checked_at ? ' · 检查于 ' + item.checked_at.slice(0, 16).replace('T', ' ') : ''), 'affairs-row-detail'));
       for (const rule of item.rule_states || []) copy.append(node('p',
         [`第${rule.rule_index + 1}条规则`, rule.label, rule.state, rule.notice].filter(Boolean).join(' · '), 'affairs-row-detail'));
@@ -408,7 +414,7 @@
       enabled.setAttribute('aria-label', '启用 ' + item.title);
       enabled.addEventListener('change', () => void act(async () => {
         await request('/monitors/' + encodeURIComponent(item.id), {revision: item.revision, enabled: enabled.checked}, 'PATCH');
-        await loadList(); status(enabled.checked ? '监测已启用，下一次检查将核对条件。' : '监测已停用。');
+        await loadList({changed: true}); status(enabled.checked ? '监测已启用，下一次检查将核对条件。' : '监测已停用。');
       }, () => { enabled.checked = item.enabled; }));
       actions.append(field('启用', enabled));
       const view = node('button', '查看', 'affairs-check'); view.type = 'button';
@@ -419,20 +425,23 @@
       remove.addEventListener('click', () => void act(async () => {
         await request('/monitors/' + encodeURIComponent(item.id) + '?revision=' + item.revision, undefined, 'DELETE');
         if (viewedItem?.id === item.id) closeView();
-        await loadList(); status('监测已删除，版本记录已保留。');
+        await loadList({changed: true}); status('监测已删除，版本记录已保留。');
       })); actions.append(view, revise, remove); row.append(copy, actions); return row;
     });
     get('list').replaceChildren(...(rows.length ? rows : [node('div', '还没有保存监测。', 'affairs-empty')]));
     sync();
   }
-  async function loadList({reveal = false} = {}) {
+  let pendingChange = false;
+  async function loadList({reveal = false, changed = false} = {}) {
+    pendingChange ||= changed;
     const token = ++listToken, result = await request('/monitors');
     if (token !== listToken) return;
     const items = result.items || [];
     monitorItems = items;
     canWrite = result.can_write === true; renderList(items);
     window.dispatchEvent(new CustomEvent('monitors-changed', {detail: {
-      count: items.length, enabled: items.some(item => item.enabled), alerts: result.alerts}}));
+      count: items.length, enabled: items.some(item => item.enabled), alerts: result.alerts, items, changed: pendingChange}}));
+    pendingChange = false;
     if (root.open && !get('list-panel').hidden) {
       if (reveal || deepLinkId) get('list').querySelector('[aria-current=true]')?.scrollIntoView({block: 'nearest'});
       if (deepLinkId && !busy) {
@@ -490,12 +499,12 @@
     if (openDeepLink()) void loadList().catch(error => status(error.message, true));
   }
   window.addEventListener('hashchange', followDeepLink);
-  // Following the current URL does not fire hashchange after the dialog closes.
-  document.getElementById('affairs-alert-list').addEventListener('click', event => {
+  document.addEventListener('click', event => {
     if (event.defaultPrevented || event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-    const link = event.target.closest('a[data-kind="monitor"]');
-    if (link?.href !== window.location.href) return;
+    const link = event.target.closest('a[data-kind="monitor-resident"], a[data-monitor-toast]');
+    if (!link) return;
     event.preventDefault();
+    if (link.href !== window.location.href) window.history.pushState(null, '', link.href);
     followDeepLink();
   });
   openDeepLink();
@@ -513,6 +522,7 @@
         restoreChoice(); return;
       }
       if (draft?.fromSetup) setupDrafts.set(previous, {draft, sentence, title: get('title').value, logic: get('logic').value,
+        summary: get('summary').value,
         customWindow: customDraftWindow, window: {start: get('start').value, end: get('end').value}});
       showSetupDraft(result, cached);
     }, restoreChoice);
@@ -551,7 +561,7 @@
     editingItem = null; get('sentence').value = ''; clearDraft();
     if (!remaining) showMode('list');
     else if (root.open) get('setup-choice').focus({preventScroll: true});
-    await loadList({reveal: true});
+    await loadList({reveal: true, changed: true});
     status(remaining ? `${message} 可继续选择其他周报监测候选。` : message);
   }));
   get('cancel').addEventListener('click', clearDraft);

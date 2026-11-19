@@ -34,13 +34,13 @@ def check_current(scope, *, day=None):
         result['partial'] = result['partial'] or strategy['partial']
         if strategy['notice']:
             result['notice'] = (result['notice'] + ' ' if result['notice'] else '') + strategy['notice']
-    from tin.web.monitors import check_monitors
+    from tin.web.monitors import check_monitors, list_monitors
     monitors = check_monitors(scope, cutoff, checked)
     result['alerts'].extend(monitors['alerts'])
     result['checked_monitors'] = monitors['checked']
-    from tin.web.monitors import recorded_monitor_alerts
-    with workbench_scope.artifact_session(scope) as session:
-        result['monitor_alerts'] = recorded_monitor_alerts(session, scope)
+    listed = list_monitors(scope)
+    result['monitor_alerts'] = listed['alerts']
+    result['monitors'] = [item for item in listed['items'] if item['enabled']]
     result['partial'] = result['partial'] or monitors['partial']
     if monitors['notice']:
         result['notice'] += ' ' + monitors['notice']

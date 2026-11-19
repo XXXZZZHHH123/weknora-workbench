@@ -15,8 +15,8 @@ from sqlalchemy import select
 from tin.config import settings
 from tin.integration.identity import Identity, current_identity
 from tin.integration.workbench_scope import WorkbenchScope, artifact_session, current_workbench
-from tin.models.workbench import WorkbenchArtifactRevision
-from tin.web import analysis_jobs, judgment_jobs, monitors
+from tin.models.workbench import WorkbenchArtifact, WorkbenchArtifactRevision
+from tin.web import affairs, analysis_jobs, judgment_jobs, monitors
 
 JOBS = '/api/sn/analysis-jobs'
 URL = '/api/sn/monitors'
@@ -45,6 +45,7 @@ def monitor_client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, 'data_dir', tmp_path)
     app, state = FastAPI(), {}
     app.include_router(monitors.router)
+    app.include_router(affairs.router)
     app.include_router(analysis_jobs.router)
     @app.middleware('http')
     async def scoped(request, call_next):
@@ -139,6 +140,26 @@ def test_personal_monitor_revisions_and_provenance(monitor_client):
     assert client.get(URL + '/' + item['id'] + '/revisions', headers={'x-actor': 'second'}).status_code == 404
 
 
+def test_monitor_summary_saved_revised_and_legacy_default(monitor_client):
+    client, state = monitor_client
+    request = body(state, summary='  库存增加两期  ')
+    assert client.post(URL, json={**request, 'summary': '字' * 41}).status_code == 422
+    saved = client.post(URL, json=request).json()
+    assert saved['summary'] == '库存增加两期'
+    url = URL + '/' + saved['id']
+    revised = client.patch(url, json={**request, 'revision': 1, 'summary': ' 库存高于阈值 '})
+    assert revised.status_code == 200 and revised.json()['summary'] == '库存高于阈值'
+    assert [row['monitor']['summary'] for row in client.get(url + '/revisions').json()['items']] == [
+        '库存高于阈值', '库存增加两期']
+    with artifact_session(state['scope']) as session:
+        row = session.get(WorkbenchArtifact, saved['id'])
+        payload = monitors._body(row)
+        del payload['summary']
+        row.body = json.dumps(payload)
+        session.commit()
+    assert client.get(URL).json()['items'][0]['summary'] == ''
+
+
 def test_draft_belongs_to_account_and_workspace(monitor_client):
     client, state = monitor_client
     request = body(state)
@@ -148,7 +169,9 @@ def test_draft_belongs_to_account_and_workspace(monitor_client):
     assert client.post(URL, json=request, headers={'x-role': 'viewer'}).status_code == 403
 
 
-def test_model_draft_recall_and_per_rule_candidate_validation(monitor_client, monkeypatch):
+@pytest.mark.parametrize(('output_summary', 'expected'), [({}, ''), ({'summary': '  '}, ''),
+    ({'summary': '字' * 41}, ''), ({'summary': ' 仓单连续增加 '}, '仓单连续增加')])
+def test_model_draft_recall_and_per_rule_candidate_validation(monitor_client, monkeypatch, output_summary, expected):
     from tin.web import strategy_text
     client, state = monitor_client
     calls = []
@@ -156,11 +179,12 @@ def test_model_draft_recall_and_per_rule_candidate_validation(monitor_client, mo
     monkeypatch.setattr(monitors, '_draft_context', lambda scope: ([], catalog))
     async def completion(scope, model, prompt, **kwargs):
         calls.append((prompt, kwargs))
-        return model_output() if len(calls) == 1 else {'picks': {'0': ['r1']}}
+        return model_output(title='仓单' * 9, **output_summary) if len(calls) == 1 else {'picks': {'0': ['r1']}}
     monkeypatch.setattr(strategy_text, 'completion', completion)
     response = draft_request(client, {'sentence': '连续增加时提醒我', 'model_id': 'fixture'})
     assert response.status_code == 200, response.text
     draft = response.json()
+    assert draft['summary'] == expected and draft['title'] == '仓单' * 9
     assert draft['rules'][0]['series_id'] == SID
     assert draft['candidates'][0]['series_id'] == SID
     assert draft['candidates'][0]['rule_index'] == 0
@@ -168,7 +192,7 @@ def test_model_draft_recall_and_per_rule_candidate_validation(monitor_client, mo
     assert calls[1][1]['purpose'] == 'monitor_selection'
     assert '不要输出series_id' in calls[0][0]
     assert client.post(URL, json={key: draft[key] for key in (
-        'draft_id', 'title', 'sentence', 'logic', 'rules')}).status_code == 201
+        'draft_id', 'title', 'sentence', 'summary', 'logic', 'rules')}).status_code == 201
 
 
 def test_draft_displays_real_candidate_coverage_without_changing_model_selection(monitor_client, monkeypatch):
@@ -254,10 +278,10 @@ def test_report_monitors_validate_individual_candidates_and_leave_unknown_rules_
         if purpose == 'monitor_draft':
             assert '分别为每个关注点' in prompt and '勿擅自换算' in prompt
             return {'candidates': [
-                model_output(rules=[model_rule(), model_rule(indicator_description=None),
+                model_output(summary='字' * 41, rules=[model_rule(), model_rule(indicator_description=None),
                                     model_rule(indicator_description='基差')]),
                 model_output(logic='any', rules=[model_rule()] * 9),
-                model_output(title='价格观察', confirmations=[note], rules=[
+                model_output(title='价格观察', summary=' 价格高于58 ', confirmations=[note], rules=[
                     model_rule(value=58, definition=note), model_rule()]),
             ]}
         assert '1-1' not in prompt
@@ -268,6 +292,7 @@ def test_report_monitors_validate_individual_candidates_and_leave_unknown_rules_
     assert calls == ['monitor_draft', 'monitor_selection']
     assert result['failures'] == [{'index': 2, 'reason': '每个关注点须包含 1 至 6 条规则'}]
     first, second = result['candidates']
+    assert first['summary'] == '' and second['summary'] == '价格高于58'
     assert [row['series_id'] for row in first['rules']] == [SID, None, None]
     assert [row.get('needs_indicator', False) for row in first['rules']] == [False, True, True]
     assert [row['series_id'] for row in second['rules']] == [SID, None]
@@ -366,7 +391,7 @@ def test_checks_alert_only_on_transition_and_persist(monitor_client, monkeypatch
         return monitors.check_monitors(scope, date(2026, 1, 2), '2026-01-02T12:00:00+08:00')
     assert check()['alerts'] == []
     current['state'] = '触发'
-    assert len(check()['alerts']) == 1
+    assert [alert['detail'] for alert in check()['alerts']] == [rule()['label']]
     assert check()['alerts'] == []
     current['state'] = '数据停更'
     assert check()['alerts'] == []
@@ -391,13 +416,23 @@ def test_checks_alert_only_on_transition_and_persist(monitor_client, monkeypatch
 
 def test_home_only_monitor_is_included_in_affairs_check(monitor_client, monkeypatch):
     from tin.web.affairs_check import check_current
+    from tin.web.affairs import build_affairs
     client, state = monitor_client
-    client.post(URL, json=body(state))
+    enabled = client.post(URL, json=body(state, summary='库存增加两期')).json()
+    client.post(URL, json=body(state, enabled=False))
     scope = replace(state['scope'], scope_version=2)
     monkeypatch.setattr(monitors, 'backtest', lambda *args, **kwargs: {'current_state': '触发', 'series': []})
-    first = check_current(scope, day=date(2026, 1, 2))
-    assert first['checked_monitors'] == 1 and len(first['alerts']) == 1
+    response = client.post('/api/sn/affairs/check')
+    assert response.status_code == 200, response.text
+    first = response.json()
+    assert first['checked_monitors'] == 1 and [alert['detail'] for alert in first['alerts']] == ['库存增加两期']
+    assert [(item['id'], item['current_state']) for item in first['monitors']] == [(enabled['id'], '触发')]
     assert check_current(scope, day=date(2026, 1, 2))['alerts'] == []
+    with artifact_session(scope) as session:
+        home = build_affairs(session, scope)
+    assert home['alerts'] == [] and home['monitor_count'] == 2
+    assert [(item['title'], item['current_state'], item['detail']) for item in home['monitors']] == [
+        (enabled['title'], '触发', '库存增加两期')]
 
 
 def test_expired_candidate_draft_rejected(monitor_client):

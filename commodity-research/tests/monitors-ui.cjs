@@ -9,7 +9,8 @@ const rule = {series_id: 'synthetic-a', metric: 'change', operator: '>', value: 
 const monthly = {series_id: 'synthetic-monthly', metric: 'value', operator: '>', value: 50,
   consecutive_periods: 1, label: '合成月度观测', definition: '月度观测值大于五十'};
 const sourceError = '所选指标含未确认日期，无法确定均线观测顺序，请先核对原表日期 <img src=x onerror=window.__monitorXss=1>';
-const draft = {draft_id: 'offered-fixture', title: '合成监测 <script>unsafe</script>', sentence: '合成周观测连续增加两期且合成月观测大于五十时提醒我',
+const draft = {draft_id: 'offered-fixture', title: '合成监测 <script>unsafe</script>', summary: '合成周观测增加两期',
+  sentence: '合成周观测连续增加两期\n且合成月观测大于五十时提醒我',
   default_window: {start: '2028-01-20', end: '2030-01-20', window_reason: '按数据可用区间回测'},
   logic: 'all', rules: [rule, monthly], confirmations: ['请确认变化按相邻观测计算'], candidates: [
     {rule_index: 0, series_id: 'synthetic-a', name: '合成观测A', unit: '吨', frequency: '周',
@@ -47,7 +48,7 @@ async function setupMonitorReview(browser) {
   const reviews = [
     {...draft, draft_id: 'report-review-1', title: titles[0], rules: [{...rule, series_id: null,
       needs_indicator: true, value: 58, definition: note}], candidates: [], confirmations: [note]},
-    {...draft, draft_id: 'report-review-2', title: titles[1]},
+    {...draft, draft_id: 'report-review-2', title: titles[1], summary: '第二个候选指标下降'},
   ];
   const setupId = 'monitor-setup-fixture-001';
   const html = f.render('home.html', {}, {affairs}).replace('</head>',
@@ -78,10 +79,13 @@ async function setupMonitorReview(browser) {
     assert.equal(await p.getByLabel('第1条规则指标', {exact: true}).inputValue(), '');
     assert.match(await p.locator('[data-coverage]').innerText(), /需研究员指定指标/);
     await p.getByLabel('标题', {exact: true}).fill('研究员已编辑标题');
+    await p.getByLabel('简介', {exact: true}).fill('研究员已编辑简介');
     await p.getByLabel('周报监测候选').selectOption('1');
     await p.waitForFunction(title => document.getElementById('monitor-title').value === title, titles[1]);
+    assert.equal(await p.locator('#monitor-summary').inputValue(), reviews[1].summary);
     await p.getByLabel('周报监测候选').selectOption('0');
     await p.waitForFunction(() => document.getElementById('monitor-title').value === '研究员已编辑标题');
+    assert.equal(await p.locator('#monitor-summary').inputValue(), '研究员已编辑简介');
     await p.getByText('在授权指标目录中选取', {exact: true}).click();
     await p.getByLabel('第1条规则目录搜索结果').selectOption('synthetic-manual');
     assert.equal(await p.getByLabel('第1条规则指标', {exact: true}).inputValue(), 'synthetic-manual');
@@ -160,7 +164,7 @@ async function setupMonitorReview(browser) {
         checks.push(true); Object.assign(saved[0], {current_state: '触发', last_trigger: '2030-01-15'});
         const alert = {kind: 'monitor', title: '合成监测', detail: '组合条件进入触发', href: '/?monitor=monitor-fixture#monitors'};
         savedAlerts = [alert];
-        return reply({alerts: checks.length === 1 ? [alert] : [], monitor_alerts: savedAlerts,
+        return reply({alerts: checks.length === 1 ? [alert] : [], monitor_alerts: savedAlerts, monitors: saved.filter(item => item.enabled),
           checked_monitors: 1, checked_rules: 0, checked_at: '2030-01-20T10:00:00', partial: false});
       }
       return false;
@@ -244,19 +248,32 @@ async function setupMonitorReview(browser) {
     await dialog.locator('[data-monitor-id="monitor-fixture"][aria-current="true"]').waitFor();
     assert.equal(await listToggle.innerText(), '监测 1');
     assert.match(await page.locator('#monitor-list').innerText(), /合成监测 <script>unsafe<\/script>.*未检查|未检查.*合成监测 <script>unsafe<\/script>/s);
+    assert.equal(await page.locator('#monitor-list .monitor-description').innerText(), draft.summary);
+    assert.ok(!(await page.locator('#monitor-list').textContent()).includes(draft.sentence));
+    const resident = page.locator('#affairs-alert-list [data-kind="monitor-resident"]');
+    assert.equal(await resident.getAttribute('data-status'), '未检查');
     await close.click();
     await page.waitForFunction(() => document.activeElement.id === 'monitor-create-toggle');
     assert.equal(await page.locator('#affairs-check').isEnabled(), true, 'Saving the first enabled monitor makes the existing check button usable');
     await page.locator('#affairs-check').click();
-    await page.locator('#affairs-alert-list .affairs-row-kind').filter({hasText: '监测触发'}).waitFor();
+    await page.locator('#affairs-alert-list [data-kind="monitor-resident"][data-status="触发"]').waitFor();
+    const toasts = page.locator('#affairs-monitor-toasts');
+    await toasts.getByText('监测触发', {exact: true}).waitFor();
     assert.equal(await page.locator('#affairs-alert-list a').getAttribute('href'), f.prefix + '/?monitor=monitor-fixture#monitors');
     await page.waitForFunction(() => document.getElementById('monitor-list').textContent.includes('2030-01-15'));
+    await page.evaluate(() => { window.__sameAffairsDocument = true; });
+    await toasts.getByRole('link', {name: '查看', exact: true}).click();
+    await page.waitForURL('**/?monitor=monitor-fixture#monitors');
+    await dialog.locator('[data-monitor-id="monitor-fixture"][aria-current="true"]').waitFor();
+    assert.equal(await page.evaluate(() => window.__sameAffairsDocument), true);
+    await close.click();
+    await toasts.getByRole('button', {name: '关闭监测提示'}).click();
     await page.locator('#affairs-check').click();
     await page.waitForFunction(() => document.getElementById('affairs-check').dataset.busy === 'false');
-    assert.equal(await page.locator('#affairs-alert-list .affairs-row-kind').filter({hasText: '监测触发'}).count(), 1,
-      'A repeated check retains exactly one persisted monitor reminder');
+    assert.equal(await resident.count(), 1, 'A repeated check retains exactly one resident row');
+    assert.equal(await toasts.locator('.affairs-monitor-toast').count(), 0);
     assert.equal(checks.length, 2);
-    await page.evaluate(() => { window.location.hash = '#monitors'; });
+    await page.evaluate(() => { history.replaceState(null, '', location.pathname); window.location.hash = '#monitors'; });
     await page.getByRole('dialog', {name: '我的监测'}).waitFor();
     await page.waitForFunction(() => !document.querySelector('[data-monitor-id][aria-current="true"]'));
     assert.equal(await page.locator('[data-monitor-id][aria-current="true"]').count(), 0);
@@ -264,22 +281,31 @@ async function setupMonitorReview(browser) {
     await page.locator('#affairs-alert-list a').click();
     await page.waitForURL('**/?monitor=monitor-fixture#monitors');
     await page.locator('#monitor-list-panel:not([hidden]) [data-monitor-id="monitor-fixture"][aria-current="true"]').waitFor();
+    assert.equal(await page.evaluate(() => window.__sameAffairsDocument), true);
     assert.notEqual(await page.locator('[data-monitor-id="monitor-fixture"]').evaluate(element => getComputedStyle(element).boxShadow), 'none');
     await close.click();
     await dialog.waitFor({state: 'hidden'});
     await page.locator('#affairs-alert-list a').click();
     await page.getByRole('dialog', {name: '我的监测'}).waitFor();
     await dialog.locator('[data-monitor-id="monitor-fixture"][aria-current="true"]').waitFor();
-    Object.assign(saved[0], {current_state: '无法判断', rule_states: [
+    Object.assign(saved[0], {summary: '', current_state: '无法判断', rule_states: [
       {rule_index: 0, label: rule.label, state: '无法判断', notice: sourceError},
       {rule_index: 1, label: monthly.label, state: '触发', notice: ''}]});
     await page.getByRole('button', {name: '刷新列表', exact: true}).click();
     await page.waitForFunction(() => document.getElementById('monitor-list').textContent.includes('所选指标含未确认日期'));
+    const fallback = saved[0].rules.map(rule => rule.label).join(saved[0].logic === 'any' ? ' 或 ' : ' 且 ');
+    assert.equal(await page.locator('#monitor-list .monitor-description').getAttribute('title'), fallback);
+    assert.ok((await resident.locator('.monitor-description').textContent()).startsWith(fallback));
     assert.match(await page.locator('#monitor-list').innerText(), /第1条规则.*无法判断.*所选指标含未确认日期/s);
     assert.match(await page.locator('#monitor-list').innerText(), /第2条规则.*触发/s);
     assert.equal(await page.evaluate(() => window.__monitorXss), undefined);
     await page.locator('[data-monitor-id="monitor-fixture"]').getByRole('button', {name: '查看', exact: true}).click();
     await page.locator('#monitor-view [data-event-marker="2030-01-15"]').first().waitFor();
+    const original = page.locator('#monitor-view-source');
+    assert.equal(await original.evaluate(details => details.open), false);
+    await original.getByText('原文', {exact: true}).click();
+    assert.equal(await original.locator('#monitor-view-sentence').textContent(), draft.sentence);
+    assert.equal(await original.locator('#monitor-view-sentence').evaluate(element => getComputedStyle(element).whiteSpace), 'pre-wrap');
     assert.equal(await page.getByLabel('已保存监测回测起始日期', {exact: true}).inputValue(), backtest.start);
     await page.getByLabel('已保存监测回测起始日期', {exact: true}).fill('2030-01-04');
     await page.getByLabel('已保存监测回测结束日期', {exact: true}).fill('2030-01-19');
@@ -295,11 +321,14 @@ async function setupMonitorReview(browser) {
     }
     await page.getByLabel('启用 ' + draft.title, {exact: true}).uncheck();
     await page.waitForFunction(() => document.getElementById('monitor-list').textContent.includes('v2'));
+    assert.equal(await resident.count(), 0);
     await dialog.getByRole('button', {name: '修订', exact: true}).click();
     await page.getByRole('dialog', {name: '修订监测'}).waitFor();
     assert.equal(await page.getByLabel('监测需求原话').inputValue(), draft.sentence);
     await page.getByRole('button', {name: '生成草稿', exact: true}).click();
     await page.locator('#monitor-draft:not([hidden])').waitFor();
+    assert.equal(await page.locator('#monitor-summary').inputValue(), '', 'Revision uses the saved summary instead of the model summary');
+    await page.getByLabel('简介', {exact: true}).fill('已修订的简介');
     await page.getByLabel('第1条规则指标', {exact: true}).selectOption('synthetic-b');
     await page.getByLabel('第1条规则阈值', {exact: true}).fill('7');
     await dialog.getByLabel('标题', {exact: true}).fill('修订后的监测');
@@ -315,12 +344,13 @@ async function setupMonitorReview(browser) {
     await listToggle.click();
     await dialog.getByText('修订后的监测', {exact: true}).waitFor();
     assert.match(await page.locator('#monitor-list').innerText(), /v3/);
+    assert.equal(await page.locator('#monitor-list .monitor-description').innerText(), '已修订的简介');
     assert.equal(await dialog.getByLabel('启用 修订后的监测', {exact: true}).isChecked(), false);
     assert.equal(await dialog.locator('#monitor-view').isHidden(), true);
     await page.locator('[data-monitor-id="monitor-fixture"]').getByRole('button', {name: '删除', exact: true}).click();
     await page.getByText('还没有保存监测。', {exact: true}).waitFor();
     assert.equal(await listToggle.innerText(), '监测 0');
-    assert.equal(await page.locator('#affairs-alert-list [data-kind="monitor"]').count(), 0);
+    assert.equal(await resident.count(), 0);
     assert.equal(checks.length, 2, 'Removing a monitor refreshes saved alerts without running a new source check');
     assert.equal(await page.locator('#affairs-check').isDisabled(), true);
     offeredDraft = sparseDraft;
@@ -377,6 +407,7 @@ async function setupMonitorReview(browser) {
     await page.goto(f.origin + f.prefix + '/?analysis_job=' + jobId);
     await page.locator('#monitor-draft:not([hidden])').waitFor();
     assert.equal(await page.getByLabel('监测需求原话').inputValue(), offeredDraft.sentence);
+    assert.equal(await page.locator('#monitor-summary').inputValue(), offeredDraft.summary);
     assert.equal(saved.length, savedCount, '取回只打开监测草稿');
     assert.deepEqual(env.errors, []);
     const restrictedHtml = f.render('home.html', {restricted: true}, {affairs});

@@ -257,10 +257,17 @@ def build_affairs(session, scope, *, today=None, limit=8):
                                'href': '/sn/reports?date=' + day + '&period=weekly'})
     alerts, truncated = _recorded_alerts(session, judgments, limit)
     partial |= truncated
-    from tin.web.monitors import recorded_monitor_alerts, _rows, _body
+    from tin.web.monitors import _body, _monitor_states, _rows, monitor_description, serialize
     monitors = _rows(session, scope)
-    alerts.extend(recorded_monitor_alerts(session, scope, monitor_ids={row.id for row in monitors}))
-    enabled_monitors = any(_body(row)['enabled'] for row in monitors)
+    enabled = [row for row in monitors if _body(row)['enabled']]
+    states = _monitor_states(session, scope, {row.id for row in enabled})
+    residents = []
+    for row in enabled:
+        item = serialize(row, states.get(row.id))
+        residents.append({'title': item['title'], 'current_state': item['current_state'],
+            'detail': monitor_description(item), 'last_trigger': item['last_trigger'],
+            'href': '/?monitor=' + row.id + '#monitors'})
+    residents.sort(key=lambda item: item['title'])
     review.sort(key=lambda item: item['due_date'])
     counts = {'progress': len(progress), 'review': len(review), 'approvals': len(approvals) + len(observations),
               'reports': len(reports)}
@@ -276,8 +283,8 @@ def build_affairs(session, scope, *, today=None, limit=8):
     return {'alerts': alerts, 'progress': progress[:limit], 'review': review[:limit], 'approvals': approvals[:limit],
         'observations': observations[:limit], 'reports': reports[:limit], 'report_links': report_links, 'counts': counts, 'sections': sections, 'shortcuts': shortcuts, 'partial': partial,
         'record_budget': RECORD_BUDGET, 'signal_budget': SIGNAL_BUDGET, 'monitored_strategies': monitored,
-        'monitor_count': len(monitors), 'can_check_rules': can_check_rules,
-        'can_check': can_check_rules or enabled_monitors}
+        'monitor_count': len(monitors), 'monitors': residents, 'can_check_rules': can_check_rules,
+        'can_check': can_check_rules or bool(residents)}
 
 
 @router.post('/check')

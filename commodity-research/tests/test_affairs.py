@@ -173,8 +173,12 @@ def test_affairs_template_has_alerts_and_real_deep_links_without_fake_health_cla
     with artifact_session(scope) as session:
         result = build_affairs(session, scope, today=TODAY)
     result['alerts'][0]['title'] = '<img src=x onerror=unsafe>'
-    result['alerts'].append({'kind': 'monitor', 'title': 'Saved monitor', 'detail': 'Entered trigger',
+    result['alerts'].append({'kind': 'monitor', 'title': 'Old monitor alert', 'detail': 'Entered trigger',
                              'href': '/?monitor=fixture-monitor#monitors'})
+    result['monitors'] = [
+        {'title': 'Idle monitor', 'current_state': '未触发', 'detail': '指标甲 且 指标乙', 'href': '/?monitor=idle#monitors'},
+        {'title': 'Saved monitor', 'current_state': '触发', 'detail': '指标连续增加', 'last_trigger': '2026-03-03',
+         'href': '/?monitor=fixture-monitor#monitors'}]
     templates = Path(__file__).parents[1] / 'src/tin/web/templates'
     environment = Environment(loader=ChoiceLoader([DictLoader({'base.html': '{% block head %}{% endblock %}{% block main %}{% endblock %}'}),
         FileSystemLoader(templates)]), autoescape=select_autoescape(['html']))
@@ -190,7 +194,12 @@ def test_affairs_template_has_alerts_and_real_deep_links_without_fake_health_cla
     assert 'id="affairs-alert-list"' in alert_card and 'id="affairs-check-status"' in alert_card
     assert '<dialog' not in alert_card and 'monitor-create-panel' not in alert_card and 'monitor-list-panel' not in alert_card
     assert html.index('class="affairs-grid"') < html.index('<dialog id="monitors"') < html.index('id="monitor-list-panel"')
-    assert '/wb/?monitor=fixture-monitor#monitors' in html and '>监测触发</span>Saved monitor' in html
+    assert '/wb/?monitor=fixture-monitor#monitors' in html and '>触发</span>Saved monitor' in html
+    assert alert_card.count('data-kind="monitor-resident"') == 2 and 'Old monitor alert' not in alert_card
+    assert alert_card.index('Saved monitor') < alert_card.index('&lt;img') < alert_card.index('Idle monitor')
+    assert '指标连续增加 · 最近触发 2026-03-03' in alert_card
+    restricted = environment.get_template('home.html').render(affairs=result, restricted_view=True, err=None)
+    assert 'monitor-resident' not in restricted and 'affairs-monitor-toasts' not in restricted
     assert '已记录预警' not in html
     assert 'affairs-check' in html and 'period=weekly' in html
     assert '<img src=x' not in html and '&lt;img' in html

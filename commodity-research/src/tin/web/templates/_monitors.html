@@ -23,7 +23,7 @@
   <div id="monitor-draft" hidden>
     <div class="affairs-section-head"><h2>监测草稿</h2><button id="monitor-cancel" type="button" class="affairs-check">收起草稿</button></div>
     <div class="monitor-content">
-      <div class="monitor-fields"><label>标题 <input id="monitor-title" type="text" maxlength="120"></label><label>组合方式 <select id="monitor-logic"><option value="all">全部满足（且）</option><option value="any">任一满足（或）</option></select></label></div>
+      <div class="monitor-fields"><label>标题 <input id="monitor-title" type="text" maxlength="120"></label><label>简介 <input id="monitor-summary" type="text" maxlength="40"></label><label>组合方式 <select id="monitor-logic"><option value="all">全部满足（且）</option><option value="any">任一满足（或）</option></select></label></div>
       <div id="monitor-rules"></div>
       <div id="monitor-confirmations"><div class="affairs-row-title">需要你确认的口径</div><ul id="monitor-confirmation-list" class="affairs-row-detail"></ul></div>
       <div class="monitor-fields"><label>回测起始日期 <input id="monitor-start" type="date" aria-label="草稿回测起始日期"></label><label>回测结束日期 <input id="monitor-end" type="date" aria-label="草稿回测结束日期"></label></div>
@@ -37,6 +37,7 @@
   <div id="monitor-list"><div class="affairs-empty">正在读取监测…</div></div>
   <div id="monitor-view" hidden>
     <div class="affairs-section-head"><h2 id="monitor-view-title">历史回测</h2><button id="monitor-view-close" type="button" class="affairs-check">收起</button></div>
+    <details id="monitor-view-source" class="monitor-content"><summary>原文</summary><div id="monitor-view-sentence"></div></details>
     <div class="monitor-content monitor-fields"><label>回测起始日期 <input id="monitor-view-start" type="date" aria-label="已保存监测回测起始日期"></label><label>回测结束日期 <input id="monitor-view-end" type="date" aria-label="已保存监测回测结束日期"></label><button id="monitor-view-backtest" type="button" class="affairs-check">调整窗口后回测</button></div>
     <div id="monitor-view-result" class="monitor-content"></div>
   </div>
