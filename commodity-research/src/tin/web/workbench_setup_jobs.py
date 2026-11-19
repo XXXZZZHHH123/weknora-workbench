@@ -90,6 +90,18 @@ def part_data(config, part):
     raise HTTPException(404, '本次建立没有该部分的待核对结果')
 
 
+async def result_view(scope, config):
+    result = config['result']
+    for item in result['items']:
+        if item['part'] == 'charts' and item['state'] == 'succeeded':
+            item['data'] = await run_in_threadpool(report_chart_import.review_state, scope, item['data'],
+                                                   config.get('applied', {}))
+    return result
+
+
+analysis_jobs.result_views[PURPOSE] = result_view
+
+
 async def job_result(scope, job_id):
     result = await analysis_jobs.job_result(scope, job_id, expected_purpose=PURPOSE)
     return {key: result[key] for key in ('report', 'items')}

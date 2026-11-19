@@ -26,7 +26,8 @@ SOURCE = {'kind': 'knowledge_file', 'source_binding_id': 'binding', 'knowledge_i
 
 def candidate(identifier='chart', selected=SID):
     return {'id': identifier, 'page': 3, 'page_label': '第3页', 'title': 'Original chart title',
-        'chart_type': 'trend', 'evidence': [{'chunk_id': 'chunk', 'quote': 'Original chart title Legend'}],
+        'chart_type': 'trend', 'legend_semantics': 'indicators',
+        'evidence': [{'chunk_id': 'chunk', 'quote': 'Original chart title Legend'}],
         'series': [{'id': 's1', 'name': 'Original legend', 'unit': '件', 'selected_id': selected,
             'candidates': [{'id': key, 'name': name, 'unit': '件', 'frequency': 'weekly'}
                            for key, name in ((SID, 'First'), (OTHER, 'Second'))]}]}
@@ -61,6 +62,7 @@ def report_client(chart_client, monkeypatch):
     monkeypatch.setattr(imports.suggestions, 'read_report', read)
     monkeypatch.setattr(imports.suggestions, 'verify_report', verify)
     monkeypatch.setattr(imports.suggestions, 'recognize_batch', recognize)
+    monkeypatch.setattr(imports, 'source_status_hint', lambda scope: None)
     async def resolve(*args):
         return current_workbench.get()
     monkeypatch.setattr(judgment_jobs, 'resolve_workbench', resolve)
@@ -161,6 +163,108 @@ def test_end_to_end_drafts_mapping_real_preview_explicit_import_and_retry_receip
     assert created[0]['definition']['note'] == '' and created[0]['definition']['group'] == 'Editable group'
     assert '/sn/charts/' in created[0]['href']
     assert apply(client, identifier, [changed]).json()['created'][0]['id'] == created[0]['id']
+    assert client.get('/api/sn/charts').json()['total'] == 1
+
+
+def test_duplicate_of_preserves_source_order_and_library_flags_refresh_after_apply(report_client):
+    client, state = report_client
+    state.report_batches = 1
+    state.report_result = [candidate('first'), {**candidate('second'), 'page': 5}]
+    identifier, result = complete(client)
+    first, second = result['charts']
+    assert 'duplicate_of' not in first and not first['possible_duplicate']
+    assert second['duplicate_of'] == {'id': first['id'], 'page': 3, 'title': first['title']}
+    assert not second['possible_duplicate']
+    response = apply(client, identifier, [selection(first['id'])])
+    assert response.status_code == 200, response.text
+    assert response.json()['possible_duplicates'] == {first['id']: True, second['id']: True}
+    restored = client.get(f'{JOBS}/{identifier}/result').json()
+    assert all(chart['possible_duplicate'] for chart in restored['charts'])
+    assert restored['applied'][first['id']]['id'] == response.json()['created'][0]['id']
+    response = apply(client, identifier, [selection(second['id'])])
+    assert len(response.json()['created']) == 1
+    assert client.get('/api/sn/charts').json()['total'] == 2
+
+
+@pytest.mark.parametrize('setup', [False, True])
+@pytest.mark.parametrize('fail', [False, True])
+def test_rematch_retrieves_original_draft_and_preserves_confirmations(report_client, monkeypatch, setup, fail):
+    client, state = report_client
+    state.report_batches = 1
+    mixed = {**candidate('unmapped', selected=None), 'title': 'Pending chart title'}
+    state.report_result = [candidate('ready'), mixed]
+    state.fields.pop(OTHER)
+    hint = {'pending': 3, 'message': '知识库还有 3 张工作表待确认'}
+    monkeypatch.setattr(imports, 'source_status_hint', lambda scope: hint)
+
+    def charts(result):
+        return result['items'][0]['data'] if setup else result
+
+    if setup:
+        response = client.post('/api/sn/workbench-setup/jobs', json={
+            'source': SOURCE, 'model_id': 'model', 'parts': ['charts'],
+        }, headers={'Idempotency-Key': 'setup-rematch-test'})
+        assert response.status_code == 202, response.text
+        identifier = response.json()['id']
+        assert wait(client, identifier)['state'] == 'succeeded'
+    else:
+        identifier = submit(client)
+        assert wait(client, identifier)['state'] == 'succeeded'
+    base_url = f'{JOBS}/{identifier}/result'
+    first = apply(client, identifier, [selection('b1-ready')]).json()['created'][0]
+    before = charts(client.get(base_url).json())
+    assert before['source_status_hint'] == hint
+    assert before['applied']['b1-ready']['id'] == first['id']
+
+    from tests.chart_fixtures import FIELDS
+    state.fields[OTHER] = FIELDS[OTHER]
+    calls = []
+
+    async def completion(scope, model_id, prompt, *, purpose):
+        assert model_id == 'new-model' and len(prompt.encode()) <= imports.suggestions.PROMPT_BYTES
+        assert 'Pending chart title' in prompt
+        assert 'b1-ready/' not in prompt
+        calls.append(purpose)
+        if purpose == 'report_chart_queries':
+            return {'queries': {'b1-unmapped/s1': ['字段乙']}}
+        assert purpose == 'report_chart_fields' and OTHER in prompt
+        if fail:
+            raise HTTPException(502, '模拟模型调用失败')
+        return {'picks': {'b1-unmapped/s1': {'series_id': OTHER, 'reason': '字段口径一致'}}}
+
+    monkeypatch.setattr(imports.suggestions.strategy_text, 'completion', completion)
+    response = client.post(BASE + '/rematch', json={'job_id': identifier, 'model_id': 'new-model'},
+                           headers={'Idempotency-Key': 'report-rematch-test'})
+    assert response.status_code == 202, response.text
+    task = response.json()
+    assert task['id'] != identifier and task['purpose'] == 'report_chart_import'
+    rematch_url = f"{JOBS}/{task['id']}/result"
+    assert wait(client, task['id'])['state'] == ('failed' if fail else 'succeeded')
+    assert calls == ['report_chart_queries', 'report_chart_fields']
+    parent = client.get(base_url)
+    assert parent.status_code == 200, parent.text
+    after = charts(parent.json())
+    response = client.get(rematch_url)
+    if fail:
+        assert response.status_code == 409
+        assert after == before
+    else:
+        assert response.status_code == 200, response.text
+        restored = response.json()
+        assert restored['id'] == identifier and restored['request']['rematch_of'] == identifier
+        assert restored['charts'] == after['charts']
+        assert restored['applied'] == before['applied'] == after['applied']
+        assert after['charts'][0] == before['charts'][0]
+        resolved = after['charts'][1]
+        assert not resolved['missing_indicators'] and after['source_status_hint'] is None
+        assert resolved['series'][0]['selected_id'] == OTHER
+        for field in ('id', 'title', 'chart_type', 'evidence'):
+            assert resolved[field] == before['charts'][1][field]
+        assert resolved['series'][0]['name'] == before['charts'][1]['series'][0]['name']
+        latest = client.get(JOBS + '/latest?purpose=report_chart_import').json()['job']
+        assert latest['id'] == task['id']
+        assert client.get(rematch_url, headers={'x-actor': 'other'}).status_code == 404
+    assert apply(client, identifier, [selection('b1-ready')]).json()['created'][0]['id'] == first['id']
     assert client.get('/api/sn/charts').json()['total'] == 1
 
 

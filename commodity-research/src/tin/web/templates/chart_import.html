@@ -60,11 +60,19 @@
     <button type="button" id="report-chart-recognize" class="charts-button" disabled>识别周报中的图表</button>
     <button type="button" id="report-chart-restore" class="charts-button" hidden>查看后台识别结果</button>
     <div id="report-chart-status" role="status" aria-live="polite" hidden></div>
-    <p id="report-chart-progress" class="charts-muted" aria-live="polite"></p>
     <div id="report-chart-failures" class="charts-notice warning" hidden></div>
+    <div id="report-chart-toolbar">
+      <p id="report-chart-progress" class="charts-muted" aria-live="polite"></p>
+      <div class="charts-toolbar">
+        <span id="report-chart-selection" class="charts-muted"></span>
+        <div class="report-chart-actions">
+          <button type="button" id="report-chart-rematch" class="charts-button" hidden>重新匹配未对上的图</button>
+          <button type="button" id="report-chart-apply" class="charts-button primary" disabled>导入所选</button>
+        </div>
+      </div>
+      <div id="report-chart-result" role="status" hidden></div>
+    </div>
     <div id="report-chart-cards"></div>
-    <div class="charts-toolbar"><span id="report-chart-selection" class="charts-muted"></span><button type="button" id="report-chart-apply" class="charts-button primary" disabled>导入所选</button></div>
-    <div id="report-chart-result" role="status" hidden></div>
   </section>
   {% endif %}
 </div>

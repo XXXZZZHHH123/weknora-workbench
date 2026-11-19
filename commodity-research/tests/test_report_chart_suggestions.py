@@ -218,6 +218,46 @@ def period_extraction():
         'evidence': [{'chunk_id': 'chunk', 'quote': text}]}]}
 
 
+def extraction_with_shape():
+    fragments, document = period_extraction()
+    quote = fragments[0]['content'] + '\n横轴：9月 10月 11月\n左轴：−50.00-2,000.00（中间刻度 1,000.00）'
+    row = document['charts'][0]
+    row['shape'] = {'season_start_month': 9, 'period_labels': ['2019年度', '2020年度', '2021年度'],
+        'period_kind': 'calendar', 'y_ticks': {'min': '−50.00', 'max': '2,000.00'}}
+    row['evidence'][0]['quote'] = quote
+    fragments[0]['content'] = quote + '\n相邻图：3月 2024年度 4,000.00'
+    return fragments, document
+
+
+def test_extraction_keeps_individually_grounded_shape_and_original_tick_spelling():
+    fragments, document = extraction_with_shape()
+    charts, failed = reports.checked_extraction(document, fragments)
+    assert not failed and not charts[0]['warnings']
+    assert charts[0]['shape'] == document['charts'][0]['shape']
+    prompt = reports.extraction_prompt(fragments)
+    assert '由你理解横轴月份顺序和图例的年度格式' in prompt
+
+
+@pytest.mark.parametrize('key,value,warning', [
+    ('season_start_month', 3, '起始月份'),
+    ('season_start_month', 1, '起始月份'),
+    ('period_labels', ['2019年度', '2024年度'], '周期标签'),
+    ('y_ticks', {'min': '−50.00', 'max': '4,000.00'}, '左轴刻度'),
+    ('y_ticks', {'min': '50.00', 'max': '2,000.00'}, '左轴刻度'),
+    ('y_ticks', {'min': '−50.00', 'max': '2,000'}, '左轴刻度'),
+    ('y_ticks', {'min': '2,000.00', 'max': '1,000.00'}, '左轴刻度'),
+    ('period_kind', 'invalid', '周期类型'),
+])
+def test_shape_field_failure_keeps_other_fields_and_candidate(key, value, warning):
+    fragments, document = extraction_with_shape()
+    shape = document['charts'][0]['shape']
+    shape[key] = value
+    charts, failed = reports.checked_extraction(document, fragments)
+    assert not failed and len(charts) == 1
+    assert charts[0]['shape'] == {field: item for field, item in shape.items() if field != key}
+    assert len(charts[0]['warnings']) == 1 and warning in charts[0]['warnings'][0]
+
+
 def test_model_period_groups_recall_one_indicator_and_retain_original_legends(monkeypatch):
     fragments, document = period_extraction()
     seen = []

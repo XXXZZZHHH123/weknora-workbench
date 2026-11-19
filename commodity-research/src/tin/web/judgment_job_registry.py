@@ -70,11 +70,16 @@ class Registry:
     def scope_key(self, row):
         return row['tenant_id'], row['user_id'], row['workbench_id'], row.get('purpose', 'judgments')
 
+    def result_key(self, row):
+        # A job that updates an existing draft can replace earlier update jobs
+        # while leaving the original draft addressable under its own ID.
+        return (*self.scope_key(row), bool(row.get('result_parent')))
+
     def compact(self, connection):
         groups = {}
         for row in self.rows(connection):
             if row['state'] in RESULTS:
-                groups.setdefault(self.scope_key(row), []).append(row)
+                groups.setdefault(self.result_key(row), []).append(row)
         retired = []
         for rows in groups.values():
             newest = max(rows, key=self.order)
@@ -100,8 +105,16 @@ class Registry:
                 row.update(updated_at=iso(), finished_at=iso())
                 self.write(connection, row)
         self.compact(connection)
+        for row in self.rows(connection):
+            if row['state'] != 'succeeded' or not row.get('result_parent'):
+                continue
+            parent = self.fetch(connection, row['result_parent'])
+            if parent is None or parent['state'] != 'succeeded':
+                row.update(state='expired', phase='expired', updated_at=iso(),
+                    message='原识别结果已过期或已有更新，请重新打开任务')
+                self.write(connection, row)
 
-    def create(self, scope, request_hash, idempotency_hash, worker_id, purpose='judgments'):
+    def create(self, scope, request_hash, idempotency_hash, worker_id, purpose='judgments', *, result_parent=None):
         if purpose not in PURPOSES:
             raise ValueError('Unsupported analysis task purpose')
         with self.transaction() as connection:
@@ -124,6 +137,7 @@ class Registry:
             now = time.time()
             row = {'kind': 'judgment-analysis-index.v1', 'id': secrets.token_hex(16),
                 **({'purpose': purpose} if purpose != 'judgments' else {}),
+                **({'result_parent': result_parent} if result_parent is not None else {}),
                 'tenant_id': scope.identity.tenant_id, 'user_id': scope.identity.user_id,
                 'workbench_id': scope.workbench_id, 'storage_legacy': scope.metadata.get('workspace_mode') == 'legacy',
                 'request_hash': request_hash, 'idempotency_hash': idempotency_hash,
@@ -165,7 +179,7 @@ class Registry:
             row = self.owned(self.fetch(connection, job_id), identity, workbench_id)
             if row.get('purpose', 'judgments') != purpose:
                 raise HTTPException(404, '分析任务不存在或无权访问')
-            newer = any(self.scope_key(other) == self.scope_key(row)
+            newer = any(self.result_key(other) == self.result_key(row)
                 and other['state'] in RESULTS and self.order(other) > self.order(row)
                 for other in self.rows(connection))
             if row['state'] in {'superseded', 'expired'} or row['expires_unix'] <= time.time() or newer:

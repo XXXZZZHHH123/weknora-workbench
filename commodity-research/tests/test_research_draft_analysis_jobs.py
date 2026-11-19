@@ -79,6 +79,8 @@ def test_draft_admission_phase_restore_and_changed_scope(draft_case, monkeypatch
             result = {'draft': 'synthetic private model output', '_verification': state['facts']}
             if purpose == WORKBENCH_SETUP:
                 result['items'] = []
+            elif purpose == 'report_chart_import':
+                result['charts'] = []
             return result
 
         result = await analysis_jobs.start_job(scope, purpose, payload, KEY, generate)

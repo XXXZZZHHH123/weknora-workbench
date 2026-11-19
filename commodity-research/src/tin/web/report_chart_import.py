@@ -1,5 +1,6 @@
 """Private, expiring report-chart drafts; only explicit confirmation creates charts."""
 import asyncio
+from copy import deepcopy
 import hashlib
 import json
 import time
@@ -14,23 +15,31 @@ from starlette.concurrency import run_in_threadpool
 from tin.config import settings
 from tin.integration.identity import research_url
 from tin.integration.page_facts import catalog_snapshot
+from tin.integration.source_status import source_status_hint
 from tin.integration.workbench_scope import artifact_session, resolve_workbench
 from tin.models import SourceMapping
-from tin.schemas.chart import ChartModel
-from tin.web import analysis_jobs, report_chart_suggestions as suggestions, strategy_citations
+from tin.schemas.chart import ChartDefinition, ChartModel
+from tin.web import analysis_jobs, judgment_jobs, report_chart_suggestions as suggestions, strategy_citations
 from tin.web.chart_data import cutoff
-from tin.web.charts import create_row, definition_data, require_scope, serialize
-from tin.web.report_chart_definitions import build_definition, duplicate_ids, mapping_warnings
+from tin.web.charts import artifact_query, create_row, decode_definition, definition_data, require_scope, serialize
+from tin.web.report_chart_definitions import (build_definition, duplicate_ids, duplicate_signature,
+                                              mapping_warnings, range_warning, shape_warnings)
 
 router = APIRouter(prefix='/api/sn/charts/import/report')
 PURPOSE = 'report_chart_import'
 BATCH_SECONDS = 360
 TOTAL_SECONDS = 1800
 VERIFY_SECONDS = 120
+MISSING_INDICATORS = '指标库中未找到，请手动选择或跳过'
 
 
 class RecognizeInput(ChartModel):
     source: strategy_citations.KnowledgeFileCitation
+    model_id: str = Field(min_length=1, max_length=128)
+
+
+class RematchInput(ChartModel):
+    job_id: str = Field(min_length=1, max_length=64)
     model_id: str = Field(min_length=1, max_length=128)
 
 
@@ -102,20 +111,26 @@ def draft(scope, state, selection, group):
 
 def annotate(scope, charts, group, identifier):
     for chart in charts:
-        chart.setdefault('errors', [])
+        chart['errors'] = []
+        chart.pop('definition', None)
         mappings = [s.get('selected_id') for s in chart['series']]
         chart.setdefault('warnings', [])
+        chart['shape_warnings'] = shape_warnings(chart)
         chart['mapping_warnings'] = mapping_warnings(mappings)
         chart['missing_indicators'] = any(value is None for value in mappings)
         chart['definition_failed'] = False
+        chart['range_mismatch'] = False
         if chart['missing_indicators']:
-            chart['errors'].append('指标库中未找到，请手动选择或跳过')
+            chart['errors'].append(MISSING_INDICATORS)
             continue
         try:
             value = build_definition(scope, chart, mappings,
                                      chart['chart_type'], group, f"report:{identifier}:{chart['id']}")
+            warning = range_warning(scope, chart, value)
+            if warning:
+                chart['range_mismatch'] = True
+                chart['shape_warnings'].append(warning)
             chart['definition'] = value.model_dump(mode='json')
-            chart['possible_duplicate'] = bool(duplicate_ids(scope, value))
         except HTTPException as exc:
             if exc.status_code in {401, 403, 409}:
                 raise
@@ -125,6 +140,33 @@ def annotate(scope, charts, group, identifier):
             chart['definition_failed'] = True
             chart['errors'].append('图表定义不符合图表库格式或数量限制')
     return charts
+
+
+def annotate_duplicates(scope, charts):
+    with artifact_session(scope) as session:
+        mark_duplicates(session, charts)
+
+
+def mark_duplicates(session, charts):
+    saved = {duplicate_signature(decode_definition(row)) for row in session.scalars(artifact_query())}
+    first = {}
+    for chart in charts:
+        chart.pop('duplicate_of', None)
+        chart['possible_duplicate'] = False
+        if not chart.get('definition'):
+            continue
+        signature = duplicate_signature(ChartDefinition.model_validate(chart['definition']))
+        chart['possible_duplicate'] = signature in saved
+        if signature in first:
+            chart['duplicate_of'] = first[signature]
+        else:
+            first[signature] = {key: chart.get(key) for key in ('id', 'page', 'title')}
+
+
+def review_state(scope, state, applied):
+    annotate_duplicates(scope, state['charts'])
+    hint = source_status_hint(scope) if any(chart.get('missing_indicators') for chart in state['charts']) else None
+    return {**state, 'applied': applied, 'source_status_hint': hint}
 
 
 async def recognize_report(scope, body, identifier, *, report=None, progress=None):
@@ -216,6 +258,7 @@ async def recognize_report(scope, body, identifier, *, report=None, progress=Non
             await suggestions.verify_report(scope, body.source, original)
         failed.append({'reason': '整体识别超时，保留已完成并复核的图；其余页面未处理'})
         message = '部分完成，请核对已完成的图表；未完成页面可重新识别'
+    await run_in_threadpool(annotate_duplicates, scope, charts)
     return {'id': identifier, 'group': group, 'charts': charts, 'failures': failed,
             '_original': original, 'progress': {'completed': completed, 'total': len(batches), 'message': message}}
 
@@ -229,7 +272,17 @@ async def verify_result(scope, body, result):
     await suggestions.verify_report(scope, citation, result['_original'])
 
 
+async def result_view(scope, config):
+    payload = config['request']
+    if parent := payload.get('rematch_of'):
+        state, _, config = await verified_draft(scope, parent)
+    else:
+        state = config['result']
+    return await run_in_threadpool(review_state, scope, state, config.get('applied', {}))
+
+
 analysis_jobs.result_checks[PURPOSE] = verify_result
+analysis_jobs.result_views[PURPOSE] = result_view
 
 
 @router.get('/files')
@@ -254,15 +307,90 @@ async def recognize(body: RecognizeInput, request: Request):
     return await analysis_jobs.start_job(scope, PURPOSE, payload, request.headers.get('idempotency-key'), process)
 
 
-async def verified_state(scope, identifier):
+def chart_state(config, purpose):
+    from tin.web import workbench_setup_jobs
+
+    if purpose == workbench_setup_jobs.PURPOSE:
+        return workbench_setup_jobs.part_data(config, 'charts')
+    return config['result']
+
+
+async def verified_draft(scope, identifier):
     from tin.web import workbench_setup_jobs
 
     meta = await run_in_threadpool(analysis_jobs.registry.get, scope.identity, identifier, scope.workbench_id)
-    purpose = meta.get('purpose')
-    if purpose == workbench_setup_jobs.PURPOSE:
-        _, config = await analysis_jobs.verified_result(scope, identifier, expected_purpose=purpose)
-        return workbench_setup_jobs.part_data(config, 'charts'), purpose
-    return await analysis_jobs.job_result(scope, identifier, expected_purpose=PURPOSE), PURPOSE
+    purpose = workbench_setup_jobs.PURPOSE if meta.get('purpose') == workbench_setup_jobs.PURPOSE else PURPOSE
+    _, config = await analysis_jobs.verified_result(scope, identifier, expected_purpose=purpose)
+    if config['request'].get('rematch_of'):
+        raise HTTPException(422, '请使用原识别结果核对图表')
+    return chart_state(config, purpose), purpose, config
+
+
+async def verified_state(scope, identifier):
+    state, purpose, _ = await verified_draft(scope, identifier)
+    return state, purpose
+
+
+async def rematch_report(scope, payload, progress, identifier):
+    await progress('reading_source')
+    state, _, config = await verified_draft(scope, payload['rematch_of'])
+    before = judgment_jobs.digest(state)
+    missing = [chart for chart in state['charts'] if chart.get('missing_indicators')]
+    if not missing:
+        raise HTTPException(409, '原识别结果中已没有待重新匹配的图')
+    await progress('loading_catalog')
+    catalog = (await run_in_threadpool(catalog_snapshot, scope))['catalog']
+    await progress('generating')
+    matched = {}
+    for start in range(0, len(missing), suggestions.MAX_BATCH_CHARTS):
+        await fresh_scope(scope)
+        batch = await asyncio.wait_for(suggestions.rematch_batch(scope, payload['model_id'],
+            missing[start:start + suggestions.MAX_BATCH_CHARTS], catalog), timeout=BATCH_SECONDS)
+        matched.update((chart['id'], chart) for chart in batch)
+    await progress('validating')
+    await run_in_threadpool(annotate, scope, list(matched.values()), state['group'], state['id'])
+    charts = [matched.get(chart['id'], chart) for chart in state['charts']]
+    await run_in_threadpool(annotate_duplicates, scope, charts)
+    await verified_draft(scope, payload['rematch_of'])
+    original = config['result'].get('_source_identity') or config['result']['_original']
+    return {'_original': original, '_before': before, '_charts': charts,
+            '_pending': sum(chart['missing_indicators'] for chart in charts)}
+
+
+def save_rematch(session, scope, payload, result):
+    if not (parent := payload.get('rematch_of')):
+        return result
+    purpose = payload['parent_purpose']
+    # Serialize with confirmation so its latest receipts survive the update.
+    session.execute(update(SourceMapping).where(SourceMapping.id == analysis_jobs.job_key(scope, parent))
+        .values(version=SourceMapping.version + 1), execution_options={'synchronize_session': False})
+    row = analysis_jobs.owned_record(session, scope, parent, purpose)
+    config = deepcopy(row.config)
+    state = chart_state(config, purpose)
+    if judgment_jobs.digest(state) != result['_before']:
+        raise HTTPException(409, '识别结果已更新，请从最新结果重新匹配')
+    state['charts'] = result['_charts']
+    state['progress']['message'] = '重新匹配完成，请核对后勾选导入'
+    if purpose != PURPOSE:
+        item = next(item for item in config['result']['items'] if item['part'] == 'charts')
+        item['counts'].update(ready=sum(bool(chart.get('definition')) for chart in state['charts']),
+            needs_mapping=result['_pending'], failed=len(state['failures']) +
+                sum(chart['definition_failed'] for chart in state['charts']))
+    judgment_jobs._update_record(session, row, config)
+    return {'id': parent, '_original': result['_original']}
+
+
+analysis_jobs.result_writers[PURPOSE] = save_rematch
+
+
+@router.post('/rematch', status_code=202)
+async def rematch(body: RematchInput, request: Request):
+    scope = writable_scope()
+    _, purpose, config = await verified_draft(scope, body.job_id)
+    payload = {'rematch_of': body.job_id, 'parent_purpose': purpose,
+               'source': config['request']['source'], 'model_id': body.model_id}
+    return await analysis_jobs.start_job(scope, PURPOSE, payload, request.headers.get('idempotency-key'),
+                                         rematch_report, result_parent=body.job_id)
 
 
 @router.post('/preview')
@@ -270,10 +398,15 @@ async def preview(body: PreviewInput):
     scope = writable_scope()
     state, _ = await verified_state(scope, body.job_id)
     def render():
-        _, value = draft(scope, state, body, body.group)
+        chart, value = draft(scope, state, body, body.group)
         payload = definition_data(scope, value, cutoff())
+        warning = range_warning(scope, chart, value, payload=payload)
+        warnings = shape_warnings(chart, body.chart_type)
+        if warning:
+            warnings.append(warning)
         return {'definition': value.model_dump(mode='json'), 'payload': payload,
                 'possible_duplicate': bool(duplicate_ids(scope, value)), 'errors': [],
+                'range_mismatch': bool(warning), 'shape_warnings': warnings,
                 'warnings': mapping_warnings(body.mappings)}
     result = await run_in_threadpool(render)
     await verified_state(scope, body.job_id)
@@ -323,8 +456,11 @@ def apply_selections(scope, body, definitions, failed, purpose):
             except Exception:
                 failed.append({'chart_id': selection.chart_id, 'reason': '写入图表库失败，请重试'})
         row.config = {**row.config, 'applied': applied}
+        charts = deepcopy(chart_state(row.config, purpose)['charts'])
+        mark_duplicates(session, charts)
         session.commit()
-    return {'created': created, 'failed': failed}
+    return {'created': created, 'failed': failed,
+            'possible_duplicates': {chart['id']: chart['possible_duplicate'] for chart in charts}}
 
 
 @router.post('/apply')

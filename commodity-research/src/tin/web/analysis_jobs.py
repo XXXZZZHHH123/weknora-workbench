@@ -24,6 +24,8 @@ registry = shared.registry
 KIND = 'research-draft-analysis-job.v1'
 DRAFT_SECONDS = 2000
 result_checks = {}
+result_views = {}
+result_writers = {}
 record_audits = {}
 
 
@@ -109,12 +111,15 @@ def _complete(scope, meta, result):
         current.update(state='succeeded', phase='succeeded', updated_at=iso(), finished_at=iso())
         registry.write(connection, current)
         retired = [old for old in registry.compact(connection)
-                   if registry.scope_key(old) == registry.scope_key(current)]
+                   if registry.result_key(old) == registry.result_key(current)]
         with artifact_session(scope) as session:
             row = owned_record(session, scope, meta['id'], purpose)
             if row.config['fence'] != meta['fence'] or row.config['state'] != 'queued' or row.version != 1:
                 raise HTTPException(409, '分析任务已中断，请重新发起')
             if all(old['id'] != meta['id'] for old in retired):
+                writer = result_writers.get(purpose)
+                if writer is not None:
+                    result = writer(session, scope, row.config['request'], result)
                 shared._update_record(session, row, {**row.config, 'state': 'succeeded', 'result': result})
                 audit = record_audits.get(purpose)
                 if audit is not None:
@@ -191,7 +196,8 @@ class Runtime(shared.Runtime):
 runtime = Runtime()
 
 
-async def start_job(scope, purpose, body, idempotency_key, generate, *, timeout=DRAFT_SECONDS):
+async def start_job(scope, purpose, body, idempotency_key, generate, *, timeout=DRAFT_SECONDS,
+                    result_parent=None):
     if purpose not in DRAFT_PURPOSES:
         raise ValueError('Unsupported draft analysis purpose')
     if not isinstance(idempotency_key, str) or not re.fullmatch(r'[\x21-\x7e]{16,128}', idempotency_key):
@@ -205,7 +211,7 @@ async def start_job(scope, purpose, body, idempotency_key, generate, *, timeout=
         try:
             await run_in_threadpool(cleanup_expired)
             meta, created = await run_in_threadpool(registry.create, verified, shared.digest(body),
-                shared.digest(idempotency_key), runtime.worker_id, purpose)
+                shared.digest(idempotency_key), runtime.worker_id, purpose, result_parent=result_parent)
             if created:
                 await run_in_threadpool(_create_private, verified, body, meta)
                 if runtime.closing:
@@ -292,7 +298,7 @@ async def status(scope, job_id):
     return (await _checked_status(scope, job_id))[1]
 
 
-async def verified_result(scope, job_id, expected_purpose=None):
+async def verified_result(scope, job_id, expected_purpose=None, *, project=False):
     verified, job, value = await _checked_status(scope, job_id, expected_purpose)
     if job['purpose'] not in DRAFT_PURPOSES:
         raise HTTPException(404, '分析任务不存在或无权访问')
@@ -306,6 +312,9 @@ async def verified_result(scope, job_id, expected_purpose=None):
         check = result_checks.get(job['purpose'])
         if check is not None:
             await check(verified, value['request'], result)
+        view = result_views.get(job['purpose']) if project else None
+        if view is not None:
+            value['result'] = await view(verified, value)
         await fresh_scope(verified, job['purpose'])
         await run_in_threadpool(registry.guard_result, verified.identity, job_id,
             verified.workbench_id, job['purpose'])
@@ -316,7 +325,7 @@ async def verified_result(scope, job_id, expected_purpose=None):
 
 
 async def job_result(scope, job_id, expected_purpose=None):
-    job, value = await verified_result(scope, job_id, expected_purpose)
+    job, value = await verified_result(scope, job_id, expected_purpose, project=True)
     return {**{key: item for key, item in value['result'].items() if not key.startswith('_')},
         'request': value['request'], 'job': job}
 

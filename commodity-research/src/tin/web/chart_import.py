@@ -10,6 +10,7 @@ from tin.integration.workbench_scope import artifact_session
 from tin.schemas.chart import ChartDefinition, NativeApplyInput, NativeApplyPageInput, NativePreviewInput
 from tin.web.chart_data import catalog_fields, catalog_fields_with_version, cutoff, read_series
 from tin.web.charts import artifact_query, create_row, require_scope, serialize
+from tin.web.report_chart_definitions import duplicate_signature
 
 native_router = APIRouter(prefix='/api/sn/charts/import/native')
 
@@ -113,17 +114,19 @@ def original_native_chart(scope, chart_key):
 def _save_suggestions(scope, suggestions):
     created, skipped, rejected = [], [], []
     with artifact_session(scope) as session:
-        # All source reads finish before the write lock. Serialize ref checks and
-        # inserts in SQLite, the existing workbench artifact store, so two apply
-        # requests cannot create the same origin concurrently.
+        # All source reads finish before the write lock. Serialize duplicate
+        # checks and inserts so simultaneous native imports cannot save the same chart.
         if session.get_bind().dialect.name == 'sqlite':
             session.connection().exec_driver_sql('BEGIN IMMEDIATE')
         else:
             from tin.models.workbench import WorkbenchStorageScope
             session.execute(select(WorkbenchStorageScope).where(
                 WorkbenchStorageScope.workbench_id == scope.workbench_id).with_for_update()).all()
-        refs = {ChartDefinition.model_validate_json(row.body).origin.ref: row.id
-                for row in session.scalars(artifact_query())}
+        refs, signatures = {}, {}
+        for row in session.scalars(artifact_query()):
+            definition = ChartDefinition.model_validate_json(row.body)
+            refs[definition.origin.ref] = row.id
+            signatures.setdefault(duplicate_signature(definition), row.id)
         for item in suggestions:
             ref = item['chart_key']
             if ref in refs:
@@ -133,9 +136,14 @@ def _save_suggestions(scope, suggestions):
                 rejected.append(item)
                 continue
             definition = ChartDefinition.model_validate(item['definition'])
+            signature = duplicate_signature(definition)
+            if signature in signatures:
+                skipped.append({'chart_key': ref, 'id': signatures[signature], 'reason': 'same_indicators'})
+                continue
             snapshots = [{'kind': 'native_chart', 'chart_key': ref, 'axes': item['axes'], 'curves': item['source_curves']}]
             row = create_row(session, scope, definition, snapshots=snapshots)
             refs[ref] = row.id
+            signatures[signature] = row.id
             created.append(serialize(row, definition=definition))
         session.commit()
     return created, skipped, rejected
@@ -162,7 +170,7 @@ def apply_page(body: NativeApplyPageInput):
                                                    expected_version=body.version)
     created, skipped, rejected = _save_suggestions(scope, suggestions)
     keys = ('chart_key', 'title', 'sheet', 'source_file', 'reason', 'missing_curves')
-    return {'created_count': len(created), 'skipped_count': len(skipped),
+    return {'created_count': len(created), 'skipped_count': len(skipped), 'skipped': skipped,
             'unconvertible': [{key: item[key] for key in keys} for item in rejected],
             'next_offset': page.next_offset, 'total': page.total, 'version': version}
 

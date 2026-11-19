@@ -62,11 +62,14 @@
   }
 
   function create({purpose, button, status, snapshot, present, isOpen = () => true,
-    disabled = () => false, accept = () => true, restoreButton, onStatus, onAccepted}) {
+    disabled = () => false, accept = () => true, restoreButton, onStatus, onAccepted, onSync}) {
     let tracked, timer, controller, latest, uncertain, serial = 0;
     let running = false, submitting = false;
     const busy = () => running || submitting;
-    const sync = () => { if (button) button.disabled = busy() || disabled(); };
+    const sync = () => {
+      if (button) button.disabled = busy() || disabled();
+      onSync?.(busy());
+    };
     const tell = (text, spinning = false, failed = false) => {
       message(status, text, spinning);
       onStatus?.(text, spinning, failed);

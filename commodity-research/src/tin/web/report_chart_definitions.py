@@ -1,21 +1,25 @@
 """Turn confirmed, evidence-grounded report structures into ordinary charts.
 
-Labels never select an indicator, a time mode or a template. The recognition
-model proposes a type; the researcher can change it. Only explicit candidate
-IDs and current catalog metadata participate in definition construction.
+Labels never select an indicator or a time mode. The recognition model
+proposes a type and evidence-grounded shape; the researcher can change the
+type. Explicit candidate IDs and current catalog metadata resolve bindings.
 """
 from copy import deepcopy
+from decimal import Decimal
+from math import isfinite
 
 from fastapi import HTTPException
 from pydantic import ValidationError
 
 from tin.compute.cycles import BUILTIN_TEMPLATES
 from tin.integration.workbench_scope import artifact_session
-from tin.schemas.chart import ChartDefinition
-from tin.web.chart_data import catalog_fields, definition_series_ids, validate_definition
-from tin.web.charts import artifact_query, decode_definition
+from tin.schemas.chart import MAX_VISIBLE_CYCLES, ChartDefinition
+from tin.web.chart_data import catalog_fields, cutoff, definition_series_ids, validate_definition
+from tin.web.charts import artifact_query, decode_definition, definition_data
+from tin.web.report_chart_suggestions import tick_number
 
 CHART_TYPES = frozenset(('trend', 'seasonal', 'comparison'))
+RANGE_SPAN_FACTOR = 5
 
 
 def frequency_template(fields):
@@ -37,6 +41,27 @@ def mapping_warnings(mappings):
         return []
     return [f'重复映射已合并：{len(selected)}条原文系列映射到'
             f'{len(set(selected))}个指标，定义已去重；请核对指标口径']
+
+
+def shape_warnings(chart, chart_type=None):
+    if ((chart_type or chart.get('chart_type')) == 'seasonal'
+            and chart.get('shape', {}).get('period_kind') == 'contract'):
+        return ['原图按合约分年（如 1905），重画按年度对齐，曲线分段可能不同']
+    return []
+
+
+def _seasonal_time(chart, fields):
+    template = frequency_template(fields)
+    time = {'mode': 'cycle', 'template': template, 'cycles': 8, 'transform': 'raw'}
+    shape = chart.get('shape', {})
+    month = shape.get('season_start_month')
+    if month is not None and month != 1 and shape.get('period_kind') != 'contract':
+        template.update(start=f'{month:02d}-01', name=f'{month}月起始年度')
+    labels = shape.get('period_labels')
+    if labels:
+        count = min(len(labels), MAX_VISIBLE_CYCLES)
+        time.update(cycles=count, visible_cycles=count)
+    return time
 
 
 def build_definition(scope, chart, mappings, chart_type, group, origin_ref):
@@ -72,8 +97,7 @@ def build_definition(scope, chart, mappings, chart_type, group, origin_ref):
         curves.append({'series_id': identifier, 'label': legend.get('name', ''),
             'kind': 'line', 'axis': 'right' if unit and units.index(unit) == 1 else 'left',
             'descriptor': {key: field.get(key) or '' for key in ('source_file', 'sheet', 'metric', 'column')}})
-    time = ({'mode': 'cycle', 'template': frequency_template(list(fields.values())),
-             'cycles': 8, 'transform': 'raw'} if chart_type == 'seasonal'
+    time = (_seasonal_time(chart, list(fields.values())) if chart_type == 'seasonal'
             else {'mode': 'recent', 'points': 120, 'transform': 'raw'})
     try:
         definition = ChartDefinition.model_validate({'title': chart.get('title'), 'group': group,
@@ -84,6 +108,45 @@ def build_definition(scope, chart, mappings, chart_type, group, origin_ref):
         raise HTTPException(422, '图表定义校验失败：' + details) from None
     validate_definition(scope, definition)
     return definition
+
+
+def _left_axis_points(definition, payload):
+    if definition.time.mode != 'cycle':
+        for curve in payload['curves']:
+            if curve['axis'] == 'left':
+                yield from curve['points']
+    elif len(definition.curves) == 1:
+        for segment in payload['segments']:
+            yield from segment['points']
+    else:
+        # Multi-curve seasonal imports show only each curve's common current
+        # period. Historical segments are kept in the payload for statistics.
+        for curve in payload['curves']:
+            if curve['axis'] == 'left':
+                for segment in curve['cycle']['segments']:
+                    if segment['current']:
+                        yield from segment['points']
+
+
+def range_warning(scope, chart, definition, *, payload=None):
+    ticks = chart.get('shape', {}).get('y_ticks')
+    if not ticks:
+        return None
+    lower, upper = (tick_number(ticks[key]) for key in ('min', 'max'))
+    if payload is None:
+        payload = definition_data(scope, definition, cutoff(), details=False)
+    values = [point['value'] for point in _left_axis_points(definition, payload)
+              if type(point['value']) in (float, int) and isfinite(point['value'])]
+    if not values:
+        return None
+    minimum, maximum = min(values), max(values)
+    original_span = Decimal(str(upper)) - Decimal(str(lower))
+    current_span = Decimal(str(maximum)) - Decimal(str(minimum))
+    if (maximum < lower or minimum > upper or current_span > original_span * RANGE_SPAN_FACTOR
+            or current_span * RANGE_SPAN_FACTOR < original_span):
+        return (f"数值范围与原图刻度不符（原图 {ticks['min']}–{ticks['max']}，"
+                f'当前数据 {minimum:.12g}–{maximum:.12g}），请核对指标口径或单位')
+    return None
 
 
 def duplicate_signature(definition):

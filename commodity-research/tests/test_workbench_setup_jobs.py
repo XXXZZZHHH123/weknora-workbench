@@ -10,6 +10,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+from tests.chart_fixtures import definition
 from tin.config import settings
 from tin.integration.identity import Identity, current_identity
 from tin.integration.workbench_scope import WorkbenchScope, artifact_session, current_workbench
@@ -114,6 +115,7 @@ def workbench(tmp_path, monkeypatch):
     monkeypatch.setattr(registry, 'touch', track)
     monkeypatch.setattr(judgment_jobs, 'resolve_workbench', resolve)
     monkeypatch.setattr(report_chart_import, 'resolve_workbench', resolve)
+    monkeypatch.setattr(report_chart_import, 'source_status_hint', lambda scope: None)
     monkeypatch.setattr(setup.report_chart_suggestions, 'read_report', read_report)
     monkeypatch.setattr(setup.report_chart_suggestions, 'verify_report', verify)
     monkeypatch.setattr(setup.strategy_citations, 'read_structure_digest', digest)
@@ -194,7 +196,8 @@ def test_diagram_uses_current_step_bindings_and_partially_mapped_chart_series(wo
     async def charts(scope, body, job_id, *, report):
         return {'_original': setup.original_identity(report), 'charts': [
             {'missing_indicators': True, 'series': [{'selected_id': CHART_SERIES}, {'selected_id': None}]},
-            {'definition': {'curves': [{'series_id': SERIES}]}, 'series': [{'selected_id': SERIES}]}]}
+            {'definition': definition(curves=[{'series_id': SERIES, 'label': '研究指标'}]),
+             'series': [{'selected_id': SERIES}]}]}
 
     async def diagram(body, *, series_ids):
         assert series_ids == {SERIES, CHART_SERIES}
@@ -330,7 +333,7 @@ def test_chart_counts_and_prefill_use_the_same_private_setup_result(workbench, m
         return {'charts': deepcopy([ready, pending, invalid]), 'failed': [{'reason': '样例识别失败'}]}
 
     def annotate(scope, charts, group, identifier):
-        charts[0]['definition'] = {'curves': [{'series_id': SERIES}]}
+        charts[0]['definition'] = definition(curves=[{'series_id': SERIES, 'label': '研究指标'}])
         charts[1]['missing_indicators'] = True
         charts[2]['definition_failed'] = True
         return charts
@@ -349,7 +352,8 @@ def test_chart_counts_and_prefill_use_the_same_private_setup_result(workbench, m
         with active(workbench.scope):
             review, purpose = await report_chart_import.verified_state(workbench.scope, identifier)
         assert purpose == 'workbench_setup'
-        assert review == row['data']
+        assert all(review[key] == row['data'][key] for key in ('source', 'job_id', 'failures'))
+        assert row['data']['applied'] == {} and row['data']['source_status_hint'] is None
         assert [chart['id'] for chart in review['charts']] == ['b1-mapped', 'b1-pending', 'b1-invalid']
         with artifact_session(workbench.scope) as session:
             assert session.scalars(select(WorkbenchArtifact)).all() == []

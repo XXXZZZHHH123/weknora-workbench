@@ -491,12 +491,15 @@ def test_native_apply_selected_sheet_override_dedup_deleted_origin_and_style_sna
 def test_native_apply_page_processes_one_page_and_imports_curves_with_warnings(chart_client):
     client, state = chart_client
     apply_url = '/api/sn/charts/import/native/apply'
-    assert client.post(apply_url, json={'sheets': [{'knowledge_id': 'fixture-document', 'sheet': '测试表'}]}).status_code == 200
-    warning = native_chart(chart_key='nc-' + '2' * 32, sheet='另一个工作表')
+    initial = client.post(apply_url, json={'sheets': [{'knowledge_id': 'fixture-document', 'sheet': '测试表'}]})
+    assert initial.status_code == 200
+    initial_id = initial.json()['created'][0]['id']
+    warning = native_chart(chart_key='nc-' + '2' * 32, sheet='另一个工作表',
+                           curves=[native_curve(series_id=OTHER)])
     unavailable = native_chart(chart_key='nc-' + '3' * 32, title='未确认图',
                                curves=[native_curve(status='pending_source', reason='来源待确认')])
     state.native.extend([warning, unavailable])
-    state.fields[SID]['unit'] = ''
+    state.fields[OTHER]['unit'] = ''
     preview = client.post('/api/sn/charts/import/native/preview', json={'limit': 2}).json()
     assert preview['sheets'][1]['charts'][0]['warnings'][0]['code'] == 'unit_missing'
     version = preview['version']
@@ -506,10 +509,11 @@ def test_native_apply_page_processes_one_page_and_imports_curves_with_warnings(c
     response = client.post(apply_url + '-page', json={'offset': 0, 'limit': 2, 'version': version})
     assert response.status_code == 200, response.text
     assert response.json() == {'created_count': 1, 'skipped_count': 1, 'unconvertible': [],
+                               'skipped': [{'chart_key': KEY, 'id': initial_id, 'reason': 'already_imported'}],
                                'next_offset': 2, 'total': 3, 'version': version}
     assert [body for endpoint, body in state.requests if endpoint.endswith('/native-charts')] == [{'offset': 0, 'limit': 2}]
     page_reads = [body for endpoint, body in state.requests if endpoint.endswith('/facts')]
-    assert page_reads and all(body['series_ids'] == [SID] for body in page_reads)
+    assert page_reads and all(body['series_ids'] == [SID, OTHER] for body in page_reads)
     state.requests.clear()
     selected = [{'knowledge_id': chart['knowledge_id'], 'sheet': chart['sheet'], 'chart_keys': [chart['chart_key']]}
                 for chart in state.native[:2]]
@@ -520,7 +524,7 @@ def test_native_apply_page_processes_one_page_and_imports_curves_with_warnings(c
     state.requests.clear()
     response = client.post(apply_url + '-page', json={'offset': 2, 'limit': 2, 'version': version})
     assert response.status_code == 200, response.text
-    assert response.json() == {'created_count': 0, 'skipped_count': 0, 'next_offset': None,
+    assert response.json() == {'created_count': 0, 'skipped_count': 0, 'skipped': [], 'next_offset': None,
         'total': 3, 'version': version, 'unconvertible': [{
             'chart_key': unavailable['chart_key'], 'title': unavailable['title'], 'sheet': unavailable['sheet'],
             'source_file': unavailable['source_file'], 'reason': '没有可用曲线',
@@ -540,7 +544,7 @@ def test_native_apply_page_processes_one_page_and_imports_curves_with_warnings(c
 def test_native_apply_page_rejects_changed_version_and_keeps_previous_pages(chart_client, native_version_provided):
     client, state = chart_client
     endpoint = '/api/sn/charts/import/native/apply-page'
-    state.native.append(native_chart(chart_key='nc-' + '2' * 32))
+    state.native.append(native_chart(chart_key='nc-' + '2' * 32, curves=[native_curve(series_id=OTHER)]))
     if native_version_provided:
         state.native_version = lambda offset: 'a' * 64
     first = client.post(endpoint, json={'offset': 0, 'limit': 1}).json()
@@ -588,6 +592,34 @@ def test_native_chart_key_duplicates_create_once_within_an_apply(chart_client):
     response = client.post('/api/sn/charts/import/native/apply', json={'sheets': [{'knowledge_id': 'fixture-document', 'sheet': '测试表'}]})
     assert response.status_code == 200 and len(response.json()['created']) == 1
     assert client.get('/api/sn/charts').json()['total'] == 1
+
+
+@pytest.mark.parametrize('endpoint, body', [
+    ('apply', {'sheets': [{'knowledge_id': 'fixture-document', 'sheet': '测试表'}]}),
+    ('apply-page', {'offset': 0, 'limit': 200}),
+])
+def test_native_import_skips_matching_signatures_from_report_and_current_batch(chart_client, endpoint, body):
+    client, state = chart_client
+    report = create(client, origin={'kind': 'ppt', 'ref': 'report:fixture:existing'})
+    first = native_chart(chart_key='nc-' + '2' * 32, curves=[native_curve(series_id=OTHER)])
+    duplicate = native_chart(chart_key='nc-' + '3' * 32, title='不同标题', curves=[native_curve(series_id=OTHER)])
+    seasonal = yearly_native(chart_key='nc-' + '4' * 32)
+    state.native = [native_chart(), first, duplicate, seasonal]
+
+    response = client.post(f'/api/sn/charts/import/native/{endpoint}', json=body)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['unconvertible'] == []
+    if endpoint == 'apply-page':
+        assert result['created_count'] == 2 and result['skipped_count'] == 2
+    else:
+        assert len(result['created']) == 2
+    saved = {row['definition']['origin']['ref']: row['id'] for row in client.get('/api/sn/charts').json()['items']}
+    assert set(saved) == {report['definition']['origin']['ref'], first['chart_key'], seasonal['chart_key']}
+    assert result['skipped'] == [
+        {'chart_key': KEY, 'id': report['id'], 'reason': 'same_indicators'},
+        {'chart_key': duplicate['chart_key'], 'id': saved[first['chart_key']], 'reason': 'same_indicators'},
+    ]
 
 
 def test_native_apply_changed_source_unknown_selection_and_invalid_pagination_never_write(chart_client):

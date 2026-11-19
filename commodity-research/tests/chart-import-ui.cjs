@@ -3,7 +3,7 @@ const base = {knowledge_id: 'knowledge-fixture', source_file: '合成原表.xlsx
 const charts = [{...base, chart_key: 'native-1', title: '<img src=x onerror=window.__xss=1>', convertible: true, mode: 'cycle', definition,
   warnings: [{message: '原图未包含 29/30，转换后会显示'}], missing_curves: [{label: '<缺失曲线>', reason: '周期图一期只保留一个指标'}]},
   {...base, chart_key: 'native-2', title: '无法转换的图', convertible: false, mode: null, reason: '没有可用曲线', warnings: [], missing_curves: [{label: '未知源', reason: 'unconfirmed_sheet'}]},
-  {...base, chart_key: 'native-3', title: '走势', convertible: true, mode: 'trend', definition: {...definition, time: {mode: 'since', start: '2020-01-01'}}, warnings: [], missing_curves: [], already_imported: true}];
+  {...base, chart_key: 'native-3', title: '走势', convertible: true, mode: 'trend', definition: {...definition, time: {mode: 'since', start: '2020-01-01'}}, warnings: [], missing_curves: []}];
 const html = render('chart_import.html');
 (async () => {
   const browser = await launch();
@@ -17,7 +17,7 @@ const html = render('chart_import.html');
       }
       if (path.endsWith('/report/files')) return reply({items: [], next_offset: null});
       if (path === '/strategies/models') return reply({models: []});
-      if (path.endsWith('/apply')) { applied = body; return reply({created: [record('created-1', {definition: {...definition, origin: {kind: 'native', ref: 'native-1'}}})], skipped: [{chart_key: 'native-3'}], unconvertible: [{chart_key: 'native-2', reason: '没有可用曲线'}]}); }
+      if (path.endsWith('/apply')) { applied = body; return reply({created: [record('created-1', {definition: {...definition, origin: {kind: 'native', ref: 'native-1'}}})], skipped: [{chart_key: 'native-3', id: 'saved-3', reason: 'same_indicators'}], unconvertible: [{chart_key: 'native-2', reason: '没有可用曲线'}]}); }
       return false;
     });
     const p = ui.page;
@@ -43,6 +43,8 @@ const html = render('chart_import.html');
     await p.locator('[data-sheet-start]').fill('02-30'); await p.locator('#chart-import-apply').click(); assert.equal(applied, undefined);
     await p.locator('[data-sheet-start]').fill('09-01'); await p.locator('#chart-import-apply').click();
     await p.locator('#chart-import-result').filter({hasText: '新建 1 张，跳过 1 张，无法转换 1 张'}).waitFor();
+    assert.match(await p.locator('#chart-import-result').innerText(), /1 张与图表库已有图指标相同，已跳过/);
+    assert.equal(await p.locator('[data-import-chart="native-3"] h3').innerText(), '走势 · 走势');
     assert.deepEqual(applied, {sheets: [{knowledge_id: base.knowledge_id, sheet: base.sheet, chart_keys: ['native-1', 'native-2', 'native-3'], start: '09-01'}]});
     assert.equal(await p.locator('#chart-import-apply').isDisabled(), true); await ui.close();
     const version = 'a'.repeat(64), updatedVersion = 'b'.repeat(64);
@@ -59,6 +61,7 @@ const html = render('chart_import.html');
       if (body.offset === 0) {
         attempt++;
         return reply({created_count: attempt === 1 ? 198 : 0, skipped_count: attempt === 1 ? 1 : 199,
+          skipped: [{chart_key: 'native-3', id: 'saved-3', reason: 'same_indicators'}],
           unconvertible: rejected, next_offset: 200, total: 405, version: attempt === 3 ? updatedVersion : version});
       }
       if (body.offset === 200 && attempt === 1) {
@@ -67,7 +70,8 @@ const html = render('chart_import.html');
       }
       if (body.offset === 200 && attempt === 2) return reply({detail: '原表图表目录已变化，请重新开始全部导入'}, 409);
       if (body.offset === 200 && attempt === 3) {
-        return reply({created_count: 0, skipped_count: 200, unconvertible: [], next_offset: 400, total: 405, version: updatedVersion});
+        return reply({created_count: 0, skipped_count: 200, unconvertible: [], next_offset: 400, total: 405,
+          skipped: [{chart_key: 'native-201', id: 'saved-3', reason: 'same_indicators'}], version: updatedVersion});
       }
       if (body.offset === 400 && attempt === 3) {
         return reply({created_count: 5, skipped_count: 0, unconvertible: [], next_offset: null, total: 405, version: updatedVersion});
@@ -95,6 +99,7 @@ const html = render('chart_import.html');
     await bulk.locator('#chart-import-all-cancel').click();
     releasePage();
     await result.filter({hasText: '已取消全部导入，已保存的图表会保留'}).waitFor();
+    assert.match(await result.innerText(), /1 张与图表库已有图指标相同，已跳过/);
     assert.equal(await progress.innerText(), '已处理 400 / 405 张：新建 398，跳过 1，无法转换 1');
     assert.deepEqual(allRequests, [{offset: 0, limit: 200}, {offset: 200, limit: 200, version}]);
 
@@ -105,6 +110,7 @@ const html = render('chart_import.html');
 
     await confirmAll();
     await result.filter({hasText: '全部导入完成：新建 5，跳过 399，无法转换 1'}).waitFor();
+    assert.match(await result.innerText(), /2 张与图表库已有图指标相同，已跳过/);
     assert.equal(await progress.innerText(), '已处理 405 / 405 张：新建 5，跳过 399，无法转换 1');
     assert.deepEqual(allRequests.slice(4), [{offset: 0, limit: 200}, {offset: 200, limit: 200, version: updatedVersion},
       {offset: 400, limit: 200, version: updatedVersion}]);

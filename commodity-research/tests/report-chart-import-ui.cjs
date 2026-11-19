@@ -2,11 +2,11 @@ const {assert, render, launch, open, definition, cycle, prefix} = require('./cha
 const source = {kind: 'knowledge_file', source_binding_id: 'binding-fixture', knowledge_id: 'report-fixture', file_version: 3};
 const candidates = [{id: 'kb-fixture-series', name: '合成指标', unit: '吨', sheet: '数据表'}, {id: 'kb-alternate', name: '另一个真实候选', unit: '吨'}];
 const charts = [
-  {id: 'report-1', page: 2, source_index: 1, title: '<img src=x onerror=window.__reportXss=1>', chart_type: 'seasonal', legend_semantics: 'periods', evidence: '原文图例：合成指标', warnings: ['模型页码与依据不一致，已按依据位置修正'], series: [{name: '合成指标', legends: ['2019', '2020'], unit: '吨', candidates, selected_id: 'kb-fixture-series'}]},
-  {id: 'report-2', page: 3, source_index: 5, title: '另一张合成图', chart_type: 'trend', evidence: '另一张图的图例', possible_duplicate: true, series: [{name: '图例二', candidates, selected_id: 'kb-fixture-series'}]},
+  {id: 'report-1', page: 2, source_index: 1, title: '<img src=x onerror=window.__reportXss=1>', chart_type: 'seasonal', legend_semantics: 'periods', evidence: '原文图例：合成指标', warnings: ['模型页码与依据不一致，已按依据位置修正'], shape: {season_start_month: 9, period_labels: ['19/20', '20/21'], period_kind: 'crop_year', y_ticks: {min: '20', max: '100'}}, series: [{name: '合成指标', legends: ['2019', '2020'], unit: '吨', candidates, selected_id: 'kb-fixture-series'}]},
+  {id: 'report-2', page: 3, source_index: 5, title: '另一张合成图', chart_type: 'trend', evidence: '另一张图的图例', possible_duplicate: true, duplicate_of: {id: 'report-4', page: 2, title: '定义失败的图'}, series: [{name: '图例二', candidates, selected_id: 'kb-fixture-series'}]},
   {id: 'report-3', page: 4, source_index: 6, title: '缺少指标的图', chart_type: 'comparison', evidence: '待核对的图例片段', missing_indicators: true, series: [{name: '待核对图例', candidates, selected_id: null}]},
   {id: 'report-4', page: 2, source_index: 1, title: '定义失败的图', chart_type: 'trend', evidence: '原文图例', definition_failed: true, errors: ['定义校验不通过'], series: [{name: '原文图例', candidates, selected_id: 'kb-fixture-series'}]},
-  {id: 'report-5', page: null, page_label: '片段9', source_index: 8, title: '无页码图', chart_type: 'trend', evidence: '无页码片段', series: [{name: '原文图例', candidates, selected_id: 'kb-fixture-series'}]}
+  {id: 'report-5', page: null, page_label: '片段9', source_index: 8, title: '无页码图', chart_type: 'trend', evidence: '无页码片段', range_mismatch: true, shape_warnings: ['数值范围与原图刻度不符（原图 1–5，当前数据 100–120），请核对指标口径或单位'], series: [{name: '原文图例', candidates, selected_id: 'kb-fixture-series'}]}
 ];
 const jobID = slug => 'report-chart-job-' + slug;
 const meta = (slug, state) => ({id: jobID(slug), purpose: 'report_chart_import', workbench_id: 'fixture',
@@ -75,6 +75,7 @@ const base = ({path, reply}) => {
       if (path === '/analysis-jobs/' + jobID('fixture') + '/result') return reply(result('fixture', {
         progress: {completed: 2, total: 2, message: '识别完成'}, group: '合成周报.pptx',
         charts: [charts[1], charts[4], charts[3], charts[2], charts[0]],
+        source_status_hint: {pending: 7},
         failures: [{page: 5, source_index: 10, reason: '本页识别超时'}, {batch: 3, reason: '本批处理超时'}, {title: '缺少依据的图', reason: '缺少依据片段'}],
       }));
       if (path === '/charts/import/report/preview') {
@@ -86,7 +87,8 @@ const base = ({path, reply}) => {
       }
       if (path === '/charts/import/report/apply') {
         applied = body;
-        return reply({created: [{id: 'new-chart-fixture', title: '新建合成图'}], failed: [{chart_id: 'report-2', title: '另一张合成图', reason: '指标已变化，请重新确认'}]});
+        return reply({created: [{id: 'new-chart-fixture', title: '新建合成图'}], failed: [{chart_id: 'report-2', title: '另一张合成图', reason: '指标已变化，请重新确认'}],
+          possible_duplicates: {'report-5': true}});
       }
       return false;
     });
@@ -107,19 +109,31 @@ const base = ({path, reply}) => {
     await p.locator('#report-chart-progress').filter({hasText: '正在识别'}).waitFor();
     await p.locator('[data-report-chart="report-1"] [data-report-plot] svg').waitFor();
     assert.equal(await p.locator('[data-report-chart]').count(), 5);
+    const toolbar = p.locator('#report-chart-toolbar'), apply = p.locator('#report-chart-apply');
+    assert.equal(await apply.count(), 1);
+    assert.equal(await toolbar.evaluate(node => getComputedStyle(node).position), 'sticky');
+    assert.equal(await toolbar.evaluate(node => node.nextElementSibling.id), 'report-chart-cards');
+    assert.equal(await p.locator('#report-chart-result').evaluate(node => node.previousElementSibling.contains(document.querySelector('#report-chart-apply'))), true);
+    await toolbar.evaluate(node => window.scrollTo({top: node.offsetTop + 140, behavior: 'instant'}));
+    await p.waitForFunction(() => window.scrollY > 100 && Math.abs(document.querySelector('#report-chart-toolbar').getBoundingClientRect().top) < 2);
+    assert.equal(await apply.isVisible(), true);
     assert.equal(await p.locator('#report-chart-cards img').count(), 0);
     assert.equal(await p.evaluate(() => window.__reportXss), undefined);
     const first = p.locator('[data-report-chart="report-1"]'), duplicate = p.locator('[data-report-chart="report-2"]');
     assert.match(await first.innerText(), /第 2 页[\s\S]*原文图例：合成指标/);
     assert.match(await first.innerText(), /原文周期图例：2019、2020/);
+    assert.equal(await first.locator('[data-report-shape]').innerText(), '原图：9月起 · 19/20、20/21 · 刻度 20–100');
     assert.match(await first.innerText(), /已按依据位置修正/);
     assert.equal(await first.locator('[data-report-select]').isChecked(), true);
     assert.equal(await duplicate.locator('[data-report-select]').isChecked(), false);
     assert.match(await duplicate.innerText(), /可能重复/);
+    assert.match(await duplicate.innerText(), /与第 2 页《定义失败的图》指标和图型相同/);
     const missing = p.locator('[data-report-chart="report-3"]'), failedDefinition = p.locator('[data-report-chart="report-4"]');
     assert.equal(await missing.locator('[data-report-select]').isDisabled(), true);
     assert.equal(await missing.locator('[data-report-select]').isChecked(), false);
     assert.match(await missing.innerText(), /未找到指标：指标库中未找到，请手动选择或跳过/);
+    assert.match(await missing.locator('[data-report-missing]').innerText(), /知识库还有 7 张工作表待确认，确认后可重新匹配/);
+    assert.equal(await p.locator('#report-chart-rematch').innerText(), '重新匹配未对上的图（1 张）');
     assert.doesNotMatch(await missing.locator('[data-report-flags]').innerText(), /定义失败/);
     assert.equal(previews.some(body => body.chart_id === 'report-3'), false, '缺失指标不发起无效数据预览');
     await failedDefinition.locator('[data-report-flags]').filter({hasText: '定义失败'}).waitFor();
@@ -141,7 +155,10 @@ const base = ({path, reply}) => {
     await failedDefinition.locator('[data-report-plot] svg').waitFor();
     assert.equal(await failedDefinition.locator('[data-report-select]').isDisabled(), false);
     assert.equal(await failedDefinition.locator('[data-report-select]').isChecked(), false, '修复初始定义失败仍不自动勾选');
-    await p.locator('[data-report-chart="report-5"] [data-report-select]').uncheck();
+    const rangeMismatch = p.locator('[data-report-chart="report-5"]');
+    await rangeMismatch.locator('[data-report-plot] svg').waitFor();
+    assert.equal(await rangeMismatch.locator('[data-report-select]').isChecked(), false);
+    assert.match(await rangeMismatch.locator('[data-report-notice]').innerText(), /数值范围与原图刻度不符/);
     await first.locator('[data-report-mapping]').selectOption('kb-alternate');
     await p.waitForFunction(() => document.querySelector('[data-report-chart="report-1"] [data-report-select]').checked);
     assert.equal(previews.at(-1).mappings[0], 'kb-alternate');
@@ -158,6 +175,7 @@ const base = ({path, reply}) => {
     assert.equal(await p.locator('#report-chart-result a').getAttribute('href'), prefix + '/sn/charts/new-chart-fixture');
     assert.match(await p.locator('#report-chart-result').innerText(), /指标已变化，请重新确认/);
     assert.equal(await first.locator('[data-report-select]').isDisabled(), true);
+    assert.match(await rangeMismatch.locator('[data-report-flags]').innerText(), /可能重复/);
     await ui.close();
 
     const readonly = await open(browser, '/sn/charts/import', render('chart_import.html', {can_write: false, write_reason: '没有编辑权限'}), base);
@@ -276,6 +294,34 @@ const base = ({path, reply}) => {
     assert.equal(await restored.locator('[data-report-chart]').count(), 0);
     assert.equal(linkedJob.calls.some(call => /\/charts\/import\/report\/(recognize|apply)$/.test(call.path)), false);
     await linkedJob.close();
+
+    const rematched = {...charts[2], missing_indicators: false,
+      series: [{...charts[2].series[0], selected_id: 'kb-alternate'}]};
+    const detachedRematch = await open(browser, '/sn/charts/import?analysis_job=' + jobID('rematch'), html, async args => {
+      if (await base(args) !== false) return;
+      if (args.path.endsWith('/files')) return args.reply({items: [], next_offset: null});
+      if (args.path === '/analysis-jobs/' + jobID('rematch')) return args.reply(meta('rematch', 'succeeded'));
+      if (args.path === '/analysis-jobs/' + jobID('rematch') + '/result') return args.reply({
+        ...result('rematch', {id: jobID('original'), group: '合成周报图组', charts: [charts[0], rematched],
+          applied: {'report-1': {id: 'applied-fixture'}}, progress: {message: '重新匹配完成'}}),
+        request: {source, model_id: 'model-fixture', rematch_of: jobID('original')},
+      });
+      if (args.path.endsWith('/preview')) {
+        assert.equal(args.body.job_id, jobID('original'));
+        assert.equal(args.body.chart_id, rematched.id);
+        assert.deepEqual(args.body.mappings, ['kb-alternate']);
+        return args.reply({definition, payload: cycle(), errors: []});
+      }
+      return false;
+    });
+    const detachedPage = detachedRematch.page;
+    await detachedPage.locator(`[data-report-chart="${rematched.id}"] [data-report-plot] svg`).waitFor();
+    const imported = detachedPage.locator('[data-report-chart="report-1"]');
+    assert.equal(await imported.locator('[data-report-select]').isDisabled(), true);
+    assert.match(await imported.locator('[data-report-flags]').innerText(), /已导入/);
+    assert.equal(await detachedPage.locator('#report-chart-rematch').isHidden(), true);
+    assert.deepEqual(detachedRematch.calls.filter(call => call.method === 'POST').map(call => call.path), ['/charts/import/report/preview']);
+    await detachedRematch.close();
     console.log('report-chart-import-ui: passed');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

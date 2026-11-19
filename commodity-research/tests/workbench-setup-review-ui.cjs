@@ -127,16 +127,33 @@ async function chartReview(browser) {
   const source = {kind: 'knowledge_file', knowledge_id: 'weekly', source_binding_id: 'fixture', file_version: 'a'.repeat(64)};
   const chart = {id: 'setup-chart', title: '合成周报图', chart_type: 'trend',
     series: [{name: item.name, selected_id: item.series_id, candidates: [{id: item.series_id, name: item.name}]}]};
-  let preview;
+  const alternate = {id: 'kb-alternate', name: '备选合成指标'};
+  const missing = {id: 'unmatched-chart', title: '待匹配的周报图', chart_type: 'trend', missing_indicators: true,
+    series: [{name: '待核对的原文图例', selected_id: null, candidates: [alternate]},
+      {name: item.name, selected_id: null, candidates: []}]};
+  const changed = {...missing, missing_indicators: false, series: [
+    {...missing.series[0], selected_id: item.series_id, candidates: [...chart.series[0].candidates, alternate]}, chart.series[0]]};
+  const rematchJob = (id, state) => ({id, purpose: 'report_chart_import', workbench_id: 'fixture', state});
+  const failedId = 'rematch-failed-00001', successId = 'rematch-success-00001';
+  let preview, rematchAttempts = 0;
   const fixture = await open(browser, prefix + '/sn/charts/import?' + query('charts'), page, ({path, body, reply}) => {
     if (path === '/charts/import/report/files') return reply({items: [], next_offset: null});
     if (path === '/strategies/models') return reply({models: [{id: 'model-fixture', name: '合成模型'}]});
     if (path === resultPath) return reply(result('charts', {
-      job_id: setupId, group: '合成周报图组', source, model_id: 'model-fixture', charts: [chart]}));
+      job_id: setupId, group: '合成周报图组', source, model_id: 'model-fixture', charts: [chart, missing]}));
     if (path === '/charts/import/report/preview') {
       preview = body;
       return reply({errors: ['本次预览仅捕获请求']});
     }
+    if (path === '/charts/import/report/rematch') {
+      assert.deepEqual(body, {job_id: setupId, model_id: 'model-fixture'});
+      return reply(rematchJob(++rematchAttempts === 1 ? failedId : successId, 'queued'), 202);
+    }
+    if (path === '/analysis-jobs/' + failedId) return reply({...rematchJob(failedId, 'failed'), message: '合成重新匹配失败'});
+    if (path === '/analysis-jobs/' + successId) return reply(rematchJob(successId, 'succeeded'));
+    if (path === '/analysis-jobs/' + successId + '/result') return reply({id: setupId, job: rematchJob(successId, 'succeeded'),
+      request: {source, model_id: 'model-fixture', rematch_of: setupId}, group: '合成周报图组', charts: [chart, changed],
+      progress: {message: '重新匹配完成'}});
     return false;
   });
   const p = fixture.page;
@@ -144,7 +161,25 @@ async function chartReview(browser) {
   assert.equal(await p.locator('#report-chart-group').inputValue(), '合成周报图组');
   assert.deepEqual(preview, {job_id: setupId, group: '合成周报图组', chart_id: chart.id,
     mappings: [item.series_id], chart_type: 'trend'});
-  assert.deepEqual(fixture.calls.filter(call => call.method !== 'GET').map(call => call.path), ['/charts/import/report/preview']);
+  const rematched = p.locator(`[data-report-chart="${missing.id}"]`);
+  const mappings = rematched.locator('[data-report-mapping]');
+  await mappings.first().selectOption(alternate.id);
+  await rematched.locator('[data-report-type]').selectOption('seasonal');
+  const rematch = p.getByRole('button', {name: '重新匹配未对上的图（1 张）'});
+  await rematch.click();
+  await p.getByText('合成重新匹配失败').waitFor();
+  assert.equal(await mappings.last().inputValue(), '');
+  await rematch.click();
+  await p.getByText('重新匹配完成').waitFor();
+  await rematched.getByText('本次预览仅捕获请求').waitFor();
+  assert.equal(await mappings.first().inputValue(), alternate.id);
+  assert.equal(await mappings.last().inputValue(), item.series_id);
+  assert.equal(await p.locator('#report-chart-rematch').isHidden(), true);
+  assert.deepEqual(fixture.calls.filter(call => call.path.endsWith('/preview')).map(call => call.body.chart_id), [chart.id, missing.id]);
+  assert.deepEqual(preview, {job_id: setupId, group: '合成周报图组', chart_id: missing.id,
+    mappings: [alternate.id, item.series_id], chart_type: 'seasonal'});
+  assert.deepEqual(fixture.calls.filter(call => call.method !== 'GET').map(call => call.path), [
+    '/charts/import/report/preview', '/charts/import/report/rematch', '/charts/import/report/rematch', '/charts/import/report/preview']);
   await fixture.close();
 }
 

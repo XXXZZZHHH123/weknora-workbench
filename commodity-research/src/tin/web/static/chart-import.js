@@ -11,6 +11,8 @@
   let next = 0, busy = false, complete = false, invalidated = false, loadedCount = 0, total = null;
   let previewStarted = false, allTotal = null, cancelRequested = false;
   const keyFor = sheet => JSON.stringify([sheet.knowledge_id, sheet.sheet]);
+  const countSameIndicators = skipped => skipped.filter(item => item.reason === 'same_indicators').length;
+  const sameIndicatorSummary = count => count ? `${count} 张${U.message('same_indicators')}。` : '';
   function controls() {
     const selected = [...sheets.values()].filter(s => s.selected);
     $('chart-import-apply').disabled = !config.can_write || !complete || invalidated || busy || !selected.length || selected.length > 200;
@@ -74,8 +76,10 @@
     busy = true; controls(); U.notice($('chart-import-status'), '正在导入已确认的工作表…');
     try {
       const result = await U.api('/charts/import/native/apply', {method: 'POST', body: JSON.stringify(body)});
-      U.notice($('chart-import-result'), `导入完成：新建 ${result.created.length} 张，跳过 ${result.skipped.length} 张，无法转换 ${(result.unconvertible || []).length} 张。`);
-      const imported = new Set([...result.created.map(c => c.definition.origin.ref), ...result.skipped.map(c => c.chart_key)]);
+      const summary = `导入完成：新建 ${result.created.length} 张，跳过 ${result.skipped.length} 张，无法转换 ${(result.unconvertible || []).length} 张。`;
+      U.notice($('chart-import-result'), summary + sameIndicatorSummary(countSameIndicators(result.skipped)));
+      const imported = new Set([...result.created.map(c => c.definition.origin.ref),
+        ...result.skipped.filter(c => c.reason === 'already_imported').map(c => c.chart_key)]);
       for (const sheet of selected) {
         sheet.charts.forEach(chart => { if (imported.has(chart.chart_key)) chart.already_imported = true; });
         sheet.selected = false; sheet.element.querySelector('[data-sheet-select]').checked = false; renderSheet(sheet);
@@ -118,7 +122,7 @@
     U.notice(allResult, '');
     showRejections([]);
 
-    let offset = 0, version, created = 0, skipped = 0;
+    let offset = 0, version, created = 0, skipped = 0, sameIndicators = 0;
     const rejected = [];
     const summary = () => `新建 ${created}，跳过 ${skipped}，无法转换 ${rejected.length}`;
     const progress = () => {
@@ -141,14 +145,16 @@
         offset = page.next_offset;
         created += page.created_count;
         skipped += page.skipped_count;
+        sameIndicators += countSameIndicators(page.skipped || []);
         rejected.push(...page.unconvertible);
         progress();
       }
       const finished = offset === null;
-      U.notice(allResult, finished ? `全部导入完成：${summary()}。` : `已取消全部导入，已保存的图表会保留。${summary()}。`);
+      const status = finished ? '全部导入完成：' : '已取消全部导入，已保存的图表会保留。';
+      U.notice(allResult, `${status}${summary()}。${sameIndicatorSummary(sameIndicators)}`);
     } catch (error) {
       const reason = error instanceof TypeError ? '连接失败，请稍后重试' : error.message;
-      U.notice(allResult, `全部导入失败：${reason}。已保存的图表会保留。`, 'error');
+      U.notice(allResult, `全部导入失败：${reason}。已保存的图表会保留。${sameIndicatorSummary(sameIndicators)}`, 'error');
     } finally {
       const restoreFocus = document.activeElement === allCancel;
       allCancel.hidden = true;
