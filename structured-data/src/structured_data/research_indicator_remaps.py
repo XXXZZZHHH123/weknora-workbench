@@ -46,11 +46,11 @@ def _positions(connection, fields, manifest):
 
 def _observations(connection, identifiers):
     result = connection.execute("""
-        SELECT array_index, date, value
+        SELECT array_index, date, source_cell, period, value, value_status, raw_value
         FROM observations
         JOIN (SELECT unnest(?) AS sid, generate_subscripts(?, 1) AS array_index) AS target
           ON series_id = sid
-        ORDER BY array_index, date, value NULLS LAST
+        ORDER BY array_index, date, source_cell, period, value, value_status, raw_value
         """, [identifiers, identifiers])
 
     def batches():
@@ -72,17 +72,22 @@ def _equal_points(old_connection, new_connection, pairs):
         latest = None
         equal = True
         for before, after in zip_longest(old_rows, new_rows):
-            if before != after or before is None or before[1] is None:
+            if before != after or before is None:
                 equal = False
-            elif before[2] is not None:
-                if not isfinite(before[2]):
+                continue
+            _, observed_date, _, _, value, status, raw_value = before
+            if value is not None:
+                if not isfinite(value):
                     equal = False
-                else:
-                    count += 1
-                    latest = before[1]
+                    continue
+            elif status not in ('text_dimension', 'annotation') or raw_value is None:
+                continue
+            count += 1
+            if observed_date is not None:
+                latest = observed_date
         if equal and count:
             position, old_field, new_field = pairs[i - 1]
-            yield position, old_field, new_field, count, latest.isoformat()
+            yield position, old_field, new_field, count, latest.isoformat() if latest else None
 
 
 def _snapshot(store, dataset, info, leased):

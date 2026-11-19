@@ -9,6 +9,9 @@ import time
 
 
 NO_DATA_NOTICE = '已检查的原表没有可导入指标数值；保留原件和预览，可手动选择映射后重试。'
+DEFAULT_BATCH_AI_REQUESTS = 256
+MAX_BATCH_AI_REQUESTS = 512
+BATCH_AI_TIMEOUT = 3600
 
 
 def inspect_sheet_data(manager, import_id, name, *, max_cells=1_000_000, max_seconds=30):
@@ -92,9 +95,9 @@ class _Stopped(Exception):
 
 
 def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
-                       total_max_requests=256, per_sheet_max_requests=12,
+                       total_max_requests=DEFAULT_BATCH_AI_REQUESTS, per_sheet_max_requests=12,
                        task, check_write, cancelled, progress=None, sheet_result=None,
-                       max_seconds=3600, assist=None):
+                       max_seconds=BATCH_AI_TIMEOUT, assist=None):
     """Import the current workbook in source order, one limited worker at a time.
 
     The caller holds the scoped import lock and propagates its captured request
@@ -106,7 +109,7 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
     from .ai_review import AIRequestBudget, assist_mapping
     from .review_errors import error_location
 
-    if (type(total_max_requests) is not int or not 1 <= total_max_requests <= 512
+    if (type(total_max_requests) is not int or not 1 <= total_max_requests <= MAX_BATCH_AI_REQUESTS
             or type(per_sheet_max_requests) is not int or not 1 <= per_sheet_max_requests <= 32):
         raise ValueError('批量 AI 总预算须为 1 至 512 次，单表预算须为 1 至 32 次。')
     doc = manager.publication_view(manager.get(import_id))
