@@ -1,4 +1,5 @@
 """Multiple source grants never become implicit facts or result ownership."""
+import asyncio
 from dataclasses import replace
 
 from fastapi import HTTPException
@@ -55,6 +56,31 @@ def test_mixed_source_permissions_are_checked_on_each_target():
     delegated = scopes.source_scope_for_binding(scope, source(1)['id'], module='market')
     assert delegated.restricted and delegated.knowledge_base_id == source(1)['knowledge_base_id']
     assert not scopes.source_scope_for_binding(scope, source(2)['id'], direct_only=True).restricted
+
+
+def test_inventory_exposes_file_version_time_only_with_direct_source_access(monkeypatch):
+    from tin.web import workbenches
+
+    direct, delegated = source(1), source(2, True)
+    scope = scopes.WorkbenchScope(IDENTITY, WB, '', 0, {'scope_version': 2}, 'Bearer fake',
+                                 scope_version=2, sources_revision=8, sources=(direct, delegated))
+    uploaded = '2026-11-19T09:30:00+08:00'
+
+    async def source_page(selected, page, page_size):
+        assert selected.source_binding_id == direct['id']
+        return {'total': 1, 'data': [{'id': 'workbook', 'file_name': 'fixture.xlsx',
+            'knowledge_base_id': selected.knowledge_base_id, 'file_version_at': uploaded,
+            'file_hash': 'b' * 32, 'previous_file_hashes': ['a' * 32], 'updated_at': '2026-11-19T09:31:00+08:00'}]}
+
+    monkeypatch.setattr(workbenches, '_native_source_page', source_page)
+    inventory = asyncio.run(workbenches.source_inventory(scope, source_binding_id=direct['id']))
+    assert inventory['sources_revision'] == scope.sources_revision
+    row = inventory['sources'][0]
+    assert row['file_version_at'] == uploaded
+    assert 'file_hash' not in row and 'previous_file_hashes' not in row
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(workbenches.source_inventory(scope, source_binding_id=delegated['id']))
+    assert denied.value.status_code == 403
 
 
 def test_zero_source_result_session_is_independent_of_a_removed_legacy_primary(tmp_path, monkeypatch):

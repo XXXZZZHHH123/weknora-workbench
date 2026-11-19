@@ -118,19 +118,21 @@ func (s *knowledgeService) createKnowledgeFromFile(ctx context.Context,
 		checkParams.DataSourceID = metadata["datasource_id"]
 		checkParams.ExternalID = metadata["external_id"]
 	}
-	exists, existingKnowledge, err := s.checkKnowledgeForCreation(ctx, tenantID, kbID, replacement, checkParams)
-	if err != nil {
-		logger.Errorf(ctx, "Failed to check knowledge existence: %v", err)
-		return nil, err
-	}
-	if exists {
-		logger.Infof(ctx, "File already exists: %s", fileName)
-		// Update creation time for existing knowledge
-		if err := s.repo.UpdateKnowledgeColumn(ctx, existingKnowledge.ID, "created_at", time.Now()); err != nil {
-			logger.Errorf(ctx, "Failed to update existing knowledge: %v", err)
+	if replacement != nil || !types.KnowledgeUploadSavesAsNew(ctx) {
+		exists, existingKnowledge, err := s.checkKnowledgeForCreation(ctx, tenantID, kbID, replacement, checkParams)
+		if err != nil {
+			logger.Errorf(ctx, "Failed to check knowledge existence: %v", err)
 			return nil, err
 		}
-		return existingKnowledge, types.NewDuplicateFileError(existingKnowledge)
+		if exists {
+			logger.Infof(ctx, "File already exists: %s", fileName)
+			// Update creation time for existing knowledge
+			if err := s.repo.UpdateKnowledgeColumn(ctx, existingKnowledge.ID, "created_at", time.Now()); err != nil {
+				logger.Errorf(ctx, "Failed to update existing knowledge: %v", err)
+				return nil, err
+			}
+			return existingKnowledge, types.NewDuplicateFileError(existingKnowledge)
+		}
 	}
 
 	// Check storage quota
@@ -143,7 +145,13 @@ func (s *knowledgeService) createKnowledgeFromFile(ctx context.Context,
 	// Convert metadata to JSON format if provided
 	var metadataJSON types.JSON
 	if metadata != nil {
-		metadataBytes, err := json.Marshal(metadata)
+		fields := make(map[string]string, len(metadata))
+		for key, value := range metadata {
+			if key != types.KnowledgeFileVersionsMetadataKey {
+				fields[key] = value
+			}
+		}
+		metadataBytes, err := json.Marshal(fields)
 		if err != nil {
 			logger.Errorf(ctx, "Failed to marshal metadata: %v", err)
 			return nil, err

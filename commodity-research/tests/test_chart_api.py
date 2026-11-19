@@ -34,7 +34,7 @@ def chart_client(tmp_path, monkeypatch):
     state = SimpleNamespace(fields=deepcopy(FIELDS), observations={SID: [('2023-01-01', 10), ('2023-01-02', 11),
         ('2023-01-03', 12), ('2023-01-04', 13)], OTHER: [('2023-01-01', 20)], THIRD: [('2023-01-01', 30)]},
         requests=[], native=[native_chart()], native_status=200, native_version=None, facts_version='f' * 64,
-        on_catalog=None, on_native=None)
+        on_catalog=None, on_native=None, sources_revision=7)
     direct = source(1)
 
     def transport(method, endpoint, body, **kwargs):
@@ -44,7 +44,7 @@ def chart_client(tmp_path, monkeypatch):
         assert not scope.restricted
         state.requests.append((endpoint, deepcopy(body)))
         envelope = {'scope_version': 2, 'workbench_id': scope.workbench_id,
-                    'sources_revision': 7, 'version': state.facts_version}
+                    'sources_revision': state.sources_revision, 'version': state.facts_version}
         if endpoint == '/api/research/native-charts':
             assert set(body) == {'offset', 'limit'} and 1 <= body['limit'] <= 200
             offset, limit = body['offset'], body['limit']
@@ -104,7 +104,8 @@ def chart_client(tmp_path, monkeypatch):
         scope = WorkbenchScope(identity, request.headers.get('x-workbench', WB), '', 0,
             {'workspace_mode': request.headers.get('x-workspace-mode', 'isolated'),
              'can_edit': request.headers.get('x-can-edit', 'true') == 'true'},
-            'Bearer fixture', scope_version=int(request.headers.get('x-scope-version', '2')), sources_revision=7,
+            'Bearer fixture', scope_version=int(request.headers.get('x-scope-version', '2')),
+            sources_revision=state.sources_revision,
             sources=(source(1, request.headers.get('x-restricted') == 'true'),))
         marker = current_workbench.set(None if request.headers.get('x-local') == 'true' else scope)
         identity_marker = current_identity.set(identity)

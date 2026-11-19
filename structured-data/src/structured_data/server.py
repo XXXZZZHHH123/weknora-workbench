@@ -1054,7 +1054,7 @@ def create_app(data_dir: str | Path | None = None):
         result['header_cleanup_count'] = len(eligible_sheets(manager, saved, publication=doc))
         if summary_only:
             fields = {"name", "rows", "columns", "status", "layout", "fingerprint", "reasons", "template_status",
-                      "import_state", "review_state", "automatic_skip",
+                      "import_state", "review_state", "automatic_skip", "source_update_state",
                       "published_in_dataset", "published_dataset_id", "published_fingerprint"}
             briefs = []
             for sheet in doc["sheets"]:
@@ -1085,13 +1085,17 @@ def create_app(data_dir: str | Path | None = None):
         col_count: int = Query(24, ge=1, le=64),
     ):
         from .sheet_view import read_sheet_view
-        manager.sheet(import_id, name)
+        sheet = manager.sheet(import_id, name)
         if not sheet_view_lock.acquire(blocking=False):
             raise HTTPException(409, "正在读取原表，请稍后再查看其他区域。")
         try:
             doc = manager.get(import_id)
+            source = manager.source_path(doc)
+            if sheet.get('source_update_state') == 'retained_deleted':
+                origin = store.sheet_source_dataset(doc['dataset_id'], name)
+                source = store._path(origin) / 'source.xlsx'
             return await run_in_threadpool(
-                read_sheet_view, manager.source_path(doc), name,
+                read_sheet_view, source, name,
                 start_row, start_col, row_count, col_count,
             )
         finally:

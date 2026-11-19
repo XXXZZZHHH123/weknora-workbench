@@ -6,8 +6,10 @@ import { useAuthStore } from '@/stores/auth'
 import { useUploadTasksStore } from '@/stores/uploadTasks'
 import { updateResearchWorkbenchOnboarding, type ResearchWorkbench } from '@/api/workspaces'
 import { createIsolatedResearchClient, type IsolatedResearchIdentity, type WorkbenchSource, type WorkbenchOverview } from '@/api/isolatedResearch'
+import { listKnowledgeFiles } from '@/api/knowledge-base'
 import KbUploadSourceDropdown from '@/views/knowledge/components/KbUploadSourceDropdown.vue'
-import { buildUploadFileName } from '@/views/knowledge/folderTree'
+import SourceFileVersionOptions from '@/views/knowledge/components/SourceFileVersionOptions.vue'
+import { buildSourceFileUploads, findSourceFileVersionChoices, sourceFileVersionConflict, type SourceFileVersionChoice } from '@/views/knowledge/sourceFileVersion'
 import { workspaceErrorMessage } from '@/views/workspaces/workspaceForm'
 
 const props = defineProps<{ workbench: ResearchWorkbench; guideSuppressed?: boolean }>()
@@ -17,6 +19,7 @@ const uploadTypes = ['pdf','txt','md','docx','doc','pptx','ppt','epub','xmind','
 const saveVisualOriginals = ref(true)
 const overview = ref<WorkbenchOverview | null>(null), sources = ref<WorkbenchSource[]>([])
 const sourceTotal = ref(0), sourcePage = ref(1)
+let inventoryRevision = 0
 const loading = ref(false), busy = ref(false), error = ref(''), drawerError = ref('')
 const guideSaving = ref(false), guideError = ref('')
 const drawer = ref<'sources' | 'evidence' | 'upload' | null>(null)
@@ -24,6 +27,9 @@ const drawerOpen = computed(() => Boolean(drawer.value))
 const sourceContent = ref<{text?: string; sha256?: string; supported?: boolean; notice?: string; image_data_url?: string} | null>(null)
 const sourceContentOpen = ref(false), sourceContentLoading = ref(false)
 const selectedSource = ref<WorkbenchSource | null>(null), pendingFiles = ref<File[]>([])
+const uploadVersionChoices = ref<SourceFileVersionChoice[] | null>(null)
+const checkingUploadVersions = ref(false)
+const uploadVersionConflict = computed(() => sourceFileVersionConflict(uploadVersionChoices.value || []))
 const isIsolated = computed(() => props.workbench.workspace_mode === 'isolated')
 const multiSource = computed(() => props.workbench.scope_version === 2)
 const directSources = computed(() => (props.workbench.sources || []).filter(source => source.status === 'active' && source.can_read && !source.delegated))
@@ -42,9 +48,13 @@ function validBinding() {
   return Boolean(own.token && own.tenantId && own.userId && own.workbenchId && (own.knowledgeBaseId || multiSource.value && Number.isSafeInteger(own.sourcesRevision) && Number(own.sourcesRevision) > 0) && ['legacy', 'isolated'].includes(props.workbench.workspace_mode))
 }
 function sourceQuery() { return multiSource.value ? `&source_binding_id=${encodeURIComponent(sourceBindingId.value)}` : '' }
-function validInventory(result: { knowledge_base_id?: string; scope_version?: number; sources_revision?: number; source_binding_id?: string; sources?: WorkbenchSource[] }) {
-  return (!multiSource.value || result.scope_version === 2 && result.sources_revision === props.workbench.sources_revision && result.source_binding_id === sourceBindingId.value)
+type SourceInventory = { knowledge_base_id: string; scope_version?: number; sources_revision?: number; source_binding_id?: string; sources: WorkbenchSource[]; total: number }
+function validInventory(result: SourceInventory) {
+  const minimumRevision = Math.max(inventoryRevision, props.workbench.sources_revision || 0)
+  return (!multiSource.value || result.scope_version === 2 && Number.isSafeInteger(result.sources_revision)
+      && Number(result.sources_revision) >= minimumRevision && result.source_binding_id === sourceBindingId.value)
     && result.knowledge_base_id === targetKnowledgeBaseId.value && Array.isArray(result.sources)
+    && Number.isSafeInteger(result.total) && result.total >= result.sources.length
     && result.sources.every(source => typeof source.id === 'string' && source.id && (!source.knowledge_base_id || source.knowledge_base_id === targetKnowledgeBaseId.value))
 }
 function clearPreview() { sourceSelection++; selectedSource.value = null; sourceContent.value = null; sourceContentOpen.value = false; sourceContentLoading.value = false }
@@ -56,9 +66,10 @@ async function load() {
     if (!validBinding()) throw new Error('请先登录并重新打开当前工作台。')
     if (multiSource.value) {
       if (!selectedBinding.value) return
-      const list = await client().get<{ knowledge_base_id: string; scope_version: number; sources_revision: number; source_binding_id: string; sources: WorkbenchSource[]; total: number }>(`/sources?page=1&page_size=100${sourceQuery()}`)
+      const list = await client().get<SourceInventory>(`/sources?page=1&page_size=100${sourceQuery()}`)
       if (own !== generation) return
-      if (!validInventory(list) || !Number.isSafeInteger(list.total) || list.total < list.sources.length) throw new Error('来源范围或版本已变化，请重新打开。')
+      if (!validInventory(list)) throw new Error('来源范围或版本已变化，请重新打开。')
+      inventoryRevision = Number(list.sources_revision)
       sources.value = list.sources; sourceTotal.value = list.total
       return
     }
@@ -98,7 +109,7 @@ async function guide(status: 'active' | 'dismissed' | 'skipped' | 'completed', t
   } catch (e) { if (stillOwner()) guideError.value = workspaceErrorMessage(e) }
   finally { if (stillOwner()) guideSaving.value = false }
 }
-function openSources() { clearPreview(); drawer.value = 'sources'; drawerError.value = ''; if (multiSource.value && !loading.value && !sources.value.length) void load() }
+function openSources() { clearPreview(); if (multiSource.value && !loading.value && drawer.value !== 'sources') void load(); drawer.value = 'sources'; drawerError.value = '' }
 function openKnowledgeBase() {
   if (validBinding() && targetKnowledgeBaseId.value) void router.push(`/platform/knowledge-bases/${encodeURIComponent(targetKnowledgeBaseId.value)}`)
 }
@@ -125,16 +136,40 @@ async function showSource(source: WorkbenchSource) {
   } catch (e) { if (own === generation && selection === sourceSelection && selectedSource.value?.id === real.id) drawerError.value = workspaceErrorMessage(e) }
   finally { if (own === generation && selection === sourceSelection && selectedSource.value?.id === real.id) sourceContentLoading.value = false }
 }
-function selectFiles(files: File[]) { if (!files.length || !validBinding() || !canEditSource.value) return; pendingFiles.value = [...files]; drawer.value = 'upload'; drawerError.value = '' }
-function enqueueFiles() {
-  if (!pendingFiles.value.length || busy.value || !canEditSource.value) return
+function clearUpload() { pendingFiles.value = []; uploadVersionChoices.value = null; checkingUploadVersions.value = false }
+function cancelUpload() { clearUpload(); drawer.value = null }
+function selectFiles(files: File[]) {
+  if (!files.length || !validBinding() || !canEditSource.value) return
+  clearUpload(); pendingFiles.value = [...files]; drawer.value = 'upload'; drawerError.value = ''
+}
+async function enqueueFiles() {
+  if (!pendingFiles.value.length || busy.value || checkingUploadVersions.value || uploadVersionConflict.value || !canEditSource.value) return
   if (!validBinding() || !targetKnowledgeBaseId.value) { drawerError.value = '请先选择可编辑的数据来源。'; return }
-  const rawOnly = saveVisualOriginals.value ? pendingFiles.value.filter(file => ['png','jpg','jpeg','zip'].includes(file.name.split('.').at(-1)?.toLowerCase() || '')) : []
-  const normal = pendingFiles.value.filter(file => !rawOnly.includes(file))
-  for (const [files,sourceOnly] of [[normal,false],[rawOnly,true]] as const) {
-    if (files.length) uploads.enqueue({kbId:targetKnowledgeBaseId.value,kbName:selectedBinding.value?.name||props.workbench.knowledge_base_name||'',targetFolder:'',...(sourceOnly?{processConfig:{source_only:true}}:{}),uploads:files.map(file=>({file,fileName:buildUploadFileName(file,'')}))})
+  const kbId = targetKnowledgeBaseId.value, owner = scopeEpoch, files = pendingFiles.value
+  const isCurrent = () => owner === scopeEpoch && kbId === targetKnowledgeBaseId.value && files === pendingFiles.value
+  if (!uploadVersionChoices.value) {
+    checkingUploadVersions.value = true; drawerError.value = ''
+    try {
+      const choices = await findSourceFileVersionChoices(files, '', params => {
+        if (!isCurrent() || !canEditSource.value || drawer.value !== 'upload') throw new Error('来源范围已变化。')
+        return listKnowledgeFiles(kbId, params)
+      })
+      if (!isCurrent() || !canEditSource.value || drawer.value !== 'upload') return
+      uploadVersionChoices.value = choices
+      if (choices.length) return
+    } catch (e) {
+      if (isCurrent() && drawer.value === 'upload') drawerError.value = workspaceErrorMessage(e)
+      return
+    } finally { if (isCurrent()) checkingUploadVersions.value = false }
   }
-  pendingFiles.value = []; drawer.value = 'sources'; void guide('active', 'sources')
+  const selections = new Map(uploadVersionChoices.value.map(choice => [choice.index, choice.knowledgeId]))
+  const planned = buildSourceFileUploads(files, '', selections)
+  const rawOnly = saveVisualOriginals.value ? planned.filter(item => ['png','jpg','jpeg','zip'].includes(item.file.name.split('.').at(-1)?.toLowerCase() || '')) : []
+  const normal = planned.filter(item => !rawOnly.includes(item))
+  for (const [batch, sourceOnly] of [[normal,false],[rawOnly,true]] as const) {
+    if (batch.length) uploads.enqueue({kbId,kbName:selectedBinding.value?.name||props.workbench.knowledge_base_name||'',targetFolder:'',...(sourceOnly?{processConfig:{source_only:true}}:{}),uploads:batch})
+  }
+  clearUpload(); drawer.value = 'sources'; void guide('active', 'sources')
   MessagePlugin.info('原件上传到绑定知识库；Excel 等待结构化解析，其他文档按知识库配置解析。')
 }
 function filesChanged(event: Event) {
@@ -147,9 +182,14 @@ async function moreSources() {
   if (busy.value || loading.value || sources.value.length >= sourceTotal.value) return
   const own = generation, ownerEpoch = scopeEpoch; busy.value = true; drawerError.value = ''
   try {
-    const result = await client().get<{knowledge_base_id: string; sources: WorkbenchSource[]; total: number}>(`/sources?page=${sourcePage.value+1}&page_size=100${sourceQuery()}`)
+    const result = await client().get<SourceInventory>(`/sources?page=${sourcePage.value+1}&page_size=100${sourceQuery()}`)
     if (own !== generation) return
     if (!validInventory(result)) throw new Error('资料范围不匹配，已停止显示。')
+    if (multiSource.value && result.sources_revision !== inventoryRevision) {
+      inventoryRevision = Number(result.sources_revision)
+      await load()
+      return
+    }
     sources.value = [...new Map([...sources.value, ...result.sources].map(source => [source.id, source])).values()]
     sourceTotal.value = result.total; sourcePage.value++
   } catch (e) { if (own === generation) drawerError.value = workspaceErrorMessage(e) }
@@ -158,16 +198,22 @@ async function moreSources() {
 function sourceLabel(source: WorkbenchSource) { const name = source.file_name || source.title || source.id; return source.folder_path ? `${source.folder_path}/${name}` : name }
 function isWorkbook(source: WorkbenchSource) { return ['xlsx','xls'].includes((source.file_name || '').split('.').at(-1)?.toLowerCase() || '') }
 function sourceStatus(source: WorkbenchSource) { const value = source.parse_status || 'pending'; return ({ completed: isWorkbook(source) ? '原件已保存' : '文档已解析', stored: '原件已保存', pending: '等待处理', processing: '处理中', failed: '处理失败' } as Record<string, string>)[value] || value }
+function sourceVersionTime(source: WorkbenchSource) {
+  if (!source.file_version_at) return ''
+  const date = new Date(source.file_version_at)
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString()
+}
 watch(scopeKey, () => {
   scopeEpoch++; generation++; clearPreview()
+  inventoryRevision = 0
   if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = undefined }
   overview.value = null; sources.value = []; sourceTotal.value = 0; sourcePage.value = 1
-  loading.value = false; busy.value = false; guideSaving.value = false; guideError.value = ''; error.value = ''; drawerError.value = ''; drawer.value = null; pendingFiles.value = []
+  loading.value = false; busy.value = false; guideSaving.value = false; guideError.value = ''; error.value = ''; drawerError.value = ''; drawer.value = null; clearUpload()
   sourceBindingId.value = directSources.value[0]?.id || ''
   const own = generation
   if (!multiSource.value) void nextTick(() => { if (own === generation) void load() })
 }, { immediate: true, flush: 'sync' })
-watch(sourceBindingId, () => { if (!multiSource.value) return; generation++; clearPreview(); sources.value = []; sourceTotal.value = 0; sourcePage.value = 1; pendingFiles.value = []; if (drawer.value === 'sources') void load() }, { flush: 'sync' })
+watch(sourceBindingId, () => { if (!multiSource.value) return; generation++; clearPreview(); sources.value = []; sourceTotal.value = 0; sourcePage.value = 1; clearUpload(); if (drawer.value === 'sources') void load() }, { flush: 'sync' })
 onMounted(() => window.addEventListener('knowledgeFileUploaded', filesChanged))
 onBeforeUnmount(() => { generation++; scopeEpoch++; sourceSelection++; if (refreshTimer) clearTimeout(refreshTimer); window.removeEventListener('knowledgeFileUploaded', filesChanged) })
 defineExpose({ openSources, drawerOpen })
@@ -182,7 +228,7 @@ defineExpose({ openSources, drawerOpen })
     <aside v-if="drawer" class="isolated-drawer" aria-label="资料与研究侧栏">
       <header>
         <h2>{{ drawer === 'evidence' ? '来源预览' : drawer === 'upload' ? '确认添加资料' : '资料与来源' }}</h2>
-        <t-button size="small" variant="text" aria-label="关闭资料侧栏" @click="clearPreview(); drawer = null"><t-icon name="close" /></t-button>
+        <t-button size="small" variant="text" aria-label="关闭资料侧栏" @click="clearPreview(); cancelUpload()"><t-icon name="close" /></t-button>
       </header>
       <div class="isolated-drawer__body">
         <t-alert v-if="drawerError" theme="error" :message="drawerError" />
@@ -197,7 +243,7 @@ defineExpose({ openSources, drawerOpen })
           <p v-if="loading" class="isolated-hint" role="status">正在读取来源…</p>
           <div v-else-if="!sources.length && !error" class="isolated-note">尚无原件，可以先添加文件或文件夹。</div>
           <div v-for="source in sources" :key="source.id" class="isolated-review-row">
-            <div><strong>{{ sourceLabel(source) }}</strong><small>{{ sourceStatus(source) }}</small></div>
+            <div><strong>{{ sourceLabel(source) }}</strong><small>{{ sourceStatus(source) }}</small><small v-if="sourceVersionTime(source)">最新版本 <time :datetime="source.file_version_at">{{ sourceVersionTime(source) }}</time></small></div>
             <t-button v-if="isWorkbook(source) && canEditSource" size="small" variant="text" data-guide="research-structured" @click="openStructured(source)">结构化解析</t-button>
             <t-button size="small" variant="text" data-guide="research-source-preview" @click="showSource(source)">预览</t-button>
           </div>
@@ -212,6 +258,7 @@ defineExpose({ openSources, drawerOpen })
             <dt>归属</dt><dd>{{ workbench.knowledge_base_name || '绑定知识库' }}</dd>
             <dt>文件类型</dt><dd>{{ selectedSource.file_type || '原件' }}</dd>
             <dt>处理状态</dt><dd>{{ sourceStatus(selectedSource) }}</dd>
+            <template v-if="sourceVersionTime(selectedSource)"><dt>最新版本</dt><dd><time :datetime="selectedSource.file_version_at">{{ sourceVersionTime(selectedSource) }}</time></dd></template>
             <dt>来源标识</dt><dd>{{ selectedSource.id }}</dd>
           </dl>
           <div class="isolated-content-preview">
@@ -229,10 +276,14 @@ defineExpose({ openSources, drawerOpen })
         <template v-else-if="drawer === 'upload'">
           <p class="isolated-hint">添加到 {{ workbench.knowledge_base_name || '绑定知识库' }}，保留文件夹层级。Excel 先存原件，其他文档按知识库配置解析。</p>
           <div v-for="(file,index) in pendingFiles" :key="index" class="isolated-upload-row"><t-icon name="file" /><span>{{ file.webkitRelativePath || file.name }}</span><small>{{ Math.ceil(file.size / 1024) }} KB</small></div>
+          <div v-if="uploadVersionChoices?.length" class="isolated-note">
+            <SourceFileVersionOptions v-for="choice in uploadVersionChoices" :key="choice.index" :choice="choice" v-model:knowledge-id="choice.knowledgeId" />
+            <t-alert v-if="uploadVersionConflict" theme="warning" :message="$t('knowledgeBase.fileVersionChoiceConflict')" />
+          </div>
           <label class="isolated-confirm-line"><input v-model="saveVisualOriginals" type="checkbox" />图片和压缩包仅保存原件，不触发图像模型；ZIP 需选中此项才能保存</label>
           <div class="isolated-actions">
-            <t-button size="small" variant="outline" @click="pendingFiles = []; drawer = null">取消</t-button>
-            <t-button size="small" @click="enqueueFiles">确认添加 {{ pendingFiles.length }} 个文件</t-button>
+            <t-button size="small" variant="outline" @click="cancelUpload">取消</t-button>
+            <t-button size="small" :loading="checkingUploadVersions" :disabled="uploadVersionConflict" @click="enqueueFiles">确认添加 {{ pendingFiles.length }} 个文件</t-button>
           </div>
         </template>
       </div>

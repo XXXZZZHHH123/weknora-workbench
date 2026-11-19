@@ -373,6 +373,8 @@ def _range_sql(ref):
 
 def build(store, dataset_id):
     folder = store._path(dataset_id)
+    retained = {sheet['name'] for sheet in store.raw_manifest(dataset_id).get('sheets', [])
+                if sheet.get('retained_dataset_id')}
     series = json.loads((folder / 'series.json').read_text())
     byid = {s['series_id']: s for s in series}
     charts = extract(folder / 'source.xlsx') if (folder / 'source.xlsx').is_file() else []
@@ -405,6 +407,9 @@ def build(store, dataset_id):
                 ref = curve['reference']
                 if not ref:
                     curve.update(status='unsupported', reason='没有可核对的工作簿内单列引用；外部链接、命名范围、数组和多列引用暂不支持。')
+                    continue
+                if ref['sheet'] in retained:
+                    curve['reason'] = '源工作表沿用上一版数据，新原件中的曲线引用待核对。'
                     continue
                 ids = [s['series_id'] for s in series if s['sheet'] == ref['sheet']]
                 if not ids:

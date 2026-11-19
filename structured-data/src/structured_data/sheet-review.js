@@ -58,6 +58,7 @@
   const publishedBlocks = s => isPublished(s) && Array.isArray(s?.published_mapping?.blocks) ? s.published_mapping.blocks : [];
   const waitingImport = s => !isPublished(s) && ['trusted_existing','auto_ready','template_ready','confirmed'].includes(s?.status);
   const isConfirmedSheet = s => !isChartOnly(s) && (s?.review_state ? s.review_state.status==='confirmed' : ['trusted_existing','auto_ready','template_ready','confirmed'].includes(s?.status));
+  const needsReview = s => s.status==='needs_review' && (s.source_update_state || !isPublished(s) && !s.automatic_skip);
   function canonical(value) {
     if(Array.isArray(value))return value.map(canonical);
     if(!value||typeof value!=='object')return value;
@@ -108,7 +109,7 @@
     if (needle && !s.name.toLowerCase().includes(needle)) return false;
     if (ui.filter === 'all') return true;
     if (ui.filter === 'charts') return isChartOnly(s);
-    return !isPublished(s) && !s.automatic_skip && (s.status === 'needs_review' || waitingImport(s)) && !isChartOnly(s);
+    return (needsReview(s) || waitingImport(s)) && !isChartOnly(s);
   }
   function sheetMeta(s) {
     const blocks = s.block_count ?? s.mapping?.blocks?.length ?? 0;
@@ -207,7 +208,8 @@
   };
   function updateImportSummary() {
     const sheets=currentImport?.sheets||[],ready=sheets.filter(isPublished).length;
-    $('importSummary').textContent=`${currentImport?.source_file||''} · ${sheets.length} 张工作表 · ${ready} 张已可查询 · ${sheets.filter(waitingImport).length} 张待导入 · ${sheets.filter(s=>!isPublished(s)&&!s.automatic_skip&&s.status==='needs_review').length} 张待核对${sheets.some(s=>s.automatic_skip&&!isPublished(s))?' · '+sheets.filter(s=>s.automatic_skip&&!isPublished(s)).length+' 张已跳过':''}`;
+    const update = currentImport?.source_update;
+    $('importSummary').textContent=`${currentImport?.source_file||''} · ${sheets.length} 张工作表 · ${ready} 张已可查询 · ${sheets.filter(waitingImport).length} 张待导入 · ${sheets.filter(needsReview).length} 张待核对${sheets.some(s=>s.automatic_skip&&!isPublished(s))?' · '+sheets.filter(s=>s.automatic_skip&&!isPublished(s)).length+' 张已跳过':''}${update?' · '+sourceUpdateText(update):''}`;
     // Said here, at import, rather than on research pages: pending sheets in which no field was recognised.
     const fieldless=sheets.filter(s=>!isPublished(s)&&!s.automatic_skip&&s.status==='needs_review'&&!isChartOnly(s)&&!mappedFieldCount(s));
     const hint=$('importFieldless');
@@ -242,7 +244,7 @@
     }
     return {sheets,mappings};
   }
-  function tabState(s){return isPublished(s)?'ready':s.status==='needs_review'||waitingImport(s)?'pending':'quiet';}
+  function tabState(s){return s.source_update_state?'pending':isPublished(s)?'ready':s.status==='needs_review'||waitingImport(s)?'pending':'quiet';}
   function renderSheetList() {
     $('sheetList').innerHTML=(currentImport?.sheets||[]).map((s,i)=>({s,i})).filter(({s})=>sheetVisible(s,'')||(ui.filter==='pending'&&s.name===currentSheet?.name&&isPublished(s))).map(({s,i})=>`<button class="sheet-tab" data-sheet-index="${i}" aria-pressed="${s.name===currentSheet?.name}" title="${esc(s.name+' · '+sheetMeta(s))}"><i class="sheet-state ${tabState(s)}" aria-hidden="true"></i><strong>${esc(s.name)}</strong><small class="sr-only">${esc(sheetMeta(s))}</small></button>`).join('')||'<p class="muted" style="font-size:12px">没有匹配的工作表。</p>';
     document.querySelectorAll('[data-sheet-filter]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.sheetFilter===ui.filter)));
@@ -261,16 +263,16 @@
     currentSheet=null;mappingConfirmed=false;mappingBusy=false;ui.checkSignature=null;
     $('sheetDetail').innerHTML='<p class="grid-loading">正在读取当前工作表…</p>';
     const sheet=await timedApi(`/api/imports/${encodeURIComponent(importId)}/sheet?name=${encodeURIComponent(s.name)}`,{},controller,30000,requestApi);
-    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,import_state:sheet.import_state,review_state:sheet.review_state,automatic_skip:sheet.automatic_skip,mapping:sheet.mapping,field_count:sheet.field_count??s.field_count,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons,published_in_dataset:sheet.published_in_dataset===true,published_dataset_id:sheet.published_dataset_id??null,published_mapping:sheet.published_mapping??null,published_fingerprint:sheet.published_fingerprint??null});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);setMappingBusy(false);
+    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,import_state:sheet.import_state,review_state:sheet.review_state,automatic_skip:sheet.automatic_skip,mapping:sheet.mapping,field_count:sheet.field_count??s.field_count,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons,source_update_state:sheet.source_update_state,published_in_dataset:sheet.published_in_dataset===true,published_dataset_id:sheet.published_dataset_id??null,published_mapping:sheet.published_mapping??null,published_fingerprint:sheet.published_fingerprint??null});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);setMappingBusy(false);
     if(isChartOnly(sheet)){showPreview('charts');return;}
     showPreview('table');await loadWindow(1,1,requestApi);
   };
   renderSheet = function(s) {
     const chartOnly = isChartOnly(s);
-    ui.editable = s.status!=='empty' && !chartOnly;
+    ui.editable = s.status!=='empty' && !chartOnly && s.source_update_state!=='retained_deleted';
     // A saved mapping may have canonical defaults or different confirmed ranges.
     // Use that actual baseline unless a local draft explicitly supersedes it.
-    const publishedSeed=isPublished(s)&&Array.isArray(s.published_mapping?.blocks)?s.published_mapping:null;
+    const publishedSeed=isPublished(s)&&(!s.source_update_state||s.source_update_state==='retained_deleted')&&Array.isArray(s.published_mapping?.blocks)?s.published_mapping:null;
     let seed = copy({...publishedSeed||s.mapping||{blocks:[]},sheet:s.name,fingerprint:s.fingerprint});
     ui.restore = false;
     if (ui.editable) try {
@@ -287,7 +289,8 @@
     const hasInspector=!chartOnly&&(ui.editable||ui.mapping.blocks.length>0||!!currentImport?.dataset_id);
     const strip=hasInspector?`<div class="block-strip"><div id="blockLegend" class="block-chips"></div>${ui.editable?'<button id="addMappingBlock" class="text-button" type="button">+ 添加区块</button><button id="undoMapping" class="text-button" type="button">↶ 撤销</button>':''}</div>`:'<div id="blockLegend" hidden></div>';
     const inspector=hasInspector?`<aside id="blockEditor" class="block-editor sheet-cards"><div class="editor-heading"><strong>字段与范围核对 <small class="editor-mode">${ui.editable?'可调整':'只读'}</small></strong><button id="previewBlockSample" class="secondary" type="button" aria-expanded="false" aria-controls="samplePreview">${isPublished(s)?'查看记录':'预览几条记录'}</button></div><div id="samplePreview" class="block-sample-content" role="status" hidden></div><div id="mappingForm"></div><section id="resultPanel" class="stored-data-panel" hidden aria-label="已保存记录"><div class="result-heading"><h3 id="resultTitle"></h3><button id="closeResults" class="secondary" type="button">返回字段</button></div><div id="resultContent"></div></section>${ui.editable?'<div class="editor-footer"><label><input id="ackBlock" type="checkbox"><span id="ackBlockLabel">我已核对这个区块</span></label><button id="excludeCurrentBlock" class="exclude-block" type="button">这块不导入</button></div>':''}</aside>`:'<div id="mappingForm" hidden></div>';
-    const source=`<div class="sheet-source"><div class="source-head"><h3>${esc(s.name)}</h3>${sheetStatusBadge(s)}${switcher}${isPublished(s)&&s.published_dataset_id&&!chartOnly?'<button id="storedResults" class="secondary" type="button">查看记录</button>':''}<button id="reviewFocus" class="text-button" type="button">展开核对</button></div><div id="tablePane" class="table-pane"><div class="view-tools"><button id="previousRows" class="secondary" type="button">↑ 上一段</button><button id="nextRows" class="secondary" type="button">↓ 下一段</button><button id="previousCols" class="secondary" type="button">← 左边</button><button id="nextCols" class="secondary" type="button">右边 →</button><input id="jumpCell" aria-label="定位原表单元格" placeholder="例如 AG90"><button id="jumpToCell" class="secondary" type="button">定位</button><span id="viewSummary" class="window-summary"></span></div><div id="sheetGrid" class="sheet-grid-wrap" tabindex="0" aria-label="当前工作表原表视图"><p class="grid-loading">正在加载原表…</p></div><div class="grid-caption"><strong id="selectedCaption"></strong></div><div id="rangeSelection" class="range-selection-actions" hidden><span>临时选区 <b id="selectionRange"></b></span><button id="applySelection" type="button">用于当前区块</button><button id="newBlockSelection" class="secondary" type="button">建立新区块</button><button id="cancelSelection" class="text-button" type="button">取消</button></div><div id="viewWarning" class="source-warning" role="status"></div><div id="selectionHint" class="source-note"></div></div><div id="chartPane" class="chart-pane" hidden></div></div>`;
+    const updateNotice = s.source_update_state || s.status==='needs_review' && currentImport?.source_update ? `<p class="source-warning">${esc(s.reasons?.join('；')||'待核对')}</p>` : '';
+    const source=`<div class="sheet-source"><div class="source-head"><h3>${esc(s.name)}</h3>${sheetStatusBadge(s)}${switcher}${isPublished(s)&&s.published_dataset_id&&!chartOnly?'<button id="storedResults" class="secondary" type="button">查看记录</button>':''}<button id="reviewFocus" class="text-button" type="button">展开核对</button></div>${updateNotice}<div id="tablePane" class="table-pane"><div class="view-tools"><button id="previousRows" class="secondary" type="button">↑ 上一段</button><button id="nextRows" class="secondary" type="button">↓ 下一段</button><button id="previousCols" class="secondary" type="button">← 左边</button><button id="nextCols" class="secondary" type="button">右边 →</button><input id="jumpCell" aria-label="定位原表单元格" placeholder="例如 AG90"><button id="jumpToCell" class="secondary" type="button">定位</button><span id="viewSummary" class="window-summary"></span></div><div id="sheetGrid" class="sheet-grid-wrap" tabindex="0" aria-label="当前工作表原表视图"><p class="grid-loading">正在加载原表…</p></div><div class="grid-caption"><strong id="selectedCaption"></strong></div><div id="rangeSelection" class="range-selection-actions" hidden><span>临时选区 <b id="selectionRange"></b></span><button id="applySelection" type="button">用于当前区块</button><button id="newBlockSelection" class="secondary" type="button">建立新区块</button><button id="cancelSelection" class="text-button" type="button">取消</button></div><div id="viewWarning" class="source-warning" role="status"></div><div id="selectionHint" class="source-note"></div></div><div id="chartPane" class="chart-pane" hidden></div></div>`;
     const footer=ui.editable?`<div class="review-footer"><div class="footer-progress" id="confirmHint" role="status"></div><div class="footer-actions"><button id="suggestMapping" class="secondary" type="button">AI 一键辅助确认</button><button id="confirmMapping" type="button">检查并导入这张表</button></div></div><p id="draftNotice" class="source-note">${ui.restore?'草稿已恢复':''}</p><div id="mappingFeedback" class="review-feedback" role="status"></div><details class="full-check-results"><summary>完整检查结果</summary><div id="mappingPreview" class="review-results"></div></details>`:`<p class="readonly-sheet muted">${chartOnly?'图表页':s.status==='trusted_existing'?(isPublished(s)?'已可查询':'待导入'):'暂无数据区块'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div>`;
     $('sheetDetail').innerHTML=`<div class="review-workspace">${strip}<div class="review-panes${hasInspector?'':' readonly'}">${source}${inspector}</div>${footer}<textarea id="mappingEditor" class="hidden">${esc(JSON.stringify(ui.mapping))}</textarea></div>`;
     $('mappingEditor').value = JSON.stringify(ui.mapping, null, 2);
@@ -413,6 +416,7 @@
   }
   async function showStoredResults() {
     const dataset=isPublished(currentSheet)?currentSheet.published_dataset_id:null,sheet=currentSheet?.name,version=reviewVersion;
+    const priorRowsOnChangedSheet = currentSheet?.source_update_state==='retained';
     if(!dataset||!sheet)return;
     const panel=$('resultPanel'),content=$('resultContent');if(!panel)return;
     clearSample();$('blockEditor').classList.add('showing-records');panel.hidden=false;
@@ -434,7 +438,7 @@
       const result=await request('/api/query?'+new URLSearchParams({dataset_id:dataset,series_id:selected,operation:'rows',limit:25,offset:rowOffset}));
       if(!result)return;
       const s=result.series;
-      host.innerHTML=`<h4>${esc(s.metric)} · ${esc(dimensionsText(s.dimensions,['block','data_region'])||'无额外维度')}</h4><p>单位：${esc(s.unit||'原表未注明')} · 共 ${result.record_count} 条记录，其中 ${result.valid_count} 条有有效数值。当前 ${result.rows.length?rowOffset+1:0}–${rowOffset+result.rows.length} 条</p><div class="scroll"><table class="stored-record-table"><thead><tr><th>时间／期间</th><th>保存数值</th><th>原值／公式</th><th>来源</th></tr></thead><tbody>${result.rows.map(r=>`<tr><td>${esc(r.date||r.period||'无时间字段')}</td><td>${r.value==null?'缺失':esc(r.value)}<small>${esc(valueLabels[r.value_status]||r.value_status)}</small></td><td>${esc(r.raw_value??'空白')}${r.formula?'<details><summary>查看公式</summary><div>'+esc(r.formula)+'</div></details>':''}</td><td>${[[r.source_cell,'数值'],[r.date_cell||r.period_cell,'时间'],[r.category_cell,'类别'],[r.metric_cell,'指标']].filter(([cell])=>cell).map(([cell,label])=>`<span class="stored-source"><small>${label}</small><button class="field-source" type="button" data-result-cell="${esc(cell)}" title="在左侧原表高亮 ${esc(cell)}">${esc(cell)} ↗</button></span>`).join('')}</td></tr>`).join('')}</tbody></table></div><div class="result-pagination"><button id="storedRowsPrevious" class="secondary" ${rowOffset===0?'disabled':''}>上一页记录</button><button id="storedRowsNext" class="secondary" ${rowOffset+result.rows.length>=result.record_count?'disabled':''}>下一页记录</button></div><p class="muted">公式使用原文件缓存值；空白、错误或无缓存值保持缺失。点击来源坐标可在左侧原表高亮；记录保持展开。</p>`;
+      host.innerHTML=`<h4>${esc(s.metric)} · ${esc(dimensionsText(s.dimensions,['block','data_region'])||'无额外维度')}</h4><p>单位：${esc(s.unit||'原表未注明')} · 共 ${result.record_count} 条记录，其中 ${result.valid_count} 条有有效数值。当前 ${result.rows.length?rowOffset+1:0}–${rowOffset+result.rows.length} 条</p><div class="scroll"><table class="stored-record-table"><thead><tr><th>时间／期间</th><th>保存数值</th><th>原值／公式</th><th>来源</th></tr></thead><tbody>${result.rows.map(r=>`<tr><td>${esc(r.date||r.period||'无时间字段')}</td><td>${r.value==null?'缺失':esc(r.value)}<small>${esc(valueLabels[r.value_status]||r.value_status)}</small></td><td>${esc(r.raw_value??'空白')}${r.formula?'<details><summary>查看公式</summary><div>'+esc(r.formula)+'</div></details>':''}</td><td>${[[r.source_cell,'数值'],[r.date_cell||r.period_cell,'时间'],[r.category_cell,'类别'],[r.metric_cell,'指标']].filter(([cell])=>cell).map(([cell,label])=>`<span class="stored-source"><small>${label}</small>${priorRowsOnChangedSheet?esc(cell):`<button class="field-source" type="button" data-result-cell="${esc(cell)}" title="在左侧原表高亮 ${esc(cell)}">${esc(cell)} ↗</button>`}</span>`).join('')}</td></tr>`).join('')}</tbody></table></div><div class="result-pagination"><button id="storedRowsPrevious" class="secondary" ${rowOffset===0?'disabled':''}>上一页记录</button><button id="storedRowsNext" class="secondary" ${rowOffset+result.rows.length>=result.record_count?'disabled':''}>下一页记录</button></div><p class="muted">公式使用原文件缓存值；空白、错误或无缓存值保持缺失。${priorRowsOnChangedSheet?'坐标来自上一版原件。':'点击来源坐标可在左侧原表高亮；记录保持展开。'}</p>`;
       $('storedRowsPrevious').onclick=()=>{rowOffset=Math.max(0,rowOffset-25);rows().catch(showError);};
       $('storedRowsNext').onclick=()=>{rowOffset+=25;rows().catch(showError);};
       bindRecordSources(host);

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"testing"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/application/access"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -55,6 +56,13 @@ func (r *replaceFileRepo) UpdateKnowledgeColumns(_ context.Context, _ string, va
 	return errors.New("database unavailable")
 }
 
+func (r *replaceFileRepo) UpdateKnowledgeFileSource(ctx context.Context, before *types.Knowledge, values map[string]interface{}) error {
+	if before.FilePath != r.row.FilePath {
+		return errors.New("source snapshot changed")
+	}
+	return r.UpdateKnowledgeColumns(ctx, before.ID, values)
+}
+
 func (r *replaceFileRepo) apply(values map[string]interface{}) {
 	for column, value := range values {
 		switch column {
@@ -80,6 +88,8 @@ func (r *replaceFileRepo) apply(values map[string]interface{}) {
 			r.row.EnableStatus = value.(string)
 		case "error_message":
 			r.row.ErrorMessage = value.(string)
+		case "updated_at":
+			r.row.UpdatedAt = value.(time.Time)
 		}
 	}
 }
@@ -98,6 +108,9 @@ func (f *replaceFileStore) SaveFile(context.Context, *multipart.FileHeader, uint
 	}
 	f.saved++
 	*f.events = append(*f.events, "save")
+	if f.saved > 1 {
+		return fmt.Sprintf("new/file-%d.md", f.saved), nil
+	}
 	return "new/file.md", nil
 }
 
@@ -187,6 +200,7 @@ func newReplaceFileHarness(t *testing.T) *replaceFileHarness {
 		ParseStatus:     types.ParseStatusCompleted,
 		EnableStatus:    "enabled",
 		Metadata:        types.JSON(`{"external_id":"notes/a.md","extra":{"nested":true}}`),
+		CreatedAt:       time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC),
 	}
 	h.repo = &replaceFileRepo{row: h.original}
 	h.store = &replaceFileStore{events: &h.events}
@@ -231,6 +245,9 @@ func md5Hex(content string) string {
 
 func TestReplaceKnowledgeFilePreservesIDAndReparsesNewContent(t *testing.T) {
 	h := newReplaceFileHarness(t)
+	h.ctx = context.WithValue(h.ctx, types.UserIDContextKey, "researcher")
+	audit := &fileReplacementAudit{}
+	h.svc.audit = audit
 	zero := 0
 	require.NoError(t, setContentProcessingMetadata(&h.repo.row, 8, &zero, false))
 	require.NoError(t, setIngestionState(&h.repo.row, knowledgeIngestionState{SourceHash: h.original.FileHash, Result: []byte(`{"accepted_count":1}`)}))
@@ -257,12 +274,114 @@ func TestReplaceKnowledgeFilePreservesIDAndReparsesNewContent(t *testing.T) {
 	assert.Equal(t, map[string]interface{}{"nested": true}, metadata["extra"], "unmanaged entries survive")
 	assert.NotContains(t, metadata, contentProcessingKey)
 	assert.NotContains(t, metadata, ingestionMetadataKey, "old original table counts cannot survive replacement")
+	history, err := row.FileVersionHistory()
+	require.NoError(t, err)
+	require.Len(t, history.Previous, 1)
+	assert.Equal(t, h.original.FileHash, history.Previous[0].FileHash)
+	assert.Equal(t, h.original.FileSize, history.Previous[0].FileSize)
+	assert.Equal(t, h.original.CreatedAt, history.Previous[0].UploadedAt)
+	assert.Equal(t, "researcher", history.Previous[0].ReplacedBy)
+	assert.Equal(t, history.UpdatedAt, history.Previous[0].ReplacedAt)
+	assert.True(t, history.UpdatedAt.After(h.original.CreatedAt))
+	require.NotNil(t, audit.updated)
+	assert.Equal(t, "researcher", audit.updated.ActorUserID)
+	details, err := audit.updated.Details.Map()
+	require.NoError(t, err)
+	assert.Equal(t, h.original.FileHash, details["previous_file_hash"])
+	assert.Equal(t, row.FileHash, details["file_hash"])
 
 	require.Len(t, h.tasks.payloads, 1)
 	assert.Equal(t, h.original.ID, h.tasks.payloads[0].KnowledgeID)
 	assert.Equal(t, "new/file.md", h.tasks.payloads[0].FilePath)
 	assert.Equal(t, []string{"save", "dequeue:knowledge-1", "enqueue", "delete:old/file.md"}, h.events,
 		"queued parse tasks are dropped before reparse; the old file is deleted only after enqueue")
+}
+
+type fileReplacementAudit struct {
+	interfaces.AuditLogService
+	updated *types.AuditLog
+}
+
+func (s *fileReplacementAudit) Log(_ context.Context, entry *types.AuditLog) error {
+	if entry.Action == types.AuditActionKnowledgeUpdated {
+		s.updated = entry
+	}
+	return nil
+}
+
+func TestReplaceKnowledgeFileHistoryKeepsRecentVersions(t *testing.T) {
+	h := newReplaceFileHarness(t)
+	for i := 1; i <= knowledgeFilePreviousVersionsRetained+1; i++ {
+		_, err := h.replace(t, fmt.Sprintf("version %d", i), "notes/a.md", nil)
+		require.NoError(t, err)
+	}
+	history, err := h.repo.row.FileVersionHistory()
+	require.NoError(t, err)
+	require.Len(t, history.Previous, knowledgeFilePreviousVersionsRetained)
+	assert.Equal(t, md5Hex(fmt.Sprintf("version %d", knowledgeFilePreviousVersionsRetained)), history.Previous[0].FileHash)
+	assert.Equal(t, md5Hex("version 1"), history.Previous[len(history.Previous)-1].FileHash)
+}
+
+func TestReplaceKnowledgeFileRetainsLastPublishedHashAcrossFailedWorkbookUpdates(t *testing.T) {
+	t.Setenv("STRUCTURED_DATA_URL", "http://structured.internal")
+	t.Setenv("COMMODITY_RESEARCH_TOKEN_FILE", "unused-by-enqueue")
+	h := newReplaceFileHarness(t)
+	h.repo.row.FileName, h.repo.row.FileType = "workbook.xlsx", "xlsx"
+	first, err := h.replaceNamed(t, "published workbook", "workbook.xlsx", "", nil)
+	require.NoError(t, err)
+	state, err := ingestionState(first)
+	require.NoError(t, err)
+	state.Status, state.Result = "completed", json.RawMessage(`{"dataset_id":"published"}`)
+	require.NoError(t, h.svc.saveIngestionState(h.ctx, first, state))
+	for i := 0; i <= knowledgeFilePreviousVersionsRetained; i++ {
+		_, err := h.replaceNamed(t, fmt.Sprintf("unpublished workbook %d", i), "workbook.xlsx", "", nil)
+		require.NoError(t, err)
+	}
+	history, err := h.repo.row.FileVersionHistory()
+	require.NoError(t, err)
+	require.Equal(t, first.FileHash, history.LastPublishedFileHash)
+	for _, version := range history.Previous {
+		require.NotEqual(t, first.FileHash, version.FileHash)
+	}
+}
+
+func TestReplaceKnowledgeFileRejectsDifferentSupportedType(t *testing.T) {
+	h := newReplaceFileHarness(t)
+	_, err := h.replaceNamed(t, "text", "replacement.txt", "", nil)
+	require.ErrorContains(t, err, "相同的文件类型")
+	assert.Zero(t, h.store.saved)
+	assert.Empty(t, h.tasks.payloads)
+}
+
+func TestReplaceKnowledgeFileQueuesNativeWorkbookIngestion(t *testing.T) {
+	t.Setenv("STRUCTURED_DATA_URL", "http://structured.internal")
+	t.Setenv("COMMODITY_RESEARCH_TOKEN_FILE", "unused-by-enqueue")
+	for _, mode := range []string{"legacy upload", "registered structured original"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newReplaceFileHarness(t)
+			h.repo.row.FileName = "workbook.xlsx"
+			h.repo.row.FileType = "xlsx"
+			h.repo.row.ParseStatus = types.ParseStatusStored
+			sourceOnly := mode == "registered structured original"
+			if sourceOnly {
+				require.NoError(t, h.repo.row.SetProcessOverrides(&types.KnowledgeProcessOverrides{SourceOnly: true}))
+			}
+			updated, err := h.replaceNamed(t, "new workbook", "workbook.XLSX", "", nil)
+			require.NoError(t, err)
+			assert.Equal(t, h.original.ID, updated.ID)
+			assert.Equal(t, "xlsx", updated.FileType)
+			state, err := ingestionState(updated)
+			require.NoError(t, err)
+			assert.NotEmpty(t, state.Attempt)
+			assert.Equal(t, updated.FileHash, state.SourceHash)
+			overrides, err := updated.ProcessOverrides()
+			require.NoError(t, err)
+			assert.Equal(t, sourceOnly, overrides != nil && overrides.SourceOnly)
+			require.Len(t, h.tasks.payloads, 1)
+			assert.Equal(t, updated.ID, h.tasks.payloads[0].KnowledgeID)
+			assert.Equal(t, updated.FilePath, h.tasks.payloads[0].FilePath)
+		})
+	}
 }
 
 func TestReplaceKnowledgeFileUnchangedContentSkipsReparse(t *testing.T) {

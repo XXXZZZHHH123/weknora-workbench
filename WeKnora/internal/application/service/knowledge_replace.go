@@ -7,12 +7,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/common/redislock"
 	werrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
+	"github.com/google/uuid"
 )
+
+const knowledgeFilePreviousVersionsRetained = 5
 
 // ReplaceKnowledgeFile swaps the source file of an existing file knowledge in
 // place. The knowledge ID, and everything keyed on it (tags, references, data
@@ -22,12 +26,12 @@ import (
 // Object storage is not transactional, so the steps are ordered to keep the
 // row pointing at a file that exists:
 //  1. save the new file under a fresh storage path;
-//  2. dequeue any in-flight parse of the previous source;
-//  3. point the row at the new file and mark it pending in one UPDATE;
+//  2. record the previous version, point the row at the new file and set its state;
+//  3. dequeue any in-flight parse of the previous source;
 //  4. ReparseKnowledge cleans the old chunks/index/graph and enqueues parsing;
 //  5. only after that succeeds, delete the old file.
 //
-// If step 3 fails the new file is discarded, unless a re-read shows the write
+// If step 2 fails the new file is discarded, unless a re-read shows the write
 // committed despite the error — in that case reparse continues so the row is
 // not left completed against a new file. If step 4 fails the previous source
 // columns are restored (marked failed, since cleanup may already have removed
@@ -39,6 +43,25 @@ import (
 // is returned. Unlike CreateKnowledgeFromFile, this does not treat another
 // knowledge's hash as a duplicate — path identity is what connectors need.
 func (s *knowledgeService) ReplaceKnowledgeFile(ctx context.Context,
+	knowledgeID string, file *multipart.FileHeader, customFileName string, metadata map[string]string,
+) (*types.Knowledge, error) {
+	if s.redisClient == nil {
+		if _, busy := s.fileReplacements.LoadOrStore(knowledgeID, struct{}{}); busy {
+			return nil, werrors.NewConflictError("该知识文件正在上传新版本，请稍后重试")
+		}
+		defer s.fileReplacements.Delete(knowledgeID)
+		return s.replaceKnowledgeFile(ctx, knowledgeID, file, customFileName, metadata)
+	}
+	var updated *types.Knowledge
+	err := redislock.WithRenewableLock(ctx, s.redisClient, "knowledge-file-version:"+knowledgeID, time.Minute, 15*time.Second, func(lockCtx context.Context) error {
+		var err error
+		updated, err = s.replaceKnowledgeFile(lockCtx, knowledgeID, file, customFileName, metadata)
+		return err
+	})
+	return updated, err
+}
+
+func (s *knowledgeService) replaceKnowledgeFile(ctx context.Context,
 	knowledgeID string, file *multipart.FileHeader, customFileName string, metadata map[string]string,
 ) (*types.Knowledge, error) {
 	if file == nil {
@@ -86,7 +109,14 @@ func (s *knowledgeService) ReplaceKnowledgeFile(ctx context.Context,
 		}
 		folderPath = types.NormalizeKnowledgeFolderPath(safeFolderPath)
 	}
-	fileType := getFileType(safeFileName)
+	fileType := normalizeFileExtension(getFileType(safeFileName))
+	previousType := normalizeFileExtension(existing.FileType)
+	if previousType == "" {
+		previousType = normalizeFileExtension(getFileType(existing.FileName))
+	}
+	if fileType != previousType || normalizeFileExtension(getFileType(file.Filename)) != previousType {
+		return nil, werrors.NewBadRequestError("新版本必须与原文件使用相同的文件类型")
+	}
 
 	// ReparseKnowledge reuses the stored overrides as-is, so check them against
 	// the new file type here.
@@ -94,15 +124,12 @@ func (s *knowledgeService) ReplaceKnowledgeFile(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	if overrides != nil && overrides.SourceOnly {
-		return nil, werrors.NewBadRequestError("仅保存原件的文件请重新上传；替换文件不支持仅保存原件模式")
-	}
-	if _, err := resolveFileImportProcessConfig(ctx, kb, fileType, overrides, nil); err != nil {
+	effective, err := resolveFileImportProcessConfig(ctx, kb, fileType, overrides, nil)
+	if err != nil {
 		return nil, err
 	}
-	if isExcelFileType(fileType) && !(fileType == "xlsx" && unifiedIngestionAvailable()) {
-		return nil, werrors.NewBadRequestError("Excel 文件请通过添加文档上传，再到结构化数据库进行结构化解析")
-	}
+	unifiedWorkbook := fileType == "xlsx" && unifiedIngestionAvailable()
+	storedOnly := !unifiedWorkbook && (effective.SourceOnly || isExcelFileType(fileType))
 
 	if err := ValidateJSONUploadContent(safeFileName, file); err != nil {
 		logger.Errorf(ctx, "Invalid JSON replacement content for knowledge %s: %v", existing.ID, err)
@@ -121,7 +148,7 @@ func (s *knowledgeService) ReplaceKnowledgeFile(ctx context.Context,
 	if hash == existing.FileHash && safeFileName == existing.FileName && folderPath == existing.FolderPath {
 		current := existing.GetMetadata()
 		for k, v := range metadata {
-			if current[k] != v {
+			if k != types.KnowledgeFileVersionsMetadataKey && current[k] != v {
 				if err := s.repo.UpdateKnowledgeColumn(ctx, existing.ID, "metadata", newMetadata); err != nil {
 					return nil, err
 				}
@@ -135,6 +162,17 @@ func (s *knowledgeService) ReplaceKnowledgeFile(ctx context.Context,
 	// the same source update, before the replacement's parse can be queued.
 	replacementMetadata := &types.Knowledge{FileHash: hash, Metadata: newMetadata}
 	clearContentProcessingMetadata(replacementMetadata)
+	versionAt := time.Now().UTC()
+	if err := appendPreviousFileVersion(existing, replacementMetadata, versionAt, auditActor(ctx)); err != nil {
+		return nil, err
+	}
+	if !storedOnly && unifiedIngestionAvailable() && (fileType == "xlsx" || fileType == "pdf") {
+		if err := setIngestionState(replacementMetadata, knowledgeIngestionState{
+			Attempt: uuid.NewString(), SourceHash: hash, Status: "pending", Stage: "等待自动处理",
+		}); err != nil {
+			return nil, err
+		}
+	}
 	newMetadata = replacementMetadata.Metadata
 
 	fileSvc := s.resolveFileService(ctx, kb)
@@ -156,11 +194,6 @@ func (s *knowledgeService) ReplaceKnowledgeFile(ctx context.Context,
 		previousMetadata = types.JSON("{}") // metadata is NOT NULL; an empty JSON writes NULL
 	}
 
-	// Drop queued parse tasks of the previous source before the row
-	// points at the new file. The new TypeDocumentProcess task is
-	// enqueued later by ReparseKnowledge.
-	s.dequeueKnowledgeTasks(cleanupCtx, existing.ID)
-
 	sourceColumns := map[string]interface{}{
 		"title":         title,
 		"file_name":     safeFileName,
@@ -173,9 +206,15 @@ func (s *knowledgeService) ReplaceKnowledgeFile(ctx context.Context,
 		"parse_status":  types.ParseStatusPending,
 		"enable_status": "disabled",
 		"error_message": "",
-		"updated_at":    time.Now(),
+		"updated_at":    versionAt,
 	}
-	if err := s.repo.UpdateKnowledgeColumns(ctx, existing.ID, sourceColumns); err != nil {
+	if storedOnly {
+		sourceColumns["parse_status"] = types.ParseStatusStored
+		sourceColumns["summary_status"] = types.SummaryStatusNone
+		sourceColumns["processed_at"] = nil
+		sourceColumns["pending_subtasks_count"] = 0
+	}
+	if err := s.repo.UpdateKnowledgeFileSource(ctx, existing, sourceColumns); err != nil {
 		current, readErr := s.repo.GetKnowledgeByID(cleanupCtx, existing.TenantID, existing.ID)
 		if readErr != nil || current == nil || current.FilePath != newPath {
 			logger.Errorf(ctx, "Failed to point knowledge %s at its replacement file: %v", existing.ID, err)
@@ -186,11 +225,22 @@ func (s *knowledgeService) ReplaceKnowledgeFile(ctx context.Context,
 			existing.ID, err)
 	}
 
-	reparsed, err := s.reparseKnowledge(ctx, existing.ID, nil, true)
+	// An upload that lost the conditional swap must not cancel the winning
+	// upload's task. Retire the previous job only once this source is current.
+	if !storedOnly || isInFlightParseStatus(existing.ParseStatus) {
+		s.dequeueKnowledgeTasks(cleanupCtx, existing.ID)
+	}
+	var updated *types.Knowledge
+	if storedOnly {
+		updated, err = s.repo.GetKnowledgeByID(ctx, existing.TenantID, existing.ID)
+	} else {
+		updated, err = s.reparseKnowledge(ctx, existing.ID, nil, true)
+	}
 	if err != nil {
 		logger.Errorf(ctx, "Reparse after replacing the file of knowledge %s failed, restoring source: %v",
 			existing.ID, err)
-		if rerr := s.repo.UpdateKnowledgeColumns(cleanupCtx, existing.ID, map[string]interface{}{
+		current := &types.Knowledge{ID: existing.ID, TenantID: existing.TenantID, KnowledgeBaseID: existing.KnowledgeBaseID, FilePath: newPath, FileHash: hash}
+		if rerr := s.repo.UpdateKnowledgeFileSource(cleanupCtx, current, map[string]interface{}{
 			"title":         existing.Title,
 			"file_name":     existing.FileName,
 			"folder_path":   existing.FolderPath,
@@ -219,9 +269,37 @@ func (s *knowledgeService) ReplaceKnowledgeFile(ctx context.Context,
 	recordKBActivity(ctx, s.audit, existing.TenantID, existing.KnowledgeBaseID, types.AuditActionKnowledgeUpdated,
 		"knowledge", existing.ID, types.AuditOutcomeAccepted, map[string]any{
 			"title": title, "source_type": "file", "file_type": fileType,
-			"processing_status": "pending", "trigger": kbActivityTrigger(ctx),
+			"processing_status": updated.ParseStatus, "trigger": kbActivityTrigger(ctx),
+			"previous_file_hash": existing.FileHash, "file_hash": hash, "file_version_at": versionAt,
 		})
-	return reparsed, nil
+	return updated, nil
+}
+
+func appendPreviousFileVersion(existing, replacement *types.Knowledge, versionAt time.Time, actor string) error {
+	history, err := existing.FileVersionHistory()
+	if err != nil {
+		return err
+	}
+	uploadedAt := history.UpdatedAt
+	if uploadedAt.IsZero() {
+		uploadedAt = existing.CreatedAt
+	}
+	previous := types.KnowledgeFileVersion{
+		FileName: existing.FileName, FileHash: existing.FileHash, FileSize: existing.FileSize,
+		UploadedAt: uploadedAt, ReplacedAt: versionAt, ReplacedBy: actor,
+	}
+	history.UpdatedAt = versionAt
+	if history.LastPublishedFileHash == "" && normalizeFileExtension(existing.FileType) == "xlsx" {
+		// Historical workbooks may have been registered as stored originals by
+		// structured-data. Its read path still verifies this first hash against
+		// the published dataset for this exact knowledge entry.
+		history.LastPublishedFileHash = existing.FileHash
+	}
+	history.Previous = append([]types.KnowledgeFileVersion{previous}, history.Previous...)
+	if len(history.Previous) > knowledgeFilePreviousVersionsRetained {
+		history.Previous = history.Previous[:knowledgeFilePreviousVersionsRetained]
+	}
+	return replacement.SetFileVersionHistory(history)
 }
 
 func knowledgeCustomNameRelocates(customFileName string) bool {
@@ -258,7 +336,9 @@ func mergeKnowledgeMetadata(current types.JSON, updates map[string]string) (type
 		merged = map[string]interface{}{}
 	}
 	for k, v := range updates {
-		merged[k] = v
+		if k != types.KnowledgeFileVersionsMetadataKey {
+			merged[k] = v
+		}
 	}
 	b, err := json.Marshal(merged)
 	if err != nil {
