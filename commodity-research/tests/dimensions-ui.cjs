@@ -409,6 +409,7 @@ async function checkUnavailableCardNames(browser) {
 
     // An unchanged stale source has its own state while retaining seasonal position and freshness.
     const stoppedConfig = initial(true); stoppedConfig.no_update = true;
+    stoppedConfig.card_overrides = {field_metadata:{source_codes:[{cell:'B3',text:'S5329490'},{cell:'B4',text:unsafe}]}};
     stoppedConfig.dimensions[0].sections[0].items[0] = {...indicator('kb-1'),name:'可读指标名称',metric:'数据来源：某机构 / 原始技术列',sheet:unsafe};
     const stopped = await fixture(browser,stoppedConfig), n = stopped.page;
     await n.locator('.dimensions-change.no_update').waitFor();
@@ -416,6 +417,11 @@ async function checkUnavailableCardNames(browser) {
     assert.equal(await n.locator('.dimensions-card .dimensions-sheet').textContent(),'工作表：' + unsafe);
     assert.equal(await n.locator('.dimensions-change').innerText(),'本期无新数据');
     assert.match(await n.locator('.dimensions-tooltip').textContent(),/本期无新数据（最新 2029-09-14）/);
+    await n.locator('.dimensions-info-trigger').click();
+    assert.equal(await n.locator('.dimensions-tooltip').isVisible(),true);
+    assert.deepEqual(await n.locator('.dimensions-tooltip .header-note-text').allTextContents(),
+      ['代码：S5329490','代码：' + unsafe]);
+    await n.keyboard.press('Escape');
     assert.match(await n.locator('.dimensions-summary').first().innerText(),/↑0 ↓0 · 持平 0 · 本期无新数据 1/);
     assert.match(await n.locator('.dimensions-card').innerText(),/近 5 年同期第 2 低[\s\S]*停更 8 天/);
     assert.equal(await n.locator('.dimensions-card img').count(),0);

@@ -150,7 +150,7 @@ def parse_matrix(ws,fs,b,bi,sheet,result):
         unit_source = ('source' if evidence['unit_evidence'] else 'declared') if unit else None
         metadata = FieldMetadata(role=rule.get('field_role'), unit=unit, unit_source=unit_source,
                                  frequency=rule.get('frequency'), header_notes=notes or None, **evidence)
-        result['series'].append({'field_metadata': metadata.model_dump(exclude={'header_notes'} if not notes else None),
+        result['series'].append({'field_metadata': metadata.model_dump(exclude={'source_codes'} if notes else {'source_codes', 'header_notes'}),
             **({'frequency': rule['frequency'], 'frequency_cells': [e['cell'] for e in evidence['frequency_evidence']]} if rule.get('frequency') else {}),
             'series_id':sid,'sheet':sheet,'metric':metric,'unit':unit,
             'unit_status':'explicit' if unit else 'needs_review','dimensions':dims,'date_mode':'period',

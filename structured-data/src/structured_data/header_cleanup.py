@@ -1,4 +1,4 @@
-"""Propose and explicitly apply header-note edits to saved workbook mappings."""
+"""Propose and explicitly apply header edits to saved workbook mappings."""
 from hashlib import sha256
 import time
 
@@ -100,11 +100,9 @@ def generate(manager, import_id, *, total_max_requests, check_write, cancelled, 
             budget = AIRequestBudget(1)
             try:
                 proposal = suggest_header_cleanup(path, cfg, sheet, _mapping(sheet), budget, stop_reason)
-                if proposal['changes'] and proposal['diagnostics']:
-                    row.update(status='failed', error='表头建议未通过证据核对，请核对原表后重试。')
-                else:
-                    row.update(status='rename' if proposal['changes'] else 'unchanged',
-                               changes=proposal['changes'], mapping=proposal['mapping'])
+                changes, diagnostics = proposal['changes'], proposal['diagnostics']
+                status = 'rename' if changes else ('needs_review' if diagnostics else 'unchanged')
+                row.update(status=status, changes=changes, diagnostics=diagnostics, mapping=proposal['mapping'])
             except ReviewValidationError:
                 row.update(status='failed', error='表头建议未通过证据核对，请核对原表后重试。')
             except Exception:

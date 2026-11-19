@@ -376,7 +376,7 @@ def dimension_data(scope, dimensions, day=None, period='weekly'):
                     card = {**failure, 'status': 'unavailable'}
                     if item['kind'] == 'indicator':
                         metadata = field.get('field_metadata') or {}
-                        if metadata.get('header_notes'):
+                        if metadata.get('header_notes') or metadata.get('source_codes'):
                             card['field_metadata'] = deepcopy(metadata)
                     cards.append(card)
                     summary['unavailable'] += 1

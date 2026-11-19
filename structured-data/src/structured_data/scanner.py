@@ -19,9 +19,9 @@ RULE_VERSION = 'generic-layout-v1'
 _UNITS = {'元/吨','元/件','元/米','元/公斤','美元/公斤','美元/磅','美元/吨','美分/磅','吨','万吨','千吨','包','万包','公顷','万公顷','亩','万亩','%','％','亿元','万元','美元','万美元','亿美元','万件','件','万米','米','天','摄氏度','华氏度','卢比/公担'}
 
 
-def header_metric(values):
+def header_metric(values, *, names_only=False):
     labels = (value.strip() for value in values if isinstance(value, str))
-    return ' / '.join(dict.fromkeys(label for label in labels if label and label not in _UNITS))
+    return ' / '.join(dict.fromkeys(label for label in labels if label and (names_only or label not in _UNITS)))
 
 
 def complete_date(value):

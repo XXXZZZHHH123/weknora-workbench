@@ -1617,6 +1617,7 @@ async function dgOpenDetail(nodeId) {
         : '<div class="text-[var(--text-muted)]">未标注口径维度</div>'}
       ${d.expression ? row("计算式", dgEsc(d.expression)) : ""}
       ${d.tolerance ? row("容差", dgEsc(d.tolerance)) : ""}
+      ${(d.source_codes || []).map(code => `<div class="header-note-text">代码：${dgEsc(code.text)}</div>`).join("")}
       ${d.header_notes?.length ? '<div data-diagram-header-notes></div>' : ''}
     </div>
 

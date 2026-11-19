@@ -939,23 +939,47 @@
     button.hidden=!record.sheets.some(sheet=>sheet.status==='rename'&&!record.applied.has(sheet.sheet_name));
     button.disabled=record.applying||record.applyBlocked||!record.selected.size;
   }
-  function headerCleanupSuggestion(sheet,record) {
-    const changes=sheet.changes.slice(0,5).map(change=>{
-      const notes=change.header_notes.map(note=>`<li>${esc(note)}</li>`).join('');
-      return `<li>${esc(change.old_name)} → ${esc(change.new_name)}
-        ${notes?`<ul class="header-cleanup-notes">${notes}</ul>`:''}</li>`;
+  function headerCleanupValue(label,text) {
+    const characters=Array.from(text);
+    if(characters.length<=72&&!text.includes('\n'))return `${label}：${esc(text)}`;
+    const preview=characters.slice(0,72).join('').split('\n')[0];
+    return `<details class="header-cleanup-value"><summary>${label}：<span class="header-cleanup-preview">${esc(preview)}…</span></summary><div>${esc(text)}</div></details>`;
+  }
+  function headerCleanupDiagnostics(sheet) {
+    const diagnostics=(sheet.diagnostics||[]).map(item=>{
+      const location=[Number.isInteger(item.block_index)?`区块 ${item.block_index+1}`:'',item.column?`${item.column} 列`:''].filter(Boolean).join(' · ');
+      return `<li>${location?`${esc(location)}：`:''}${esc(item.message)}</li>`;
     }).join('');
-    const remaining=sheet.changes.length-5;
+    return diagnostics?`<div class="header-cleanup-diagnostics">待核对<ul>${diagnostics}</ul></div>`:'';
+  }
+  function headerCleanupChange(change) {
+    const fields=[
+      ['代码',change.source_codes||[]],
+      ['单位',change.unit||[]],
+      ['频率',change.frequency||[]],
+      ['说明',change.header_notes||[]],
+    ];
+    const values=fields.flatMap(([label,items])=>items.map(item=>`<li>${headerCleanupValue(label,typeof item==='string'?item:item.text)}</li>`));
+    if(change.unit_conflict)values.push('<li class="header-cleanup-conflict">单位待核对</li>');
+    if(change.frequency_conflict)values.push('<li class="header-cleanup-conflict">频率待核对</li>');
+    return `<li><span>${esc(change.old_name)} → ${esc(change.new_name)}</span>
+      ${values.length?`<ul class="header-cleanup-fields">${values.join('')}</ul>`:''}</li>`;
+  }
+  function headerCleanupSuggestion(sheet,record) {
+    const rename=sheet.status==='rename';
+    const changes=rename?sheet.changes.map(headerCleanupChange):[];
+    const remaining=changes.slice(5);
     return `<div class="header-cleanup-sheet">
       <label>
-        <input type="checkbox" data-header-cleanup-sheet="${esc(sheet.sheet_name)}"${record.selected.has(sheet.sheet_name)?' checked':''}${record.applying||record.applyBlocked?' disabled':''}>
-        <span>${esc(sheet.sheet_name)} · ${sheet.changes.length} 个指标改名</span>
+        <input type="checkbox" data-header-cleanup-sheet="${esc(sheet.sheet_name)}"${record.selected.has(sheet.sheet_name)?' checked':''}${!rename||record.applying||record.applyBlocked?' disabled':''}>
+        <span>${esc(sheet.sheet_name)} · ${rename?`${changes.length} 个指标会改名`:'需核对'}</span>
       </label>
-      <details>
-        <summary>查看改名和移出的说明</summary>
-        <ul>${changes}</ul>
-        ${remaining>0?`<p>其余 ${remaining} 个</p>`:''}
-      </details>
+      ${rename?`<details class="header-cleanup-changes">
+        <summary>查看改名和分离的表头信息</summary>
+        <ul>${changes.slice(0,5).join('')}</ul>
+        ${remaining.length?`<details><summary>其余 ${remaining.length} 个</summary><ul>${remaining.join('')}</ul></details>`:''}
+      </details>`:''}
+      ${headerCleanupDiagnostics(sheet)}
     </div>`;
   }
   function renderHeaderCleanup(record) {
@@ -969,13 +993,14 @@
     $('headerCleanupRetry').hidden=record.running||record.applying;
     $('headerCleanupNotice').textContent=[record.message,record.notice].filter(Boolean).join(' ');
 
-    const suggestions=record.sheets.filter(sheet=>sheet.status==='rename'&&!record.applied.has(sheet.sheet_name));
+    const suggestions=record.sheets.filter(sheet=>['rename','needs_review'].includes(sheet.status)&&!record.applied.has(sheet.sheet_name));
     const unchanged=record.sheets.filter(sheet=>sheet.status==='unchanged');
     const failed=record.sheets.filter(sheet=>sheet.status==='failed');
     const outcomes=[...record.applied.values()].map(sheet=>{
       const success=sheet.status==='applied';
       const outcome=success?`已应用（${esc(sheet.renamed_fields)} 个指标改名）`:esc(sheet.error||'应用未完成，请重新整理。');
-      return `<li data-sheet-confirm="${success?'success':'failed'}">${esc(sheet.sheet_name)}：${outcome}</li>`;
+      const suggestion=record.sheets.find(item=>item.sheet_name===sheet.sheet_name);
+      return `<li data-sheet-confirm="${success?'success':'failed'}"><span>${esc(sheet.sheet_name)}：${outcome}</span>${suggestion?headerCleanupDiagnostics(suggestion):''}</li>`;
     }).join('');
     const unchangedList=unchanged.map(sheet=>`<li>${esc(sheet.sheet_name)}</li>`).join('');
     const failedList=failed.map(sheet=>`<li data-sheet-confirm="failed">${esc(sheet.sheet_name)}：${esc(sheet.error||'未能整理表头说明。')}</li>`).join('');

@@ -52,6 +52,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if ((item.history_coverage?.limited ?? item.limited) && !notes.has('history')) add('history', warningText('history_limited'));
     if (!knownUnit(item.unit) && item.kind === 'indicator') add('unit', '单位未注明');
     const rows = [...new Set(notes.values())].map(text => ({text}));
+    for (const code of item.field_metadata?.source_codes || []) rows.push({text: '代码：' + code.text, css: 'header-note-text'});
     if (item.frequency) rows.push({text: '频率：' + item.frequency});
     if (item.source && item.source !== item.source_file) rows.push({text: '来源：' + item.source});
     if (item.source_file) rows.push({text: '来源文件：' + item.source_file});

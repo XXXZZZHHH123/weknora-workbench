@@ -12,3 +12,9 @@
   {% endif %}
 {% endfor %}
 {%- endmacro %}
+
+{% macro render_source_codes(codes) -%}
+{% for code in codes or [] %}
+  <div class="header-note-text">代码：{{ code.text }}</div>
+{% endfor %}
+{%- endmacro %}

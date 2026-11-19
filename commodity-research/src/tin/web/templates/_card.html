@@ -1,4 +1,4 @@
-{% from "_header_notes.html" import render_header_notes %}
+{% from "_header_notes.html" import render_header_notes, render_source_codes %}
 {% macro card(c, loop_index, compact=false) -%}
 {% set pid = "pop-" ~ c.key %}
 {% set details = c.detail|default({}, true) %}
@@ -59,6 +59,7 @@
       <div class="text-[var(--text)]" data-card-full-name>完整名称：{{ c.detail.display.full_name }}</div>
       {% for item in c.detail.display.metadata %}<div class="text-[var(--text-muted)]">{{ item.label }}：{{ item.value }}</div>{% endfor %}
     {% endif %}
+    {{ render_source_codes(details.get('source_codes')) }}
     {{ render_header_notes(details.get('header_notes')) }}
     {% if c.detail.inputs is defined %}
       <div class="text-[var(--text-muted)]">{{ c.detail.formula }}</div>

@@ -25,6 +25,7 @@ class FieldMetadata(BaseModel):
     unit_evidence: list[MetadataEvidence] = Field(default_factory=list, max_length=16)
     frequency_evidence: list[MetadataEvidence] = Field(default_factory=list, max_length=16)
     header_notes: list[HeaderNoteCell] | None = None
+    source_codes: list[HeaderNoteCell] | None = None
 
     @field_validator('unit', 'frequency')
     @classmethod

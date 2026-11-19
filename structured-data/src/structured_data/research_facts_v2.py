@@ -111,6 +111,7 @@ def _read_current(registry, body, sources, leases):
                 for field in selected:
                     if field.get('field_metadata'):
                         field['field_metadata'].pop('header_notes', None)
+                        field['field_metadata'].pop('source_codes', None)
             prepared={'version':metadata['version'],'indicators':selected,'datasets':[],'bindings':[]}
             for info in metadata['datasets']:
                 mapping={field['source_series_id']:field['series_id'] for field in selected

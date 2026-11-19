@@ -61,12 +61,17 @@ def read_series(client, dataset_id):
     return {(row['sheet'], row['metric']): row for row in response.json()['series']}
 
 
-def suggest_notes(*, name_rows=(1,)):
-    evidence = [{'block_index': 0, 'field': 'header_note_cells', 'cells': ['B3']}]
-    if name_rows:
-        evidence.append({'block_index': 0, 'field': 'metric', 'cells': ['B1']})
-    return {'block_updates': [{'block_index': 0, 'header_note_cells': ['B3'],
-                              'metric_header_rows': list(name_rows)}], 'evidence': evidence}
+def suggest_roles(rows, evidence, *, unresolved=()):
+    return {'block_updates': [{'block_index': 0, 'header_roles': rows}],
+            'evidence': [{'block_index': 0, 'field': role, 'cells': cells} for role, cells in evidence.items()],
+            'unresolved': list(unresolved)}
+
+
+def suggest_notes(*, frequency_role='frequency'):
+    evidence = {'name': ['A1', 'B1', 'C1'], 'note': ['B3']}
+    evidence.setdefault(frequency_role, []).append('B2')
+    return suggest_roles([{'row': 1, 'role': 'name'}, {'row': 2, 'role': frequency_role},
+                          {'row': 3, 'role': 'note'}], evidence)
 
 
 def mock_header_model(monkeypatch, propose):
@@ -142,7 +147,9 @@ def test_cleanup_preview_is_read_only_and_applies_only_selected_renames(client, 
     assert suggestions['已发布单位表']['status'] == 'unchanged'
     change, = current['changes']
     assert change['column_index'] == 2
-    assert (change['old_name'], change['new_name'], change['header_notes']) == (OLD_METRIC, '产量', [NOTE])
+    assert (change['old_name'], change['new_name']) == (OLD_METRIC, '产量')
+    assert change['header_notes'] == [{'cell': 'B3', 'text': NOTE}]
+    assert change['frequency'] == [{'cell': 'B2', 'text': '周'}]
     sheet_before = read_sheet(client, import_url, '本期数据')
     assert current['fingerprint'] == sheet_before['fingerprint']
     assert current['mapping_digest']
@@ -227,7 +234,7 @@ def test_cleanup_is_structural_and_contains_one_model_failure(client, monkeypatc
         if sheet == '已发布单位表':
             # The source has two header cells but no description to move.
             return {'block_updates': [], 'evidence': []}
-        return suggest_notes(name_rows=())
+        return suggest_notes(frequency_role='name')
 
     calls = mock_header_model(monkeypatch, propose)
     result = poll(client, start_cleanup(client, import_url))
@@ -286,3 +293,185 @@ def test_cleanup_job_cancels_without_saving_and_skips_remaining_requests(client,
     assert len(calls) == 1
     assert all(row['status'] != 'rename' for row in job['result']['sheets'])
     assert review_path.read_bytes() == review_before
+
+
+def publish_fixture(client, book, blocks):
+    raw = BytesIO()
+    book.save(raw)
+    uploaded = poll(client, client.post('/api/import', files={'file': ('header-roles.xlsx', raw.getvalue())}))
+    url = '/api/imports/' + uploaded['import_id']
+    name = book.active.title
+    sheet = read_sheet(client, url, name)
+    mapping = {'sheet': name, 'fingerprint': sheet['fingerprint'], 'blocks': blocks}
+    poll(client, client.post(url + '/confirm', json={'mapping': mapping, 'save_template': False}))
+    return url, read_sheet(client, url, name)['published_mapping']
+
+
+def fixture_block(rows, columns, **extra):
+    return {'header_rows': rows, 'data_start_row': rows[-1] + 1, 'data_end_row': rows[-1] + 2,
+            'date_mode': 'none', 'columns': columns, **extra}
+
+
+def test_cleanup_keeps_steel_note_suggestion_and_unresolved_other_block(client, monkeypatch):
+    book = Workbook()
+    sheet = book.active
+    sheet.title = '钢联下游情况'
+    names = ['开机率', '成品库存', '产量', '订单']
+    descriptions = [f'{name} 的统计口径补充说明' for name in names]
+    sheet.append(['钢联数据', None, None, None, None, '其他来源', '另一分区'])
+    sheet.append(['日期', *names, '日期', '辅助指标'])
+    sheet.append([None, '周', '周', '周', '周'])
+    sheet.append(['指标描述', *descriptions])
+    for day in (1, 2):
+        date = datetime(2024, 1, day)
+        sheet.append([date, 5, 6, 7, 8, date, 9])
+    first = fixture_block([1, 2, 3, 4], [
+        {'column': col, 'metric': f'{name} / 周 / {desc}', 'header_cells': [f'{col}{row}' for row in (2, 3, 4)]}
+        for col, name, desc in zip('BCDE', names, descriptions)
+    ], date_mode='date', date_column='A')
+    second = fixture_block([1, 2, 3, 4], [
+        {'column': 'G', 'metric': '另一分区 / 辅助指标', 'header_cells': ['G1', 'G2']}
+    ], date_mode='date', date_column='F')
+    url, previous = publish_fixture(client, book, [first, second])
+    unresolved = {'block_index': 1, 'field': 'header_note_cells', 'cells': ['G1'],
+                  'message': '需要核对 G1 在另一区块的用途。'}
+    suggestion = suggest_roles(
+        [{'row': row, 'role': role} for row, role in enumerate(('note', 'name', 'frequency', 'note'), 1)],
+        {'name': [f'{col}2' for col in 'ABCDE'], 'frequency': [f'{col}3' for col in 'BCDE'],
+         'note': ['A1', *(f'{col}4' for col in 'ABCDE')]}, unresolved=[unresolved],
+    )
+    mock_header_model(monkeypatch, lambda _: suggestion)
+    response = start_cleanup(client, url)
+    row, = poll(client, response)['sheets']
+    assert row['status'] == 'rename'
+    assert [change['new_name'] for change in row['changes']] == names
+    assert row['mapping']['blocks'][1] == previous['blocks'][1]
+    diagnostic, = row['diagnostics']
+    assert (diagnostic['block_index'], diagnostic['message']) == (1, unresolved['message'])
+    assert row['changes'][0]['header_notes'] == [
+        {'cell': 'A1', 'text': '钢联数据'}, {'cell': 'A4', 'text': '指标描述'},
+        {'cell': 'B4', 'text': descriptions[0]},
+    ]
+    result = apply_cleanup(client, url, response.json()['id'], sheet.title)
+    assert result['renamed_fields'] == 4
+    catalog = read_series(client, result['dataset_id'])
+    assert catalog[sheet.title, names[0]]['field_metadata']['header_notes'] == row['changes'][0]['header_notes']
+    assert (sheet.title, '另一分区 / 辅助指标') in catalog
+
+    # A response containing only unresolved reasons stays visible as a review item.
+    message = 'B4-E4 建议作为表头说明格，请核对。'
+    suggestion.clear()
+    suggestion.update(block_updates=[], evidence=[], unresolved=[
+        {'block_index': 0, 'field': 'header_note_cells', 'cells': ['B4', 'E4'], 'message': message},
+    ])
+    # The second block still has multiple header cells, so the sheet remains in scope.
+    row, = poll(client, start_cleanup(client, url))['sheets']
+    assert row['status'] == 'needs_review' and row['changes'] == []
+    assert row['diagnostics'][0]['message'] == message
+
+
+@pytest.mark.parametrize('unit,existing', [(None, None), ('百万包', None), ('百万包', '万吨')])
+def test_cleanup_publishes_wind_codes_and_units(client, monkeypatch, unit, existing):
+    book = Workbook()
+    sheet = book.active
+    sheet.title = 'USDA' if unit else '国内外棉花现货价格指数'
+    name, code = ('期初库存', 'S0112531') if unit else ('国家棉花价格B指数:CNCotton B', 'S5329490')
+    parts = [('note', 'EDBclose'), ('name', name), ('code', code)]
+    if unit:
+        parts = [('note', '数据来源：Wind（USDA）'), *parts, ('unit', unit), ('frequency', ' 周 ')]
+    evidence = {}
+    rules, headers = [], []
+    for row, (role, value) in enumerate(parts, 1):
+        sheet.append([None, value])
+        rules.append({'row': row, 'role': role})
+        headers.append(f'B{row}')
+        evidence.setdefault(role, []).append(headers[-1])
+    sheet.append([None, 10])
+    sheet.append([None, 11])
+    old = ' / '.join(text.strip() for _, text in parts)
+    block = fixture_block(list(range(1, len(parts) + 1)), [
+        {'column': 'B', 'metric': old, 'header_cells': headers, 'unit': existing}])
+    url, _ = publish_fixture(client, book, [block])
+    mock_header_model(monkeypatch, lambda _: suggest_roles(rules, evidence))
+    response = start_cleanup(client, url)
+    row, = poll(client, response)['sheets']
+    change, = row['changes']
+    assert row['status'] == 'rename'
+    assert change['new_name'] == name
+    assert change['source_codes'] == [{'cell': evidence['code'][0], 'text': code}]
+    if existing:
+        assert change['unit_conflict']
+        diagnostic, = row['diagnostics']
+        assert (diagnostic['column'], diagnostic['field']) == ('B', 'unit')
+    else:
+        assert not row['diagnostics']
+    result = apply_cleanup(client, url, response.json()['id'], sheet.title)
+    assert result['renamed_fields'] == 1
+    field = read_series(client, result['dataset_id'])[sheet.title, name]
+    metadata = field['field_metadata']
+    assert metadata['source_codes'] == change['source_codes']
+    assert 'EDBclose' in [item['text'] for item in metadata['header_notes']]
+    assert field['unit'] == metadata['unit'] == (existing or unit)
+    if unit and not existing:
+        assert metadata['unit_source'] == 'source'
+        assert metadata['unit_evidence'] == [{'sheet': sheet.title, 'cell': evidence['unit'][0], 'text': unit}]
+    elif existing:
+        assert metadata['unit_source'] == 'declared' and not metadata['unit_evidence']
+    if unit:
+        assert metadata['frequency'] == ' 周 '
+        assert metadata['frequency_evidence'] == [{'sheet': sheet.title, 'cell': evidence['frequency'][0], 'text': ' 周 '}]
+
+
+def test_cleanup_removes_merged_daily_title_and_respects_cell_override(client, monkeypatch):
+    book = Workbook()
+    sheet = book.active
+    sheet.title = '日报'
+    title = '棉花日报 2023-07-10'
+    sheet.append(['日期', '价格', '产地'])
+    sheet.append([None, title])
+    sheet.merge_cells('B2:C2')
+    sheet.append([None, 'S123', '按登记产地统计'])
+    for day in (1, 2):
+        sheet.append([datetime(2024, 1, day), 10, 11])
+    block = fixture_block([1, 2, 3], [
+        {'column': 'B', 'metric': f'价格 / {title} / S123', 'header_cells': ['B1', 'B2', 'B3']},
+        {'column': 'C', 'metric': f'产地 / {title} / 按登记产地统计', 'header_cells': ['C1', 'B2', 'C3']},
+    ], date_mode='date', date_column='A')
+    url, _ = publish_fixture(client, book, [block])
+    suggestion = suggest_roles([{'row': 1, 'role': 'name'}, {'row': 2, 'role': 'note'},
+                                {'row': 3, 'role': 'code', 'overrides': {'C3': 'note'}}],
+                               {'name': ['A1', 'B1', 'C1'], 'note': ['B2', 'C3'], 'code': ['B3']})
+    mock_header_model(monkeypatch, lambda _: suggestion)
+    row, = poll(client, start_cleanup(client, url))['sheets']
+    assert row['status'] == 'rename'
+    price, origin = row['changes']
+    assert (price['new_name'], origin['new_name']) == ('价格', '产地')
+    assert price['source_codes'] == [{'cell': 'B3', 'text': 'S123'}]
+    assert not origin['source_codes']
+    assert [item['text'] for item in price['header_notes']] == [title]
+    assert [item['text'] for item in origin['header_notes']] == [title, '按登记产地统计']
+
+
+@pytest.mark.parametrize('invalid', ['row', 'blank', 'overlap', 'missing', 'no_name', 'period'])
+def test_cleanup_rejects_invalid_role_evidence(client, monkeypatch, workbook_import, invalid):
+    url, _ = workbook_import
+    suggestion = suggest_notes()
+    rules = suggestion['block_updates'][0]['header_roles']
+    if invalid == 'row':
+        rules[-1]['row'] = 4
+    elif invalid == 'blank':
+        suggestion['evidence'][1]['cells'].append('C3')
+    elif invalid == 'overlap':
+        suggestion['evidence'][1]['cells'].append('B1')
+    elif invalid == 'missing':
+        suggestion['evidence'].pop()
+    elif invalid == 'no_name':
+        rules[0]['role'] = 'note'
+    elif invalid == 'period':
+        rules[0]['role'] = 'period'
+    mock_header_model(monkeypatch, lambda sheet: suggestion if sheet == '本期数据' else {'block_updates': []})
+    previous = read_sheet(client, url, '本期数据')['published_mapping']
+    row = next(row for row in poll(client, start_cleanup(client, url))['sheets'] if row['sheet_name'] == '本期数据')
+    assert row['status'] == 'needs_review' and not row['changes']
+    assert row['mapping'] == previous
+    assert row['diagnostics'][0]['block_index'] == 0
