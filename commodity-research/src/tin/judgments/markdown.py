@@ -3,6 +3,7 @@ import difflib
 import json
 from tin.schemas.judgment import JudgmentIn
 from tin.judgments.markdown_protocol import TARGET_LABELS
+from tin.judgments.quantity_alignment import conversion_text
 
 FIELDS = {'contradiction': '主矛盾', 'marginal_focus': '短线边际', 'cost_line': '成本线',
           'pricing_power': '边际定价权', 'time_dimension': '时间维度', 'survey_notes': '调研信息差',
@@ -69,6 +70,8 @@ def dump_markdown(payload: JudgmentIn, *, dimensions=None):
             lines.append('阈值维度：`' + t['id'] + '`（' + cell(t['name']) + '） · ' + dimension_text(t, dimensions))
         if t.get('related_series_ids'):
             lines.append('阈值关联：`' + t['id'] + '`（' + cell(t['name']) + '）' + related_text(t))
+        if converted := conversion_text(t):
+            lines.append('阈值换算：`' + t['id'] + '` · ' + converted)
     lines.extend(['', '## 冲突优先级', ' > '.join((j['priority_rule'] or {}).get('order', [])) or '待确认'])
     if j['priority_rule'] and j['priority_rule']['note']:
         lines.append('说明：' + j['priority_rule']['note'])
@@ -81,6 +84,8 @@ def dump_markdown(payload: JudgmentIn, *, dimensions=None):
             lines.append('  - ' + dimension_text(f, dimensions))
         if f.get('related_series_ids'):
             lines.append('  - 关联说明：' + related_text(f).removeprefix(' · '))
+        if converted := conversion_text(f):
+            lines.append('  - 数值换算：' + converted)
         if f['note']:
             lines.append('  - 说明：' + cell(f['note']))
     lines.extend(['', '## 待确认项'])

@@ -1,5 +1,6 @@
 """Readable views and Markdown from actual report records, without inference."""
 from copy import deepcopy
+from tin.judgments.quantity_alignment import conversion_text
 from tin.web.number_format import format_number, source_decimals
 from tin.web.research_display import human_text, indicator_name, condition_text
 
@@ -17,11 +18,11 @@ def _stale_note(freshness):
             if isinstance(freshness, dict) and freshness.get('stale') else '')
 
 
-def _condition(expression, metadata=None):
+def _condition(expression, metadata=None, *, converted=''):
     from tin.schemas.judgment import EXPRESSION
     match = EXPRESSION.fullmatch(str(expression or '').strip())
     if match:
-        return condition_text(expression).removesuffix(match[3]) + _number(match[3], metadata)
+        return condition_text(expression).removesuffix(match[3]) + (converted or _number(match[3], metadata))
     return condition_text(expression)
 
 
@@ -67,17 +68,19 @@ def _judgment_view(payload, names, signals, preview=None, metrics=None, dimensio
             rule['stale_note'] = _stale_note(metric.get('freshness'))
             rule['name'] = human_text(item.get('name') or item.get('desc'), names) or '已保存观察条件'
             rule['series_name'] = indicator_name(item.get('series_id'), names)
+            converted = conversion_text(item)
             if kind == 'thresholds':
                 if isinstance(value, dict) and value.get('kind') == 'sma':
                     comparison = {'>': '高于', '>=': '不低于', '<': '低于', '<=': '不高于',
                         'crosses_below': '下穿', 'crosses_above': '上穿'}.get(item.get('operator'), '')
                     rule['condition'] = comparison + ' MA' + str(value['window'])
                 else:
-                    rule['condition'] = (' – '.join(_number(part, metric) for part in value)
+                    rule['condition'] = ((converted or ' – '.join(_number(part, metric) for part in value))
                         if item.get('operator') == 'between' and isinstance(value, list)
-                        else _plain(item.get('operator')) + ' ' + _number(value, metric))
+                        else _plain(item.get('operator')) + ' ' + (converted or _number(value, metric)))
             else:
-                rule['condition'] = _condition(item.get('expression'), metric) + ' · 连续 ' + str(item.get('consecutive_periods') or 1) + ' 期'
+                rule['condition'] = (_condition(item.get('expression'), metric, converted=converted)
+                    + ' · 连续 ' + str(item.get('consecutive_periods') or 1) + ' 期')
             saved = states.get(item.get('id')) or {}
             computed = trial.get(item.get('id'))
             signal = computed if computed is not None else saved

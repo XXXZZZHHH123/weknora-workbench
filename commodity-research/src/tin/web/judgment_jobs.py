@@ -453,8 +453,7 @@ async def _job_result(verified, job_id):
     preview = await run_in_threadpool(load_preview, verified, token)
     from tin.web.judgment_review import review_snapshot, preview_response
     state = await run_in_threadpool(review_snapshot, verified, preview)
-    return {**preview_response(verified, token, preview, state), 'job': metadata(meta),
-        **{key: preview.get(key) for key in ('variety', 'source_name', 'panel_title', 'model_id')}}
+    return {**preview_response(verified, token, preview, state), 'job': metadata(meta)}
 
 
 def list_jobs(identity, limit=20):

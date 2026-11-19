@@ -251,6 +251,8 @@ from tin.web.workbench_setup_jobs import router as workbench_setup_jobs_router
 app.include_router(workbench_setup_jobs_router)
 from tin.web.judgment_review import router as judgment_review_router
 app.include_router(judgment_review_router)
+from tin.web.judgment_recommendations import router as judgment_recommendations_router
+app.include_router(judgment_recommendations_router)
 from tin.web.judgment_radar import router as judgment_radar_router
 app.include_router(judgment_radar_router)
 from tin.web.judgment_charts import router as judgment_charts_router

@@ -82,6 +82,14 @@ def checked_dimension(value, dimensions):
     return value if isinstance(value, str) and value in {item['id'] for item in dimensions} else None
 
 
+def stale_dimension_reason(value, dimensions, labels=None):
+    if value is None or checked_dimension(value, dimensions) is not None:
+        return None
+    known = {item['id']: item['label'] for item in default_dimensions()}
+    known.update(labels or {})
+    return f'维度「{known.get(value, value)}」已不在本研究台的研究维度中，请改选或设为未标注'
+
+
 def dimension_prompt(dimensions):
     """Describe this workbench's own dimensions to a model, in order."""
     lines = ['\n【本研究台的研究维度】按下列维度归类，只能使用这里列出的维度编号：']

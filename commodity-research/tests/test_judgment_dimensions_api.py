@@ -214,3 +214,81 @@ def test_review_dimension_edit_preserves_status_content_and_manual_confirmation_
     assert confirmed.status_code == 200, confirmed.text
     assert apply(client, headers, confirmed.json()).status_code == 200
     assert rows()[0].contradiction['bull']['evidence'][0]['dimension'] == 'demand'
+
+
+@pytest.mark.parametrize('operation', ['clear', 'suggest', 'invalid_suggestion'])
+def test_stale_preview_dimensions_are_listed_and_can_be_resolved(generator, monkeypatch, operation):
+    client, headers, _, source, _ = generator
+    source['judgment']['contradiction']['bull']['evidence'][0]['dimension'] = 'supply'
+    source['judgment']['thresholds'][0]['dimension'] = 'inventory'
+    original = generate(client, headers).json()
+    custom_dimensions()
+
+    request = {'draft_id': original['draft_id'], 'revision': original['review']['revision']}
+    result = client.get(endpoint('/review/preview'), headers=headers, params={'draft_id': request['draft_id']})
+    assert result.status_code == 200, result.text
+    preview = result.json()
+    assert preview['review']['stale_dimension_count'] == 2
+    assert [row['id'] for row in preview['review']['research_dimensions']] == ['desk-flow']
+    stale = [item for item in all_items(preview) if item.get('dimension_issue')]
+    assert {item['dimension'] for item in stale} == {'supply', 'inventory'}
+    assert all(item['requires_attention'] and not item['can_confirm'] for item in stale)
+    assert '维度「供给」已不在本研究台' in stale[0]['dimension_issue']
+    review = client.get(endpoint('/review'), headers=headers, params={'draft_id': request['draft_id']})
+    assert review.json()['stale_dimension_count'] == 2
+    blocked = apply(client, headers, preview)
+    assert blocked.status_code == 422, blocked.text
+    assert all(text in blocked.json()['detail'] for text in ('Measured stock', 'Stock watch', '维度「供给」', '维度「库存」'))
+    assert update(client, headers, preview, stale[0]).status_code == 422
+    assert rows() == []
+
+    if operation == 'clear':
+        changed = client.post(endpoint('/review/dimensions/clear'), headers=headers, json=request)
+        expected = None
+    else:
+        expected = 'desk-flow'
+        calls = model_suggestions(monkeypatch, dimension=expected if operation == 'suggest' else 'missing')
+        with detached_loop(client):
+            started = client.post(endpoint('/review/dimensions/jobs'),
+                headers={**headers, 'Idempotency-Key': 'draft-dimension-fixture-' + operation},
+                json={**request, 'model_id': 'synthetic-chat'})
+            assert started.status_code == 202, started.text
+            assert started.json()['purpose'] == 'judgment_review_dimensions'
+            job_id = started.json()['id']
+            job, suggestions = finished_job(client, page(FIRST, '/api/sn/analysis-jobs/' + job_id), headers)
+        assert '合成流量' in calls[0] and 'Measured stock' in calls[0] and 'Stock watch' in calls[0]
+        if operation == 'invalid_suggestion':
+            assert job['state'] == 'failed' and '不存在的维度' in suggestions.json()['detail']
+            assert apply(client, headers, preview).status_code == 422
+            return
+        assert job['state'] == 'succeeded' and job['context'] == request
+        assert {entry['dimension'] for entry in suggestions.json()['suggestions']} == {expected}
+        changed = client.post(endpoint(f'/review/dimensions/jobs/{job_id}/apply'), headers=headers)
+        assert client.post(endpoint(f'/review/dimensions/jobs/{job_id}/apply'), headers=headers).status_code == 409
+
+    assert changed.status_code == 200, changed.text
+    fixed = changed.json()
+    assert fixed['review']['stale_dimension_count'] == 0
+    dimensioned = [item for item in all_items(fixed) if item['can_dimension']]
+    assert all(item['dimension'] == expected and not item['dimension_issue'] for item in dimensioned)
+    assert apply(client, headers, fixed).status_code == 200
+    assert rows()[0].thresholds[0].get('dimension') == expected
+
+
+def test_apply_preserves_conflict_mapping_but_surfaces_other_save_errors(generator, monkeypatch):
+    from tin.judgments.service import JudgmentError, JudgmentVersionConflict
+
+    client, headers, _, _, _ = generator
+    preview = generate(client, headers).json()
+    error = JudgmentError('指标已移除，请更换指标')
+
+    def fail_save(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(generation, 'save_version', fail_save)
+    invalid = apply(client, headers, preview)
+    assert invalid.status_code == 422 and invalid.json()['detail'] == str(error)
+    error = JudgmentVersionConflict('基准版本不一致')
+    conflict = apply(client, headers, preview)
+    assert conflict.status_code == 409
+    assert conflict.json()['detail'] == '研究逻辑已有新版本或正在保存，请刷新后重新分析'

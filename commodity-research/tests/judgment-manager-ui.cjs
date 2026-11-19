@@ -4,10 +4,12 @@ const vm = require('node:vm');
 const path = require('node:path');
 const {webcrypto} = require('node:crypto');
 const source = fs.readFileSync(path.join(__dirname, '../src/tin/web/static/judgment-manager.js'), 'utf8');
+const analysisJobsSource = fs.readFileSync(path.join(__dirname, '../src/tin/web/static/analysis-jobs.js'), 'utf8');
 class Element {
   constructor(id='') { this.id=id;this.dataset={};this.attributes={};this.children=[];this.listeners={};this.style={};this.value='';this.textContent='';this.hidden=false;this.disabled=false;this.open=false; }
   get textContent(){return (this._text||'')+this.children.map(child=>child.textContent).join('');}
   set textContent(value){this._text=String(value);this.children=[];}
+  get parentElement(){return this.parentNode;}
   set innerHTML(_) { throw new Error('Unsafe HTML rendering attempted'); }
   addEventListener(type,fn) { this.listeners[type]=fn; }
   async fire(type,event={}) { return this.listeners[type]?.({target:this,preventDefault(){},...event}); }
@@ -22,11 +24,16 @@ class Element {
   close(){this.open=false;}
   click(){}
 }
-function setup({chartMode=false,viewer=false,failure=false,stale=false,empty=false,panelMode=false,savedId=false,reviewMode=false,reviewFailure=false,catalogDeferred=false,emptyExcerpt=false,ruleEntries=null,readyMode=false,reviewConflict=false,reviewDeferred=false,jobState='succeeded',jobStartDeferred=false,jobStatusDeferred=false,jobResultDeferred=false,jobNetworkFailure=false,baselineDeferred=false,visualMode=false,caliberMode='',lifecycleMode=false,deleteFailure=false,confirmDelete=true,bindingWarning=false,numberReview=false,analysisReused=false,analysisComplete=undefined,previewNotice='',boundIndicators=[],latestJob=null,latestDeferred=false,catalogFailure=false,reviewSections=null,catalogEntries=null,reviewFrequencyRequired=null}={}) {
+function setup({chartMode=false,viewer=false,failure=false,stale=false,empty=false,panelMode=false,savedId=false,reviewMode=false,reviewFailure=false,catalogDeferred=false,emptyExcerpt=false,ruleEntries=null,readyMode=false,reviewConflict=false,reviewDeferred=false,jobState='succeeded',jobStartDeferred=false,jobStatusDeferred=false,jobResultDeferred=false,jobNetworkFailure=false,baselineDeferred=false,visualMode=false,caliberMode='',lifecycleMode=false,deleteFailure=false,confirmDelete=true,bindingWarning=false,numberReview=false,analysisReused=false,analysisComplete=undefined,previewNotice='',boundIndicators=[],latestJob=null,latestDeferred=false,catalogFailure=false,reviewSections=null,catalogEntries=null,reviewFrequencyRequired=null,reviewJob=false,requestOverride=null}={}) {
   const ids=['judgment-manager',...['restore-result','original-source','reuse-original','input','status','preview','generate','apply','file','skeleton','structured','variety','reuse','model','current-md','current-state','version-label','version','version-range','file-name','download','version-number','load-version','history-md','history-diff','preview-md','generated-diff','coverage','bindings','unresolved','field-diff'].map(x=>'logic-'+x)];
   const nodes=Object.fromEntries(ids.map(id=>[id,new Element(id)]));
   for(const name of ['current-delete','history-download','history-reuse','history-delete','history-state','history-more'])nodes['logic-'+name]=new Element('logic-'+name);
   for(const name of ['import','review','review-nav','review-items','review-count','review-reuse','review-note','review-edit','review-save-note','review-ready','review-source','review-attention','review-all','review-empty'])nodes['logic-'+name]=new Element('logic-'+name);
+  if(reviewJob) for(const name of ['review-dimensions','review-reclassify','review-clear-dimensions',
+    'review-dimensions-result','review-dimensions-status','review-indicators-result','review-indicators-status']) {
+    nodes['logic-'+name]=new Element('logic-'+name);
+    if(name.endsWith('-result')||name==='review-dimensions')nodes['logic-'+name].hidden=true;
+  }
   if(panelMode||lifecycleMode) for(const name of ['panel-switch','panel-open','panel-name','panel-save','panel-range','panel-more','new-panel-title'])nodes['logic-'+name]=new Element();
   if(chartMode)for(const name of ['chart-editor','chart-selected','chart-target','chart-insert','chart-save','current-charts','history-charts'])nodes['logic-'+name]=new Element('logic-'+name);
   nodes['judgment-manager'].dataset.prefill='false';
@@ -62,6 +69,7 @@ function setup({chartMode=false,viewer=false,failure=false,stale=false,empty=fal
     TextEncoder,TextDecoder,AbortController,Blob,URL:DownloadURL,URLSearchParams,Option:Element,console,setTimeout,clearTimeout,
     async researchFetch(url,options={}) {
       requests.push({url,body:options.body?JSON.parse(options.body):undefined,method:options.method,signal:options.signal,headers:options.headers,keepalive:options.keepalive});
+      if(requestOverride){const response=await requestOverride(url,options,{preview,review});if(response!==undefined)return response;}
       let result;
       if(baselineDeferred&&url.includes('/manage')&&requests.filter(row=>row.url.includes('/manage')).length>1)await new Promise(resolve=>baselineReplies.push(resolve));
       const jobMatch=/\/jobs\/([A-Za-z0-9_-]+)(\/result)?$/.exec(url);
@@ -134,6 +142,7 @@ function setup({chartMode=false,viewer=false,failure=false,stale=false,empty=fal
       else result={markdown:'# Historical',diff:{markdown:'-Current\n+Historical'}};
       return {ok:true,json:async()=>result};
     }};
+  if(reviewJob)vm.runInNewContext(analysisJobsSource,context);
   vm.runInNewContext(source,context);
   return {nodes,requests,context,navigations,downloads,confirmations,chartMounts,catalogReplies,reviewReplies,jobStartReplies,jobStatusReplies,jobResultReplies,baselineReplies,latestReplies,firstJob,jobStates,jobSources,jobsCreated:()=>jobKeys.size,reloads:()=>reloads};
 }

@@ -202,7 +202,7 @@ def number_review_subject(kind, rule, quote, unit, values, original):
     """
     start = original.find(quote)
     tail = original[start + len(quote):start + len(quote) + 40] if start >= 0 else ''
-    dumped = rule.model_dump(mode='json', exclude={'caliber_confirmation'})
+    dumped = rule.model_dump(mode='json', exclude={'caliber_confirmation', 'dimension'})
     return {'kind': kind, 'rule_id': rule.id, 'series_id': rule.series_id, 'unit': unit,
         'quote': quote, 'following': re.match(r'[^\r\n，。；;!?！？]*', tail)[0],
         'values': [format(Decimal(str(value)).normalize(), 'f') for value in values],
@@ -224,16 +224,29 @@ MANUAL_FIELDS = ('mode', 'kind', 'rule_id', 'series_id', 'unit', 'quote', 'rule'
 
 def manual_confirmation_subject(kind, rule, quote, unit):
     """The exact rule a researcher confirms as written; any later change to it invalidates the confirmation."""
-    dumped = rule.model_dump(mode='json', exclude={'caliber_confirmation'})
+    dumped = rule.model_dump(mode='json', exclude={'caliber_confirmation', 'dimension'})
     return {'mode': 'manual', 'kind': kind, 'rule_id': rule.id, 'series_id': rule.series_id, 'unit': unit,
         'quote': quote if isinstance(quote, str) else '',
         'rule': json.dumps(dumped, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}
 
 
-def _manually_confirmed(confirmations, subject, actor):
+def _confirmation_matches(confirmations, subject, fields, actor):
     supplied = confirmations.get(subject['rule_id']) if isinstance(confirmations, dict) else None
-    return (isinstance(supplied, dict) and supplied.get('confirmed_by') == actor
-            and {key: supplied.get(key) for key in MANUAL_FIELDS} == subject)
+    if not isinstance(supplied, dict) or supplied.get('confirmed_by') != actor:
+        return False
+    candidate = {key: supplied.get(key) for key in fields}
+    if candidate['rule'] != subject['rule']:
+        # Existing private previews signed the dimension label along with the
+        # rule. Reclassification changes only the research categorization.
+        try:
+            rule = json.loads(candidate['rule'])
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(rule, dict):
+            return False
+        rule.pop('dimension', None)
+        candidate['rule'] = json.dumps(rule, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    return candidate == subject
 
 
 def _issue_rule(path, payload):
@@ -247,9 +260,7 @@ def _issue_rule(path, payload):
 
 
 def _number_review(subject, confirmations, actor, path):
-    supplied = confirmations.get(subject['rule_id']) if isinstance(confirmations, dict) else None
-    if (isinstance(supplied, dict) and supplied.get('confirmed_by') == actor
-            and {key: supplied.get(key) for key in NUMBER_REVIEW_FIELDS} == subject):
+    if _confirmation_matches(confirmations, subject, NUMBER_REVIEW_FIELDS, actor):
         return
     unit = subject['unit'] or '单位未确认'
     message = ('程序无法自动判断原文数字后的文字是否属于单位：请对照原文' + number_review_source(subject)
@@ -327,7 +338,7 @@ def rule_frequency_issues(kind, rule, quote, source_frequency):
 
 
 def validate_analysis(document, original, catalog, *, variety, actor, written_at=None, caliber_confirmations=None,
-                      number_confirmations=None):
+                      number_confirmations=None, quantity_confirmations=None):
     if not isinstance(original, str) or not original.strip() or len(original.encode('utf-8')) > SOURCE_BYTES:
         raise AnalysisError('请提供48 KiB以内的完整研究逻辑文本')
     if not isinstance(document, dict) or set(document) != {'judgment', 'binding_units', 'rule_quotes', 'unresolved'}:
@@ -387,6 +398,14 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
         for index, rule in enumerate(rules):
             path = f'/judgment/{name}/{index}'
             if not isinstance(rule, dict): raise AnalysisError('研究规则格式无效')
+            if {'source_value', 'scale'} & rule.keys() or name == 'falsifiers' and 'value' in rule:
+                confirmation = (quantity_confirmations or {}).get(rule.get('id'), {})
+                execution = confirmation.get('execution')
+                if (not isinstance(execution, dict) or confirmation.get('series_id') != rule.get('series_id')
+                        or not isinstance(document['rule_quotes'], dict)
+                        or confirmation.get('source_quote') != document['rule_quotes'].get(rule.get('id'))
+                        or any(rule.get(key) != value for key, value in execution.items())):
+                    _error('数值换算必须由研究员在逐项确认时明确选择', 'quantity_confirmation_authority', path + '/scale')
             value = rule.get('value')
             moving = name == 'thresholds' and isinstance(value, dict) and value.get('kind') == 'sma'
             if moving:
@@ -490,7 +509,7 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
     subjects = {rule.id: manual_confirmation_subject(kind, rule, quotes.get(rule.id), units.get(rule.series_id))
         for kind, rules in (('thresholds', payload.thresholds), ('falsifiers', payload.falsifiers)) for rule in rules}
     confirmed = {identifier for identifier, subject in subjects.items()
-        if _manually_confirmed(number_confirmations, subject, actor)}
+        if _confirmation_matches(number_confirmations, subject, MANUAL_FIELDS, actor)}
     try:
         for identifier, quote in quotes.items():
             if not isinstance(quote, str):
@@ -503,6 +522,8 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
         for index, rule in enumerate(payload.thresholds):
             if rule.id in confirmed:
                 continue
+            if rule.scale is not None:
+                rule = rule.model_copy(update={'value': rule.source_value, 'source_value': None, 'scale': None})
             moving = isinstance(rule.value, MovingAverageTarget)
             if moving:
                 source_records = explicit['thresholds'].get(rule.series_id)
@@ -548,6 +569,10 @@ def validate_analysis(document, original, catalog, *, variety, actor, written_at
         for index, rule in enumerate(payload.falsifiers):
             if rule.id in confirmed:
                 continue
+            if rule.scale is not None:
+                source = EXPRESSION.fullmatch(rule.expression)
+                expression = f'{source.group(1)} {source.group(2)} {rule.source_value}'
+                rule = rule.model_copy(update={'expression': expression, 'value': None, 'source_value': None, 'scale': None})
             match = EXPRESSION.fullmatch(rule.expression)
             directional_zero = bool(match and match.group(1) == 'change' and Decimal(match.group(3)) == 0)
             source_numbers = quoted_quantities(quotes[rule.id], unit=known[rule.series_id].get('unit'),

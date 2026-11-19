@@ -39,6 +39,8 @@ def test_judgment_manager_management_and_caliber_interactions():
     'judgment-manager-item-confirmation.test.cjs',
     'judgment-manager-number-review.test.cjs',
     'judgment-manager-picker.test.cjs',
+    'judgment-manager-indicator-recommendations.test.cjs',
+    'judgment-manager-review-alignment.test.cjs',
     'chart-palette.test.cjs',
 ])
 def test_judgment_manager_review_and_recovery_interactions(script):

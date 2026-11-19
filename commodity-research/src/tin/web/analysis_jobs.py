@@ -197,7 +197,7 @@ runtime = Runtime()
 
 
 async def start_job(scope, purpose, body, idempotency_key, generate, *, timeout=DRAFT_SECONDS,
-                    result_parent=None):
+                    result_parent=None, result_slot=None):
     if purpose not in DRAFT_PURPOSES:
         raise ValueError('Unsupported draft analysis purpose')
     if not isinstance(idempotency_key, str) or not re.fullmatch(r'[\x21-\x7e]{16,128}', idempotency_key):
@@ -211,7 +211,8 @@ async def start_job(scope, purpose, body, idempotency_key, generate, *, timeout=
         try:
             await run_in_threadpool(cleanup_expired)
             meta, created = await run_in_threadpool(registry.create, verified, shared.digest(body),
-                shared.digest(idempotency_key), runtime.worker_id, purpose, result_parent=result_parent)
+                shared.digest(idempotency_key), runtime.worker_id, purpose, result_parent=result_parent,
+                result_slot=result_slot)
             if created:
                 await run_in_threadpool(_create_private, verified, body, meta)
                 if runtime.closing:
@@ -242,7 +243,9 @@ async def start_job(scope, purpose, body, idempotency_key, generate, *, timeout=
 
 
 def _context(purpose, body):
-    keys = {'report_dimension_draft': ('day', 'period'), 'judgment_dimensions': ('judgment_id',)}.get(purpose, ())
+    keys = {'report_dimension_draft': ('day', 'period'), 'judgment_dimensions': ('judgment_id',),
+            'judgment_review_dimensions': ('draft_id', 'revision'),
+            'judgment_indicator_recommendations': ('draft_id', 'item_id')}.get(purpose, ())
     return {key: body[key] for key in keys if key in body}
 
 

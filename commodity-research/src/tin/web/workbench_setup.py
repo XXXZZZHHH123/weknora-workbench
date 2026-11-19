@@ -229,7 +229,8 @@ class Setup:
         body = judgment_generation.GenerateRequest(model_id=self.body.model_id, text=text,
             base_version=before['base_version'], source_name=self.report['filename'][:128],
             panel_title=('往期周报研判草稿 · ' + self.report['filename'])[:120])
-        preview, _ = await judgment_generation._analyze(self.scope, body)
+        options = {'dimension_draft': self.dimensions_result['dimensions']} if self.dimensions_result is not None else {}
+        preview, _ = await judgment_generation._analyze(self.scope, body, **options)
         return preview, {'drafts': 1}
 
     async def strategy(self):

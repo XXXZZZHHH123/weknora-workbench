@@ -124,7 +124,13 @@ def judgment_record(session, scope, token):
 def load_judgment(scope, token):
     with artifact_session(scope) as session:
         row = judgment_record(session, scope, token)
-        return {**deepcopy(row.config['result']['_judgment']), '_setup_job_id': row.config['id'], '_draft_id': token}
+        result = row.config['result']
+        preview = deepcopy(result['_judgment'])
+        for item in result['items']:
+            if item['part'] == 'dimensions' and item['state'] == 'succeeded':
+                labels = {entry['id']: entry['label'] for entry in item['data']['dimensions']}
+                preview['dimension_labels'] = {**labels, **preview.get('dimension_labels', {})}
+        return {**preview, '_setup_job_id': row.config['id'], '_draft_id': token}
 
 
 def replace_judgment(session, scope, token, preview, revision):
@@ -167,8 +173,7 @@ async def judgment_preview(job_id: str):
     if token is None:
         raise HTTPException(409, '研判草稿已失效或已保存，请重新打开建立任务')
     preview, state = await current_preview(scope, token)
-    return {**preview_response(scope, token, preview, state),
-            **{key: preview.get(key) for key in ('variety', 'source_name', 'panel_title', 'model_id')}}
+    return preview_response(scope, token, preview, state)
 
 
 @router.post('/{job_id}/monitor-preview')
