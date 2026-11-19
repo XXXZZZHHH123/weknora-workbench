@@ -9,6 +9,7 @@
 <script defer src="{{ research_static_prefix() }}/static/chart-kit.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/market-overview.js?v={{ static_version() }}"></script>{% endif %}
 {% if not restricted_view %}<script defer src="{{ research_static_prefix() }}/static/market-history.js?v={{ static_version() }}"></script>{% endif %}
+{% if not restricted_view and market_catalog and market_catalog.can_edit_shared %}<script defer src="{{ research_static_prefix() }}/static/market-contract-settings.js?v={{ static_version() }}"></script>{% endif %}
 {% endif %}
 {% endblock %}
 {% block main %}

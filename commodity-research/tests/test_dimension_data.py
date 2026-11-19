@@ -339,8 +339,9 @@ def test_partial_failures_keep_cards(chart_client, monkeypatch):
         return original(ids, *args, **kwargs)
     monkeypatch.setattr(data, 'read_series', failing)
     missing = 'kb-' + 'd' * 48
-    state.observations[THIRD] = []
-    bind(state, dimensions(*({'kind': 'indicator', 'id': sid} for sid in (SID, OTHER, THIRD, missing))))
+    state.observations[THIRD] = [('2023-01-05', 30)]
+    bind(state, dimensions(*({'kind': 'indicator', 'id': sid} for sid in (SID, OTHER, THIRD)),
+                           {'kind': 'indicator', 'id': missing, 'name': '已配置指标'}))
     result = client.get('/dimension-data-test?day=2023-01-04')
     assert result.status_code == 200, result.text
     output = result.json()
@@ -349,6 +350,11 @@ def test_partial_failures_keep_cards(chart_client, monkeypatch):
     assert [item['id'] for item in cards] == [SID, OTHER, THIRD, missing]
     assert cards[0]['status'] == 'ok' and all(item['status'] == 'unavailable' for item in cards[1:])
     assert cards[1]['reason'] == '隔离测试读取失败'
+    assert cards[2]['reason'] == '截至所选日期没有有效观测'
+    for item, failure, expected in zip(cards[1:], output['failed'], (
+            ('字段乙', '测试表', '件'), ('字段丙', '测试表', '元'), ('已配置指标', '', ''))):
+        assert tuple(item[key] for key in ('name', 'sheet', 'unit')) == expected
+        assert tuple(failure[key] for key in ('name', 'sheet', 'unit')) == expected
 
 
 @pytest.mark.parametrize('status', [401, 403, 409])

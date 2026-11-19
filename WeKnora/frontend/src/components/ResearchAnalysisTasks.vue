@@ -90,7 +90,7 @@ onBeforeUnmount(() => { closeNotice(); store.stop(); document.removeEventListene
 
 <style scoped>
 .analysis-tasks{display:flex;flex-direction:column;align-items:flex-end;gap:8px;min-height:42px;max-width:calc(100vw - 32px);pointer-events:auto;font-family:var(--app-font-family)}
-.analysis-task-trigger{position:relative;display:grid;place-items:center;width:42px;height:42px;padding:0;border:1px solid var(--app-border-color);border-radius:50%;background:var(--app-card-bg);color:var(--td-brand-color);box-shadow:var(--td-shadow-2);cursor:pointer}
+.analysis-task-trigger{position:relative;display:grid;flex:none;place-items:center;box-sizing:border-box;width:var(--feedback-size,42px);height:var(--feedback-size,42px);padding:0;border:1px solid var(--app-border-color);border-radius:50%;background:var(--app-card-bg);color:var(--td-brand-color);box-shadow:var(--td-shadow-2);cursor:pointer}
 .analysis-trigger-unread{position:absolute;right:-3px;top:-4px;min-width:15px;padding:1px 3px;border-radius:var(--app-radius-lg);background:var(--td-brand-color);color:var(--td-text-color-anti);font-size:var(--app-text-2xs);line-height:15px}
 .analysis-tasks-list{width:340px;max-width:calc(100vw - 32px);max-height:320px;overflow:auto;border:1px solid var(--app-border-color);border-radius:var(--app-radius-lg);background:var(--app-card-bg);box-shadow:var(--td-shadow-2);color:var(--app-text-primary)}
 .analysis-tasks-list header{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--app-border-color);font-size:var(--app-text-sm)}

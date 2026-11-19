@@ -73,6 +73,7 @@ const report = {mode: 'isolated_market_focus_ui_fixture', real_model_calls: 0, r
       state, phase_label: '正在生成建议'});
     const page = await browser.newPage({viewport: {width: 1400, height: 950}, reducedMotion: 'reduce'}), errors = [];
     page.on('pageerror', error => errors.push(error.message));
+    let savedLinks = [];
     let fail = false, core = [], favorites = {format: 'favorites.v1', revision: 1,
       items: [{kind: 'indicator', id: ids[17], added_at: '2026-03-03T00:00:00Z', status: 'active', title: '隔离指标18'}]};
     const chartItems = Object.keys(fixture.chart_cards).map((id, index) => ({id, revision: 1, definition: {
@@ -89,7 +90,8 @@ const report = {mode: 'isolated_market_focus_ui_fixture', real_model_calls: 0, r
       const request = route.request(), url = new URL(request.url()); report.requests++;
       assert.equal(url.origin, 'http://market.fixture', 'No external requests');
       const pathName = url.pathname;
-      const writable = [prefix + '/api/sn/favorites', prefix + '/api/sn/market/core/config', prefix + '/api/sn/market/core/suggestions'];
+      const writable = [prefix + '/api/sn/favorites', prefix + '/api/sn/market/core/config',
+        prefix + '/api/sn/market/core/suggestions', prefix + '/api/sn/market/contracts/config'];
       assert.ok(request.method() === 'GET' || writable.includes(pathName), 'Only synthetic fixture writes');
       if (pathName === prefix + '/sn') return route.fulfill({contentType: 'text/html; charset=utf-8', body: marketHTML()});
       if (pathName === prefix + '/sn/indicators') return route.fulfill({contentType: 'text/html; charset=utf-8', body: fixture.indicators});
@@ -102,6 +104,10 @@ const report = {mode: 'isolated_market_focus_ui_fixture', real_model_calls: 0, r
       }
       if (pathName === prefix + '/api/sn/market/core/config') {
         core = request.postDataJSON().items; assert.ok(core.length <= 16); return route.fulfill({json: {items: core}});
+      }
+      if (pathName === prefix + '/api/sn/market/contracts/config') {
+        savedLinks = request.postDataJSON().source_links;
+        return route.fulfill({json: {source_links: savedLinks}});
       }
       if (pathName === prefix + '/api/sn/strategies/models') return route.fulfill({json: {models: [{id: 'fixture-model', name: '隔离模型'}]}});
       if (pathName === prefix + '/api/sn/market/core/suggestions') {
@@ -153,6 +159,31 @@ const report = {mode: 'isolated_market_focus_ui_fixture', real_model_calls: 0, r
     });
     await page.goto('http://market.fixture' + prefix + '/sn');
     await page.waitForSelector('#market-core-open');
+    const contractGuide = page.locator('#market-contract-source');
+    await contractGuide.getByRole('button', {name: '合约设置', exact: true}).click();
+    const contractDialog = page.locator('#market-contract-settings[open]');
+    const preset = contractDialog.locator('#market-contract-settings-preset');
+    const draftLinks = contractDialog.locator('.market-contract-settings-row');
+    await preset.selectOption({index: 1});
+    assert.equal(await draftLinks.first().getByLabel('名称').inputValue(), '上海期货交易所 · 日交易快讯');
+    assert.match(await draftLinks.first().getByLabel('网址').inputValue(), /^https:\/\/www\.shfe\.com\.cn\//);
+    const addLink = contractDialog.getByRole('button', {name: '手动添加'});
+    for (let row = 0; row < 3; row++) await addLink.click();
+    assert.equal(await draftLinks.count(), 4);
+    assert.equal(await preset.isDisabled(), true);
+    await draftLinks.nth(3).getByRole('button', {name: '移除此来源链接'}).click();
+    await draftLinks.nth(2).getByRole('button', {name: '移除此来源链接'}).click();
+    await draftLinks.nth(1).getByLabel('名称').fill('手填来源');
+    await draftLinks.nth(1).getByLabel('网址').fill('https://example.org/daily');
+    const saveResponse = page.waitForResponse(response => response.url().endsWith('/api/sn/market/contracts/config'));
+    const reload = page.waitForEvent('load');
+    await contractDialog.getByRole('button', {name: '保存'}).click();
+    assert.equal((await saveResponse).status(), 200);
+    await reload;
+    assert.equal(savedLinks.length, 2);
+    assert.deepEqual(savedLinks[1], {label: '手填来源', url: 'https://example.org/daily'});
+    report.assertions.push('contract_settings_support_preset_and_manual_links_with_four_row_limit');
+
     assert.match(await page.locator('#market-core-title').innerText(), /核心关注/);
     assert.equal(await page.locator('#market-core-empty [data-source-status-hint]').count(), 0);
     assert.match(await page.locator('#market-core-empty').innerText(), /从指标目录、图表库或账号自选中挑选，或按研究框架生成建议/);
