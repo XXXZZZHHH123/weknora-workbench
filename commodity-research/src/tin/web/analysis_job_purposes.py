@@ -23,7 +23,8 @@ PURPOSES = {
         'validating': '核对分析结果'}),
     'diagram': Purpose('产业图配置生成', 'diagram', '/sn/diagram', {
         'queued': '等待生成', 'reading_source': '读取原件', 'loading_catalog': '读取指标目录',
-        'selecting': '匹配指标', 'generating': '生成图结构', 'validating': '核对配置'}),
+        'selecting': '匹配指标', 'generating': '生成图结构', 'validating': '核对配置',
+        'recommending': '正在为空节点推荐指标'}),
     'monitor_draft': Purpose('监测草稿生成', 'home', '/', {
         **DRAFT_PHASES, 'loading_catalog': '读取指标目录', 'selecting': '正在匹配监测指标'}),
     'report_dimension_draft': Purpose('日报周报结论起草', 'reports', '/sn/reports', {
@@ -42,6 +43,8 @@ PURPOSES = {
     'judgment_review_dimensions': Purpose('研判草稿维度重新归类', 'judgments', '/sn/judgment', {
         **SUGGESTION_PHASES, 'analyzing': '正在重新归类研究维度'}),
     'judgment_indicator_recommendations': Purpose('研判指标推荐', 'judgments', '/sn/judgment', {
+        **SUGGESTION_PHASES, 'selecting': '正在匹配指标', 'analyzing': '正在挑选指标'}),
+    'diagram_indicator_recommendations': Purpose('产业图指标推荐', 'diagram', '/sn/diagram', {
         **SUGGESTION_PHASES, 'selecting': '正在匹配指标', 'analyzing': '正在挑选指标'}),
     'strategy_text': Purpose('策略原文整理', 'strategies', '/sn/strategies', {
         **DRAFT_PHASES, 'reading_source': '正在读取策略原文与依据', 'generating': '正在整理策略原文'}),

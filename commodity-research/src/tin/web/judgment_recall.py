@@ -5,11 +5,15 @@ bounded by the items it was shown. Recall widens what the model can see; the mod
 decides; the program accepts only references it actually showed in this request.
 """
 import json
+from datetime import datetime
 
 from fastapi import HTTPException
+from starlette.concurrency import run_in_threadpool
 
+from tin.config import SHANGHAI
 from tin.integration.catalog_recall import CatalogRecall
-from tin.judgments.prompt import RECALL_PICK_PROTOCOL, RECALL_QUERY_PROTOCOL, RECALL_RECOMMEND_PROTOCOL
+from tin.judgments.prompt import (RECALL_BATCH_RECOMMEND_PROTOCOL, RECALL_PICK_PROTOCOL,
+    RECALL_QUERY_PROTOCOL, RECALL_RECOMMEND_PROTOCOL)
 
 QUERIES_PER_ITEM = 5
 QUERY_CHARS = 60
@@ -20,10 +24,13 @@ OVERVIEW_FIELD_CHARS = 40
 SHARED_CANDIDATE_LIMIT = 40
 RECOMMENDATION_LIMIT = 5
 RECOMMENDATION_REASON_CHARS = 40
+# Keep the ranked response as well as the prompt inside the model budget.
+RECOMMENDATION_BATCH_ITEMS = 16
 # Candidates per item, tried from the most generous until the request fits.
 RECALL_STEPS = (20, 12, 8)
 DISPLAY_KEYS = ('name', 'sheet', 'unit', 'frequency', 'dimensions', 'source_file', 'source_kind')
 SELECTION_INVALID = '模型未给出有效的真实指标选择'
+RECOMMENDATION_INVALID = '模型未给出有效的真实指标推荐'
 
 
 def _encode(value):
@@ -96,6 +103,11 @@ def catalog_index(catalog):
                          for row in catalog)
 
 
+def catalog_fields(catalog):
+    return [{**field, 'id': identifier, 'name': field.get('metric') or field.get('name') or identifier}
+            for identifier, field in catalog.items()]
+
+
 def shared_candidate_ids(scope, catalog):
     """Only references in this workbench and its current directory are eligible."""
     if not catalog or scope is None or scope.scope_version != 2:
@@ -159,18 +171,18 @@ def shared_candidate_ids(scope, catalog):
     return list(dict.fromkeys(sid for _, identifiers in uses for sid in identifiers if sid in allowed))[:SHARED_CANDIDATE_LIMIT]
 
 
-def recall_groups(index, inventory, phrased, per_item, *, shared=(), search=''):
+def recall_groups(index, inventory, phrased, per_item, *, shared=(), search='', all_items=False):
     # Without any usable phrasing every item is still recalled by its own verbatim quote.
-    items = [item for item in inventory['items'] if not phrased or shared or item['id'] in phrased]
+    items = [item for item in inventory['items'] if all_items or not phrased or shared or item['id'] in phrased]
     groups = []
     for item in items:
         found = index.recall([*phrased.get(item['id'], []), search, item['quote'][:QUOTE_QUERY_CHARS]], per_item)
-        if found or shared:
+        if found or shared or all_items:
             groups.append((item, found))
     return groups
 
 
-def pick_request(text, groups, catalog_by_id, *, shared=(), recommend=False):
+def pick_request(text, groups, catalog_by_id, *, shared=(), recommend=False, batch=False):
     ordered = list(dict.fromkeys([*(identifier for _, found in groups for identifier in found), *shared]))
     refs = {identifier: f'r{position + 1}' for position, identifier in enumerate(ordered)}
     candidates = {refs[identifier]: {key: catalog_by_id[identifier][key] for key in DISPLAY_KEYS
@@ -178,7 +190,7 @@ def pick_request(text, groups, catalog_by_id, *, shared=(), recommend=False):
                   for identifier in ordered}
     items = [{'id': item['id'], 'kind': item['kind'], 'quote': item['quote'],
               'candidates': [refs[identifier] for identifier in found]} for item, found in groups]
-    protocol = RECALL_RECOMMEND_PROTOCOL if recommend else RECALL_PICK_PROTOCOL
+    protocol = RECALL_BATCH_RECOMMEND_PROTOCOL if batch else RECALL_RECOMMEND_PROTOCOL if recommend else RECALL_PICK_PROTOCOL
     prompt = (protocol + ('\n本研究台已使用的指标（共享候选）：' + _encode([refs[sid] for sid in shared]) if shared else '')
               + '\n研究条目：' + _encode(items) + '\n候选指标：' + _encode(candidates)
               + '\n完整原文：\n' + text)
@@ -203,20 +215,127 @@ def picked_ids(result, mapping):
     return list(dict.fromkeys(chosen))
 
 
-def picked_recommendations(result, mapping):
-    invalid = '模型未给出有效的真实指标推荐'
+def ranked_references(candidates, mapping, allowed):
+    if not isinstance(candidates, list) or len(candidates) > RECOMMENDATION_LIMIT:
+        raise HTTPException(422, RECOMMENDATION_INVALID)
+    ranked, seen = [], set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or set(candidate) != {'ref', 'reason'}:
+            raise HTTPException(422, RECOMMENDATION_INVALID)
+        reference, reason = candidate['ref'], candidate['reason']
+        if not isinstance(reference, str) or not isinstance(reason, str) or not 1 <= len(reason.strip()) <= RECOMMENDATION_REASON_CHARS:
+            raise HTTPException(422, RECOMMENDATION_INVALID)
+        identifier = mapping.get(reference)
+        ranked.append((identifier, reason.strip()) if identifier in allowed and identifier not in seen else None)
+        seen.add(identifier)
+    return ranked
+
+
+def picked_recommendations(result, groups, mapping, shared, *, batch):
     if not isinstance(result, dict) or set(result) != {'recommendations'}:
-        raise HTTPException(422, invalid)
-    recommendations = result['recommendations']
-    if not isinstance(recommendations, list) or len(recommendations) > RECOMMENDATION_LIMIT:
-        raise HTTPException(422, invalid)
-    chosen = {}
-    for item in recommendations:
-        if not isinstance(item, dict) or set(item) != {'ref', 'reason'}:
-            raise HTTPException(422, invalid)
-        reference, reason = item['ref'], item['reason']
-        if (not isinstance(reference, str) or reference not in mapping or reference in chosen
-                or not isinstance(reason, str) or not 1 <= len(reason.strip()) <= RECOMMENDATION_REASON_CHARS):
-            raise HTTPException(422, invalid)
-        chosen[reference] = reason.strip()
-    return [(mapping[reference], reason) for reference, reason in chosen.items()]
+        raise HTTPException(422, RECOMMENDATION_INVALID)
+    value = result['recommendations']
+    if not batch:
+        item, found = groups[0]
+        return {item['id']: (False, ranked_references(value, mapping, set(found) | set(shared)))}
+    if not isinstance(value, dict) or value.keys() - {item['id'] for item, _ in groups}:
+        raise HTTPException(422, RECOMMENDATION_INVALID)
+    ranked = {}
+    for item, found in groups:
+        answer = value.get(item['id'], {'ambiguous': False, 'candidates': []})
+        if (not isinstance(answer, dict) or set(answer) != {'ambiguous', 'candidates'}
+                or type(answer['ambiguous']) is not bool):
+            raise HTTPException(422, RECOMMENDATION_INVALID)
+        ranked[item['id']] = (answer['ambiguous'], ranked_references(answer['candidates'], mapping, set(found) | set(shared)))
+    return ranked
+
+
+def observed_ids(scope, catalog, identifiers, module):
+    """Check only the model's selected, authorized IDs with a one-point window."""
+    day = datetime.now(SHANGHAI).date()
+    if not identifiers:
+        return set()
+    if scope.scope_version != 2:
+        if module == 'diagram':
+            from tin.web.diagram_generation import candidate_status
+            return set(candidate_status(scope, identifiers))
+        from tin.web.judgment_radar import legacy_series
+        return {sid for sid, field in legacy_series(scope, identifiers, day, list(catalog.values()), 1).items()
+                if field['points']}
+
+    from tin.integration.page_facts import bounded_facts, catalog_read_scope
+
+    observed, versions = set(), {}
+    with catalog_read_scope():
+        for offset in range(0, len(identifiers), 200):
+            selection = identifiers[offset:offset + 200]
+            facts = bounded_facts(scope, selection, module, day=day.isoformat(), points=1, direct_only=True)
+            for binding, version in facts.get('source_versions', {}).items():
+                if binding in versions and version != versions[binding]:
+                    raise HTTPException(409, '推荐指标的观测来源已改变，请重新推荐')
+                versions[binding] = version
+            for sid in selection:
+                field = catalog[sid]
+                binding, version = field.get('source_binding_id'), field.get('source_version')
+                if binding and version is not None and versions.get(binding) != version:
+                    raise HTTPException(409, '指标目录与观测来源不一致，请重新推荐')
+            observed.update(row['series_id'] for row in facts['rows'])
+    return observed
+
+
+async def recommend(scope, model_id, catalog, text, inventory, *, search='', progress,
+                    compatible=None, module='judgments', shared=()):
+    """Run one bounded recommendation job, issuing its model calls serially."""
+    from tin.web import judgment_generation as generation
+
+    completion = generation.selection_completion
+    if module == 'diagram':
+        from tin.web.diagram_generation import completion
+    items = inventory['items']
+    if not items:
+        return {}
+    by_id = {field['id']: field for field in catalog}
+    used = await run_in_threadpool(shared_candidate_ids, scope, catalog)
+    shared = tuple(dict.fromkeys([*(sid for sid in shared if sid in by_id), *used]))[:SHARED_CANDIDATE_LIMIT]
+    index = await run_in_threadpool(catalog_index, catalog)
+    batch = module == 'diagram' or len(items) > 1
+    ranked = {}
+    for offset in range(0, len(items), RECOMMENDATION_BATCH_ITEMS):
+        portion = {'items': items[offset:offset + RECOMMENDATION_BATCH_ITEMS]}
+        if not catalog:
+            break
+        await progress('selecting')
+        query = query_prompt(text, portion, catalog, prompt_bytes=generation.PROMPT_BYTES, search=search)
+        phrased = item_queries(await completion(scope, model_id, query), portion)
+        largest = recall_groups(index, portion, phrased, RECALL_STEPS[0], shared=shared, search=search, all_items=True)
+        for per_item in RECALL_STEPS:
+            groups = [(item, found[:per_item]) for item, found in largest if found or shared]
+            prompt, mapping = pick_request(text, groups, by_id, shared=shared, recommend=True, batch=batch)
+            if len(prompt.encode('utf-8')) <= generation.PROMPT_BYTES:
+                break
+        else:
+            raise HTTPException(413, '完整资料与召回候选超过本次容量，请缩小范围后重试')
+        if mapping:
+            await progress('analyzing')
+            result = await completion(scope, model_id, prompt)
+            ranked.update(picked_recommendations(result, groups, mapping, shared, batch=batch))
+
+    await progress('validating')
+    identifiers = list(dict.fromkeys(pair[0] for _, candidates in ranked.values() for pair in candidates if pair))
+    observed = await run_in_threadpool(observed_ids, scope, by_id, identifiers, module)
+    reviewed = {}
+    for item in items:
+        ambiguous, candidates = ranked.get(item['id'], (False, []))
+        checked = []
+        for pair in candidates:
+            candidate = None
+            if pair and pair[0] in observed:
+                field, reason = by_id[pair[0]], pair[1]
+                if compatible is None or compatible(item, field):
+                    candidate = {'series_id': field['id'], 'reason': reason,
+                                 **{key: field.get(key) for key in DISPLAY_KEYS}}
+            checked.append(candidate)
+        reviewed[item['id']] = {'recommended': checked[0] if checked and not ambiguous else None,
+                                'recommendations': [candidate for candidate in checked if candidate],
+                                'ambiguous': ambiguous}
+    return reviewed

@@ -25,6 +25,7 @@ const draftPhases: Record<string, string> = {
 }
 const drafting = { queued: '等待起草', analyzing: '正在起草', validating: '正在核对草稿' }
 const suggesting = { queued: '等待生成', analyzing: '正在生成建议', validating: '正在核对候选' }
+const recommending = { ...suggesting, selecting: '正在匹配指标', analyzing: '正在挑选指标' }
 const purposePhases: Partial<Record<AnalysisJobPurpose, Record<string, string>>> = {
   monitor_draft: { ...drafting, selecting: '正在匹配监测指标' },
   report_dimension_draft: { ...drafting, reading_source: '正在读取报告事实与依据' },
@@ -34,6 +35,8 @@ const purposePhases: Partial<Record<AnalysisJobPurpose, Record<string, string>>>
   dimension_fields: { ...suggesting, dimension_queries: '正在归纳指标检索方向', dimension_fields: '正在选择指标' },
   focus_suggestions: suggesting,
   judgment_dimensions: { ...suggesting, analyzing: '正在补标维度' },
+  judgment_indicator_recommendations: recommending,
+  diagram_indicator_recommendations: recommending,
   strategy_text: { ...drafting, reading_source: '正在读取策略原文与依据', generating: '正在整理策略原文' },
   strategy_generation: { ...drafting, analyzing: '正在生成策略方案', generating: '正在生成策略方案' },
 }
@@ -45,7 +48,7 @@ export function analysisPhaseLabel(job: AnalysisJob): string {
   }
   if (job.purpose === 'diagram') {
     const diagramPhases: Record<string, string> = { queued: '等待生成', reading_source: '读取原件', loading_catalog: '读取指标目录',
-      selecting: '匹配指标', generating: '生成图结构', validating: '核对配置', succeeded: '配置已生成',
+      selecting: '匹配指标', generating: '生成图结构', validating: '核对配置', recommending: '正在为空节点推荐指标', succeeded: '配置已生成',
       failed: '生成未完成', interrupted: '生成已中断', expired: '结果已过期', applied: '已导入配置', superseded: '已有更新结果' }
     return diagramPhases[active(job) ? job.phase : job.state] || '后台生成中'
   }

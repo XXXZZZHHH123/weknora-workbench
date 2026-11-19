@@ -1,5 +1,6 @@
 """Compose the native research generators into a private report setup draft."""
 import asyncio
+from time import monotonic
 from copy import deepcopy
 from dataclasses import dataclass, field
 import json
@@ -189,6 +190,7 @@ class Setup:
         return result, counts
 
     async def diagram(self):
+        started = monotonic()
         series_ids = {item['series_id'] for item in self.indicator_items}
         series_ids.update(series['selected_id'] for chart in self.chart_candidates
                           for series in chart['series'] if series.get('selected_id'))
@@ -202,6 +204,8 @@ class Setup:
         body = diagram_generation.GenerateRequest(model_id=self.body.model_id,
             instructions=text + self.evidence[:12000 - len(text)])
         result = await diagram_generation.generate(body, series_ids=series_ids)
+        result = await diagram_generation.recommend_generated(self.scope, result,
+            timeout=diagram_generation.GENERATION_SECONDS - (monotonic() - started) - 1)
         return result, {'nodes': result['nodes']}
 
     async def historical_text(self, subject, maximum):
@@ -260,7 +264,7 @@ STEPS = (
     ('charts', 'indicators', report_chart_import.TOTAL_SECONDS + report_chart_import.VERIFY_SECONDS, Setup.charts),
     ('layout', 'reports', 120, Setup.layout),
     ('focus', 'market', focus_suggestions.SECONDS, Setup.focus),
-    ('diagram', 'diagram', 600, Setup.diagram),
+    ('diagram', 'diagram', diagram_generation.GENERATION_SECONDS, Setup.diagram),
     ('judgment', 'judgments', judgment_generation.GENERATION_SECONDS + 130, Setup.judgment),
     ('strategy', 'strategies', 600, Setup.strategy),
     ('monitors', 'home', 430, Setup.monitors),

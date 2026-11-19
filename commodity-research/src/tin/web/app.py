@@ -257,7 +257,7 @@ from tin.web.workbench_sources import router as workbench_sources_router
 app.include_router(workbench_sources_router)
 from tin.web.brief_export import router as brief_export_router
 app.include_router(brief_export_router)
-from tin.web.diagram_generation import router as diagram_generation_router
+from tin.web.diagram_generation import router as diagram_generation_router, register_recommendation_jobs
 app.include_router(diagram_generation_router)
 from tin.web.judgment_generation import router as judgment_generation_router
 app.include_router(judgment_generation_router)
@@ -268,6 +268,7 @@ from tin.web.diagram_jobs import router as diagram_jobs_router
 app.include_router(diagram_jobs_router)
 from tin.web.analysis_jobs import router as analysis_jobs_router
 app.include_router(analysis_jobs_router)
+register_recommendation_jobs()
 from tin.web.workbench_setup_jobs import router as workbench_setup_jobs_router
 app.include_router(workbench_setup_jobs_router)
 from tin.web.judgment_review import router as judgment_review_router
@@ -801,7 +802,12 @@ def indicator_catalog(scope: str = "all", search: str = Query('', max_length=200
 
 
 @app.get("/sn/diagram")
-def diagram_page(request: Request, template: int | None = None, date: str | None = None):
+def diagram_page(request: Request, template: int | None = None, date: str | None = None,
+                 analysis_job: str | None = None):
+    if template is None and analysis_job:
+        from tin.web.analysis_jobs import navigation_context
+        context = navigation_context(current_workbench.get(), analysis_job, 'diagram_indicator_recommendations')
+        template = context.get('template_id')
     with _page_session('diagram', day=date, template_id=template) as s:
         # 这里原来无条件返回默认布局，`?template=` 被整个忽略——下拉框选哪张都回到同一张，
         # 新建的布局也永远打不开。切换布局是这个页面最基本的操作之一。
@@ -863,7 +869,21 @@ def diagram_values_live(body: dict = Body(...)):
 
 @app.post("/api/sn/diagram/templates")
 def diagram_save(body: dict = Body(...)):
-    with _page_session('diagram', series_ids=_layout_series_ids(body.get('layout') or {})) as s:
+    layout = body.get('layout') or {}
+    scope = current_workbench.get()
+    if scope is None and ('fact_version' in body or 'recommendation_version' in body):
+        raise HTTPException(409, '请从已授权的研究工作台保存产业图草稿')
+    with _page_session('diagram', series_ids=_layout_series_ids(layout)) as s:
+        if 'fact_version' in body:
+            from tin.web.diagram_generation import validate_generated_layout
+            validate_generated_layout(layout, body['fact_version'], canvas=True)
+            if body.get('id') and not any(row['id'] == body['id'] for row in diagram_api.list_templates(s, V)):
+                raise HTTPException(404, '当前工作台没有该产业图')
+        if 'recommendation_version' in body:
+            from tin.web.diagram_generation import recommendation_catalog
+            version, _ = recommendation_catalog(scope)
+            if version != body['recommendation_version']:
+                raise HTTPException(409, '推荐时的指标目录已改变，请重新推荐或撤回这些绑定')
         try:
             saved = diagram_api.save_template(s, V, body)
         except diagram_api.DiagramError as e:

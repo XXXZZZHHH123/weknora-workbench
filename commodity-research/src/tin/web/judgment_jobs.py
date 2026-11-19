@@ -211,6 +211,7 @@ def _complete(scope, meta, preview):
                 prune_snapshots_after_success(scope, preview.get('analysis_snapshot'))
             except Exception:
                 logging.getLogger(__name__).warning('Analysis snapshot cleanup deferred')
+            return value['_draft_id']
 
 
 async def fresh_scope(scope):
@@ -340,7 +341,12 @@ class Runtime:
             preview, _ = await asyncio.wait_for(generation._analyze(scope, body, progress),
                 timeout=generation.GENERATION_SECONDS)
             await fresh_scope(scope)
-            await run_in_threadpool(_complete, scope, meta, preview)
+            token = await run_in_threadpool(_complete, scope, meta, preview)
+            if token:
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
+                from tin.web.judgment_recommendations import start_automatic
+                await start_automatic(scope, token, preview)
         except asyncio.CancelledError:
             await run_in_threadpool(registry.finish, meta['id'], self.worker_id, meta['fence'],
                 'interrupted', '分析已中断，请重新发起')

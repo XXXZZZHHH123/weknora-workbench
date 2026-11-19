@@ -29,6 +29,66 @@ function recommendationGroup(env) {
   return group;
 }
 
+async function testSavedJudgmentAutomaticRecommendations() {
+  const alternative = {series_id: 'alternate', name: 'Alternate reading', unit: 't', reason: '备选依据'};
+  const proposed = {recommended: recommendations[0], recommendations: [...recommendations, alternative], matched: true};
+  let state = 'running';
+  function automatic(url, options, {preview, review}) {
+    const job = {id: identifier, purpose, workbench_id: 'synthetic', state, phase_label: '正在挑选指标',
+      context: {draft_id: review.draft_id, item_id: null}};
+    if (/\/judgment\/jobs\/[^/]+\/result$/.test(url)) {
+      review.auto_indicator_recommendations = true;
+      return resultResponse({...preview(), model_id: 'configured'});
+    }
+    if (url.endsWith('/indicator-recommendations/automatic')) return resultResponse({job});
+    if (url.endsWith('/analysis-jobs/' + identifier)) return resultResponse(job);
+    if (url.endsWith('/analysis-jobs/' + identifier + '/result')) {
+      const anchor = review.sections[0].items[0];
+      review.revision++;
+      review.auto_indicator_recommendations = false;
+      anchor.binding = proposed.recommended;
+      anchor.indicator_recommendation = proposed;
+      return resultResponse({job, draft_id: review.draft_id, items: {anchor: proposed}});
+    }
+    if (url.includes('/analysis-jobs/latest?')) return resultResponse({job: null});
+    if (url.includes('/review/preview?')) return resultResponse(preview());
+  }
+
+  const env = setup({reviewMode: true, reviewJob: true, requestOverride: automatic});
+  const manager = env.context.window.JudgmentManager;
+  await manager.open();
+  await env.nodes['logic-reuse'].fire('click');
+  assert.equal(env.nodes['logic-input'].value, '# Current');
+  env.nodes['logic-model'].value = 'configured';
+  await env.nodes['logic-generate'].fire('click');
+  await flush();
+  assert.match(env.nodes['logic-review-indicators-status'].textContent, /后台/);
+  assert.equal(env.nodes['logic-review-indicators-status'].dataset.analysisBusy, 'true');
+  const search = reviewControl(env, 'anchor', 'search');
+  search.value = 'Hand-entered search';
+  await search.fire('input');
+  manager.close();
+  state = 'succeeded';
+  await manager.open();
+  await flush();
+  assert.equal(reviewControl(env, 'anchor', 'search').value, 'Hand-entered search');
+  assert.equal(env.requests.filter(request => request.url.endsWith('/review/update')).length, 0);
+  manager.close();
+
+  const restored = setup({reviewMode: true, reviewJob: true, requestOverride: automatic});
+  await restored.context.window.JudgmentManager.openJob(identifier);
+  const restoredSearch = reviewControl(restored, 'anchor', 'search');
+  assert.equal(restoredSearch.value, recommendations[0].name);
+  assert.match(restored.nodes['logic-review-items'].textContent, /模型推荐·待核对.*原文名称与目录字段一致/);
+  assert.equal(reviewControl(restored, 'anchor', 'confirm-item').hidden, false);
+  assert.equal(restored.requests.filter(request => request.url.endsWith('/review/update')).length, 0);
+  await restoredSearch.fire('focus');
+  const group = descendants(restored.nodes['logic-review-items']).find(node => node.dataset.recommendationGroup === 'true');
+  assert.match(group.textContent, /模型推荐.*Alternate reading/);
+  assert.doesNotMatch(group.textContent, /Matched quantity/);
+  restored.context.window.JudgmentManager.close();
+}
+
 (async () => {
   const env = await generateReview({reviewJob: true, requestOverride});
   const search = reviewControl(env, 'anchor', 'search');
@@ -64,5 +124,6 @@ function recommendationGroup(env) {
   await empty.context.window.JudgmentManager.openJob(identifier);
   assert.match(empty.nodes['logic-review-indicators-status'].textContent, /没有找到一致的指标/);
   empty.context.window.JudgmentManager.close();
+  await testSavedJudgmentAutomaticRecommendations();
   console.log('indicator recommendation grouping, explicit selection and background recovery passed');
 })().catch(error => {console.error(error); process.exitCode = 1;});

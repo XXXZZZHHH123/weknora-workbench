@@ -5,6 +5,8 @@ export type AnalysisJobState = 'queued' | 'running' | 'succeeded' | 'failed' | '
 export const analysisJobPresentation = {
   judgments: { title: '研究逻辑分析', view: 'judgment', completed: '研究分析已完成' },
   diagram: { title: '产业图配置生成', view: 'diagram', completed: '产业图配置已生成' },
+  judgment_indicator_recommendations: { title: '研判指标推荐', view: 'judgment' },
+  diagram_indicator_recommendations: { title: '产业图指标推荐', view: 'diagram' },
   monitor_draft: { title: '监测草稿生成', view: 'monitors' },
   report_dimension_draft: { title: '日报周报结论起草', view: 'reports' },
   report_chart_import: { title: '往期周报图表识别', view: 'chart-import' },
@@ -49,7 +51,7 @@ export interface AnalysisJob {
 export interface AnalysisTaskOwner { userId: string; tenantId: string; token: string }
 const states = new Set<AnalysisJobState>(['queued', 'running', 'succeeded', 'failed', 'interrupted', 'expired', 'applied', 'superseded'])
 const phases = new Set(['reading_source', 'loading_catalog', 'selecting', 'analyzing', 'generating', 'validating',
-  'dimension_queries', 'dimension_fields', ...states])
+  'recommending', 'dimension_queries', 'dimension_fields', ...states])
 
 export function analysisJobId(value: unknown): string {
   return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value) ? value : ''

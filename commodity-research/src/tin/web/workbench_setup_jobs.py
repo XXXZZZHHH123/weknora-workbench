@@ -66,6 +66,15 @@ analysis_jobs.record_audits[PURPOSE] = record_audit
 analysis_jobs.result_checks[PURPOSE] = verify_result
 
 
+async def recommend_judgment(scope, result):
+    if result.get('_judgment_token'):
+        from tin.web.judgment_recommendations import start_automatic
+        await start_automatic(scope, result['_judgment_token'], result['_judgment'])
+
+
+analysis_jobs.completed_hooks[PURPOSE] = recommend_judgment
+
+
 async def start_job(scope, body, idempotency_key):
     payload = body.model_dump(mode='json', exclude={'source': {'snapshot'}})
     # Each setup step has its own deadline. The full sequence can take longer
@@ -96,6 +105,9 @@ async def result_view(scope, config):
         if item['part'] == 'charts' and item['state'] == 'succeeded':
             item['data'] = await run_in_threadpool(report_chart_import.review_state, scope, item['data'],
                                                    config.get('applied', {}))
+        if item['part'] == 'diagram' and item['state'] == 'succeeded':
+            from tin.web.diagram_generation import checked_recommendation_preview
+            item['data'] = await checked_recommendation_preview(scope, item['data'])
     return result
 
 

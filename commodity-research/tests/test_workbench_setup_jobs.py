@@ -312,6 +312,41 @@ def test_diagram_skips_without_current_or_saved_bindings(workbench, monkeypatch)
     asyncio.run(run())
 
 
+def test_setup_diagram_expands_only_post_generation_recommendation_catalog(workbench, monkeypatch):
+    generation = setup.diagram_generation
+    markdown = '# Flow\n\n## Supply\n\n- Deliveries <!-- id: node1 -->\n'
+    base_version, all_sources_version = 'report.fixture', 'catalog.fixture'
+
+    async def generate_diagram(body, *, series_ids):
+        assert series_ids == {SERIES}
+        return {'markdown': markdown, 'nodes': 1, 'version': base_version, 'bindings': [],
+                'model_id': body.model_id}
+
+    async def recommend(scope, model, title, nodes, shared_ids, progress):
+        assert title == 'Flow' and nodes[0].label == 'Deliveries' and shared_ids == []
+        candidate = {'series_id': CHART_SERIES, 'name': 'Delivery volume', 'reason': 'Same measurement'}
+        return {nodes[0].id: {'recommended': candidate, 'recommendations': [candidate], 'ambiguous': False}}, all_sources_version
+
+    async def check(scope, version):
+        assert version == all_sources_version
+
+    monkeypatch.setattr(generation, 'generate', generate_diagram)
+    monkeypatch.setattr(generation, 'recommend_nodes', recommend)
+    monkeypatch.setattr(generation, 'verify_generation_scope', check)
+    monkeypatch.setattr(setup.dimension_suggestions, 'dimensions_for_scope', lambda scope: [
+        {'sections': [{'items': [{'kind': 'indicator', 'id': SERIES}]}]}])
+
+    async def run():
+        _, result = await completed(workbench, 'diagram')
+        data = result['items'][0]['data']
+        assert data['version'] == base_version and data['markdown'] == markdown
+        assert data['indicator_recommendations']['node1']['recommended']['series_id'] == CHART_SERIES
+        with artifact_session(workbench.scope) as session:
+            assert session.scalars(select(DiagramTemplate)).all() == []
+
+    asyncio.run(run())
+
+
 def test_diagram_reports_exact_scoped_catalog_capacity_before_any_model_call(workbench, monkeypatch):
     generation = setup.diagram_generation
     fields = [{'id': 'kb-' + format(i, '048x'), 'name': '相同长度'} for i in range(6)]

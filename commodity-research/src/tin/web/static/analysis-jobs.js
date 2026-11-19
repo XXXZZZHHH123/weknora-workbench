@@ -83,6 +83,14 @@
       serial++;
     }
 
+    function detach() {
+      pause();
+      tracked = latest = undefined;
+      running = false;
+      if (restoreButton) restoreButton.hidden = true;
+      sync();
+    }
+
     async function follow(entry) {
       pause();
       const operation = serial;
@@ -192,7 +200,7 @@
     }
 
     restoreButton?.addEventListener('click', () => { if (latest) restore(latest.id, {explicit: true}); });
-    return {submit, restore, discover, pause, get busy() { return busy(); }};
+    return {submit, restore, discover, pause, detach, get busy() { return busy(); }};
   }
 
   window.ResearchAnalysisJobs = {create, requested, result, message};

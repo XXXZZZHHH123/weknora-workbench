@@ -18,6 +18,8 @@
   const rememberedChoices = new Set();
   const indicatorRecommendations = new Map();
   let recommendingItem = null;
+  let automaticIndicatorDraft = null;
+  let recommendationSearch = null;
   let reviewControls = [], searchSessions = [], selectedSection = '', reviewView = 'all';
   let bindingControlSerial = 0;
   const selectedId = () => dialog.dataset.judgmentId || '';
@@ -35,7 +37,7 @@
   function invalidate() {
     closeItemConfirmation();
     stopJobMonitor(true); submissionSerial++;
-    stopSearches(); draft = null; review = null; setupDraftId = null; reviewEdits.clear(); rememberedChoices.clear(); indicatorRecommendations.clear();
+    stopSearches(); draft = null; review = null; setupDraftId = null; automaticIndicatorDraft = null; recommendationSearch = null; reviewEdits.clear(); rememberedChoices.clear(); indicatorRecommendations.clear();
     for (const kind of ['dimensions', 'indicators']) {
       const restore = byId(`review-${kind}-result`);
       if (restore) restore.hidden = true;
@@ -71,6 +73,7 @@
     if (!response.ok) { const detail = value.detail; const message = typeof detail === 'string' ? detail :
       detail?.message ? detail.message + (detail.issues?.length ? '：' + detail.issues.slice(0, 4).map(item => item.message).join('；') : '') : '请求未完成，输入已保留。';
       const error = new Error(message); error.status = response.status; error.fields = detail?.attention_fields;
+      error.code = detail?.code;
       if (typeof detail?.frequency_required === 'boolean') error.frequencyRequired = detail.frequency_required;
       if (detail?.code === 'binding_warning' && typeof detail.confirmation_token === 'string') error.bindingWarningToken = detail.confirmation_token;
       if (detail?.code === 'number_review' && typeof detail.confirmation_token === 'string') error.numberReviewToken = detail.confirmation_token;
@@ -332,12 +335,21 @@
     onAccepted: job => { recommendingItem = job.context?.item_id || recommendingItem; },
     async present(result, {current}) {
       if (!canRestoreReview(result.draft_id)) throw new Error('请先处理当前草稿，再取回指标推荐结果。');
-      if (!draft) {
-        const value = await api('/review/preview?draft_id=' + encodeURIComponent(result.draft_id));
-        if (!current()) return;
+      const value = await api('/review/preview?draft_id=' + encodeURIComponent(result.draft_id));
+      if (!current()) return;
+      if (!review || value.review?.revision >= review.revision) {
+        if (result.item_id && recommendationSearch?.token === result.draft_id && recommendationSearch.itemId === result.item_id) {
+          const edit = reviewEdits.get(result.item_id);
+          const item = value.review.sections.flatMap(group => group.items || []).find(row => row.id === result.item_id);
+          // A search phrase sent with an explicit retry can be replaced by its selection.
+          if (item?.indicator_recommendation?.recommended && edit === recommendationSearch.edit &&
+              edit.query === recommendationSearch.query && !edit.bindingChanged && !edit.dimensionChanged &&
+              edit.sourceQuote === null && !edit.extraRowsAdded) reviewEdits.delete(result.item_id);
+          recommendationSearch = null;
+        }
         showRecoveredDraft(value);
       }
-      indicatorRecommendations.set(result.item_id, result.recommendations || []);
+      if (result.item_id) indicatorRecommendations.set(result.item_id, result.recommendations || []);
       const section = review?.sections.find(group => group.items?.some(item => item.id === result.item_id));
       if (section) {
         if (reviewView === 'attention' && !section.items.some(item => item.id === result.item_id && needsAttention(item))) reviewView = 'all';
@@ -347,9 +359,40 @@
         const picker = findNode(card, node => Boolean(node.showRecommendations));
         picker?.showRecommendations();
       }
-      reviewJobs.message(byId('review-indicators-status'), result.recommendations?.length ? '推荐已生成，请选择要关联的指标。' : '没有找到一致的指标');
+      const rows = result.items ? Object.values(result.items) : [result];
+      const count = review?.sections.flatMap(group => group.items || []).filter(item =>
+        (result.items?.[item.id] || result.item_id === item.id) && item.indicator_recommendation?.recommended &&
+        !reviewEdits.get(item.id)?.dirty).length;
+      reviewJobs.message(byId('review-indicators-status'), count ? '指标推荐已填入，请核对。' :
+        !rows.length ? '指标推荐已结束，当前草稿的绑定已保留。' :
+          rows.some(row => row.recommendations?.length) ? '指标推荐已生成，请核对。' : '没有找到一致的指标');
     },
   });
+  async function followAutomaticRecommendations(value) {
+    if (!reviewIndicatorsJob || !managed?.can_write || !value.review?.auto_indicator_recommendations ||
+        automaticIndicatorDraft === value.draft_id || !dialog.open) return;
+    const token = value.draft_id;
+    automaticIndicatorDraft = token;
+    const status = byId('review-indicators-status');
+    reviewJobs.message(status, '正在提交后台指标推荐，可关闭窗口。', true);
+    try {
+      const {job} = await api('/indicator-recommendations/automatic', {draft_id: token}, 'POST', null, {}, true);
+      if (draft?.draft_id !== token || !dialog.open) return;
+      if (!job) {
+        if (draft === value) await refreshReview(value);
+        reviewJobs.message(status, '');
+        return;
+      }
+      recommendingItem = null;
+      if (parent !== window && window.RESEARCH_CONTEXT?.workbench)
+        parent.postMessage({type: 'research-analysis-job-started', purpose: job.purpose,
+          workbenchId: window.RESEARCH_CONTEXT.workbench, jobId: job.id}, location.origin);
+      await reviewIndicatorsJob.restore(job.id);
+    } catch (error) {
+      if (draft?.draft_id === token && dialog.open) reviewJobs.message(status, error.message);
+      if (automaticIndicatorDraft === token) automaticIndicatorDraft = null;
+    }
+  }
   byId('review-reclassify')?.addEventListener('click', async () => {
     if (!draft || !review || !reviewDimensionsJob) return;
     const modelId = byId('model').value;
@@ -528,6 +571,7 @@
     review = value.review || null;
     if (!preserveEdits) { reviewView = 'all'; selectedSection = ''; }
     renderReview(); syncDiscard(); inform(previewNotice(value));
+    void followAutomaticRecommendations(value);
   }
   function element(tag, className, value) {
     const node = document.createElement(tag); if (className) node.className = className;
@@ -590,7 +634,7 @@
       ? `连续 ${periods} 期 = ${periods} 个观测（目录频率：${frequencyLabel(edit.selected)}）`
       : '频率未注明，请核对连续期数的口径';
   }
-  function changed(edit, dimensionOnly = false) { edit.dirty = true; edit.dimensionOnly = dimensionOnly; edit.renderCondition?.(); edit.renderErrors?.(); edit.renderConfirmation?.(); edit.renderOutcome?.(); syncReviewVisibility(); syncReviewControls(); syncApply(); }
+  function changed(edit, dimensionOnly = false) { edit.dirty = true; edit.dimensionOnly = dimensionOnly; edit.renderCondition?.(); edit.renderErrors?.(); edit.renderConfirmation?.(); edit.renderOutcome?.(); edit.renderRecommendation?.(); syncReviewVisibility(); syncReviewControls(); syncApply(); }
   const ruleNumber = '[+-]?(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?';
   const singleRuleNumber = new RegExp('^' + ruleNumber + '$');
   const rangeRuleNumbers = new RegExp('^\\[\\s*(' + ruleNumber + ')\\s*,\\s*(' + ruleNumber + ')\\s*\\]$');
@@ -919,6 +963,17 @@
     const meta = element('p', 'logic-binding-meta', selection.selected ? bindingMeta(selection.selected) : '请先选择指标');
     meta.title = meta.textContent; meta.textContent = sourceCaliber(selection.selected);
     search.title = meta.title;
+    const suggestion = index === 0 ? item.indicator_recommendation : null;
+    const suggestionNote = element('p', 'logic-recommendation-note'); suggestionNote.hidden = true;
+    if (suggestion) {
+      edit.renderRecommendation = () => {
+        const selected = suggestion.recommended && selection.selected?.series_id === suggestion.recommended.series_id && !edit.bindingChanged;
+        suggestionNote.textContent = selected ? `模型推荐·待核对　${display.text(suggestion.recommended.reason)}` :
+          suggestion.matched === false && !edit.bindingChanged ? '没有找到一致的指标' : '';
+        suggestionNote.hidden = !suggestionNote.textContent;
+      };
+      edit.renderRecommendation();
+    }
     const recommend = index === 0 && reviewIndicatorsJob ? registerControl(element('button', 'logic-recommend-indicator', '推荐指标'), item, 'recommend-indicator', () => reviewIndicatorsJob.busy) : null;
     if (recommend) {
       recommend.type = 'button';
@@ -927,6 +982,7 @@
         const modelId = byId('model').value;
         if (!modelId) return inform('请选择分析模型。', true);
         recommendingItem = item.id;
+        recommendationSearch = {token: draft.draft_id, itemId: item.id, edit, query: selection.query};
         await reviewIndicatorsJob.submit('/api/sn/judgment/indicator-recommendations',
           {draft_id: draft.draft_id, item_id: item.id, model_id: modelId, search: selection.query || ''});
       });
@@ -935,7 +991,8 @@
       recommend, itemId: item.id, optionNodes: () => [...list.children].flatMap(node => node.dataset.recommendationGroup === 'true' ? [...node.children].slice(1) : [node])};
     searchSessions.push(session);
     field.cancelBindingSearch = () => { clearTimeout(session.timer); session.controller?.abort(); session.token++; searchSessions = searchSessions.filter(value => value !== session); };
-    const recommendations = () => recommend ? indicatorRecommendations.get(item.id) : undefined;
+    const recommendations = () => recommend ? (suggestion ? suggestion.recommendations.filter(row =>
+      row.series_id !== suggestion.recommended?.series_id) : indicatorRecommendations.get(item.id)) : undefined;
     const unlisted = rows => rows.filter(row => !recommendations()?.some(rec => rec.series_id === row.series_id));
     const options = () => [...(recommendations() || []), null, ...unlisted(session.rows)];
     function closeMenu() { menu.hidden = true; search.setAttribute('aria-expanded', 'false'); search.removeAttribute?.('aria-activedescendant'); }
@@ -993,7 +1050,7 @@
         session.next = result.next_offset; session.loaded = wanted;
         if (append) appendOptions(rows.filter(row => !session.rows.some(existing => existing.series_id === row.series_id)));
         else { session.rows = rows; drawOptions(); }
-        feedback.textContent = `${recommendations()?.length === 0 ? '没有找到一致的指标。' : ''}${session.rows.length ? `已显示 ${session.rows.length} / ${result.total} 个匹配指标` : '没有匹配指标，可调整搜索或保留文字。'}`;
+        feedback.textContent = `${suggestion?.matched === false || !suggestion && recommendations()?.length === 0 ? '没有找到一致的指标。' : ''}${session.rows.length ? `已显示 ${session.rows.length} / ${result.total} 个匹配指标` : '没有匹配指标，可调整搜索或保留文字。'}`;
       } catch (error) {
         if (error.name !== 'AbortError' && token === session.token && session.epoch === reviewEpoch) feedback.textContent = '指标目录暂时不可用，请稍后重试。';
       } finally { if (token === session.token) more.disabled = false; }
@@ -1033,7 +1090,7 @@
     field.focusSearch = () => { session.quiet = true; try { search.focus({preventScroll: true}); } finally { session.quiet = false; } };
     if (recommend) field.showRecommendations = () => {
       field.focusSearch(); drawOptions(); showMenu();
-      feedback.textContent = recommendations()?.length ? '' : '没有找到一致的指标';
+      feedback.textContent = suggestion?.matched === false || !suggestion && !recommendations()?.length ? '没有找到一致的指标' : '';
       syncReviewControls();
     };
     const picker = element('div', 'logic-binding-picker'); picker.append(search, menu);
@@ -1041,7 +1098,9 @@
       const heading = element('div', 'logic-binding-heading'); heading.append(label, recommend);
       field.append(heading);
     } else field.append(label);
-    field.append(picker, meta); return field;
+    field.append(picker, meta);
+    if (suggestion) field.append(suggestionNote);
+    return field;
   }
   function renderReview() {
     if (!byId('review')) return;
@@ -1172,6 +1231,7 @@
     if (draft !== value) return;
     for (const [id, edit] of reviewEdits) if (!edit.dirty && !edit.extraRowsAdded) reviewEdits.delete(id);
     review = updated; draft.review = review; renderReview();
+    void followAutomaticRecommendations(value);
   }
   // Saving one item re-renders the review and disables its controls meanwhile. Keep the reviewer on the
   // same card and control instead of letting focus fall to the page and later cards jump into place.
@@ -1251,7 +1311,11 @@
       inform(action === 'dimension' ? '维度已暂存，确认保存后生效。' : action === 'confirm' ? '本条已确认。' : action === 'keep_text' ? '本条已保留为文字。' : '本条已排除。');
       return true;
     } catch (error) {
-      if (error.status === 409) { invalidate(); inform(error.message, true); }
+      if (error.code === 'review_revision' && draft?.draft_id === body.draft_id) {
+        edit.dirty = true;
+        try { await refreshReview(draft); } catch { /* Retain the current selection for a retry. */ }
+        inform('草稿已更新，已保留本条选择，请重新核对。', true);
+      } else if (error.status === 409) { invalidate(); inform(error.message, true); }
       else if (error.name !== 'AbortError') { edit.dirty = true; edit.errorMessage = error.message; if (typeof error.frequencyRequired === 'boolean') edit.frequencyRequired = error.frequencyRequired; edit.errorFields = Array.isArray(error.fields) ? error.fields : item.attention_fields?.length ? item.attention_fields : [item.can_bind ? 'binding' : 'content']; edit.renderErrors?.(); edit.renderConfirmation?.(); inform('本条未确认：' + error.message, true); }
       return false;
     } finally { edit.saving = false; edit.renderOutcome?.(); if (!holdBusy) { setBusy(false); restoreFocus(place); } }
@@ -1294,6 +1358,7 @@
         if (!hasReviewEdits() && review.research_dimensions && managed.research_dimensions &&
             JSON.stringify(review.research_dimensions) !== JSON.stringify(managed.research_dimensions)) await refreshReview(draft);
         else renderReview();
+        void followAutomaticRecommendations(draft);
       }
       inform('');
       if (setup && managed.can_write) {

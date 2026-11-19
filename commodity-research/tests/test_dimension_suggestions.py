@@ -93,7 +93,7 @@ def test_model_prompts_use_current_dimensions_and_representativeness_requirement
     assert len(inventory['items']) == 3
     groups = validation_groups(dimensions)
     data = {identifier: {**field, 'latest_date': '2024-03-21'} for identifier, field in catalog().items()}
-    query = suggestions.query_prompt(dimensions, inventory)
+    query = suggestions.query_prompt(dimensions, inventory, suggestions.recall.catalog_fields(data))
     prompt = suggestions.pick_prompt(groups, data, dimensions, date(2024, 3, 29))
     assert dimension_prompt(dimensions) in query and dimension_prompt(dimensions) in prompt
     assert 'Model context' in query and 'Synthetic downstream' in query
@@ -171,6 +171,30 @@ def test_every_section_recalled_from_whole_catalog_with_partial_queries(monkeypa
     assert result['items'][0]['name'] == 'Readable upstream target' and len(calls) == 2
 
 
+def test_catalog_overview_supplies_search_phrasing_for_unmatched_section(monkeypatch):
+    dimensions = [{'id': 'water', 'label': '美棉产区墒情', 'category': '供给',
+                   'sections': [{'label': '美棉主产区旱情'}]}]
+    data = catalog()
+    data['field-1'].update(metric='种植季累计降水', dimensions={'station': '博州:精河'})
+    data['field-3'].update(metric='DSCI', sheet='Drought Monitor', dimensions={'State': 'Texas'})
+    monkeypatch.setattr(suggestions, 'catalog_snapshot', lambda active: {'catalog': data})
+
+    async def complete(active, model_id, prompt, *, purpose):
+        if purpose == 'dimension_queries':
+            overview = json.loads(prompt.split('目录用语概览（表名与字段名样例）：', 1)[1].split('\n', 1)[0])
+            assert ['Drought Monitor', ['DSCI / Texas']] in overview
+            assert '美棉主产区旱情' in prompt
+            return {'queries': {'i1': ['Texas DSCI']}}
+        groups = groups_of(prompt)
+        assert groups[0]['candidates'][0] == 'field-3'
+        assert fields_of(prompt)['field-3']['dimensions'] == {'State': 'Texas'}
+        return response_for(groups, [choice('field-3', 'water', section='美棉主产区旱情')])
+
+    monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
+    result = asyncio.run(suggestions.generate_suggestions(scope(), 'model', dimensions))
+    assert [row['series_id'] for row in result['items']] == ['field-3']
+
+
 @pytest.mark.parametrize('document', [None, [], {'queries': []}, {'queries': {'unknown': ['Synthetic']}},
     {'queries': {'i1': ['']}}, {'queries': {'i1': 'Synthetic'}}, {'queries': {'i1': [5]}},
     {'queries': {'i1': ['x' * 61]}}, {'queries': {'i1': ['a'] * 4}}])
@@ -199,7 +223,7 @@ def test_picks_cannot_authorize_unshown_id_or_another_sections_candidate():
 @pytest.mark.parametrize('all_invalid', [False, True])
 def test_dimension_generation_ignores_only_ids_outside_their_own_section(monkeypatch, all_invalid):
     monkeypatch.setattr(suggestions, 'catalog_snapshot', lambda active: {'catalog': catalog()})
-    monkeypatch.setattr(suggestions, 'recall_sections', lambda index, inventory, phrased, per_item:
+    monkeypatch.setattr(suggestions.recall, 'recall_groups', lambda index, inventory, phrased, per_item, *, all_items:
                         list(zip(inventory['items'], [['field-0'], ['field-1'], ['field-2']], strict=True)))
 
     async def complete(active, model_id, prompt, *, purpose):

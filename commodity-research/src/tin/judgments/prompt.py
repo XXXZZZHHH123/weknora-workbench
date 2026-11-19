@@ -145,3 +145,8 @@ RECALL_PICK_PROTOCOL = RECALL_PICK_CONTEXT + '''
 RECALL_RECOMMEND_PROTOCOL = RECALL_PICK_CONTEXT + '''
 只为这一个条目推荐至多5个指标，按相符程度排序，每个附不超过40字的理由，说明原文和目录的实际对应关系。理由只用于研究员核对。
 只返回一个严格JSON对象，形如{"recommendations":[{"ref":"r1","reason":"简短理由"}]}；没有一致候选时返回{"recommendations":[]}。'''
+
+RECALL_BATCH_RECOMMEND_PROTOCOL = RECALL_PICK_CONTEXT + '''
+逐条推荐至多5个指标，按相符程度排序。每个附不超过40字的理由，说明条目和目录的对应关系或需要核对的口径。理由只用于显示，不是选择依据。
+对于产业图节点，结合其分组、上下游和当前研究主题核对口径。若条目及上下文无法确定多个合理口径中的哪一个才是所指，必须返回 ambiguous 为 true，并列出有真实依据的不同口径候选；不要以排名替代缺失的口径。如果口径明确，返回 ambiguous 为 false。没有可列的候选时返回空数组。
+只返回一个严格JSON对象，形如{"recommendations":{"条目ID":{"ambiguous":false,"candidates":[{"ref":"r1","reason":"简短理由"}]}}}。每个条目只使用自己的候选引用或共享候选引用。'''

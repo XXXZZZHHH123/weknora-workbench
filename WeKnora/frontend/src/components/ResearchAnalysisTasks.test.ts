@@ -110,6 +110,8 @@ test('new task notifications and panel rows open the corresponding native views'
       ['dimension_fields', 'dimensions', '研究维度指标建议'],
       ['focus_suggestions', 'market', '核心关注建议生成'],
       ['judgment_dimensions', 'judgment', '研究判断维度补标'],
+      ['judgment_indicator_recommendations', 'judgment', '研判指标推荐'],
+      ['diagram_indicator_recommendations', 'diagram', '产业图指标推荐'],
       ['strategy_text', 'strategies', '策略原文整理'],
       ['strategy_generation', 'strategies', '策略方案生成'],
     ]

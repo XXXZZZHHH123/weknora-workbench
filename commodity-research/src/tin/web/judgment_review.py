@@ -117,6 +117,23 @@ def has_binding(item):
     return bool(item.get('series_id')) if item['kind'] in ('thresholds', 'falsifiers', 'whitelist') else bool(binding_ids(item))
 
 
+def can_bind(item):
+    return item['kind'] in {'binding', 'unresolved_binding', 'whitelist', 'thresholds', 'falsifiers'}
+
+
+def can_fill_recommendation(item):
+    return (can_bind(item) and item['status'] in {'pending', 'ready'} and item['origin'] != 'user'
+            and not item['binding_explicit'] and not item['remembered'])
+
+
+def needs_indicator_recommendation(item):
+    return can_fill_recommendation(item) and not has_binding(item) and 'indicator_recommendation' not in item
+
+
+def recommended_binding(item):
+    return (item.get('indicator_recommendation') or {}).get('recommended') if can_fill_recommendation(item) else None
+
+
 def ai_binding_ids(item):
     return ([item['ai_series_id']] if item.get('ai_series_id') else []) + item.get('ai_related_series_ids', [])
 
@@ -664,7 +681,9 @@ def review_response(scope, token, preview, catalog, *, dimensions=None):
                     rule['value_literal'] = json.dumps(value['value'], ensure_ascii=False, separators=(',', ':'))
                 if value.get('scale') is not None:
                     rule['conversion_text'] = conversion_text(value)
-            field = known.get(item['series_id'])
+            recommendation = item.get('indicator_recommendation')
+            recommended = recommended_binding(item)
+            field = known.get(recommended['series_id'] if recommended else item['series_id'])
             declaration = item.get('caliber_confirmation')
             caliber_choice = item.get('caliber_choice') or {}
             display_field = ({**field, 'unit': declaration['unit']} if field is not None
@@ -702,6 +721,8 @@ def review_response(scope, token, preview, catalog, *, dimensions=None):
                 'warnings': errors if errors else item['warnings'] if item['status'] == 'pending'
                     and item['kind'] not in {'thresholds', 'falsifiers'} else [],
                 'binding': binding(display_field), 'caliber': caliber,
+                **({'indicator_recommendation': {**recommendation, 'recommended': recommended}}
+                    if recommendation is not None else {}),
                 'ai_binding': binding(known.get(item['ai_series_id'])),
                 'bindings': [binding(known[sid]) for sid in binding_ids(item) if sid in known],
                 'ai_bindings': [binding(known[sid]) for sid in ai_binding_ids(item) if sid in known],
@@ -710,8 +731,8 @@ def review_response(scope, token, preview, catalog, *, dimensions=None):
                 'can_add_binding': item['kind'] in ('binding', 'unresolved_binding', 'thresholds', 'falsifiers'),
                 'max_bindings': 8,
                 'requires_binding': requires_binding(item),
-                'can_bind': item['kind'] in ('binding', 'unresolved_binding', 'whitelist', 'thresholds', 'falsifiers'),
-                'can_confirm': not errors, 'can_confirm_with_binding': item['kind'] in ('binding', 'unresolved_binding', 'whitelist', 'thresholds', 'falsifiers'),
+                'can_bind': can_bind(item),
+                'can_confirm': not errors, 'can_confirm_with_binding': can_bind(item),
                 'rule': rule, 'remembered': item['remembered']})
         if items:
             sections.append({'id': section_id, 'title': title, 'items': items})
@@ -723,6 +744,7 @@ def review_response(scope, token, preview, catalog, *, dimensions=None):
         'needs_attention_count': sum(item['status'] == 'pending' for item in items),
         'ready_count': sum(item['status'] == 'ready' for item in items),
         'confirmed_count': sum(item['status'] == 'confirmed' for item in items), 'total': len(items),
+        'auto_indicator_recommendations': any(needs_indicator_recommendation(item) for item in preview['review']['items']),
         'reuse_enabled': preview['review']['reuse_enabled']}
 
 
@@ -844,7 +866,12 @@ def record_decisions(scope, token, before, preview, catalog, decisions):
             session.add(AuditLog(at=now, actor=verified_actor(session, ''), action='研判逐项确认',
                 target_type='judgment_preview', target_id=digest(token), detail=detail))
         if durable:
-            replace_preview(session, scope, token, preview, before['review']['revision'])
+            try:
+                replace_preview(session, scope, token, preview, before['review']['revision'])
+            except HTTPException as error:
+                if error.status_code == 409:
+                    raise revision_conflict() from None
+                raise
         else:
             generation.previews.replace(scope, token, preview, before['review']['revision'])
         try:
@@ -856,9 +883,13 @@ def record_decisions(scope, token, before, preview, catalog, decisions):
             raise
 
 
+def revision_conflict():
+    return HTTPException(409, {'code': 'review_revision', 'message': '逐项确认已更新，请刷新后继续'})
+
+
 def check_revision(preview, revision):
     if preview['review']['revision'] != revision:
-        raise HTTPException(409, '逐项确认已更新，请刷新后继续')
+        raise revision_conflict()
 
 
 @router.get('')
@@ -946,7 +977,7 @@ async def update_review(request: Request):
                                             preview.get('dimension_labels'))
             if reason:
                 reject_fields(['dimension'], [{'code': 'stale_dimension', 'message': reason}])
-        can_bind = item['kind'] in ('binding', 'unresolved_binding', 'whitelist', 'thresholds', 'falsifiers')
+        bindable = can_bind(item)
         known = {field['id']: field for field in state['catalog']}
         if body.quantity_alignment is not None and (body.action != 'confirm' or item['kind'] not in quantity.RULE_KINDS):
             quantity.alignment_error('仅可在核对确认规则时选择数值换算。')
@@ -962,7 +993,7 @@ async def update_review(request: Request):
         if len(proposed) != len(set(proposed)):
             reject_fields(['binding'], [{'message': '同一条目不能重复绑定相同指标。'}])
         if 'series_id' in body.model_fields_set:
-            if not can_bind or body.series_id is not None and body.series_id not in known:
+            if not bindable or body.series_id is not None and body.series_id not in known:
                 reject_fields(['binding'])
             acknowledgement = acknowledge_binding(scope, body, preview, item, known)
             if item['series_id'] != body.series_id:
@@ -981,7 +1012,7 @@ async def update_review(request: Request):
             item['remembered'] = False
         if body.caliber is not None:
             from tin.compute.rule_caliber import unit_present, frequency_present, frequency_kind
-            if body.action != 'confirm' or not can_bind or item['series_id'] not in known:
+            if body.action != 'confirm' or not bindable or item['series_id'] not in known:
                 reject_fields(['binding'], [{'message': '请先选择真实指标，再确认此绑定的来源口径。'}])
             field = known[item['series_id']]
             value = body.caliber
@@ -1036,7 +1067,7 @@ async def update_review(request: Request):
             item['source_quote'] = body.source_quote
         if old_unit != (item.get('caliber_confirmation') or {}).get('unit'):
             item.pop('quantity_confirmation', None)
-        if body.remember and (body.action != 'confirm' or not can_bind or not binding_ids(item)):
+        if body.remember and (body.action != 'confirm' or not bindable or not binding_ids(item)):
             raise HTTPException(422, '只有明确确认绑定指标时才可勾选记住')
         if body.action in {'keep_text', 'exclude'}:
             item['series_id'] = None
@@ -1048,6 +1079,7 @@ async def update_review(request: Request):
             item.pop('quantity_confirmation', None)
         item['status'] = {'confirm': 'confirmed', 'keep_text': 'kept_text', 'exclude': 'excluded'}[body.action]
         item['origin'] = 'user'
+        item.pop('indicator_recommendation', None)
         if body.action == 'confirm':
             from tin.judgments.analysis import SOURCE_MATCH_CODES
             issues = confirmation_issues(preview, item, state['catalog'], scope)
@@ -1099,7 +1131,8 @@ async def confirm_ready(request: Request):
         preview, decisions = deepcopy(before), []
         stale = {item['id'] for item, _ in stale_review_dimensions(preview, state['research_dimensions'])}
         ready = [item for item in preview['review']['items'] if item['id'] not in stale
-            and item['status'] in {'pending', 'ready'} and not confirmation_error(preview, item, state['catalog'], scope)]
+            and item['status'] in {'pending', 'ready'} and not recommended_binding(item)
+            and not confirmation_error(preview, item, state['catalog'], scope)]
         known = {field['id']: field for field in state['catalog']}
         range_warnings = await run_in_threadpool(quantity.pending_alignment, scope, known, ready)
         for item in ready:

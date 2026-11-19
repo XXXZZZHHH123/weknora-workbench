@@ -17,7 +17,7 @@ from tin.integration.catalog_recall import CatalogRecall
 from tin.integration.workbench_scope import artifact_session
 from tin.models import SourceMapping, WorkbenchArtifact
 from tin.schemas.chart import ChartDefinition
-from tin.web import charts, judgment_generation as generation, judgment_recall as recall
+from tin.web import analysis_jobs, charts, judgment_generation as generation, judgment_recall as recall
 from tin.web.judgment_failures import failure_for
 from tin.web.research_dimensions import DIMENSIONS_KEY
 from tin.web.restricted_views import CORE_KEY, mapping_key
@@ -47,6 +47,73 @@ def candidates_of(prompt):
 
 def items_of(prompt):
     return json.loads(prompt.split('研究条目：', 1)[1].split('\n候选指标：', 1)[0])
+
+
+@pytest.mark.parametrize('failure', ['unshown', 'no_observation', 'incompatible', 'ambiguous', None])
+def test_recommendation_keeps_the_first_rank_and_never_promotes_an_alternative(monkeypatch, failure):
+    text = 'Compare measurement coverage.'
+    item = {'id': 'node', 'kind': 'diagram_node', 'quote': text}
+    phases = []
+
+    async def progress(phase):
+        phases.append(phase)
+
+    async def complete(scope, model, prompt):
+        if prompt.startswith('research-catalog-recall.v1'):
+            assert '目录用语概览' in prompt
+            return {'queries': {'node': [TARGET['name'], PORT['name']]}}
+        refs = {field['name']: ref for ref, field in candidates_of(prompt).items()}
+        return {'recommendations': {'node': {'ambiguous': failure == 'ambiguous', 'candidates': [
+            {'ref': 'unshown' if failure == 'unshown' else refs[TARGET['name']], 'reason': '首选理由'},
+            {'ref': refs[PORT['name']], 'reason': '备选理由'}]}}}
+
+    def observations(scope, fields, identifiers, module):
+        assert module == 'diagram' and fields.keys() == {TARGET['id'], PORT['id']}
+        assert PORT['id'] in identifiers
+        return {PORT['id']} if failure == 'no_observation' else set(identifiers)
+
+    monkeypatch.setattr('tin.web.diagram_generation.completion', complete)
+    monkeypatch.setattr(recall, 'observed_ids', observations)
+    result = asyncio.run(recall.recommend(None, 'model', [TARGET, PORT], text, {'items': [item]},
+        module='diagram', progress=progress,
+        compatible=lambda _, field: failure != 'incompatible' or field['id'] != TARGET['id']))['node']
+    assert phases == ['selecting', 'analyzing', 'validating']
+    assert result['ambiguous'] is (failure == 'ambiguous')
+    assert result['recommendations'][-1]['series_id'] == PORT['id']
+    assert result['recommendations'][-1]['reason'] == '备选理由'
+    if failure:
+        assert result['recommended'] is None
+    else:
+        assert result['recommended']['series_id'] == TARGET['id']
+
+
+def test_recommendation_batches_cover_every_item_and_obey_prompt_budget(monkeypatch):
+    items = [{'id': f'item{i}', 'kind': 'binding', 'quote': TARGET['name']}
+             for i in range(2 * recall.RECOMMENDATION_BATCH_ITEMS + 1)]
+    seen = []
+
+    async def progress(phase):
+        pass
+
+    async def complete(scope, model, prompt):
+        assert len(prompt.encode('utf-8')) <= generation.PROMPT_BYTES
+        if prompt.startswith('research-catalog-recall.v1'):
+            return {'queries': {}}
+        shown = items_of(prompt)
+        assert 1 <= len(shown) <= recall.RECOMMENDATION_BATCH_ITEMS
+        seen.extend(item['id'] for item in shown)
+        return {'recommendations': {item['id']: {'ambiguous': False, 'candidates': [
+            {'ref': item['candidates'][0], 'reason': '字段匹配'}]} for item in shown}}
+
+    monkeypatch.setattr(generation, 'completion', complete)
+    monkeypatch.setattr(recall, 'observed_ids', lambda scope, fields, identifiers, module: set(identifiers))
+    result = asyncio.run(recall.recommend(None, 'model', [TARGET], TEXT, {'items': items}, progress=progress))
+    assert seen == [item['id'] for item in items]
+    assert all(item['recommended']['series_id'] == TARGET['id'] for item in result.values())
+    with pytest.raises(HTTPException) as oversized:
+        asyncio.run(recall.recommend(None, 'model', [TARGET], 'x' * generation.PROMPT_BYTES,
+            {'items': items}, progress=progress))
+    assert oversized.value.status_code == 413
 
 
 def choose(monkeypatch, answer, rows=None, value=None, shared=()):
@@ -237,6 +304,12 @@ def test_recommendation_job_accepts_only_shown_refs_and_retains_reasons(generato
 
     monkeypatch.setattr(generation, 'completion', complete)
     job_paths = []
+
+    async def complete_job(job_id):
+        task = analysis_jobs.runtime.tasks.get(job_id)
+        if task is not None:
+            await asyncio.wait_for(asyncio.shield(task), timeout=20)
+
     with detached_loop(client):
         for index, item in enumerate(selected_items):
             response = client.post(endpoint('/indicator-recommendations'), headers={**headers,
@@ -245,16 +318,16 @@ def test_recommendation_job_accepts_only_shown_refs_and_retains_reasons(generato
             assert response.status_code == 202, response.text
             job = response.json()
             assert job['purpose'] == 'judgment_indicator_recommendations'
+            client.portal.call(complete_job, job['id'])
             path = page(FIRST, '/api/sn/analysis-jobs/' + job['id'])
             status, result = finished_job(client, path, headers)
+            assert status['state'] == 'succeeded', status
+            assert result.status_code == 200, result.text
+            data = result.json()
+            assert data['item_id'] == item['id'] and data['draft_id'] == preview['draft_id']
             if bad_ref:
-                assert status['state'] == 'failed' and result.status_code == 409
-                assert '模型未给出有效的真实指标推荐' in status['message']
+                assert data['recommended'] is None and data['recommendations'] == []
             else:
-                assert status['state'] == 'succeeded', status
-                assert result.status_code == 200, result.text
-                data = result.json()
-                assert data['item_id'] == item['id'] and data['draft_id'] == preview['draft_id']
                 assert data['recommendations'][0]['series_id'] == SERIES
                 assert data['recommendations'][0]['reason'] == '原文数量匹配实测字段'
                 job_paths.append(path)

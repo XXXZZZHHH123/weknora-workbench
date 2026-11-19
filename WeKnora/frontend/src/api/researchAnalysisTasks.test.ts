@@ -49,7 +49,8 @@ test('workbench setup keeps only known phases and uses a fixed title', () => {
 
 test('draft task metadata exposes recognized purposes and phases without retaining provider data', () => {
   const purposes = ['monitor_draft', 'report_dimension_draft', 'report_chart_import', 'dimension_inference',
-    'dimension_fields', 'focus_suggestions', 'judgment_dimensions', 'strategy_text', 'strategy_generation']
+    'dimension_fields', 'focus_suggestions', 'judgment_dimensions', 'strategy_text', 'strategy_generation',
+    'judgment_indicator_recommendations', 'diagram_indicator_recommendations']
   const jobs = readAnalysisJobs({ items: purposes.map((purpose, index) => ({
     id: `job-${index}`, workbench_id: 'wb-a', purpose, state: 'running',
     phase: purpose === 'dimension_fields' ? 'dimension_queries' : 'generating', title: 'provider data', result: 'provider output',

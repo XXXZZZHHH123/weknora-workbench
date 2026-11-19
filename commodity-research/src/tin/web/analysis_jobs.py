@@ -27,6 +27,7 @@ result_checks = {}
 result_views = {}
 result_writers = {}
 record_audits = {}
+completed_hooks = {}
 
 
 def _scope():
@@ -130,6 +131,7 @@ def _complete(scope, meta, result):
         for old in retired:
             old['payload_pruned'] = True
             registry.write(connection, old)
+        return all(old['id'] != meta['id'] for old in retired)
 
 
 def cleanup_expired():
@@ -179,7 +181,12 @@ class Runtime(shared.Runtime):
 
             result = await asyncio.wait_for(generate(verified, body, progress, meta['id']), timeout)
             await fresh_scope(verified, purpose)
-            await run_in_threadpool(_complete, verified, meta, jsonable_encoder(result))
+            completed = await run_in_threadpool(_complete, verified, meta, jsonable_encoder(result))
+            hook = completed_hooks.get(purpose)
+            if completed and hook is not None:
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
+                await hook(verified, result)
         except asyncio.CancelledError:
             await run_in_threadpool(registry.finish, meta['id'], self.worker_id, meta['fence'],
                 'interrupted', '分析已中断，请重新发起')
@@ -245,7 +252,8 @@ async def start_job(scope, purpose, body, idempotency_key, generate, *, timeout=
 def _context(purpose, body):
     keys = {'report_dimension_draft': ('day', 'period'), 'judgment_dimensions': ('judgment_id',),
             'judgment_review_dimensions': ('draft_id', 'revision'),
-            'judgment_indicator_recommendations': ('draft_id', 'item_id')}.get(purpose, ())
+            'judgment_indicator_recommendations': ('draft_id', 'item_id'),
+            'diagram_indicator_recommendations': ('template_id',)}.get(purpose, ())
     return {key: body[key] for key in keys if key in body}
 
 

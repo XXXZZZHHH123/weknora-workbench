@@ -117,10 +117,11 @@ def section_inventory(dimensions):
     return {'items': items}
 
 
-def query_prompt(dimensions, inventory):
-    return (recall.query_prompt(structure_prompt(dimensions), inventory) +
-            '\n本任务每个条目都是研究维度的一个环节；没有环节的维度本身也是一个条目。'
-            '请逐条理解维度名称、说明和环节，各写1–3个最有代表性的指标检索说法。')
+def query_prompt(dimensions, inventory, catalog):
+    instructions = ('\n本任务每个条目都是研究维度的一个环节；没有环节的维度本身也是一个条目。'
+                    '请逐条理解维度名称、说明和环节，各写1–3个最有代表性的指标检索说法。')
+    return recall.query_prompt(structure_prompt(dimensions), inventory, catalog,
+        prompt_bytes=PROMPT_BYTES - len(instructions.encode('utf-8'))) + instructions
 
 
 def checked_queries(document, inventory):
@@ -134,14 +135,6 @@ def checked_queries(document, inventory):
                    for values in queries.values())):
         raise HTTPException(422, '模型未返回有效的逐环节检索说法，请重新生成建议；未使用固定列表')
     return recall.item_queries(document, inventory)
-
-
-def recall_sections(index, inventory, phrased, per_item):
-    # Unlike judgment evidence (which may be prose-only), every configured
-    # section needs recall even when another section has a model phrasing.
-    return [(item, index.recall([*phrased.get(item['id'], []),
-                                item['quote'][:recall.QUOTE_QUERY_CHARS]], per_item))
-            for item in inventory['items']]
 
 
 def candidate_fields(scope, catalog, identifiers, day):
@@ -182,6 +175,7 @@ def pick_prompt(groups, catalog, dimensions, day):
     candidates = {identifier: {
         'name': indicator_name(identifier, {identifier: catalog[identifier].get('name') or catalog[identifier].get('metric')}),
         **{key: catalog[identifier].get(key) or '' for key in ('unit', 'frequency', 'sheet', 'source_file')},
+        **({'dimensions': catalog[identifier]['dimensions']} if catalog[identifier].get('dimensions') else {}),
         'latest_date': catalog[identifier]['latest_date']}
         for identifier in ordered}
     items = [{**{key: item[key] for key in ('id', 'dimension', 'section', 'quote')}, 'candidates': found}
@@ -298,20 +292,19 @@ async def generate_suggestions(scope, model_id, dimensions=None, day=None, *, pr
     if not catalog:
         raise HTTPException(422, '当前目录没有可用指标，请先确认知识库工作表')
     inventory = section_inventory(dimensions)
-    request = query_prompt(dimensions, inventory)
-    if len(request.encode('utf-8')) > PROMPT_BYTES:
-        raise HTTPException(413, '研究维度结构超过本次检索容量，请缩小范围后重试')
+    recall_catalog = recall.catalog_fields(catalog)
+    request = query_prompt(dimensions, inventory, recall_catalog)
     if progress:
         await progress('dimension_queries')
     document = await strategy_text.completion(scope, model_id, request, purpose='dimension_queries')
     phrased = checked_queries(document, inventory)
-    index = recall.catalog_index([{**field, 'id': identifier,
-        'name': field.get('name') or field.get('metric') or identifier} for identifier, field in catalog.items()])
-    largest = recall_sections(index, inventory, phrased, recall.RECALL_STEPS[0])
+    index = recall.catalog_index(recall_catalog)
+    # Even a section without viable candidates needs its own empty reason.
+    largest = recall.recall_groups(index, inventory, phrased, recall.RECALL_STEPS[0], all_items=True)
     identifiers = list(dict.fromkeys(identifier for _, found in largest for identifier in found))
     fields = await run_in_threadpool(candidate_fields, scope, catalog, identifiers, day)
     for per_item in recall.RECALL_STEPS:
-        groups = largest if per_item == recall.RECALL_STEPS[0] else recall_sections(index, inventory, phrased, per_item)
+        groups = [(item, found[:per_item]) for item, found in largest]
         prompt = pick_prompt(groups, fields, dimensions, day)
         if len(prompt.encode('utf-8')) <= PROMPT_BYTES:
             break
