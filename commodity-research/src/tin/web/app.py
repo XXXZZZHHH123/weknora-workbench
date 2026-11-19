@@ -701,7 +701,7 @@ def indicators_page(request: Request, date: str | None = None):
             s, "indicators", day, rows=rows, groups=groups, dimensions=DIMENSIONS, checks=checks,
             chart_page=page_config(request),
             source_status_hint=source_status_hint(scope),
-            dedup_enabled=bool(remote and not scope.restricted and any(item.get('source_type') == 'central_dataset' for item in scope.sources)),
+            dedup_enabled=bool(remote and not scope.restricted and scope.sources),
             catalog_remote=remote, catalog_offset=directory['offset'] if directory else 0,
             catalog_total=directory['total'] if directory else len(rows),
             catalog_next=directory['next_offset'] if directory else None,
@@ -712,7 +712,7 @@ def indicators_page(request: Request, date: str | None = None):
 def indicator_dedup_page(request: Request):
     scope = current_workbench.get()
     if scope is None or scope.scope_version != 2:
-        raise HTTPException(409, '请从已关联中心来源的研究台打开指标对应确认')
+        raise HTTPException(409, '请从新版多来源研究台打开指标对应确认')
     if scope.restricted:
         raise HTTPException(403, '受限视角不开放指标对应确认')
     return templates.TemplateResponse(request, 'indicator_dedup.html',

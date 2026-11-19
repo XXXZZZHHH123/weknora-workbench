@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (!root && !banner && !sources) return;
   const prefix = window.RESEARCH_PREFIX || '', api = prefix + '/api/sn/indicator-dedup';
   const states = {pending: '待确认', confirmed_default: '以 default 库为准', keep_both: '保留两者', rejected: '不是同一指标'};
+  const isRemap = item => item.remap || item.candidate?.kind === 'remap';
   const name = field => field ? field.metric || field.name || field.series_id : '来源已不可用';
   function node(tag, text, className) {
     const result = document.createElement(tag);
@@ -26,8 +27,9 @@ document.addEventListener('DOMContentLoaded', () => {
     link.href = prefix + '/sn/indicators/' + encodeURIComponent(field.series_id);
     return link;
   }
-  function evidenceText(evidence) {
+  function evidenceText(evidence, remap = false) {
     if (!evidence) return '尚未核实重叠期数值。请先核实证据。';
+    if (remap) return `已逐点核对全部 ${evidence.matching_periods} 期，日期和数值完全一致。`;
     return `一致 ${evidence.matching_periods} 期 · 不一致 ${evidence.mismatching_periods} 期 · 最近不一致日期：${evidence.latest_mismatch_date || '无'}。` +
       `单位${evidence.unit_match ? '一致' : '不一致或缺失'}，频率${evidence.frequency_match ? '一致' : '不一致或缺失'}。` +
       `个人库截至 ${evidence.personal_as_of || '无数据'}；default 库截至 ${evidence.default_as_of || '无数据'}。` +
@@ -37,25 +39,36 @@ document.addEventListener('DOMContentLoaded', () => {
   if (root) {
     const status = document.getElementById('dedup-status'), groups = document.getElementById('dedup-groups');
     const batch = document.getElementById('dedup-batch-confirm'), permission = document.getElementById('dedup-permission');
+    const selectRemaps = document.getElementById('dedup-select-remaps');
     let data, busy = false, selectionOverflow = false;
     function button(text, action, enabled = true) {
       const value = node('button', text, 'indicator-button'); value.type = 'button'; value.disabled = !enabled;
       value.addEventListener('click', () => run(action)); return value;
     }
     function sync() {
-      const count = root.querySelectorAll('[data-dedup-select]:checked').length;
-      batch.disabled = busy || !data?.can_confirm || !count || count > 20;
-      if (count > 20) status.textContent = '每批最多选择 20 组，请减少所选候选。';
+      const selected = [...root.querySelectorAll('[data-dedup-select]:checked')];
+      const remaps = selected.filter(input => input.dataset.remap).length;
+      const mixed = Boolean(remaps && remaps !== selected.length);
+      const overflow = selected.length > (remaps ? 10000 : 20);
+      batch.disabled = busy || !data?.can_confirm || !selected.length || mixed || overflow;
+      batch.textContent = remaps && !mixed ? '确认所选重映射并改写引用' : '所选以 default 库为准';
+      if (mixed) status.textContent = '请选择同一类候选进行确认。';
+      else if (overflow) status.textContent = '所选候选超过单批上限，请减少所选候选。';
       else if (selectionOverflow) status.textContent = `共 ${data.items.length} 组对应，${data.pending_count} 组待确认。`;
-      selectionOverflow = count > 20;
+      selectionOverflow = mixed || overflow;
     }
     function render() {
       groups.replaceChildren();
       permission.hidden = data.can_confirm;
-      permission.textContent = '当前账号仅可查看和核实。确认与撤销需要本空间中心来源维护权限（已有读取权限的空间管理员）。';
+      permission.textContent = '当前账号仅可查看和核实。确认与撤销需要本空间中心来源维护权限，或原表重映射来源的编辑权限及工作台编辑权限。';
+      selectRemaps.hidden = !data.items.some(item => isRemap(item) && item.batch_eligible);
+      selectRemaps.disabled = !data.can_confirm;
       const buckets = new Map();
       for (const item of data.items) {
         const personal = item.personal, standard = item.default;
+        const remap = isRemap(item);
+        const labelFor = state => remap && state === 'confirmed_default' ? '采用新映射并改写引用' : states[state] || state;
+        const canConfirm = item.can_confirm ?? data.can_confirm;
         const key = JSON.stringify(personal ? [personal.knowledge_base_id, personal.source_file, personal.sheet] : ['unavailable']);
         let group = buckets.get(key);
         if (!group) {
@@ -67,16 +80,19 @@ document.addEventListener('DOMContentLoaded', () => {
         const heading = node('header');
         const select = node('input'); select.type = 'checkbox'; select.dataset.dedupSelect = item.id;
         select.setAttribute('aria-label', '选择 ' + name(personal));
-        select.disabled = !data.can_confirm || !item.batch_eligible || item.state !== 'pending';
+        if (remap) select.dataset.remap = 'true';
+        select.disabled = !canConfirm || !item.batch_eligible || item.state !== 'pending';
         select.addEventListener('change', sync);
-        heading.append(select, node('strong', states[item.state] || item.state)); row.append(heading);
+        heading.append(select, node('strong', labelFor(item.state))); row.append(heading);
         const fields = node('div', undefined, 'dedup-fields');
-        for (const [label, field] of [['个人库副本', personal], ['default 库', standard]]) {
+        for (const [label, field] of (remap ? [['重映射前', personal], ['重映射后', standard]]
+                                            : [['个人库副本', personal], ['default 库', standard]])) {
           if (!field) {
             const box = node('div'); box.append(node('b', label), node('p', '来源已不可用，未读取历史字段资料。', 'indicator-muted'));
             fields.append(box); continue;
           }
-          const box = node('div'); box.append(node('b', label), node('p')); box.lastChild.append(indicatorLink(field));
+          const box = node('div'); box.append(node('b', label), node('p'));
+          box.lastChild.append(remap && label === '重映射前' ? document.createTextNode(name(field)) : indicatorLink(field));
           box.append(node('p', `${field.unit || '单位未注明'} · ${field.frequency || '频率未注明'}`), node('p', field.series_id, 'dedup-code'));
           fields.append(box);
         }
@@ -85,28 +101,32 @@ document.addEventListener('DOMContentLoaded', () => {
           row.append(node('p', '一侧来源已不可用。原决定继续保留，不会自动切换来源；可显式撤销决定。', 'indicator-warning'));
         } else {
           const codes = item.codes || item.candidate?.codes || item.shared_codes;
-          row.append(node('p', (item.candidate?.reason ? item.candidate.reason + '。' : '') +
-            (codes?.length ? '共同编码：' + codes.map(c => typeof c === 'string' ? c : `${c.vendor} · ${c.code}`).join('、') : '候选证据请结合完整名称与字段口径核对。'), 'indicator-muted'));
-          row.append(node('p', evidenceText(item.evidence), 'dedup-evidence'));
+          const location = remap
+            ? `同一原件 · 区块 ${item.candidate.block_index + 1} · ${item.candidate.column} 列` +
+              (item.candidate.category === null ? '' : ` · 类别 ${item.candidate.category}`)
+            : (item.candidate?.reason ? item.candidate.reason + '。' : '') +
+              (codes?.length ? '共同编码：' + codes.map(c => typeof c === 'string' ? c : `${c.vendor} · ${c.code}`).join('、') : '候选证据请结合完整名称与字段口径核对。');
+          row.append(node('p', location, 'indicator-muted'));
+          row.append(node('p', evidenceText(item.evidence, remap), 'dedup-evidence'));
         }
         if (item.evidence?.stale_default) row.append(node('p', 'default 库序列截至日期早于个人库副本，请核对中心来源更新情况；仍使用已确认的 default 库序列。', 'indicator-warning'));
         const actions = node('div', undefined, 'dedup-actions');
-        const verify = button('核实最近 500 期', async () => { await request('/' + encodeURIComponent(item.id) + '/verify', {sources_revision: data.sources_revision}); await load(); });
+        const verify = button(remap ? '核实全部观测' : '核实最近 500 期', async () => { await request('/' + encodeURIComponent(item.id) + '/verify', {sources_revision: data.sources_revision}); await load(); });
         verify.dataset.dedupVerify = item.id; verify.disabled = Boolean(item.source_unavailable); actions.append(verify);
         for (const state of ['confirmed_default', 'keep_both', 'rejected']) {
-          const choice = button(states[state], async () => {
+          const choice = button(labelFor(state), async () => {
             await request('/decisions', {ids: [item.id], revisions: {[item.id]: item.revision}, state, batch: false, sources_revision: data.sources_revision}); await load();
-          }, data.can_confirm && item.state === 'pending' && (state !== 'confirmed_default' || Boolean(item.evidence)));
+          }, canConfirm && item.state === 'pending' && (state !== 'confirmed_default' || Boolean(item.evidence)));
           choice.dataset.dedupDecision = state; actions.append(choice);
         }
         if (item.state !== 'pending') {
-          const undo = button('撤销决定', async () => { await request('/' + encodeURIComponent(item.id) + '/undo', {revision: item.revision, sources_revision: data.sources_revision}); await load(); }, data.can_confirm);
+          const undo = button(remap && item.state === 'confirmed_default' ? '撤销决定并恢复引用' : '撤销决定', async () => { await request('/' + encodeURIComponent(item.id) + '/undo', {revision: item.revision, sources_revision: data.sources_revision}); await load(); }, canConfirm);
           undo.dataset.dedupUndo = item.id; actions.append(undo);
         }
         row.append(actions);
         if (item.history?.length) {
           const history = node('details'); history.append(node('summary', '决定与撤销记录'));
-          for (const event of item.history) history.append(node('p', `${event.actor || event.confirmed_by || '系统'} · ${event.at || event.created_at || event.time || ''} · ${states[event.state || event.to_state] || event.action || event.state || ''}`));
+          for (const event of item.history) history.append(node('p', `${event.actor || event.confirmed_by || '系统'} · ${event.at || event.created_at || event.time || ''} · ${labelFor(event.state || event.to_state) || event.action || ''}`));
           row.append(history);
         }
         group.append(row);
@@ -114,7 +134,7 @@ document.addEventListener('DOMContentLoaded', () => {
       status.textContent = data.items.length ? `共 ${data.items.length} 组对应，${data.pending_count} 组待确认。` : '当前来源未发现可能重复的指标。';
       sync();
     }
-    async function load() { data = await request(); if (!Array.isArray(data.items)) throw new Error('指标对应响应不完整'); render(); }
+    async function load() { data = await request('?include_remaps=true'); if (!Array.isArray(data.items)) throw new Error('指标对应响应不完整'); render(); }
     async function run(action) {
       if (busy) return; busy = true; root.setAttribute('aria-busy', 'true'); sync();
       const buttons = [...root.querySelectorAll('button')]; const disabled = buttons.map(value => value.disabled); buttons.forEach(value => { value.disabled = true; });
@@ -122,6 +142,12 @@ document.addEventListener('DOMContentLoaded', () => {
       finally { busy = false; root.removeAttribute('aria-busy'); buttons.forEach((value, index) => { if (value.isConnected) value.disabled = disabled[index]; }); sync(); }
     }
     document.getElementById('dedup-reload').addEventListener('click', () => run(load));
+    selectRemaps.addEventListener('click', () => {
+      for (const input of root.querySelectorAll('[data-dedup-select]')) {
+        input.checked = Boolean(input.dataset.remap && !input.disabled);
+      }
+      sync();
+    });
     batch.addEventListener('click', () => run(async () => {
       const ids = [...root.querySelectorAll('[data-dedup-select]:checked')].map(value => value.dataset.dedupSelect);
       const revisions = Object.fromEntries(data.items.filter(item => ids.includes(item.id)).map(item => [item.id, item.revision]));

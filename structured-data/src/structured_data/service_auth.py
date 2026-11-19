@@ -14,7 +14,9 @@ import httpx
 from fastapi import HTTPException
 from .workspaces import Identity, valid_knowledge_base_id
 
-WHOLE_RESEARCH_SOURCE_PATHS = frozenset({'/api/research/native-charts', '/api/research/source-status'})
+WHOLE_RESEARCH_SOURCE_PATHS = frozenset({
+    '/api/research/native-charts', '/api/research/source-status', '/api/research/indicator-remaps',
+})
 
 
 async def verify_service(request):
@@ -191,7 +193,8 @@ async def verify_research_projection(request, identity):
                     raise ValueError('invalid multi-source grant')
                 indexed[source['id']] = source
             if whole_source_read:
-                resource = '原表图表' if request.url.path == '/api/research/native-charts' else '来源状态'
+                resource = {'/api/research/native-charts': '原表图表', '/api/research/source-status': '来源状态',
+                            '/api/research/indicator-remaps': '指标重映射候选'}[request.url.path]
                 unavailable = grant.get('unavailable_sources', [])
                 if not isinstance(unavailable, list):
                     raise ValueError('invalid unavailable source scope')

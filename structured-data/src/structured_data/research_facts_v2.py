@@ -107,6 +107,10 @@ def _read_current(registry, body, sources, leases):
             from .research_catalog import current_index,page
             connection,metadata = leases.enter_context(current_index(objects['store'],objects['manager'],_originals(source)))
             selected,_,_=page(connection,series_ids=parsed['selection']['series_ids'],limit=256)
+            if source['delegated']:
+                for field in selected:
+                    if field.get('field_metadata'):
+                        field['field_metadata'].pop('header_notes', None)
             prepared={'version':metadata['version'],'indicators':selected,'datasets':[],'bindings':[]}
             for info in metadata['datasets']:
                 mapping={field['source_series_id']:field['series_id'] for field in selected

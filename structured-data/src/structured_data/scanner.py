@@ -19,6 +19,11 @@ RULE_VERSION = 'generic-layout-v1'
 _UNITS = {'元/吨','元/件','元/米','元/公斤','美元/公斤','美元/磅','美元/吨','美分/磅','吨','万吨','千吨','包','万包','公顷','万公顷','亩','万亩','%','％','亿元','万元','美元','万美元','亿美元','万件','件','万米','米','天','摄氏度','华氏度','卢比/公担'}
 
 
+def header_metric(values):
+    labels = (value.strip() for value in values if isinstance(value, str))
+    return ' / '.join(dict.fromkeys(label for label in labels if label and label not in _UNITS))
+
+
 def complete_date(value):
     """Never guess a year, year/month, Excel serial, US date or intraday timestamp."""
     if isinstance(value, datetime):
@@ -181,7 +186,7 @@ def scan_workbook(path, sample_rows=40, *, use_reviewed_mappings=True, progress=
                     sample=[row[c-1] for row in rows[start-1:]]
                     if not any(v is not None for v in sample) and not direct:
                         continue
-                    labels=[str(v).strip() for _,v,_ in entries if isinstance(v,str) and v.strip() and v.strip() not in _UNITS]
+                    metric=header_metric(v for _,v,_ in entries)
                     # Copy unambiguous literal declarations with their real cells.
                     # Unknown/contradictory metadata still needs model/user review.
                     units = {}
@@ -198,10 +203,10 @@ def scan_workbook(path, sample_rows=40, *, use_reviewed_mappings=True, progress=
                         for literal in literals:
                             if literal in _UNITS:
                                 units.setdefault(literal, []).append(cell)
-                    if not any(v is not None for v in sample) and not labels:
+                    if not any(v is not None for v in sample) and not metric:
                         # Annotation-only columns are not metrics. Named empty series remain candidates.
                         continue
-                    column = {'column':get_column_letter(c),'metric':' / '.join(dict.fromkeys(labels)),
+                    column = {'column':get_column_letter(c),'metric':metric,
                         'unit':next(iter(units)) if len(units) == 1 else None,
                         'header_cells':[coord for _,_,coord in entries]}
                     if column['unit']:

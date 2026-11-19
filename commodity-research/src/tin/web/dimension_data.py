@@ -359,7 +359,12 @@ def dimension_data(scope, dimensions, day=None, period='weekly'):
                         raise
                     reason = _reason(error)
                     failed.append({**item, 'reason': reason})
-                    cards.append({**item, 'status': 'unavailable', 'reason': reason})
+                    card = {**item, 'status': 'unavailable', 'reason': reason}
+                    if item['kind'] == 'indicator':
+                        metadata = fields.get(item['id'], {}).get('field_metadata') or {}
+                        if metadata.get('header_notes'):
+                            card['field_metadata'] = deepcopy(metadata)
+                    cards.append(card)
                     summary['unavailable'] += 1
             section['items'] = cards
         dimension['summary'] = summary

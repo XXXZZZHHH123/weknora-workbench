@@ -4,9 +4,11 @@ import json
 
 import httpx
 from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
 import pytest
 
-from structured_data.ai_review import AIRequestBudget, assist_mapping, suggest_mapping
+from structured_data import ai_review
+from structured_data.ai_review import MAX_INPUT_BYTES, AIRequestBudget, assist_mapping, suggest_mapping
 from structured_data.imports import ImportManager
 
 
@@ -56,8 +58,210 @@ def test_ai_receives_current_draft_and_error_cell_evidence_without_publishing(tm
     assert payload['candidate_mapping']['blocks'][1]['columns'][0]['metric'] == ''
     assert any(c['cell'] == 'D1' and c['value'] == 'Volume' for c in payload['source_cells'])
     assert result['mapping']['blocks'][1]['columns'][0]['metric'] == 'Volume'
+    assert len(calls) == 1 and '仅表头建议' not in result['notice']
     assert calls[0]['enable_thinking'] is False
     assert manager.get(record['import_id'])['dataset_id'] == record['dataset_id']
+
+
+def test_ai_classifies_header_note_from_source_and_reassigns_header(tmp_path, monkeypatch):
+    note = 'Preliminary results pending reconciliation.'
+    manager, record, sheet, candidate = fixture(tmp_path, annotation=note)
+    column = candidate['blocks'][0]['columns'][0]
+    column['metric'] = f'{note} / Amount'
+    column['header_cells'].insert(0, 'F1')
+    calls = []
+    mock_model(monkeypatch, [{
+        'block_updates': [{'block_index': 0, 'header_note_cells': ['F1']}],
+        'column_updates': [{'block_index': 0, 'column': 'B', 'metric': 'Amount', 'header_cells': ['B1', 'B2']}],
+        'evidence': [{'block_index': 0, 'field': 'header_note_cells', 'cells': ['F1']},
+                     {'block_index': 0, 'field': 'header_cells', 'column': 'B', 'cells': ['B1', 'B2']},
+                     {'block_index': 0, 'field': 'metric', 'column': 'B', 'cells': ['B1']}],
+    }], calls)
+    result = suggest_mapping(manager, record['import_id'], sheet['name'], mapping=candidate, strict=True)
+    assert result['diagnostics'] == []
+    block = result['mapping']['blocks'][0]
+    assert block['header_note_cells'] == ['F1']
+    assert block['columns'][0]['metric'] == 'Amount'
+    prompt = calls[0]['messages'][0]['content']
+    assert '请由模型根据原单元格的实际内容及相邻表头的关系' in prompt
+    assert '不按字面关键词或格式判断' in prompt
+    assert '以“备注”开头' not in prompt
+    assert any(cell['cell'] == 'F1' and cell['value'] == note
+               for cell in json.loads(calls[0]['messages'][1]['content'])['source_cells'])
+    assert manager.sheet(record['import_id'], sheet['name'])['mapping'] == sheet['mapping']
+
+
+@pytest.mark.parametrize(('ref', 'evidence', 'error'), [
+    ('F1', [], '证据'), ('F1', ['D1'], '证据'), ('F1', ['F1'], '非空'),
+    ('A3', ['A3'], '表头行'), ('B1', ['B1'], '重叠'),
+])
+def test_ai_rejects_unsupported_header_note_drafts(tmp_path, monkeypatch, ref, evidence, error):
+    manager, record, sheet, candidate = fixture(tmp_path, annotation=' ')
+    suggestion = {'block_updates': [{'block_index': 0, 'header_note_cells': [ref]}]}
+    if evidence:
+        suggestion['evidence'] = [{'block_index': 0, 'field': 'header_note_cells', 'cells': evidence}]
+    mock_model(monkeypatch, [suggestion, suggestion], [])
+    with pytest.raises(ValueError, match=error) as rejection:
+        suggest_mapping(manager, record['import_id'], sheet['name'], mapping=candidate)
+    assert rejection.value.review_target['field'] == 'header_note_cells'
+    strict = suggest_mapping(manager, record['import_id'], sheet['name'], mapping=candidate, strict=True)
+    assert any(item['field'] == 'header_note_cells' and error in item['message'] for item in strict['diagnostics'])
+
+
+def make_wide_header_workbook(tmp_path, width):
+    note = ('  本期数字待各地数据核对完毕后统一修订。'
+            '修订前请结合上期总量和本期实际统计范围核对。\n' * 4)
+    source = tmp_path / 'wide.xlsx'
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = '宽表'
+    sheet.append([' ', note])
+    sheet.merge_cells(start_row=1, start_column=2, end_row=1, end_column=width)
+    sheet.append(['统计日期', *(['  产量  '] * (width - 1))])
+    sheet.append([None, '  S0002  ', '产量', '产量', *(f'S{col:04}' for col in range(5, width + 1))])
+    sheet.append([None, '百万包', *(['吨'] * (width - 2))])
+    sheet.append([datetime(2024, 1, 1), *([864_197] * (width - 1))])
+    sheet.append([datetime(2024, 2, 1), *([864_198] * (width - 1))])
+    workbook.save(source)
+    manager = ImportManager(tmp_path / 'store')
+    record = manager.ingest(source)
+    saved = manager.get(record['import_id'])
+    saved['sheets'][0]['mapping']['blocks'][0]['columns'][0]['dimensions'] = {'区域': '甲'}
+    manager._save(saved)
+    (manager.root / 'model-settings.json').write_text(json.dumps({'chat': {
+        'model': 'fixture', 'base_url': 'https://example.invalid/v1',
+        'api_key': 'not-a-real-secret', 'enable_thinking': False,
+    }}))
+    return manager, record['import_id'], sheet.title, width, note
+
+
+@pytest.fixture
+def wide_header_workbook(tmp_path):
+    return make_wide_header_workbook(tmp_path, 420)
+
+
+def header_suggestion(note='B1', *, note_evidence=True):
+    return {
+        'block_updates': [{'block_index': 0, 'header_note_cells': [note], 'metric_header_rows': [2, 3]}],
+        'evidence': [
+            *([{'block_index': 0, 'field': 'header_note_cells', 'cells': [note]}] if note_evidence else []),
+            {'block_index': 0, 'field': 'metric', 'cells': ['B2', 'B3']},
+        ],
+    }
+
+
+def test_wide_mapping_suggestion_uses_one_bounded_header_request(wide_header_workbook, monkeypatch):
+    manager, import_id, sheet_name, width, note = wide_header_workbook
+    saved_review = manager.get(import_id)
+    sheet = manager.sheet(import_id, sheet_name)
+    candidate = sheet['mapping']
+    original_block, = candidate['blocks']
+    assert len(original_block['columns']) == width - 1
+    assert original_block['columns'][0]['metric'] == f'{note.strip()} / 产量 / S0002 / 百万包'
+    assert original_block['columns'][0]['dimensions'] == {'区域': '甲'}
+    assert original_block['columns'][1]['unit'] == '吨'
+    assert len(json.dumps(candidate, ensure_ascii=False).encode('utf-8')) > MAX_INPUT_BYTES
+
+    calls = []
+    mock_model(monkeypatch, [header_suggestion()], calls)
+    budget = AIRequestBudget(1)
+    with pytest.raises(ValueError, match='超过 AI 请求大小限制'):
+        suggest_mapping(manager, import_id, sheet_name, strict=True, budget=budget)
+    assert calls == [] and budget.used == 0
+
+    def unexpected_observation_evidence(*args, **kwargs):
+        pytest.fail('The mapping alone is oversized and no observation window is needed.')
+
+    monkeypatch.setattr(ai_review, '_source_evidence', unexpected_observation_evidence)
+    result = manager.suggest(import_id, sheet_name)
+    body, = calls
+    assert len(httpx.Request('POST', 'https://example.invalid/v1', json=body).content) < MAX_INPUT_BYTES // 2
+    encoded = body['messages'][1]['content']
+    payload = json.loads(encoded)
+    assert payload['mode'] == 'header_only'
+    assert {'candidate_mapping', 'source_cells', 'date_candidates'}.isdisjoint(payload)
+    assert all(str(observation) not in encoded for observation in (864_197, 864_198))
+    evidence_block, = payload['blocks']
+    assert evidence_block['block_index'] == 0
+    assert evidence_block['header_rows'] == [1, 2, 3, 4]
+    assert f'B1:{get_column_letter(width)}1' in evidence_block['merged_ranges']
+    rows = {row['row']: {cell['cell']: cell['value'] for cell in row['cells']} for row in evidence_block['rows']}
+    assert set(rows) == {1, 2, 3, 4}
+    assert rows[1]['B1'] == note
+    assert rows[2]['B2'] == '  产量  '
+    assert rows[3][f'{get_column_letter(width)}3'] == f'S{width:04}'
+    assert len(rows[2]) < width // 4
+
+    assert result['diagnostics'] == []
+    assert result['scope'] == 'header_only'
+    assert result['renamed_fields'] == width - 1
+    assert all(word in result['notice'] for word in ('仅表头建议', str(width - 1), 'ID', '指标对应确认'))
+    expected_mapping = deepcopy(candidate)
+    expected_block, = expected_mapping['blocks']
+    expected_block['header_note_cells'] = ['B1']
+    for number, column in enumerate(expected_block['columns'], 2):
+        column['header_cells'].remove('B1')
+        if number == 2:
+            column['metric'] = '产量 / S0002 / 百万包'
+        elif number in (3, 4):
+            column['metric'] = '产量'
+        else:
+            column['metric'] = f'产量 / S{number:04}'
+    assert result['mapping'] == expected_mapping
+    assert manager.get(import_id) == saved_review
+    assert manager.list_templates() == []
+
+
+def test_header_suggestion_falls_back_when_source_samples_push_payload_over_limit(tmp_path, monkeypatch):
+    manager, import_id, sheet_name, width, _ = make_wide_header_workbook(tmp_path, 60)
+    calls = []
+    mock_model(monkeypatch, [header_suggestion()], calls)
+    source_reads = []
+    collect = ai_review._source_evidence
+
+    def track_source_evidence(*args, **kwargs):
+        source_reads.append(True)
+        return collect(*args, **kwargs)
+
+    monkeypatch.setattr(ai_review, '_source_evidence', track_source_evidence)
+    result = manager.suggest(import_id, sheet_name)
+    assert len(source_reads) == len(calls) == 1
+    assert json.loads(calls[0]['messages'][1]['content'])['mode'] == 'header_only'
+    assert result['renamed_fields'] == width - 1
+
+
+def test_wide_header_note_without_name_rows_keeps_confirmed_remaining_headers(wide_header_workbook, monkeypatch):
+    manager, import_id, sheet_name, width, _ = wide_header_workbook
+    calls = []
+    suggestion = {'block_updates': [{'block_index': 0, 'header_note_cells': ['B1'], 'metric_header_rows': []}],
+                  'evidence': [{'block_index': 0, 'field': 'header_note_cells', 'cells': ['B1']}]}
+    mock_model(monkeypatch, [suggestion], calls)
+    result = manager.suggest(import_id, sheet_name)
+    block, = result['mapping']['blocks']
+    assert block['header_note_cells'] == ['B1']
+    assert block['columns'][0]['metric'] == '产量 / S0002 / 百万包'
+    assert all('B1' not in column['header_cells'] for column in block['columns'])
+    assert result['renamed_fields'] == width - 1
+
+
+@pytest.mark.parametrize(('note', 'has_evidence', 'error'), [
+    ('A5', True, '表头行|证据'),
+    ('XFD1', True, '范围|证据'),
+    ('B2', True, '重叠'),
+    ('A1', True, '非空|证据'),
+    ('B1', False, '证据'),
+])
+def test_wide_mapping_suggestion_rejects_unverified_notes(
+        wide_header_workbook, monkeypatch, note, has_evidence, error):
+    manager, import_id, sheet_name, _, _ = wide_header_workbook
+    saved_review = manager.get(import_id)
+    calls = []
+    mock_model(monkeypatch, [header_suggestion(note, note_evidence=has_evidence)], calls)
+    with pytest.raises(ValueError, match=error) as rejection:
+        manager.suggest(import_id, sheet_name)
+    assert rejection.value.review_target['field'] == 'header_note_cells'
+    assert len(calls) == 1
+    assert manager.get(import_id) == saved_review
 
 
 def test_assist_only_changes_failed_block_and_checks_before_becoming_ready(tmp_path, monkeypatch):
@@ -68,7 +272,9 @@ def test_assist_only_changes_failed_block_and_checks_before_becoming_ready(tmp_p
                              'evidence': [{'block_index': 0, 'column': 'D', 'field': 'metric', 'cells': ['D1']}]}], calls)
     result = assist_mapping(manager, record['import_id'], sheet['name'], mapping=candidate)
     assert len(calls) == result['model_requests'] == 1
+    assert {'scope', 'renamed_fields', 'header_notice'}.isdisjoint(result)
     payload = json.loads(calls[0]['messages'][1]['content'])
+    assert payload['source_cells']
     assert payload['repair_scope'] == {'mode': 'repair_existing_blocks', 'allowed_block_indices': [0],
                                      'columns_by_block': [{'block_index': 0, 'columns': ['D']}]}
     assert result['mapping']['blocks'][0] == good

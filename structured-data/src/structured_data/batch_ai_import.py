@@ -160,11 +160,11 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
                       'stage': stage, 'requests_used': used,
                       'total_max_requests': total_max_requests, **extra})
 
-    def skip(name, mapping, requests_used=0):
+    def skip(name, mapping, requests_used=0, **extra):
         checked = call('mark_skip', mapping, publish_guard=guard)
         message = checked.get('message') or NO_DATA_NOTICE
         skipped.append({'sheet': name, 'code': 'no_indicator_data', 'message': message})
-        record(name, 'skipped_no_data', message, requests_used)
+        record(name, 'skipped_no_data', message, requests_used, **extra)
 
     try:
         guard()
@@ -198,6 +198,7 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
             if not isinstance(mapping, dict):
                 mapping = {'sheet': name, 'fingerprint': source.get('fingerprint'), 'blocks': []}
             sheet_used = 0
+            header_result = {}
             try:
                 if not mapping.get('blocks'):
                     evidence = call('evidence', {'sheet': name})
@@ -251,28 +252,32 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
                     guard()
                     mapping = proposal.get('mapping')
                     state = proposal.get('review_state') or {}
+                    if proposal.get('scope') == 'header_only':
+                        header_result = {key: proposal[key] for key in ('scope', 'renamed_fields', 'header_notice')}
                     if state.get('status') != 'confirmed' or not isinstance(mapping, dict):
                         pending.append(name)
-                        record(name, 'needs_review', proposal.get('notice') or '缺少可验证的映射依据，保留待确认。',
-                               sheet_used, review_state=state)
+                        message = proposal.get('notice') or '缺少可验证的映射依据，保留待确认。'
+                        if header_result and state.get('diagnostics'):
+                            message = state['diagnostics'][-1]['message']
+                        record(name, 'needs_review', message, sheet_used, review_state=state, **header_result)
                         continue
                     # Never trust a model/helper's claimed confirmation. The
                     # resource-limited real parser rechecks values and bounds.
                     preview = call('preview', mapping)
                     if not preview.get('series_count') or not preview.get('valid_observation_count'):
-                        skip(name, mapping, sheet_used)
+                        skip(name, mapping, sheet_used, **header_result)
                         continue
                     state = call('review', mapping)
                     if state.get('status') != 'confirmed':
                         pending.append(name)
                         record(name, 'needs_review', 'AI 建议未通过逐区块真实数据检查，请补齐或排除无数据区块。',
-                               sheet_used, review_state=state)
+                               sheet_used, review_state=state, **header_result)
                         continue
 
                 guard()
                 call('confirm', mapping, save_template=save_template, publish_guard=guard)
                 imported.append(name)
-                record(name, 'imported', '已通过全量校验并导入。', sheet_used)
+                record(name, 'imported', '已通过全量校验并导入。', sheet_used, **header_result)
             except _Stopped:
                 raise
             except Exception as exc:
@@ -287,7 +292,7 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
                         pass
                 failed.append({'sheet': name, 'message': str(exc)[:2000], **location})
                 pending.append(name)
-                record(name, 'failed', str(exc), sheet_used, **location)
+                record(name, 'failed', str(exc), sheet_used, **location, **header_result)
             finally:
                 completed = index + 1 if any(row['sheet'] == name for row in details) else index
                 notify(completed, name, '完成当前工作表检查')

@@ -15,6 +15,7 @@ import json
 
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter, column_index_from_string
+from openpyxl.utils.cell import coordinate_to_tuple
 from openpyxl.utils.datetime import from_excel
 from .review_errors import ReviewValidationError
 
@@ -75,6 +76,50 @@ def _column(value, width, *, field="column"):
     return col
 
 
+def _validate_header_note_cells(block, sheet):
+    if 'header_note_cells' not in block:
+        return
+    refs = block['header_note_cells']
+    field = 'header_note_cells'
+    if not isinstance(refs, list):
+        raise ReviewValidationError('表头说明来源须填写为单元格坐标列表。', field=field)
+    headers = {ref for column in block['columns'] for ref in column['header_cells']}
+    for ref in refs:
+        match = re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]*)', ref) if isinstance(ref, str) else None
+        if not match or int(match[2]) not in block['header_rows']:
+            raise ReviewValidationError('表头说明来源须位于区块声明的表头行。', field=field, cells=[ref])
+        _column(match[1], sheet['columns'], field=field)
+        if ref in headers:
+            raise ReviewValidationError('表头说明来源不能与指标表头来源重叠。', field=field, cells=[ref])
+    block[field] = list(dict.fromkeys(refs))
+
+
+def _header_values(ws, refs):
+    coordinates = {coordinate_to_tuple(ref): ref for ref in refs if ref != '$sheet_title'}
+    values = {'$sheet_title': ws.title}
+    if not coordinates:
+        return values
+    rows = ws.iter_rows(max_row=max(row for row, _ in coordinates),
+                        max_col=max(column for _, column in coordinates), values_only=True)
+    for row_index, row in enumerate(rows, 1):
+        for column_index, value in enumerate(row, 1):
+            ref = coordinates.get((row_index, column_index))
+            if ref:
+                values[ref] = value
+    return values
+
+
+def _header_notes(block, values, sheet, block_index):
+    notes = []
+    for ref in block.get('header_note_cells', []):
+        value = values.get(ref)
+        if value is None or not str(value).strip():
+            raise ReviewValidationError('表头说明必须引用原件中的非空单元格。',
+                                        field='header_note_cells', sheet=sheet, block_index=block_index, cells=[ref])
+        notes.append({'cell': ref, 'text': str(value)})
+    return notes
+
+
 def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
     """Validate explicit bounds/semantics; return a copied normalized mapping."""
     if not isinstance(mapping,dict):raise ValueError('映射必须是对象')
@@ -96,6 +141,7 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
             if b.get('layout')=='matrix':
                 from .matrix import validate_matrix
                 validate_matrix(b,sheet_scan)
+                _validate_header_note_cells(b,sheet_scan)
                 for c in b['columns']:
                     ci=_column(c['column'],sheet_scan['columns']);start=b['data_start_row'];end=b['data_end_row']
                     if any(ci==x[0] and start<=x[2] and end>=x[1] for x in used):raise ValueError('矩阵与其他区块范围重叠')
@@ -196,6 +242,7 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                     from .catalog_search import currency_pair
                     if currency_pair(c) is None:
                         raise ValueError('汇率元数据须含不同的三字母 base_currency/quote_currency 和真实表头 evidence_cells')
+            _validate_header_note_cells(b,sheet_scan)
         except ValueError as exc:
             label = b.get('name') if isinstance(b, dict) else None
             raise ReviewValidationError(f"工作表「{sheet_scan['name']}」· 区块 {bi+1}{'（'+str(label)+'）' if label else ''}：{exc}", target=getattr(exc, "review_target", {}), sheet=sheet_scan["name"], block_index=bi) from exc
@@ -327,11 +374,9 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
             refs.update(cell for bi,b in rowblocks for c in b['columns'] for field in ('frequency_cells', 'unit_cells') for cell in c.get(field, []))
             refs.update(b['date_cell'] for bi,b in rowblocks if b['date_mode']=='shared_cell')
             refs.update(cell for bi,b in rowblocks for cell in b.get('header_expectations',{}))
-            refs.discard('$sheet_title')
-            maxref=max([int(re.search(r'[0-9]+',x).group()) for x in refs] or [1])
-            refwidth=max([column_index_from_string(re.match(r'[A-Z]+',x).group()) for x in refs] or [1])
-            refvalues={f'{get_column_letter(ci)}{rn}':cell.value for rn,row in enumerate(ws.iter_rows(max_row=maxref,max_col=refwidth),1) for ci,cell in enumerate(row,1) if f'{get_column_letter(ci)}{rn}' in refs}
-            refvalues['$sheet_title'] = ws.title
+            refs.update(cell for bi,b in rowblocks for cell in b.get('header_note_cells', []))
+            refvalues = _header_values(ws, refs)
+            notes_by_block = {bi: _header_notes(b, refvalues, name, bi) for bi, b in rowblocks}
             anchor_dates={}
             for bi,b in rowblocks:
                 for column in b['columns']:
@@ -380,9 +425,10 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                     from .field_metadata import FieldMetadata
                     metadata = FieldMetadata(role=c.get('field_role'), unit=c.get('unit'), frequency=c.get('frequency'),
                         unit_source=('source' if c.get('unit_cells') else 'declared') if c.get('unit') else None,
+                        header_notes=notes_by_block[bi] or None,
                         **{field + '_evidence': [dict(sheet=name, cell=cell, text=str(refvalues[cell]))
                            for cell in c.get(field + '_cells', [])] for field in ('unit', 'frequency')})
-                    item['field_metadata'] = metadata.model_dump()
+                    item['field_metadata'] = metadata.model_dump(exclude={'header_notes'} if metadata.header_notes is None else None)
                     if metadata.unit_source == 'declared':
                         item['description'] += '；单位为人工确认，未在原表找到对应文字'
                     if c.get('exchange_rate'):item['exchange_rate']=deepcopy(c['exchange_rate'])
