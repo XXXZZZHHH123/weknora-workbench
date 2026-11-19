@@ -22,6 +22,18 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
 <script defer src="{{ research_static_prefix() }}/static/favorites-client.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/dedup-references.js?v={{ static_version() }}"></script>
 {% endif %}
+<style>
+  .research-body { --research-dock-clearance: 92px; }
+  .research-body .research-main::after {
+    content: '';
+    display: block;
+    height: var(--research-dock-clearance);
+  }
+  .research-body [data-drawer] {
+    padding-bottom: calc(1.5rem + var(--research-dock-clearance));
+    overflow-y: auto;
+  }
+</style>
 {% block head %}{% endblock %}
 </head>
 <body class="research-body min-h-screen transition-colors duration-200">

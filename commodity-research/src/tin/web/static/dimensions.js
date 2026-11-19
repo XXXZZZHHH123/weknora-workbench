@@ -14,7 +14,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const indicatorChart = get('indicator-chart'), cycleQueue = [];
   let activeCycles = 0;
   const clone = value => JSON.parse(JSON.stringify(value));
-  const itemName = item => item.name || item.title || item.id;
+  const itemName = (item, configured) => [item.name, item.title, configured?.name, configured?.title]
+    .find(name => typeof name === 'string' && name.trim() && name.trim() !== item.id)
+    || (item.kind === 'chart' ? '图表名称待核对' : '指标名称待核对');
   const warningText = value => ({history_limited:'历史观测已达到读取上限，同期统计仅覆盖已读取窗口。',observation_window_limited:'观测已达到读取上限，统计仅覆盖已读取窗口。',baseline_unavailable:'缺少可比的往期观测。',insufficient_cycles:'有效往期同期样本不足3年，不提供排名。',empty_segments_omitted:'没有观测的历史周期已省略。',current_missing:'当前周期没有有效观测。',frequency_unavailable:'无法推断观测频率。',no_observations:'没有有效观测。',segments_overlap:'历史周期有重叠。',non_finite_transform:'部分观测转换后无有效数值。',non_finite_result:'部分计算结果无有效数值。'}[value] || '数据提示：' + value);
   const knownUnit = value => String(value || '').trim() === '未注明' ? '' : String(value || '').trim();
   let activeInfo, infoSequence = 0;
@@ -56,12 +58,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (item.sheet) rows.push({text: '工作表：' + item.sheet, css: 'dimensions-sheet'});
     return rows;
   }
-  function cardInfo(item) {
+  function cardInfo(item, name, unavailable) {
     const rows = cardNotes(item), notes = item.field_metadata?.header_notes || [];
     const root = node('div', 'dimensions-info'), trigger = button('ⓘ', () => {
       if (activeInfo?.root === root && activeInfo.pinned) closeInfo(); else show(true);
     }), panel = node('div', 'dimensions-tooltip');
-    trigger.className = 'dimensions-info-trigger'; trigger.setAttribute('aria-label', '查看' + itemName(item) + '的说明与来源');
+    trigger.className = 'dimensions-info-trigger'; trigger.setAttribute('aria-label', '查看' + name + '的说明与来源');
     panel.id = 'dimensions-info-' + ++infoSequence; panel.hidden = true;
     trigger.setAttribute('aria-controls', panel.id); trigger.setAttribute('aria-expanded', 'false');
     if (notes.length) {
@@ -70,7 +72,9 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       panel.setAttribute('role', 'tooltip'); trigger.setAttribute('aria-describedby', panel.id);
     }
-    panel.append(node('p', 'dimensions-info-name', itemName(item)));
+    panel.append(node('p', 'dimensions-info-name', name), node('p', '', 'ID：' + item.id));
+    const unit = knownUnit(item.unit);
+    if (unavailable && unit) panel.append(node('p', '', '单位：' + unit));
     for (const row of rows) panel.append(node('p', row.css || '', row.text));
     if (notes.length) panel.append(renderHeaderNotes(notes));
     function show(pinned = false) {
@@ -202,6 +206,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const limits = editing ? draftLimits() : [];
     get('template-limits').textContent = limits.join('；'); get('template-limits').hidden = !limits.length;
     const dataById = new Map((current?.dimensions || []).map(d => [d.id, d]));
+    const configuredItems = new Map(allItems().map(item => [key(item), item]));
+    const displayName = item => itemName(item, configuredItems.get(key(item)));
     const mounts = [];
     for (const [index, dim] of (starting ? [] : dims()).entries()) {
       const section = node('section', 'dimensions-section'); section.dataset.dimensionId = dim.id || ''; section.dataset.dimensionIndex = index;
@@ -227,7 +233,7 @@ document.addEventListener('DOMContentLoaded', () => {
           if (items.length !== 1) row.classList.add('dimensions-stage-wide');
           row.dataset.stageId = stage.id;
           const grid = node('div', 'dimensions-grid');
-          for (const item of items) grid.append(renderCard(item, mounts));
+          for (const item of items) grid.append(renderCard(item, mounts, displayName(item)));
           row.append(node('h3', '', stage.label), grid); stages.append(row);
         }
         section.append(stages);
@@ -244,7 +250,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const unassigned = config.evidence?.unassigned, removed = config.evidence?.deleted;
     get('evidence').textContent = config.evidence_available === false ? '' : [unassigned ? `未标注维度的研判依据 ${unassigned.total ?? unassigned} 条` : '', removed ? `已删除维度的研判依据 ${removed.total ?? removed} 条，请在研究判断中重新指派。` : ''].filter(Boolean).join('；');
     const failed = current?.failed || []; get('failed').hidden = !failed.length;
-    get('failed').querySelector('ul').replaceChildren(...failed.map(item => node('li', '', `${item.name || item.title || item.id}：${item.reason}`)));
+    get('failed').querySelector('ul').replaceChildren(...failed.map(item => node('li', '', `${displayName(item)}：${item.reason}`)));
     if (locked) {
       root.querySelectorAll('input,textarea,select,button').forEach(control => control.disabled = true);
     }
@@ -274,18 +280,19 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     return row;
   }
-  function renderCard(item, mounts) {
+  function renderCard(item, mounts, name) {
     const card = node('article', 'dimensions-card dimensions-view-card');
     const body = node('div', 'dimensions-card-main judgment-metric');
-    const name = itemName(item), title = node('h4', 'judgment-metric-heading');
+    const unavailable = item.status === 'unavailable' || item.status === 'missing' || Boolean(item.reason);
+    const title = node('h4', 'judgment-metric-heading');
     const label = node(initial.restricted ? 'span' : 'a', 'dimensions-card-title', name);
     title.title = name;
     if (!initial.restricted) label.href = prefix + (item.kind === 'chart' ? '/sn/charts/' : '/sn/indicators/') + encodeURIComponent(item.id) + (get('date').value ? '?date=' + get('date').value : '');
-    title.append(label); body.append(title); card.append(body, cardInfo(item));
+    title.append(label); body.append(title); card.append(body, cardInfo(item, name, unavailable));
     card.dataset.itemId = item.id;
     if (item.kind === 'indicator') card.id = 'dimension-indicator-' + item.id;
     const references = item.kind === 'indicator' ? judgmentReferences(item) : null;
-    if (item.status === 'unavailable' || item.status === 'missing' || item.reason) {
+    if (unavailable) {
       body.append(node('p', 'dimensions-error', item.reason || item.notice || '条目暂不可用'));
       if (references) body.append(references);
       return card;

@@ -581,7 +581,7 @@ def variety_page(request: Request, date: str | None = None, err: str | None = No
         today = datetime.now(SHANGHAI).date()
         cards = saved_core_cards(s, d, core_cards(s, research_variety(s), d) if d is not None else [])
         from tin.web.market_history import market_history
-        from tin.web.market_contracts import configured_contract_curve
+        from tin.web.market_contracts import CONTRACT_SOURCE_LINK_PRESETS, configured_contract_curve
         from tin.integration.source_status import source_status_hint
         curve = (configured_contract_curve(s, d if date else None) if s.info.get('workbench_id')
                  else contract_curve(s, research_variety(s), d) if d is not None else None)
@@ -590,6 +590,7 @@ def variety_page(request: Request, date: str | None = None, err: str | None = No
             s, "variety", d, cards=cards,
             has_core_charts=any(isinstance(card, dict) and card.get('kind') == 'chart' for card in cards),
             market_catalog=market_catalog,
+            market_contract_presets=CONTRACT_SOURCE_LINK_PRESETS,
             source_status_hint=source_status_hint() if market_catalog and market_catalog['has_selectable_items'] is False else None,
             judgment=judgment_block(s, research_variety(s), today),
             radar=threshold_radar(s, research_variety(s), d) if d is not None else [],

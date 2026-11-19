@@ -34,7 +34,7 @@ test('global analysis widget compiles as a real Vue template and lives outside t
   const parsed = parse(source).descriptor, compiled = compileTemplate({ id: 'analysis-tasks', source: parsed.template!.content, filename: 'ResearchAnalysisTasks.vue' })
   assert.deepEqual(compiled.errors, [])
   const host = readFileSync(new URL('../views/platform/index.vue', import.meta.url), 'utf8')
-  assert.match(host, /<div class="platform-task-dock"><ResearchAnalysisTasks\s*\/><UploadTasksPanel\s*\/><\/div>/)
+  assert.match(host, /<FeedbackLauncher>\s*<div class="platform-task-dock">\s*<ResearchAnalysisTasks\s*\/>\s*<UploadTasksPanel\s*\/>\s*<\/div>\s*<\/FeedbackLauncher>/)
   assert.doesNotMatch(parsed.template!.content, /percentage|aria-valuenow|ProgressRing/)
 })
 test('completion notifies once with an explicit result link and never invokes analysis creation or saving', async () => {

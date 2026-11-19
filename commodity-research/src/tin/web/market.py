@@ -112,7 +112,8 @@ class HistoryConfig(BaseModel):
 
 class ContractsConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    contracts: list[dict] = Field(max_length=24)
+    contracts: list[dict] = Field(default_factory=list, max_length=24)
+    source_links: list[dict] = Field(default_factory=list, max_length=4)
 
 
 def _chart_records(session, identifiers):
@@ -190,15 +191,16 @@ def build_market_router(session_factory, templates, resolve_date):
     @router.post('/api/sn/market/contracts/config')
     def save_contracts(body: ContractsConfig):
         from tin.integration.workbench_scope import current_workbench, require_shared_write
-        from tin.web.market_contracts import save_contract_config
+        from tin.web.market_contracts import save_contract_config, _validate, _identifiers
         scope = current_workbench.get()
         if scope is None or scope.restricted:
             raise HTTPException(403, '只有来源可读的研究台编辑成员可以配置合约来源')
         require_shared_write(scope)
-        from tin.web.market_contracts import _validate, _identifiers
+        if not body.model_fields_set:
+            raise HTTPException(422, '请提供合约绑定或数据来源链接')
         identifiers = _identifiers(_validate(body.contracts))
         with page_read_scope('market',series_ids=identifiers), session_factory() as session:
-            return save_contract_config(session, body.contracts)
+            return save_contract_config(session, **body.model_dump(exclude_unset=True))
 
     @router.get('/api/sn/market/core')
     def core(request: Request, series_id: list[str] | None = Query(None, max_length=16),

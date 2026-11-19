@@ -53,7 +53,7 @@ async function fixture(browser, config = initial(), boot = {}, pathname = '/sn/d
       stored = {...stored,revision:stored.revision + 1,dimensions:body.dimensions.map((d,i) => ({...d,id:d.id || 'd-new0000'+i,references:{support:0,oppose:0,total:0}}))};
       return reply(stored);
     }
-    if (path === '/dimensions/data') return reply(observations(stored));
+    if (path === '/dimensions/data') return reply(options.data || observations(stored));
     if (path === '/dimensions/templates') return reply(templateResult({operation:'list'}).result);
     if (path.startsWith('/dimensions/templates/') && path.endsWith('/draft')) {
       assert.equal(body.revision,stored.revision);
@@ -300,11 +300,40 @@ async function checkViewCards(browser) {
     assert.equal(requests().filter(call => call.url.searchParams.get('date') === nextDate).length,6);
   } finally { requestGate.resolve(); await view.close(); }
 }
+async function checkUnavailableCardNames(browser) {
+  const config = initial(true), section = config.dimensions[0].sections[0];
+  const ids = ['kb-catalog', 'kb-configured', 'kb-unnamed'];
+  section.items = ids.map((id, index) => ({kind:'indicator',id,name:index < 2 ? '配置指标' + index : ''}));
+  const data = observations(config);
+  const unavailable = ids.map((id, index) => ({kind:'indicator',id,status:'unavailable',
+    reason:index === 0 ? '截至所选日期没有有效观测' : '指标暂不可用',
+    ...(index === 0 ? {name:'目录指标',sheet:'真实工作表',unit:'吨'} : {name:id})}));
+  data.dimensions[0].sections[0].items = unavailable;
+  data.failed = unavailable;
+  const view = await fixture(browser,config,{},'/sn/dimensions',{data});
+  const page = view.page, cards = page.locator('.dimensions-view-card');
+  try {
+    await cards.last().locator('.dimensions-error').waitFor();
+    const titles = ['目录指标', '配置指标1', '指标名称待核对'];
+    assert.deepEqual(await cards.locator('h4').allTextContents(),titles);
+    assert.deepEqual(await page.locator('#dimensions-failed li').allTextContents(),
+      titles.map((name, index) => name + '：' + unavailable[index].reason));
+    for (const [index, id] of ids.entries()) {
+      const card = cards.nth(index), info = card.locator('.dimensions-tooltip');
+      assert.equal((await card.innerText()).includes(id),false);
+      await card.locator('.dimensions-info-trigger').focus();
+      assert.equal(await info.isVisible(),true);
+      assert.ok((await info.innerText()).includes('ID：' + id));
+      if (index === 0) assert.match(await info.innerText(),/单位：吨[\s\S]*工作表：真实工作表/);
+    }
+  } finally { await view.close(); }
+}
 (async () => {
   const browser = await launch();
   try {
     await checkPrimaryButton(browser);
     await checkViewCards(browser);
+    await checkUnavailableCardNames(browser);
     const empty = await fixture(browser), p = empty.page;
     const nav = await p.evaluate(html => [...new DOMParser().parseFromString(html,'text/html').querySelectorAll('.research-nav-links a')].map(a => a.textContent.trim()),navigation(false));
     assert.equal(nav.indexOf('研究维度'),nav.indexOf('指标')+1); assert.equal(nav.indexOf('研究判断'),nav.indexOf('研究维度')+1);
