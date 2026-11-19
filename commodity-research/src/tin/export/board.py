@@ -522,6 +522,9 @@ def _threshold_radar(j, lookup, moving_lookup=None):
             row['target_value'] = target
         row["condition"] = row.get('condition') or (f"{_fmt(target[0])} – {_fmt(target[1])}" if op == "between"
                             else f"{op} {_fmt(target)}")
+        from tin.judgments.quantity_alignment import conversion_text
+        if converted := conversion_text(t):
+            row['condition'] = converted if op == 'between' else f'{op} {converted}'
         if o is None:
             out.append(row)
             continue

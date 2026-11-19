@@ -193,7 +193,7 @@ class LibraryReferencesInput(BaseModel):
 async def save_library_references(request: Request):
     from tin.web.judgment_generation import read_body, result_session, scope_for_analysis
     from tin.web.judgment_panels import register_panel
-    from tin.judgments.service import save_version, JudgmentError
+    from tin.judgments.service import JudgmentError, JudgmentVersionConflict, save_version
     from tin.schemas.judgment import JudgmentIn
     from tin.integration.workbench_scope import require_shared_write
     from sqlalchemy.exc import IntegrityError, OperationalError
@@ -226,6 +226,9 @@ async def save_library_references(request: Request):
             panel = register_panel(session, scope, saved)
             session.commit()
             return {'id': saved.id, 'version': saved.version, 'status': saved.status, 'panel': panel}
-        except (JudgmentError, IntegrityError, OperationalError):
+        except (JudgmentVersionConflict, IntegrityError, OperationalError):
             session.rollback()
             raise HTTPException(409, '研判或来源已变化，请刷新后保存图表引用') from None
+        except JudgmentError as error:
+            session.rollback()
+            raise HTTPException(422, str(error)) from None

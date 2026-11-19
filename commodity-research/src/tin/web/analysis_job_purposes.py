@@ -39,6 +39,10 @@ PURPOSES = {
     'focus_suggestions': Purpose('核心关注建议生成', 'market', '/sn', SUGGESTION_PHASES),
     'judgment_dimensions': Purpose('研究判断维度补标', 'judgments', '/sn/judgment', {
         **SUGGESTION_PHASES, 'analyzing': '正在补标维度'}),
+    'judgment_review_dimensions': Purpose('研判草稿维度重新归类', 'judgments', '/sn/judgment', {
+        **SUGGESTION_PHASES, 'analyzing': '正在重新归类研究维度'}),
+    'judgment_indicator_recommendations': Purpose('研判指标推荐', 'judgments', '/sn/judgment', {
+        **SUGGESTION_PHASES, 'selecting': '正在匹配指标', 'analyzing': '正在挑选指标'}),
     'strategy_text': Purpose('策略原文整理', 'strategies', '/sn/strategies', {
         **DRAFT_PHASES, 'reading_source': '正在读取策略原文与依据', 'generating': '正在整理策略原文'}),
     'strategy_generation': Purpose('策略方案生成', 'strategies', '/sn/strategies', {

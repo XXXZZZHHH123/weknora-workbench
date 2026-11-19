@@ -3,6 +3,7 @@ import asyncio
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from fastapi import FastAPI, HTTPException
@@ -131,6 +132,80 @@ async def completed(workbench, *parts):
     status = await analysis_jobs.status(workbench.scope, job['id'])
     assert status['state'] == 'succeeded', status
     return job['id'], await jobs.job_result(workbench.scope, job['id'])
+
+
+@pytest.mark.parametrize(('saved', 'draft'), [(False, True), (True, True), (False, False)])
+def test_setup_judgment_uses_saved_dimensions_then_same_task_draft_then_defaults(workbench, monkeypatch, saved, draft):
+    import re
+
+    from tests.test_judgment_generation import TEXT as REVIEW_TEXT, document, model_fixture
+    from tin.integration import kb_facts
+    from tin.web.judgment_review import stale_review_dimensions
+    from tin.web.research_dimensions import DIMENSIONS_KEY, read_dimensions
+    from tin.web.restricted_views import mapping_key
+
+    response = document()
+    fields = response['judgment']
+    evidence, rule = fields['contradiction']['bull']['evidence'][0], fields['thresholds'][0]
+    evidence['series_id'] = rule['series_id'] = fields['marginal_focus'][0]['series_id'] = SERIES
+    fields['whitelist'] = [SERIES]
+    response['binding_units'] = {SERIES: '吨'}
+    if saved:
+        with artifact_session(workbench.scope) as session:
+            session.add(SourceMapping(id=mapping_key(session, DIMENSIONS_KEY), version=1, confirmed_by='owner',
+                confirmed_at=datetime.now(timezone.utc),
+                config={'dimensions': [{'id': 'saved-flow', 'label': '已存维度', 'category': '其他',
+                                        'description': ''}]}))
+            session.commit()
+
+    async def historical(self, purpose, maximum):
+        return REVIEW_TEXT
+
+    async def current_model(scope, model):
+        return 'fixture-model-version'
+
+    async def complete(scope, model, prompt):
+        if not prompt.startswith('research-source-inventory.v1'):
+            if saved:
+                assert 'saved-flow（已存维度' in prompt and '原料环节' not in prompt
+                tag = 'saved-flow'
+            elif draft:
+                tag = re.search(r'- (d-[a-f0-9]+)（原料环节', prompt).group(1)
+                assert 'supply（供给' not in prompt
+            else:
+                assert 'supply（供给' in prompt
+                tag = 'supply'
+            evidence['dimension'] = rule['dimension'] = tag
+        return model_fixture(prompt, response)
+
+    monkeypatch.setattr(setup.Setup, 'historical_text', historical)
+    monkeypatch.setattr(judgment_generation, 'resolve_workbench', judgment_jobs.resolve_workbench)
+    monkeypatch.setattr(judgment_generation, 'current_model', current_model)
+    monkeypatch.setattr(judgment_generation, 'completion', complete)
+    monkeypatch.setattr(kb_facts, 'catalog_snapshot', lambda scope: {
+        'version': 'fixture-fact-version', 'catalog': workbench.fields, 'datasets': []})
+
+    async def run():
+        identifier, result = await completed(workbench, *(['dimensions', 'judgment'] if draft else ['judgment']))
+        row = result['items'][-1]
+        assert row['state'] == 'succeeded', row
+        config = jobs.load_config(workbench.scope, identifier)
+        preview = jobs.load_judgment(workbench.scope, config['result']['_judgment_token'])
+        expected = 'saved-flow' if saved else result['items'][0]['data']['dimensions'][0]['id'] if draft else 'supply'
+        assert {item['value']['dimension'] for item in preview['review']['items'] if
+                item['kind'] == 'thresholds' or item['path'][:3] == ['contradiction', 'bull', 'evidence']} == {expected}
+        if draft and not saved:
+            dimensions = result['items'][0]['data']['dimensions']
+            with artifact_session(workbench.scope) as session:
+                stale = stale_review_dimensions(preview, read_dimensions(session))
+                assert len(stale) == 2 and all('维度「原料环节」已不在本研究台' in reason for _, reason in stale)
+                session.add(SourceMapping(id=mapping_key(session, DIMENSIONS_KEY), version=1,
+                    confirmed_by='owner', confirmed_at=datetime.now(timezone.utc), config={'dimensions': dimensions}))
+                session.commit()
+            with artifact_session(workbench.scope) as session:
+                assert not stale_review_dimensions(preview, read_dimensions(session))
+
+    asyncio.run(run())
 
 
 def test_selected_steps_have_fixed_phases_and_publish_only_private_candidates(workbench, monkeypatch):

@@ -13,6 +13,21 @@ class JudgmentError(ValueError):
     pass
 
 
+class JudgmentVersionConflict(JudgmentError):
+    pass
+
+
+def stale_payload_dimensions(j, dimensions):
+    from tin.web.research_dimensions import stale_dimension_reason
+    items = [(f'{title}第{index}条「{item.desc}」', item.dimension)
+             for side, title in (('bull', '多方依据'), ('bear', '空方依据'))
+             for index, item in enumerate(getattr(j.contradiction, side).evidence, 1)]
+    items.extend((f'阈值「{item.name}」', item.dimension) for item in j.thresholds)
+    items.extend((f'证伪「{item.desc}」', item.dimension) for item in j.falsifiers)
+    return [f'{title}：{reason}' for title, value in items
+            if (reason := stale_dimension_reason(value, dimensions))]
+
+
 def _refs(j: JudgmentIn) -> list[tuple[str, str, str]]:
     refs = [("whitelist", sid, sid) for sid in j.whitelist]
     refs += [("marginal_focus", f"mf{i}", m.series_id) for i, m in enumerate(j.marginal_focus) if m.series_id]
@@ -46,12 +61,10 @@ def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool 
                  expected_base_version: int | None = None,
                  caliber_confirmations: dict | None = None) -> Judgment:
     """每次保存都生成新版本（FR-1.5）。activate=True 时须通过全部硬校验，且旧的生效版本转为已归档。"""
-    from tin.web.research_dimensions import checked_dimension, default_dimensions, read_dimensions
+    from tin.web.research_dimensions import default_dimensions, read_dimensions
     dimensions = read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()
-    tagged = [e for side in ('bull', 'bear') for e in getattr(j.contradiction, side).evidence]
-    for item in [*tagged, *j.thresholds, *j.falsifiers]:
-        if item.dimension is not None and checked_dimension(item.dimension, dimensions) is None:
-            raise JudgmentError('请选择当前研究台存在的维度，或选择未标注')
+    if issues := stale_payload_dimensions(j, dimensions):
+        raise JudgmentError('；'.join(issues))
     refs = _refs(j)
     wanted = {sid for _t, _i, sid in refs}
     verified_catalog = session.info.get('knowledge_facts_catalog')
@@ -85,7 +98,7 @@ def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool 
     version = (session.scalar(scope_query(session, select(func.max(Judgment.version))
                                          .where(Judgment.variety == j.variety), Judgment, include_deleted=True)) or 0) + 1
     if expected_base_version is not None and version - 1 != expected_base_version:
-        raise JudgmentError("研究逻辑已有新版本，请刷新后重新分析或比较")
+        raise JudgmentVersionConflict("研究逻辑已有新版本，请刷新后重新分析或比较")
     if activate:
         session.execute(scope_query(session, update(Judgment)
                         .where(Judgment.variety == j.variety, Judgment.status == "生效")

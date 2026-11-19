@@ -16,6 +16,8 @@
   let dimensionEdits = new Map(), dimensionSuggestions = new Map(), dimensionDirty = false;
   const reviewEdits = new Map();
   const rememberedChoices = new Set();
+  const indicatorRecommendations = new Map();
+  let recommendingItem = null;
   let reviewControls = [], searchSessions = [], selectedSection = '', reviewView = 'all';
   let bindingControlSerial = 0;
   const selectedId = () => dialog.dataset.judgmentId || '';
@@ -33,7 +35,12 @@
   function invalidate() {
     closeItemConfirmation();
     stopJobMonitor(true); submissionSerial++;
-    stopSearches(); draft = null; review = null; setupDraftId = null; reviewEdits.clear(); rememberedChoices.clear();
+    stopSearches(); draft = null; review = null; setupDraftId = null; reviewEdits.clear(); rememberedChoices.clear(); indicatorRecommendations.clear();
+    for (const kind of ['dimensions', 'indicators']) {
+      const restore = byId(`review-${kind}-result`);
+      if (restore) restore.hidden = true;
+      reviewJobs?.message?.(byId(`review-${kind}-status`), '');
+    }
     byId('preview').hidden = true;
     if (byId('import')) byId('import').hidden = false;
     syncDiscard();
@@ -206,12 +213,13 @@
   function dimensionName(identifier) {
     return identifier ? researchDimensions().find(item => item.id === identifier)?.label || '已删除维度' : '未标注';
   }
-  function dimensionSelect(value) {
+  function dimensionSelect(value, dimensions = researchDimensions(), includeDeleted = true) {
     const select = element('select', 'logic-dimension-select'); select.setAttribute('aria-label', '研究维度');
-    for (const item of [{id: '', label: '未标注'}, ...researchDimensions()]) {
+    for (const item of [{id: '', label: '未标注'}, ...dimensions]) {
       const option = element('option', '', item.label); option.value = item.id; select.append(option);
     }
-    if (value && !researchDimensions().some(item => item.id === value)) {
+    const deletedValue = value && !dimensions.some(item => item.id === value);
+    if (deletedValue && includeDeleted) {
       const deleted = element('option', '', '已删除维度（请重新指派）'); deleted.value = value; deleted.disabled = true; select.append(deleted);
     }
     select.value = value || ''; return select;
@@ -277,6 +285,86 @@
     if (!modelId) return inform('请选择补标模型；暂无可用模型时请先配置对话模型。', true);
     await dimensionJob.submit('/api/sn/judgment/dimension-suggestions',
       {judgment_id: displayed.id, version: displayed.version, model_id: modelId});
+  });
+  const reviewJobs = window.ResearchAnalysisJobs;
+  function canRestoreReview(token) {
+    return draft ? draft.draft_id === token : !input.value.trim();
+  }
+  function showRecoveredDraft(value) {
+    if (draft?.draft_id !== value.draft_id) {
+      indicatorRecommendations.clear();
+      if (value.draft_id.startsWith('setup.')) setupDraftId = value.draft_id;
+      input.value = value.source_text || '';
+      if (value.variety) byId('variety').value = value.variety;
+      if (value.model_id) syncModelSelection(value.model_id);
+      text('file-name', value.source_name);
+      if (byId('new-panel-title')) byId('new-panel-title').value = value.panel_title || '';
+    }
+    presentDraft(value, draft?.draft_id === value.draft_id);
+    tab('analyze');
+  }
+  const reviewDimensionsJob = byId('review-dimensions-status') && reviewJobs?.create({
+    purpose: 'judgment_review_dimensions', status: byId('review-dimensions-status'),
+    restoreButton: byId('review-dimensions-result'), isOpen: () => dialog.open,
+    disabled: () => busy || !managed?.can_write || !review?.stale_dimension_count || hasReviewEdits(),
+    accept: job => canRestoreReview(job.context?.draft_id) && (!review || job.context?.revision === review.revision),
+    snapshot: () => [draft?.draft_id, review?.revision, hasReviewEdits(), input.value],
+    onSync: syncReviewControls,
+    async present(result, {current}) {
+      if (!canRestoreReview(result.draft_id) || hasReviewEdits()) throw new Error('请先处理当前草稿中的编辑，再取回维度归类结果。');
+      setBusy(true);
+      try {
+        const value = await api('/review/dimensions/jobs/' + encodeURIComponent(result.job.id) + '/apply', {});
+        if (!current()) return;
+        showRecoveredDraft(value);
+        byId('review-dimensions-result').hidden = true;
+        reviewJobs.message(byId('review-dimensions-status'), '维度已重新归类，请核对后保存。');
+      } finally { setBusy(false); }
+    },
+  });
+  const reviewIndicatorsJob = byId('review-indicators-status') && reviewJobs?.create({
+    purpose: 'judgment_indicator_recommendations', status: byId('review-indicators-status'),
+    restoreButton: byId('review-indicators-result'), isOpen: () => dialog.open,
+    disabled: () => busy || !managed?.can_write || !draft,
+    accept: job => canRestoreReview(job.context?.draft_id),
+    snapshot: () => [draft?.draft_id, input.value],
+    onSync: syncReviewControls,
+    onAccepted: job => { recommendingItem = job.context?.item_id || recommendingItem; },
+    async present(result, {current}) {
+      if (!canRestoreReview(result.draft_id)) throw new Error('请先处理当前草稿，再取回指标推荐结果。');
+      if (!draft) {
+        const value = await api('/review/preview?draft_id=' + encodeURIComponent(result.draft_id));
+        if (!current()) return;
+        showRecoveredDraft(value);
+      }
+      indicatorRecommendations.set(result.item_id, result.recommendations || []);
+      const section = review?.sections.find(group => group.items?.some(item => item.id === result.item_id));
+      if (section) {
+        if (reviewView === 'attention' && !section.items.some(item => item.id === result.item_id && needsAttention(item))) reviewView = 'all';
+        selectSection(section.id);
+        tab('analyze');
+        const card = reviewCards().find(node => node.dataset.reviewItem === result.item_id);
+        const picker = findNode(card, node => Boolean(node.showRecommendations));
+        picker?.showRecommendations();
+      }
+      reviewJobs.message(byId('review-indicators-status'), result.recommendations?.length ? '推荐已生成，请选择要关联的指标。' : '没有找到一致的指标');
+    },
+  });
+  byId('review-reclassify')?.addEventListener('click', async () => {
+    if (!draft || !review || !reviewDimensionsJob) return;
+    const modelId = byId('model').value;
+    if (!modelId) return inform('请选择分析模型。', true);
+    await reviewDimensionsJob.submit('/api/sn/judgment/review/dimensions/jobs',
+      {draft_id: draft.draft_id, revision: review.revision, model_id: modelId});
+  });
+  byId('review-clear-dimensions')?.addEventListener('click', async () => {
+    if (!review?.stale_dimension_count || busy || reviewDimensionsJob?.busy || hasReviewEdits() || !managed?.can_write) return;
+    setBusy(true);
+    try {
+      const result = await api('/review/dimensions/clear', {draft_id: draft.draft_id, revision: review.revision});
+      presentDraft(result, true); inform('过期维度已设为未标注。');
+    } catch (error) { if (error.name !== 'AbortError') inform(error.message, true); }
+    finally { setBusy(false); }
   });
   byId('dimension-save')?.addEventListener('click', async () => {
     if (busy || !displayed || !managed?.can_write || !dimensionDirty) return;
@@ -415,7 +503,7 @@
     const setupNotice = byId('setup-notice');
     if (setupNotice) {
       setupNotice.hidden = !setupDraftId || value.draft_id !== setupDraftId;
-      setupNotice.textContent = setupNotice.hidden ? '' : window.WorkbenchSetupReview.historicalNotice;
+      setupNotice.textContent = setupNotice.hidden ? '' : (window.WorkbenchSetupReview?.historicalNotice || '来自所选周报的当期观点，请修改为当前判断后再保存。');
     }
     text('preview-md', value.markdown); text('generated-diff', value.diff?.markdown);
     text('coverage', `${(value.bindings || []).length} 个已绑定指标`);
@@ -453,6 +541,7 @@
     byId('apply').disabled = busy || !draft || managed?.can_write === false || unsynced;
     const note = byId('review-save-note');
     if (note) note.textContent = !review ? '' : unsynced ? '修改尚未同步，请处理红框位置后再保存。' :
+      review.stale_dimension_count ? `请先处理 ${review.stale_dimension_count} 项过期维度，再保存草稿。` :
       pendingCount() ? `有 ${pendingCount()} 项需处理，也可先保存草稿；未通过校验的规则不会参与执行。` :
       draft?.analysis_complete === false ? '部分原文尚未完成核对，可先保存现有草稿。' : '内容已解析，可以保存草稿；保存后不会自动生效。';
     if (byId('review-reuse')) byId('review-reuse').disabled = busy || !review || unsynced || !managed?.can_write;
@@ -461,7 +550,18 @@
   }
   function syncReviewControls() {
     for (const control of reviewControls) control.node.disabled = busy || !managed?.can_write || Boolean(control.disabled?.());
-    for (const session of searchSessions) for (const option of session.list?.children || []) option.disabled = busy || !managed?.can_write;
+    for (const session of searchSessions) {
+      for (const option of session.optionNodes()) option.disabled = busy || !managed?.can_write;
+      if (session.recommend) session.recommend.dataset.analysisBusy = String(!!reviewIndicatorsJob?.busy && session.itemId === recommendingItem);
+    }
+    if (byId('review-dimensions')) {
+      const count = review?.stale_dimension_count || 0;
+      byId('review-dimensions').hidden = !count;
+      const disabled = busy || !count || !managed?.can_write || hasReviewEdits() || !!reviewDimensionsJob?.busy;
+      byId('review-reclassify').disabled = disabled || !reviewDimensionsJob;
+      byId('review-clear-dimensions').disabled = disabled;
+      byId('review-reclassify').textContent = `按当前研究维度重新归类（${count} 条）`;
+    }
   }
   function registerControl(node, item, name, disabled) {
     node.dataset.reviewItem = item.id; node.dataset.reviewControl = name;
@@ -469,7 +569,9 @@
   }
   function shortFile(value) { return String(value || '').split(/[\\/]/).pop(); }
   function bindingMeta(row) {
-    return [row?.unit || '单位未注明', frequencyLabel(row), shortFile(row?.source_file), row?.sheet].filter(Boolean).join(' · ');
+    const qualifiers = row?.dimensions && typeof row.dimensions === 'object'
+      ? Object.values(row.dimensions).filter(value => typeof value === 'string' || typeof value === 'number') : [];
+    return [...qualifiers, row?.unit || '单位未注明', frequencyLabel(row), shortFile(row?.source_file), row?.sheet].filter(Boolean).join(' · ');
   }
   // Match the server's finite missing-metadata markers; never infer a caliber
   // from an indicator title or from research prose.
@@ -499,6 +601,7 @@
     const rule = item.rule || {}, sourceUnit = unitPresent(edit.selected?.unit) ? edit.selected.unit.trim() : '';
     const unit = sourceUnit ? ' ' + display.text(sourceUnit) : edit.selected ? '（来源未注明单位）' : '（尚未关联指标）';
     const details = [rule.type, rule.horizon].filter(value => typeof value === 'string' && value).map(value => display.text(value));
+    if (rule.conversion_text && item.binding?.series_id === edit.selected?.series_id) details.unshift(rule.conversion_text);
     if (item.kind === 'thresholds') {
       const literal = typeof rule.value_literal === 'string' ? rule.value_literal.trim() : '';
       let target;
@@ -534,6 +637,7 @@
   }
   function needsAttention(item) {
     if (reviewEdits.get(item.id)?.dirty === true) return true;
+    if (item.dimension_issue) return true;
     if (['ready', 'confirmed', 'kept_text', 'excluded'].includes(item.status)) return false;
     return item.status === 'pending' || item.requires_attention === true;
   }
@@ -572,9 +676,17 @@
     const current = itemConfirmation; itemConfirmation = null;
     if (!current) return;
     current.capture();
+    current.cancelRead?.();
     reviewControls = reviewControls.filter(control => !current.node.contains(control.node));
     if (current.node.open) current.node.close();
     current.node.remove();
+  }
+  function decimalText(value) {
+    return String(value).replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '')
+      .replace(/^[+-]?\d+/, digits => digits.replace(/\B(?=(\d{3})+(?!\d))/g, ','));
+  }
+  function quantityText(value) {
+    return Array.isArray(value) ? value.map(decimalText).join('–') : decimalText(value);
   }
   async function confirmWholeItem(item, edit) {
     if (busy || !review || !draft || !managed?.can_write) return;
@@ -586,7 +698,8 @@
     const knownUnit = unitPresent(sourceUnit);
     const knownFrequency = frequencyPresent(sourceFrequency);
     const frequencyRequired = edit.frequencyRequired ?? caliber.frequency_required;
-    if (knownUnit && (frequencyRequired !== true || knownFrequency)) {
+    const quantityAvailable = item.rule?.quantity_review_available === true;
+    if (!quantityAvailable && knownUnit && (frequencyRequired !== true || knownFrequency)) {
       const updated = await updateReview(item, edit, 'confirm');
       // The current catalog may reveal missing cadence after the preview was
       // rendered. Continue into the form on the same click, without reposting.
@@ -606,15 +719,26 @@
     if (edit.additional?.some(slot => slot.selected)) content.append(element('p', 'logic-confirm-source',
       '关联指标：' + edit.additional.filter(slot => slot.selected).map(slot => display.text(slot.selected.name || '已选指标')).join('、')));
     const prior = edit.confirmationDraft || {};
-    let unit = null, frequency = null;
+    let unit = null, frequency = null, unitLabel, readController, quantity, aligned = true;
+    let alignmentMode, exponent, alignmentReason, converted;
+    const sourceValue = item.rule?.source_value;
+    if (quantityAvailable && sourceValue != null) content.append(element('p', 'logic-confirm-source', '原文数字写法：' + quantityText(sourceValue)));
+    const observations = element('p', 'logic-confirm-source');
+    if (quantityAvailable) content.append(observations);
+    const alignment = element('div');
+    if (quantityAvailable) content.append(alignment);
     if (knownUnit) content.append(element('p', 'logic-confirm-source', '采用指标单位：' + display.text(sourceUnit)));
     else {
       const suggestion = [same ? caliber.unit : null, caliber.model_unit, item.rule?.unit_confirmed]
         .find(value => unitPresent(value) && value.trim() !== '未确认') || '';
-      const label = element('label', 'logic-confirm-label', suggestion && !Object.hasOwn(prior, 'unit') && !caliber.confirmed ? '数据单位（建议值，请核对）' : '数据单位（请核对）');
+      const label = element('label', 'logic-confirm-label');
+      unitLabel = element('span', '', '指标数据的单位'); label.append(unitLabel);
       unit = registerControl(element('input'), item, 'confirm-unit'); unit.type = 'text'; unit.maxLength = 80;
-      unit.value = prior.unit ?? suggestion; unit.placeholder = '填写本条数据的单位';
+      unit.value = prior.unit ?? (same && caliber.confirmed ? caliber.unit || '' : quantityAvailable ? '' : suggestion);
+      unit.placeholder = '填写本条数据的单位';
       label.append(unit); content.append(label);
+      if (!quantityAvailable && suggestion && !Object.hasOwn(prior, 'unit') && !caliber.confirmed)
+        label.append(element('small', 'logic-confirm-source', '建议值，请核对'));
     }
     if (knownFrequency) content.append(element('p', 'logic-confirm-source', '采用指标频率：' + display.text(sourceFrequency)));
     else {
@@ -634,25 +758,101 @@
     const error = element('p', 'logic-field-error'); error.setAttribute('role', 'status'); error.hidden = true;
     const actions = element('div', 'logic-confirm-actions');
     const cancel = registerControl(element('button', '', '返回修改'), item, 'confirm-cancel'); cancel.type = 'button';
-    const submit = registerControl(element('button', 'logic-primary', '确认整条'), item, 'confirm-submit'); submit.type = 'button';
-    const capture = () => { edit.confirmationDraft = {unit: unit?.value ?? '', frequency: frequency?.value ?? '', basis: basis.value}; };
+    const submit = registerControl(element('button', 'logic-primary', '确认整条'), item, 'confirm-submit', () => quantityAvailable && (!quantity || !aligned)); submit.type = 'button';
+    const capture = () => { edit.confirmationDraft = {unit: unit?.value ?? '', frequency: frequency?.value ?? '', basis: basis.value,
+      alignment: alignmentMode ? {mode: alignmentMode.value, exponent: exponent.value, reason: alignmentReason.value} : null}; };
+    const quantityQuery = quantityAvailable ? new URLSearchParams({draft_id: draft.draft_id, item_id: item.id, series_id: edit.selected.series_id}) : null;
+    async function readQuantity(query) {
+      readController?.abort(); const reading = new AbortController(); readController = reading;
+      try {
+        const data = await api('/review/quantity?' + query, undefined, 'GET', reading.signal);
+        if (reading !== readController || reading.signal.aborted || itemConfirmation?.node !== modal) return null;
+        return data;
+      } catch (failure) {
+        if (failure.name !== 'AbortError' && itemConfirmation?.node === modal) { error.textContent = failure.message; error.hidden = false; }
+        return null;
+      }
+    }
+    async function refreshConversion() {
+      readController?.abort(); error.hidden = true;
+      exponent.parentElement.hidden = alignmentMode.value !== 'convert';
+      alignmentReason.parentElement.hidden = alignmentMode.value !== 'keep';
+      converted.textContent = '';
+      aligned = true;
+      if (alignmentMode.value !== 'convert' || exponent.value === '') { syncReviewControls(); return; }
+      const query = new URLSearchParams(quantityQuery);
+      query.set('exponent', exponent.value);
+      aligned = false; syncReviewControls();
+      converted.textContent = '正在计算换算值…';
+      const data = await readQuantity(query);
+      if (!data) return;
+      const comparison = data.converted_warning || (data.converted_overlaps === true ? '与近 3 年数据范围有交集' : data.converted_overlaps === false ? '与近 3 年数据范围无交集' : '暂无数据范围可比较');
+      converted.textContent = `${data.converted_text} · ${comparison}`;
+      aligned = true; syncReviewControls();
+    }
+    function showAlignment() {
+      alignment.append(element('p', 'logic-quantity-warning', quantity.warning));
+      const modeLabel = element('label', 'logic-confirm-label', '核对规则数值');
+      alignmentMode = registerControl(element('select'), item, 'confirm-quantity-mode');
+      for (const [mode, label] of [['', '请选择'], ['convert', '换算到指标单位'], ['keep', '数值无误，仍按原值']]) {
+        const option = element('option', '', label); option.value = mode; alignmentMode.append(option);
+      }
+      modeLabel.append(alignmentMode); alignment.append(modeLabel);
+      const factorLabel = element('label', 'logic-confirm-label', '换算倍率');
+      exponent = registerControl(element('select'), item, 'confirm-quantity-exponent');
+      const placeholder = element('option', '', '请选择倍率'); placeholder.value = ''; exponent.append(placeholder);
+      for (let k = -4; k <= 4; k++) {
+        const option = element('option', '', `×${10 ** k}`); option.value = String(k); exponent.append(option);
+      }
+      factorLabel.append(exponent); alignment.append(factorLabel);
+      const reasonLabel = element('label', 'logic-confirm-label', '仍按原值的原因（必填）');
+      alignmentReason = registerControl(element('textarea'), item, 'confirm-quantity-reason');
+      alignmentReason.rows = 2; alignmentReason.maxLength = 1000; reasonLabel.append(alignmentReason); alignment.append(reasonLabel);
+      converted = element('p', 'logic-confirm-source'); converted.setAttribute('aria-live', 'polite'); alignment.append(converted);
+      const previous = prior.alignment || quantity.alignment || {};
+      alignmentMode.value = previous.mode || ''; exponent.value = String(previous.exponent ?? ''); alignmentReason.value = previous.reason || '';
+      alignmentMode.addEventListener('change', refreshConversion); exponent.addEventListener('change', refreshConversion);
+      return refreshConversion();
+    }
     cancel.addEventListener('click', closeItemConfirmation);
     submit.addEventListener('click', async () => {
       if (busy || itemConfirmation?.node !== modal) return;
       capture();
       if (!knownUnit && !unit.value.trim()) { error.textContent = '请填写并核对本条数据单位。'; error.hidden = false; unit.focus(); return; }
       if (frequencyRequired === true && !knownFrequency && !frequency.value) { error.textContent = '请选择并核对本条数据频率。'; error.hidden = false; frequency.focus(); return; }
+      let quantityAlignment;
+      if (alignmentMode) {
+        if (alignmentMode.value === 'convert' && exponent.value !== '') quantityAlignment = {mode: 'convert', exponent: Number(exponent.value)};
+        else if (alignmentMode.value === 'keep' && alignmentReason.value.trim()) quantityAlignment = {mode: 'keep', reason: alignmentReason.value.trim()};
+        else {
+          const [control, message] = alignmentMode.value === 'keep' ? [alignmentReason, '请填写仍按原值的原因。'] :
+            alignmentMode.value === 'convert' ? [exponent, '请选择换算倍率。'] : [alignmentMode, '请选择换算或填写仍按原值的原因。'];
+          error.textContent = message; error.hidden = false; control.focus(); return;
+        }
+      }
+      if (quantityAvailable && (!quantity || !aligned)) return;
       const value = {mode: knownUnit ? 'catalog' : 'declared', basis: basis.value.trim() || '用户在本条确认窗口核对口径', scope_note: caliber.scope_note || ''};
       if (!knownUnit) value.unit = unit.value.trim();
       if (frequency?.value) value.frequency = frequency.value;
-      const updated = await updateReview(item, edit, 'confirm', false, value);
+      const updated = await updateReview(item, edit, 'confirm', false, value, quantityAlignment);
       if (updated) closeItemConfirmation();
       else { error.textContent = edit.errorMessage || '本条仍有需要核对的内容，请修改后再确认。'; error.hidden = false; }
     });
     actions.append(cancel, submit); modal.append(title, content, error, actions); dialog.append(modal);
-    itemConfirmation = {node: modal, capture};
+    itemConfirmation = {node: modal, capture, cancelRead: () => readController?.abort()};
     modal.addEventListener('close', () => { if (itemConfirmation?.node === modal) closeItemConfirmation(); }); modal.showModal();
     (unit || frequency || submit).focus();
+    if (quantityQuery) {
+      observations.textContent = '正在读取指标数据…'; syncReviewControls();
+      quantity = await readQuantity(quantityQuery);
+      if (!quantity) { observations.textContent = '暂时无法读取指标数据，请重新打开确认窗口。'; return; }
+      const latest = quantity.latest ? `${decimalText(quantity.latest.value)}（${quantity.latest.date}）` : '暂无';
+      const history = quantity.range ? `${decimalText(quantity.range.min)}–${decimalText(quantity.range.max)}` : '暂无';
+      observations.textContent = `最新值 ${latest} · 近 3 年范围 ${history}`;
+      if (unitLabel && quantity.latest) unitLabel.textContent = `指标数据的单位（看数据：最新 ${decimalText(quantity.latest.value)}）`;
+      if (quantity.warning) await showAlignment();
+      syncReviewControls();
+    }
   }
   function cancelBindingField(node) {
     node.cancelBindingSearch?.();
@@ -705,7 +905,7 @@
     const field = element('div', 'logic-binding-field logic-binding-row');
     const label = element('label', 'logic-item-label', index === 0 && item.rule ? '计算指标' : index ? '关联指标 ' + (index + 1) : '关联指标');
     const search = registerControl(element('input', 'logic-binding-search'), item, 'search');
-    search.type = 'text'; search.id = 'logic-binding-' + (++bindingControlSerial);
+    search.type = 'text'; search.id = 'logic-binding-' + (++bindingControlSerial); search.maxLength = 200;
     label.setAttribute('for', search.id); search.value = selection.selected ? display.text(selection.selected.name) : selection.query || '';
     search.placeholder = item.status === 'kept_text' ? '暂无，暂不关联' : '搜索全部授权指标'; search.autocomplete = 'off';
     search.setAttribute('role', 'combobox'); search.setAttribute('aria-autocomplete', 'list');
@@ -719,15 +919,32 @@
     const meta = element('p', 'logic-binding-meta', selection.selected ? bindingMeta(selection.selected) : '请先选择指标');
     meta.title = meta.textContent; meta.textContent = sourceCaliber(selection.selected);
     search.title = meta.title;
-    const session = {timer: null, controller: null, token: 0, rows: [], active: -1, next: null, epoch: reviewEpoch, list, loaded: null, quiet: false}; searchSessions.push(session);
+    const recommend = index === 0 && reviewIndicatorsJob ? registerControl(element('button', 'logic-recommend-indicator', '推荐指标'), item, 'recommend-indicator', () => reviewIndicatorsJob.busy) : null;
+    if (recommend) {
+      recommend.type = 'button';
+      recommend.addEventListener('click', async () => {
+        if (!draft || busy || reviewIndicatorsJob.busy || !managed?.can_write) return;
+        const modelId = byId('model').value;
+        if (!modelId) return inform('请选择分析模型。', true);
+        recommendingItem = item.id;
+        await reviewIndicatorsJob.submit('/api/sn/judgment/indicator-recommendations',
+          {draft_id: draft.draft_id, item_id: item.id, model_id: modelId, search: selection.query || ''});
+      });
+    }
+    const session = {timer: null, controller: null, token: 0, rows: [], active: -1, next: null, epoch: reviewEpoch, loaded: null, quiet: false,
+      recommend, itemId: item.id, optionNodes: () => [...list.children].flatMap(node => node.dataset.recommendationGroup === 'true' ? [...node.children].slice(1) : [node])};
+    searchSessions.push(session);
     field.cancelBindingSearch = () => { clearTimeout(session.timer); session.controller?.abort(); session.token++; searchSessions = searchSessions.filter(value => value !== session); };
-    const options = () => [null, ...session.rows];
+    const recommendations = () => recommend ? indicatorRecommendations.get(item.id) : undefined;
+    const unlisted = rows => rows.filter(row => !recommendations()?.some(rec => rec.series_id === row.series_id));
+    const options = () => [...(recommendations() || []), null, ...unlisted(session.rows)];
     function closeMenu() { menu.hidden = true; search.setAttribute('aria-expanded', 'false'); search.removeAttribute?.('aria-activedescendant'); }
     function showMenu() { menu.hidden = false; search.setAttribute('aria-expanded', 'true'); }
     function activate(index) {
       session.active = index;
-      [...list.children].forEach((option, position) => option.setAttribute('aria-selected', String(position === index)));
-      if (index >= 0) { search.setAttribute('aria-activedescendant', list.children[index].id); list.children[index].scrollIntoView?.({block: 'nearest'}); }
+      const nodes = session.optionNodes();
+      nodes.forEach((option, position) => option.setAttribute('aria-selected', String(position === index)));
+      if (index >= 0) { search.setAttribute('aria-activedescendant', nodes[index].id); nodes[index].scrollIntoView?.({block: 'nearest'}); }
     }
     function choose(row) {
       if (busy || !managed?.can_write || session.epoch !== reviewEpoch || !bindingSlots(edit).includes(selection)) return;
@@ -744,16 +961,23 @@
       const name = element('span', '', row ? display.text(row.name) + ' · ' + frequencyLabel(row) : '暂无，暂不关联');
       option.title = row ? bindingMeta(row) : '保留文字，暂不关联指标'; option.append(name);
       if (row) option.append(element('small', '', bindingMeta(row)));
+      if (row?.reason) option.append(element('small', 'logic-indicator-reason', display.text(row.reason)));
       option.addEventListener('click', () => choose(row)); return option;
     }
     function drawOptions() {
-      list.replaceChildren(...options().map(optionNode));
+      const rows = options().map(optionNode), suggested = recommendations();
+      if (suggested?.length) {
+        const group = element('div', 'logic-recommendation-group'); group.dataset.recommendationGroup = 'true';
+        group.setAttribute('role', 'group'); group.setAttribute('aria-label', '模型推荐');
+        group.append(element('div', 'logic-recommendation-heading', '模型推荐'), ...rows.splice(0, suggested.length));
+        list.replaceChildren(group, ...rows);
+      } else list.replaceChildren(...rows);
       session.active = -1; more.hidden = session.next === null || session.next === undefined;
     }
     // Later pages are appended under the rows already shown, so an option being clicked is never replaced.
     function appendOptions(rows) {
       const start = options().length;
-      session.rows = [...session.rows, ...rows]; list.append(...rows.map((row, offset) => optionNode(row, start + offset)));
+      session.rows = [...session.rows, ...rows]; list.append(...unlisted(rows).map((row, offset) => optionNode(row, start + offset)));
       more.hidden = session.next === null || session.next === undefined;
     }
     async function load(append = false) {
@@ -769,7 +993,7 @@
         session.next = result.next_offset; session.loaded = wanted;
         if (append) appendOptions(rows.filter(row => !session.rows.some(existing => existing.series_id === row.series_id)));
         else { session.rows = rows; drawOptions(); }
-        feedback.textContent = session.rows.length ? `已显示 ${session.rows.length} / ${result.total} 个匹配指标` : '没有匹配指标，可调整搜索或保留文字。';
+        feedback.textContent = `${recommendations()?.length === 0 ? '没有找到一致的指标。' : ''}${session.rows.length ? `已显示 ${session.rows.length} / ${result.total} 个匹配指标` : '没有匹配指标，可调整搜索或保留文字。'}`;
       } catch (error) {
         if (error.name !== 'AbortError' && token === session.token && session.epoch === reviewEpoch) feedback.textContent = '指标目录暂时不可用，请稍后重试。';
       } finally { if (token === session.token) more.disabled = false; }
@@ -807,8 +1031,17 @@
     menu.addEventListener('mousedown', event => event.preventDefault());
     more.addEventListener('click', () => { if (session.next !== null && session.next !== undefined) return load(true); });
     field.focusSearch = () => { session.quiet = true; try { search.focus({preventScroll: true}); } finally { session.quiet = false; } };
+    if (recommend) field.showRecommendations = () => {
+      field.focusSearch(); drawOptions(); showMenu();
+      feedback.textContent = recommendations()?.length ? '' : '没有找到一致的指标';
+      syncReviewControls();
+    };
     const picker = element('div', 'logic-binding-picker'); picker.append(search, menu);
-    field.append(label, picker, meta); return field;
+    if (recommend) {
+      const heading = element('div', 'logic-binding-heading'); heading.append(label, recommend);
+      field.append(heading);
+    } else field.append(label);
+    field.append(picker, meta); return field;
   }
   function renderReview() {
     if (!byId('review')) return;
@@ -844,14 +1077,15 @@
         const note = element('div', 'logic-item-description');
         note.append(element('p', '', (display.prose || display.text)(item.description || ''))); field(note, 'content'); card.append(note);
         if (item.can_dimension) {
-          const label = element('label', 'logic-item-dimension'), select = registerControl(dimensionSelect(edit.dimension), item, 'dimension');
+          const currentDimensions = review.research_dimensions || researchDimensions();
+          const label = element('label', 'logic-item-dimension'), select = registerControl(dimensionSelect(edit.dimension, currentDimensions, false), item, 'dimension');
           label.append(element('span', '', '研究维度'), select); field(label, 'dimension'); card.append(label);
           const chooseDimension = identifier => {
             const dimensionOnly = !edit.dirty || edit.dimensionOnly; edit.dimension = identifier || ''; select.value = edit.dimension; edit.dimensionChanged = true; changed(edit, dimensionOnly);
             if (dimensionOnly) return updateReview(item, edit, 'dimension');
           };
           select.addEventListener('change', () => chooseDimension(select.value));
-          if (item.dimension_suggestion) {
+          if (item.dimension_suggestion && (!item.dimension_suggestion.dimension || currentDimensions.some(row => row.id === item.dimension_suggestion.dimension))) {
             const suggestion = item.dimension_suggestion, content = element('div', 'logic-dimension-suggestion');
             content.append(element('span', '', '模型建议：' + dimensionName(suggestion.dimension) + (suggestion.reason ? ' · ' + suggestion.reason : '')));
             const adopt = registerControl(element('button', '', '采纳维度建议'), item, 'dimension-adopt', () => Boolean(suggestion.dimension) && !researchDimensions().some(row => row.id === suggestion.dimension)); adopt.type = 'button';
@@ -904,7 +1138,7 @@
           outcome.dataset.error = String(Boolean(edit.errorMessage) && !edit.saving); outcome.hidden = !outcome.textContent;
         };
         edit.renderOutcome(); toolbar.append(outcome);
-        edit.renderConfirmation = () => { confirmItem.hidden = !needsAttention(item); toolbar.hidden = !item.can_bind && confirmItem.hidden && outcome.hidden; };
+        edit.renderConfirmation = () => { confirmItem.hidden = !needsAttention(item) && !(item.rule?.quantity_review_available && edit.selected); toolbar.hidden = !item.can_bind && confirmItem.hidden && outcome.hidden; };
         edit.renderConfirmation(); card.append(toolbar);
         const actions = element('div', 'logic-item-actions');
         for (const [action, label] of [['keep_text', '仅保留文字'], ['exclude', '排除']]) {
@@ -917,9 +1151,11 @@
         edit.renderErrors = () => {
           const marked = needsAttention(item) ? edit.errorFields || item.attention_fields || (item.status === 'pending' ? [item.can_bind ? 'binding' : 'content'] : []) : [];
           const reasons = item.kind === 'unresolved_binding' ? item.attention_reasons || [] : item.warnings?.length ? item.warnings : item.attention_reasons || [];
-          const reason = display.text(edit.errorMessage || (typeof reasons[0] === 'string' ? reasons[0] : reasons[0]?.message) || '请修改红框位置。');
+          const others = reasons.map(reason => typeof reason === 'string' ? reason : reason?.message).filter(reason => reason && reason !== item.dimension_issue);
+          const reason = display.text(edit.errorMessage || others[0] || '请修改红框位置。');
           for (const [name, entry] of fields) {
-            const invalid = marked.some(value => (value === 'caliber' ? 'binding' : value) === name); entry.node.dataset.invalid = String(invalid); entry.node.setAttribute('aria-invalid', String(invalid)); entry.error.hidden = !invalid; entry.error.textContent = invalid ? reason : '';
+            const dimensionIssue = name === 'dimension' && item.dimension_issue;
+            const invalid = Boolean(dimensionIssue) || marked.some(value => (value === 'caliber' ? 'binding' : value) === name); entry.node.dataset.invalid = String(invalid); entry.node.setAttribute('aria-invalid', String(invalid)); entry.error.hidden = !invalid; entry.error.textContent = invalid ? dimensionIssue || reason : '';
           }
         };
         edit.renderErrors(); group.append(card);
@@ -929,7 +1165,13 @@
     selectSection(selectedSection); syncReviewControls(); syncApply();
   }
   async function hydrateReview(value) {
-    if (value.review_available && !value.review) { review = await api('/review?draft_id=' + encodeURIComponent(value.draft_id)); draft.review = review; renderReview(); }
+    if (value.review_available && !value.review) await refreshReview(value);
+  }
+  async function refreshReview(value) {
+    const updated = await api('/review?draft_id=' + encodeURIComponent(value.draft_id));
+    if (draft !== value) return;
+    for (const [id, edit] of reviewEdits) if (!edit.dirty && !edit.extraRowsAdded) reviewEdits.delete(id);
+    review = updated; draft.review = review; renderReview();
   }
   // Saving one item re-renders the review and disables its controls meanwhile. Keep the reviewer on the
   // same card and control instead of letting focus fall to the page and later cards jump into place.
@@ -971,7 +1213,7 @@
     const control = findNode(row || card, node => node.dataset?.reviewControl === place.control);
     if (control && !control.disabled && !control.hidden && control.getClientRects?.().length) control.focus?.({preventScroll: true});
   }
-  async function updateReview(item, edit, action, holdBusy = false, caliber = null) {
+  async function updateReview(item, edit, action, holdBusy = false, caliber = null, quantityAlignment = null) {
     if ((busy && !holdBusy) || !review || !draft || !managed?.can_write) return;
     if (action === 'confirm' && item.can_bind && pendingBindingQuery(edit)) { edit.errorFields = ['binding']; edit.errorMessage = '请选择搜索结果中的指标，或选择“暂无”。'; changed(edit); return; }
     const body = {draft_id: draft.draft_id, revision: review.revision, item_id: item.id, action};
@@ -980,6 +1222,7 @@
     if (item.can_bind && (action === 'confirm' || action === 'keep_text')) body.series_id = action === 'keep_text' ? null : edit.selected?.series_id || null;
     if (item.can_add_binding && (action === 'confirm' || action === 'keep_text')) body.related_series_ids = action === 'keep_text' ? [] : (edit.additional || []).map(slot => slot.selected?.series_id).filter(Boolean);
     if (caliber !== null && action === 'confirm') body.caliber = caliber;
+    if (quantityAlignment !== null && action === 'confirm') body.quantity_alignment = quantityAlignment;
     if (action !== 'dimension' && edit.sourceQuote !== null) body.source_quote = edit.sourceQuote;
     const place = reviewPlace(item.id);
     edit.saving = true; edit.renderOutcome?.(); setBusy(true); inform('正在同步修改…');
@@ -1013,7 +1256,7 @@
       return false;
     } finally { edit.saving = false; edit.renderOutcome?.(); if (!holdBusy) { setBusy(false); restoreFocus(place); } }
   }
-  async function open(requestedJob, requestedDimensionJob, setup) {
+  async function open(requestedJob, requestedDimensionJob, setup, requestedReviewJob) {
     if (busy || setup && (dialog.open || draft || hasReviewEdits() || input.value.trim())) return;
     const setupSnapshot = () => JSON.stringify([input.value, byId('variety').value,
       byId('new-panel-title')?.value, draft?.draft_id, review?.revision]);
@@ -1047,7 +1290,11 @@
         }
       }
       await loadPanels();
-      if (review && draft) renderReview();
+      if (review && draft) {
+        if (!hasReviewEdits() && review.research_dimensions && managed.research_dimensions &&
+            JSON.stringify(review.research_dimensions) !== JSON.stringify(managed.research_dimensions)) await refreshReview(draft);
+        else renderReview();
+      }
       inform('');
       if (setup && managed.can_write) {
         const value = await setup.load();
@@ -1062,15 +1309,25 @@
         if (value.source_name) text('file-name', value.source_name);
         if (byId('new-panel-title')) byId('new-panel-title').value = value.panel_title || '';
         presentDraft(value); await hydrateReview(value); tab('analyze'); inform(setup.historicalNotice);
+        void reviewDimensionsJob?.discover(); void reviewIndicatorsJob?.discover();
         return;
       }
       await discoverLatestResult();
       if (dialog.dataset.prefill === 'true') { tab('analyze'); dialog.dataset.prefill = 'false'; }
       const selectedJob = jobId(requestedJob) || (['queued', 'running'].includes(activeJob?.state) ? activeJob.id : null);
-      if (requestedDimensionJob) { tab('current'); await dimensionJob.restore(requestedDimensionJob, {explicit: true}); }
+      if (requestedReviewJob) {
+        const job = requestedReviewJob.purpose === 'judgment_review_dimensions' ? reviewDimensionsJob : reviewIndicatorsJob;
+        if (requestedReviewJob.purpose === 'judgment_indicator_recommendations') recommendingItem = requestedReviewJob.context?.item_id || null;
+        tab('analyze'); await job?.restore(requestedReviewJob.id, {explicit: true});
+      }
+      else if (requestedDimensionJob) { tab('current'); await dimensionJob.restore(requestedDimensionJob, {explicit: true}); }
       else if (selectedJob) { tab('analyze'); await followJob(selectedJob); }
       else if (submittingJob) { setBusy(true); inform('正在提交后台分析，可关闭窗口。'); }
-      else if (managed.can_write) await dimensionJob?.discover();
+      else if (managed.can_write) {
+        if (draft) tab('analyze');
+        void reviewDimensionsJob?.discover(); void reviewIndicatorsJob?.discover();
+        await dimensionJob?.discover();
+      }
     } catch (error) { inform(error.message, true); }
   }
   function close() {
@@ -1078,6 +1335,7 @@
     historyEpoch++; historyPending = false;
     stopJobMonitor();
     dimensionJob?.pause();
+    reviewDimensionsJob?.pause(); reviewIndicatorsJob?.pause();
     controller?.abort(); stopSearches(); setBusy(false); dialog.close();
     if (byId('restore-result')) byId('restore-result').hidden = true;
     if (byId('discard-result')) byId('discard-result').hidden = true;
@@ -1165,7 +1423,12 @@
         ...(selected.kind !== 'structured' && review ? {review_revision: review.revision} : {})});
       if (activeJob && result.id) announceJob(activeJob, result.id);
       invalidate(); inform(result.notice); if (result.id) navigateToJudgment(result.id); else location.reload();
-    } catch (error) { await recover(error); }
+    } catch (error) {
+      if (error.status === 422 && review && draft === selected) {
+        try { await refreshReview(selected); } catch { /* Keep the original save error. */ }
+      }
+      await recover(error);
+    }
     finally { setBusy(false); }
   });
   input.addEventListener('input', invalidate); byId('model').addEventListener('change', () => { syncModelSelection(byId('model').value); invalidate(); });
@@ -1299,13 +1562,14 @@
   dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
   document.querySelectorAll('[data-open-logic]').forEach(button => button.addEventListener('click', open));
   const openJob = async (identifier, automatic = false) => {
-    const other = dimensionJob && await window.ResearchAnalysisJobs.requested('judgment_dimensions', identifier);
+    const other = reviewJobs && await reviewJobs.requested(undefined, identifier);
     if (automatic && (dialog.open || dimensionDirty || hasReviewEdits() || input.value.trim())) return;
-    if (other) {
+    if (other?.purpose === 'judgment_dimensions') {
       if (!dimensionDirty && Number.isSafeInteger(other.context?.judgment_id))
         dialog.dataset.judgmentId = String(other.context.judgment_id);
       return open(null, other.id);
     }
+    if (['judgment_review_dimensions', 'judgment_indicator_recommendations'].includes(other?.purpose)) return open(null, null, null, other);
     return open(jobId(identifier));
   };
   window.JudgmentManager = {open, close, openJob};

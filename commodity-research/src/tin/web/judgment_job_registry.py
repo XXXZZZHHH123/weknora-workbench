@@ -73,7 +73,7 @@ class Registry:
     def result_key(self, row):
         # A job that updates an existing draft can replace earlier update jobs
         # while leaving the original draft addressable under its own ID.
-        return (*self.scope_key(row), bool(row.get('result_parent')))
+        return (*self.scope_key(row), bool(row.get('result_parent')), row.get('result_slot'))
 
     def compact(self, connection):
         groups = {}
@@ -114,7 +114,8 @@ class Registry:
                     message='原识别结果已过期或已有更新，请重新打开任务')
                 self.write(connection, row)
 
-    def create(self, scope, request_hash, idempotency_hash, worker_id, purpose='judgments', *, result_parent=None):
+    def create(self, scope, request_hash, idempotency_hash, worker_id, purpose='judgments', *,
+               result_parent=None, result_slot=None):
         if purpose not in PURPOSES:
             raise ValueError('Unsupported analysis task purpose')
         with self.transaction() as connection:
@@ -138,6 +139,7 @@ class Registry:
             row = {'kind': 'judgment-analysis-index.v1', 'id': secrets.token_hex(16),
                 **({'purpose': purpose} if purpose != 'judgments' else {}),
                 **({'result_parent': result_parent} if result_parent is not None else {}),
+                **({'result_slot': result_slot} if result_slot is not None else {}),
                 'tenant_id': scope.identity.tenant_id, 'user_id': scope.identity.user_id,
                 'workbench_id': scope.workbench_id, 'storage_legacy': scope.metadata.get('workspace_mode') == 'legacy',
                 'request_hash': request_hash, 'idempotency_hash': idempotency_hash,

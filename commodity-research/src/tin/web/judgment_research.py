@@ -204,6 +204,9 @@ def _falsifier(session, judgment, rule, day, metric):
         except (ValueError, TypeError, ArithmeticError):
             missing = '已保存条件需核对，暂不能判定。'
     condition = condition_text(rule['expression']).replace('较上一期变化', '较上一数据点变化')
+    from tin.judgments.quantity_alignment import conversion_text
+    if converted := conversion_text(rule):
+        condition = condition.removesuffix(match[3]) + converted
     if rule.get('unit_confirmed'):
         condition += ' ' + rule['unit_confirmed']
     if periods > 1:
