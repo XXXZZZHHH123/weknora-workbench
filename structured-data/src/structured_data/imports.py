@@ -524,11 +524,8 @@ class ImportManager:
                 raise ReviewValidationError('此区块只有空白、错误或无缓存公式，没有实际指标数值；可核对原件或排除此区块。',
                     block_index=index, field='columns')
 
-    def _publish(self, doc, changed_sheet=None, before_publish=None, progress=None):
-        from .profiles.reviewed import parse_workbook, reviewed_mapping
-        from .generic_parser import parse_mapped_workbook, validate_mapping
-        from .snapshots import publish_parts
-        path = self.source_path(doc)
+    def confirmation_base(self, doc):
+        """Select the snapshot reused by incremental confirmation."""
         base_id = doc.get('dataset_id')
         base = self.store.manifest(base_id) if base_id else None
         # Older pilot tools sometimes published a newer snapshot without moving
@@ -545,6 +542,14 @@ class ImportManager:
                     if candidate['imported_at'] > base['imported_at']:
                         base_id, base = item['dataset_id'], candidate
                     break
+        return base_id, base
+
+    def _publish(self, doc, changed_sheet=None, before_publish=None, progress=None):
+        from .profiles.reviewed import parse_workbook, reviewed_mapping
+        from .generic_parser import parse_mapped_workbook, validate_mapping
+        from .snapshots import publish_parts
+        path = self.source_path(doc)
+        base_id, base = self.confirmation_base(doc)
         base_sheets = {s['name']: s for s in base['sheets']} if base else {}
         if changed_sheet and base_id != doc.get('dataset_id'):
             published_coverage = {s['name']: s for s in base.get('coverage', [])}

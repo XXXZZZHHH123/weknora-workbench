@@ -29,7 +29,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   function evidenceText(evidence, remap = false) {
     if (!evidence) return '尚未核实重叠期数值。请先核实证据。';
-    if (remap) return `已逐点核对全部 ${evidence.matching_periods} 期，日期和数值完全一致。`;
+    if (remap) return `已逐条核对 ${evidence.matching_periods} 条原表记录，内容一致。`;
     return `一致 ${evidence.matching_periods} 期 · 不一致 ${evidence.mismatching_periods} 期 · 最近不一致日期：${evidence.latest_mismatch_date || '无'}。` +
       `单位${evidence.unit_match ? '一致' : '不一致或缺失'}，频率${evidence.frequency_match ? '一致' : '不一致或缺失'}。` +
       `个人库截至 ${evidence.personal_as_of || '无数据'}；default 库截至 ${evidence.default_as_of || '无数据'}。` +

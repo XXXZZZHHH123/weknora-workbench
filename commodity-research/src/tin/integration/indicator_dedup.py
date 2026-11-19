@@ -123,7 +123,7 @@ def remap_pairs(scope, catalog):
                     'frequency_match': old.get('frequency') == new.get('frequency'),
                     'precision_complete': True, 'limited': False, 'version': item['source_version'],
                     'checked_points': points, 'previous_dataset_id': old['dataset_id'],
-                    'current_dataset_id': new['dataset_id'], 'notice': '全部观测日期与数值逐点一致，无舍入或容差'}}
+                    'current_dataset_id': new['dataset_id'], 'notice': '观测记录逐条一致，无舍入或容差'}}
         return list(pairs.values())
     except (ValueError, KeyError, AttributeError, TypeError):
         raise HTTPException(409, '指标目录或重映射候选已变化，请重新读取') from None

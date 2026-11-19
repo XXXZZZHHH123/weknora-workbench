@@ -16,7 +16,7 @@ import httpx
 from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 
-from .generic_parser import _date as parse_date_value, validate_mapping
+from .generic_parser import _date as parse_date_value, _header_notes, validate_mapping
 from .mapping_suggestions import apply_suggestion, BLOCK_FIELDS, COLUMN_FIELDS, HEADER_NOTES_PROMPT
 from .model_settings import read_model, thinking_fields
 from .review_errors import ReviewValidationError, clean_target
@@ -875,7 +875,8 @@ def _header_payload(path, sheet, mapping, cancelled, *, whole_sheet):
     return payload, values, shown
 
 
-def _apply_header_suggestion(original, normalized, suggestion, values, shown, sheet, *, strict):
+def _apply_header_suggestion(original, normalized, suggestion, values, shown, sheet, *,
+                             strict, use_name_rows=False):
     if set(suggestion) - {'block_updates', 'evidence', 'unresolved', 'notice'}:
         raise ValueError('仅表头建议只能提交表头说明和名称行。')
     updates = suggestion.get('block_updates')
@@ -954,13 +955,12 @@ def _apply_header_suggestion(original, normalized, suggestion, values, shown, sh
                     raise ReviewValidationError('表头说明不能与矩阵的期间来源重叠。',
                                                 **column_target, field='header_note_cells')
             else:
-                # Name rows substantiate the edit. Existing columns retain every other header ref
-                # and use the same composition rule as the scanner, including unit handling.
-                metric = header_metric(values.get(ref) for ref in headers)
-                # Without declared name rows the remaining header refs are the ones the
-                # researcher already confirmed; only declared rows need new evidence.
-                if not metric or (name_rows and not header_metric(values.get(ref) for ref in headers
-                                                                  if _cell_position(ref)[0] in name_rows)):
+                name_headers = [ref for ref in headers if _cell_position(ref)[0] in name_rows]
+                # The cleanup uses evidenced name rows for the name while keeping
+                # other non-note header refs available for units and frequency.
+                metric_refs = name_headers if use_name_rows and name_rows else headers
+                metric = header_metric(values.get(ref) for ref in metric_refs)
+                if not metric or (name_rows and not header_metric(values.get(ref) for ref in name_headers)):
                     raise ReviewValidationError('移出说明后，指标名称仍须有已核对的真实表头。',
                                                 **column_target, field='metric')
                 if metric != old['metric']:
@@ -969,7 +969,7 @@ def _apply_header_suggestion(original, normalized, suggestion, values, shown, sh
                         # Use one source per distinct label, in the same order
                         # as header_metric, to prove the exact recomputed name.
                         label_refs = {}
-                        for ref in headers:
+                        for ref in metric_refs:
                             label = header_metric([values.get(ref)])
                             if label:
                                 label_refs.setdefault(label, ref)
@@ -991,24 +991,55 @@ def _apply_header_suggestion(original, normalized, suggestion, values, shown, sh
     return proposed, diagnostics, changed
 
 
-def _header_change_notice(changed):
+def _header_change_notice(changed, *, applied=False):
+    if applied:
+        if changed:
+            return f'{changed} 个字段改名后 ID 已变化；请到各研究台「指标对应确认」确认重映射，并改写引用。'
+        return '本次没有字段改名。'
     notice = f'仅表头建议：{changed} 个字段的名称会改变'
     if changed:
         notice += '，字段 ID 也会改变；导入后请到研究台「指标对应确认」处理引用延续'
     return notice + '。'
 
 
-def _suggest_headers(path, cfg, original, normalized, sheet, budget, cancelled, *, strict, whole_sheet):
+def _suggest_headers(path, cfg, original, normalized, sheet, budget, cancelled, *,
+                     strict, whole_sheet, cleanup=False):
     payload, values, shown = _header_payload(path, sheet, normalized, cancelled, whole_sheet=whole_sheet)
     suggestion = _request(cfg, payload, budget, cancelled)
     proposed, diagnostics, changed = _apply_header_suggestion(original, normalized, suggestion, values, shown, sheet,
-                                                               strict=strict)
+                                                               strict=strict, use_name_rows=cleanup)
     notice = _header_change_notice(changed)
     if diagnostics:
         notice += ' 未解决的内容保留待确认。'
     notice += ' 建议尚未确认或导入。'
-    return {'mapping': proposed, 'diagnostics': diagnostics, 'notice': notice,
-            'scope': 'header_only', 'renamed_fields': changed}
+    result = {'mapping': proposed, 'diagnostics': diagnostics, 'notice': notice,
+              'scope': 'header_only', 'renamed_fields': changed}
+    if cleanup:
+        changes = []
+        for bi, (before, after) in enumerate(zip(normalized['blocks'], proposed['blocks'])):
+            new_notes = set(after.get('header_note_cells', [])) - set(before.get('header_note_cells', []))
+            if not new_notes:
+                continue
+            notes = {note['cell']: note['text'] for note in _header_notes(after, values, sheet['name'], bi)
+                     if note['cell'] in new_notes}
+            for old, new in zip(before['columns'], after['columns']):
+                if old.get('metric') != new.get('metric'):
+                    changes.append({
+                        'block_index': bi, 'column': old['column'],
+                        'column_index': column_index_from_string(old['column']),
+                        'old_name': old['metric'], 'new_name': new['metric'],
+                        'header_notes': [notes[ref] for ref in old['header_cells'] if ref in notes],
+                    })
+        result['changes'] = changes
+    return result
+
+
+def suggest_header_cleanup(path, cfg, sheet, mapping, budget, cancelled):
+    """Use one header-only request against an already saved mapping."""
+    original = _candidate(sheet, mapping)
+    normalized = validate_mapping(original, sheet)
+    return _suggest_headers(path, cfg, original, normalized, sheet, budget, cancelled,
+                            strict=True, whole_sheet=True, cleanup=True)
 
 
 def suggest_mapping(manager, import_id, sheet_name, *, mapping=None, review_errors=None,
