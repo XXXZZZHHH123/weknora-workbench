@@ -945,12 +945,16 @@
     const preview=characters.slice(0,72).join('').split('\n')[0];
     return `<details class="header-cleanup-value"><summary>${label}：<span class="header-cleanup-preview">${esc(preview)}…</span></summary><div>${esc(text)}</div></details>`;
   }
-  function headerCleanupDiagnostics(sheet) {
-    const diagnostics=(sheet.diagnostics||[]).map(item=>{
-      const location=[Number.isInteger(item.block_index)?`区块 ${item.block_index+1}`:'',item.column?`${item.column} 列`:''].filter(Boolean).join(' · ');
-      return `<li>${location?`${esc(location)}：`:''}${esc(item.message)}</li>`;
+  function headerCleanupMessages(sheet) {
+    return [['待核对',sheet.diagnostics],['提示',sheet.notices]].map(([label,items])=>{
+      if(!items?.length)return '';
+      const messages=items.map(item=>{
+        const location=[Number.isInteger(item.block_index)?`区块 ${item.block_index+1}`:'',
+          item.column?`${item.column} 列`:'',label==='提示'?item.cells?.join('、'):''].filter(Boolean).join(' · ');
+        return `<li>${location?`${esc(location)}：`:''}${esc(item.message)}</li>`;
+      }).join('');
+      return `<div class="header-cleanup-diagnostics"><span>${label}</span><ul>${messages}</ul></div>`;
     }).join('');
-    return diagnostics?`<div class="header-cleanup-diagnostics">待核对<ul>${diagnostics}</ul></div>`:'';
   }
   function headerCleanupChange(change) {
     const fields=[
@@ -979,7 +983,7 @@
         <ul>${changes.slice(0,5).join('')}</ul>
         ${remaining.length?`<details><summary>其余 ${remaining.length} 个</summary><ul>${remaining.join('')}</ul></details>`:''}
       </details>`:''}
-      ${headerCleanupDiagnostics(sheet)}
+      ${headerCleanupMessages(sheet)}
     </div>`;
   }
   function renderHeaderCleanup(record) {
@@ -1000,9 +1004,9 @@
       const success=sheet.status==='applied';
       const outcome=success?`已应用（${esc(sheet.renamed_fields)} 个指标改名）`:esc(sheet.error||'应用未完成，请重新整理。');
       const suggestion=record.sheets.find(item=>item.sheet_name===sheet.sheet_name);
-      return `<li data-sheet-confirm="${success?'success':'failed'}"><span>${esc(sheet.sheet_name)}：${outcome}</span>${suggestion?headerCleanupDiagnostics(suggestion):''}</li>`;
+      return `<li data-sheet-confirm="${success?'success':'failed'}"><span>${esc(sheet.sheet_name)}：${outcome}</span>${suggestion?headerCleanupMessages(suggestion):''}</li>`;
     }).join('');
-    const unchangedList=unchanged.map(sheet=>`<li>${esc(sheet.sheet_name)}</li>`).join('');
+    const unchangedList=unchanged.map(sheet=>`<li>${esc(sheet.sheet_name)}${headerCleanupMessages(sheet)}</li>`).join('');
     const failedList=failed.map(sheet=>`<li data-sheet-confirm="failed">${esc(sheet.sheet_name)}：${esc(sheet.error||'未能整理表头说明。')}</li>`).join('');
     $('headerCleanupResults').innerHTML=`
       ${outcomes?`<ul class="batch-confirm-results">${outcomes}</ul>`:''}

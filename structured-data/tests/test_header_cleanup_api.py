@@ -6,6 +6,7 @@ import json
 from threading import Event
 from time import monotonic, sleep
 
+import httpx
 from openpyxl import Workbook
 import pytest
 
@@ -83,7 +84,8 @@ def mock_header_model(monkeypatch, propose):
         assert payload['mode'] == 'header_only'
         assert 'source_cells' not in payload
         suggestion = propose(payload['sheet'])
-        return {'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps(suggestion)}}]}
+        content = suggestion if isinstance(suggestion, str) else json.dumps(suggestion)
+        return {'choices': [{'finish_reason': 'stop', 'message': {'content': content}}]}
 
     monkeypatch.setattr(header_cleanup, 'read_model', lambda _: {'native_model_id': 'test-model'})
     monkeypatch.setattr(model_gateway, 'complete', complete)
@@ -185,6 +187,25 @@ def test_cleanup_preview_is_read_only_and_applies_only_selected_renames(client, 
     assert client.get('/api/templates').json() == templates_before
 
 
+def test_cleanup_applied_mapping_is_unchanged_on_repeat(client, monkeypatch, workbook_import):
+    url, _ = workbook_import
+    calls = mock_header_model(monkeypatch, lambda sheet: suggest_notes() if sheet == '本期数据'
+                              else {'block_updates': []})
+    started = start_cleanup(client, url)
+    first = next(row for row in poll(client, started)['sheets'] if row['sheet_name'] == '本期数据')
+    assert first['status'] == 'rename'
+    assert apply_cleanup(client, url, started.json()['id'], '本期数据')['renamed_fields'] == 1
+    saved = read_sheet(client, url, '本期数据')['published_mapping']
+    assert all(len(column['header_cells']) == 1 for column in saved['blocks'][0]['columns'])
+
+    repeated = next(row for row in poll(client, start_cleanup(client, url))['sheets']
+                    if row['sheet_name'] == '本期数据')
+    assert [payload['sheet'] for payload in calls].count('本期数据') == 2
+    assert repeated['status'] == 'unchanged'
+    assert repeated['changes'] == []
+    assert repeated['mapping'] == saved
+
+
 @pytest.mark.parametrize('changed', ['fingerprint', 'mapping', 'published_snapshot'])
 def test_cleanup_apply_skips_changed_sheet_and_continues(client, monkeypatch, workbook_import, changed):
     import_url, review_path = workbook_import
@@ -260,6 +281,68 @@ def test_cleanup_respects_shared_request_budget(client, monkeypatch, workbook_im
     statuses = [row['status'] for row in result['sheets']]
     assert statuses.count('unchanged') == 1
     assert statuses.count('failed') == 2
+
+
+def header_model_failure(kind):
+    details = 'internal trace marker /srv/model/private.json'
+    request = httpx.Request('POST', 'https://model.fixture/chat/completions')
+    if kind == 'timeout':
+        raise httpx.ReadTimeout(details, request=request)
+    if kind == 'invalid_json':
+        return '{'
+    status = {'server_error': 503, 'too_large': 413}[kind]
+    response = httpx.Response(status, request=request)
+    raise httpx.HTTPStatusError(details, request=request, response=response)
+
+
+@pytest.mark.parametrize(('failure', 'category'), [
+    ('timeout', '超时'), ('server_error', '模型服务暂时不可用'), ('invalid_json', '模型返回格式无效'),
+])
+@pytest.mark.parametrize('recover', [True, False], ids=['recover', 'exhausted'])
+def test_cleanup_retries_each_transient_model_failure(client, monkeypatch, workbook_import, failure, category,
+                                                      recover):
+    url, _ = workbook_import
+
+    def propose(sheet):
+        if sheet != '本期数据':
+            return {'block_updates': []}
+        if not recover or [payload['sheet'] for payload in calls].count(sheet) == 1:
+            return header_model_failure(failure)
+        return suggest_notes()
+
+    calls = mock_header_model(monkeypatch, propose)
+    result = poll(client, start_cleanup(client, url))
+    names = [payload['sheet'] for payload in calls]
+    assert len(names) == result['requests_used'] == 4
+    assert names[:2] == ['本期数据', '本期数据']
+    rows = {row['sheet_name']: row for row in result['sheets']}
+    row = rows['本期数据']
+    if recover:
+        assert row['status'] == 'rename'
+        assert [change['new_name'] for change in row['changes']] == ['产量']
+    else:
+        assert row['status'] == 'failed'
+        assert category in row['error']
+        assert all(detail not in row['error'] for detail in ('internal trace', '/srv/model', 'model.fixture'))
+    assert rows['历史数据']['status'] == rows['已发布单位表']['status'] == 'unchanged'
+
+
+@pytest.mark.parametrize(('failure', 'budget', 'category'), [
+    ('too_large', 2, '请求过大'), ('timeout', 1, '超时'),
+])
+def test_cleanup_forgoes_retry_on_oversize_or_exhausted_budget(client, monkeypatch, workbook_import, failure,
+                                                              budget, category):
+    url, _ = workbook_import
+    calls = mock_header_model(monkeypatch, lambda sheet: header_model_failure(failure) if sheet == '本期数据'
+                              else {'block_updates': []})
+    result = poll(client, start_cleanup(client, url, total_max_requests=budget))
+    names = [payload['sheet'] for payload in calls]
+    assert names.count('本期数据') == 1
+    assert len(names) == result['requests_used'] == budget
+    row = next(row for row in result['sheets'] if row['sheet_name'] == '本期数据')
+    assert row['status'] == 'failed'
+    assert category in row['error']
+    assert '/srv/model' not in row['error']
 
 
 def test_cleanup_job_cancels_without_saving_and_skips_remaining_requests(client, monkeypatch, workbook_import):
@@ -452,20 +535,96 @@ def test_cleanup_removes_merged_daily_title_and_respects_cell_override(client, m
     assert [item['text'] for item in origin['header_notes']] == [title, '按登记产地统计']
 
 
-@pytest.mark.parametrize('invalid', ['row', 'blank', 'overlap', 'missing', 'no_name', 'period'])
+def test_cleanup_preserves_undetermined_cells_and_applies_verified_rename(client, monkeypatch):
+    book = Workbook()
+    sheet = book.active
+    sheet.append(['日期', '产量', '价格'])
+    sheet.append([None, '分地区', '预留'])
+    sheet.append([None, '计算口径', 'S123'])
+    sheet.append([None, '已有来源说明'])
+    sheet.append([None, '吨'])
+    for day in (1, 2):
+        sheet.append([datetime(2024, 1, day), 10, 11])
+    block = fixture_block([1, 2, 3, 4, 5], [
+        {'column': 'B', 'metric': '产量 / 分地区 / 计算口径', 'header_cells': ['B1', 'B2', 'B3', 'B5'],
+         'header_note_cells': ['B4'], 'unit': '吨', 'unit_cells': ['B5']},
+        {'column': 'C', 'metric': '价格', 'header_cells': ['C1'], 'source_code_cells': ['C3']},
+    ], date_mode='date', date_column='A', header_note_cells=['B4'])
+    url, _ = publish_fixture(client, book, [block])
+    suggestion = suggest_roles([{'row': 1, 'role': 'name'}, {'row': 3, 'role': 'note'}],
+                               {'name': ['A1', 'B1'], 'note': ['B3']})
+    mock_header_model(monkeypatch, lambda _: suggestion)
+
+    started = start_cleanup(client, url)
+    row, = poll(client, started)['sheets']
+    assert row['status'] == 'rename' and not row['diagnostics']
+    change, = row['changes']
+    assert (change['column'], change['new_name']) == ('B', '产量 / 分地区')
+    updated, = row['mapping']['blocks']
+    assert set(updated['header_note_cells']) == {'B3', 'B4'}
+    amount, price = updated['columns']
+    assert amount['header_cells'] == ['B1', 'B2', 'B5']
+    assert amount['unit'] == '吨' and amount['unit_cells'] == ['B5']
+    assert price['header_cells'] == ['C1'] and price['source_code_cells'] == ['C3']
+    undetermined = [item for item in row['notices'] if item['code'] == 'header_role_undetermined']
+    assert undetermined and all(item['message'] == '未判定，保持原样' for item in undetermined)
+    assert {cell for item in undetermined for cell in item['cells']} == {'C1', 'B2', 'C2', 'C3', 'B4', 'B5'}
+    result = apply_cleanup(client, url, started.json()['id'], sheet.title)
+    assert result['renamed_fields'] == 1
+    catalogue = read_series(client, result['dataset_id'])
+    assert (sheet.title, '产量 / 分地区') in catalogue
+    assert catalogue[sheet.title, '价格']['field_metadata']['source_codes'] == [{'cell': 'C3', 'text': 'S123'}]
+
+
+def test_cleanup_keeps_original_name_when_a_column_loses_every_name_cell(client, monkeypatch):
+    book = Workbook()
+    sheet = book.active
+    sheet.append(['日期', '原字段', '价格'])
+    sheet.append([None, '说明甲', '说明乙'])
+    for day in (1, 2):
+        sheet.append([datetime(2024, 1, day), 10, 11])
+    block = fixture_block([1, 2], [
+        {'column': 'B', 'metric': '原字段 / 说明甲', 'header_cells': ['B1', 'B2']},
+        {'column': 'C', 'metric': '价格 / 说明乙', 'header_cells': ['C1', 'C2']},
+    ], date_mode='date', date_column='A')
+    url, _ = publish_fixture(client, book, [block])
+    suggestion = suggest_roles([{'row': 1, 'role': 'name', 'overrides': {'B1': 'note'}},
+                                {'row': 2, 'role': 'note'}],
+                               {'name': ['A1', 'C1'], 'note': ['B1', 'B2', 'C2']})
+    mock_header_model(monkeypatch, lambda _: suggestion)
+
+    started = start_cleanup(client, url)
+    row, = poll(client, started)['sheets']
+    assert row['status'] == 'rename' and not row['diagnostics']
+    assert [(change['column'], change['new_name']) for change in row['changes']] == [('C', '价格')]
+    assert row['mapping']['blocks'][0]['columns'][0]['metric'] == '原字段 / 说明甲'
+    notice, = row['notices']
+    assert (notice['code'], notice['column'], notice['message']) == (
+        'header_name_unchanged', 'B', '该列没有名称表头格，保持原名。',
+    )
+    result = apply_cleanup(client, url, started.json()['id'], sheet.title)
+    assert result['renamed_fields'] == 1
+    assert (sheet.title, '原字段 / 说明甲') in read_series(client, result['dataset_id'])
+
+
+@pytest.mark.parametrize('invalid', ['row', 'out_of_scope', 'blank', 'overlap', 'override_missing_evidence',
+                                     'mismatched_role', 'period'])
 def test_cleanup_rejects_invalid_role_evidence(client, monkeypatch, workbook_import, invalid):
     url, _ = workbook_import
     suggestion = suggest_notes()
     rules = suggestion['block_updates'][0]['header_roles']
     if invalid == 'row':
         rules[-1]['row'] = 4
+    elif invalid == 'out_of_scope':
+        suggestion['evidence'][1]['cells'].append('B4')
     elif invalid == 'blank':
         suggestion['evidence'][1]['cells'].append('C3')
     elif invalid == 'overlap':
         suggestion['evidence'][1]['cells'].append('B1')
-    elif invalid == 'missing':
+    elif invalid == 'override_missing_evidence':
+        rules[1]['overrides'] = {'B2': 'note'}
         suggestion['evidence'].pop()
-    elif invalid == 'no_name':
+    elif invalid == 'mismatched_role':
         rules[0]['role'] = 'note'
     elif invalid == 'period':
         rules[0]['role'] = 'period'

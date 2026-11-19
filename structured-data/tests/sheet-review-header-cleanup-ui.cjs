@@ -25,11 +25,14 @@ const change = index => ({
 });
 const mixedDiagnostic={block_index:1,message:'此区块另有一格需要核对。'};
 const reviewDiagnostic={block_index:0,message:'B4-E4 建议作为表头说明格，请核对。'};
+const omittedNotice={code:'header_role_undetermined',block_index:0,cells:['B6','C6'],message:'未判定，保持原样'};
+const originalNameNotice={code:'header_name_unchanged',block_index:0,column:'C',message:'该列没有名称表头格，保持原名。'};
 const suggestions = [
-  {sheet_name:sheet.name,status:'rename',changes:Array.from({length:6},(_,index)=>change(index)),diagnostics:[mixedDiagnostic]},
+  {sheet_name:sheet.name,status:'rename',changes:Array.from({length:6},(_,index)=>change(index)),
+   diagnostics:[mixedDiagnostic],notices:[omittedNotice]},
   {sheet_name:'合成表乙',status:'rename',changes:[change(0)]},
   {sheet_name:'合成表丙',status:'rename',changes:[change(0)]},
-  {sheet_name:'合成表丁',status:'unchanged',changes:[]},
+  {sheet_name:'合成表丁',status:'unchanged',changes:[],notices:[originalNameNotice]},
   {sheet_name:'合成表戊',status:'failed',error:'模型暂时无法提供建议。'},
   {sheet_name:'合成表己',status:'needs_review',changes:[],diagnostics:[reviewDiagnostic]},
 ];
@@ -116,6 +119,10 @@ const notice = '6 个字段改名后 ID 已变化；请到各研究台「指标�
     const first=dialog.locator('.header-cleanup-sheet').first();
     assert.match(await first.innerText(),/合成表甲 · 6 个指标会改名/);
     assert.match(await first.innerText(),/区块 2：此区块另有一格需要核对。/);
+    const prompt=first.getByText('提示',{exact:true});
+    assert.equal(await prompt.isVisible(),true);
+    const omitted=prompt.locator('..').getByText(/未判定，保持原样/);
+    assert.match(await omitted.innerText(),/B6.*C6/);
     const changes=first.locator('.header-cleanup-changes');
     await changes.locator(':scope > summary').click();
     assert.equal(await changes.locator(':scope > ul > li').count(),5);
@@ -135,8 +142,12 @@ const notice = '6 个字段改名后 ID 已变化；请到各研究台「指标�
     await remaining.getByText('其余 1 个',{exact:true}).click();
     assert.equal(await remaining.getByText('原名称 6 → 新名称 6',{exact:true}).isVisible(),true);
     assert.equal(await dialog.locator('img').count(),0);
-    assert.equal(await dialog.getByText('无需改动（1 张）',{exact:true}).isVisible(),true);
-    assert.equal(await dialog.getByText('合成表丁',{exact:true}).isHidden(),true);
+    const unchanged=dialog.getByText('无需改动（1 张）',{exact:true});
+    assert.equal(await unchanged.isVisible(),true);
+    const originalName=unchanged.locator('..').getByText(/保持原名/);
+    assert.equal(await originalName.isHidden(),true);
+    await unchanged.click();
+    assert.equal(await originalName.isVisible(),true);
     assert.equal(await dialog.getByText('合成表戊：模型暂时无法提供建议。',{exact:true}).isVisible(),true);
 
     await proposals.nth(1).uncheck();
@@ -147,6 +158,7 @@ const notice = '6 个字段改名后 ID 已变化；请到各研究台「指标�
     const applied=dialog.locator('[data-sheet-confirm="success"]');
     await applied.getByText('合成表甲：已应用（6 个指标改名）',{exact:true}).waitFor();
     assert.match(await applied.innerText(),/区块 2：此区块另有一格需要核对。/);
+    assert.match(await applied.innerText(),/未判定，保持原样/);
     assert.equal(await dialog.getByText('合成表丙：工作表已变化，请重新整理',{exact:true}).isVisible(),true);
     assert.equal(await page.locator('#headerCleanupNotice').innerText(),notice);
     assert.equal(await button.innerText(),'整理已导入表的表头说明（5 张）');
