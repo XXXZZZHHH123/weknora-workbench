@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from fastapi import Body, FastAPI, Form, HTTPException, Query, Request, UploadFile
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -46,6 +47,7 @@ from tin.schemas.brief import STANCES
 from tin.schemas.judgment import TONES
 from tin.integration.identity import current_identity, research_prefix, research_url, research_form_url, verified_actor
 from tin.integration.auth import ResearchAuthMiddleware
+from tin.integration.page_facts import StructuredFactsError
 from tin.ownership import scope_query
 from tin.web import home
 from tin.web.strategy import build_router as build_strategy_router
@@ -200,6 +202,25 @@ templates.env.filters["num"] = _num
 templates.env.filters["local"] = lambda dt: dt.astimezone(SHANGHAI).strftime("%Y-%m-%d %H:%M") if dt else ""
 from tin.web.research_display import register_display
 register_display(templates.env)
+
+
+def source_error_page(request: Request, error: StructuredFactsError):
+    path = request.state.research_page_path
+    nav = path.split('/')[2] if path.startswith('/sn/') else 'variety' if path == '/sn' else 'home'
+    query = str(request.query_params)
+    retry_url = research_url(quote(path, safe='/')) + ('?' + query if query else '')
+    return templates.TemplateResponse(request, 'source_read_error.html', {
+        'nav': nav, 'restricted_view': current_workbench.get().restricted,
+        'source_error': error.detail, 'retry_url': retry_url,
+    }, status_code=error.status_code)
+
+
+@app.exception_handler(StructuredFactsError)
+async def _structured_facts_error(request: Request, error: StructuredFactsError):
+    if getattr(request.state, 'research_page_path', None) is not None:
+        return source_error_page(request, error)
+    return await http_exception_handler(request, error)
+
 
 # Resolve SessionLocal at request time, preserving the app's test/deployment overrides.
 from tin.integration.read_api import router as research_read_router

@@ -4,10 +4,13 @@ from dataclasses import replace
 from datetime import date, datetime
 
 from fastapi import HTTPException
+import httpx
 import pytest
 from sqlalchemy import event, func, select
 
+from tests.test_judgment_charts import mixed_judgment
 from tests.test_judgment_panels import panels
+from tests.test_knowledge_facts import FIRST, canonical, page
 from tests.test_structured_judgment_import import payload
 from tin.config import SHANGHAI
 from tin.integration import page_facts, workbench_scope
@@ -79,6 +82,29 @@ def test_warning_check_uses_saved_rule_ids_and_is_readonly(panels, monkeypatch):
     with workbench_scope.artifact_session(scope) as session:
         assert session.scalar(select(func.count()).select_from(Signal)) == 0
         assert session.scalar(select(func.count()).select_from(ReviewTask)) == 0
+
+
+def test_warning_check_routes_isolate_undated_series_and_keep_upstream_error_details(mixed_judgment, monkeypatch):
+    client, headers, _, calls = mixed_judgment
+    url = page(FIRST, '/api/sn/affairs/check')
+    response = client.post(url, headers=headers)
+    assert response.status_code == 200, response.text
+    assert len(calls) == 1
+    result = response.json()
+    assert result['checked_rules'] == 2
+    alerts = {alert['kind']: alert for alert in result['alerts']}
+    assert alerts['triggered']['title'] == '日度库存增加 · 触发'
+    assert alerts['undated']['title'] == '年度面积阈值 · 无法按日期判断'
+    assert alerts['undated']['evidence_dates'] == []
+
+    upstream_detail = '来源版本已变化，请刷新后重新检查'
+    def transport(method, endpoint, body, **kwargs):
+        assert body['view_module'] == 'judgments' and body['include_invalid'] is True
+        request = httpx.Request(method, 'http://fixture.invalid' + endpoint)
+        return httpx.Response(409, json={'detail': upstream_detail}, request=request)
+    monkeypatch.setattr('tin.provenance.bridge.structured_request', transport)
+    response = client.post(url, headers=headers)
+    assert response.status_code == 409 and response.json()['detail'] == upstream_detail
 
 
 def test_warning_check_does_not_expand_restricted_page_grants(panels):

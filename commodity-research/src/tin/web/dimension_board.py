@@ -11,6 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from starlette.concurrency import run_in_threadpool
 
+from tin.integration.page_facts import source_error_details
 from tin.integration.workbench_scope import artifact_session, current_workbench, require_shared_write
 from tin.models import Judgment, SourceMapping
 from tin.web.research_dimensions import (CATEGORIES, DIMENSIONS_KEY, default_dimensions, read_dimensions,
@@ -335,7 +336,7 @@ def save_config(session, scope, body, *, admitted_ids=()):
 @router.get('')
 def get_config():
     scope = require_scope()
-    with artifact_session(scope) as session:
+    with source_error_details(), artifact_session(scope) as session:
         return describe_config(session, scope)
 
 
@@ -405,7 +406,8 @@ def get_data(date: str | None = None, period: str = 'weekly',
         identifiers = {item['id'] for item in _items(dimensions) if item['kind'] == 'indicator'}
         selected_id, references = _judgment_references(session, scope, identifiers, judgment_id)
         rev = revision(session)
-    result = dimension_data(scope, dimensions, day, period)
+    with source_error_details():
+        result = dimension_data(scope, dimensions, day, period)
     for dim in result['dimensions']:
         dim['references'] = counts[dim['id']]
     if references:

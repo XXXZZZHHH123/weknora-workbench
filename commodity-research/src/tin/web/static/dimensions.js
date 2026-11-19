@@ -97,6 +97,13 @@ document.addEventListener('DOMContentLoaded', () => {
   function node(tag, css, text) { const el = document.createElement(tag); if (css) el.className = css; if (text !== undefined) el.textContent = text; return el; }
   function button(label, action, disabled = false) { const el = node('button', '', label); el.type = 'button'; el.disabled = disabled; el.addEventListener('click', action); return el; }
   function status(message, error = false) { get('status').textContent = message || ''; get('status').classList.toggle('error', error); }
+  function loadError(message) {
+    status(message, true);
+    const retry = node('a', 'underline', '重试');
+    retry.href = location.pathname + location.search;
+    retry.addEventListener('click', event => { event.preventDefault(); void load(); });
+    get('status').append(' ', retry);
+  }
   async function request(path, body, method = 'GET') {
     const response = await window.researchFetch(prefix + '/api/sn' + path, body === undefined ? {} : {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
     const result = await response.json();
@@ -171,7 +178,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (own === generation) {
         scrollToIndicator();
       }
-    } catch (error) { if (own === generation) status(error.message, true); }
+    } catch (error) { if (own === generation) loadError(error.message); }
   }
   async function loadData(own = ++generation) {
     status('正在计算本期变化…');
@@ -183,7 +190,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!get('date').value) get('date').value = data.latest_data_date || data.as_of || '';
       if (!editing) render();
       status(globalNotice(data));
-    } catch (error) { if (own === generation) status(error.message, true); }
+    } catch (error) { if (own === generation) loadError(error.message); }
   }
   function startEdit() {
     if (!editable() || editing) return;

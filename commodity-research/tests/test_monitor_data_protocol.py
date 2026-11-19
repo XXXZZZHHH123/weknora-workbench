@@ -103,7 +103,7 @@ def protocol_client(tmp_path, monkeypatch, validate_request):
         sources=(direct,), view_modules=('home',))
     state = SimpleNamespace(requests=[], observations={SID: [], OTHER: []},
                             frequencies={SID: '日', OTHER: '日'}, on_read=None, reads=0, scope=scope,
-                            coverage_metadata=True, source_calendar=True, read_error=None, logic='all')
+                            coverage_metadata=True, source_calendar=True, read_error=None, logic='all', undated=set())
 
     def transport(method, endpoint, body, **kwargs):
         assert method == 'POST' and endpoint == '/api/research/facts'
@@ -143,8 +143,11 @@ def protocol_client(tmp_path, monkeypatch, validate_request):
                        'total': len(fields), 'offset': 0, 'next_offset': None, 'truncated': False}
         else:
             rows = []
+            undated = state.undated.intersection(ids) if body.get('include_invalid') else set()
             for field in fields:
                 sid = field['series_id']
+                if sid in undated:
+                    continue
                 selected = sorted((stamp, value) for stamp, value in state.observations[sid]
                                   if stamp <= body['as_of'] and (body.get('include_invalid') or value is not None)
                                   )[-body['points_per_series']:]
@@ -156,6 +159,7 @@ def protocol_client(tmp_path, monkeypatch, validate_request):
                        'unavailable_series_ids': [], 'datasets': []}
             if body.get('include_invalid'):
                 payload['include_invalid'] = True
+                payload['undated_series_ids'] = sorted(undated)
             if state.source_calendar:
                 valid = sorted(stamp for sid in ids for stamp, value in state.observations[sid]
                                if value is not None and stamp <= END.isoformat())
@@ -725,3 +729,19 @@ def test_current_check_returns_rule_failure_reason_in_personal_list(protocol_cli
     assert listed['rule_states'][0]['state'] == '无法判断'
     assert listed['rule_states'][0]['notice'] == detail
     assert listed['rule_states'][1]['state'] == '触发'
+
+
+def test_current_check_marks_undated_rule_without_discarding_other_rule(protocol_client):
+    client, state = protocol_client
+    state.rules = [rule(), rule(OTHER)]
+    state.observations[SID] = state.observations[OTHER] = observation_window(size=40)
+    state.undated.add(SID)
+    save_protocol_monitor(client, state)
+
+    response = client.post('/protocol-check')
+    assert response.status_code == 200 and response.json()['checked'] == 1
+    [listed] = client.get(URL).json()['items']
+    assert listed['current_state'] == '无法判断'
+    undated, dated = listed['rule_states']
+    assert undated['state'] == '无法按日期判断' and '无日期观测' in undated['notice']
+    assert dated['state'] == '触发'

@@ -187,6 +187,29 @@ def test_regular_bounded_values_deduplicate_equal_dates_and_reject_conflicts(mul
     assert error.value.status_code==409
 
 
+def test_judgment_window_reports_undated_series_with_current_field_ids(multi):
+    _, read, _, store, review, _ = multi
+    ids = {field['knowledge_base_id']: field['series_id'] for field in catalog(read)['series']}
+    database = store._path(review['dataset_id']) / 'data.duckdb'
+    with duckdb.connect(str(database), config={'enable_external_access':'false','threads':'1','memory_limit':'128MB'}) as connection:
+        connection.execute("UPDATE observations SET date=NULL, period='2026/27' WHERE date='2026-01-05'")
+
+    body = {'source_bindings':['binding-a','binding-b'],'series_ids':list(ids.values()),
+        'view_module':'judgments','as_of':'2026-01-05','points_per_series':2}
+    result = read({**body,'include_invalid':True})
+    assert result['undated_series_ids'] == [ids['library-a']]
+    assert {field['series_id'] for field in result['indicators']} == set(ids.values())
+    assert [(row['series_id'],row['date'],row['value']) for row in result['rows']] == [
+        (ids['library-b'],date(2026,1,3),30), (ids['library-b'],date(2026,1,4),40)]
+    assert result['calendar']['min_date'] == '2026-01-02'
+    assert result['unavailable_series_ids'] == []
+
+    regular = read(body)
+    assert 'undated_series_ids' not in regular
+    assert [row['value'] for row in regular['rows'] if row['series_id'] == ids['library-a']] == [1,3]
+    assert regular['calendar']['min_date'] == '2026-01-01'
+
+
 def test_removed_saved_binding_is_reported_missing_without_legacy_fallback(multi):
     _,read,sources,_,_,_=multi
     ids=[field['series_id'] for field in catalog(read)['series']]

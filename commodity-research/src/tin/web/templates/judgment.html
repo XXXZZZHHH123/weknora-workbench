@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_judgment_metric.html" import metric_view, compact_metric with context %}
+{% from "_judgment_metric.html" import metric_view, compact_metric, undated_message with context %}
 {% block title %}研究判断 · {{ research_workbench().metadata.name if research_workbench() else '商品研究' }}{% endblock %}
 {% block head %}
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/charts.css?v={{ static_version() }}">
@@ -15,6 +15,7 @@
 <script id="research-display-names" type="application/json">{{ names|default({})|tojson }}</script>
 <script src="{{ research_static_prefix() }}/static/research-display.js?v={{ static_version() }}"></script>
 {% set research = research|default({}) %}
+{% set metrics = research.metrics|default({}) %}
 {% set chart_owners = {} %}
 {% macro dimension_tag(label) -%}
 {%- if label -%}<span class="judgment-dimension-tag" data-dimension-label>{{ label }}</span>{%- endif -%}
@@ -23,7 +24,8 @@
   {% if thresholds %}<div class="judgment-item-conditions">
     {% for item in thresholds %}<div class="judgment-item-condition" data-item-threshold>
       <span><strong>{{ human_text(item.name, names) }}</strong>{{ dimension_tag((research.threshold_dimensions|default({})).get(item.id)) }} · {{ human_text(item.condition, names) }}</span>
-      <span class="judgment-item-condition-state" data-state="{{ item.state }}">{{ item.state }}</span>
+      {% set state = '无法按日期判断' if (metrics.get(item.series_id) or {}).undated else item.state %}
+      <span class="judgment-item-condition-state" data-state="{{ state }}">{{ state }}</span>
     </div>{% endfor %}
   </div>{% endif %}
 {% endmacro %}
@@ -157,6 +159,8 @@
       </thead>
       <tbody class="divide-y divide-[var(--line)]">
         {% for t in radar %}
+        {% set undated = (metrics.get(t.series_id) or {}).undated %}
+        {% set state = '无法按日期判断' if undated else t.state %}
         <tr id="judgment-threshold-{{ t.id }}">
           <td class="py-3 px-3 font-bold">{{ human_text(t.name, names) }}{{ dimension_tag((research.threshold_dimensions|default({})).get(t.id)) }}<div class="text-[10px] font-normal text-[var(--text-muted)]">{{ t.type }} · {{ t.horizon }}</div>
             {% for note in (research.threshold_notes|default({})).get(t.id, []) %}<p class="judgment-rule-review judgment-rule-review-compact" title="待核对：{{ human_text(note, names) }}">待核对：{{ human_text(note, names) }}</p>{% endfor %}
@@ -168,10 +172,10 @@
             </details>{% endif %}
           </td>
           <td class="py-3 px-3 tabular font-bold {{ 'text-[var(--alert)]' if t.type == '风控线' else 'text-[var(--primary)]' }}">{{ human_text(t.condition, names) }}</td>
-          <td class="py-3 px-3 text-right tabular font-bold">{{ t.value | num(t.unit) if t.value is not none else '—' }}
+          <td class="py-3 px-3 text-right tabular font-bold">{% if undated %}{{ undated_message() }}{% else %}{{ t.value | num(t.unit) if t.value is not none else '—' }}{% endif %}
             {% if t.as_of %}<div class="text-[10px] font-normal text-[var(--text-muted)]">{{ t.as_of[5:] }}</div>{% endif %}</td>
           <td class="py-3 px-3">
-            <div class="text-[10px] text-[var(--text-muted)] mb-1">{{ t.distance }}</div>
+            <div class="text-[10px] text-[var(--text-muted)] mb-1">{{ state if undated else t.distance }}</div>
             <div data-threshold-state="{{ 'missing' if t.value is none else 'observed' }}" aria-label="{{ '该指标暂无实际观测' if t.value is none else t.distance }}" class="w-full bg-[var(--surface-soft)] h-2 rounded-full overflow-hidden border border-[var(--line)]">
               {% if t.value is not none %}{% set progress = [0, [100, t.progress] | min] | max %}
               <div data-threshold-fill class="h-full rounded-full {{ 'bg-[var(--alert)]' if t.state == '已触发' and t.type == '风控线' else 'bg-[var(--amber)]' if t.state in ('已触发', '在区间内') else 'bg-[var(--primary)]' }}" style="width: {{ progress | round(0) }}%;"></div>
@@ -183,7 +187,7 @@
             {% elif t.state == '已触发' and t.type == '风控线' %}bg-[var(--alert-soft)] text-[var(--alert)]
             {% elif t.state in ('已触发', '在区间内') %}bg-[var(--amber-soft)] text-[var(--amber)]
             {% elif t.state == '数据缺失' %}bg-[var(--amber-soft)] text-[var(--amber)]
-            {% else %}bg-[var(--primary-soft)] text-[var(--primary)]{% endif %}">{{ t.state }}</span></td>
+            {% else %}bg-[var(--primary-soft)] text-[var(--primary)]{% endif %}">{{ state }}</span></td>
         </tr>
         {% if not restricted_view %}<tr data-rule-chart-row hidden><td colspan="7"><div data-judgment-library-target="threshold:{{ t.id }}"></div></td></tr>{% endif %}
         {% else %}
@@ -222,7 +226,7 @@
   </div>
 </details>
 <details class="judgment-research-details"><summary>资料关联与版本</summary>
-  <div class="judgment-context-grid"><div><h3>关联指标</h3>{% for identifier in j.whitelist %}<p>{{ indicator_name(identifier, names) }}</p>{% endfor %}</div>
+  <div class="judgment-context-grid"><div><h3>关联指标</h3>{% for identifier in j.whitelist %}<p>{{ indicator_name(identifier, names) }}{% if (metrics.get(identifier) or {}).undated %} · {{ undated_message() }}{% endif %}</p>{% endfor %}</div>
   <div><h3>已保存研究</h3>{% for version in versions %}<p>{{ version.written_at }} · {{ version.status }}{% if author_label(version.author) %} · {{ author_label(version.author) }}{% endif %}</p>{% endfor %}</div></div>
 </details>
 {% endif %}

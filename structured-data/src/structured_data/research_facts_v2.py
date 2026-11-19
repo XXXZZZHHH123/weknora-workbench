@@ -148,13 +148,21 @@ def _read_current(registry, body, sources, leases):
         selected_date = None if set(selection['same_day_series_ids'])-known else _same_day_date(None,bindings,selection)
         selection = {**selection,'selected_date':selected_date}
     version = _hash({**fingerprint,'selection':selection})
-    rows = _same_day_rows(None,bindings,selection) if 'same_day_series_ids' in selection else _bounded_rows(None,bindings,selection,strict=True)
-    totals,calendar = _calendar(bindings,selection,
+    if 'same_day_series_ids' in selection:
+        rows, undated_series_ids = _same_day_rows(None,bindings,selection), set()
+    else:
+        rows, undated_series_ids = _bounded_rows(None,bindings,selection,strict=True)
+    calendar_bindings = bindings
+    if undated_series_ids:
+        calendar_bindings = [(info,{raw: identifier for raw,identifier in mapping.items()
+                                   if identifier not in undated_series_ids}) for info,mapping in bindings]
+    totals,calendar = _calendar(calendar_bindings,selection,
         include_totals=body.get('view_module')=='indicators' and selection['points_per_series']>2)
     result = {'bounded':True,'indicators':fields,'rows':rows,'total':len(rows),'offset':0,
         'next_offset':None,'truncated':False,'version':version,
         'series_totals':totals,'calendar':calendar,'source_versions':dict(parts),'unavailable_series_ids':sorted(unavailable),
-        **({'include_invalid':True} if selection.get('include_invalid') else {}),
+        **({'include_invalid':True,'undated_series_ids':sorted(undated_series_ids)}
+           if selection.get('include_invalid') else {}),
         **({'selected_date':selection['selected_date']} if 'same_day_series_ids' in selection else {})}
     if body.get('version') is not None and body['version'] != version:
         raise HTTPException(409, '来源快照在读取期间发生变化，请重新读取')

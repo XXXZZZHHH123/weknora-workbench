@@ -185,22 +185,25 @@ def _same_day_rows(store, bindings, selection):
 
 def _bounded_rows(store, bindings, selection, *, strict=False):
     rows = []
+    undated_series_ids = set()
     for info, mapping in bindings:
         if not mapping:
             continue
         identifiers = sorted(mapping)
         if selection.get('include_invalid'):
-            placeholders = ','.join('?' for _ in identifiers)
-            where = 'series_id IN (' + placeholders + ') AND date IS NOT NULL'
-            parameters = list(identifiers)
-            if selection['as_of'] is not None:
-                where += ' AND date <= ?'
-                parameters.append(selection['as_of'])
             with info.get('_store', store)._connect(info['dataset_id']) as connection:
-                undated = connection.execute('SELECT count(*) FROM observations WHERE series_id IN ('
-                    + placeholders + ') AND date IS NULL', identifiers).fetchone()[0]
-                if undated:
-                    raise HTTPException(409, '所选指标含未确认日期，无法确定均线观测顺序，请先核对原表日期')
+                undated = {source_id for (source_id,) in connection.execute(
+                    'SELECT DISTINCT series_id FROM observations WHERE series_id IN ('
+                    + ','.join('?' for _ in identifiers) + ') AND date IS NULL', identifiers).fetchall()}
+                undated_series_ids.update(mapping[source_id] for source_id in undated)
+                identifiers = [source_id for source_id in identifiers if source_id not in undated]
+                if not identifiers:
+                    continue
+                where = 'series_id IN (' + ','.join('?' for _ in identifiers) + ') AND date IS NOT NULL'
+                parameters = list(identifiers)
+                if selection['as_of'] is not None:
+                    where += ' AND date <= ?'
+                    parameters.append(selection['as_of'])
                 cursor = connection.execute('SELECT series_id,date,min(value),max(value),'
                     "bool_and(coalesce(value_status IN ('valid','ok','正常') AND value IS NOT NULL AND isfinite(value), false)) "
                     'FROM observations WHERE ' + where + ' GROUP BY series_id,date '
@@ -249,7 +252,7 @@ def _bounded_rows(store, bindings, selection, *, strict=False):
                 if not math.isfinite(value):
                     raise HTTPException(503, '页面指标含非有限数值，未返回部分结果')
                 rows.append({'series_id': mapping[source_id], 'date': when, 'value': value, 'value_status': status})
-    return rows
+    return rows, undated_series_ids
 
 
 def _page_series(identifiers,counts,offset,limit):
@@ -371,12 +374,16 @@ def read_facts(store,manager,body,*,_allow_partial=False,_prepare_only=False):
     if _prepare_only:
         return {'version':version,'indicators':indicators,'datasets':datasets,'bindings':bindings,'selection':bounded}
     if bounded is not None:
-        rows = _same_day_rows(store, bindings, bounded) if 'same_day_series_ids' in bounded else _bounded_rows(store, bindings, bounded)
+        if 'same_day_series_ids' in bounded:
+            rows, undated_series_ids = _same_day_rows(store, bindings, bounded), set()
+        else:
+            rows, undated_series_ids = _bounded_rows(store, bindings, bounded)
         return {'knowledge_base_id': identity.knowledge_base_id,
                 'knowledge_base_tenant_id': identity.knowledge_base_tenant_id,
                 'version': version, 'bounded': True, 'indicators': indicators,
                 'rows': rows, 'total': len(rows), 'offset': 0, 'next_offset': None, 'truncated': False,
-                **({'include_invalid':True} if bounded.get('include_invalid') else {}),
+                **({'include_invalid':True,'undated_series_ids':sorted(undated_series_ids)}
+                   if bounded.get('include_invalid') else {}),
                 **({'selected_date': bounded['selected_date']} if 'same_day_series_ids' in bounded else {})}
     if body.get('metadata_only'):
         # Exactly the same current original, confirmation and catalog checks as

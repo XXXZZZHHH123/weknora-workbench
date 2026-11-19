@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from tin.compute.rule_values import decimal_difference, decimal_value
 from tin.compute.signals import recent_points, _falsifier_signal, _transient_signals
 from tin.config import SHANGHAI
+from tin.integration.observation_windows import UNDATED_RULE_NOTE, UNDATED_RULE_STATE
 from tin.judgments.service import _refs, to_payload
 from tin.models import Indicator
 from tin.schemas.judgment import EXPRESSION, binding_ids
@@ -90,8 +91,9 @@ def _metric(session, identifier, day, count=24):
     indicator = session.get(Indicator, identifier)
     if type(count) is not int or not 1 <= count <= 121:
         raise HTTPException(400, '图表观测范围无效')
-    rows = recent_points(session, identifier, day, count) if indicator is not None and day is not None else []
-    result = metric_from_rows(indicator, rows, identifier=identifier, limit=count)
+    undated = identifier in session.info.get('knowledge_facts_undated_series_ids', ())
+    rows = recent_points(session, identifier, day, count) if indicator is not None and day is not None and not undated else []
+    result = metric_from_rows(indicator, rows, identifier=identifier, limit=count, undated=undated)
     from tin.web.number_format import observation_decimals
     digits = observation_decimals(session, identifier, result.get('date'), result)
     if digits is not None:
@@ -102,7 +104,7 @@ def _metric(session, identifier, day, count=24):
     return result
 
 
-def metric_from_rows(indicator, rows, *, identifier=None, limit=24):
+def metric_from_rows(indicator, rows, *, identifier=None, limit=24, undated=False):
     if type(limit) is not int or not 1 <= limit <= 121 or len(rows) > limit:
         raise HTTPException(400, '图表观测范围无效')
     identifier = identifier or (indicator.series_id if indicator is not None else '')
@@ -116,6 +118,7 @@ def metric_from_rows(indicator, rows, *, identifier=None, limit=24):
     name = human_text(indicator.name) if indicator is not None else ''
     return {'series_id': identifier, 'name': name or '指标名称待核对',
         'unit': indicator.unit if indicator is not None else '',
+        **({'undated': True} if undated else {}),
         **({'display_decimals': digits} if digits is not None else {}),
         'latest': latest.value if latest is not None else None,
         'previous': previous.value if previous is not None else None,
@@ -183,9 +186,12 @@ def _falsifier(session, judgment, rule, day, metric):
     except ValueError:
         unit = None
         caliber_conflict = True
-    rows = recent_points(session, rule['series_id'], day, need) if indicator is not None and day is not None else []
+    undated = metric.get('undated', False)
+    rows = recent_points(session, rule['series_id'], day, need) if indicator is not None and day is not None and not undated else []
     missing = None
-    if day is None:
+    if undated:
+        missing = UNDATED_RULE_NOTE
+    elif day is None:
         missing = '暂无可用观测日期。'
     elif indicator is None:
         missing = '尚无可读指标数据。'
@@ -211,7 +217,8 @@ def _falsifier(session, judgment, rule, day, metric):
         condition += ' ' + rule['unit_confirmed']
     if periods > 1:
         condition += f'，连续 {periods} 期'
-    return {'rule': deepcopy(rule), 'state': signal.state if signal is not None else '数据缺失',
+    state = UNDATED_RULE_STATE if undated else signal.state if signal is not None else '数据缺失'
+    return {'rule': deepcopy(rule), 'state': state,
         'current_value': signal.current_value if signal is not None else None,
         'condition': condition, 'gap_note': missing, 'metric': metric}
 
@@ -271,7 +278,8 @@ def judgment_research_view(session, judgment, day):
     with session.no_autoflush:
         metrics = {identifier: _metric(session, identifier, day, wanted[identifier]) for identifier in wanted}
         for identifier, metric in metrics.items():
-            metric['boundaries'] = metric_boundaries(payload, identifier)
+            if not metric.get('undated'):
+                metric['boundaries'] = metric_boundaries(payload, identifier)
         names = {identifier: metric['name'] for identifier, metric in metrics.items()}
         references = {side: set() for side in sides}
         marker = _transient_signals.set(True)

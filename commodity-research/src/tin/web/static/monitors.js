@@ -359,6 +359,7 @@
       const plot = node('div'); section.append(plot); target.append(section);
       const points = (item.points || []).map(point => ({...point, raw: point.value}));
       if (!points.some(point => Number.isFinite(point.value))) {
+        if (item.state === '无法按日期判断') continue;
         plot.append(node('p', item.state === '无法判断' ? '指标暂不可读，无法展示观测。' : '该指标在回测范围内无有效观测。', 'affairs-empty'));
         continue;
       }

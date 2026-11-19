@@ -5,6 +5,8 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../src/tin/web/static/affairs.js'), 'utf8');
 class Element {
   constructor(){this.dataset={};this.children=[];this.textContent='';this.listeners={};this.disabled=false;}
+  set textContent(value){this.text=value;this.children=[];}
+  get textContent(){return this.text+this.children.map(child=>child.textContent||'').join('');}
   set innerHTML(_){throw new Error('Unsafe HTML rendering');}
   addEventListener(kind,callback){this.listeners[kind]=callback;}
   fire(kind,event){return this.listeners[kind]?.(event);}
@@ -39,7 +41,7 @@ function setup({failure=false,zeroRules=false,checkable=true,monitoring=false,ed
   const context={window:{RESEARCH_PREFIX:'/research/workbenches/fixture',addEventListener(kind,callback){listeners[kind]=callback;}},
     document:{getElementById:id=>nodes[id],createElement:()=>new Element(),querySelector:()=>null},
     Date:{now:()=>clock},setTimeout(callback,delay){timers.set(++next,{callback,at:clock+delay});return next;},clearTimeout:id=>timers.delete(id),
-    async researchFetch(url,options){requests.push({url,options});if(wait)await wait;return {ok:!failure,json:async()=>failure?{detail:'Source access changed'}:{
+    async researchFetch(url,options){requests.push({url,options});if(wait)await wait;return {ok:!failure,json:async()=>failure?{detail:'来源授权已变化，请核对'}:{
       alerts:[...(monitoring&&requests.length===1?Array.from({length:edgeCount},(_,index)=>edge(index)):[]),
         ...(zeroRules?[]:[{kind:'triggered',title:'<img onerror=unsafe>',detail:'Actual bounded result',href:'/sn/judgment?judgment_id=7',trade_date:'2026-01-01',evidence_dates:['2025-12-30']}])],
       monitors:monitoring?[resident('last','Z','未触发'),resident('disabled','Disabled','触发',false),
@@ -70,7 +72,14 @@ const settle=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(env.requests.length,2,'The button re-runs the check on demand');
   const rejected=setup({failure:true});await settle();
   assert.deepEqual(rejected.nodes['affairs-alert-list'].children,['Original persisted alert'],'A failed check preserves the last visible records');
-  assert.equal(rejected.nodes['affairs-check-status'].dataset.error,'true');
+  const failureStatus=rejected.nodes['affairs-check-status'];
+  assert.equal(failureStatus.dataset.error,'true');
+  assert.match(failureStatus.textContent,/来源授权已变化，请核对/);
+  const retry=failureStatus.children[0];
+  assert.equal(retry.textContent,'重试');
+  assert.equal(retry.href,'#affairs-check');
+  retry.fire('click',{preventDefault(){}});await settle();
+  assert.equal(rejected.requests.length,2,'The retry link starts a new check');
   const empty=setup({zeroRules:true});await settle();
   assert.match(empty.nodes['affairs-alert-list'].children[0].textContent,/规则/,'No saved rule must never be described as no trigger');
   assert.ok(!empty.nodes['affairs-alert-list'].children[0].textContent.includes('触发'));

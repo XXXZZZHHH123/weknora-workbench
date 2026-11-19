@@ -15,7 +15,17 @@
     measureNav();
     new ResizeObserver(measureNav).observe(nav);
   }
-  function inform(message, error = false) { status.textContent = message; status.dataset.error = String(error); }
+  function inform(message, error = false) {
+    status.textContent = error ? message + ' ' : message;
+    status.dataset.error = String(error);
+    if (error) {
+      const retry = document.createElement('a');
+      retry.href = '#affairs-check';
+      retry.textContent = '重试';
+      retry.addEventListener('click', event => { event.preventDefault(); check(); });
+      status.append(retry);
+    }
+  }
   function stamp(value, dateOnly = false) {
     const text = String(value ?? ''), match = text.match(/^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}))?/);
     return match ? (dateOnly || !match[2] ? match[1] : match[1] + ' ' + match[2]) : text;
@@ -26,7 +36,9 @@
     row.href = prefix + (typeof item.href === 'string' && item.href.startsWith('/sn/') ? item.href : '/sn/judgment');
     const title = document.createElement('div'), kind = document.createElement('span'), name = document.createElement('span');
     title.className = 'affairs-row-title'; kind.className = 'affairs-row-kind';
-    kind.textContent = {triggered: '研判触发', missing: '数据缺失', strategy: '策略条件', strategy_missing: '策略缺数'}[item.kind] || item.kind || '检查结果'; name.textContent = item.title || '';
+    kind.textContent = {triggered: '研判触发', missing: '数据缺失', undated: '无法按日期判断',
+      strategy: '策略条件', strategy_missing: '策略缺数'}[item.kind] || item.kind || '检查结果';
+    name.textContent = item.title || '';
     row.dataset.kind = typeof item.kind === 'string' ? item.kind : '';
     title.append(kind, name);
     const detail = document.createElement('div'); detail.className = 'affairs-row-detail';
@@ -115,12 +127,19 @@
   async function check() {
     if (busy || button.disabled) return;
     const changesBeforeCheck = monitorChanges;
+    const failed = '检查未完成，原记录已保留。';
     busy = true; button.disabled = true; button.dataset.busy = 'true'; inform('检查中…');
     try {
       const response = await researchFetch(prefix + '/api/sn/affairs/check', {method: 'POST'});
-      const result = await response.json();
-      if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : '检查未完成，原记录已保留。');
-      if (!Array.isArray(result.alerts)) throw new Error('检查结果格式不完整，原记录已保留。');
+      const result = await response.json().catch(() => null);
+      if (!response.ok) {
+        inform(typeof result?.detail === 'string' && result.detail.trim() ? result.detail : failed, true);
+        return;
+      }
+      if (!Array.isArray(result?.alerts)) {
+        inform('检查结果格式不完整，原记录已保留。', true);
+        return;
+      }
       const monitorsEdited = changesBeforeCheck !== monitorChanges;
       if (!monitorsEdited && Array.isArray(result.monitors)) currentMonitors = result.monitors;
       otherRows = result.alerts.filter(item => item.kind !== 'monitor').slice(0, 30).map(alertRow);
@@ -130,7 +149,7 @@
       inform([result.checked_at ? '检查于 ' + stamp(result.checked_at) : '',
         result.partial ? '部分结果' : ''].filter(Boolean).join(' · '));
       if (typeof window.dispatchEvent === 'function') window.dispatchEvent(new CustomEvent('affairs-checked'));
-    } catch (error) { inform(error.message || '检查未完成，原记录已保留。', true); }
+    } catch (error) { inform(error?.network ? error.message : failed, true); }
     finally { busy = false; button.disabled = !canCheck; button.dataset.busy = 'false'; }
   }
   button.addEventListener('click', check);

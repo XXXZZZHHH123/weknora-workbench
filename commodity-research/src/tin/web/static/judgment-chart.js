@@ -178,7 +178,8 @@
       cross.append(element('line', {y1: plot.top, y2: plot.bottom, class: 'judgment-chart-cross-line'}));
       cross.append(element('circle', {r: 3.5, class: 'judgment-chart-cross-point', style: `stroke:${lineColor}`}));
       svg.append(cross);
-      if (selectedWindow && !rendered.averages.find(item => item.window === selectedWindow)?.values.some(value => value !== null)) message(`MA${selectedWindow}：有效连续观测不足`);
+      if (metric.undated) message('按期间记录，暂无日期走势，请刷新页面');
+      else if (selectedWindow && !rendered.averages.find(item => item.window === selectedWindow)?.values.some(value => value !== null)) message(`MA${selectedWindow}：有效连续观测不足`);
       else message('');
     }
     function hide() {
