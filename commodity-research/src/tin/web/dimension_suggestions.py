@@ -268,8 +268,9 @@ def validate_suggestions(document, catalog, dimensions, groups):
         if not isinstance(row, dict):
             raise HTTPException(422, '模型留空原因格式无效')
         key = target(row)['id']
+        # A section with selections keeps them; a repeated reason keeps the first.
         if counts[key] or key in empty:
-            raise HTTPException(422, '模型留空原因与环节选择不一致，请重新生成建议')
+            continue
         empty[key] = reason(row)
     for row in ignored:
         key = row['item_id']

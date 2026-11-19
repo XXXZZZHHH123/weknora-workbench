@@ -578,3 +578,16 @@ def test_missing_empty_reason_with_usable_items_marks_the_section():
     items, sections, ignored, duplicates = suggestions.validate_suggestions(document, data, dimensions, groups)
     assert [row['series_id'] for row in items] == ['field-0']
     assert all(row['empty_reason'] == '模型未说明留空原因' for row in sections if not row['selected_count'])
+
+
+def test_empty_reason_for_a_selected_section_keeps_the_selection():
+    dimensions, data = axes(), catalog()
+    groups = validation_groups(dimensions, data)
+    document = response_for([item for item, _ in groups], [choice('field-0', section='Synthetic upstream')])
+    document['empty_reasons'].append({'dimension': 'supply', 'section': 'Synthetic upstream', 'reason': 'Conflicting'})
+    document['empty_reasons'].append(dict(document['empty_reasons'][0], reason='Repeated'))
+    items, sections, ignored, duplicates = suggestions.validate_suggestions(document, data, dimensions, groups)
+    assert [row['series_id'] for row in items] == ['field-0']
+    selected = [row for row in sections if row['selected_count']]
+    assert selected and all(row['empty_reason'] == '' for row in selected)
+    assert 'Repeated' not in [row['empty_reason'] for row in sections]
