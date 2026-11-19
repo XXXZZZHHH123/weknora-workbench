@@ -106,24 +106,25 @@
     return 'tin.judgment.chart.v1:' + JSON.stringify([context.tenant, context.user, context.workbench, metric.series_id]);
   }
 
-  function initialize(root) {
+  function mount(root, {preferenceKey, scheduleCycle = load => load(), cycleHeight} = {}) {
     if (root.dataset.chartReady) return;
     const source = root.querySelector('[data-chart-values]'), svg = root.querySelector('[data-metric-trend]');
     if (!source || !svg) return;
     let metric;
     try { metric = JSON.parse(source.textContent); } catch { return; }
     root.dataset.chartReady = 'true';
+    const lifetime = new AbortController(), listener = {signal: lifetime.signal};
     const tooltip = root.querySelector('[data-chart-tooltip]');
     const select = root.querySelector('[data-chart-ma]'), custom = root.querySelector('[data-chart-ma-custom]');
     const semantic = root.querySelector('[data-chart-semantics]'), streak = root.querySelector('[data-chart-streak]');
     const status = root.querySelector('[data-chart-status]');
     let selectedWindow = 0, revision = 0, rendered, selectedIndex = null;
-    const key = storageKey(metric);
+    const key = preferenceKey === undefined ? storageKey(metric) : preferenceKey;
     let preference = {};
     if (key) try { preference = JSON.parse(window.localStorage.getItem(key) || '{}') || {}; } catch { /* Presentation stays available without local storage. */ }
-    if ((metric.boundaries || []).some(item => item.kind === 'sma')) select.options[0].textContent = '按规则';
-    semantic.value = ['change', 'inventory'].includes(preference.semantics) ? preference.semantics : metric.trend_semantics === 'inventory' ? 'inventory' : 'change';
+    if (select && (metric.boundaries || []).some(item => item.kind === 'sma')) select.options[0].textContent = '按规则';
     function semantics() {
+      if (!semantic) return;
       const label = streakText(metric.streak, semantic.value);
       if (streak) streak.textContent = label;
       document.querySelectorAll('[data-judgment-compact]').forEach(other => {
@@ -133,12 +134,16 @@
       });
     }
     function savePreference() {
-      if (key) try { window.localStorage.setItem(key, JSON.stringify({semantics: semantic.value, view: preference.view === 'cycle' ? 'cycle' : 'trend'})); } catch { /* Presentation preference is optional. */ }
+      const view = preference.view === 'cycle' ? 'cycle' : 'trend';
+      if (key) try { window.localStorage.setItem(key, JSON.stringify(semantic ? {semantics: semantic.value, view} : {view})); } catch { /* Presentation preference is optional. */ }
     }
-    semantic.addEventListener('change', () => { semantics(); savePreference(); });
-    semantics();
+    if (semantic) {
+      semantic.value = ['change', 'inventory'].includes(preference.semantics) ? preference.semantics : metric.trend_semantics === 'inventory' ? 'inventory' : 'change';
+      semantic.addEventListener('change', () => { semantics(); savePreference(); }, listener);
+      semantics();
+    }
 
-    function message(text) { status.textContent = text; status.hidden = !text; }
+    function message(text) { if (status) { status.textContent = text; status.hidden = !text; } }
     function render() {
       const width = svg.getBoundingClientRect().width || root.clientWidth || 480;
       rendered = shape(metric.timeline || metric.points || [], metric.boundaries || [], selectedWindow, width);
@@ -217,9 +222,9 @@
         const delta = Math.abs(point.x - x); if (delta < distance) { nearest = index; distance = delta; }
       });
       if (nearest >= 0) show(nearest);
-    });
-    svg.addEventListener('pointerleave', hide);
-    svg.addEventListener('blur', hide);
+    }, listener);
+    svg.addEventListener('pointerleave', hide, listener);
+    svg.addEventListener('blur', hide, listener);
     svg.addEventListener('keydown', event => {
       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(event.key)) return;
       event.preventDefault(); if (event.key === 'Escape') { hide(); return; }
@@ -229,7 +234,7 @@
       else if (event.key === 'End') index = valid.length - 1;
       else index = Math.max(0, Math.min(valid.length - 1, (index < 0 ? valid.length - 1 : index) + (event.key === 'ArrowLeft' ? -1 : 1)));
       if (valid.length) show(valid[index]);
-    });
+    }, listener);
     async function chooseAverage() {
       const ownRevision = ++revision;
       custom.hidden = select.value !== 'custom';
@@ -259,31 +264,47 @@
       }
       if (ownRevision === revision) render();
     }
-    select.addEventListener('change', chooseAverage); custom.addEventListener('change', chooseAverage);
+    if (select && custom) {
+      select.addEventListener('change', chooseAverage, listener);
+      custom.addEventListener('change', chooseAverage, listener);
+    }
     render();
+    let resizeObserver;
     if (typeof ResizeObserver !== 'undefined') {
-      new ResizeObserver(() => {
+      resizeObserver = new ResizeObserver(() => {
         if (svg.getBoundingClientRect().width && Math.abs(svg.getBoundingClientRect().width - rendered.plot.width) >= 1) { hide(); render(); }
-      }).observe(svg);
+      });
+      resizeObserver.observe(svg);
     }
     // 同期: the same indicator laid over past years (the indicator page's cycle view), read on demand.
     const views = [...root.querySelectorAll('[data-chart-view]')], cycleBox = root.querySelector('[data-chart-cycle]');
-    const plotBox = root.querySelector('.judgment-chart-plot'), averageControl = select.closest('label');
+    const plotBox = root.querySelector('.judgment-chart-plot'), averageControl = select?.closest('label');
     let cycleChart = null, cycleLoading = null;
+    async function readCycle() {
+      const query = new URLSearchParams(); if (root.dataset.chartDate) query.set('date', root.dataset.chartDate);
+      const url = (window.RESEARCH_PREFIX || '') + '/api/sn/indicators/' + encodeURIComponent(metric.series_id) + '/cycle?' + query;
+      const response = await window.researchFetch(url, {signal: lifetime.signal});
+      const data = await response.json();
+      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '往年同期暂时无法读取，请稍后重试');
+      return data;
+    }
     function loadCycle() {
       if (cycleChart || cycleLoading || !window.ChartKit) return cycleLoading;
       cycleBox.textContent = '正在读取往年同期…';
-      cycleLoading = (async () => {
-        try {
-          const query = new URLSearchParams(); if (root.dataset.chartDate) query.set('date', root.dataset.chartDate);
-          const response = await window.researchFetch((window.RESEARCH_PREFIX || '') + '/api/sn/indicators/' + encodeURIComponent(metric.series_id) + '/cycle?' + query);
-          const data = await response.json();
-          if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '往年同期暂时无法读取，请稍后重试');
-          cycleBox.replaceChildren();
-          cycleChart = window.ChartKit.render(cycleBox, data, {width: Math.max(320, Math.round(cycleBox.clientWidth || root.clientWidth || 480)), height: 320});
-        } catch (error) { cycleBox.textContent = error.message; }
-        finally { cycleLoading = null; }
-      })();
+      const {signal} = lifetime;
+      cycleLoading = Promise.resolve().then(() => {
+        if (!signal.aborted) return scheduleCycle(readCycle, signal);
+      }).then(data => {
+        if (signal.aborted) return;
+        const width = cycleBox.clientWidth || root.clientWidth || 480;
+        const options = cycleHeight === undefined
+          ? {width: Math.max(320, Math.round(width)), height: 320}
+          : {width, height: cycleHeight, minPlotHeight: 80, responsive: true};
+        cycleBox.replaceChildren();
+        cycleChart = window.ChartKit.render(cycleBox, data, options);
+      }).catch(error => {
+        if (!signal.aborted) cycleBox.textContent = error.message;
+      }).finally(() => { cycleLoading = null; });
       return cycleLoading;
     }
     function showView(view, persist = true) {
@@ -292,17 +313,30 @@
       if (plotBox) plotBox.hidden = cycle;
       if (cycleBox) cycleBox.hidden = !cycle;
       if (averageControl) averageControl.hidden = cycle;
-      if (cycle) { custom.hidden = true; hide(); } else if (select.value === 'custom') custom.hidden = false;
+      if (custom) custom.hidden = cycle || select?.value !== 'custom';
+      if (cycle) hide();
       if (persist) { preference.view = cycle ? 'cycle' : 'trend'; savePreference(); }
       if (cycle) loadCycle();
     }
-    views.forEach(button => button.addEventListener('click', () => showView(button.dataset.chartView)));
+    views.forEach(button => button.addEventListener('click', () => showView(button.dataset.chartView), listener));
     if (preference.view === 'cycle' && cycleBox) showView('cycle', false);
+    return function destroy() {
+      if (lifetime.signal.aborted) return;
+      lifetime.abort();
+      revision++;
+      resizeObserver?.disconnect();
+      cycleChart?.destroy();
+      hide();
+      svg.replaceChildren();
+      cycleBox?.replaceChildren();
+      delete root.dataset.chartReady;
+    };
   }
 
   const api = {movingAverage, shape, streakText, boundaryText};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (typeof document === 'undefined') return;
+  window.JudgmentChart = Object.freeze({mount});
   function targetKey(target = {kind: 'judgment'}) {
     if (target.kind === 'evidence') return `evidence:${target.side}:${target.index}`;
     return target.id ? `${target.kind}:${target.id}` : 'judgment';
@@ -351,7 +385,7 @@
   function boot() {
     const sources = new Map();
     document.querySelectorAll('[data-judgment-chart]').forEach(card => {
-      initialize(card);
+      mount(card);
       if (card.dataset.chartSeries) sources.set(card.dataset.chartSeries, card.querySelector('[data-chart-values]'));
     });
     document.querySelectorAll('[data-compact-preview]').forEach(row => {

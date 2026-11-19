@@ -11,6 +11,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let suggestionTargets = new Map(), modelReviewDirty = false, setupDimensions, modelSetupJob, draftSetupJob;
   let templates, templateApplying = false, appliedTemplate, templateToken = 0;
   const renderers = new Set(), modelDialog = get('model-dialog'), picker = get('picker'), templateDialog = get('template-dialog');
+  const indicatorChart = get('indicator-chart'), cycleQueue = [];
+  let activeCycles = 0;
   const clone = value => JSON.parse(JSON.stringify(value));
   const itemName = item => item.name || item.title || item.id;
   const warningText = value => ({history_limited:'历史观测已达到读取上限，同期统计仅覆盖已读取窗口。',observation_window_limited:'观测已达到读取上限，统计仅覆盖已读取窗口。',baseline_unavailable:'缺少可比的往期观测。',insufficient_cycles:'有效往期同期样本不足3年，不提供排名。',empty_segments_omitted:'没有观测的历史周期已省略。',current_missing:'当前周期没有有效观测。',frequency_unavailable:'无法推断观测频率。',no_observations:'没有有效观测。',segments_overlap:'历史周期有重叠。',non_finite_transform:'部分观测转换后无有效数值。',non_finite_result:'部分计算结果无有效数值。'}[value] || '数据提示：' + value);
@@ -56,7 +58,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   function cardInfo(item) {
     const rows = cardNotes(item), notes = item.field_metadata?.header_notes || [];
-    if (!rows.length && !notes.length) return null;
     const root = node('div', 'dimensions-info'), trigger = button('ⓘ', () => {
       if (activeInfo?.root === root && activeInfo.pinned) closeInfo(); else show(true);
     }), panel = node('div', 'dimensions-tooltip');
@@ -69,12 +70,13 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       panel.setAttribute('role', 'tooltip'); trigger.setAttribute('aria-describedby', panel.id);
     }
+    panel.append(node('p', 'dimensions-info-name', itemName(item)));
     for (const row of rows) panel.append(node('p', row.css || '', row.text));
     if (notes.length) panel.append(renderHeaderNotes(notes));
     function show(pinned = false) {
       const wasPinned = activeInfo?.root === root && activeInfo.pinned;
       if (activeInfo?.root !== root) closeInfo();
-      window.ChartHover?.close(); panel.hidden = false; trigger.setAttribute('aria-expanded', 'true');
+      panel.hidden = false; trigger.setAttribute('aria-expanded', 'true');
       panel.style.transform = '';
       const box = panel.getBoundingClientRect(), viewportWidth = document.documentElement.clientWidth;
       const shift = Math.max(8 - box.left, Math.min(0, viewportWidth - 8 - box.right));
@@ -109,7 +111,34 @@ document.addEventListener('DOMContentLoaded', () => {
   function freshId(prefix = 's-') { const bytes = new Uint8Array(4); crypto.getRandomValues(bytes); return prefix + [...bytes].map(v => v.toString(16).padStart(2, '0')).join(''); }
   const editable = () => config?.can_write === true;
   const dims = () => editing ? draft : config.dimensions;
-  function clearRenderers() { closeInfo(); renderers.forEach(value => value.destroy?.()); renderers.clear(); window.ChartHover?.close(); }
+  function clearRenderers() { closeInfo(); renderers.forEach(value => value.destroy()); renderers.clear(); }
+  function startCycleReads() {
+    while (activeCycles < 4 && cycleQueue.length) cycleQueue.shift()();
+  }
+  function scheduleCycle(load, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) { reject(signal.reason); return; }
+      function cancel() {
+        cycleQueue.splice(cycleQueue.indexOf(start), 1);
+        reject(signal.reason);
+      }
+      async function start() {
+        signal.removeEventListener('abort', cancel);
+        activeCycles++;
+        try { resolve(await load()); }
+        catch (error) { reject(error); }
+        finally { activeCycles--; startCycleReads(); }
+      }
+      cycleQueue.push(start);
+      signal.addEventListener('abort', cancel, {once: true});
+      startCycleReads();
+    });
+  }
+  function chartPreferenceKey(series) {
+    const context = window.RESEARCH_CONTEXT;
+    if (!context?.tenant || !context?.user || !context?.workbench || !series) return null;
+    return 'tin.dimensions.chart.v1:' + JSON.stringify([context.tenant, context.user, context.workbench, series]);
+  }
   function allItems() { return (draft || config?.dimensions || []).flatMap(d => (d.sections || []).flatMap(s => s.items || [])); }
   function countItems() { return allItems().length; }
   function serialized(dimensions = draft) {
@@ -173,10 +202,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const limits = editing ? draftLimits() : [];
     get('template-limits').textContent = limits.join('；'); get('template-limits').hidden = !limits.length;
     const dataById = new Map((current?.dimensions || []).map(d => [d.id, d]));
+    const mounts = [];
     for (const [index, dim] of (starting ? [] : dims()).entries()) {
       const section = node('section', 'dimensions-section'); section.dataset.dimensionId = dim.id || ''; section.dataset.dimensionIndex = index;
       if (editing) renderEditor(section, dim, index);
       else {
+        section.classList.add('dimensions-section-view');
         const observed = dataById.get(dim.id), heading = node('header', 'dimensions-heading'), title = node('div');
         title.append(node('h2', '', dim.label));
         const summary = observed?.summary;
@@ -189,11 +220,17 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         section.append(heading);
         if (dim.description) section.append(node('p', 'dimensions-muted dimensions-description', dim.description));
-        const stages = observed?.sections || dim.sections || [];
-        for (const stage of stages) {
-          const row = node('section', 'dimensions-stage'); row.append(node('h3', '', stage.label)); const grid = node('div', 'dimensions-grid');
-          for (const item of stage.items || []) grid.append(renderCard(item)); row.append(grid); section.append(row);
+        const stages = node('div', 'dimensions-stages');
+        for (const stage of observed?.sections || dim.sections || []) {
+          const items = stage.items || [];
+          const row = node('section', 'dimensions-stage');
+          if (items.length !== 1) row.classList.add('dimensions-stage-wide');
+          row.dataset.stageId = stage.id;
+          const grid = node('div', 'dimensions-grid');
+          for (const item of items) grid.append(renderCard(item, mounts));
+          row.append(node('h3', '', stage.label), grid); stages.append(row);
         }
+        section.append(stages);
         if (!(dim.sections || []).some(s => s.items?.length)) {
           const empty = node('div', 'dimensions-empty', '还没有绑定指标');
           if (editable()) empty.append(button('添加', () => { startEdit(); ensureStage(index); openPicker(index, 0); }), button('让模型建议', () => openModels('suggest')));
@@ -202,6 +239,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       root.append(section);
     }
+    mounts.forEach(mount => mount());
     get('empty').hidden = allItems().length > 0 || editing || starting;
     const unassigned = config.evidence?.unassigned, removed = config.evidence?.deleted;
     get('evidence').textContent = config.evidence_available === false ? '' : [unassigned ? `未标注维度的研判依据 ${unassigned.total ?? unassigned} 条` : '', removed ? `已删除维度的研判依据 ${removed.total ?? removed} 条，请在研究判断中重新指派。` : ''].filter(Boolean).join('；');
@@ -236,39 +274,62 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     return row;
   }
-  function renderCard(item) {
-    const card = node('article', 'dimensions-card'), body = node(initial.restricted ? 'div' : 'a', 'dimensions-card-main');
-    if (!initial.restricted) body.href = prefix + (item.kind === 'chart' ? '/sn/charts/' : '/sn/indicators/') + encodeURIComponent(item.id) + (get('date').value ? '?date=' + get('date').value : '');
-    card.dataset.itemId = item.id; body.append(node('h4', '', itemName(item))); card.append(body);
+  function renderCard(item, mounts) {
+    const card = node('article', 'dimensions-card dimensions-view-card');
+    const body = node('div', 'dimensions-card-main judgment-metric');
+    const name = itemName(item), title = node('h4', 'judgment-metric-heading');
+    const label = node(initial.restricted ? 'span' : 'a', 'dimensions-card-title', name);
+    title.title = name;
+    if (!initial.restricted) label.href = prefix + (item.kind === 'chart' ? '/sn/charts/' : '/sn/indicators/') + encodeURIComponent(item.id) + (get('date').value ? '?date=' + get('date').value : '');
+    title.append(label); body.append(title); card.append(body, cardInfo(item));
+    card.dataset.itemId = item.id;
     if (item.kind === 'indicator') card.id = 'dimension-indicator-' + item.id;
-    const info = cardInfo(item); if (info) card.append(info);
     const references = item.kind === 'indicator' ? judgmentReferences(item) : null;
-    if (references) card.append(references);
-    if (item.status === 'unavailable' || item.status === 'missing' || item.reason) { body.append(node('p', 'dimensions-error', item.reason || item.notice || '条目暂不可用')); return card; }
+    if (item.status === 'unavailable' || item.status === 'missing' || item.reason) {
+      body.append(node('p', 'dimensions-error', item.reason || item.notice || '条目暂不可用'));
+      if (references) body.append(references);
+      return card;
+    }
     if (item.kind === 'chart') {
       const plot = node('div', 'dimensions-chart-plot'); body.append(plot);
       if (item.payload && window.ChartKit) {
-        try { renderers.add(window.ChartKit.render(plot, item.payload, {definition: item.definition, thumbnail: true, width: 500, height: 155})); } catch (error) { plot.textContent = error.message; }
+        mounts.push(() => {
+          try {
+            renderers.add(window.ChartKit.render(plot, item.payload, {
+              definition: item.definition, responsive: true, height: 220, minPlotHeight: 80
+            }));
+          } catch (error) { plot.textContent = error.message; }
+        });
       } else plot.textContent = '图表数据读取中…';
       return card;
     }
-    const unit = knownUnit(item.unit), display = item.display || {}, value = node('p', 'dimensions-value', display.latest ?? '—');
-    if (unit) value.append(node('small', '', unit));
-    body.append(value, node('p', 'dimensions-date dimensions-muted', item.date || '—'));
+    const unit = knownUnit(item.unit), display = item.display || {}, value = node('div', 'judgment-metric-value');
+    value.append(node('strong', '', display.latest ?? '—'));
+    if (unit) value.append(node('span', '', unit));
     const baselineLabel = item.baseline?.label === '较上期' ? '较上期 ' + (item.baseline.date || item.previous_date || '').slice(5) : item.baseline?.label || ('较 ' + (item.previous_date || '').slice(5));
     const noUpdate = item.update_status === 'no_update' || item.direction === 'no_update';
     const change = noUpdate ? '本期无新数据' : item.change === null || item.change === undefined ? '暂无可比观测' : `${baselineLabel} ${display.change ?? '—'}${unit ? ' ' + unit : ''}${display.change_pct ? '（' + display.change_pct + '）' : ''}`;
-    body.append(node('p', 'dimensions-change ' + (noUpdate ? 'no_update' : item.direction || ''), change));
-    body.append(node('p', 'dimensions-position', item.position?.rank != null ? item.position.text || '—' : '—'));
-    if (item.freshness?.stale) body.append(node('span', 'dimensions-stale', `停更 ${item.freshness.age_days} 天`));
-    if (item.points?.length) body.append(spark(item.points));
-    if (item.status === 'ok' && !initial.restricted) window.ChartHover?.attach(body, {key: 'dimension:' + item.id + ':' + get('date').value,title: itemName(item),load: async () => ({title: itemName(item),data: await request('/indicators/' + encodeURIComponent(item.id) + '/cycle?' + new URLSearchParams({date: get('date').value})),definition: {title: itemName(item),time: {mode: 'cycle'}}})});
+    value.append(node('small', 'dimensions-change ' + (noUpdate ? 'no_update' : item.direction || ''), change));
+    const metadata = node('div', 'dimensions-card-meta');
+    metadata.append(node('span', 'dimensions-date dimensions-muted', item.date || '—'),
+      node('span', 'dimensions-position', item.position?.rank != null ? item.position.text || '—' : '—'));
+    if (item.freshness?.stale) metadata.append(node('span', 'dimensions-stale', `停更 ${item.freshness.age_days} 天`));
+    body.append(value, metadata);
+    if (references) body.append(references);
+    if (item.points?.length) {
+      const chart = indicatorChart.content.cloneNode(true), series = item.series_id || item.id;
+      chart.querySelector('[data-chart-values]').textContent = JSON.stringify({series_id: series, unit, points: item.points});
+      chart.querySelector('[data-metric-trend]').setAttribute('aria-label', `${name}近期观测走势，横轴日期，纵轴数值${unit ? '（' + unit + '）' : ''}`);
+      body.dataset.chartDate = get('date').value;
+      body.append(chart);
+      mounts.push(() => {
+        const destroy = window.JudgmentChart.mount(body, {
+          preferenceKey: initial.restricted ? null : chartPreferenceKey(series), scheduleCycle, cycleHeight: 260
+        });
+        if (destroy) renderers.add({destroy});
+      });
+    }
     return card;
-  }
-  function spark(points) {
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 240 40'); svg.setAttribute('preserveAspectRatio', 'none'); svg.classList.add('dimensions-spark'); svg.setAttribute('aria-label', '最近 ' + points.length + ' 个观测点走势');
-    const values = points.map(p => p.value), lo = Math.min(...values), hi = Math.max(...values), dates = points.map(p => Date.parse(p.date)), first = dates[0], span = dates.at(-1) - first;
-    const line = document.createElementNS(svg.namespaceURI, 'polyline'); line.setAttribute('points', points.map((p, i) => `${span ? (dates[i] - first) / span * 236 + 2 : 120},${hi === lo ? 20 : 37 - (p.value - lo) / (hi - lo) * 34}`).join(' ')); line.setAttribute('fill', 'none'); line.setAttribute('stroke', 'currentColor'); line.setAttribute('stroke-width', '1.7'); svg.append(line); return svg;
   }
   function input(value, label, action, tag = 'input') {
     const el = node(tag); el.value = value || ''; el.setAttribute('aria-label', label); if (tag === 'input') el.type = 'text'; el.addEventListener('input', () => action(el.value)); return el;

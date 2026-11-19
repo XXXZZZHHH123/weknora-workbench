@@ -360,8 +360,9 @@
     const cycle = multiCycle || Array.isArray(payload.segments);
     const transform = payload.transform || payload.template?.transform || definition.time?.transform || 'raw';
     const exporting = !!options.export, exportTheme = exporting ? exportStyle(options.width || 960) : null;
+    const responsive = options.responsive && !exporting, fitLegend = exporting || responsive;
     const title = options.title || (exporting ? definition.title : '');
-    const measure = exporting ? textMeasure(document, exportTheme.fontFamily) : null;
+    const measure = fitLegend ? textMeasure(document, exportTheme?.fontFamily || root.getComputedStyle(container).fontFamily) : null;
     const base = definition.curves?.[0] || {};
     const hasPoints = part => (part.points || []).some(p => finite(p.x) && finite(p.value));
     const parts = multiCycle ? payload.curves.flatMap((curve, curveIndex) => {
@@ -424,11 +425,14 @@
       wrapper.append(allYears);
     }
     let svg, destroyed = false;
+    let targetWidth = responsive ? Math.max(200, options.width || 960) : options.width || 960;
+    const currentWidth = () => container.clientWidth ? Math.max(200, container.clientWidth) : targetWidth;
     function draw() {
       if (destroyed) return;
       tip.hidden = true;
       allYears?.setAttribute('aria-pressed', String(hidden.size === 0));
-      const targetWidth = options.width || 960, targetHeight = options.height || 440;
+      if (responsive) targetWidth = currentWidth();
+      const targetHeight = options.height || 440;
       // Interactive exactSize callers retain their old design scale. PPT exports
       // lay out directly in slot pixels so small slots never shrink their text.
       const designScale = options.exactSize && !exporting ? Math.min(1, targetWidth / 960, targetHeight / (160 + Math.ceil(series.length / 4) * 24)) : 1;
@@ -444,7 +448,7 @@
       const bandLegend = bandShown ? [{kind: 'range', label: `近 ${bandCount} ${bandUnit}区间`, title: `往${bandUnit}同期最低至最高（近 ${bandCount} ${bandUnit}）`},
         {kind: 'mean', label: `近 ${bandCount} ${bandUnit}均值`, title: `往${bandUnit}同期均值（近 ${bandCount} ${bandUnit}）`}] : [];
       const legendLayout = [];
-      if (exporting && !options.thumbnail) {
+      if (fitLegend && !options.thumbnail) {
         let x = 8 * scale, row = 0;
         for (const s of [...legendSeries, ...bandLegend]) {
           const label = fitText(s.kind ? s.label : s.label + (s.current ? '（当前）' : ''), width - 40 * scale, value => measure(value, legendFont));
@@ -453,12 +457,13 @@
           legendLayout.push({x, row, label, width: itemWidth}); x += itemWidth + 14 * scale;
         }
       }
-      const legendRows = options.thumbnail ? 0 : exporting ? (legendLayout.at(-1)?.row ?? -1) + 1 : Math.ceil((series.length + bandLegend.length) / 4);
+      const legendRows = options.thumbnail ? 0 : fitLegend ? (legendLayout.at(-1)?.row ?? -1) + 1 : Math.ceil((series.length + bandLegend.length) / 4);
       const margin = exporting ? {left: 72 * scale, right: 72 * scale,
         top: 8 * scale + titleLines.length * exportTheme.titleFontSize * 1.3 + axisFont * 1.7,
         bottom: axisFont * 2.6 + legendRows * legendRowHeight + 8 * scale}
         : {left: 72, right: 72, top: options.title ? 46 : 28, bottom: 54 + legendRows * 24};
-      const height = exporting ? targetHeight : options.exactSize ? targetHeight / designScale : Math.max(options.height || (options.thumbnail ? 210 : 440), margin.top + margin.bottom + (options.thumbnail ? 80 : 200));
+      const minPlotHeight = options.minPlotHeight ?? (options.thumbnail ? 80 : 200);
+      const height = exporting ? targetHeight : options.exactSize ? targetHeight / designScale : Math.max(options.height || (options.thumbnail ? 210 : 440), margin.top + margin.bottom + minPlotHeight);
       if (exporting && height - margin.top - margin.bottom < axisFont * 3) throw new Error('图位过小，无法容纳清晰的标题、坐标轴与图例，请增大图位');
       let right = width - margin.right;
       const bottom = height - margin.bottom;
@@ -545,7 +550,7 @@
         const x = xScale(tick.x), labelX = tick.labelX ?? tick.x;
         if (tick.x >= minX && tick.x <= maxX) add('line', {x1: x, x2: x, y1: bottom, y2: bottom + 4 * scale, stroke: exportTheme?.grid || 'var(--line)'});
         if (labelX >= minX && labelX <= maxX) {
-          if (exporting) {
+          if (measure) {
             const half = measure(tick.label, axisFont) / 2;
             if (xScale(labelX) - half < lastLabelRight + 6 * scale) return;
             lastLabelRight = xScale(labelX) + half;
@@ -656,14 +661,14 @@
       if (!options.thumbnail) {
         legendSeries.forEach((s, index) => {
           const layout = legendLayout[index];
-          const x = exporting ? layout.x : margin.left + (index % 4) * ((right - margin.left) / 4);
-          const y = exporting ? height - 8 * scale - (legendRows - 1 - layout.row) * legendRowHeight : bottom + 48 + Math.floor(index / 4) * 24;
+          const x = layout?.x ?? margin.left + (index % 4) * ((right - margin.left) / 4);
+          const y = exporting ? height - 8 * scale - (legendRows - 1 - layout.row) * legendRowHeight : bottom + 48 + (layout?.row ?? Math.floor(index / 4)) * 24;
           const legend = add('g', {role: 'button', tabindex: 0, 'aria-label': s.label, 'aria-pressed': String(!hidden.has(s.key)), 'data-legend': s.key, opacity: hidden.has(s.key) ? .4 : 1});
-          add('rect', {x: x - 4 * scale, y: y - 16 * scale, width: exporting ? layout.width + 4 * scale : (right - margin.left) / 4 - 8, height: exporting ? legendRowHeight : 23, fill: exportTheme?.background || 'var(--surface)'}, undefined, legend);
+          add('rect', {x: x - 4 * scale, y: y - 16 * scale, width: layout ? layout.width + 4 * scale : (right - margin.left) / 4 - 8, height: exporting ? legendRowHeight : 23, fill: exportTheme?.background || 'var(--surface)'}, undefined, legend);
           const {color, width, dash, opacity} = appearance(s);
           add('line', {x1: x, x2: x + 18 * scale, y1: y - 4 * scale, y2: y - 4 * scale, stroke: color, 'stroke-width': width, 'stroke-dasharray': dash, opacity}, undefined, legend);
           const label = s.label + (s.current ? '（当前）' : ''), short = label.length > 20 ? label.slice(0, 19) + '…' : label;
-          const text = add('text', {x: x + 24 * scale, y, fill: exportTheme?.text || 'var(--text)', 'font-size': legendFont}, exporting ? layout.label : short, legend);
+          const text = add('text', {x: x + 24 * scale, y, fill: exportTheme?.text || 'var(--text)', 'font-size': legendFont}, layout?.label ?? short, legend);
           add('title', {}, label, text);
           const toggle = () => { hidden.has(s.key) ? hidden.delete(s.key) : hidden.add(s.key); draw(); };
           legend.addEventListener('click', toggle);
@@ -671,13 +676,13 @@
         });
         bandLegend.forEach((item, offset) => {
           const index = legendSeries.length + offset, layout = legendLayout[index];
-          const x = exporting ? layout.x : margin.left + (index % 4) * ((right - margin.left) / 4);
-          const y = exporting ? height - 8 * scale - (legendRows - 1 - layout.row) * legendRowHeight : bottom + 48 + Math.floor(index / 4) * 24;
+          const x = layout?.x ?? margin.left + (index % 4) * ((right - margin.left) / 4);
+          const y = exporting ? height - 8 * scale - (legendRows - 1 - layout.row) * legendRowHeight : bottom + 48 + (layout?.row ?? Math.floor(index / 4)) * 24;
           const key = add('g', {'data-band-legend': item.kind});
           const color = exportTheme?.band || 'var(--text-muted)';
           if (item.kind === 'range') add('rect', {x, y: y - 9 * scale, width: 18 * scale, height: 10 * scale, fill: color, 'fill-opacity': exporting ? .12 : .13}, undefined, key);
           else add('line', {x1: x, x2: x + 18 * scale, y1: y - 4 * scale, y2: y - 4 * scale, stroke: color, 'stroke-width': 1.5 * scale, 'stroke-dasharray': '6 4'}, undefined, key);
-          const text = add('text', {x: x + 24 * scale, y, fill: exportTheme?.text || 'var(--text-muted)', 'font-size': legendFont}, exporting ? layout.label : item.label, key);
+          const text = add('text', {x: x + 24 * scale, y, fill: exportTheme?.text || 'var(--text-muted)', 'font-size': legendFont}, layout?.label ?? item.label, key);
           add('title', {}, item.title, text);
         });
         const crosshair = add('line', {y1: margin.top, y2: bottom, stroke: 'var(--text-muted)', 'stroke-dasharray': '3 3', visibility: 'hidden', 'pointer-events': 'none'});
@@ -717,7 +722,15 @@
     draw();
     const observer = !exporting && typeof root.MutationObserver === 'function' ? new root.MutationObserver(draw) : null;
     observer?.observe(document.documentElement, {attributes: true, attributeFilter: ['class', 'style', 'theme-mode']});
-    return {destroy() { destroyed = true; observer?.disconnect(); wrapper.remove(); }, ...imageMethods(() => svg, document)};
+    const resizeObserver = responsive && typeof root.ResizeObserver === 'function'
+      ? new root.ResizeObserver(() => { if (currentWidth() !== targetWidth) draw(); }) : null;
+    resizeObserver?.observe(container);
+    return {destroy() {
+      destroyed = true;
+      observer?.disconnect();
+      resizeObserver?.disconnect();
+      wrapper.remove();
+    }, ...imageMethods(() => svg, document)};
   }
   render.sequence = 0;
   const api = {render, renderTable, exportStyle, monthMidpoint, monthlyBand, medianInterval, recurringGap, shouldBreak, splitObservations, cycleTicks, dateTicks, niceAxis, formatNumber, annualSegments, visibleCycleKeys, alignAxes, filterBand, bandRuns, nearestPoint, tooltipValues, ruleOverlays};

@@ -1,14 +1,22 @@
 {% extends "base.html" %}
+{% from "_judgment_metric.html" import metric_chart_switch, metric_chart_plot, metric_chart_cycle %}
 {% block title %}研究维度 · 商品研究{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="{{ research_static_prefix() }}/static/dimensions.css?v={{ static_version() }}">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/charts.css?v={{ static_version() }}">
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/judgment-research.css?v={{ static_version() }}">
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/dimensions.css?v={{ static_version() }}">
 <script defer src="{{ research_static_prefix() }}/static/chart-kit.js?v={{ static_version() }}"></script>
-<script defer src="{{ research_static_prefix() }}/static/chart-hover.js?v={{ static_version() }}"></script>
+<script defer src="{{ research_static_prefix() }}/static/judgment-chart.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/dimensions.js?v={{ static_version() }}"></script>
 {% endblock %}
 {% block main %}
 <script id="dimensions-page" type="application/json">{{ dimension_page | tojson }}</script>
+<template id="dimensions-indicator-chart">
+  <script type="application/json" data-chart-values></script>
+  {% if not dimension_page.restricted %}<div class="judgment-chart-toolbar">{{ metric_chart_switch() }}</div>{% endif %}
+  {{ metric_chart_plot() }}
+  {% if not dimension_page.restricted %}{{ metric_chart_cycle() }}{% endif %}
+</template>
 <section id="dimensions-app" class="dimensions-app" aria-labelledby="dimensions-title">
   <header class="dimensions-toolbar">
     <div><h1 id="dimensions-title">研究维度</h1><p class="dimensions-muted">按研究维度整理指标与图表，观察本期变化。</p></div>
