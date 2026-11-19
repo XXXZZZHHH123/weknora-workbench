@@ -7,9 +7,10 @@ from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 import pytest
 
-from structured_data import ai_review
+from structured_data import ai_review, model_gateway
 from structured_data.ai_review import MAX_INPUT_BYTES, AIRequestBudget, assist_mapping, suggest_mapping
 from structured_data.imports import ImportManager
+from structured_data.scanner import scan_workbook
 
 
 def fixture(tmp_path, *, annotation=None):
@@ -262,6 +263,214 @@ def test_wide_mapping_suggestion_rejects_unverified_notes(
     assert rejection.value.review_target['field'] == 'header_note_cells'
     assert len(calls) == 1
     assert manager.get(import_id) == saved_review
+
+
+def suggest_cleanup_roles_with_model(monkeypatch, source, sheet, mapping, suggestion):
+    def complete(config, messages, **kwargs):
+        payload = json.loads(messages[1]['content'])
+        assert payload['sheet'] == sheet['name']
+        assert payload['header_role_cleanup'] is True
+        return {'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps(suggestion)}}]}
+
+    monkeypatch.setattr(model_gateway, 'complete', complete)
+    budget = AIRequestBudget(1)
+    result = ai_review.suggest_header_cleanup(source, {'native_model_id': 'fixture'}, sheet, mapping, budget, None)
+    assert budget.used == 1
+    assert not result['diagnostics']
+    return result
+
+
+def header_cleanup_workbook(tmp_path, sheet_name, column_headers, *,
+                            old_names=None, dimensions=None, column_metadata=None, merged_ranges=()):
+    source = tmp_path / 'header-roles.xlsx'
+    book = Workbook()
+    ws = book.active
+    ws.title = sheet_name
+    header_rows = list(range(1, len(column_headers[0]) + 1))
+    columns = [get_column_letter(index) for index in range(2, 2 + len(column_headers))]
+    for row, texts in enumerate(zip(*column_headers), 1):
+        ws.append(['日期' if row == 1 else None, *texts])
+    for merged in merged_ranges:
+        ws.merge_cells(merged)
+    for month in (1, 2):
+        ws.append([datetime(2024, month, 1), *([month] * len(columns))])
+    book.save(source)
+    sheet, = scan_workbook(source, use_reviewed_mappings=False)['sheets']
+
+    def source_ref(col, row):
+        ref = f'{col}{row}'
+        return next((merged.start_cell.coordinate for merged in ws.merged_cells.ranges if ref in merged), ref)
+
+    mapping = {'sheet': sheet_name, 'fingerprint': sheet['fingerprint'], 'blocks': [{
+        'date_mode': 'date', 'date_column': 'A', 'header_rows': header_rows,
+        'data_start_row': header_rows[-1] + 1, 'data_end_row': header_rows[-1] + 2,
+        'columns': [{'column': col, 'header_cells': [source_ref(col, row) for row in header_rows],
+                     'metric': old_names[index] if old_names else ' / '.join(column_headers[index]),
+                     'dimensions': dimensions[index] if dimensions else {},
+                     **(column_metadata or {}).get(col, {})}
+                    for index, col in enumerate(columns)],
+    }]}
+    return source, sheet, mapping
+
+
+def cleanup_role_suggestion(tmp_path, monkeypatch, sheet_name, roles, column_headers, **mapping_options):
+    source, sheet, mapping = header_cleanup_workbook(tmp_path, sheet_name, column_headers, **mapping_options)
+    block, = mapping['blocks']
+    evidence = {}
+    for row, role in enumerate(roles, 1):
+        evidence.setdefault(role, []).extend(dict.fromkeys(column['header_cells'][row - 1] for column in block['columns']))
+    suggestion = {'block_updates': [{'block_index': 0, 'header_roles': [
+        {'row': row, 'role': role} for row, role in enumerate(roles, 1)]}],
+        'evidence': [{'block_index': 0, 'field': role, 'cells': cells} for role, cells in evidence.items()]}
+    return suggest_cleanup_roles_with_model(monkeypatch, source, sheet, mapping, suggestion), mapping
+
+
+def test_legacy_header_suggestion_restores_differing_notes(tmp_path, monkeypatch):
+    source, sheet, mapping = header_cleanup_workbook(tmp_path, '多列行情', [
+        ('收盘价', 'CF01M.CZC'), ('收盘价', 'CF05M.CZC'), ('成交量', '人工复核说明'),
+    ])
+    notes = ['B2', 'C2', 'D2']
+    suggestion = {'block_updates': [{'block_index': 0, 'header_note_cells': notes, 'metric_header_rows': [1]}],
+                  'evidence': [{'block_index': 0, 'field': 'header_note_cells', 'cells': notes},
+                               {'block_index': 0, 'field': 'metric', 'cells': ['B1', 'C1', 'D1']}]}
+    calls = []
+    mock_model(monkeypatch, [suggestion], calls)
+    config = {'model': 'fixture', 'base_url': 'https://example.invalid/v1', 'api_key': 'fixture'}
+    budget = AIRequestBudget(1)
+    result = ai_review._suggest_headers(source, config, mapping, mapping, sheet, budget, None,
+                                        strict=True, whole_sheet=True)
+    assert len(calls) == 1
+    assert result['diagnostics'] == []
+    block, = result['mapping']['blocks']
+    assert [column['metric'] for column in block['columns']] == ['收盘价 / CF01M.CZC', '收盘价 / CF05M.CZC', '成交量']
+    assert [column['header_cells'] for column in block['columns']] == [['B1', 'B2'], ['C1', 'C2'], ['D1']]
+    assert block['header_note_cells'] == ['D2']
+    assert result['renamed_fields'] == 1
+    for code in ('CF01M.CZC', 'CF05M.CZC'):
+        assert f'为避免与同表其他列重名，保留：{code}' in result['notice']
+
+
+@pytest.mark.parametrize(('sheet_name', 'roles', 'column_headers', 'restored_row', 'expected_names'), [
+    pytest.param('郑棉期货', ('name', 'code', 'code'),
+                 [('收盘价', 'close', 'CF01M.CZC'), ('收盘价', 'close', 'CF05M.CZC')],
+                 3, ['收盘价 / CF01M.CZC', '收盘价 / CF05M.CZC'], id='cotton-futures-contract'),
+    pytest.param('美棉期货', ('note', 'code', 'name', 'code'),
+                 [('收盘价', 'close', 'ICE2号棉花', 'CT.NYB'), ('结算价', 'settle', 'ICE2号棉花', 'CT.NYB')],
+                 1, ['收盘价 / ICE2号棉花', '结算价 / ICE2号棉花'], id='cotton-futures-measure'),
+    pytest.param('淘宝服装销售', ('note', 'name'), [('销售额(亿元)', '运动服'), ('销量(万件)', '运动服')],
+                 1, ['销售额(亿元) / 运动服', '销量(万件) / 运动服'], id='apparel-sales-measure'),
+    pytest.param('新疆棉产区气象数据', ('note', 'name'),
+                 [('阿克苏:阿拉尔', 'Ave. T. (ºC)'), ('喀什:喀什', 'Ave. T. (ºC)')],
+                 1, ['阿克苏:阿拉尔 / Ave. T. (ºC)', '喀什:喀什 / Ave. T. (ºC)'], id='weather-station'),
+    pytest.param('不同频率', ('name', 'frequency', 'code'), [('产量', '周', '量'), ('产量', '月', '量')],
+                 2, ['产量 / 周', '产量 / 月'], id='frequency'),
+])
+def test_cleanup_restores_differing_header_without_duplicating_metadata(
+        tmp_path, monkeypatch, sheet_name, roles, column_headers, restored_row, expected_names):
+    dimensions = [{'原表列': col, 'block': f'mapped_{index}'} for index, col in enumerate('BC', 1)]
+    result, _ = cleanup_role_suggestion(tmp_path, monkeypatch, sheet_name, roles, column_headers,
+                                        dimensions=dimensions)
+    block, = result['mapping']['blocks']
+    assert [column['metric'] for column in block['columns']] == expected_names
+    assert [column['dimensions'] for column in block['columns']] == dimensions
+    for column, texts in zip(block['columns'], column_headers):
+        col = column['column']
+        refs = [f'{col}{row}' for row in range(1, len(roles) + 1)]
+        assert column['header_cells'] == [ref for row, (ref, role) in enumerate(zip(refs, roles), 1)
+                                          if role == 'name' or row == restored_row]
+        assert column.get('source_code_cells', []) == [ref for row, (ref, role) in enumerate(zip(refs, roles), 1)
+                                                       if role == 'code' and row != restored_row]
+        restored_ref = refs[restored_row - 1]
+        assert restored_ref not in block.get('header_note_cells', [])
+        assert restored_ref not in column.get('header_note_cells', [])
+        assert restored_ref not in column.get('frequency_cells', [])
+        assert column.get('frequency') is None
+        assert any(notice.get('column') == col and
+                   notice['message'] == f'为避免与同表其他列重名，保留：{texts[restored_row - 1]}'
+                   for notice in result['notices'])
+
+
+def test_cleanup_restores_usda_units_then_codes_in_source_order(tmp_path, monkeypatch):
+    headers = [('Wind', '期初库存', unit, code, '年') for unit in ('百万包', '万吨')
+               for code in ('S0112531', 'S0112532', 'S0112533')]
+    # Some published mappings already cite the unit cell as unit evidence.
+    existing = {col: {'unit': unit, 'unit_cells': [f'{col}3']}
+                for col, (_, _, unit, _, _) in zip('BDF', headers[::2])}
+    result, _ = cleanup_role_suggestion(tmp_path, monkeypatch, 'USDA 各国平衡表',
+                                        ('note', 'name', 'unit', 'code', 'frequency'), headers,
+                                        column_metadata=existing)
+    block, = result['mapping']['blocks']
+    assert [column['metric'] for column in block['columns']] == [
+        f'期初库存 / {unit} / {code}' for _, _, unit, code, _ in headers]
+    for column, change, (_, _, unit, code, frequency) in zip(block['columns'], result['changes'], headers, strict=True):
+        col = column['column']
+        assert column['header_cells'] == [f'{col}2', f'{col}3', f'{col}4']
+        assert column.get('unit') is None
+        assert not column.get('unit_cells')
+        assert not column.get('source_code_cells')
+        assert change['unit'] == change['source_codes'] == []
+        assert change['header_notes'] == [{'cell': f'{col}1', 'text': 'Wind'}]
+        assert change['frequency'] == [{'cell': f'{col}5', 'text': frequency}]
+        messages = [notice['message'] for notice in result['notices'] if notice.get('column') == col]
+        assert any(message.startswith('为避免与同表其他列重名，保留：') and
+                   unit in message and code in message and message.index(unit) < message.index(code)
+                   for message in messages)
+
+
+def test_cleanup_keeps_original_mapping_when_removed_headers_cannot_distinguish_columns(tmp_path, monkeypatch):
+    result, original = cleanup_role_suggestion(
+        tmp_path, monkeypatch, '同表头的独立指标', ('name', 'code', 'note'),
+        [('产量', 'X1', '统计口径一致'), ('产量', 'X1', '统计口径一致')],
+        old_names=['实际产量', '预计产量'])
+    assert result['mapping'] == original
+    assert result['changes'] == []
+    assert result['renamed_fields'] == 0
+
+
+def test_cleanup_rechecks_a_restored_name_against_the_rest_of_the_sheet(tmp_path, monkeypatch):
+    result, original = cleanup_role_suggestion(tmp_path, monkeypatch, '三组产量', ('name', 'code', 'note'), [
+        ('产量', '甲', '统计口径一致'), ('产量', '乙', '统计口径一致'), ('产量 / 甲', '甲', '统计口径一致'),
+    ])
+    columns = result['mapping']['blocks'][0]['columns']
+    names = [column['metric'] for column in columns]
+    assert len(set(names)) == len(columns)
+    assert names[1] == '产量 / 乙'
+    assert not ai_review.header_name_conflicts(original, result['mapping'])
+
+
+def test_cleanup_allows_same_name_with_distinct_business_dimensions(tmp_path, monkeypatch):
+    dimensions = [{'区域': '甲'}, {'区域': '乙'}]
+    result, _ = cleanup_role_suggestion(tmp_path, monkeypatch, '不同区域', ('name', 'code'),
+                                        [('产量', 'X1'), ('产量', 'X2')], dimensions=dimensions)
+    block, = result['mapping']['blocks']
+    assert [column['metric'] for column in block['columns']] == ['产量', '产量']
+    assert [column['dimensions'] for column in block['columns']] == dimensions
+    assert [column['source_code_cells'] for column in block['columns']] == [['B2'], ['C2']]
+
+
+def test_cleanup_restores_merged_note_only_for_columns_that_need_it(tmp_path, monkeypatch):
+    result, _ = cleanup_role_suggestion(tmp_path, monkeypatch, '两地行情', ('note', 'name'),
+                                        [('甲站', '收盘价'), ('甲站', '结算价'), ('乙站', '收盘价')],
+                                        merged_ranges=('B1:C1',))
+    block, = result['mapping']['blocks']
+    b, c, d = block['columns']
+    assert (b['metric'], c['metric'], d['metric']) == ('甲站 / 收盘价', '结算价', '乙站 / 收盘价')
+    assert b['header_cells'] == ['B1', 'B2'] and d['header_cells'] == ['D1', 'D2']
+    assert c['header_cells'] == ['C2']
+    assert block['header_note_cells'] == ['B1']
+    assert c['header_note_cells'] == ['B1']
+    assert not b.get('header_note_cells') and not d.get('header_note_cells')
+    change, = result['changes']
+    assert change['column'] == 'C'
+    assert change['header_notes'] == [{'cell': 'B1', 'text': '甲站'}]
+
+    source = tmp_path / 'header-roles.xlsx'
+    sheet, = scan_workbook(source, use_reviewed_mappings=False)['sheets']
+    followup = {'block_updates': [{'block_index': 0, 'header_roles': [{'row': 2, 'role': 'name'}]}],
+                'evidence': [{'block_index': 0, 'field': 'name', 'cells': ['B2', 'C2', 'D2']}]}
+    repeated = suggest_cleanup_roles_with_model(monkeypatch, source, sheet, result['mapping'], followup)
+    assert repeated['changes'] == []
+    assert repeated['mapping'] == result['mapping']
 
 
 def test_assist_only_changes_failed_block_and_checks_before_becoming_ready(tmp_path, monkeypatch):
