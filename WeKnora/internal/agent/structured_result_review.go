@@ -322,18 +322,23 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 		return decision
 	}
 	encoded := e.modelContext.EncodeMessages([]chat.Message{{Role: "assistant", Content: answer}})
-	decoded := e.modelContext.DecodeOutputText(encoded[0].Content)
-	if len(structuredReviewCitationTag.FindAllString(answer, -1)) != len(structuredReviewCitationTag.FindAllString(decoded, -1)) {
+	// Use the same presentation cleanup as ordinary delivery before binding
+	// approval. A deletion can leave whitespace that analyzeResponse will trim.
+	presentation := agenttools.StripThinkBlocks(e.modelContext.DecodeOutputText(encoded[0].Content))
+	if len(structuredReviewCitationTag.FindAllString(answer, -1)) != len(structuredReviewCitationTag.FindAllString(presentation, -1)) {
 		correctionFailure = "citation_decoding"
 		return decision
 	}
-	answer = decoded
-	// Check the correction once with the same deterministic guards. No recursive
-	// checkCandidate, extra critic, evidence collection or candidate repair loop.
-	if correctionFailure = e.structuredResultCorrectionFailure(query, answer, state, conversation); correctionFailure != "" {
+	if presentation == agenttools.TrimAnswerWhitespace(decision.Candidate) {
+		correctionFailure = "unchanged_correction"
 		return decision
 	}
-	decision.Candidate, decision.CandidateHash = answer, candidateTextDigest(answer)
+	// Check the correction once with the same deterministic guards. No recursive
+	// checkCandidate, extra critic, evidence collection or candidate repair loop.
+	if correctionFailure = e.structuredResultCorrectionFailure(query, presentation, state, conversation); correctionFailure != "" {
+		return decision
+	}
+	decision.Candidate, decision.CandidateHash = presentation, candidateTextDigest(presentation)
 	decision.StructuredResultReviewStatus = "corrected"
 	return decision
 }
@@ -691,7 +696,10 @@ func applyStructuredResultReplacementSpans(candidate string, replacements []stru
 }
 
 func (e *AgentEngine) structuredResultCorrectionFailure(query, answer string, state *types.AgentState, conversation []chat.Message) string {
-	if strings.TrimSpace(answer) == "" || !e.candidateEvidenceBudgetFits(answer, state) {
+	if strings.TrimSpace(structuredReviewCitationTag.ReplaceAllString(answer, "")) == "" || terminalCandidateFallback(answer) {
+		return "empty_or_runtime_fallback"
+	}
+	if !e.candidateEvidenceBudgetFits(answer, state) {
 		return "answer_budget"
 	}
 	expanded, _, err := e.expandDocumentTableCandidate(answer, state)

@@ -114,7 +114,8 @@ func TestStructuredResultSegmentProtocolRecoveryRetainsAllFinalGuards(t *testing
 				require.Equal(t, "not_checked_invalid_correction", d.StructuredResultReviewStatus)
 			} else {
 				require.Equal(t, "corrected", d.StructuredResultReviewStatus)
-				require.Equal(t, "Observed 12.500 tonnes.\nObserved 12.500 kg.\n", d.Candidate)
+				require.Equal(t, "Observed 12.500 tonnes.\nObserved 12.500 kg.", d.Candidate)
+				require.True(t, e.candidateApprovalCurrent(d.Candidate, state))
 			}
 		})
 	}
