@@ -34,11 +34,11 @@ var readDocumentTool = BaseTool{
 		"Printed page labels and table-of-contents ranges are not physical PDF pages or proof that a listed section is present in this file. Verify physical pages with parser source_locators or page reads; chunk counts and the largest observed locator do not establish total pages.\n" +
 		"The result includes an image_catalog of stored figures and relationship-verified original PPTX media on explicitly read physical pages, even for older text-only imports. " +
 		"original_image_catalog_complete=true applies only to original_image_catalog_pages: their original-image catalog is complete even if body text is still paginated. Further text offsets are not required to complete that image catalog; listing it does not view any image. " +
-		"To inspect a figure, use that catalog entry's read_args (its actual owning chunk and any verified physical page), then add focus describing the complete user request. " +
+		"Use the entry's read_args for pixels, or its geometry_read_args for supported vector-chart traces. Keep its bound selector and physical page, then add focus describing the complete user request. " +
 		"Do not move an image reference to another page, chunk, document or pagination range. page_hint is an unverified source label, not physical-page proof; no page should be guessed when page_verified=false. " +
 		"Choose the figure from its actual source labels/context; text labels and image URLs alone do not reveal curves or their colors. " +
 		"Returned originals are delivered to a vision model or the configured separate image reader; report estimates and unclear overlaps honestly.\n" +
-		"For numeric traces in supported original vector charts, explicitly select image_mode=geometry with images and exact image_series legend identifiers. This verifies original source geometry without rasterizing or visually inspecting pixels; use image_mode=pixels (the default) when visual inspection is required.\n" +
+		"For a requested trend, endpoint or comparison covered by geometry_read_args, explicitly choose the relevant image_series from its original legend identifiers using the full question. This reads original drawing geometry without pixel inspection; use image_mode=pixels (the default) when visual inspection is required.\n" +
 		"query is a literal text filter, not topic retrieval: matching chunks come back with one chunk of context on each " +
 		"side. By default query is case-insensitive and split on whitespace: a chunk matches when it contains " +
 		"every word, in any order. Set regex=true to match query as one POSIX regular expression instead. " +
@@ -109,7 +109,7 @@ var readDocumentTool = BaseTool{
       "type": "array",
       "items": {"type": "string"},
       "maxItems": 4,
-      "description": "Exact image references from the actual image_catalog. Use that entry's read_args with its owning chunk and any verified page; never move a prior reference to a guessed page/range. Omit to list figures without reading pixels or geometry."
+      "description": "Exact image references from the actual image_catalog. Use its read_args for pixels or geometry_read_args for supported vector-chart traces. Preserve its bound selector and verified page. Omit to list figures and available legend options without reading pixels or geometry values."
     },
     "image_mode": {
       "type": "string", "enum": ["pixels", "geometry"],

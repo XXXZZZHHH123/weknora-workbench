@@ -301,7 +301,7 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 			system += "\nNumeric warning delivery policy: the user prioritizes a useful source-based answer over all numbers passing automatic matching. The runtime will append numeric_warning_delivery_notice to this candidate. Judge the complete request and actual source evidence; unmatched tokens are diagnostics, not an automatic reason to reject the whole answer. Accept supported requested results with explicitly limited ancillary arithmetic or metadata uncertainty when that caution is sufficient. Do not require deletion of the supported answer solely for an optional difference or source label. Still reject fabricated or contradicted core values, unsupported claims presented as verified, and missing requested information disguised as success; request a minimal revision that answers the supported part and states genuine gaps. Preserve the actual source/permission/receipt contracts. Acceptance here is recorded as numeric_warning, never full deterministic verification."
 		}
 		if hasImageObservations {
-			system += "\n" + documentImageReviewInstructions
+			system += "\n" + documentImageReviewInstructions + "\n" + documentImageReadingReviewRules
 		}
 		// Tables can contain many independent claims inside one presentation unit.
 		// Bound the receipt output, not its capacity by blank-line count.

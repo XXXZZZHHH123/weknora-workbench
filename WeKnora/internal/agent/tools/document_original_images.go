@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -105,4 +106,78 @@ func (t *ReadDocumentTool) appendOriginalImageCatalog(ctx context.Context, k *ty
 		result.Output += fmt.Sprintf("\nOriginal-media image catalog is complete only for verified physical pages %v; body text may still be paginated. No images have been viewed by listing this catalog. Choose the relevant figure from the full question and actual source context, then use its read_args directly; further text offsets are not required to complete these pages' original-image catalog. Catalog metadata is not numeric or visual evidence.\n", pages)
 	}
 	return catalog
+}
+
+// The same source verifier used by an explicit geometry read supplies legend
+// options. Listing a catalog requests no series and delivers no measurements.
+func (t *ReadDocumentTool) addGeometryCatalogOptions(ctx context.Context, k *types.Knowledge, catalog []documentImage) {
+	if t.figureReader == nil || !strings.EqualFold(strings.TrimPrefix(k.FileType, "."), "pptx") {
+		return
+	}
+	var originals, stored []int
+	for index, item := range catalog {
+		if !item.PageVerified || !strings.HasSuffix(strings.ToLower(item.SourcePart), ".emf") {
+			continue
+		}
+		if strings.HasPrefix(item.Reference, types.OriginalMediaPrefix) {
+			originals = append(originals, index)
+		} else {
+			stored = append(stored, index)
+		}
+	}
+	indices := append(originals, stored...)
+	if len(indices) == 0 {
+		return
+	}
+
+	// Prefer verified original selectors, which avoid rendering legacy previews.
+	// A single deadline and bounded concurrency keep optional discovery from
+	// consuming the answer budget or delaying the authorized text read.
+	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	jobs := make(chan int, len(indices))
+	for _, index := range indices {
+		jobs <- index
+	}
+	close(jobs)
+	type option struct {
+		index int
+		args  *ReadDocumentInput
+	}
+	options := make(chan option, len(indices))
+	for range min(4, len(indices)) {
+		go func() {
+			for index := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				item := catalog[index]
+				metadata, err := t.figureReader(ctx, k, item.Reference, item.Page, item.SourcePart, nil)
+				var args *ReadDocumentInput
+				if err == nil {
+					args = documentGeometryReadArgs(item.ReadArgs, metadata)
+				}
+				options <- option{index, args}
+			}
+		}()
+	}
+	for range indices {
+		select {
+		case result := <-options:
+			catalog[result.index].GeometryReadArgs = result.args
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func documentGeometryReadArgs(pixels ReadDocumentInput, metadata map[string]any) *ReadDocumentInput {
+	series, ok := metadata["available_series"].([]string)
+	if metadata["version"] != "source_figure_selection_options_v1" || !ok || len(series) == 0 || len(series) > 32 {
+		return nil
+	}
+	pixels.ImageMode = "geometry"
+	pixels.ImageSeries = append([]string(nil), series...)
+	pixels.Detail = ""
+	return &pixels
 }

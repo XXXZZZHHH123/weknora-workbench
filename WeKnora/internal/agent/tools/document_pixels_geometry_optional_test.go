@@ -115,6 +115,11 @@ func TestReadDocumentPixelsKeepOptionalGeometrySelectionSeparate(t *testing.T) {
 				}
 				options := evidence[0]["geometry_selection_options"].(map[string]any)
 				require.Equal(t, []string{"Alpha", "Beta"}, options["available_series"])
+				args := options["geometry_read_args"].(*ReadDocumentInput)
+				require.Equal(t, "geometry", args.ImageMode)
+				require.Equal(t, []string{ref}, args.Images)
+				require.Equal(t, 1, args.Page)
+				require.Equal(t, []string{"Alpha", "Beta"}, args.ImageSeries)
 				require.Contains(t, result.Output, "Original pixels were returned")
 				require.NotContains(t, result.Output, "98765")
 				require.NotContains(t, result.Output, "<original_figure_geometry")

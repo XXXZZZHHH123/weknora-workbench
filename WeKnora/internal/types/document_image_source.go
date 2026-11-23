@@ -7,6 +7,13 @@ import "encoding/json"
 // document/tenant scope; SourceHash identifies that document's source revision.
 const DocumentImageSourcesKey = "document_image_sources_v1"
 
+const DocumentImageTextEvidenceKey = "image_text_evidence"
+
+const DocumentImageTextEvidenceNotice = "Image OCR supplies a word-for-word transcription made at ingestion, and can contain recognition errors. " +
+	"Image captions describe appearance and context. VLM observations are visual readings and may be estimates. " +
+	"Compare evidence for the same image using the actual row, column and unit labels. If the OCR transcription and vision reading of the same value conflict, " +
+	"recheck that location in the original image or explicitly report the unresolved conflict. A missing or unclear vision reading alone does not invalidate a source-bound transcription."
+
 type DocumentImageSource struct {
 	Reference  string `json:"reference"`
 	Page       int    `json:"page"`
