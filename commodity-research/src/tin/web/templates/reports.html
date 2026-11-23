@@ -57,6 +57,32 @@
 
 {% endif %}
 <script>
+  (function () {
+    const tables = document.querySelectorAll('#report-readable .report-table, .report-footer .report-table');
+    tables.forEach(table => {
+      let scroller = table.parentElement;
+      const label = table.closest('.report-rule-section')?.querySelector('h4')
+        || table.closest('details')?.querySelector('summary')
+        || table.closest('.report-section')?.querySelector('h3');
+      if (!scroller.matches('.report-scroll, .report-overview-scroll')) {
+        scroller = document.createElement('div');
+        scroller.className = 'report-scroll';
+        table.before(scroller);
+        scroller.append(table);
+      }
+      scroller.setAttribute('role', 'region');
+      scroller.setAttribute('aria-label', label?.textContent.trim() || '报告表格');
+      const updateTabStop = () => {
+        const overflows = scroller.scrollWidth > scroller.clientWidth || scroller.scrollHeight > scroller.clientHeight;
+        if (overflows) scroller.tabIndex = 0;
+        else scroller.removeAttribute('tabindex');
+      };
+      const observer = new ResizeObserver(updateTabStop);
+      observer.observe(scroller);
+      observer.observe(table);
+    });
+  })();
+
   // Close the export menu after choosing an output.
   (function () {
     const menu = document.querySelector('.report-export-menu'); if (!menu) return;
