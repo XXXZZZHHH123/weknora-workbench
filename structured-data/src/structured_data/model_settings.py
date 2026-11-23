@@ -5,22 +5,94 @@ from pathlib import Path
 import tempfile
 from urllib.parse import urlsplit
 
+from .workspaces import current_identity
+
+
+NO_FIELD_MODEL = '没有可用的字段模型。请在 WeKnora「模型管理」添加并启用对话模型，再在知识库设置选择摘要模型，或在结构化页面的「字段模型」中选择。'
+AMBIGUOUS_FIELD_MODEL = '当前空间有多个可用对话模型，且未确定唯一默认模型。请在知识库设置选择摘要模型，或在结构化页面的「字段模型」中选择。'
+FOREIGN_KB_MODEL = '字段模型只支持当前空间的知识库。请切换到该知识库所属空间后重试。'
+
+
+def _native_selection(root):
+    path = Path(root) / 'model-settings.json'
+    if not path.is_file():
+        return {}
+    selected = json.loads(path.read_text()).get('chat', {})
+    if selected.get('native_model_id'):
+        return {key: selected[key] for key in ('native_model_id', 'enable_thinking') if key in selected}
+    return {}
+
+
+def _automatic_model(models, summary_model_id):
+    summary = next((model for model in models if model['id'] == summary_model_id), None)
+    if summary:
+        return summary, ''
+    defaults = [model for model in models if model['workspace_default']]
+    if not defaults:
+        defaults = [model for model in models if model['tenant_default']]
+    candidates = defaults or models
+    if len(candidates) == 1:
+        return candidates[0], ''
+    return None, AMBIGUOUS_FIELD_MODEL if models else NO_FIELD_MODEL
+
+
+def platform_model_settings(root):
+    from .model_gateway import available_models
+
+    identity = current_identity.get()
+    if identity.knowledge_base_tenant_id != identity.tenant_id:
+        explicit_id, models, effective, error = '', [], None, FOREIGN_KB_MODEL
+    else:
+        explicit_id = _native_selection(root).get('native_model_id', '')
+        models = available_models()
+        if explicit_id:
+            effective = next((model for model in models if model['id'] == explicit_id), None)
+            error = '' if effective else '已选择的字段模型不可用，请在结构化页面的「字段模型」中重新选择已启用的对话模型。'
+        else:
+            effective, error = _automatic_model(models, identity.summary_model_id)
+
+    def public(model):
+        return {key: model[key] for key in ('id', 'name')}
+
+    return {
+        'native_model_id': explicit_id,
+        'protocol': 'platform',
+        'can_edit': identity.can_write and identity.knowledge_base_tenant_id == identity.tenant_id,
+        'models': [public(model) for model in models],
+        'effective_model': public(effective) if effective else None,
+        'model_selection': ('explicit' if explicit_id else 'automatic') if effective else 'unavailable',
+        'model_error': error,
+    }
+
 
 def read_model(root=None):
     from .ingestion import current_ingestion_claim, current_ingestion_model
     if current_ingestion_claim.get():
         # The admitted upload uses the KB's server-configured model. No user
         # credential or legacy provider key is inherited by the background task.
-        selected_root = Path(root) if root else None
-        if selected_root:
-            selected_path = selected_root / 'model-settings.json'
-            if selected_path.is_file():
-                selected = json.loads(selected_path.read_text()).get('chat', {})
-                if selected.get('native_model_id'):
-                    return {key:selected[key] for key in ('native_model_id','enable_thinking') if key in selected}
+        selected = _native_selection(root) if root else {}
+        if selected:
+            return selected
         model = current_ingestion_model.get()
         return {'native_model_id': model} if model else {}
     root=Path(root or os.environ.get('STRUCTURED_DATA_DIR',os.environ.get('COTTON_DATA_DIR','data')))
+    identity = current_identity.get()
+    if identity is not None and identity.knowledge_base_id:
+        # Verified KB requests use platform model IDs. Legacy provider
+        # configuration belongs to the unscoped path below.
+        from .model_gateway import available_models
+
+        if identity.knowledge_base_tenant_id != identity.tenant_id:
+            return {'model_error': FOREIGN_KB_MODEL}
+        selected = _native_selection(root)
+        if selected:
+            return selected
+        try:
+            effective, error = _automatic_model(available_models(), identity.summary_model_id)
+        except ValueError as exc:
+            return {'model_error': str(exc)}
+        return {'native_model_id': effective['id']} if effective else {'model_error': error}
+
     path=root/'model-settings.json'
     if not path.is_file():
         # A KB may reuse its owner's configured model, never another tenant's pilot secret.

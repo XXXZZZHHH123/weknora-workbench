@@ -524,7 +524,8 @@ async function showModelSettings(){
   $('nativeModel').innerHTML='<option value="">选择通用模型</option>'+models.map(m=>`<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
   const selected=models.some(m=>m.id===cfg.native_model_id);if(selected)$('nativeModel').value=cfg.native_model_id;
   $('nativeModel').disabled=!modelCanEdit||!models.length;$('modelSave').disabled=!modelCanEdit||!models.length;
-  $('modelStatus').textContent=cfg.protocol!=='platform'?'从知识库打开结构化页面后，可选择平台通用模型。':!modelCanEdit?'当前仅可查看，需知识库编辑权限才能更换模型。':!models.length?'当前空间暂无可用通用模型，请先在平台配置。':cfg.native_model_id&&!selected?'原模型已不可用，请重新选择；不会自动切换到其他模型。':cfg.legacy_configured?'当前沿用原字段模型；选择后将改用平台配置。':'保存后，AI 辅助和字段理解将使用此模型。';
+  const modelMessage=cfg.protocol!=='platform'?'从知识库打开结构化页面后，可选择平台通用模型。':cfg.model_error||(cfg.model_selection==='automatic'&&cfg.effective_model?`当前生效模型（自动）：${cfg.effective_model.name}`:'保存后，AI 辅助和字段理解将使用此模型。');
+  $('modelStatus').textContent=cfg.protocol==='platform'&&!modelCanEdit?`${modelMessage} 当前仅可查看，需知识库编辑权限才能更换模型。`:modelMessage;
  }catch(error){if(epoch===authEpoch&&request===modelRequest&&error.name!=='AbortError')$('modelStatus').textContent=error.message}
  finally{if(request===modelRequest){modelController=null;endTaskProgress($('modelStatus'))}}
 }

@@ -11,6 +11,9 @@ from .workspaces import current_identity
 
 
 current_authorization = ContextVar('structured_model_authorization', default='')
+# A single request can resolve fields, bind sources and retry model output.
+# Share only the public catalogue within that request's verified scope.
+request_model_catalog = ContextVar('structured_request_model_catalog', default=None)
 MAX_RESPONSE_BYTES = 256 * 1024
 
 
@@ -72,14 +75,27 @@ def _check_status(response):
     return result.get('data')
 
 
-async def available_models():
+def available_models():
     identity, headers = _context()
+    catalog = request_model_catalog.get()
+    if catalog is not None and identity in catalog:
+        return catalog[identity]
     try:
-        async with httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False) as client:
-            rows = _check_status(await client.get(_base() + '/api/v1/models', headers=headers))
+        with httpx.Client(timeout=5, trust_env=False, follow_redirects=False) as client:
+            rows = _check_status(client.get(_base() + '/api/v1/models', headers=headers))
         if not isinstance(rows, list):
             raise ValueError('平台模型列表无效，请刷新后重试。')
-        return [model for row in rows if (model := _model(row, identity.tenant_id)) is not None]
+        models = []
+        for row in rows:
+            if (model := _model(row, identity.tenant_id)) is not None:
+                purposes = row.get('default_for')
+                models.append(model | {
+                    'workspace_default': isinstance(purposes, list) and 'KnowledgeQA' in purposes,
+                    'tenant_default': row.get('tenant_id') == identity.tenant_id and row.get('is_default') is True,
+                })
+        if catalog is not None:
+            catalog[identity] = models
+        return models
     except httpx.HTTPError:
         raise ValueError('暂时无法读取平台模型，请检查平台连接。') from None
 
