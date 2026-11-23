@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -35,7 +36,7 @@ type documentImageTextEvidence struct {
 
 // Reading text/FAQ chunks does not return the OCR and caption children. Look
 // them up only for image identities scoped to the authorized read response.
-func (t *ReadDocumentTool) appendDocumentImageText(ctx context.Context, k *types.Knowledge, result *types.ToolResult, catalog, images []documentImage) {
+func (t *ReadDocumentTool) appendDocumentImageText(ctx context.Context, k *types.Knowledge, result *types.ToolResult, catalog, images []documentImage, catalogOnly bool) {
 	if len(images) == 0 || t.chunkService == nil {
 		return
 	}
@@ -80,8 +81,17 @@ func (t *ReadDocumentTool) appendDocumentImageText(ctx context.Context, k *types
 		if ref == "" {
 			ref = info[0].OriginalURL
 		}
-		for _, binding := range bindings[storedDocumentImage{child.ParentChunkID, ref}] {
+		imageBindings := bindings[storedDocumentImage{child.ParentChunkID, ref}]
+		for _, binding := range imageBindings {
 			image := binding.image
+			// On a catalog read, use the stored resource as the single
+			// representation of this child's text on the page. An explicit
+			// pixel or geometry read still binds text to its selected image.
+			if catalogOnly && image.Reference != ref && slices.ContainsFunc(imageBindings, func(other documentImageTextBinding) bool {
+				return other.image.Reference == ref && other.image.Page == image.Page
+			}) {
+				continue
+			}
 			if binding.hash != "" && info[0].SHA256 != binding.hash &&
 				(info[0].SHA256 != "" || image.Reference != ref) {
 				continue

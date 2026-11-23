@@ -92,7 +92,7 @@ func TestReadDocumentBindsImageOCRAndCaptionToStoredAndOriginalPixels(t *testing
 			require.True(t, page.Success, page.Error)
 			require.Empty(t, page.Images)
 			pageTexts := page.Data[types.DocumentImageTextEvidenceKey].([]documentImageTextEvidence)
-			require.Len(t, pageTexts, 6)
+			require.Len(t, pageTexts, 3)
 			model := modelcontext.NewRegistry(true).ModelToolResultForTool(ToolReadDocument, page)
 			require.Contains(t, model, ocr, "model must receive the original row breaks and tabs")
 			require.Contains(t, model, "Amounts by workshop batch.")
@@ -134,4 +134,72 @@ func TestReadDocumentBindsImageOCRAndCaptionToStoredAndOriginalPixels(t *testing
 			}
 		})
 	}
+}
+
+func TestReadDocumentPageBudgetsOCRBeforeOriginalImageAliases(t *testing.T) {
+	const table = "resource://AbCdEfGhIjKlMnOpQrStUv"
+	const second = "resource://ZyXwVuTsRqPoNmLkJiHgFe"
+	const page = 4
+	tool, repo := newReadDocumentFixture(1)
+	doc := tool.knowledgeService.(*readDocKnowledgeService).docs["doc-1"]
+	doc.FileType, doc.FileHash = "pptx", "fixture-source-revision"
+	parent := repo.ordered[0]
+	parent.Content = "# Page 4\n![First table](" + table + ")\n![Second table](" + second + ")"
+	original := types.OriginalMediaReference{
+		KnowledgeID: doc.ID, KnowledgeBaseID: doc.KnowledgeBaseID,
+		SourceSHA256: strings.Repeat("a", 64), MediaSHA256: strings.Repeat("b", 64),
+		Page: page, Part: "ppt/media/table.png",
+	}
+	metadata, err := json.Marshal(map[string]any{types.DocumentImageSourcesKey: []types.DocumentImageSource{
+		{Reference: table, Page: page, SourcePart: original.Part, SourceHash: doc.FileHash},
+	}})
+	require.NoError(t, err)
+	parent.Metadata = types.JSON(metadata)
+	tool.WithOriginalImageCatalog(func(_ context.Context, _ *types.Knowledge, pages []int) ([]types.OriginalDocumentImage, error) {
+		require.Equal(t, []int{page}, pages)
+		return []types.OriginalDocumentImage{{Reference: original.Reference(), Page: page, Part: original.Part}}, nil
+	})
+	firstOCR := "Batch\tOpening\tClosing\n" + strings.Repeat("Workshop\t71.2\t64.7\n", 28) + "Museum\t88.9\t67.4"
+	secondOCR := "Room\tOpening\tClosing\nGallery\t83.1\t52.7"
+	for _, item := range []struct{ id, ref, body string }{
+		{"transcription-a", table, firstOCR},
+		{"transcription-b", second, secondOCR},
+	} {
+		info, err := json.Marshal([]types.ImageInfo{{URL: item.ref, OriginalURL: item.ref}})
+		require.NoError(t, err)
+		repo.children = append(repo.children, &types.Chunk{
+			ID: item.id, TenantID: doc.TenantID, KnowledgeID: doc.ID, KnowledgeBaseID: doc.KnowledgeBaseID,
+			ParentChunkID: parent.ID, ChunkType: types.ChunkTypeImageOCR, Content: item.body, IsEnabled: true,
+			ImageInfo: string(info),
+		})
+	}
+
+	registry := NewToolRegistry()
+	registry.RegisterTool(tool)
+	registry.SetMaxToolOutputSize(3000)
+	result, err := registry.ExecuteTool(t.Context(), ToolReadDocument, json.RawMessage(`{"id":"doc-1","page":4}`))
+	require.NoError(t, err)
+	require.True(t, result.Success, result.Error)
+	require.Empty(t, result.Images)
+	require.Len(t, result.Data["image_catalog"], 3)
+	require.NotContains(t, result.Data, "image_text_evidence_truncated")
+	evidence, ok := result.Data[types.DocumentImageTextEvidenceKey].([]documentImageTextEvidence)
+	require.True(t, ok)
+	require.Len(t, evidence, 2)
+	require.Equal(t, firstOCR, evidence[0].Text)
+	require.Equal(t, secondOCR, evidence[1].Text)
+	for _, item := range evidence {
+		require.Equal(t, parent.ID, item.ChunkID)
+		require.Equal(t, parent.ID, item.ParentChunkID)
+		require.Equal(t, item.StoredRef, item.Reference)
+		require.Equal(t, page, item.Page)
+	}
+
+	model := modelcontext.NewRegistry(true).ModelToolResultForTool(ToolReadDocument, result)
+	require.Equal(t, 1, strings.Count(model, firstOCR))
+	require.Contains(t, model, secondOCR)
+	require.Contains(t, model, "use the source-bound image_ocr transcription as primary evidence")
+	require.Contains(t, model, "recheck that location in the original image or explicitly report the unresolved conflict")
+	require.Contains(t, model, `"image_catalog":`)
+	require.Less(t, strings.Index(model, secondOCR), strings.Index(model, `"image_catalog":`))
 }

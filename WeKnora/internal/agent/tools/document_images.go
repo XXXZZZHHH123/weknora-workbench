@@ -156,6 +156,7 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 	catalog := documentImageCatalog(result, knowledge.ID, knowledge.FileHash)
 	catalog = t.appendOriginalImageCatalog(ctx, knowledge, input, result, catalog)
 	if len(input.Images) == 0 {
+		t.appendDocumentImageText(ctx, knowledge, result, catalog, catalog, true)
 		t.addGeometryCatalogOptions(ctx, knowledge, catalog)
 	}
 	result.Data["image_catalog"] = catalog
@@ -169,7 +170,6 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 			"Each image retains its document, page and cited chunk."
 	}
 	if len(input.Images) == 0 {
-		t.appendDocumentImageText(ctx, knowledge, result, catalog, catalog)
 		return result, nil
 	}
 	if len(input.Images) > 4 {
@@ -199,11 +199,11 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 	if input.ImageMode == "geometry" {
 		result = t.finishGeometryRead(ctx, knowledge, input, result, catalog, selected)
 		if result.Success {
-			t.appendDocumentImageText(ctx, knowledge, result, catalog, selected)
+			t.appendDocumentImageText(ctx, knowledge, result, catalog, selected, false)
 		}
 		return result, nil
 	}
-	defer t.appendDocumentImageText(ctx, knowledge, result, catalog, selected)
+	defer t.appendDocumentImageText(ctx, knowledge, result, catalog, selected, false)
 	if t.imageReader == nil && t.sourceImageReader == nil {
 		result.Data["image_read_error"] = "原图读取服务不可用"
 		result.Output += "\nOriginal image reader is unavailable; image labels alone cannot establish visual facts."

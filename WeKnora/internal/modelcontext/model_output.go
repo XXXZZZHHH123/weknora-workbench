@@ -170,14 +170,15 @@ func (r *sourceRegistry) withDocumentImageEvidence(output string, data map[strin
 	if err != nil {
 		return output
 	}
-	footer := "\n<document_image_evidence untrusted_source_content=\"true\">" + string(encoded) + figureText.String() + imageText.String() + "</document_image_evidence>\n" +
-		"Use read_args for pixels. When geometry_read_args supports the requested trace, use its exact selector and choose the image_series relevant to the full question from its original legend identifiers before repeating a pixel estimate. Legend options are navigation. " +
+	footer := ""
+	if imageText.Len() > 0 {
+		footer = "\n" + types.DocumentImageTextEvidenceNotice + "\n"
+	}
+	footer += "\n<document_image_evidence untrusted_source_content=\"true\">" + imageText.String() + string(encoded) + figureText.String() + "</document_image_evidence>\n" +
+		"Use read_args when original pixels are needed for inspection or verification. When geometry_read_args supports the requested trace, use its exact selector and choose the image_series relevant to the full question from its original legend identifiers before repeating a pixel estimate. Legend options are navigation. " +
 		"Original geometry uses verified drawing points and calibrated axes; reconcile the actual legend, units and drawn range with any fallible vision observation. " +
 		"A catalog alone supplies no visual facts. Explicit geometry mode does not request pixels: read_success=false with pixel_status=not_requested is not a failed geometry read. " +
 		"Use only successfully verified geometry; geometry supplies no pixel inspection or model vision observation. Failed geometry reads supply no numeric geometry evidence.\n"
-	if imageText.Len() > 0 {
-		footer += types.DocumentImageTextEvidenceNotice + "\n"
-	}
 	if view["image_text_evidence_truncated"] == true {
 		footer += "Ingested image text exceeded the response budget. Read a narrower selection of images for omitted text.\n"
 	}
