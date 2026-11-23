@@ -1,5 +1,7 @@
 """Readable views and Markdown from actual report records, without inference."""
 from copy import deepcopy
+from decimal import Decimal
+from html import escape
 from tin.web.number_format import format_number, source_decimals
 from tin.web.research_display import human_text, indicator_name, condition_text
 
@@ -356,7 +358,9 @@ def _weekly_citations(view):
     from tin.integration.identity import research_prefix
     saved = view['manual_report']['draft']
     passages = {item['dimension_id']: item['passages'] for item in saved['evidence_citations']}
-    route = f"{research_prefix()}/api/sn/reports/{saved['date']}/weekly/evidence"
+    prefix, day = research_prefix(), saved['date']
+    route = f"{prefix}/api/sn/reports/{day}/weekly/evidence"
+    report_url = f"{prefix}/sn/reports?period=weekly&date={day}"
     for row in view['dimension_overview']:
         check = checks.get(row['id'])
         if not check:
@@ -370,10 +374,13 @@ def _weekly_citations(view):
             unit = fact.get('unit') or ''
             observations = [(baseline.get('date'), baseline.get('value')),
                             (fact.get('date') or fact.get('latest_date'), fact.get('latest'))]
-            fields = [f'{stamp} {value} {unit}'.strip() for stamp, value in observations
+            fields = [f'{stamp[:10]} 为 {_citation_value(value)} {unit}'.rstrip() for stamp, value in observations
                       if stamp and value is not None]
-            note = {'title': fact.get('name') or '计算事实', 'location': '观测 ' + ' → '.join(fields),
-                    'number': len(notes) + 1}
+            text = fact.get('name') or '计算事实'
+            if fields:
+                text += '：' + ' → '.join(fields)
+            note = {'text': text, 'number': len(notes) + 1,
+                    'data_url': f"{report_url}#report-facts-{row['id']}"}
             citations.append(note)
             notes.append(note)
         for index, (source, ref) in enumerate(zip(check.get('sources') or [], passages.get(row['id'], []))):
@@ -383,15 +390,19 @@ def _weekly_citations(view):
             notes.append(note)
 
 
-def citation_dates(note):
-    labels = ('观测日期', '发布日期', '入库时间')
-    return ' · '.join(f'{label} {note.get(field) or "未知"}'
-        for label, field in zip(labels, ('observation_date', 'published_at', 'ingested_at')))
+def _citation_value(value):
+    text = format(Decimal(str(value)), 'f')
+    return text.rstrip('0').rstrip('.') if '.' in text else text
 
 
 def _md(value):
     # Source text is content in exported Markdown, never active HTML or table syntax.
     return _plain(value).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('|', '\\|').replace('\n', ' ')
+
+
+def _citation_md(value):
+    return escape(_plain(value).replace('\n', ' '), quote=False).translate(
+        str.maketrans({char: f'&#{ord(char)};' for char in '[]`*_\\~'}))
 
 
 def _md_lines(text):
@@ -525,7 +536,7 @@ def _strategy_lines(view):
     return lines
 
 
-def readable_markdown(payload, *, title='研究报告', names=None, dimensions=None):
+def readable_markdown(payload, *, title='研究报告', names=None, dimensions=None, citation_origin=''):
     """One-page overview and evidence, followed by the preserved full records."""
     view = present_snapshot(payload, names, dimensions=dimensions)
     manual = view['manual_report']
@@ -581,17 +592,22 @@ def readable_markdown(payload, *, title='研究报告', names=None, dimensions=N
         lines += ['> 部分逐条引用需重新核对。', '']
     if view['evidence_notes']:
         from urllib.parse import quote
+
+        def link_url(value):
+            return quote(value, safe=':/?&=%#@+;,~._-')
+
         lines += ['## 逐条引用', '']
         for note in view['evidence_notes']:
-            title = _md(note['title']).translate(str.maketrans({'[': '&#91;', ']': '&#93;', '`': '&#96;'}))
-            definition = title + ' · ' + _md(note['location'])
-            if 'content_sha256' in note:
-                definition += ' · ' + _md(citation_dates(note))
-                if note['background']:
-                    definition += ' · 背景资料'
+            if note.get('read_url'):
+                fields = [note['title'], note['location'], f"“{note['excerpt']}”", note['date_label']]
+                definition = ' · '.join(_citation_md(field) for field in fields if field)
+                link = link_url(citation_origin + note['read_url'])
+                definition += f' · [查看原文](<{link}> "SHA-256 {note["content_sha256"]}")'
                 if note['url']:
-                    definition += ' · [原始网页](<' + quote(note['url'], safe=':/?&=%#@+;,~._-') + '>)'
-                definition += ' · SHA-256 `' + note['content_sha256'] + '`'
+                    definition += f' · [原网页](<{link_url(note["url"])}>)'
+            else:
+                link = link_url(citation_origin + note['data_url'])
+                definition = _citation_md(note['text']) + f' · [查看数据](<{link}>)'
             lines.append(f"[^e{note['number']}]: {definition}")
         lines.append('')
     return '\n'.join(lines)

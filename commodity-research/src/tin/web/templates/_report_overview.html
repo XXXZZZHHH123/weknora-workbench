@@ -3,7 +3,7 @@
 {% if report.dimension_overview %}
 <div class="report-overview-scroll"><table class="report-table report-overview-table"><thead><tr><th scope="col">维度</th><th scope="col">本期变化</th><th scope="col">研究员一句话</th><th scope="col">影响</th><th scope="col">依据计数</th></tr></thead><tbody>
 {% for dimension in report.dimension_overview %}<tr data-report-dimension="{{ dimension.id }}">
-<th scope="row">{{ dimension.label }}</th><td class="report-dimension-facts">
+<th scope="row">{{ dimension.label }}</th><td class="report-dimension-facts" id="report-facts-{{ dimension.id }}">
 {% if dimension.change_summary %}<p class="report-change-summary">{{ dimension.change_summary }}</p>{% endif %}
 {% for fact in dimension.facts %}<p{% if dimension.change_summary %} class="report-latest-reference"{% endif %}>{{ (fact.latest_text or fact.text) if dimension.change_summary else fact.text }}</p>{% else %}{% if not dimension.change_summary %}<span class="report-muted">暂无可用本期数值</span>{% endif %}{% endfor %}
 {% if dimension.warnings %}<details class="report-dimension-notices"><summary>{{ dimension.warning_summary or '数据说明' }} <span aria-hidden="true">ⓘ</span></summary><div>{% for warning in dimension.warnings %}<p>{{ warning }}</p>{% endfor %}</div></details>{% elif dimension.warning_summary %}<small>{{ dimension.warning_summary }}</small>{% endif %}</td>
@@ -12,12 +12,31 @@
 <td><details class="report-dimension-evidence"><summary>支持 {{ dimension.support_count or 0 }} / 反对 {{ dimension.oppose_count or 0 }}</summary>{% for evidence in dimension.evidence %}<p><small>{{ '支持' if evidence.side in ['bull', 'support'] else '反对' }}</small>{{ evidence.text }}</p>{% else %}<p class="report-muted">暂无该维度研判依据</p>{% endfor %}</details></td>
 </tr>{% endfor %}
 </tbody></table></div>
-{% if report.evidence_notes %}<h4>逐条引用</h4><ol>
-{% for citation in report.evidence_notes %}<li id="report-evidence-{{ citation.number }}">
-{% if citation.read_url %}<a href="{{ citation.read_url }}" target="_blank" rel="noopener">{{ citation.title }} · {{ citation.location }}</a>
-<small> · 观测日期 {{ citation.observation_date or '未知' }} · 发布日期 {{ citation.published_at or '未知' }} · 入库时间 {{ citation.ingested_at or '未知' }}{% if citation.background %} · 背景资料{% endif %}</small>
-{% if citation.url %} · <a href="{{ citation.url }}" target="_blank" rel="noopener noreferrer">原始网页</a>{% endif %}
-{% else %}{{ citation.title }} · {{ citation.location }}{% endif %}</li>{% endfor %}
-</ol>{% endif %}
+{% if report.evidence_notes %}
+<section id="report-citations" class="report-citations" aria-labelledby="report-citations-title">
+<h4 id="report-citations-title">逐条引用</h4>
+<ol>
+{% for citation in report.evidence_notes %}
+<li id="report-evidence-{{ citation.number }}">
+{% if citation.read_url %}
+<div class="report-citation-heading"><strong>{{ citation.title }}</strong>{% if citation.location %}<span>{{ citation.location }}</span>{% endif %}{% if citation.background_hint %}<small class="report-citation-tag" title="{{ citation.background_hint }}">背景资料</small>{% endif %}</div>
+<p class="report-citation-quote">“{{ citation.excerpt }}”</p>
+<div class="report-citation-links">
+{% if citation.date_label %}<span>{{ citation.date_label }}</span>{% endif %}
+<a href="{{ citation.read_url }}" target="_blank" rel="noopener">查看原文</a>
+{% if citation.url %}<a href="{{ citation.url }}" target="_blank" rel="noopener noreferrer">原网页</a>{% endif %}
+<details class="report-citation-details"><summary>详情</summary>
+{% if citation.ingested_at %}<div>入库时间 {{ citation.ingested_at }}</div>{% endif %}
+<div>SHA-256 <code>{{ citation.content_sha256 }}</code></div>
+</details>
+</div>
+{% else %}
+<div class="report-citation-heading"><span>{{ citation.text }}</span><a href="{{ citation.data_url }}">查看数据</a></div>
+{% endif %}
+</li>
+{% endfor %}
+</ol>
+</section>
+{% endif %}
 {% else %}<p class="report-muted">暂无维度内容，可先绑定研究指标、标注研判依据或编辑维度综述。</p>{% endif %}
 </section>

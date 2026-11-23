@@ -23,16 +23,21 @@ document.addEventListener("DOMContentLoaded", () => {
     const preview = evidencePreviews.get(identifier);
     if (preview?.notice) host.append(node("p", preview.notice, "report-dimension-draft-status"));
     for (const source of preview?.sources || []) {
-      const label = source.title + " · " + source.location;
-      if (typeof source.text !== "string") {
-        host.append(node("p", label, "report-muted"));
-        continue;
+      const label = [source.title, source.location].filter(Boolean).join(" · ");
+      host.append(node("p", label, "report-muted"));
+      if (source.excerpt) host.append(node("p", "“" + source.excerpt + "”"));
+      const dates = node("p", source.date_label || "", "report-muted");
+      if (source.background_hint) {
+        const tag = node("small", "背景资料", "report-citation-tag");
+        tag.title = source.background_hint;
+        dates.append(" ", tag);
       }
+      if (dates.textContent.trim()) host.append(dates);
+      if (typeof source.text !== "string" && !source.ingested_at) continue;
       const details = node("details");
-      details.append(node("summary", label), node("p",
-        "观测日期 " + (source.observation_date || "未知") + " · 发布日期 " + (source.published_at || "未知")
-        + " · 入库时间 " + (source.ingested_at || "未知") + (source.background ? " · 背景资料" : ""), "report-muted"),
-        node("p", source.text, "research-prose whitespace-pre-wrap"));
+      details.append(node("summary", typeof source.text === "string" ? "查看原文" : "详情"));
+      if (source.ingested_at) details.append(node("p", "入库时间 " + source.ingested_at, "report-muted"));
+      if (typeof source.text === "string") details.append(node("p", source.text, "research-prose whitespace-pre-wrap"));
       host.append(details);
     }
     const remove = node("button", "清除引用及对应原句", "report-button");

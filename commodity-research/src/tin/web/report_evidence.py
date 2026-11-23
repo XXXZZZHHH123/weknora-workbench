@@ -1,7 +1,7 @@
 """Authorized weekly-report passages and sentence-bound citation receipts."""
 import asyncio
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 import hashlib
 import hmac
 import json
@@ -22,6 +22,8 @@ MAX_PASSAGES = 8
 MAX_SEARCHES = 3
 MAX_PASSAGE_CHARS = 6000
 MAX_PASSAGE_BYTES = 64 * 1024
+EXCERPT_LIMIT = 80
+BACKGROUND_HINT = '发布日期早于本周或未知'
 router = APIRouter(prefix='/api/sn/reports')
 
 NativeID = Annotated[str, Field(pattern=r'^[a-zA-Z0-9_-]{1,128}$')]
@@ -160,6 +162,85 @@ def _owned(row, bound, identifier):
             and type(row.get('tenant_id')) is int and row['tenant_id'] == bound.knowledge_base_tenant_id)
 
 
+def _positive_int(value):
+    return type(value) is int and value > 0
+
+
+def _column_name(number):
+    letters = ''
+    while number:
+        number, digit = divmod(number - 1, 26)
+        letters = chr(ord('A') + digit) + letters
+    return letters
+
+
+def _locator_label(locator):
+    kind = locator.get('type')
+    if kind == 'pdf' and _positive_int(locator.get('page')):
+        return f"PDF 第 {locator['page']} 页"
+    if kind == 'slide' and _positive_int(locator.get('slide')):
+        return f"第 {locator['slide']} 张幻灯片"
+    if kind == 'section' and isinstance(locator.get('title'), str):
+        title = ' '.join(locator['title'].split())
+        return f'章节「{title}」' if title else ''
+    if kind != 'sheet' or not isinstance(locator.get('sheet'), str) or not locator['sheet'].strip():
+        return ''
+    first, last = locator.get('row_start'), locator.get('row_end')
+    if not (_positive_int(first) and _positive_int(last) and first <= last):
+        return ''
+    left, right = locator.get('column_start'), locator.get('column_end')
+    if _positive_int(left) and _positive_int(right) and left <= right:
+        begin, end = f'{_column_name(left)}{first}', f'{_column_name(right)}{last}'
+        position = begin if begin == end else f'{begin}:{end}'
+    else:
+        position = f'第 {first} 行' if first == last else f'第 {first}–{last} 行'
+    return f"工作表「{locator['sheet']}」{position}"
+
+
+def _source_location(chunk, source):
+    # Chunk.SourceLocators maps this text to the original file. Image metadata
+    # maps images, and ContextHeader is internal to Go and absent from this API.
+    locators = chunk.get('source_locators')
+    if not isinstance(locators, list):
+        return ''
+    labels = {}
+    for locator in locators:
+        if not isinstance(locator, dict):
+            continue
+        if locator.get('source_hash') and locator['source_hash'] != source.get('file_hash'):
+            continue
+        label = _locator_label(locator)
+        if label:
+            labels[label] = None
+        if len(labels) > 3:
+            return '、'.join(list(labels)[:3]) + '等'
+    return '、'.join(labels)
+
+
+def _excerpt(text):
+    # Keep the actual passage words. Prefer complete sentences, then a clause
+    # or word boundary when the opening sentence alone exceeds the budget.
+    plain = ' '.join(text.split())
+    if len(plain) <= EXCERPT_LIMIT:
+        return plain
+    window = plain[:EXCERPT_LIMIT]
+    endings = list(re.finditer(r'(?:[。！？!?]+|\.(?=\s|$))[”’」』）)]*', plain))
+    end = max((match.end() for match in endings if match.end() <= EXCERPT_LIMIT), default=0)
+    if end:
+        return plain[:end]
+    window = window[:-1]
+    end = max((match.end() for match in re.finditer(r'[，、；;,：:\s]', window)
+               if match.end() >= EXCERPT_LIMIT // 2), default=len(window))
+    return window[:end].rstrip(' ，、；;,：:') + '…'
+
+
+def _ingest_display(value):
+    try:
+        return datetime.fromisoformat(value).isoformat(sep=' ', timespec='seconds')[:19]
+    except (ValueError, TypeError):
+        return None
+
+
 async def _read(binding_id, bound, knowledge_id, chunk_id, day):
     source = (await go_request(bound, '/api/v1/knowledge/' + knowledge_id)).get('data')
     if (not _owned(source, bound, knowledge_id) or source.get('enable_status') != 'enabled'
@@ -188,17 +269,23 @@ async def _read(binding_id, bound, knowledge_id, chunk_id, day):
     ingested = source.get('created_at')
     ingested = ingested[:64] if isinstance(ingested, str) else None
     start = period_start(date.fromisoformat(day), 'weekly').isoformat()
-    data = {'title': title, 'location': f"分块 {chunk['chunk_index'] + 1} · 字符 {chunk['start_at']}–{chunk['end_at']}",
+    # Keep the v1 fingerprint input so existing signed receipts still verify.
+    # Human-facing location, dates, and excerpts are projections of the fresh read.
+    version_data = {'title': title, 'location': f"分块 {chunk['chunk_index'] + 1} · 字符 {chunk['start_at']}–{chunk['end_at']}",
             'url': _source_url(source.get('source')), 'published_at': published,
             'observation_date': observed, 'ingested_at': ingested,
             'background': not published or published < start or bool(observed and observed < start)}
     try:
-        data['content_sha256'] = _hash(text)
+        version_data['content_sha256'] = _hash(text)
         fingerprint = _hash(_json([binding_id, bound.knowledge_base_id, bound.knowledge_base_tenant_id,
-            knowledge_id, chunk_id, data,
+            knowledge_id, chunk_id, version_data,
             source.get('updated_at'), chunk['content_revision'], chunk['updated_at']]))
     except (ValueError, TypeError):
         raise HTTPException(409, '段落文本或来源版本无效') from None
+    data = {**version_data, 'location': _source_location(chunk, source), 'excerpt': _excerpt(text),
+            'date_label': f'发布于 {published}' if published else f'数据日期 {observed}' if observed else '',
+            'background_hint': BACKGROUND_HINT if not published or published < start else '',
+            'ingested_at': _ingest_display(ingested)}
     return PassageRef(binding_id=binding_id, knowledge_id=knowledge_id, chunk_id=chunk_id,
                       fingerprint=fingerprint), data, text
 

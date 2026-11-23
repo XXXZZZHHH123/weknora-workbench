@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import replace
 import hashlib
 import json
+import re
 from types import SimpleNamespace
 
 from fastapi import HTTPException
@@ -57,14 +58,17 @@ def native(monkeypatch):
                 metadata['published_at'] = '2023-01-10'
             if identifier == 'background':
                 metadata = {}
+            if identifier == 'negative':
+                metadata.pop('published_at')
             return {'data': {**row, 'title': '同名市场观察', 'parse_status': 'completed', 'enable_status': 'enabled',
                 'source': 'https://example.test/original', 'created_at': '2023-01-08T11:00:00+08:00',
                 'custom_metadata': metadata}}
         assert route == '/api/v1/chunks/by-id'
         text = texts.get(identifier, '段落 ' + identifier)
+        locators = [{'type': 'slide', 'slide': 4}] if identifier == 'positive' else []
         return {'data': {**row, 'knowledge_id': identifier, 'content': text, 'chunk_type': 'text', 'chunk_index': 0,
             'start_at': 12, 'end_at': 12 + len(text), 'content_revision': state['revision'],
-            'is_enabled': True, 'status': 2}}
+            'is_enabled': True, 'status': 2, 'source_locators': locators}}
 
     async def refresh(*_):
         return current_workbench.get() or standalone_scope()
@@ -138,7 +142,18 @@ def test_workflow_renders_clickable_citations_and_markdown_then_hides_revoked_so
     proof = result['evidence'][identifier]
     assert result['dimensions'][0]['text'] == CLAIM
     assert proof['sources'][0]['content_sha256'] == hashlib.sha256(POSITIVE.encode()).hexdigest()
-    assert proof['sources'][0]['location'] == f'分块 1 · 字符 12–{12 + len(POSITIVE)}'
+    assert proof['sources'][0]['location'] == '第 4 张幻灯片'
+    assert proof['sources'][0]['excerpt'] == POSITIVE
+    assert proof['sources'][1]['location'] == '' and proof['sources'][1]['excerpt'] == NEGATIVE
+    # Reconstruct the pre-redesign fingerprint from the original wire fields.
+    revision = '2023-01-08T11:00:00+08:00'
+    legacy = [BINDING['id'], BINDING['knowledge_base_id'], BINDING['tenant_id'], 'positive', 'positive', {
+        'title': '同名市场观察', 'location': f'分块 1 · 字符 12–{12 + len(POSITIVE)}',
+        'url': 'https://example.test/original', 'published_at': '2023-01-06', 'observation_date': '2023-01-05',
+        'ingested_at': revision, 'background': True, 'content_sha256': hashlib.sha256(POSITIVE.encode()).hexdigest(),
+    }, revision, 0, revision]
+    expected = hashlib.sha256(json.dumps(legacy, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode())
+    assert proof['receipt']['passages'][0]['fingerprint'] == expected.hexdigest()
     draft = {'period': 'weekly', 'date': DAY, 'title': '带引用周报',
              'dimension_notes': {identifier: {'text': CLAIM, 'impact': 'neutral'}},
              'evidence_citations': [proof['receipt']]}
@@ -155,7 +170,18 @@ def test_workflow_renders_clickable_citations_and_markdown_then_hides_revoked_so
     assert page.status_code == 200, page.text
     page_html = fromstring(page.text)
     assert page_html.xpath(f'//*[@data-report-dimension="{identifier}"]//sup/a/text()') == ['[1]', '[2]', '[3]']
-    read_url = page_html.xpath('//*[@id="report-evidence-2"]/a[1]/@href')[0]
+    citation_block = page_html.get_element_by_id('report-citations')
+    positive, negative = (citation_block.get_element_by_id(f'report-evidence-{i}') for i in (2, 3))
+    assert positive.xpath('.//div[@class="report-citation-links"]/span/text()') == ['发布于 2023-01-06']
+    assert negative.xpath('.//div[@class="report-citation-links"]/span/text()') == ['数据日期 2023-01-05']
+    assert not negative.xpath('.//div[@class="report-citation-heading"]/span')
+    assert positive.xpath('.//details/div/text()')[0] == '入库时间 2023-01-08 11:00:00'
+    assert positive.xpath('.//small/@title') == ['发布日期早于本周或未知']
+    assert positive.xpath('.//a[.="原网页"]/@href') == ['https://example.test/original']
+    citations_text = citation_block.text_content()
+    assert '字段乙：2023-01-02 为 20 件 → 2023-01-09 为 40 件' in citations_text
+    assert f'“{POSITIVE}”' in citations_text and f'“{NEGATIVE}”' in citations_text
+    read_url = positive.xpath('.//a[.="查看原文"]/@href')[0]
     prefix = f'/research/workbenches/{WB}'
     assert read_url.startswith(prefix + '/api/sn/reports/')
     # This fixture installs routes directly. The application middleware strips the scoped prefix.
@@ -169,8 +195,17 @@ def test_workflow_renders_clickable_citations_and_markdown_then_hides_revoked_so
     markdown = client.get(download)
     assert markdown.status_code == 200
     assert CLAIM + '[^e1][^e2][^e3]' in markdown.text
-    assert '[^e1]: 字段乙 · 观测 2023-01-02 20.0 件 → 2023-01-09 40.0 件' in markdown.text
-    assert '[^e2]: 同名市场观察' in markdown.text and 'https://example.test/original' in markdown.text
+    footnotes = markdown.text.split('## 逐条引用\n', 1)[1]
+    assert '[^e1]: 字段乙：2023-01-02 为 20 件 → 2023-01-09 为 40 件 · [查看数据]' in footnotes
+    assert f'[^e2]: 同名市场观察 · 第 4 张幻灯片 · “{POSITIVE}” · 发布于 2023-01-06 · [查看原文]' in footnotes
+    assert f'[^e3]: 同名市场观察 · “{NEGATIVE}” · 数据日期 2023-01-05 · [查看原文]' in footnotes
+    assert '[查看原文](<http://testserver' + prefix + read_url + '>' in footnotes
+    assert '[原网页](<https://example.test/original>)' in footnotes
+    assert '入库时间' not in footnotes
+    for readable in (citations_text, footnotes):
+        assert '分块' not in readable and '字符' not in readable
+        assert not re.search(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})', readable)
+        assert '20.0 件' not in readable and '40.0 件' not in readable
     assert client.get(download).text == markdown.text
     assert client.post(REPORT + '/ppt').status_code == 409
     raw_url = f'/sn/reports/{DAY}/weekly.json'
@@ -219,6 +254,32 @@ def standalone_scope(**changes):
     scope = WorkbenchScope(IDENTITY, WB, BINDING['knowledge_base_id'], BINDING['tenant_id'],
                            {'can_edit': True}, 'Bearer fixture', scope_version=2, sources=(BINDING,))
     return replace(scope, **changes)
+
+
+@pytest.mark.parametrize('locators, label', [
+    ([{'type': 'pdf', 'page': 7, 'bbox': [0, 0, 1, 1]}], 'PDF 第 7 页'),
+    ([{'type': 'slide', 'slide': 2, 'page': 8}], '第 2 张幻灯片'),
+    ([{'type': 'sheet', 'sheet': '库存', 'row_start': 7, 'row_end': 8}], '工作表「库存」第 7–8 行'),
+    ([{'type': 'sheet', 'sheet': '库存', 'row_start': 7, 'row_end': 8,
+       'column_start': 26, 'column_end': 28}], '工作表「库存」Z7:AB8'),
+    ([{'type': 'section', 'section': 3, 'title': '交付计划'}], '章节「交付计划」'),
+    ([{'type': 'section', 'section': 3}, {'type': 'pdf', 'page': False},
+      {'type': 'text', 'start': 7, 'end': 8}, {'type': 'pdf', 'page': 5, 'source_hash': 'old'}], ''),
+    ([{'type': 'pdf', 'page': 2, 'source_hash': 'file'}, {'type': 'pdf', 'page': 2},
+      {'type': 'pdf', 'page': 4}], 'PDF 第 2 页、PDF 第 4 页'),
+])
+def test_human_location_uses_only_native_text_locators(locators, label):
+    chunk = {'source_locators': locators, 'metadata': {'page': 99}, 'image_info': '[{"page": 99}]'}
+    assert report_evidence._source_location(chunk, {'file_hash': 'file'}) == label
+
+
+def test_excerpt_prefers_sentence_boundaries_and_keeps_real_decimal_points():
+    sentence = '初值为 12.375 件。'
+    assert report_evidence._excerpt(sentence + '延长内容' * 40) == sentence
+    fallback = report_evidence._excerpt('很长的连续叙述' * 30)
+    assert len(fallback) <= 80 and fallback.endswith('…')
+    from tin.web.report_view import _citation_value
+    assert [_citation_value(v) for v in (20.0, 12.375, 0.000005)] == ['20', '12.375', '0.000005']
 
 
 def generate(scope=None):
