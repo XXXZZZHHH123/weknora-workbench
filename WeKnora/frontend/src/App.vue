@@ -134,7 +134,6 @@ const handleGlobalOIDCCallback = async () => {
 
   const params = new URLSearchParams(hash)
   const oidcError = params.get('oidc_error')
-  const oidcErrorDescription = params.get('oidc_error_description')
   const oidcResult = params.get('oidc_result')
 
   if (!oidcError && !oidcResult) return
@@ -142,7 +141,7 @@ const handleGlobalOIDCCallback = async () => {
   if (oidcError) {
     clearOIDCCallbackState('/login')
     await router.replace('/login')
-    MessagePlugin.error(oidcErrorDescription || 'OIDC login failed')
+    MessagePlugin.error(t('auth.oidcLoginFailed'))
     return
   }
 
@@ -150,7 +149,7 @@ const handleGlobalOIDCCallback = async () => {
     if (!oidcResult) {
       clearOIDCCallbackState('/login')
       await router.replace('/login')
-      MessagePlugin.error('OIDC login failed')
+      MessagePlugin.error(t('auth.oidcLoginFailed'))
       return
     }
 
@@ -164,13 +163,13 @@ const handleGlobalOIDCCallback = async () => {
 
     clearOIDCCallbackState('/login')
     await router.replace('/login')
-    MessagePlugin.error(response.message || 'OIDC login failed')
+    MessagePlugin.error(t('auth.oidcLoginFailed'))
   } catch (error: any) {
     console.error('Global OIDC callback handling failed:', error)
     authStore.logout()
     clearOIDCCallbackState('/login')
     await router.replace('/login')
-    MessagePlugin.error(error.message || 'OIDC login failed')
+    MessagePlugin.error(t('auth.oidcLoginFailed'))
   }
 }
 

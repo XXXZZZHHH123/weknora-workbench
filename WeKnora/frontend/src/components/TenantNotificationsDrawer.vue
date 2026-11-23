@@ -14,8 +14,8 @@
         <div class="notification-title">
           <span>{{ actionLabel(row.action) }}</span><span v-if="!row.read_at" class="notification-dot" aria-label="未读" />
         </div>
-        <p><span class="notification-actor">{{ row.actor_name || row.actor_user_id }}</span>
-          <span v-if="row.target_user_id"> · {{ row.target_name || row.target_user_id }}</span>
+        <p><span class="notification-actor">{{ row.actor_name || $t('displayError.memberUnknown') }}</span>
+          <span v-if="row.target_user_id"> · {{ row.target_name || $t('displayError.memberUnknown') }}</span>
         </p>
         <p v-if="row.details?.old_role && row.details?.new_role" class="notification-role">
           {{ roleLabel(row.details.old_role) }} → {{ roleLabel(row.details.new_role) }}

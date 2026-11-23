@@ -6,6 +6,7 @@
   if (!config.enabled) return;
   const $ = id => document.getElementById(id), E = U.esc;
   const dataDate = config.date ? '?date=' + encodeURIComponent(config.date) : '';
+  const localTime = new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',dateStyle:'short',timeStyle:'short'});
   if (page.dataset.chartsPage === 'library') {
     let started = false;
     const start = () => {
@@ -99,7 +100,7 @@
       const def = item.definition, card = document.createElement('article'); card.className = 'charts-card';
       card.dataset.chartId = item.id;
       const link = U.pageURL('/sn/charts/' + encodeURIComponent(item.id)) + dataDate;
-      card.innerHTML = `<h2><a href="${E(link)}">${E(def.title)}</a> <span class="charts-warning-marker" hidden></span></h2><p class="charts-muted">${E(def.group || '未分组')} · ${def.time.mode === 'cycle' ? '周期对比' : '走势'} · v${E(item.revision)}</p><a class="charts-thumbnail" href="${E(link)}" aria-label="${E('打开图表 ' + def.title)}">等待图表进入视野…</a><button type="button" class="favorites-star" data-favorite="${E(item.id)}" data-favorite-kind="chart" data-favorite-label="${E(def.title)}" aria-pressed="false" disabled>☆ 自选</button>`;
+      card.innerHTML = `<h2><a href="${E(link)}">${E(def.title)}</a> <span class="charts-warning-marker" hidden></span></h2><p class="charts-muted">${E(def.group || '未分组')} · ${def.time.mode === 'cycle' ? '周期对比' : '走势'} · 第 ${E(item.revision)} 版</p><a class="charts-thumbnail" href="${E(link)}" aria-label="${E('打开图表 ' + def.title)}">正在准备图表…</a><button type="button" class="favorites-star" data-favorite="${E(item.id)}" data-favorite-kind="chart" data-favorite-label="${E(def.title)}" aria-pressed="false" disabled>☆ 自选</button>`;
       const element = card.querySelector('.charts-thumbnail'), warning = card.querySelector('.charts-warning-marker');
       const warnings = [...(item.warnings || []), ...(item.curves || []).filter(c => c.status === 'missing').map(c => ({code: 'missing', label: c.label}))];
       U.noticeMarker(warning, warnings);
@@ -190,7 +191,7 @@
     }
     function populate() {
       const def = record.definition, time = def.time;
-      $('chart-title').textContent = def.title; $('chart-meta').textContent = `${def.group || '未分组'} · 修订 v${record.revision}`;
+      $('chart-title').textContent = def.title; $('chart-meta').textContent = `${def.group || '未分组'} · 第 ${record.revision} 版`;
       const favorite = page.querySelector('[data-favorite-kind="chart"]');
       if (favorite) { favorite.dataset.favoriteLabel = def.title; window.AccountFavorites?.syncButtons(page); }
       $('chart-note').textContent = def.note;
@@ -247,9 +248,22 @@
         const result = await U.api(path + '/revisions?' + new URLSearchParams({offset: revisionOffset, limit: 20}));
         if (own !== generation) return;
         for (const item of result.items) {
-          const details = document.createElement('details'), summary = document.createElement('summary'), pre = document.createElement('pre');
-          summary.textContent = `v${item.revision} · ${item.definition.title} · ${item.recorded_at || ''} · ${item.edited_by || ''}${item.status === 'deleted' ? ' · 已删除' : ''}`;
-          pre.textContent = JSON.stringify(item.definition, null, 2); details.append(summary, pre); $('chart-revisions').append(details);
+          const row = document.createElement('div'), summary = document.createElement('p');
+          const date = new Date(item.recorded_at || '');
+          const stamp = /^\d{4}-\d{2}-\d{2}$/.test(item.recorded_at) ? item.recorded_at :
+            Number.isNaN(date.getTime()) ? '' : localTime.format(date);
+          const editor = item.edited_by===window.RESEARCH_CONTEXT?.user ? '本人' :
+            item.edited_by && !/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(item.edited_by) ? item.edited_by : '研究员';
+          summary.textContent = [`第 ${item.revision} 版`,item.definition.title,stamp,item.edited_by ? editor : '',item.status==='deleted' ? '已删除' : ''].filter(Boolean).join(' · ');
+          row.append(summary);
+          if ($('research-diagnostics')) {
+            const details = document.createElement('details'), label = document.createElement('summary'), raw = document.createElement('pre');
+            label.textContent = '管理员修订详情';
+            raw.textContent = JSON.stringify(item,null,2);
+            details.append(label,raw);
+            row.append(details);
+          }
+          $('chart-revisions').append(row);
         }
         revisionOffset = result.next_offset; more.hidden = revisionOffset === null; U.notice($('chart-revision-status'), '');
       } catch (error) { U.notice($('chart-revision-status'), '修订历史读取失败：' + error.message, 'error'); }

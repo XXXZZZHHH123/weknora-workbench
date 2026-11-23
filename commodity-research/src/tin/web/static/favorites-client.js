@@ -84,7 +84,7 @@
       if (data.format !== 'favorites.v1' || !Number.isSafeInteger(data.revision) || data.revision < 0 ||
           !Array.isArray(data.items) || data.items.length > 100 ||
           data.items.some(item => !['indicator', 'chart'].includes(item.kind) || typeof item.id !== 'string' || !['active', 'invalid'].includes(item.status)) ||
-          new Set(data.items.map(identity)).size !== data.items.length) throw new Error('账号自选返回格式无效，请刷新后重试。');
+          new Set(data.items.map(identity)).size !== data.items.length) throw new Error('暂时无法确认自选列表，请刷新后查看。');
       return data;
     }
     function accept(data) { items = data.items; revision = data.revision; loaded = true; error = null; }

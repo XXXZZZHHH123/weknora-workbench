@@ -1,7 +1,7 @@
 <template>
   <div class="structured-workspace">
-    <div class="structured-toolbar"><div><strong>表格分析</strong><span>完整数值、字段与原单元格</span></div><div class="toolbar-actions"><router-link to="/platform/materials?add=1">添加资料</router-link><router-link :to="{path:'/platform/structured-data',query:route.query.view ? {} : {view:'model-settings'}}">{{ route.query.view ? '返回工作台' : '字段模型设置' }}</router-link></div></div>
-    <iframe ref="frame" :key="src" :src="src" @load="sendAuth" title="结构化数据工作台" />
+    <div class="structured-toolbar"><div><strong>表格分析</strong><span>按指标查询数值，也可以回到原表核对</span></div><div class="toolbar-actions"><router-link to="/platform/materials?add=1">添加资料</router-link><router-link :to="{path:'/platform/structured-data',query:route.query.view ? {} : {view:'model-settings'}}">{{ route.query.view ? '返回工作台' : '表头识别模型' }}</router-link></div></div>
+    <iframe ref="frame" :key="src" :src="src" @load="sendAuth" title="表格分析" />
   </div>
 </template>
 <script setup lang="ts">
@@ -13,7 +13,7 @@ import {useTheme} from '@/composables/useTheme'
 const auth=useAuthStore(),route=useRoute(),router=useRouter(),frame=ref<HTMLIFrameElement>(),generation=ref(0)
 const {effectiveTheme}=useTheme()
 const src=computed(()=>'/structured/?session='+generation.value+(route.query.view==='model-settings'?'&view=model-settings':'')+(typeof route.query.dataset==='string'?'&dataset='+encodeURIComponent(route.query.dataset):''))
-function sendAuth(){frame.value?.contentWindow?.postMessage({type:'structured-auth',token:auth.token,tenant:auth.selectedTenantId??auth.tenant?.id,userId:auth.user?.id||''},window.location.origin)}
+function sendAuth(){frame.value?.contentWindow?.postMessage({type:'structured-auth',token:auth.token,tenant:auth.selectedTenantId??auth.tenant?.id,userId:auth.user?.id||'',canViewDiagnostics:auth.isSystemAdmin||auth.hasRole('admin')},window.location.origin)}
 function sendTheme(){frame.value?.contentWindow?.postMessage({type:'workspace-theme',mode:effectiveTheme.value},window.location.origin)}
 function receive(e:MessageEvent){
   if(e.origin!==window.location.origin||e.source!==frame.value?.contentWindow)return
@@ -27,7 +27,7 @@ function receive(e:MessageEvent){
   }
 }
 watch(()=>[Boolean(auth.token),auth.selectedTenantId,auth.tenant?.id,auth.user?.id],()=>{generation.value+=1},{flush:'sync'})
-watch(()=>auth.token,sendAuth)
+watch(()=>[auth.token, auth.isSystemAdmin, auth.hasRole('admin')],sendAuth)
 watch(effectiveTheme,sendTheme)
 onMounted(()=>window.addEventListener('message',receive))
 onBeforeUnmount(()=>window.removeEventListener('message',receive))

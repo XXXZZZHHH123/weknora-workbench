@@ -72,14 +72,14 @@ export async function dismissAnalysisJob(owner: AnalysisTaskOwner, id: string, i
   const result: unknown = await response.json()
   if (!isCurrent()) throw new Error('账号或空间已切换。')
   const job = readAnalysisJobs({ items: [result] })[0]
-  if (!job || job.id !== id || job.dismissed !== true) throw new Error('忽略状态未能核对，请刷新后重试。')
+  if (!job || job.id !== id || job.dismissed !== true) throw new Error('暂时无法确认这条提示是否已忽略，请刷新任务列表。')
   return job
 }
 
 export function readDismissedAnalysisJobIds(value: unknown): string[] {
   const ids = value && typeof value === 'object' ? (value as { dismissed_ids?: unknown }).dismissed_ids : undefined
   if (!Array.isArray(ids) || ids.length > 512 || ids.some(id => !analysisJobId(id)) || new Set(ids).size !== ids.length)
-    throw new Error('忽略状态未能核对，请刷新后重试。')
+    throw new Error('暂时无法确认这条提示是否已忽略，请刷新任务列表。')
   return [...ids] as string[]
 }
 

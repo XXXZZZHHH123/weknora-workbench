@@ -74,7 +74,7 @@ func TestNumericUnverifiedTerminalDeliveryKeepsRealChartAndCitation(t *testing.T
 	e.commitTerminalResult(t.Context(), state, "session", numericFailureFallback, "", "failed", false)
 	require.Contains(t, state.FinalAnswer, image)
 	require.Contains(t, state.FinalAnswer, citation)
-	require.Contains(t, state.FinalAnswer, "93〔未核验〕")
+	require.Contains(t, state.FinalAnswer, "93〔数字待核对〕")
 	require.NotNil(t, e.turnReview.NumericUnverifiedDelivery)
 	before := state.FinalAnswer
 	e.reviewConversationReady, e.reviewConversation = false, nil

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { localDateTime } from '@/utils/localDateTime'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
@@ -131,7 +132,7 @@ async function archive() {
     <div v-if="loading" class="workspace-management__empty"><t-loading text="正在加载项目" /></div>
     <template v-else-if="projectId && current">
       <section class="workspace-management__panel"><h3>项目对话</h3><p>归档仅调整项目关联，不复制消息，不改变历史回答的来源。</p>
-        <div v-for="session in sessions" :key="session.id" class="workspace-management__row"><div><strong>{{ session.title || '未命名对话' }}</strong><small>{{ session.updated_at || session.created_at }}</small></div><t-button variant="text" @click="router.push(`/platform/chat/${session.id}`)">打开对话</t-button></div>
+        <div v-for="session in sessions" :key="session.id" class="workspace-management__row"><div><strong>{{ session.title || '未命名对话' }}</strong><small v-if="localDateTime(session.updated_at)">更新于 {{ localDateTime(session.updated_at) }}</small><small v-else-if="localDateTime(session.created_at)">创建于 {{ localDateTime(session.created_at) }}</small></div><t-button variant="text" @click="router.push(`/platform/chat/${session.id}`)">打开对话</t-button></div>
         <p v-if="!sessions.length">还没有对话，可以新建或归档已有对话。</p>
         <t-pagination v-if="total > 20" :current="page" :page-size="20" :total="total" :show-page-size="false" @current-change="(value: number) => { page = value; load() }" />
       </section>

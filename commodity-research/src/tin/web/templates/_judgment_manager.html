@@ -12,9 +12,9 @@
     <div class="logic-toolbar"><label for="logic-panel-switch">研判面板</label><select id="logic-panel-switch" aria-label="已保存研判"></select><button type="button" id="logic-panel-open">切换查看</button><span id="logic-panel-range" class="logic-hint"></span><button type="button" id="logic-panel-more" hidden>更多</button></div>
     <div class="logic-toolbar"><label for="logic-panel-name">面板名称</label><input id="logic-panel-name" maxlength="120" placeholder="为选中研判命名"><button type="button" id="logic-panel-save">保存名称</button><span class="logic-hint">切换仅影响当前预览，不自动生效。</span></div>
   </div>
-    <div class="logic-toolbar"><span id="logic-current-state">尚无研究逻辑</span><button type="button" id="logic-reuse">复用当前 MD</button><button type="button" id="logic-reuse-original">复用原文</button><button type="button" id="logic-download">导出 MD</button><button type="button" id="logic-current-delete" class="logic-danger">删除当前研判</button></div>
+    <div class="logic-toolbar"><span id="logic-current-state">尚无研究逻辑</span><button type="button" id="logic-reuse">复用当前文档</button><button type="button" id="logic-reuse-original">复用原文</button><button type="button" id="logic-download">导出 Markdown 文档</button><button type="button" id="logic-current-delete" class="logic-danger">删除当前研判</button></div>
     <section id="logic-dimension-editor" class="logic-dimension-editor" aria-label="编辑研判维度" hidden>
-      <div class="logic-toolbar"><strong>研究维度</strong><label for="logic-dimension-model">补标模型</label><select id="logic-dimension-model" aria-label="维度补标模型"><option value="">正在读取模型…</option></select><button type="button" id="logic-dimension-suggest">模型补标</button><button type="button" id="logic-dimension-save">保存维度为新版本</button></div>
+      <div class="logic-toolbar"><strong>研究维度</strong><label for="logic-dimension-model">研究维度推荐模型</label><select id="logic-dimension-model" aria-label="为内容推荐研究维度所用的模型"><option value="">正在读取模型…</option></select><button type="button" id="logic-dimension-suggest">为尚未分类的内容推荐维度</button><button type="button" id="logic-dimension-save">保存维度为新版本</button></div>
       <p class="logic-hint">模型仅建议维度；逐条采纳或修改后，确认保存为新版本。</p>
       <div id="logic-dimension-items"></div>
     </section>
@@ -53,7 +53,7 @@
   </section>
   <section data-logic-panel="versions" class="logic-panel" hidden>
     <div class="logic-toolbar"><label for="logic-version">历史研判</label><select id="logic-version" aria-label="选择历史研判"></select><span id="logic-version-range" class="logic-hint"></span><button type="button" id="logic-history-more" hidden>更多</button></div>
-    <div class="logic-toolbar"><span id="logic-history-state" class="logic-hint" role="status">选择历史研判查看。</span><button type="button" id="logic-history-download" disabled>导出 MD</button><button type="button" id="logic-history-dimensions" disabled>编辑维度</button><button type="button" id="logic-history-reuse" disabled>复用为新研判</button><button type="button" id="logic-history-delete" class="logic-danger" disabled>删除此研判</button></div>
+    <div class="logic-toolbar"><span id="logic-history-state" class="logic-hint" role="status">选择历史研判查看。</span><button type="button" id="logic-history-download" disabled>导出 Markdown 文档</button><button type="button" id="logic-history-dimensions" disabled>编辑维度</button><button type="button" id="logic-history-reuse" disabled>复用为新研判</button><button type="button" id="logic-history-delete" class="logic-danger" disabled>删除此研判</button></div>
     <div id="logic-history-charts"></div>
     <pre id="logic-history-md" class="logic-code"></pre>
     <details><summary>与当前展示版本的 MD 差异</summary><pre id="logic-history-diff" class="logic-code"></pre></details>

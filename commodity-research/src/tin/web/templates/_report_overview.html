@@ -12,5 +12,5 @@
 <td><details class="report-dimension-evidence"><summary>支持 {{ dimension.support_count or 0 }} / 反对 {{ dimension.oppose_count or 0 }}</summary>{% for evidence in dimension.evidence %}<p><small>{{ '支持' if evidence.side in ['bull', 'support'] else '反对' }}</small>{{ evidence.text }}</p>{% else %}<p class="report-muted">暂无该维度研判依据</p>{% endfor %}</details></td>
 </tr>{% endfor %}
 </tbody></table></div>
-{% else %}<p class="report-muted">暂无维度内容，可先绑定研究指标、标注研判依据或编辑维度综述。</p>{% endif %}
+{% else %}<p class="report-muted">这期还没有按研究维度整理内容。可以先添加指标，或在报告中写下本期变化。</p>{% endif %}
 </section>

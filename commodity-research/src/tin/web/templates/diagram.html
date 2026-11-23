@@ -9,7 +9,7 @@
 <header class="rw-page-head dg-page-head">
   <div>
     <h1>产业图</h1>
-    <p>{% if research_workbench() %}结构由当前工作台独立建立，每个环节只绑定已确认来源{% else %}结构来自《锡产业基础研究框架》，每个环节的数值从事实层现取{% endif %}；没有数据的环节显示“尚无数据”，不用旧值充数。</p>
+    <p>每个环节显示所选指标在当前日期的可用数据。没有数据的环节会显示“尚无数据”。</p>
   </div>
   <div class="rw-tools">
     <select id="dg-template" aria-label="选择产业图" onchange="dgSwitch(this.value)" class="dg-template-select">
@@ -226,9 +226,8 @@
   class="fixed right-0 top-0 bottom-0 z-50 w-full max-w-2xl bg-[var(--surface)] border-l border-[var(--line)] shadow-2xl p-6 flex flex-col translate-x-full transition-transform duration-300 ease-in-out">
   <div class="flex items-start justify-between gap-4 pb-3 border-b border-[var(--line)]">
     <div>
-      <h2 class="text-lg font-bold">md管理</h2>
-      <p class="text-[11px] text-[var(--text-muted)] mt-0.5">导出再导入无损 ——
-        结构、层级、绑定、静态标注、流向、分组公式都写得回去。</p>
+      <h2 class="text-lg font-bold">导入或导出产业图</h2>
+      <p class="text-[11px] text-[var(--text-muted)] mt-0.5">可以导入环节和连接关系。没有对应指标的环节，可在导入后点开选择指标。</p>
     </div>
     <button onclick="dgCloseMarkdown()" class="text-xl leading-none text-[var(--text-muted)] hover:text-[var(--text)]">&times;</button>
   </div>
@@ -244,8 +243,8 @@
           <tr><td class="py-1"><code>### 矿端</code></td><td class="py-1">子分组，井号越多层级越深</td></tr>
           <tr><td class="py-1"><code>- {{ '来源指标' if research_workbench() else '国产锡精矿' }}</code></td><td class="py-1">节点</td></tr>
           <tr><td class="py-1 pl-4"><code>&nbsp;&nbsp;- {{ '子项' if research_workbench() else '缅甸矿' }}</code></td><td class="py-1">缩进＝包含关系，自动连线</td></tr>
-          <tr><td class="py-1"><code>[占比 32%]</code></td><td class="py-1">静态标注（调研系数，<b>不入事实层</b>）</td></tr>
-          <tr><td class="py-1"><code>&lt;!-- bind: {{ '真实指标编号' if research_workbench() else 'MYSTEEL.X' }} --&gt;</code></td><td class="py-1">绑定指标；派生指标写公式 ID</td></tr>
+          <tr><td class="py-1"><code>[占比 32%]</code></td><td class="py-1">手工标注的调研数据，供查看</td></tr>
+          <tr><td class="py-1"><code>&lt;!-- bind: {{ '真实指标编号' if research_workbench() else 'MYSTEEL.X' }} --&gt;</code></td><td class="py-1">填写指标代码；用计算结果时，填写导出文件里的原有代码</td></tr>
           <tr><td class="py-1"><code>矿端 -&gt; 冶炼 -&gt; 平衡</code></td><td class="py-1"><b>流向连线</b>，独占一行，可连分组也可连节点</td></tr>
           <tr><td class="py-1"><code>&lt;!-- agg: sum --&gt;</code></td><td class="py-1">写在分组标题后：对直接子节点求和（<code>share</code>＝占比）</td></tr>
         </tbody>
@@ -275,7 +274,7 @@
       <p class="text-[10px] text-[var(--text-muted)] leading-relaxed">
         <b>分组之间的连线只能显式写。</b>缩进只表达"包含"，表达不了"矿端的货流向冶炼"——
         那是两个平级分组之间的关系。<br>
-        <b>导入给不了绑定。</b>没写 <code>bind</code> 的节点一律未绑定，打开时用「建议参考」逐个补。<br>
+        没有填写指标代码的环节，导入后可以用“建议参考”选择指标。<br>
         <b>流向里的名称必须写全</b>，对不上会报错并指出是哪一个，不会静默丢掉。</p>
     </div>
   </details>

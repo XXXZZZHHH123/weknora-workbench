@@ -82,7 +82,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const response = await window.researchFetch(prefix + '/api/sn' + path, body === undefined ? {} : {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
     const result = await response.json();
     if (!response.ok) {
-      const detail = result.detail, error = new Error(typeof detail === 'string' ? detail : detail?.message || '研究维度暂时不可用，请重试。');
+      const detail = result.detail, error = new Error(typeof detail === 'string' ? (window.researchCopy?.(detail) ?? detail) : detail?.message || '研究维度暂时不可用，请重试。');
       error.status = response.status; error.detail = detail; throw error;
     }
     return result;
@@ -395,7 +395,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   async function generate() {
     if (running || get('model-run').disabled) return; running = true; suggestions = []; inferred = []; suggestionTargets = new Map(); get('suggestions').replaceChildren(); syncModel();
-    get('model-status').textContent = modelMode === 'infer' ? '正在读取所选原文并归纳维度…' : '正在为每个环节召回并核对真实指标…';
+    get('model-status').textContent = modelMode === 'infer' ? '正在读取所选原文并归纳维度…' : '正在为每个研究环节查找可用指标…';
     try {
       if (modelMode === 'suggest' && editing) for (const dim of draft) if (!dim.id) dim.id = freshId('d-');
       if (modelMode === 'suggest') {
@@ -426,7 +426,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const unresolved = node('section','dimensions-suggestion-group'); unresolved.append(node('h3','','待指定维度'));
         for (const [index, row] of suggestions.entries()) {
           const choice = node('label','dimensions-choice'), check = node('input'); check.type = 'checkbox'; check.checked = true; check.dataset.index = index;
-          const body = node('span','dimensions-choice-body'); body.append(node('strong','',row.name || row.series_id),node('small','dimensions-suggestion-reason',row.reason));
+          const body = node('span','dimensions-choice-body'); body.append(node('strong','',(row.name && row.name !== row.series_id ? row.name : '未命名指标')),node('small','dimensions-suggestion-reason',row.reason));
           if (row.sheet) body.append(node('small','dimensions-sheet',row.sheet));
           const target = node('select'); target.setAttribute('aria-label','建议指标的维度');
           target.append(new Option('请选择维度','')); available.forEach((d, i) => target.append(new Option(d.label,String(i))));
@@ -437,7 +437,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (unresolved.querySelector('.dimensions-choice')) get('suggestions').append(unresolved);
       }
-      get('model-status').textContent = result.notice || (modelMode === 'infer' ? '这是模型草稿。采用后可以增删改；只有点击页面“保存”才会覆盖配置。' : '勾选条目并核对环节；采用后还需要保存研究维度。');
+      get('model-status').textContent = (window.researchCopy?.(result.notice) ?? result.notice) || (modelMode === 'infer' ? '这是模型草稿。采用后可以增删改；只有点击页面“保存”才会覆盖配置。' : '勾选条目并核对环节；采用后还需要保存研究维度。');
     } catch (error) { get('model-status').textContent = error.message; }
     finally { running = false; syncModel(); }
   }

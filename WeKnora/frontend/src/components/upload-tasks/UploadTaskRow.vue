@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { formatFileSize, getFileIcon } from '@/utils/files'
 import { itemPhase, type UploadItem } from '@/stores/uploadTasksState'
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
 import ProgressRing from './ProgressRing.vue'
 
 const props = defineProps<{ item: UploadItem }>()
@@ -61,16 +62,13 @@ const meta = computed(() => {
     case 'saving':
       return t('uploadTasks.phaseSaving')
     case 'parsing':
-      if (item.processingStage) return item.processingStage
       return t(item.parseStatus === 'processing' ? 'uploadTasks.phaseParsing' : 'uploadTasks.phasePending')
     case 'ready':
       if (item.attentionCount) return t('uploadTasks.attentionReady', {count: item.attentionCount})
       if (item.parseStatus === 'stored') return t('knowledgeBase.uploadedStored')
       return t(item.parseStatus === 'finalizing' ? 'uploadTasks.phaseFinalizing' : 'uploadTasks.phaseReady')
-    case 'failed': {
-      const label = t(item.transfer === 'failed' ? 'uploadTasks.phaseUploadFailed' : 'uploadTasks.phaseParseFailed')
-      return reason.value ? `${label} · ${reason.value}` : label
-    }
+    case 'failed':
+      return t(item.transfer === 'failed' ? 'uploadTasks.phaseUploadFailed' : 'uploadTasks.phaseParseFailed')
     case 'duplicate':
       return t('uploadTasks.phaseDuplicate')
     case 'cancelled':
@@ -104,7 +102,8 @@ const handleRowClick = () => {
         <span class="row-name-text">{{ item.name }}</span>
         <span v-if="folder" class="row-name-folder">{{ folder }}</span>
       </span>
-      <span class="row-meta" :title="reason || undefined">{{ meta }}</span>
+      <span class="row-meta">{{ meta }}</span>
+      <ErrorDiagnostics v-if="reason" :detail="reason" @click.stop />
       <span v-if="item.transfer === 'uploaded' && item.parseStatus !== 'stored' && item.coverageSummary?.length"
         class="row-coverage" aria-label="内容处理结果">{{ item.coverageSummary.join(' · ') }}</span>
     </span>

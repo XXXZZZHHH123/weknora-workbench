@@ -82,7 +82,7 @@ func TestFinalNumericRepairIncludesPersistentTokensAndStillChecksFinalAnswer(t *
 			if corrected {
 				require.Equal(t, final, state.FinalAnswer)
 			} else {
-				require.Contains(t, state.FinalAnswer, "最低680〔未核验〕，最高742.25。")
+				require.Contains(t, state.FinalAnswer, "最低680〔数字待核对〕，最高742.25。")
 			}
 		})
 	}

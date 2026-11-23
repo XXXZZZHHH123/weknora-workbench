@@ -1,6 +1,30 @@
-
-      {% if report.gaps %}<ul class="report-gaps">{% for row in report.gaps %}<li><strong>{{ human_text(row.name, names|default({})) or '指标名称待核对' }}</strong>：{{ human_text(row.reason, names|default({})) }}<small>最近数据 {{ row.last_as_of or '暂无' }} · 预期日期 {{ row.expected_by or '未注明' }}</small></li>{% endfor %}</ul>{% else %}<p class="report-muted">本次读取未记录数据缺口；不代表未绑定的数据也已齐备。</p>{% endif %}
-      <details class="report-evidence"><summary>截至所选日期的最新指标 · {{ report.counts.observations }} 项</summary>
-        {% if report.observations %}<div class="report-scroll"><table class="report-table"><thead><tr><th>指标</th><th>数值</th><th>单位</th><th>数据时点</th><th>来源与口径</th></tr></thead><tbody>{% for row in report.observations %}<tr><td>{{ human_text(row.name, names|default({})) }}</td><td class="report-value">{{ row.value_text if row.value is not none else '暂无值' }}</td><td>{{ row.unit or '未注明' }}</td><td>{{ row.as_of or '未注明' }}</td><td>{{ row.source or '未注明' }}{% if row.caliber %}<details><summary>来源详情</summary><dl>{% for key, value in row.caliber.items() %}<dt>{{ key }}</dt><dd>{{ value }}</dd>{% endfor %}</dl></details>{% endif %}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="report-muted">截至该日尚无已记录指标。</p>{% endif %}
-      </details>
-      {% if report.derived %}<details class="report-evidence"><summary>派生计算 · {{ report.counts.derived }} 项</summary><table class="report-table"><thead><tr><th>计算项</th><th>数值</th><th>状态与原因</th></tr></thead><tbody>{% for row in report.derived %}<tr><td>{{ row.formula_id }}</td><td>{{ row.value_text if row.value is not none else '未计算' }}</td><td>{{ row.status }}{% if row.note %} · {{ row.note }}{% endif %}</td></tr>{% endfor %}</tbody></table></details>{% endif %}
+{% if report.gaps %}
+<ul class="report-gaps">{% for row in report.gaps %}
+  <li><strong>{{ human_text(row.name, names|default({})) or '指标名称待核对' }}</strong>：{{ human_text(row.reason, names|default({})) }}<small>最近数据 {{ display_time(row.last_as_of, true) or '暂无' }} · 预期日期 {{ display_time(row.expected_by, true) or '未注明' }}</small></li>
+{% endfor %}</ul>
+{% elif report.observations %}<p class="report-muted">本报告已检查的指标中，暂未发现缺口。未纳入报告的指标未作检查。</p>
+{% else %}<p class="report-muted">本报告没有可核对的指标数据。请检查这期使用的资料。</p>{% endif %}
+<details class="report-evidence"><summary>截至所选日期的最新指标 · {{ report.counts.observations }} 项</summary>
+  {% if report.observations %}<div class="report-scroll"><table class="report-table">
+    <thead><tr><th>指标</th><th>数值</th><th>单位</th><th>数据时点</th><th>来源与口径</th></tr></thead>
+    <tbody>{% for row in report.observations %}<tr>
+      <td>{{ human_text(row.name, names|default({})) or '指标名称待核对' }}</td>
+      <td class="report-value">{{ row.value_text if row.value is not none else '暂无值' }}</td><td>{{ row.unit or '未注明' }}</td>
+      <td>{{ display_time(row.as_of) or '未注明' }}</td>
+      <td>{{ human_text(row.source) or '来源未注明' }}{% if row.revision is defined and row.revision is number and row.revision > 0 %}<small>第 {{ row.revision }} 次修订</small>{% endif %}
+        {% set caliber = display_caliber(row.caliber) %}{% if caliber %}<details><summary>数据口径</summary><dl>{% for label, value in caliber %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}</dl></details>{% endif %}
+      </td>
+    </tr>{% endfor %}</tbody>
+  </table></div>{% else %}<p class="report-muted">截至该日，暂无已记录指标。</p>{% endif %}
+</details>
+{% if report.derived %}<details class="report-evidence"><summary>计算得出的指标 · {{ report.counts.derived }} 项</summary><div class="report-scroll"><table class="report-table">
+  <thead><tr><th>指标</th><th>数值</th><th>计算方法</th><th>状态</th></tr></thead><tbody>
+  {% for row in report.derived %}
+    {% set formula = report_formula(row.formula_id) %}
+    {% set status = {'ok': '已计算', 'missing_input': '缺少计算所需的数据', 'blocked_timestamp_mismatch': '数据时点不一致，暂未计算', 'blocked_caliber_mismatch': '数据口径不一致，暂未计算'}.get(row.status, '暂时无法确认计算状态') %}
+    <tr><td>{{ (formula.name if formula else human_text(row.name)) or '未命名计算项' }}</td>
+      <td>{{ row.value_text if row.value is not none else '未计算' }}{% if row.value is not none and formula and formula.unit %} {{ formula.unit }}{% endif %}</td>
+      <td>{{ formula.expression if formula else '暂未登记计算方法' }}</td>
+      <td>{{ status }}{% if row.note and row.status in ('ok', 'missing_input', 'blocked_timestamp_mismatch', 'blocked_caliber_mismatch') %}<small>{{ human_text(row.note, names|default({})) }}</small>{% endif %}</td></tr>
+  {% endfor %}
+  </tbody></table></div></details>{% endif %}

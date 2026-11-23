@@ -27,7 +27,6 @@
               class="meta-pill"
               :class="statusClass(item)"
             >{{ statusLabel(item) }}</span>
-            <span v-if="item.method" class="meta-pill method">{{ formatMethod(item.method) }}</span>
             <span v-if="item.content_length" class="meta-text">{{ $t('chat.contentLengthLabel', { value: formatLength(item.content_length) }) }}</span>
             <t-icon
               :name="isExpanded(index) ? 'chevron-up' : 'chevron-down'"
@@ -39,7 +38,7 @@
         <div class="result-content" :class="{ expanded: isExpanded(index) }">
           <div class="info-section">
             <div class="info-field">
-              <span class="field-label">URL</span>
+              <span class="field-label">{{ $t('chat.webOriginalUrl', 'Original page') }}</span>
               <span class="field-value">
                 <a
                   v-if="item.url"
@@ -52,17 +51,10 @@
             </div>
           </div>
 
-          <div v-if="itemError(item)" class="info-section">
+          <div v-if="item.status === 'failed' || itemError(item)" class="info-section">
             <div class="info-section-title error">{{ $t('chat.errorMessageLabel') }}</div>
-            <div v-if="item.error_code" class="info-field">
-              <span class="field-label">{{ $t('chat.webFetchErrorCode') }}</span>
-              <span class="field-value">{{ item.error_code }}</span>
-            </div>
-            <div v-if="item.retryable !== undefined" class="info-field">
-              <span class="field-label">{{ $t('chat.webFetchRetryable') }}</span>
-              <span class="field-value">{{ item.retryable ? $t('common.yes') : $t('common.no') }}</span>
-            </div>
-            <div class="full-content error-text">{{ itemError(item) }}</div>
+            <p class="full-content error-text">{{ $t('chat.webReadFailed', 'This page could not be read. Open the original page to check it.') }}</p>
+            <ErrorDiagnostics :detail="[item.method, item.error_code, itemError(item)].filter(Boolean).join(' · ')" />
           </div>
 
           <div v-else-if="isSuccessItem(item)">
@@ -73,13 +65,8 @@
 
             <div v-else-if="item.summary_status === 'failed'" class="info-section">
               <div class="info-section-title error">{{ $t('chat.webFetchSummaryFailed') }}</div>
-              <div v-if="item.summary_error_code" class="info-field">
-                <span class="field-label">{{ $t('chat.webFetchErrorCode') }}</span>
-                <span class="field-value">{{ item.summary_error_code }}</span>
-              </div>
-              <div v-if="item.summary_error_message" class="full-content error-text">
-                {{ item.summary_error_message }}
-              </div>
+              <p class="full-content">{{ $t('chat.webSummaryFailed', 'The page was read, but no summary was available. Open the original page to read it.') }}</p>
+              <ErrorDiagnostics :detail="[item.summary_error_code, item.summary_error_message].filter(Boolean).join(' · ')" />
             </div>
 
             <div v-if="item.raw_content" class="info-section">
@@ -116,6 +103,7 @@
 import { computed, ref, watch } from 'vue';
 import type { WebFetchResultsData, WebFetchResultItem } from '@/types/tool-results';
 import { useI18n } from 'vue-i18n';
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue';
 
 interface Props {
   data: WebFetchResultsData;
@@ -160,7 +148,7 @@ const statusLabel = (item: WebFetchResultItem): string => {
     case 'success':
       return t('chat.webFetchStatusSuccess');
     default:
-      return t('chat.webFetchStatusSuccess');
+      return t('chat.webUnknownState', 'Page status could not be confirmed');
   }
 };
 
@@ -215,17 +203,6 @@ const formatLength = (length: number): string => {
     return t('chat.lengthThousands', { value: (length / 1000).toFixed(1) });
   }
   return t('chat.lengthChars', { value: length });
-};
-
-const formatMethod = (method: string): string => {
-  if (!method) return '';
-  if (method.toLowerCase() === 'chromedp') {
-    return 'Chromedp';
-  }
-  if (method.toLowerCase() === 'http') {
-    return 'HTTP';
-  }
-  return method;
 };
 
 const indexKey = (index: number, item: WebFetchResultItem): string => {

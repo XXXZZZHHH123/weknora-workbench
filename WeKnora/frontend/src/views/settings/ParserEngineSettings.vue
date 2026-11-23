@@ -72,7 +72,7 @@
                 {{ $t('settings.parser.available') }}
               </span>
               <t-tooltip
-                v-else-if="engine.UnavailableReason"
+                v-else-if="canViewDiagnostics && engine.UnavailableReason"
                 :content="engine.UnavailableReason"
                 placement="top"
               >
@@ -149,6 +149,7 @@
         <span v-if="checkMessage" :class="['footer-test-message', saveSuccess ? 'success' : 'error']" :title="checkMessage">
           {{ checkMessage }}
         </span>
+        <ErrorDiagnostics v-if="checkMessage" :detail="checkDiagnostic" />
       </template>
 
       <div v-if="currentEngine">
@@ -239,7 +240,7 @@
             <p class="form-desc">{{ $t('settings.parser.mineruEndpointHint') }}</p>
           </div>
           <div class="form-item">
-            <label class="form-label">API Key</label>
+            <label class="form-label" :title="$t('displayError.parserKeyHelp')">{{ $t('displayError.parserKey') }}</label>
             <t-input
               v-model="config.mineru_server_api_key"
               type="password"
@@ -316,7 +317,7 @@
           <h4 class="setting-drawer__section-title">{{ $t('settings.parser.configSection', '配置') }}</h4>
 
           <div class="form-item">
-            <label class="form-label required">API Key</label>
+            <label class="form-label required" :title="$t('displayError.parserKeyHelp')">{{ $t('displayError.parserKey') }}</label>
             <t-input
               v-model="config.mineru_api_key"
               type="password"
@@ -327,7 +328,7 @@
             </t-input>
           </div>
           <div class="form-item">
-            <label class="form-label">Model Version</label>
+            <label class="form-label" :title="$t('displayError.parserVersionHelp')">{{ $t('displayError.parserVersion') }}</label>
             <t-select v-model="config.mineru_cloud_model" :placeholder="$t('settings.parser.defaultPipeline')" clearable>
               <t-option value="pipeline" label="pipeline" />
               <t-option value="vlm" :label="$t('settings.parser.vlmLabel')" />
@@ -414,6 +415,7 @@
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useUIStore } from '@/stores/ui'
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
 import { useAuthStore } from '@/stores/auth'
 import { MessagePlugin } from 'tdesign-vue-next'
 import SettingDrawer from '@/components/settings/SettingDrawer.vue'
@@ -431,6 +433,7 @@ import PDFProcessingSettings from './PDFProcessingSettings.vue'
 const { t } = useI18n()
 const uiStore = useUIStore()
 const authStore = useAuthStore()
+const canViewDiagnostics = computed(() => authStore.isSystemAdmin || authStore.hasRole('admin'))
 
 const CONFIGURABLE_ENGINES = new Set(['mineru', 'mineru_cloud', 'paddleocr_vl', 'paddleocr_vl_cloud'])
 
@@ -486,6 +489,7 @@ const saveMessage = ref('')
 const saveSuccess = ref(false)
 const checking = ref(false)
 const checkMessage = ref('')
+const checkDiagnostic = ref<unknown>()
 
 const hasBuiltinEngine = computed(() => engines.value.some(e => e.Name === 'builtin'))
 
@@ -565,6 +569,7 @@ function openDrawer(engine: ParserEngineInfo) {
   drawerVisible.value = true
   saveMessage.value = ''
   checkMessage.value = ''
+  checkDiagnostic.value = undefined
 }
 
 async function loadEngines() {
@@ -663,6 +668,7 @@ async function onCheck() {
   }
   checking.value = true
   checkMessage.value = ''
+  checkDiagnostic.value = undefined
   saveMessage.value = ''
   try {
     const res = await checkParserEngines(buildConfigPayload())
@@ -687,7 +693,8 @@ async function onCheck() {
             checkMessage.value = t('settings.parser.checkSuccess', '测试连接成功')
             saveSuccess.value = true
           } else {
-            checkMessage.value = updatedEngine.UnavailableReason || t('settings.parser.checkFailed', '测试连接失败')
+            checkDiagnostic.value = updatedEngine.UnavailableReason
+            checkMessage.value = t('displayError.parserTestFailed')
             saveSuccess.value = false
           }
         } else {
@@ -702,7 +709,8 @@ async function onCheck() {
 
     setTimeout(() => { checkMessage.value = '' }, 3000)
   } catch (e: any) {
-    checkMessage.value = e?.message || t('settings.parser.checkFailed', '测试连接失败')
+    checkDiagnostic.value = e?.diagnostic ?? e?.message
+    checkMessage.value = t('displayError.parserTestFailed')
     saveSuccess.value = false
   } finally {
     checking.value = false

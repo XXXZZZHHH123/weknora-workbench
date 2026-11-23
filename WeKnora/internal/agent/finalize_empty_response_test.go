@@ -95,8 +95,8 @@ func TestFinalEmptyDeliveryRecoveryCannotBypassNumericGuardOrAddAttempts(t *test
 	require.Len(t, model.calls, 3)
 	require.Equal(t, 2, engine.turnReview.Repairs)
 	require.Equal(t, 2, engine.turnReview.Checks)
-	require.Contains(t, state.FinalAnswer, "The result is 999〔未核验〕.")
-	require.Contains(t, state.FinalAnswer, "请以引用的原表、原文或数据为准")
+	require.Contains(t, state.FinalAnswer, "The result is 999〔数字待核对〕.")
+	require.Contains(t, state.FinalAnswer, "写入报告前，请对照原表或原文核对")
 	for _, opts := range model.opts[1:] {
 		require.JSONEq(t, string(reviewedAnswerSchema), string(opts.Format))
 	}
@@ -143,7 +143,7 @@ func TestFinalEmptyDeliveryRecoveryDoesNotReclassifyOtherResponses(t *testing.T)
 				require.Empty(t, opts.Format)
 			}
 			if test.name == "unsupported nonempty answer" {
-				require.Contains(t, state.FinalAnswer, "999〔未核验〕")
+				require.Contains(t, state.FinalAnswer, "999〔数字待核对〕")
 			} else {
 				require.Contains(t, []string{incompleteAnswerFallback, finalNumericFailureFallback}, state.FinalAnswer)
 			}

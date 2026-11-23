@@ -1,4 +1,5 @@
 import type { EvidenceDetail, EvidenceReference, EvidenceUnit } from '../api/chat/evidence'
+import { sheetColumnLabel } from './structuredSheetView'
 import { parseSourceLocators, validSourceBox, type SourceLocator, type SourceLocateRequest } from './sourceLocator'
 
 /** Never resolve by title, array position, numerical equality or another reply. */
@@ -55,4 +56,17 @@ export function evidenceTableColumnInfo(detail: EvidenceDetail): Array<{ name: s
 /** Unknown/mixed declarations never acquire a unit from an optional string. */
 export function evidenceUnitSymbol(unit?: EvidenceUnit): string {
   return unit?.status === 'declared' || unit?.status === 'derived' ? unit.symbol || '' : ''
+}
+
+/** Use original workbook coordinates only when the saved source provides them. */
+export function evidenceSourceLabel(locator: SourceLocator): string {
+  if (locator.type !== 'sheet' || !locator.sheet) return ''
+  const cell = (column?: number, row?: number) => {
+    if (!column || !row || !Number.isSafeInteger(column) || !Number.isSafeInteger(row) || column < 1 || column > 16384 || row < 1) return ''
+    return sheetColumnLabel(column) + row
+  }
+  const start = cell(locator.column_start, locator.row_start)
+  const end = cell(locator.column_end, locator.row_end)
+  if (!start) return locator.sheet
+  return `${locator.sheet} · ${start}${end && end !== start ? `–${end}` : ''}`
 }

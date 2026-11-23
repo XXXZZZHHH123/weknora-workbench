@@ -6,7 +6,10 @@ document.addEventListener('DOMContentLoaded', () => {
   if (!root && !banner && !sources) return;
   const prefix = window.RESEARCH_PREFIX || '', api = prefix + '/api/sn/indicator-dedup';
   const states = {pending: '待确认', confirmed_default: '以 default 库为准', keep_both: '保留两者', rejected: '不是同一指标'};
-  const name = field => field ? field.metric || field.name || field.series_id : '来源已不可用';
+  const name = field => field ? [field.metric,field.name].find(value=>value && value!==field.series_id) || '未命名指标' : '来源已不可用';
+  const localTime = new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',dateStyle:'short',timeStyle:'short'});
+  const accountLabel = value => value===window.RESEARCH_CONTEXT?.user ? '本人' :
+    value && !/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(value) ? value : '研究员';
   function node(tag, text, className) {
     const result = document.createElement(tag);
     if (text !== undefined) result.textContent = text;
@@ -60,7 +63,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let group = buckets.get(key);
         if (!group) {
           group = node('section', undefined, 'dedup-group'); group.dataset.dedupGroup = key;
-          group.append(node('h2', personal ? `${personal.knowledge_base_name || personal.knowledge_base_id || '个人库'} · ${personal.source_file || '来源文件'} · ${personal.sheet || '未注明工作表'}` : '个人库来源已不可用'));
+          group.append(node('h2', personal ? `${personal.knowledge_base_name || '个人库'} · ${personal.source_file || '来源文件未注明'} · ${personal.sheet || '未注明工作表'}` : '个人库来源已不可用'));
           buckets.set(key, group); groups.append(group);
         }
         const row = node('article', undefined, 'dedup-row'); row.dataset.dedupRow = item.id;
@@ -69,7 +72,7 @@ document.addEventListener('DOMContentLoaded', () => {
         select.setAttribute('aria-label', '选择 ' + name(personal));
         select.disabled = !data.can_confirm || !item.batch_eligible || item.state !== 'pending';
         select.addEventListener('change', sync);
-        heading.append(select, node('strong', states[item.state] || item.state)); row.append(heading);
+        heading.append(select, node('strong', states[item.state] || '暂时无法确认')); row.append(heading);
         const fields = node('div', undefined, 'dedup-fields');
         for (const [label, field] of [['个人库副本', personal], ['default 库', standard]]) {
           if (!field) {
@@ -77,7 +80,7 @@ document.addEventListener('DOMContentLoaded', () => {
             fields.append(box); continue;
           }
           const box = node('div'); box.append(node('b', label), node('p')); box.lastChild.append(indicatorLink(field));
-          box.append(node('p', `${field.unit || '单位未注明'} · ${field.frequency || '频率未注明'}`), node('p', field.series_id, 'dedup-code'));
+          box.append(node('p',[field.knowledge_base_name,field.source_file,field.sheet,field.unit||'单位未注明',field.frequency].filter(Boolean).join(' · ')));
           fields.append(box);
         }
         row.append(fields);
@@ -86,7 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
           const codes = item.codes || item.candidate?.codes || item.shared_codes;
           row.append(node('p', (item.candidate?.reason ? item.candidate.reason + '。' : '') +
-            (codes?.length ? '共同编码：' + codes.map(c => typeof c === 'string' ? c : `${c.vendor} · ${c.code}`).join('、') : '候选证据请结合完整名称与字段口径核对。'), 'indicator-muted'));
+            (codes?.length ? '相同的供应商指标代码：' + codes.map(c => typeof c === 'string' ? c : `${c.vendor} · ${c.code}`).join('、') : '请结合指标名称和统计口径核对。'), 'indicator-muted'));
           row.append(node('p', evidenceText(item.evidence), 'dedup-evidence'));
         }
         if (item.evidence?.stale_default) row.append(node('p', 'default 库序列截至日期早于个人库副本，请核对中心来源更新情况；仍使用已确认的 default 库序列。', 'indicator-warning'));
@@ -106,7 +109,13 @@ document.addEventListener('DOMContentLoaded', () => {
         row.append(actions);
         if (item.history?.length) {
           const history = node('details'); history.append(node('summary', '决定与撤销记录'));
-          for (const event of item.history) history.append(node('p', `${event.actor || event.confirmed_by || '系统'} · ${event.at || event.created_at || event.time || ''} · ${states[event.state || event.to_state] || event.action || event.state || ''}`));
+          for (const event of item.history) {
+            const actor = event.actor || event.confirmed_by;
+            const stamp = new Date(event.at || event.created_at || event.time || '');
+            const time = Number.isNaN(stamp.getTime()) ? '' : localTime.format(stamp);
+            const action = event.action==='undo' ? '撤销决定' : states[event.state||event.to_state] || '更新指标对应关系';
+            history.append(node('p',[actor ? accountLabel(actor) : '系统',time,action].filter(Boolean).join(' · ')));
+          }
           row.append(history);
         }
         group.append(row);
@@ -141,7 +150,7 @@ document.addEventListener('DOMContentLoaded', () => {
     for (const item of related) {
       const paragraph = node('p', item.default.series_id === identifier ? '已与个人库对应，副本保留：' : '本指标已对应至 default 库：');
       const field = item.default.series_id === identifier ? item.personal : item.default;
-      paragraph.append(indicatorLink(field), document.createTextNode(` · ${field.source_file || field.knowledge_base_id || ''} · ${field.sheet || ''}`));
+      paragraph.append(indicatorLink(field), document.createTextNode(' · '+[field.source_file||field.knowledge_base_name||'来源未注明',field.sheet].filter(Boolean).join(' · ')));
       sources.append(paragraph);
       try {
         const verified = await request('/' + encodeURIComponent(item.id) + '/verify', {sources_revision: data.sources_revision});

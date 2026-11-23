@@ -4,6 +4,7 @@
       <h3>{{ t('pdfProcessing.title') }}</h3>
       <span>{{ t('pdfProcessing.timingHint') }}</span>
     </div>
+    <ErrorDiagnostics v-if="error" :detail="diagnostic" />
     <p v-if="error" role="alert" class="pdf-processing-error">{{ error }} <t-button v-if="!loaded" variant="text" @click="load">{{ t('pdfProcessing.retry') }}</t-button></p>
     <div class="pdf-processing-fields">
       <label>{{ t('pdfProcessing.overlap') }}
@@ -29,6 +30,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { getPDFProcessingSettings, updatePDFProcessingSettings, type PDFProcessingSettings } from '@/api/pdf-processing'
@@ -49,7 +51,11 @@ function apply(settings: PDFProcessingSettings) {
   form.overlap = settings.overlap_pages; form.batch = settings.grouping_request_bytes / 1000
   form.queue = settings.queue_timeout_seconds / 3600; form.execution = settings.execution_timeout_seconds / 60
 }
-function message(e: any) { return e?.error?.message || e?.message || t('pdfProcessing.failed') }
+const diagnostic = ref<unknown>()
+function message(e: any) {
+  diagnostic.value = e?.diagnostic ?? e?.error ?? e?.message
+  return t('pdfProcessing.failed')
+}
 async function load() {
   const current = ++generation
   loaded.value = false; canEdit.value = false; error.value = ''; saved.value = false

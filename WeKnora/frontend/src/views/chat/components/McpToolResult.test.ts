@@ -19,6 +19,7 @@ before(async () => {
         load(id) {
           // Unused result components depend on browser-only app services.
           // Keep the real renderer, MCP component and shared result rows.
+          if (id.endsWith('/ErrorDiagnostics.vue')) return '<script>export default { inheritAttrs: false }</script><template><div /></template>'
           if (id.endsWith('.vue') && !['ToolResultRenderer.vue', 'McpToolResult.vue', 'ResultRow.vue'].some((name) => id.endsWith(`/${name}`))) {
             return '<template><div /></template>'
           }
@@ -27,7 +28,7 @@ before(async () => {
       vue(),
     ],
     resolve: { alias: { '@': fileURLToPath(new URL('../../../', import.meta.url)) } },
-    server: { middlewareMode: true }, appType: 'custom',
+    server: { middlewareMode: true, ws: false }, appType: 'custom',
   })
   Renderer = (await server.ssrLoadModule('/src/views/chat/components/ToolResultRenderer.vue')).default
 })
@@ -55,23 +56,24 @@ test('discovery renders tool rows instead of raw metadata, including old history
   assert.doesNotMatch(html, /fallback-output|mcpt_old|<script>/)
 })
 
-test('definition renders parameters and expandable complete schema', async () => {
+test('definition renders plain parameter types without exposing the complete schema', async () => {
   const html = await render({ displayType: 'mcp_discovery', output: JSON.stringify({
     name: 'get_log', server_name: 'Svrlog Mcp Server',
     input_schema: { type: 'object', required: ['start_time'], properties: { start_time: { type: 'string' } } },
   }) })
-  assert.match(html, /start_time/)
+  assert.match(html, /Input 1/)
+  assert.doesNotMatch(html, /start_time/)
   assert.match(html, /Svrlog Mcp Server/)
   assert.match(html, /Required/)
-  assert.match(html, /<details/)
-  assert.match(html, /Full parameter definition/)
+  assert.match(html, /Text/)
   assert.doesNotMatch(html, /fallback-output/)
 })
 
 test('proxy validation errors and empty service lists use dedicated views', async () => {
   const error = await render({ displayType: 'mcp_call', success: false, output: 'arguments must be an object' })
   assert.match(error, /role="alert"/)
-  assert.match(error, /arguments must be an object/)
+  assert.match(error, /Check your input and try again/)
+  assert.doesNotMatch(error, /arguments must be an object/)
   assert.doesNotMatch(error, /fallback-output/)
   const empty = await render({ displayType: 'mcp_discovery', output: '{"mode":"list_servers","total":0,"has_more":false}' })
   assert.match(empty, /Showing 0 of 0/)

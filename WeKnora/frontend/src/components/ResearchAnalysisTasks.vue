@@ -47,8 +47,8 @@ function notifyCompleted() {
   for (const job of completed) {
     if (notifications.has(job.id)) continue
     const forget = (): void => { if (notifications.get(job.id) === notification) notifications.delete(job.id) }
-    const notification = NotifyPlugin.success({ title: job.purpose === 'diagram' ? '产业图配置已生成' : '研究分析已完成',
-      content: () => h('div', { class: 'analysis-completion' }, [h('span', '结果已暂存，尚未保存。'),
+    const notification = NotifyPlugin.success({ title: job.purpose === 'diagram' ? '产业图草稿已生成' : '研究分析已完成',
+      content: () => h('div', { class: 'analysis-completion' }, [h('span', '点“查看结果”核对，确认保存后会更新研究台。'),
         h('button', { type: 'button', onClick: () => openTask(job) }, '查看结果'),
         h('button', { type: 'button', disabled: store.dismissingAll || store.dismissingIds.includes(job.id), onClick: () => ignoreTask(job) }, '忽略')]),
       duration: 6000, closeBtn: true, onClose: forget, onCloseBtnClick: forget, onDurationEnd: forget })

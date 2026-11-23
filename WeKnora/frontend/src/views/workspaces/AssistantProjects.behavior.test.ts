@@ -1,3 +1,4 @@
+import { localDateTime } from '../../utils/localDateTime'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
@@ -49,7 +50,7 @@ function fixture(options: { detail?: boolean; viewer?: boolean; failList?: boole
     vue, 'vue-router': { useRoute: () => route, useRouter: () => ({ push: (target: any) => { navigations.push(target); return Promise.resolve() } }) },
     '@/stores/auth': { useAuthStore: () => auth }, '@/stores/menu': { useMenuStore: () => ({ changeIsFirstSession() {} }) },
     '@/api/workspaces': api, '@/api/chat': { createSessions: async () => { throw new Error('Unexpected session creation') }, getSessionsList: async () => ({ data: [] }) },
-    './workspaceForm': forms, './workspaces.css': {}, '@/utils/resourceSorting': sorting,
+    './workspaceForm': forms, './workspaces.css': {}, '@/utils/resourceSorting': sorting, '@/utils/localDateTime': { localDateTime },
     '@/components/ResourceListToolbar.vue': { default: toolbar }, '@/components/ResourceSortControl.vue': { default: sort },
     '@/components/EmptyState.vue': { default: vue.defineComponent({ props: ['title', 'description'], setup: (p, { slots }) => () => vue.h('section', {}, [p.title, p.description, slots.default?.()]) }) },
   }

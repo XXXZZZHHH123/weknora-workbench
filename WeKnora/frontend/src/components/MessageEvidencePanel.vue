@@ -4,11 +4,12 @@ import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import DocumentPreview from '@/components/document-preview.vue'
 import { getMessageEvidence, previewEvidenceSource, type EvidenceDetail, type EvidenceReference, type EvidenceUnit } from '@/api/chat/evidence'
-import { evidenceCellPosition, evidenceSourceLocate, evidenceTableColumnInfo, evidenceUnitSymbol, findEvidenceReference } from '@/utils/evidenceSources'
+import { evidenceCellPosition, evidenceSourceLabel, evidenceSourceLocate, evidenceTableColumnInfo, evidenceUnitSymbol, findEvidenceReference } from '@/utils/evidenceSources'
 
 const props = defineProps<{ sessionId: string; messageId: string; references?: EvidenceReference[] }>()
 const { t } = useI18n()
 const auth = useAuthStore()
+const admin = computed(() => auth.hasRole?.('admin') === true)
 const visible = ref(false), busy = ref(false), error = ref(''), selected = ref('')
 const detail = shallowRef<EvidenceDetail | null>(null)
 const original = shallowRef<Blob | null>(null)
@@ -31,8 +32,40 @@ const isCalculation = computed(() => detail.value?.reference.kind === 'structure
 const isUnverified = computed(() => detail.value?.reference.review_status === 'unverified')
 const hasUnverifiedReferences = computed(() => props.references?.some(reference => reference.review_status === 'unverified'))
 const computation = computed(() => detail.value?.manifest?.computation)
-const formula = computed(() => computation.value?.sql || computation.value?.expression)
-const hasComputation = computed(() => !!computation.value && (formula.value || computation.value.input_scope !== undefined || computation.value.input_count !== undefined || computation.value.coverage !== undefined || computation.value.mappings?.length || computation.value.source_truncated || computation.value.input_complete === false))
+const scopeText = computed(() => {
+  switch (computation.value?.input_scope) {
+    case 'loaded_inputs_before_user_sql':
+    case 'loaded_returned_rows':
+    case 'actual_loaded_rows':
+      return t('evidence.loadedInputs', 'Records read before filtering and calculation')
+    case 'returned_source_rows':
+      return t('evidence.returnedSourceRows', 'Records returned by this query')
+    default: return ''
+  }
+})
+const chartAxes = computed(() => {
+  if (!computation.value?.mappings?.length && !detail.value?.reference.artifact_ids?.length) return []
+  return columnInfo.value.map(column => {
+    const unit = evidenceUnitSymbol(column.unit)
+    return unit ? `${column.label} (${unit})` : column.label
+  })
+})
+const sourceLabels = computed(() => detail.value?.sources?.map((item, index) => {
+  const positions = evidenceSourceLocate(detail.value!, index, 0).locators.map(evidenceSourceLabel).filter(Boolean)
+  return [item.title || item.file_name, ...new Set(positions)].filter(Boolean).join(' · ')
+}) || [])
+const unavailableCopy = computed(() => {
+  switch (detail.value?.message) {
+    case '历史证据未保存原件版本，无法确认原定位':
+      return t('evidence.historicalVersionMissing', 'This older answer did not retain the original file version, so the passage cannot be located.')
+    case '原件版本核验超过单次预览范围':
+      return t('evidence.previewLimit', 'The full file could not be checked in this preview. Open the original file from the knowledge base.')
+    case '来源已更新或原件版本无法读取，原定位不可用':
+      return t('evidence.sourceVersionChanged', 'The file version used for this answer could not be opened. Please select the source again and check the citation.')
+    default: return t('evidence.unavailable')
+  }
+})
+const hasComputation = computed(() => !!computation.value && (computation.value.expression || computation.value.sql || computation.value.input_scope !== undefined || computation.value.input_count !== undefined || computation.value.coverage !== undefined || computation.value.mappings?.length || computation.value.source_truncated || computation.value.input_complete === false))
 function unitText(unit?: EvidenceUnit): string {
   const status = unit?.status === 'declared' ? t('evidence.declaredUnit') : unit?.status === 'derived' ? t('evidence.derivedUnit') : unit?.status === 'mixed' ? t('evidence.mixedUnits') : t('evidence.unknownUnit')
   const symbol = evidenceUnitSymbol(unit)
@@ -40,7 +73,8 @@ function unitText(unit?: EvidenceUnit): string {
 }
 function unitLevel(unit: EvidenceUnit): string {
   const keys: Record<string, string> = { reviewed_plan_declaration: 'reviewedPlanUnit', imported_series_metadata: 'importedSeriesUnit', deterministic_expression: 'expressionUnit' }
-  return keys[unit.evidence_level || ''] ? t(`evidence.${keys[unit.evidence_level!]}`) : unit.evidence_level === 'none' ? '' : unit.evidence_level || ''
+  const key = unit.evidence_level && Object.hasOwn(keys, unit.evidence_level) ? keys[unit.evidence_level] : undefined
+  return key ? t(`evidence.${key}`) : t('evidence.unitBasisUnknown', 'The unit basis was not recorded. Please check the original table.')
 }
 const cellPosition = computed(() => {
   const cells = detail.value?.manifest?.source_cells || []
@@ -97,7 +131,21 @@ async function openOriginal(index = sourceIndex.value) {
 function onLocated(value: { found: boolean; precise: boolean; page?: number }) {
   position.value = value.found ? cellPosition.value || t('evidence.pageLocation') : t('evidence.noCoordinates')
 }
-const displayCell = (cell: unknown) => cell === null || cell === undefined ? '—' : typeof cell === 'object' ? JSON.stringify(cell) : String(cell)
+function displayCell(cell: unknown): string {
+  if (cell == null) return '—'
+  if (typeof cell === 'boolean') return t(cell ? 'common.yes' : 'common.no')
+  if (typeof cell !== 'object') return String(cell)
+  if (Array.isArray(cell)) return cell.map(displayCell).join(' · ')
+  const value = cell as Record<string, unknown>
+  const parts = [
+    [t('evidence.cellValue', 'Value'), value.value],
+    [t('evidence.unit'), value.unit],
+    [t('evidence.cellSource', 'Source'), value.source_cell],
+  ].filter(([, item]) => ['string', 'number'].includes(typeof item))
+  return parts.length
+    ? parts.map(([label, item]) => `${label} · ${item}`).join(' / ')
+    : t('evidence.cellOpenOriginal', 'See the original file')
+}
 
 watch(() => [props.sessionId, props.messageId, auth.token, auth.selectedTenantId], close)
 onBeforeUnmount(close)
@@ -119,18 +167,42 @@ defineExpose({ open })
           <template v-else-if="detail">
             <h4>{{ detail.reference.title || t('evidence.result') }}</h4>
             <p v-if="isUnverified" class="message-evidence__review-warning" role="status">{{ t('evidence.unverifiedReview') }}</p>
-            <p v-if="detail.status !== 'snapshot'" role="status">{{ detail.message || t('evidence.unavailable') }}</p>
-            <template v-else>
+            <p v-if="detail.status !== 'snapshot'" role="status">{{ unavailableCopy }}</p>
+            <details v-if="detail.status !== 'snapshot' && admin && detail.message"><summary>{{ t('evidence.adminDetails', 'Diagnostic details') }}</summary><pre>{{ detail.message }}</pre></details>
+            <template v-if="detail.status === 'snapshot'">
               <p class="message-evidence__note">{{ t('evidence.snapshot') }}</p>
               <p v-if="isCalculation">{{ t('evidence.calculated') }}</p>
               <div v-if="columns.length" class="message-evidence__table">
                 <table><thead><tr><th v-for="(column, index) in columns" :key="index">{{ column }}<small v-if="columnInfo[index]?.unit">{{ unitText(columnInfo[index].unit) }}</small></th></tr></thead><tbody><tr v-for="(row, index) in rows" :key="index"><td v-for="(cell, col) in row" :key="col">{{ displayCell(cell) }}</td></tr></tbody></table>
               </div>
               <p v-if="globalUnit">{{ t('evidence.unit') }}：{{ unitText(globalUnit) }}</p>
-              <details v-if="unitDeclarations.length"><summary>{{ t('evidence.columnUnits') }}</summary><dl v-for="(declaration, index) in unitDeclarations" :key="index"><dt>{{ declaration.label }} · {{ unitText(declaration.unit) }}</dt><dd v-if="unitLevel(declaration.unit)">{{ t('evidence.unitLevel') }}：{{ unitLevel(declaration.unit) }}</dd><dd v-if="declaration.unit.expression">{{ t('evidence.unitExpression') }}：{{ declaration.unit.expression }}</dd><dd v-if="declaration.unit.reason">{{ declaration.unit.reason }}</dd></dl></details>
+              <details v-if="unitDeclarations.length"><summary>{{ t('evidence.columnUnits') }}</summary><dl v-for="(declaration, index) in unitDeclarations" :key="index"><dt>{{ declaration.label }} · {{ unitText(declaration.unit) }}</dt><dd v-if="unitLevel(declaration.unit)">{{ t('evidence.unitLevel') }}：{{ unitLevel(declaration.unit) }}</dd><dd v-if="declaration.unit.expression">{{ t('evidence.unitExpression') }}：{{ declaration.unit.expression }}</dd></dl></details>
               <p v-if="cellPosition" class="message-evidence__note">{{ cellPosition }}</p>
-              <details v-if="hasComputation && computation"><summary>{{ t('evidence.calculation') }}</summary><pre v-if="formula">{{ formula }}</pre><p>{{ t('evidence.inputScope') }}</p><dl><template v-if="computation.input_scope !== undefined"><dt>{{ t('evidence.inputScopeLabel') }}</dt><dd>{{ displayCell(computation.input_scope) }}</dd></template><template v-if="computation.input_count !== undefined"><dt>{{ t('evidence.inputCountLabel') }}</dt><dd>{{ computation.input_count }}</dd></template><template v-if="computation.coverage !== undefined"><dt>{{ t('evidence.coverageLabel') }}</dt><dd><pre>{{ displayCell(computation.coverage) }}</pre></dd></template></dl><p v-if="computation.source_truncated || computation.input_complete === false">{{ t('evidence.partialSource') }}</p><details v-if="computation.mappings?.length"><summary>{{ t('evidence.mappingLabel') }}</summary><pre>{{ displayCell(computation.mappings) }}</pre></details></details>
-              <div class="message-evidence__sources"><button v-for="(item, index) in detail.sources" :key="`${item.knowledge_id}:${index}`" type="button" :disabled="previewBusy" @click="openOriginal(index)">{{ t('evidence.openSource') }} · {{ item.title || item.file_name }}</button></div>
+              <details v-if="hasComputation && computation">
+                <summary>{{ t('evidence.calculation') }}</summary>
+                <pre v-if="computation.expression">{{ computation.expression }}</pre>
+                <p>{{ t('evidence.inputScope') }}</p>
+                <dl>
+                  <template v-if="scopeText"><dt>{{ t('evidence.inputScopeLabel') }}</dt><dd>{{ scopeText }}</dd></template>
+                  <template v-if="computation.input_count !== undefined"><dt>{{ t('evidence.inputCountLabel') }}</dt><dd>{{ computation.input_count }}</dd></template>
+                </dl>
+                <p v-if="computation.source_truncated || computation.input_complete === false">{{ t('evidence.partialSource') }}</p>
+                <div v-if="chartAxes.length > 1">
+                  <h5>{{ t('evidence.mappingLabel') }}</h5>
+                  <dl>
+                    <dt>{{ t('evidence.axisX', 'Horizontal axis') }}</dt><dd>{{ chartAxes[0] }}</dd>
+                    <dt>{{ t('evidence.axisY', 'Vertical axis') }}</dt><dd>{{ chartAxes.slice(1).join(' · ') }}</dd>
+                    <dt>{{ t('evidence.cellSource', 'Source') }}</dt><dd>{{ sourceLabels.join(' / ') }}</dd>
+                  </dl>
+                </div>
+                <details v-if="admin">
+                  <summary>{{ t('evidence.adminDetails', 'Diagnostic details') }}</summary>
+                  <pre v-if="computation.sql">{{ computation.sql }}</pre>
+                  <pre v-if="computation.coverage !== undefined">{{ JSON.stringify(computation.coverage, null, 2) }}</pre>
+                  <pre v-if="computation.mappings?.length">{{ JSON.stringify(computation.mappings, null, 2) }}</pre>
+                </details>
+              </details>
+              <div class="message-evidence__sources"><button v-for="(item, index) in detail.sources" :key="`${item.knowledge_id}:${index}`" type="button" :disabled="previewBusy" @click="openOriginal(index)">{{ t('evidence.openSource') }} · {{ sourceLabels[index] }}</button></div>
               <p v-if="previewBusy" role="status">{{ t('evidence.loading') }}</p>
               <p v-if="previewError" role="alert">{{ previewError }}</p>
               <p v-if="position" class="message-evidence__note">{{ position }}</p>

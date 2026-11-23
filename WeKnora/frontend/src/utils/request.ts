@@ -2,6 +2,7 @@
 import axios from "axios";
 import { generateRandomString, MAX_FILE_SIZE_MB, MAX_SKILL_BUNDLE_SIZE_MB } from "./index";
 import i18n from '@/i18n'
+import { httpErrorTextKey, userFacingErrorKey } from './userFacingError';
 import { getApiBaseUrl } from './api-base';
 import { isSkillBundleUploadUrl } from './uploadLimit';
 import { isTimeoutError, uploadTimeoutMs } from './requestTimeouts';
@@ -163,7 +164,8 @@ instance.interceptors.response.use(
       const msg = typeof data === 'object'
         ? (typeof data?.error === 'string' ? data.error : (data?.error?.message || data?.message))
         : data;
-      return Promise.reject(withHttpStatus({ status, message: msg || t('error.invalidCredentials') }, status));
+      const key = httpErrorTextKey(msg, status, originalRequest?.method, originalRequest?.url);
+      return Promise.reject(withHttpStatus({ status, message: t(key || 'error.invalidCredentials'), diagnostic: msg }, status));
     }
 
     // Embed 调试页/挂件：无 JWT 时直接拒绝，勿走 refresh → /login
@@ -172,7 +174,7 @@ instance.interceptors.response.use(
       const msg = typeof data === 'object'
         ? (typeof data?.error === 'string' ? data.error : (data?.error?.message || data?.message))
         : data;
-      return Promise.reject(withHttpStatus({ status, message: msg || t('error.invalidCredentials') }, status));
+      return Promise.reject(withHttpStatus({ status, message: t('error.pleaseRelogin'), diagnostic: msg }, status));
     }
 
     // 如果是401错误且不是刷新token的请求，尝试刷新token
@@ -196,7 +198,7 @@ instance.interceptors.response.use(
     
     // 处理 Nginx 413 Request Entity Too Large
     const ERR_ENTITY_TOO_LARGE = 413;
-    if (error.response.status === ERR_ENTITY_TOO_LARGE) {
+    if (error.response.status === ERR_ENTITY_TOO_LARGE && !userFacingErrorKey(error.response.data?.error?.message, '')) {
       const skillUpload = isSkillBundleUploadUrl(error.config?.url)
       return Promise.reject(withHttpStatus({
         status: ERR_ENTITY_TOO_LARGE,
@@ -223,10 +225,13 @@ instance.interceptors.response.use(
     } else if (typeof data === 'string') {
       errorMessage = data;
     }
+    const key = httpErrorTextKey(errorMessage, status, originalRequest?.method, originalRequest?.url, typeof data === 'string');
+    const payload = typeof data === 'object' && data ? data : {};
     return Promise.reject(withHttpStatus({
       status,
-      message: errorMessage,
-      ...(typeof data === 'object' ? data : {}) 
+      ...payload,
+      message: key ? t(key) : errorMessage,
+      ...(key ? { diagnostic: payload.error ?? payload.message ?? errorMessage } : {}),
     }, status));
   }
 );

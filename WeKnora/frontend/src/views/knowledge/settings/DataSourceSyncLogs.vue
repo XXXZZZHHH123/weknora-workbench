@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
+import { localDateTime } from '@/utils/localDateTime'
+import { useAuthStore } from '@/stores/auth'
 import { useI18n } from 'vue-i18n'
 import { getSyncLogs, type SyncLog, type SyncItemError } from '@/api/datasource'
 import AssistantActionButton from '@/components/assistant/AssistantActionButton.vue'
@@ -88,18 +91,11 @@ function statusColor(status: string) {
   }
 }
 
+const auth = useAuthStore()
+const canViewDiagnostics = computed(() => auth.isSystemAdmin || auth.hasRole('admin'))
+
 function formatTime(ts: string | null) {
-  if (!ts) return '--'
-  const d = new Date(ts)
-  if (isNaN(d.getTime())) return '--'
-  return d.toLocaleString(undefined, {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  })
+  return localDateTime(ts) || '—'
 }
 
 function formatDate(ts: string | null) {
@@ -284,10 +280,11 @@ const groupedLogs = computed(() => {
                   {{ t('datasource.logDetail.docsFailedSummary', { n: log.items_failed }) }}
                 </div>
                 <div v-else-if="log.error_message" class="tl-error">
-                  {{ log.error_message }}
+                  {{ t('displayError.syncFailed') }}
                 </div>
+                <ErrorDiagnostics :detail="log.error_message" />
                 <AssistantActionButton
-                  v-if="log.status === 'failed' || log.status === 'partial' || log.items_failed > 0"
+                  v-if="canViewDiagnostics && (log.status === 'failed' || log.status === 'partial' || log.items_failed > 0)"
                   :label="t('assistant.actions.diagnose')"
                   :query="t('assistant.prompts.syncFailure', { source: props.dataSourceName || props.dataSourceId, id: props.dataSourceId, log: log.id })"
                   :selection="{

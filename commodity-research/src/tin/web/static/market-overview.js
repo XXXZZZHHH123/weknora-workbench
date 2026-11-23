@@ -11,14 +11,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const renderers = new Set(), chartControllers = new Set(), schedule = P.pool(4);
   const announce = message => { get('notice').textContent = message; get('notice').hidden = !message; };
   const normalize = value => String(value || '').normalize('NFKC').toLocaleLowerCase();
-  const title = item => item.kind === 'chart' ? (charts.get(item.id)?.title || charts.get(item.id)?.definition?.title || item.title || item.id) : (catalog.get(item.id)?.name || item.title || item.id);
+  const title = item => item.kind === 'chart' ? (charts.get(item.id)?.title || charts.get(item.id)?.definition?.title || item.title || '未命名图表') : (catalog.get(item.id)?.name || item.title || '未命名指标');
   function button(label, action, disabled = false) {
     const control = document.createElement('button'); control.type = 'button'; control.className = 'market-core-button';
     control.textContent = label; control.disabled = disabled; control.addEventListener('click', action); return control;
   }
   async function request(path, options = {}) {
     const response = await window.researchFetch((window.RESEARCH_PREFIX || '') + '/api/sn' + path, options), data = await response.json();
-    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '核心关注暂时不可用，请重试。');
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? (window.researchCopy?.(data.detail) ?? data.detail) : '核心关注暂时不可用，请重试。');
     return data;
   }
   function syncCount() {
@@ -184,17 +184,21 @@ document.addEventListener('DOMContentLoaded', () => {
   model.addEventListener('change', () => { try { localStorage.setItem('research-strategy-text-model', model.value); } catch (_) {} syncSuggestions(); });
   get('suggestions-close').addEventListener('click', () => suggestions.close());
   run.addEventListener('click', async () => {
-    if (running || !model.value) return; running = true; suggested = []; get('suggestions-list').replaceChildren(); syncSuggestions(); suggestionStatus('正在根据研究框架核对工作表，再从真实字段中生成建议…');
+    if (running || !model.value) return; running = true; suggested = []; get('suggestions-list').replaceChildren(); syncSuggestions(); suggestionStatus('正在从已导入的指标中挑选建议…');
     try {
       const data = await request('/market/core/suggestions', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({model_id: model.value})});
       suggested = data.items || [];
       for (const row of suggested) {
-        catalog.set(row.series_id, {series_id: row.series_id, name: row.name || row.series_id, unit: row.unit, source: row.sheet});
+        catalog.set(row.series_id, {series_id: row.series_id, name: (row.name && row.name !== row.series_id ? row.name : '未命名指标'), unit: row.unit, source: row.sheet});
         const label = document.createElement('label'), checkbox = document.createElement('input'), content = document.createElement('span'), name = document.createElement('b'), reason = document.createElement('small');
         checkbox.type = 'checkbox'; checkbox.value = row.series_id; checkbox.checked = true; checkbox.addEventListener('change', syncSuggestions);
-        name.textContent = `${row.group} · ${row.name || row.series_id}`; reason.textContent = row.reason; content.append(name, reason); label.append(checkbox, content); get('suggestions-list').append(label);
+        name.textContent = `${row.group} · ${(row.name && row.name !== row.series_id ? row.name : '未命名指标')}`; reason.textContent = row.reason; content.append(name, reason); label.append(checkbox, content); get('suggestions-list').append(label);
       }
-      suggestionStatus(data.notice || (suggested.length ? '请核对分组和理由，勾选后采用。' : '模型未给出可采用建议。'));
+      const limited = data.truncated && Number.isInteger(data.selected_field_count) ? `本次仅查看了列出的 ${data.selected_field_count} 个指标，可手动补选其他指标。` : '';
+      const mapped = window.researchCopy?.(data.notice);
+      const missing = mapped && mapped !== data.notice ? mapped : '本次没有找到可用建议，可以手动选择指标。';
+      const notice = suggested.length ? '请核对分组和理由，勾选后采用。' : missing;
+      suggestionStatus([notice,limited].filter(Boolean).join(' '));
     } catch (error) { suggestionStatus(error.message); }
     finally { running = false; syncSuggestions(); }
   });

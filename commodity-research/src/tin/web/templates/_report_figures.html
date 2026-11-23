@@ -2,7 +2,7 @@
 <figure class="report-figure" data-report-figure="{{ figure.key }}">
 <header><h4>{{ figure.title }}</h4><small data-figure-metadata>单位：{{ figure.unit or '未注明或暂不可核验' }} · 数据截至 {{ figure.as_of or selected.date }}</small></header>
 {% if figure.conclusion %}<p class="report-figure-conclusion">{{ figure.conclusion }}</p>{% endif %}
-{% if live_report %}<div data-figure-plot><p class="report-figure-state" role="status">进入视口后读取图表</p></div>{% endif %}
+{% if live_report %}<div data-figure-plot><p class="report-figure-state" role="status">正在准备图表…</p></div>{% endif %}
 <figcaption>{% if figure.caption %}<strong>{{ figure.caption }}</strong>{% endif %}<span data-figure-notice>{{ figure.notice or '' }}</span></figcaption>
 </figure>
 {% endmacro %}
@@ -12,4 +12,4 @@
 {% else %}{% for figure in report.report_figures %}{{ evidence_figure(figure) }}{% endfor %}{% endif %}
 </div>
 {% elif live_report %}<p class="report-muted" id="report-no-figures">未选择报告图表，可在编辑报告中选择已有绑定指标。</p>{% endif %}
-{% if not live_report %}<p class="report-muted">历史冻结归档沿用保存时的数据，不重新加载当前图表；引用图仅列标题与引用处。</p>{% endif %}
+{% if not live_report %}<p class="report-muted">归档保留当时的数据。这里列出引用图表的标题和引用位置。</p>{% endif %}

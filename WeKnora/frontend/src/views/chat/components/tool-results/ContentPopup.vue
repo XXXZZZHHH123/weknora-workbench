@@ -16,19 +16,21 @@
       <div v-else-if="blocks.length === 1" class="full-content" v-html="blocks[0].html"></div>
     </div>
 
-    <div v-if="hasInfo" class="popup-footer">
+    <details v-if="hasInfo && admin" class="popup-footer">
+      <summary>{{ $t('displayError.diagnostics', 'Diagnostic details') }}</summary>
       <span v-if="chunkId" class="popup-footer__item" :title="chunkId">
         <span class="popup-footer__key">{{ $t('chat.chunkIdLabel') }}</span>{{ chunkId }}
       </span>
       <span v-if="knowledgeId" class="popup-footer__item" :title="knowledgeId">
         <span class="popup-footer__key">{{ $t('chat.documentIdLabel') }}</span>{{ knowledgeId }}
       </span>
-    </div>
+    </details>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import { useAuthStore } from '@/stores/auth';
 import { sanitizeHTML } from '@/utils/security';
 import { highlightText, highlightRegex } from '@/components/GlobalCommandPalette/useHighlight';
 import { cleanContent } from './contentClean';
@@ -53,6 +55,8 @@ interface Props {
 
 const props = defineProps<Props>();
 
+const auth = useAuthStore();
+const admin = computed(() => auth.hasRole('admin'));
 const hasInfo = computed(() => !!(props.chunkId || props.knowledgeId));
 
 const processedContent = computed(() => {

@@ -57,7 +57,7 @@ const formatKnowledgeMeta = (result: GrepKnowledgeResult): string => {
 };
 
 const rowFromGroupedChunk = (group: ReturnType<typeof groupGrepChunkResults>[number]): GrepRow => {
-  const title = group.title || t('knowledge.untitledDocument');
+  const title = group.title || t('knowledgeBase.untitledDocument');
   const meta = group.is_faq
     ? t('agentStream.grepResults.faqEntry')
     : formatKnowledgeMeta({

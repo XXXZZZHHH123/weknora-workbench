@@ -15,6 +15,7 @@ import { humanizeCron, relativeTime } from '@/utils/cronHumanize'
 import DataSourceEditorDialog from './DataSourceEditorDialog.vue'
 import DataSourceSyncLogs from './DataSourceSyncLogs.vue'
 import DataSourceTypeIcon from './DataSourceTypeIcon.vue'
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useAssistantDataChange } from '@/utils/assistantDataChange'
 
@@ -123,7 +124,7 @@ async function handleResume(ds: DataSource) {
     MessagePlugin.success(t('datasource.resumed'))
     loadList()
   } catch (e: any) {
-    MessagePlugin.error(e?.message || e?.error || t('datasource.resumeFailed'))
+    MessagePlugin.error(t('datasource.resumeFailed'))
   }
 }
 
@@ -311,8 +312,9 @@ onBeforeUnmount(stopPolling)
             </p>
             <div v-if="ds.error_message" class="ds-card__error">
               <t-icon name="error-circle-filled" size="14px" />
-              <span>{{ ds.error_message }}</span>
+              <span>{{ t('displayError.syncFailed') }}</span>
             </div>
+            <ErrorDiagnostics v-if="canManageDataSource" :detail="ds.error_message" @click.stop />
           </div>
         </component>
 

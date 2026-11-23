@@ -411,8 +411,10 @@
                 {{ t('system.globalSettings.runtime.tasks.unknownTarget') }}
               </p>
               <p v-if="task.last_error" class="rq-failed-row-error">
-                {{ task.last_error }}
+                {{ t('displayError.runtimeTaskFailed') }}
               </p>
+              <ErrorDiagnostics v-if="task.last_error || task.worker"
+                :detail="{ worker: task.worker, error: task.last_error }" />
             </div>
 
             <div v-if="task.allowed_actions.length > 0" class="rq-failed-row-actions">
@@ -508,6 +510,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
+import { localDateTime } from '@/utils/localDateTime'
 import { useI18n } from 'vue-i18n'
 import { MessagePlugin } from 'tdesign-vue-next'
 import SettingDrawer from '@/components/settings/SettingDrawer.vue'
@@ -661,18 +665,7 @@ function taskStateCount(row: QueueStat | null, state: RuntimeTaskState): number 
 }
 
 function formatTaskTime(value?: string): string {
-  if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '—'
-  return date.toLocaleString(locale.value, {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  })
+  return localDateTime(value) || '—'
 }
 
 function runtimeTaskMeta(task: RuntimeTask): RuntimeTaskMeta[] {
@@ -720,7 +713,6 @@ function runtimeTaskMeta(task: RuntimeTask): RuntimeTaskMeta[] {
   if (task.last_failed_at) refs.push({ key: 'failed', label: t('system.globalSettings.runtime.tasks.lastFailedAt'), value: formatTaskTime(task.last_failed_at) })
   if (task.completed_at) refs.push({ key: 'completed', label: t('system.globalSettings.runtime.tasks.completedAt'), value: formatTaskTime(task.completed_at) })
   if (task.deadline) refs.push({ key: 'deadline', label: t('system.globalSettings.runtime.tasks.deadline'), value: formatTaskTime(task.deadline) })
-  if (task.worker) refs.push({ key: 'worker', label: t('system.globalSettings.runtime.tasks.worker'), value: task.worker })
   if (task.is_orphaned) refs.push({ key: 'orphaned', label: t('system.globalSettings.runtime.tasks.health'), value: t('system.globalSettings.runtime.tasks.orphaned') })
   return refs
 }

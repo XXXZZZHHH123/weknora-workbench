@@ -10,7 +10,7 @@
         <div class="result-header document-header">
           <div class="result-title">
             <span class="doc-index">#{{ index + 1 }}</span>
-            <span class="doc-title">{{ doc.title || $t('chat.notProvided') }}</span>
+            <span class="doc-title">{{ doc.title || $t('knowledgeBase.untitledDocument') }}</span>
           </div>
           <div class="result-meta">
             <span class="meta-chip" v-if="doc.chunk_count">
@@ -20,6 +20,8 @@
         </div>
         <div class="result-content expanded">
           <div class="info-section">
+            <details v-if="admin && (doc.faq_id || doc.knowledge_id)">
+              <summary>{{ $t('displayError.diagnostics', 'Diagnostic details') }}</summary>
             <div class="info-field" v-if="doc.is_faq && doc.faq_id">
               <span class="field-label">{{ $t('chat.faqIdLabel') }}</span>
               <span class="field-value"><code>{{ doc.faq_id }}</code></span>
@@ -28,6 +30,7 @@
               <span class="field-label">{{ doc.is_faq ? $t('chat.faqContainerIdLabel') : $t('chat.documentIdLabel') }}</span>
               <span class="field-value"><code>{{ doc.knowledge_id }}</code></span>
             </div>
+            </details>
             <div
               v-if="doc.is_faq && doc.faq_answers?.length"
               class="info-field info-field--block"
@@ -85,10 +88,13 @@
 </template>
 
 <script setup lang="ts">
+import { useAuthStore } from '@/stores/auth';
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { DocumentInfoData, DocumentInfoDocument } from '@/types/tool-results';
 
+const auth = useAuthStore();
+const admin = computed(() => auth.hasRole('admin'));
 const props = defineProps<{
   data: DocumentInfoData;
 }>();

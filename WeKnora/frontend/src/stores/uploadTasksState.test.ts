@@ -137,7 +137,7 @@ test('classifyUploadResult reads success, duplicate rejections and failures', ()
   assert.deepEqual(
     classifyUploadResult({ success: true, data: { id: 'k1', parse_status: 'pending' } }),
     { kind: 'uploaded', knowledgeId: 'k1', parseStatus: 'pending', coverageSummary: [
-      '正文：未统计', '图片：未统计', '表格：未统计', '可计算数据：未统计', '内容覆盖尚未核验',
+      '正文数量未统计', '图片：未统计', '表格数量未统计', '可计算的数值尚未统计', '当前结果可能只包含原件中的部分内容',
     ] },
   )
   assert.deepEqual(

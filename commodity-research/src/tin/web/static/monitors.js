@@ -24,7 +24,7 @@
       headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})});
     let result;
     try { result = await response.json(); } catch (_) { throw new Error('服务返回异常，编辑内容已保留，请重试。'); }
-    if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : '操作未完成，请核对后重试。');
+    if (!response.ok) throw new Error(typeof result.detail === 'string' ? (window.researchCopy?.(result.detail) ?? result.detail) : '操作未完成，请核对后重试。');
     return result;
   }
   function sync() {
@@ -165,7 +165,7 @@
       const warning = node('p', '', 'monitor-warning'); warning.dataset.overlapWarning = 'true'; warning.hidden = true; row.append(warning);
       const candidates = node('details', undefined, 'monitor-candidates'); candidates.append(node('summary', '候选指标与数据覆盖'));
       const list = node('ul', undefined, 'affairs-row-detail');
-      for (const candidate of rule._candidates) list.append(node('li', `${candidate.name || candidate.series_id} · ${coverageText(candidate)}`));
+      for (const candidate of rule._candidates) list.append(node('li', [candidate.name && candidate.name !== candidate.series_id ? candidate.name : '未命名指标',candidate.source_file,candidate.sheet,candidate.unit,coverageText(candidate)].filter(Boolean).join(' · ')));
       candidates.append(list); row.append(candidates); return row;
     });
     get('rules').replaceChildren(...rows); showRuleCoverage(overlap); sync();

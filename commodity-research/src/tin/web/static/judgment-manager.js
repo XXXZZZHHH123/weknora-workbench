@@ -61,7 +61,7 @@
     });
     let value;
     try { value = await response.json(); } catch { throw new Error('研究逻辑服务暂时不可用，输入已保留。'); }
-    if (!response.ok) { const detail = value.detail; const message = typeof detail === 'string' ? detail :
+    if (!response.ok) { const detail = value.detail; const message = typeof detail === 'string' ? (window.researchCopy?.(detail) ?? detail) :
       detail?.message ? detail.message + (detail.issues?.length ? '：' + detail.issues.slice(0, 4).map(item => item.message).join('；') : '') : '请求未完成，输入已保留。';
       const error = new Error(message); error.status = response.status; error.fields = detail?.attention_fields;
       if (typeof detail?.frequency_required === 'boolean') error.frequencyRequired = detail.frequency_required;
@@ -249,7 +249,7 @@
   byId('dimension-suggest')?.addEventListener('click', async () => {
     if (busy || dimensionSuggesting || !displayed || !managed?.can_write) return;
     const modelId = (byId('dimension-model') || byId('model')).value;
-    if (!modelId) return inform('请选择补标模型；暂无可用模型时请先配置对话模型。', true);
+    if (!modelId) return inform('请选择推荐研究维度所用的模型。没有可用模型时，请联系管理员在设置中添加。', true);
     const record = displayed, epoch = ++dimensionSuggestEpoch; dimensionSuggesting = true; syncDimensionControls(); inform('正在建议研究维度，可继续手动编辑…');
     try {
       const result = await api('/dimension-suggestions', {judgment_id: record.id, version: record.version, model_id: modelId});

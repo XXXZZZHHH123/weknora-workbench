@@ -92,7 +92,7 @@ func annotateUnverifiedCitations(answer string, invalidChunkIDs map[string]bool)
 			}
 		}
 		marked.WriteString(answer[previous:location[0]])
-		marked.WriteString("〔引用未核验〕")
+		marked.WriteString("〔引用待核对〕")
 		previous = location[1]
 		matched[match[1]] = true
 		count++

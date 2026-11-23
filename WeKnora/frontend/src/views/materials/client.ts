@@ -34,7 +34,14 @@ export function createMaterialClient(scope: MaterialScope, current: () => Materi
     }
     const result = await response.json().catch(() => ({}))
     assertScope()
-    if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : '资料处理失败，请稍后重试。')
+    if (!response.ok) {
+      const fallback = response.status === 403
+        ? '无法访问这份资料，请联系资料负责人核对权限。'
+        : options.method && options.method !== 'GET'
+          ? '暂时无法确认操作是否完成，请先刷新核对。'
+          : '暂时无法读取资料，请刷新后重试。'
+      throw new Error(fallback, { cause: result.detail })
+    }
     return result
   }
   return {

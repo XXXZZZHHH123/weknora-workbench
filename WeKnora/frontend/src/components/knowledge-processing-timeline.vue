@@ -2,6 +2,9 @@
 import { ref, reactive, onMounted, onBeforeUnmount, watch, computed, nextTick } from 'vue'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { useI18n } from 'vue-i18n'
+import { useAuthStore } from '@/stores/auth'
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
+import { localDateTime } from '@/utils/localDateTime'
 import AssistantActionButton from '@/components/assistant/AssistantActionButton.vue'
 import { copyWithToast } from '@/utils/clipboard'
 import { getKnowledgeSpans, reparseKnowledge, cancelKnowledgeParse, getKnowledgeDetails } from '@/api/knowledge-base/index'
@@ -87,7 +90,9 @@ const emit = defineEmits<{
   (e: 'close'): void
 }>()
 
-const { t } = useI18n()
+const { t, te, locale } = useI18n()
+const auth = useAuthStore()
+const canViewDiagnostics = computed(() => auth.isSystemAdmin || auth.hasRole('admin'))
 
 const STAGES = ['docreader', 'chunking', 'embedding', 'multimodal', 'postprocess'] as const
 const POLL_INTERVAL_MS = 2000
@@ -174,7 +179,7 @@ const currentStageLabel = computed(() => {
   const running = stages.value.find((s) => s.status === 'running')
   const failed = stages.value.find((s) => s.status === 'failed')
   const target = failed || running || stages.value.find((s) => s.status === 'pending') || stages.value[stages.value.length - 1]
-  return target ? t(`knowledgeStages.stage.${target.name}`) : ''
+  return target ? localizedStage(target.name) : ''
 })
 
 const currentStageIndex = computed(() => {
@@ -459,17 +464,12 @@ function ensureAttemptStatuses() {
 function localizedErrorTitle(code?: string): string {
   if (!code) return ''
   const key = `knowledgeStages.errorCode.${code}`
-  const localized = t(key)
-  return localized === key ? code : localized
+  return te(key, locale.value) ? t(key) : ''
 }
 
 function localizedErrorSuggestion(code?: string): string {
-  if (!code) return ''
   const key = `knowledgeStages.errorCode.${code}_SUGGESTION`
-  const localized = t(key)
-  if (localized !== key) return localized
-  const fallback = t('knowledgeStages.errorCode.UNKNOWN_SUGGESTION')
-  return fallback === 'knowledgeStages.errorCode.UNKNOWN_SUGGESTION' ? '' : fallback
+  return code && te(key, locale.value) ? t(key) : t('knowledgeStages.errorCode.UNKNOWN_SUGGESTION')
 }
 
 async function copyValue(value: any) {
@@ -1016,17 +1016,22 @@ function prettyJSON(v: any): string {
 
 function localizedStatus(status: string): string {
   const key = `knowledgeStages.status.${status}`
-  const localized = t(key)
-  return localized === key ? status : localized
+  return te(key, locale.value) ? t(key) : t('knowledgeStages.status.unknown')
+}
+
+function localizedStage(stage: string): string {
+  const key = `knowledgeStages.stage.${stage}`
+  return te(key, locale.value) ? t(key) : t('knowledgeStages.stage.other')
 }
 
 function rowLabel(row: FlatRow): string {
   if (row.isRoot) return t('knowledgeStages.root')
-  if (row.isStage) return t(`knowledgeStages.stage.${row.node.name}`)
-  if (row.node.name === 'postprocess.graph') return t('knowledgeStages.processConfig.graph')
-  const graphChunk = /^postprocess\.graph\.chunk\[(\d+)\]$/.exec(row.node.name)
-  if (graphChunk) return `${t('knowledgeStages.processConfig.graph')} #${Number(graphChunk[1]) + 1}`
-  return row.node.name
+  if (row.isStage) return localizedStage(row.node.name)
+  if (row.node.name === 'postprocess.graph' || row.node.name.startsWith('postprocess.graph.chunk[')) {
+    return t('knowledgeStages.processConfig.graph')
+  }
+  if (row.node.kind === 'generation') return t('knowledgeStages.detail.generation')
+  return t('knowledgeStages.stage.other')
 }
 
 // v1 stamped ROOT / STAGE / SPAN on every row and flung the label to the
@@ -1035,7 +1040,7 @@ function rowLabel(row: FlatRow): string {
 // already said. Only `generation` (an LLM/VLM call) is worth a chip.
 function rowKindLabel(row: FlatRow): string {
   if (row.isRoot || row.isStage) return ''
-  return row.node.kind === 'generation' ? 'generation' : ''
+  return row.node.kind === 'generation' ? t('knowledgeStages.detail.generation') : ''
 }
 
 function jsonExpandKey(section: string, key: string): string {
@@ -1055,24 +1060,7 @@ function isJsonExpanded(section: string, key: string): boolean {
 }
 
 function formatTime(s?: string | null): string {
-  if (!s) return '—'
-  const ts = Date.parse(s)
-  if (Number.isNaN(ts)) return s
-  const d = new Date(ts)
-  const ms = String(d.getMilliseconds()).padStart(3, '0')
-  const hh = String(d.getHours()).padStart(2, '0')
-  const mm = String(d.getMinutes()).padStart(2, '0')
-  const ss = String(d.getSeconds()).padStart(2, '0')
-  // Date prefix: omit year when same as current year to keep the row
-  // compact, but always show month+day so traces from yesterday/last
-  // week aren't ambiguous. The full ISO date is preserved in the
-  // tooltip via the original string.
-  const now = new Date()
-  const yyyy = d.getFullYear()
-  const mo = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  const datePart = yyyy === now.getFullYear() ? `${mo}-${dd}` : `${yyyy}-${mo}-${dd}`
-  return `${datePart} ${hh}:${mm}:${ss}.${ms}`
+  return localDateTime(s) || '—'
 }
 
 function humanizeKey(k: string): string {
@@ -1140,7 +1128,7 @@ function toKvEntry(key: string, value: any): KvEntry {
     return { key, label, kind: 'scalar', display: '—', raw: value, defaultExpanded: false }
   }
   if (typeof value === 'boolean') {
-    return { key, label, kind: 'bool', display: value ? 'true' : 'false', raw: value, defaultExpanded: false }
+    return { key, label, kind: 'bool', display: t(value ? 'uploadConfirm.statusOn' : 'uploadConfirm.statusOff'), raw: value, defaultExpanded: false }
   }
   if (typeof value === 'number') {
     return { key, label, kind: 'scalar', display: value.toLocaleString(), raw: value, defaultExpanded: false }
@@ -1151,7 +1139,7 @@ function toKvEntry(key: string, value: any): KvEntry {
   if (Array.isArray(value)) {
     return {
       key, label, kind: 'array',
-      display: `Array · ${value.length}`, raw: value,
+      display: t('knowledgeStages.detail.itemCount', { n: value.length }), raw: value,
       defaultExpanded: shouldInlineExpand(value),
     }
   }
@@ -1159,7 +1147,7 @@ function toKvEntry(key: string, value: any): KvEntry {
     const n = Object.keys(value as object).length
     return {
       key, label, kind: 'object',
-      display: `Object · ${n} keys`, raw: value,
+      display: t('knowledgeStages.detail.itemCount', { n }), raw: value,
       defaultExpanded: shouldInlineExpand(value),
     }
   }
@@ -1274,7 +1262,7 @@ const errorHeadline = computed(() => {
   const name = failedStage.value?.name
     || (STAGES as readonly string[]).find((n) => n === err?.name)
   if (name) {
-    return t('knowledgeStages.stageFailed', { stage: t(`knowledgeStages.stage.${name}`) })
+    return t('knowledgeStages.stageFailed', { stage: localizedStage(name) })
   }
   return t('knowledgeStages.status.failed')
 })
@@ -1420,8 +1408,8 @@ const traceMetadata = computed(() => {
   return hasContent(m) ? m : null
 })
 
-watch([selectedSpanId, detailTab], () => {
-  if (detailTab.value === 'metadata' && !tabHasContent('metadata')) {
+watch([selectedSpanId, detailTab, canViewDiagnostics], () => {
+  if (!canViewDiagnostics.value || (detailTab.value === 'metadata' && !tabHasContent('metadata'))) {
     detailTab.value = 'overview'
   }
 })
@@ -1698,18 +1686,14 @@ const processConfigLines = computed<string[]>(() => {
             <div class="kp-err-top">
               <span class="kp-err-glyph" aria-hidden="true">!</span>
               <span class="kp-err-where">{{ errorHeadline }}</span>
-              <span v-if="data.last_error.error_code" class="kp-err-code kp-mono">{{ data.last_error.error_code }}</span>
-              <button type="button" class="kp-err-copy" :title="t('knowledgeStages.copyError')"
-                :aria-label="t('knowledgeStages.copyError')" @click="copyValue(data.last_error)">
-                <t-icon name="copy" size="14px" />
-              </button>
+
             </div>
-            <div v-if="data.last_error.error_message" class="kp-err-message">{{ data.last_error.error_message }}</div>
-            <div v-if="localizedErrorSuggestion(data.last_error.error_code)" class="kp-err-hint">
+            <ErrorDiagnostics :detail="data.last_error" />
+            <div class="kp-err-hint">
               {{ localizedErrorSuggestion(data.last_error.error_code) }}
             </div>
             <div class="kp-err-actions">
-              <AssistantActionButton :label="t('assistant.actions.diagnose')"
+              <AssistantActionButton v-if="canViewDiagnostics" :label="t('assistant.actions.diagnose')"
                 :query="t('assistant.prompts.documentFailure', { title: docTitle || knowledgeId, id: knowledgeId })"
                 :selection="{ field: errorHeadline, text: [data.last_error.error_code, data.last_error.error_message].filter(Boolean).join('\n') }" />
               <button v-if="data.parse_status === 'failed'" type="button" class="kp-err-btn" @click="onRetry">
@@ -1849,7 +1833,7 @@ const processConfigLines = computed<string[]>(() => {
                 </span>
               </div>
               <div class="kp-detail-actions">
-                <button type="button" class="kp-icon-btn" :title="t('knowledgeStages.copyDetails')"
+                <button v-if="canViewDiagnostics" type="button" class="kp-icon-btn" :title="t('knowledgeStages.copyDetails')"
                   @click.stop="copySpan(selectedRow.node)">
                   <t-icon name="copy" size="18px" />
                 </button>
@@ -1862,16 +1846,16 @@ const processConfigLines = computed<string[]>(() => {
             <div class="kp-tabs">
               <button type="button" class="kp-tab" :class="{ 'kp-tab-active': detailTab === 'overview' }"
                 @click="detailTab = 'overview'">{{ t('knowledgeStages.tab.overview') }}</button>
-              <button type="button" class="kp-tab"
+              <button v-if="canViewDiagnostics" type="button" class="kp-tab"
                 :class="{ 'kp-tab-active': detailTab === 'input', 'kp-tab-empty': !tabHasContent('input') }"
                 @click="detailTab = 'input'">{{ t('knowledgeStages.detail.input') }}</button>
-              <button type="button" class="kp-tab"
+              <button v-if="canViewDiagnostics" type="button" class="kp-tab"
                 :class="{ 'kp-tab-active': detailTab === 'output', 'kp-tab-empty': !tabHasContent('output') }"
                 @click="detailTab = 'output'">{{ t('knowledgeStages.detail.output') }}</button>
-              <button v-if="tabHasContent('metadata')" type="button" class="kp-tab"
+              <button v-if="canViewDiagnostics && tabHasContent('metadata')" type="button" class="kp-tab"
                 :class="{ 'kp-tab-active': detailTab === 'metadata' }" @click="detailTab = 'metadata'">{{
                   t('knowledgeStages.detail.metadata') }}</button>
-              <button type="button" class="kp-tab" :class="{ 'kp-tab-active': detailTab === 'raw' }"
+              <button v-if="canViewDiagnostics" type="button" class="kp-tab" :class="{ 'kp-tab-active': detailTab === 'raw' }"
                 @click="detailTab = 'raw'">{{ t('knowledgeStages.tab.raw') }}</button>
             </div>
 
@@ -1922,9 +1906,9 @@ const processConfigLines = computed<string[]>(() => {
                   </div>
                 </div>
 
-                <!-- Identity / lineage -->
-                <div class="kp-section">
-                  <div class="kp-section-title">{{ t('knowledgeStages.detail.identity') }}</div>
+                <!-- Internal task references -->
+                <details v-if="canViewDiagnostics" class="kp-section">
+                  <summary>{{ t('knowledgeStages.detail.identity') }}</summary>
                   <div class="kp-kv">
                     <div v-for="entry in identityFields(selectedRow)" :key="entry.key" class="kp-kv-row">
                       <span class="kp-kv-key">{{ entry.label }}</span>
@@ -1937,10 +1921,10 @@ const processConfigLines = computed<string[]>(() => {
                       </span>
                     </div>
                   </div>
-                </div>
+                </details>
 
-                <div v-if="traceMetadata" class="kp-section">
-                  <div class="kp-section-title">{{ t('knowledgeStages.detail.traceMetadata') }}</div>
+                <details v-if="canViewDiagnostics && traceMetadata" class="kp-section">
+                  <summary>{{ t('knowledgeStages.detail.traceMetadata') }}</summary>
                   <p class="kp-section-desc">{{ t('knowledgeStages.detail.metadataHint') }}</p>
                   <div class="kp-kv">
                     <div v-for="entry in buildKvEntries(traceMetadata)" :key="entry.key" class="kp-kv-row kp-kv-row-multiline">
@@ -1948,7 +1932,7 @@ const processConfigLines = computed<string[]>(() => {
                       <span class="kp-kv-val kp-kv-scalar">{{ entry.display }}</span>
                     </div>
                   </div>
-                </div>
+                </details>
 
                 <!-- Stage breakdown (root only) -->
                 <div v-if="selectedRow.isRoot" class="kp-section">
@@ -1978,11 +1962,9 @@ const processConfigLines = computed<string[]>(() => {
                     <span class="kp-error-glyph">!</span>
                     <span class="kp-error-title">{{ localizedErrorTitle(selectedRow.node.error_code) ||
                       t('knowledgeStages.detail.error') }}</span>
-                    <span v-if="selectedRow.node.error_code" class="kp-error-code kp-mono">{{
-                      selectedRow.node.error_code }}</span>
                   </div>
-                  <pre v-if="selectedRow.node.error_message"
-                    class="kp-error-msg kp-mono">{{ selectedRow.node.error_message }}</pre>
+                  <p>{{ localizedErrorSuggestion(selectedRow.node.error_code) }}</p>
+                  <ErrorDiagnostics :detail="{ code: selectedRow.node.error_code, message: selectedRow.node.error_message }" />
                 </div>
 
                 <div v-if="!selectedRow.node.span_id && !selectedRow.node.started_at" class="kp-detail-hint">
@@ -1991,7 +1973,7 @@ const processConfigLines = computed<string[]>(() => {
               </template>
 
               <!-- Input / Output / Metadata tabs -->
-              <template v-else-if="detailTab === 'input' || detailTab === 'output' || detailTab === 'metadata'">
+              <template v-else-if="canViewDiagnostics && (detailTab === 'input' || detailTab === 'output' || detailTab === 'metadata')">
                 <div v-if="!tabHasContent(detailTab)" class="kp-detail-empty">
                   <span>{{ detailTab === 'metadata' ? t('knowledgeStages.detail.metadataEmpty') :
                     t('knowledgeStages.detail.empty') }}</span>
@@ -2046,7 +2028,7 @@ const processConfigLines = computed<string[]>(() => {
               </template>
 
               <!-- Raw JSON tab -->
-              <template v-else-if="detailTab === 'raw'">
+              <template v-else-if="canViewDiagnostics && detailTab === 'raw'">
                 <div class="kp-section">
                   <div class="kp-section-bar">
                     <span class="kp-section-title">{{ t('knowledgeStages.tab.raw') }}</span>

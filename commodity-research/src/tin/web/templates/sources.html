@@ -6,59 +6,99 @@
   {% if research_prefix() %}<div class="legacy-source-banner"><div><strong>资料中心</strong></div><a href="/platform/materials{% if selected_source %}?source={{ selected_source | urlencode }}{% endif %}" target="_top" class="research-button primary">打开资料中心 ↗</a></div>{% endif %}
   <header><h1 class="text-xl font-bold">文件与来源 · 原件核验</h1></header>
   <section id="legacy-source-upload" class="rounded-xl border p-4 space-y-3{% if in_workbench %} workbench-ingest-hidden{% endif %}">
-    <h2 class="font-semibold">研究字段接入</h2>
+    <h2 class="font-semibold">把表格数据加入研究指标</h2>
     <form id="upload-form" class="flex flex-wrap gap-3"><input id="file-input" type="file" accept=".xlsx,.xls,.xlsm,.csv,.tsv" required><button class="btn-primary" type="submit">上传并检查</button></form>
     {% if research_prefix() %}<a href="/platform/materials" target="_top" class="text-[var(--primary)]">研报、表格与网页资料统一进入资料中心 →</a>{% endif %}
   </section>
   <section id="legacy-source-bridge" class="rounded-xl border p-4 space-y-3{% if in_workbench %} workbench-ingest-hidden{% endif %}">
     <h2 class="font-semibold">从已解析的 Excel 导入研究指标</h2>
-    <button id="load-datasets" class="btn-secondary">选择结构化文件</button>
+    <button id="load-datasets" class="btn-secondary">读取已整理的表格</button>
     <select id="dataset-select" class="border rounded p-2"><option value="">请选择文件版本</option></select>
-    <select id="series-select" class="border rounded p-2"><option value="">请选择字段</option></select>
-    <button id="preview-bridge" class="btn-secondary">检查并接入已确认字段</button>
+    <select id="series-select" class="border rounded p-2"><option value="">请选择数据列</option></select>
+    <button id="preview-bridge" class="btn-secondary">核对所选数据列</button>
     <div id="bridge-mapping" class="hidden space-y-2">
       <p id="bridge-summary" class="text-sm"></p>
       <label>研究指标 <select id="bridge-target" class="border rounded p-2"></select></label>
       <label>原单位 <input id="bridge-source-unit" class="border rounded p-2" placeholder="必须明确原单位"></label>
       <label>登记单位 <input id="bridge-target-unit" class="border rounded p-2" readonly></label>
       <label>换算系数 <input id="bridge-factor" type="number" step="any" value="1" class="border rounded p-2"></label>
-      <label class="block">映射说明 <input id="bridge-note" class="border rounded p-2 w-full" placeholder="说明该字段与指标的关系、单位和统计口径"></label>
+      <label class="block">这列数据对应哪个指标 <input id="bridge-note" class="border rounded p-2 w-full" placeholder="请写明对应的指标、单位和统计口径"></label>
       <label class="block"><input id="bridge-conflicts" type="checkbox"> 已核对冲突，允许保留旧值并新增修订</label>
-      <button id="commit-bridge" class="btn-primary">确认映射并导入</button>
+      <button id="commit-bridge" class="btn-primary">确认对应关系并导入</button>
     </div>
   </section>
   <section id="import-preview" class="hidden rounded-xl border p-4 space-y-3{% if in_workbench %} workbench-ingest-hidden{% endif %}">
     <h2 class="font-semibold">导入检查结果</h2><p id="preview-summary"></p><div id="preview-columns" class="space-y-2"></div>
-    <label id="register-new-box" class="hidden"><input id="register-new" type="checkbox"> 已核对新指标名称与口径，允许登记新编码</label>
+    <label id="register-new-box" class="hidden"><input id="register-new" type="checkbox"> 已核对新指标名称与口径，同意新增这些指标</label>
     <button id="commit-upload" class="btn-primary">确认并导入</button>
   </section>
   <p id="source-message" role="status" class="text-sm whitespace-pre-wrap"></p>
+  {% if can_view_diagnostics() %}<details id="source-error" hidden><summary>管理员诊断信息</summary><pre class="text-xs overflow-auto whitespace-pre-wrap"></pre></details>{% endif %}
   <section class="rounded-xl border p-4 space-y-3">
     <h2 class="font-semibold">当前空间的原件</h2>
-    <ul class="space-y-2">{% for source in sources %}<li><button type="button" class="source-open text-[var(--primary)]" data-source="{{ source.id }}">{{ source.filename }}</button> <span class="text-xs">{{ source.kind }} · {{ source.size }} 字节 · {{ source.id[:12] }}…</span></li>{% else %}<li>还没有留存原件。历史观测仍保留原有来源说明，但不能反推原始文件。</li>{% endfor %}</ul>
+    <ul class="space-y-2">{% for source in sources %}<li><button type="button" class="source-open text-[var(--primary)]" data-source="{{ source.id }}">{{ source.filename or '未命名文件' }}</button> <span class="text-xs">{{ display_file_type(source.filename) }} · {{ display_file_size(source.size) }}{% if source.created_at %} · 保存于 {{ display_time(source.created_at) }}{% endif %}</span></li>{% else %}<li>还没有留存原件。已有数据仍可查看原有来源说明。这里没有可下载的原始文件。</li>{% endfor %}</ul>
   </section>
   <section id="source-inspector" class="hidden rounded-xl border p-4 space-y-3">
-    <h2 id="source-heading" class="font-semibold"></h2><p id="source-hash" class="text-xs break-all"></p>
-    <a id="source-download" class="text-[var(--primary)]">下载不可变原件</a>
+    <h2 id="source-heading" class="font-semibold"></h2><p id="source-file-info" class="text-xs"></p>
+    <a id="source-download" class="text-[var(--primary)]">下载当时上传的原件</a>
     <label>工作表 <select id="sheet-select" class="border rounded p-2"></select></label>
-    <div class="overflow-auto"><table class="text-xs w-full"><thead><tr><th>工作表</th><th>单元格</th><th>原值</th><th>缓存值</th><th>公式</th><th>状态</th></tr></thead><tbody id="source-cell-rows"></tbody></table></div>
-    <p id="cells-count" class="text-xs"></p><button id="cells-prev" class="btn-secondary">上一页</button> <button id="cells-next" class="btn-secondary">下一页</button>
-    <details><summary>观测来源与转换记录</summary><pre id="source-evidence" class="text-xs overflow-auto whitespace-pre-wrap"></pre></details>
+    <div class="overflow-auto"><table class="text-xs w-full"><thead><tr><th>工作表</th><th>单元格</th><th>原值</th><th>文件上次保存的计算结果</th><th>公式</th><th>状态</th></tr></thead><tbody id="source-cell-rows"></tbody></table></div>
+    <p id="source-gap" class="text-xs"></p><p id="cells-count" class="text-xs"></p><button id="cells-prev" class="btn-secondary">上一页</button> <button id="cells-next" class="btn-secondary">下一页</button>
+    <details><summary>数据来源和单位换算</summary><ul id="source-evidence" class="text-xs space-y-2"></ul></details>
+    {% if can_view_diagnostics() %}<details><summary>管理员诊断信息</summary><pre id="source-diagnostics" class="text-xs overflow-auto whitespace-pre-wrap"></pre></details>{% endif %}
   </section>
 </div>
 <script>
 const sourceIndicators = {{ source_indicators | tojson }};
 let uploaded = null, bridged = null, opened = null, cellOffset = 0;
 const sourcePrefix = window.RESEARCH_PREFIX || '';
-const sourceMessage = value => document.getElementById('source-message').textContent = typeof value === 'string' ? value : JSON.stringify(value,null,2);
+const sourceElement = id => document.getElementById(id);
+const sourceDate = new Intl.DateTimeFormat('sv-SE', {timeZone:'Asia/Shanghai', dateStyle:'short', timeStyle:'short'});
+const sourceTime = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && !Number.isNaN(Date.parse(value))
+  ? sourceDate.format(new Date(value)) : value;
+const cellLabels = {formula_uncached:'公式没有已保存的结果',error:'单元格报错',empty:'空白',valid:'可读取'};
+const incompleteCatalog = '指标列表没有读全，暂时无法确认选择。请重新选择文件并读取数据列。';
+const sourceReadFailure = '暂时无法读取这份原件。请重新打开文件，仍无法读取时联系管理员。';
+function sourceMessage(message, detail) {
+  sourceElement('source-message').textContent = message;
+  const diagnostics = sourceElement('source-error');
+  if (diagnostics) {
+    diagnostics.hidden = detail == null;
+    diagnostics.querySelector('pre').textContent = detail == null ? '' : (typeof detail === 'string' ? detail : JSON.stringify(detail,null,2));
+  }
+}
+function sourceFailure(error, fallback) {
+  const messages = {
+    '原件缺失或哈希不一致，未提供替代文件':'当前文件与保存时的版本不同或已无法读取。请重新选择原件。',
+    '原件缺失或SHA256不符，未提供替代文件':'当前文件与保存时的版本不同或已无法读取。请重新选择原件。',
+    '单元格快照缺少校验记录或已被改动；未返回替代内容':'目前无法核对表格与原件是否一致。请重新选择原件。',
+    '结构化导入记录的SHA256与原件不符':'当前文件与导入时的版本不同，无法核对。请重新选择原件。',
+    '重复文件原件无法核验为本次SHA256版本；未关联错误文件':'无法确认已有文件与本次上传的是同一版本。请从原知识库核对原件。',
+    '结构化服务未返回后台任务号；原件已保留，可重试':'原件已保存，暂时无法确认表格是否开始处理。请先刷新处理记录。',
+    '桥接需要同时提供真实 dataset_id 和 series_id':'请重新选择文件版本，再选择其中一列。',
+    '文件超过 100 MiB，请分批导入':'文件超过 100 MB，请拆小后分批导入。',
+    '表格请上传Excel或CSV；文档请使用研报资料入口':'请上传 Excel 或文本表格。文档请从资料中心上传。'
+  };
+  const detail = error.detail ?? error.cause?.message;
+  let message = fallback;
+  if (error.localCopy) message = error.message;
+  else if (error.status === 401) message = '登录已失效，请重新打开研究工作台。';
+  else if (Object.hasOwn(messages,detail)) message = messages[detail];
+  else if (typeof detail === 'string' && detail.startsWith('原件已留存，但未写入观测：'))
+    message = '原件已保留，本次数据尚未加入研究指标。请核对表格后再次导入。';
+  sourceMessage(message,detail);
+}
 async function sourceApi(path, body) {
   const options = body instanceof FormData ? {method:'POST',body} : body === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};
   const response = await researchFetch(sourcePrefix+path,options);
-  const result = await response.json(); if (!response.ok) throw new Error(result.detail || '读取失败'); return result;
+  const result = await response.json().catch(()=>null);
+  if (!response.ok || result == null) throw Object.assign(new Error(),{status:response.status,detail:result?.detail});
+  return result;
 }
 function optionsFor(select, value) {
   select.replaceChildren(new Option('请选择研究指标',''));
-  for (const item of sourceIndicators) select.add(new Option(`${item.name} [${item.series_id}] · ${item.unit}`,item.series_id));
+  for (const item of sourceIndicators)
+    select.add(new Option([item.name||'未命名指标',item.unit||'单位待确认'].join(' · '),item.series_id));
   select.value = value || '';
 }
 function pinnedUrl(path) {
@@ -66,45 +106,246 @@ function pinnedUrl(path) {
   if (window.RESEARCH_CONTEXT) {url.searchParams.set('_research_tenant',window.RESEARCH_CONTEXT.tenant);url.searchParams.set('_research_user',window.RESEARCH_CONTEXT.user);}
   return url.pathname+url.search;
 }
+function sourceEvidence(observations) {
+  const list = sourceElement('source-evidence');
+  list.replaceChildren();
+  for (const {locator={},transformation={}} of observations||[]) {
+    const {mapping={}} = transformation;
+    const indicator = sourceIndicators.find(item=>item.series_id===mapping?.research_series_id);
+    const place = [locator.sheet,locator.value_cell||(locator.row ? '第 '+locator.row+' 行':'')].filter(Boolean).join(' · ');
+    const unit = mapping?.target_unit || indicator?.unit;
+    const rows = [
+      ['数据日期',sourceTime(transformation.normalized_as_of||locator.date||locator.period)],
+      ['指标',indicator?.name],
+      ['原值',sourceTime(locator.raw_value)],
+      ['来源',place||transformation.source],
+      ['记录数值',transformation.normalized_value],
+      ['单位',unit],
+      ['换算方式',Number.isFinite(mapping?.factor) && mapping.factor!==1 ? `原值乘以 ${mapping.factor}${mapping.source_unit && unit ? `（${mapping.source_unit}换算为${unit}）`:''}`:'']
+    ].filter(([,value])=>['string','number'].includes(typeof value) && value!=='');
+    if (!rows.length) continue;
+    const item = document.createElement('li');
+    item.textContent = rows.map(([label,value])=>label+'：'+value).join(' · ');
+    list.append(item);
+  }
+  if (!list.childElementCount) {
+    const item = document.createElement('li');
+    item.textContent = '暂未记录可展示的数据来源。您仍可以下载原件核对。';
+    list.append(item);
+  }
+}
+function importSummary(result) {
+  if (result.already_imported) return '这份数据已经导入，可在研究指标中查看。';
+  const needsReview = (result.conflicts?.length??0)+(result.stale_rows?.length??0)+(result.skipped?.length??0)+(result.rejected?.length??0);
+  if (result.status==='needs_confirmation') {
+    const conflicts = result.conflicts.map(row=>{
+      const place=[sourceTime(row.as_of),row.source_cell].filter(Boolean).join(' · ');
+      return `${place}：已有值 ${row.old_value}，新值 ${row.new_value}`;
+    });
+    return [`有 ${result.conflicts.length} 条数据与已有数值不同。请核对旧值和新值后，再决定是否保留旧值并添加修订。`,...conflicts].join('\n');
+  }
+  const counts = [
+    ['已写入',result.committed??result.written], ['其中修订',result.revisions],
+    ['已有相同值',result.unchanged], ['待核对',needsReview]
+  ].filter(([,count])=>Number.isFinite(count)).map(([label,count])=>label+' '+count+' 条');
+  return counts.join('，')+'。';
+}
+function vendorPreview(summary) {
+  const needsReview = (summary.code_conflicts?.length??0)+(summary.frequency_mismatches?.length??0)+(summary.unmapped_columns?.length??0);
+  return [`识别到 ${summary.series_total} 个指标、${summary.points} 条数据`,
+    `其中 ${summary.new_indicators} 个指标尚未登记`,
+    `有 ${needsReview} 处指标或数据列需要核对`,
+    summary.future_points ? `有 ${summary.future_points} 条数据标注为尚未结束的统计期间` : ''].filter(Boolean).join('。')+'。';
+}
 async function inspectSource(id, reset=true) {
   if (reset) {opened=id;cellOffset=0;}
-  const sheet = reset ? '' : document.getElementById('sheet-select').value;
+  const sheet = reset ? '' : sourceElement('sheet-select').value;
   const result = await sourceApi(`/api/sources/${encodeURIComponent(id)}?offset=${cellOffset}&limit=200`+(sheet?'&sheet='+encodeURIComponent(sheet):''));
-  document.getElementById('source-inspector').classList.remove('hidden');
-  document.getElementById('source-heading').textContent=result.filename;
-  document.getElementById('source-hash').textContent='SHA256: '+result.sha256;
-  document.getElementById('source-download').href=pinnedUrl(`/api/sources/${encodeURIComponent(id)}/download`);
-  if(reset){const select=document.getElementById('sheet-select');select.replaceChildren(new Option('全部工作表',''));for(const name of Object.keys(result.details.sheets||{}))select.add(new Option(name,name));}
-  const rows=document.getElementById('source-cell-rows');rows.replaceChildren();
-  for(const cell of result.cells){const tr=document.createElement('tr');for(const value of [cell.sheet,cell.address,cell.raw_value,cell.value,cell.formula,cell.status]){const td=document.createElement('td');td.textContent=value==null?'':String(value);td.className='border p-2 whitespace-pre-wrap';tr.appendChild(td);}rows.appendChild(tr);}
-  document.getElementById('cells-count').textContent=`共 ${result.total} 个单元格；当前 ${cellOffset+1}–${cellOffset+result.cells.length}`;
-  document.getElementById('cells-next').disabled=!result.truncated;document.getElementById('cells-prev').disabled=cellOffset===0;
-  document.getElementById('source-evidence').textContent=JSON.stringify(result.observations,null,2);
+  sourceElement('source-inspector').classList.remove('hidden');
+  sourceElement('source-heading').textContent=result.filename||'未命名文件';
+  const size=result.size >= 1024**2 ? (result.size/1024**2).toFixed(1)+' MB' : (result.size/1024).toFixed(1)+' KB';
+  sourceElement('source-file-info').textContent=[size, result.created_at && '保存于 '+sourceTime(result.created_at)].filter(Boolean).join(' · ');
+  const link=sourceElement('source-download');
+  link.href=pinnedUrl(`/api/sources/${encodeURIComponent(id)}/download`);
+  link.onclick=async event=>{
+    event.preventDefault();
+    try {
+      const response=await researchFetch(link.href);
+      if (!response.ok) {
+        const body=await response.json().catch(()=>null);
+        throw Object.assign(new Error(),{status:response.status,detail:body?.detail});
+      }
+      const url=URL.createObjectURL(await response.blob());
+      const download=document.createElement('a');
+      download.href=url;
+      download.download=result.filename||'原件';
+      document.body.appendChild(download);
+      download.click();
+      download.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
+    } catch(error) {sourceFailure(error,'暂时无法下载原件。请重新打开文件后再试。');}
+  };
+  if(reset){
+    const select=sourceElement('sheet-select');
+    select.replaceChildren(new Option('全部工作表',''));
+    for(const name of Object.keys(result.details.sheets||{})) select.add(new Option(name,name));
+  }
+  const rows=sourceElement('source-cell-rows');
+  rows.replaceChildren();
+  for(const cell of result.cells){
+    const tr=document.createElement('tr');
+    const status=Object.hasOwn(cellLabels,cell.status)?cellLabels[cell.status]:'暂时无法确认';
+    for(const value of [cell.sheet,cell.address,sourceTime(cell.raw_value),sourceTime(cell.value),cell.formula,status]){
+      const td=document.createElement('td');
+      td.textContent=value==null?'':String(value);
+      td.className='border p-2 whitespace-pre-wrap';
+      tr.appendChild(td);
+    }
+    rows.appendChild(tr);
+  }
+  sourceElement('source-gap').textContent=result.gap?'此文件没有可查看的表格单元格。您可以下载原件核对。':'';
+  sourceElement('cells-count').textContent=result.total ? `共 ${result.total} 个单元格。当前显示第 ${cellOffset+1}–${cellOffset+result.cells.length} 个。`:'';
+  sourceElement('cells-next').disabled=!result.truncated;
+  sourceElement('cells-prev').disabled=cellOffset===0;
+  sourceEvidence(result.observations);
+  const diagnostics=sourceElement('source-diagnostics');
+  if (diagnostics) diagnostics.textContent=JSON.stringify(result,null,2);
 }
-document.getElementById('upload-form').onsubmit=async e=>{e.preventDefault();try{
-  const form=new FormData();form.append('file',document.getElementById('file-input').files[0]);uploaded=await sourceApi('/api/sources/upload',form);
-  document.getElementById('import-preview').classList.remove('hidden');document.getElementById('commit-upload').classList.toggle('hidden',!!uploaded.automatically_imported);document.getElementById('preview-columns').replaceChildren();
-  document.getElementById('register-new-box').classList.toggle('hidden',uploaded.mode!=='vendor');
-  document.getElementById('preview-summary').textContent=uploaded.mode==='vendor'?JSON.stringify(uploaded.summary):`全部 ${uploaded.sheets.length} 个工作表；新增 ${uploaded.ready_count}，修订 ${uploaded.revision_count}，相同 ${uploaded.skipped_count}，待确认/异常 ${uploaded.error_count}`;
-  if(uploaded.mode==='table')for(const col of uploaded.columns){const label=document.createElement('label');label.textContent=col.header+'：';const select=document.createElement('select');select.className='border rounded p-2';select.dataset.key=col.col_key;optionsFor(select,col.series_id);label.appendChild(select);const unit=document.createElement('input');unit.dataset.role='source-unit';unit.className='border rounded p-2';unit.placeholder='原数据单位';unit.value=col.source_unit||col.unit||'';const factor=document.createElement('input');factor.dataset.role='factor';factor.type='number';factor.step='any';factor.value=col.factor||1;factor.className='border rounded p-2';factor.title='换算到登记单位的系数';select.onchange=()=>{if(!unit.value)unit.value=sourceIndicators.find(i=>i.series_id===select.value)?.unit||'';};label.append(unit,document.createTextNode(' × '),factor);document.getElementById('preview-columns').appendChild(label);}
-  sourceMessage(uploaded.automatically_imported?uploaded.import_result:'原件和单元格已保存；确认后才写入研究观测。');await inspectSource(uploaded.artifact_id);
-}catch(error){sourceMessage(error.message);}};
-document.getElementById('commit-upload').onclick=async()=>{try{
-  if(!uploaded)return;let result;
-  if(uploaded.mode==='vendor')result=await sourceApi('/api/sources/vendor/commit',{batch_id:uploaded.batch_id,register_new:document.getElementById('register-new').checked});
-  else{const overrides={};for(const select of document.querySelectorAll('#preview-columns select'))if(select.value)overrides[select.dataset.key]={series_id:select.value,source_unit:select.parentElement.querySelector('[data-role=source-unit]').value,factor:Number(select.parentElement.querySelector('[data-role=factor]').value)};result=await sourceApi('/api/sources/table/commit',{preview_id:uploaded.preview_id,selected_row_keys:uploaded.rows.filter(r=>r.category!=='skip').map(r=>r.row_key),column_overrides:overrides,note:'文件原件及单元格已留存'});}
-  sourceMessage(result);await inspectSource(uploaded.artifact_id);
-}catch(error){sourceMessage(error.message);}};
-document.querySelectorAll('.source-open').forEach(button=>button.onclick=()=>inspectSource(button.dataset.source).catch(e=>sourceMessage(e.message)));
-document.getElementById('sheet-select').onchange=()=>{cellOffset=0;inspectSource(opened,false).catch(e=>sourceMessage(e.message));};
-document.getElementById('cells-prev').onclick=()=>{cellOffset=Math.max(0,cellOffset-200);inspectSource(opened,false).catch(e=>sourceMessage(e.message));};
-document.getElementById('cells-next').onclick=()=>{cellOffset+=200;inspectSource(opened,false).catch(e=>sourceMessage(e.message));};
-document.getElementById('load-datasets').onclick=async()=>{try{const result=await sourceApi('/api/sources/bridge/catalog',{operation:'list_datasets',arguments:{}});const select=document.getElementById('dataset-select');select.replaceChildren(new Option('请选择文件版本',''));for(const item of result.datasets||[])select.add(new Option((item.source_file||item.dataset_id)+' · '+item.dataset_id,item.dataset_id));}catch(error){sourceMessage(error.message);}};
-document.getElementById('dataset-select').onchange=async()=>{try{const select=document.getElementById('series-select');select.replaceChildren(new Option('正在读取完整字段目录…',''));const collected=[];let offset=0;while(true){const result=await sourceApi('/api/sources/bridge/catalog',{operation:'list_series',arguments:{dataset_id:document.getElementById('dataset-select').value,limit:100,offset}});collected.push(...(result.series||[]));if(result.next_offset==null){if(result.truncated)throw new Error('字段目录不完整，未采用截断结果');break;}if(result.next_offset<=offset)throw new Error('字段目录分页异常');offset=result.next_offset;}select.replaceChildren(new Option('请选择字段（共 '+collected.length+' 个）',''));for(const item of collected)select.add(new Option((item.sheet||'')+' · '+(item.metric||item.description||item.series_id)+' · '+(item.unit||'单位待确认'),item.series_id));}catch(error){sourceMessage(error.message);}};
-optionsFor(document.getElementById('bridge-target'));
-document.getElementById('bridge-target').onchange=()=>{document.getElementById('bridge-target-unit').value=sourceIndicators.find(i=>i.series_id===document.getElementById('bridge-target').value)?.unit||'';};
-document.getElementById('preview-bridge').onclick=async()=>{try{bridged=await sourceApi('/api/sources/bridge/preview',{dataset_id:document.getElementById('dataset-select').value,series_id:document.getElementById('series-select').value});document.getElementById('bridge-mapping').classList.remove('hidden');document.getElementById('commit-bridge').classList.toggle('hidden',!!bridged.automatically_imported);if(bridged.import_result)sourceMessage(bridged.import_result);document.getElementById('bridge-summary').textContent=`已读取完整 ${bridged.total} 行并核验原件哈希。${bridged.known_mapping?'已有确认映射，可复用。':'首次使用，请明确单位和研究指标。'}`;const known=bridged.known_mapping||{};document.getElementById('bridge-target').value=known.research_series_id||'';document.getElementById('bridge-source-unit').value=known.source_unit||bridged.series.unit||'';document.getElementById('bridge-factor').value=known.factor||1;document.getElementById('bridge-note').value=known.note||'';document.getElementById('bridge-target').onchange();await inspectSource(bridged.artifact_id);}catch(error){sourceMessage(error.message);}};
-document.getElementById('commit-bridge').onclick=async()=>{try{if(!bridged)return;const mapping={research_series_id:document.getElementById('bridge-target').value,source_unit:document.getElementById('bridge-source-unit').value,target_unit:document.getElementById('bridge-target-unit').value,factor:Number(document.getElementById('bridge-factor').value),note:document.getElementById('bridge-note').value};sourceMessage(await sourceApi('/api/sources/bridge/commit',{batch_id:bridged.batch_id,mapping,allow_conflicts:document.getElementById('bridge-conflicts').checked}));await inspectSource(bridged.artifact_id);}catch(error){sourceMessage(error.message);}};
-const selectedSource = {{ selected_source | tojson }};if(selectedSource)inspectSource(selectedSource).catch(error=>sourceMessage(error.message));
+sourceElement('upload-form').onsubmit=async event=>{
+  event.preventDefault();
+  const form=new FormData();
+  form.append('file',sourceElement('file-input').files[0]);
+  try{uploaded=await sourceApi('/api/sources/upload',form);}
+  catch(error){sourceFailure(error,'暂时无法确认文件是否保存。请先刷新原件列表，再决定是否重新上传。');return;}
+  sourceElement('import-preview').classList.remove('hidden');
+  sourceElement('commit-upload').classList.toggle('hidden',!!uploaded.automatically_imported);
+  sourceElement('preview-columns').replaceChildren();
+  sourceElement('register-new-box').classList.toggle('hidden',uploaded.mode!=='vendor');
+  sourceElement('preview-summary').textContent=uploaded.mode==='vendor'?vendorPreview(uploaded.summary):
+    `共读取 ${uploaded.sheets.length} 张工作表。可新增 ${uploaded.ready_count} 条，可修订 ${uploaded.revision_count} 条，已有相同值 ${uploaded.skipped_count} 条，待核对 ${uploaded.error_count} 条。`;
+  if(uploaded.mode==='table') for(const column of uploaded.columns){
+    const label=document.createElement('label');
+    label.textContent=column.header+'：';
+    const select=document.createElement('select');
+    select.className='border rounded p-2';
+    select.dataset.key=column.col_key;
+    optionsFor(select,column.series_id);
+    label.appendChild(select);
+    const unit=document.createElement('input');
+    unit.dataset.role='source-unit';
+    unit.className='border rounded p-2';
+    unit.placeholder='原数据单位';
+    unit.value=column.source_unit||column.unit||'';
+    const factor=document.createElement('input');
+    factor.dataset.role='factor';
+    factor.type='number';
+    factor.step='any';
+    factor.value=column.factor||1;
+    factor.className='border rounded p-2';
+    factor.title='原值乘以这个数，得到研究指标使用的单位';
+    select.onchange=()=>{if(!unit.value)unit.value=sourceIndicators.find(item=>item.series_id===select.value)?.unit||'';};
+    label.append(unit,document.createTextNode(' × '),factor);
+    sourceElement('preview-columns').appendChild(label);
+  }
+  const message=uploaded.automatically_imported?'原件已保存。'+importSummary(uploaded.import_result):
+    '原件已保存。请核对数据列，确认后再将数据加入研究指标。';
+  sourceMessage(message,uploaded);
+  await inspectSource(uploaded.artifact_id).catch(error=>sourceFailure(error,message+' '+sourceReadFailure));
+};
+const importFailure='暂时无法确认所选数据是否已加入研究指标。请先核对指标中的记录，再决定是否重新导入。';
+async function showImport(result, artifact) {
+  const message=importSummary(result);
+  sourceMessage(message,result);
+  await inspectSource(artifact).catch(error=>sourceFailure(error,message+' '+sourceReadFailure));
+}
+sourceElement('commit-upload').onclick=async()=>{
+  if(!uploaded)return;
+  try {
+    let result;
+    if(uploaded.mode==='vendor')result=await sourceApi('/api/sources/vendor/commit',{batch_id:uploaded.batch_id,register_new:sourceElement('register-new').checked});
+    else {
+      const overrides={};
+      for(const select of document.querySelectorAll('#preview-columns select'))if(select.value)
+        overrides[select.dataset.key]={series_id:select.value,source_unit:select.parentElement.querySelector('[data-role=source-unit]').value,factor:Number(select.parentElement.querySelector('[data-role=factor]').value)};
+      result=await sourceApi('/api/sources/table/commit',{preview_id:uploaded.preview_id,selected_row_keys:uploaded.rows.filter(row=>row.category!=='skip').map(row=>row.row_key),column_overrides:overrides,note:'文件原件及单元格已留存'});
+    }
+    await showImport(result,uploaded.artifact_id);
+  } catch(error){sourceFailure(error,importFailure);}
+};
+function openSource(id, reset) {
+  return inspectSource(id,reset).catch(error=>sourceFailure(error,sourceReadFailure));
+}
+document.querySelectorAll('.source-open').forEach(button=>button.onclick=()=>openSource(button.dataset.source));
+sourceElement('sheet-select').onchange=()=>{cellOffset=0;openSource(opened,false);};
+sourceElement('cells-prev').onclick=()=>{cellOffset=Math.max(0,cellOffset-200);openSource(opened,false);};
+sourceElement('cells-next').onclick=()=>{cellOffset+=200;openSource(opened,false);};
+sourceElement('load-datasets').onclick=async()=>{
+  try {
+    const result=await sourceApi('/api/sources/bridge/catalog',{operation:'list_datasets',arguments:{}});
+    const select=sourceElement('dataset-select');
+    select.replaceChildren(new Option('请选择文件版本',''));
+    for(const item of result.datasets||[]){
+      const filename=item.source_file?.split(/[/\\]/).pop()||'未命名文件';
+      select.add(new Option([filename,item.imported_at && '导入于 '+sourceTime(item.imported_at)].filter(Boolean).join(' · '),item.dataset_id));
+    }
+  } catch(error){sourceFailure(error,'暂时无法读取可选文件，请重新读取表格。');}
+};
+sourceElement('dataset-select').onchange=async()=>{
+  const select=sourceElement('series-select');
+  select.replaceChildren(new Option('正在读取表格的数据列…',''));
+  try {
+    const collected=[];
+    let offset=0;
+    while(true){
+      const result=await sourceApi('/api/sources/bridge/catalog',{operation:'list_series',arguments:{dataset_id:sourceElement('dataset-select').value,limit:100,offset}});
+      collected.push(...(result.series||[]));
+      if(result.next_offset==null){
+        if(result.truncated)throw Object.assign(new Error(incompleteCatalog),{localCopy:true,detail:'字段目录不完整，未采用截断结果'});
+        break;
+      }
+      if(result.next_offset<=offset)throw Object.assign(new Error(incompleteCatalog),{localCopy:true,detail:'字段目录分页异常'});
+      offset=result.next_offset;
+    }
+    select.replaceChildren(new Option(`请选择数据列（共 ${collected.length} 列）`,''));
+    for(const item of collected)
+      select.add(new Option([item.sheet,item.metric||item.description||'未命名数据列',item.unit||'单位待确认'].filter(Boolean).join(' · '),item.series_id));
+  } catch(error){
+    select.replaceChildren(new Option('请重新选择文件',''));
+    sourceFailure(error,incompleteCatalog);
+  }
+};
+optionsFor(sourceElement('bridge-target'));
+sourceElement('bridge-target').onchange=()=>{
+  sourceElement('bridge-target-unit').value=sourceIndicators.find(item=>item.series_id===sourceElement('bridge-target').value)?.unit||'';
+};
+sourceElement('preview-bridge').onclick=async()=>{
+  const dataset=sourceElement('dataset-select').value, series=sourceElement('series-select').value;
+  if(!dataset||!series){sourceMessage('请先选择文件版本，再选择其中一列。');return;}
+  try{
+    bridged=await sourceApi('/api/sources/bridge/preview',{dataset_id:dataset,series_id:series});
+    sourceElement('bridge-mapping').classList.remove('hidden');
+    sourceElement('commit-bridge').classList.toggle('hidden',!!bridged.automatically_imported);
+    sourceElement('bridge-summary').textContent=`已读取 ${bridged.total} 行，并核对了原件版本。 ${bridged.known_mapping?'已有核对过的对应关系，可以继续使用。':'请确认这列对应的研究指标和单位。'}`;
+    const known=bridged.known_mapping||{};
+    sourceElement('bridge-target').value=known.research_series_id||'';
+    sourceElement('bridge-source-unit').value=known.source_unit||bridged.series.unit||'';
+    sourceElement('bridge-factor').value=known.factor||1;
+    sourceElement('bridge-note').value=known.note||'';
+    sourceElement('bridge-target').onchange();
+    if(bridged.import_result)await showImport(bridged.import_result,bridged.artifact_id);
+    else await openSource(bridged.artifact_id);
+  }catch(error){sourceFailure(error,'暂时无法核对所选数据列，请重新选择文件版本和数据列。');}
+};
+sourceElement('commit-bridge').onclick=async()=>{
+  if(!bridged)return;
+  try{
+    const mapping={research_series_id:sourceElement('bridge-target').value,source_unit:sourceElement('bridge-source-unit').value,
+      target_unit:sourceElement('bridge-target-unit').value,factor:Number(sourceElement('bridge-factor').value),note:sourceElement('bridge-note').value};
+    const result=await sourceApi('/api/sources/bridge/commit',{batch_id:bridged.batch_id,mapping,allow_conflicts:sourceElement('bridge-conflicts').checked});
+    await showImport(result,bridged.artifact_id);
+  }catch(error){sourceFailure(error,importFailure);}
+};
+const selectedSource = {{ selected_source | tojson }};
+if(selectedSource)openSource(selectedSource);
 </script>
 {% endblock %}

@@ -17,7 +17,37 @@
     finally { clearTimeout(timeout); controllers.delete(controller); }
   }
   const post = (url, body) => api(url, {method: 'POST', body: JSON.stringify(body)});
-  const reason = value => typeof value === 'string' ? value : value?.reason || value?.message || '处理失败';
+  const cannotDraw = '这张图还不能生成。请为每条图例选择对应指标，检查图表类型，再点“预览”。';
+  const cannotIdentify = '这部分报告暂时无法识别出可导入的图表。可以重新识别，或在图表库手动新建。';
+  const reasonLabels = {
+    '图型只能选择走势、同期对比或多指标对比':'请选择走势、同期对比或多指标对比。',
+    '请为每条原文图例确认一个候选指标':'请为每条图例选择对应指标。',
+    '指标库中未找到，请手动选择或跳过':'指标库中未找到，请手动选择或跳过',
+    '只能选择该图例本次展示过的候选指标，请重新确认映射':'请重新为这条图例选择列表中可用的指标。',
+    '映射指标已不在当前研究台来源目录，请重新识别':'所选指标已不在当前研究台，请重新识别并选择。',
+    '候选图超过两种真实单位，请调整映射；不会换算单位':'一张图最多可以比较两种单位，请重新选择指标。',
+    '请选择已有解析正文的PPTX或PDF周报':'请选择正文已经可以搜索的 PPTX 或 PDF 周报。',
+    '所选周报尚未完成解析，请先在知识库完成解析':'所选周报还不能搜索正文，请在知识库查看文件处理进度。',
+    '所选周报没有可读解析片段':'暂时无法读取所选周报的正文，请先在知识库核对文件。',
+    '周报文件版本已变化，请重新选择':'周报文件版本已变化，请重新选择后识别。',
+    '请求超时，请重试或重新识别':'预览等待时间过长，请点“预览”重试。',
+    '周报解析正文超过200万字，请拆分资料后重试':'周报正文超过 200 万字，请拆分资料后重试。',
+    '整体识别超时，保留已完成并复核的图；其余页面未处理':'识别超时。这里已有完成的图表，其余页面请重新识别。',
+    '写入图表库失败，请重试':'这张图未能保存，请核对后重试。'
+  };
+  function reason(value, fallback = cannotIdentify) {
+    const raw = typeof value === 'string' ? value : value?.reason || value?.message;
+    if (Object.hasOwn(reasonLabels,raw)) return reasonLabels[raw];
+    if (/^本批处理超过\d+秒$/.test(raw)) return '这部分识别超时，请重新识别。';
+    return fallback;
+  }
+  function diagnostic(detail) {
+    const node = $('diagnostics');
+    if (!node) return;
+    node.hidden = detail == null;
+    node.querySelector('pre').textContent = detail == null ? '' :
+      typeof detail === 'string' ? detail : JSON.stringify(detail,null,2);
+  }
   const noticeText = values => [...new Set((values || []).map(U.message).filter(Boolean))].join('；');
   const missingMessage = '指标库中未找到，请手动选择或跳过';
   function controls() {
@@ -29,7 +59,7 @@
     $('recognize').disabled = !config.can_write || busy || !$('file').value || !$('model').value;
     const selected = [...states.values()].filter(state => state.selected && state.valid && !state.imported);
     $('apply').disabled = !config.can_write || busy || invalidated || !selected.length;
-    $('selection').textContent = states.size ? `已选 ${selected.length} / ${states.size} 张；可能重复、未找到指标、定义失败的图默认不勾选。` : '';
+    $('selection').textContent = states.size ? `共 ${states.size} 张，已选 ${selected.length} 张。可能重复、缺少指标或暂不能绘制的图需要您确认后勾选。` : '';
     for (const state of states.values()) {
       state.element.querySelector('[data-report-select]').disabled = !config.can_write || busy || invalidated || !state.valid || state.imported;
       state.element.querySelectorAll('select,button').forEach(control => { control.disabled = !config.can_write || busy || invalidated || state.imported; });
@@ -41,7 +71,10 @@
       for (const state of states.values()) { state.valid = false; state.selected = false; state.element.querySelector('[data-report-select]').checked = false; }
       controls();
     }
-    U.notice($('status'), error.message, 'error');
+    const fallback = error.status===409 ? '文件版本或访问权限可能已有变化，请重新识别。' :
+      error.status===403 ? '当前账号无法读取这份周报或导入图表，请联系研究台负责人。' : cannotIdentify;
+    U.notice($('status'),reason(error.detail??error.message,fallback), 'error');
+    diagnostic(error.detail??error.message);
   }
   function clearCards() {
     for (const state of states.values()) { state.version++; state.renderer?.destroy(); }
@@ -59,7 +92,7 @@
     U.notice(state.element.querySelector('[data-report-flags]'), [
       state.duplicate ? '可能重复：图表库已有同指标、同图型的图。' : '',
       missing ? '未找到指标：' + missingMessage : '',
-      state.definitionFailed && !missing ? '定义失败：请修改映射或图型后重新预览。' : '',
+      state.definitionFailed && !missing ? cannotDraw : '',
       state.needsReview && state.valid ? '请核对后手动勾选。' : ''
     ].filter(Boolean).join('；'), 'warning');
     return missing;
@@ -73,14 +106,15 @@
     if (flags(state)) {
       plot.textContent = ''; U.notice(notice, noticeText([...(state.item.warnings || []), ...(state.item.mapping_warnings || [])]), 'warning'); controls(); return;
     }
-    plot.textContent = '正在读取真实数据预览…'; controls();
+    plot.textContent = '正在读取所选指标的数据，准备预览…'; controls();
     try {
       const result = await post('/preview', {job_id: jobId, group: $('group').value, ...selection(state)});
       if (closed || own !== generation || version !== state.version) return;
-      const errors = (result.errors || []).map(reason);
+      const errors = (result.errors || []).map(error=>reason(error,cannotDraw));
       if (errors.length || !result.definition || !result.payload) {
         state.definitionFailed = true; state.needsReview = true; flags(state);
-        plot.textContent = ''; U.notice(notice, errors.join('；') || '暂无有效图表预览', 'error'); return;
+        diagnostic(result.errors);
+        plot.textContent = ''; U.notice(notice, [...new Set(errors)].join('；') || cannotDraw, 'error'); return;
       }
       state.renderer = K.render(plot, result.payload, {definition: result.definition, thumbnail: true, width: 680, height: 250});
       state.valid = true;
@@ -94,16 +128,17 @@
     } catch (error) {
       if (closed || own !== generation || version !== state.version) return;
       state.definitionFailed = true; state.needsReview = true; flags(state);
-      plot.textContent = ''; U.notice(notice, error.message + (!error.status ? '；可点击“预览”重试。' : ''), 'error');
+      diagnostic(error.detail??error.message);
+      plot.textContent = ''; U.notice(notice, reason(error.detail??error.message,cannotDraw), 'error');
       if ([403, 409].includes(error.status)) conflict(error);
     } finally { if (own === generation && version === state.version) controls(); }
   }
   function addCard(item, target) {
     const card = document.createElement('article'); card.className = 'charts-card'; card.dataset.reportChart = item.id;
-    const pageLabel = item.page != null ? `第 ${item.page} 页` : item.page_label || '片段顺序';
-    card.innerHTML = `<h2><label><input type="checkbox" data-report-select disabled> ${E(pageLabel)} · ${E(item.title)}</label></h2><p role="status" data-report-flags hidden></p>` +
+    const pageLabel = item.page != null ? `第 ${item.page} 页` : '按原文顺序';
+    card.innerHTML = `<h2><label><input type="checkbox" data-report-select disabled> ${E(pageLabel)} · ${E(item.title || '未命名图表')}</label></h2><p role="status" data-report-flags hidden></p>` +
       '<div class="charts-fields"><label class="charts-field">图型<select data-report-type><option value="trend">走势</option><option value="seasonal">同期对比（按年份分列）</option><option value="comparison">多指标对比</option></select></label></div>' +
-      (item.series || []).map((series, index) => `<label class="charts-field">原文图例：${E(series.name)}${series.unit ? `（${E(series.unit)}）` : ''} → 指标<select data-report-mapping="${index}"><option value="">请选择指标</option>${(series.candidates || []).map(candidate => `<option value="${E(candidate.id)}">${E(candidate.name || candidate.metric || candidate.id)}${candidate.unit ? ` · ${E(candidate.unit)}` : ''}${candidate.sheet ? ` · ${E(candidate.sheet)}` : ''}${candidate.source_file ? ` · ${E(candidate.source_file)}` : ''}</option>`).join('')}</select></label>` +
+      (item.series || []).map((series, index) => `<label class="charts-field">原文图例：${E(series.name)}${series.unit ? `（${E(series.unit)}）` : ''} → 指标<select data-report-mapping="${index}"><option value="">请选择指标</option>${(series.candidates || []).map(candidate => `<option value="${E(candidate.id)}">${E(candidate.name || candidate.metric || '未命名指标')}${candidate.unit ? ` · ${E(candidate.unit)}` : ''}${candidate.sheet ? ` · ${E(candidate.sheet)}` : ''}${candidate.source_file ? ` · ${E(candidate.source_file)}` : ''}</option>`).join('')}</select></label>` +
         (series.legends?.length ? `<p class="charts-muted">${item.legend_semantics === 'periods' ? '原文周期图例' : '原文图例'}：${E(series.legends.join('、'))}</p>` : '') +
         `<p class="charts-notice warning" data-report-missing="${index}" hidden>${missingMessage}</p>`).join('') +
       '<button type="button" class="charts-button" data-report-preview>预览</button><div class="charts-thumbnail" data-report-plot></div><p role="status" data-report-notice hidden></p>' +
@@ -119,7 +154,7 @@
     card.querySelector('[data-report-preview]').addEventListener('click', () => preview(state));
     target.append(card); flags(state);
     U.notice(card.querySelector('[data-report-notice]'), noticeText([
-      ...(item.errors || []).map(reason), ...(item.warnings || []), ...(item.mapping_warnings || [])
+      ...(item.errors || []).map(error=>reason(error,cannotDraw)), ...(item.warnings || []), ...(item.mapping_warnings || [])
     ]), 'warning');
     return state;
   }
@@ -150,14 +185,15 @@
         const card = document.createElement('article'); card.className = 'charts-card'; card.dataset.reportFailure = '';
         const title = document.createElement('h2'); title.textContent = item.title || '未完成的图表识别';
         const message = document.createElement('p'); message.className = 'charts-notice warning';
-        message.textContent = '定义失败：' + reason(item); card.append(title, message); cards.append(card);
+        message.textContent = reason(item); card.append(title, message); cards.append(card);
       }
     }
     U.notice($('failures'), (data.failures || []).map(item => {
-      const location = item.page != null ? `第 ${item.page} 页` : item.page_label || (item.batch != null ? `第 ${item.batch} 批` : '');
+      const location = item.page != null ? `第 ${item.page} 页` : '';
       return [location, item.title, reason(item)].filter(Boolean).join('：');
     }).join('\n'), 'warning');
-    U.notice($('status'), queue.length ? `识别到 ${queue.length} 张候选图，请核对指标映射与真实数据预览。` : '没有可导入的图表结构。', queue.length ? '' : 'warning');
+    diagnostic({failures:data.failures, charts:(data.charts||[]).filter(item=>item.errors?.length).map(item=>({id:item.id,errors:item.errors}))});
+    U.notice($('status'), queue.length ? `识别到 ${queue.length} 张图，请核对每条图例对应的指标和预览效果。` : '没有找到可导入的图。可重新识别，或在图表库手动新建。', queue.length ? '' : 'warning');
     controls();
     // Bounded previews keep a long report from starting every data read at once.
     await Promise.all(Array.from({length: Math.min(3, queue.length)}, async () => {
@@ -180,7 +216,8 @@
   $('recognize').addEventListener('click', async () => {
     if (!config.can_write || busy || !$('file').value) return;
     const own = ++generation; clearTimeout(timer); clearCards(); invalidated = false; busy = true;
-    U.notice($('result'), ''); U.notice($('failures'), ''); U.notice($('status'), '正在读取已解析片段并识别图表…'); controls();
+    diagnostic();
+    U.notice($('result'), ''); U.notice($('failures'), ''); U.notice($('status'), '正在读取周报正文并识别图表…'); controls();
     try {
       const data = await post('/recognize', {source: sources.get($('file').value).citation, model_id: $('model').value});
       if (own !== generation || closed) return;
@@ -201,7 +238,14 @@
         const link = document.createElement('a'); link.className = 'charts-button';
         link.href = U.pageURL('/sn/charts/' + encodeURIComponent(item.id)); link.textContent = item.title || item.definition?.title || '打开新建图表'; $('result').append(link);
       }
-      for (const item of failed) { const p = document.createElement('p'); p.textContent = `${item.title || item.chart_id || ''}：${reason(item)}`; $('result').append(p); }
+      for (const item of failed) {
+        const failedIndex=selected.findIndex(state=>state.item.id===item.chart_id), original=selected[failedIndex]?.item;
+        const title=item.title || original?.title || (original?.page != null ? `第 ${original.page} 页的图` : failedIndex>=0 ? `所选的第 ${failedIndex+1} 张图` : '未命名图表');
+        const notice=document.createElement('p');
+        notice.textContent=`${title}：${reason(item,cannotDraw)}`;
+        $('result').append(notice);
+      }
+      diagnostic(failed.length ? failed : undefined);
       const failedIds = new Set(failed.map(item => item.chart_id));
       for (const state of selected) if (!failedIds.has(state.item.id)) { state.imported = true; state.selected = false; state.element.querySelector('[data-report-select]').checked = false; }
       U.notice($('status'), '');

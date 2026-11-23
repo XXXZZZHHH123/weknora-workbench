@@ -137,7 +137,7 @@
               <t-input-number v-model="topP" :min="0.01" :max="1" :step="0.1" theme="column" />
             </div>
             <div class="form-item">
-              <label class="form-label">Max Tokens</label>
+              <label class="form-label" :title="$t('displayError.modelLengthHelp')">{{ $t('displayError.replyLength') }}</label>
               <t-input-number v-model="maxTokens" :min="1" :max="8192" :step="128" theme="column" />
             </div>
           </div>

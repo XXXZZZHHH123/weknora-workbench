@@ -78,9 +78,12 @@ async def bound_library(request):
 
 @router.get('/materials')
 def page(request: Request):
+    from tin.web.research_display import can_view_diagnostics
+
     identity=current_identity.get()
     return templates.TemplateResponse(request,'materials.html',{'prefix':research_prefix(),
-        'identity':{'tenant':identity.tenant_id,'user':identity.user_id} if identity else None})
+        'identity':{'tenant':identity.tenant_id,'user':identity.user_id} if identity else None,
+        'diagnostics':can_view_diagnostics()})
 
 
 @router.get('/api/materials')

@@ -87,10 +87,11 @@ func (e *AgentEngine) numericUnverifiedPresentation(ctx context.Context, state *
 	if !ok || count == 0 {
 		return "", 0, nil, nil, false
 	}
-	delivery := marked + "\n\n> 提示：标注〔未核验〕的数字未能与本轮取数结果逐项核对，请以引用的原表、原文或数据为准。"
+	delivery := marked + "\n\n> 提示：本次查到的数据还不能确认带标记的数字。"
 	if visible := visibleNumericWarningTokens(d.Unsupported); len(visible) > 0 {
-		delivery += "未核验数字：“" + strings.Join(visible, "、") + "”。"
+		delivery += "待核对的数字包括“" + strings.Join(visible, "、") + "”。"
 	}
+	delivery += "写入报告前，请对照原表或原文核对。"
 	refs, legacy := e.unverifiedNavigationReferences(delivery, state)
 	if len(refs) != len(uniqueCandidateEvidenceIDs(delivery)) || len(legacy) != len(uniqueCandidateCitationIDs(delivery)) ||
 		!numericUnverifiedReferenceBudgetFits(refs, legacy) {

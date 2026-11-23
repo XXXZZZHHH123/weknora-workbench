@@ -8,7 +8,7 @@
         <h3>{{ group.metric }}</h3>
         <p v-if="group.definition">概念说明：{{group.definition}}</p>
         <small v-for="source in group.sources" :key="source.series_id">来源：{{ answer.file }} · {{ source.sheet }} · 表头：{{ (source.header_cells || []).join('、') }}<template v-if="dimensionLabel(source.dimensions)"> · {{ dimensionLabel(source.dimensions) }}</template> · 单位：{{ source.unit || '原表未注明' }}</small>
-        <small v-if="group.sources_truncated">共 {{ group.source_count }} 个来源列，以上展示部分表头证据。</small>
+        <small v-if="group.sources_truncated">{{ t('structuredReview.partialHeaders', { count: group.source_count }, '共 {count} 个来源列，以上列出其中一部分，请打开原表查看其余列。') }}</small>
       </div>
       <small>{{ answer.notice }}</small>
     </template>
@@ -59,7 +59,7 @@
       <p v-if="answer.analysis.interval">基线区间：{{answer.analysis.interval.map(number).join(' 至 ')}}</p>
       <small v-if="answer.analysis.sample_count">共同有效样本 / 期间有效记录：{{answer.analysis.sample_count}}</small>
       <p>{{answer.analysis.notice}}</p>
-      <details v-if="answer.analysis.aligned_rows"><summary>日期对齐与来源明细</summary><table><thead><tr><th>日期</th><th>左侧原值</th><th>右侧原值</th><th>单元格</th></tr></thead><tbody><tr v-for="r in answer.analysis.aligned_rows" :key="r.date"><td>{{r.date}}</td><td>{{number(r.left_value)}}</td><td>{{number(r.right_value)}}</td><td>{{r.left_cell}} / {{r.right_cell}}</td></tr></tbody></table></details>
+      <details v-if="answer.analysis.aligned_rows"><summary>日期对齐与来源明细</summary><table><thead><tr><th>日期</th><th>{{ alignedColumnLabels[0] }}</th><th>{{ alignedColumnLabels[1] }}</th><th>单元格</th></tr></thead><tbody><tr v-for="r in answer.analysis.aligned_rows" :key="r.date"><td>{{r.date}}</td><td>{{number(r.left_value)}}</td><td>{{number(r.right_value)}}</td><td>{{r.left_cell}} / {{r.right_cell}}</td></tr></tbody></table></details>
     </section>
     <figure v-for="chart in charts" :key="chart.label" class="source-chart">
       <figcaption>{{chart.label}} · {{chart.unit || '原表未注明单位'}}</figcaption>
@@ -74,17 +74,28 @@
       <h3>{{ answer.coverage_complete === false ? '已记录月份小计' : answer.operation === 'statistics' ? '统计计算结果' : '计算结果' }}：{{ answer.rounded_value }} {{ answer.unit }}</h3>
       <p>{{ answer.explanation }}</p>
       <p>计算式：{{ readableExpression }}</p>
-      <small>{{ answer.operation === 'statistics' ? '统计与计算使用上方列出的实际范围和记录。' : '上述数值由程序计算。换算公式和业务口径由模型提出，请结合来源核对。' }}</small>
+      <small>{{ answer.operation === 'statistics' ? '统计与计算使用上方列出的实际范围和记录。' : t('structuredReview.checkUnits', '请对照来源核对公式、原单位和目标单位，再使用换算结果。') }}</small>
     </div>
     </template>
   </section>
 </template>
 <script setup lang="ts">
 import { computed } from 'vue';
+import { useI18n } from 'vue-i18n';
 import type { Clarification } from '@/utils/fieldClarification';
 import { dimensionLabel } from '@/utils/fieldClarification';
 const props = defineProps<{ plan: Clarification | null }>();
+const { t } = useI18n();
 const answer = computed(() => props.plan?.answer || {});
+const alignedColumnLabels = computed(() => {
+  const sources = Object.values(answer.value.sources || {}) as Array<{ series?: { metric?: string; unit?: string; sheet?: string } }>
+  const sameName = sources[0]?.series?.metric === sources[1]?.series?.metric
+  return [0, 1].map(index => {
+    const series = sources[index]?.series
+    const label = series?.metric || t('structuredReview.fieldOrdinal', { index: index + 1 }, '第 {index} 项指标')
+    return [label, series?.unit && `（${series.unit}）`, sameName && series?.sheet && ` · ${series.sheet}`].filter(Boolean).join('')
+  })
+});
 const operationLabels: Record<string, string> = {max:'最大值',min:'最小值',mean:'算术平均值',sum:'合计',count:'有效记录数',latest:'最新有效值',statistics:'复合统计',top:'排序结果'};
 const filterLabels: Record<string,string>={gt:'大于',gte:'不低于',lt:'小于',lte:'不超过',ne:'不等于'};
 const number=(v:any)=>typeof v==='number'?Number(v.toPrecision(10)).toString():String(v);

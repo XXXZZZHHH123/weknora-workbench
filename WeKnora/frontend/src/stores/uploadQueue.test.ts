@@ -200,7 +200,7 @@ test('polls created rows until parsing settles', async () => {
   ])
   await queue.pollNow()
   assert.equal(byName('a').parseStatus, 'completed')
-  assert.ok(byName('a').coverageSummary?.includes('正文：已保存 2 个文本分块'))
+  assert.ok(byName('a').coverageSummary?.includes('已保存 2 段正文'))
   assert.ok(byName('a').coverageSummary?.includes('可计算数据：已入库 0 个有效数值'))
   assert.equal(byName('b').parseStatus, 'failed')
   assert.equal(byName('b').parseError, 'broken pdf')

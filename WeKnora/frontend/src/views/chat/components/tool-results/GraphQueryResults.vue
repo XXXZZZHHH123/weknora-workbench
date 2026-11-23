@@ -1,8 +1,8 @@
 <template>
   <div class="graph-query-results">
     <!-- Graph Configuration Card -->
-    <div v-if="data.graph_config" class="stats-card">
-      <div class="stats-title">{{ $t('chat.graphConfigTitle') }}</div>
+    <details v-if="data.graph_config && admin" class="stats-card">
+      <summary class="stats-title">{{ $t('chat.graphConfigTitle') }}</summary>
       <div class="info-field">
         <span class="field-label">{{ $t('chat.entityTypesLabel') }}</span>
         <span class="field-value">{{ data.graph_config.nodes.join(', ') }}</span>
@@ -11,7 +11,7 @@
         <span class="field-label">{{ $t('chat.relationTypesLabel') }}</span>
         <span class="field-value">{{ data.graph_config.relations.join(', ') }}</span>
       </div>
-    </div>
+    </details>
 
     <!-- Results List -->
     <div v-if="data.results && data.results.length > 0" class="results-list">
@@ -33,7 +33,6 @@
             <span class="knowledge-title">{{ result.knowledge_title }}</span>
           </div>
           <div class="result-meta">
-            <span class="score">{{ (result.score * 100).toFixed(0) }}%</span>
             <span class="expand-icon" :class="{ expanded: expandedResults.includes(result.chunk_id) }">
               ▶
             </span>
@@ -42,6 +41,7 @@
         
         <div class="result-content" :class="{ expanded: expandedResults.includes(result.chunk_id) }">
           <div class="full-content">{{ result.content }}</div>
+          <ErrorDiagnostics v-if="admin" :detail="Number.isFinite(result.score) ? `${(result.score * 100).toFixed(0)}%` : ''" />
         </div>
       </div>
     </div>
@@ -53,15 +53,19 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import type { GraphQueryResultsData, RelevanceLevel } from '@/types/tool-results';
 import { useI18n } from 'vue-i18n';
+import { useAuthStore } from '@/stores/auth';
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue';
 
 const props = defineProps<{
   data: GraphQueryResultsData;
 }>();
 
 const { t } = useI18n();
+const auth = useAuthStore();
+const admin = computed(() => auth.hasRole('admin'));
 
 const expandedResults = ref<string[]>([]);
 
@@ -91,7 +95,7 @@ const getRelevanceLabel = (level: RelevanceLevel): string => {
     'Low Relevance': t('chat.relevanceLow'),
     'Weak Relevance': t('chat.relevanceWeak'),
   };
-  return labelMap[level] || level;
+  return labelMap[level] || '';
 };
 </script>
 

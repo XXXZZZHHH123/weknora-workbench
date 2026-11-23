@@ -94,7 +94,7 @@ func TestResultWorkflowStallMarksUnsupportedMeasurementsAfterRepairs(t *testing.
 	e, state, _ := lightStructuredFixture(t, chatAnswer(unsupported), chatAnswer(unsupported), chatAnswer(unsupported))
 	finished, _ := e.finishResultWorkflowStall(t.Context(), state, "Report the observation.", "s", nil)
 	require.True(t, finished)
-	require.Contains(t, state.FinalAnswer, "987654.321〔未核验〕")
+	require.Contains(t, state.FinalAnswer, "987654.321〔数字待核对〕")
 	require.False(t, e.candidateApprovalCurrent(state.FinalAnswer, state))
 	require.False(t, e.candidateApprovalCurrent(unsupported, state))
 }

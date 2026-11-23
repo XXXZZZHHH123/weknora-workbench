@@ -113,3 +113,17 @@ export function getMcpToolTitle(t: ComposerTranslation, event: {
   if (event.success === false) return t('agentStream.toolStatus.calledFailed', { name: title })
   return title
 }
+
+const parameterLabels: Record<string, readonly [string, string]> = {
+  string: ['chat.parameterText', 'Text'],
+  number: ['chat.parameterNumber', 'Number'],
+  integer: ['chat.parameterNumber', 'Number'],
+  boolean: ['chat.parameterYesNo', 'Yes or no'],
+  array: ['chat.parameterList', 'List'],
+  object: ['chat.parameterGroup', 'Group'],
+}
+
+export function mcpParameterTypeLabel(value: string | undefined, translate: (key: string, fallback: string) => string): string {
+  const label = value && Object.hasOwn(parameterLabels, value) ? parameterLabels[value] : undefined
+  return label ? translate(...label) : ''
+}

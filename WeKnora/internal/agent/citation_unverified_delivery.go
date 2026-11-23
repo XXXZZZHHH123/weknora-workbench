@@ -275,11 +275,11 @@ func (e *AgentEngine) citationUnverifiedPresentation(ctx context.Context, state 
 			return "", 0, 0, nil, nil, false
 		}
 	}
-	notice := "标注〔引用未核验〕的引用未能与本轮读取逐项核对，已移除对应来源入口"
+	notice := "本次读取的资料未能确认带标记的引用，因此没有可打开的来源链接。请找到对应原文后再引用。"
 	if markedNumbers > 0 {
-		notice += "；标注〔未核验〕的数字未能与本轮取数结果逐项核对"
+		notice += "带标记的数字也待核对，写入报告前请对照原表或原文。"
 	}
-	delivery := marked + "\n\n> 提示：" + notice + "，请核对原始资料。"
+	delivery := marked + "\n\n> 提示：" + notice
 	refs, legacy := e.unverifiedNavigationReferences(delivery, state)
 	if len(refs) != len(uniqueCandidateEvidenceIDs(delivery)) || len(legacy) != len(uniqueCandidateCitationIDs(delivery)) || !numericUnverifiedReferenceBudgetFits(refs, legacy) {
 		return "", 0, 0, nil, nil, false

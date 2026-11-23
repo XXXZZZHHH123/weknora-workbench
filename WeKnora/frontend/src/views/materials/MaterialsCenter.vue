@@ -3,6 +3,10 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { FileAddIcon, FolderOpenIcon, FileExcelIcon, FileIcon, SearchIcon, DownloadIcon, RefreshIcon, LinkIcon, ChevronRightIcon } from 'tdesign-icons-vue-next'
+import { useI18n } from 'vue-i18n'
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
+import { localDateTime } from '@/utils/localDateTime'
+import { userFacingErrorKey } from '@/utils/userFacingError'
 import { useAuthStore } from '@/stores/auth'
 import { refreshStructuredFrame } from '@/utils/authFetch'
 import { useTheme } from '@/composables/useTheme'
@@ -13,6 +17,8 @@ import { fileKind, isTable, isStructuredFile, purposeNames, readableSize, stateN
 
 const auth = useAuthStore(), route = useRoute(), router = useRouter(), confirmStore = useUploadConfirmStore()
 const { effectiveTheme } = useTheme()
+const { t } = useI18n()
+const canViewDiagnostics = computed(() => auth.isSystemAdmin || auth.hasRole('admin'))
 const scope = (): MaterialScope => ({ token: auth.token, userId: auth.user?.id || '', tenantId: String(auth.effectiveTenantId || '') })
 const identity = () => ({ userId: scope().userId, tenantId: scope().tenantId })
 let client = createMaterialClient(scope(), scope), generation = 0, listingRequest = 0, legacyRequest = 0, detailRequest = 0, timer: ReturnType<typeof setTimeout> | undefined, searchTimer: ReturnType<typeof setTimeout> | undefined
@@ -41,9 +47,53 @@ const pageReady = computed(() => visibleAssets.value.filter(a => a.operations?.s
 const pagePending = computed(() => visibleAssets.value.filter(a => a.operations?.some(o => ['needs_mapping', 'failed', 'interrupted'].includes(o.status))).length)
 const preview = computed(() => mappingOperation.value?.result?.preview || mappingOperation.value?.result || {})
 const operationActive = (o: LibraryOperation) => ['pending', 'running', 'processing'].includes(o.status)
-const dateLabel = (value: string) => new Date(value).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+const dateLabel = (value: string) => localDateTime(value, false) || '—'
 const statusClass = (status: string) => ['failed', 'interrupted'].includes(status) ? 'warning' : status === 'needs_mapping' ? 'pending' : status === 'completed' ? 'ready' : ''
-function notify(e: unknown) { const message = e instanceof Error ? e.message : '操作未完成，请重试'; error.value = message; MessagePlugin.error(message) }
+const diagnostic = ref<unknown>()
+function displayError(detail: unknown, fallback: string) {
+  const key = userFacingErrorKey(detail, '')
+  return key ? t(key) : fallback
+}
+function notify(e: unknown) {
+  diagnostic.value = e instanceof Error ? e.cause : e && typeof e === 'object' && 'diagnostic' in e ? e.diagnostic : undefined
+  const fallback = e instanceof Error ? e.message : '操作未完成，请重试。'
+  const message = displayError(diagnostic.value, fallback)
+  error.value = message
+  MessagePlugin.error(message)
+}
+function operationStatus(op: LibraryOperation) {
+  if (op.status_checked === false) return '暂时无法确认处理状态'
+  if (op.status !== 'completed') return stateName(op.status)
+  if (op.purpose === 'knowledge') return documentStatus(op.result?.parse_status || op.parse_status)
+  if (op.purpose === 'structured') return '表格可查询'
+  return '已加入研究数据'
+}
+function documentStatus(status?: string) {
+  switch (status) {
+    case 'stored': return '原件已保存'
+    case 'pending': return '等待处理'
+    case 'processing': return '正在解析'
+    case 'finalizing': return '正文已可搜索，其他内容仍在整理'
+    case 'completed': return '正文可搜索'
+    case 'failed': return '原件已保存，正文尚不能搜索'
+    case 'cancelled': return '处理已停止'
+    default: return '暂时无法确认状态，请刷新查看'
+  }
+}
+function operationError(op: LibraryOperation) {
+  if (op.status === 'interrupted') return '处理已中断，可以点“恢复处理”继续。'
+  if (op.status === 'needs_mapping') return '还有内容需要核对，请打开下方的确认页面。'
+  const fallback = op.purpose === 'structured'
+    ? '表格暂时无法查询，原件仍可下载。请重试处理。'
+    : op.purpose === 'knowledge'
+      ? '正文解析未完成，原件仍可下载。请重试处理。'
+      : '这份资料尚未加入研究数据，原件仍可下载。请重试处理。'
+  return displayError(op.error, fallback)
+}
+function indicatorLabel(row: any) {
+  return row.name || indicators.value.find(i => i.series_id === row.series_id)?.name
+    || '请为这列选择指标'
+}
 function stopPolling() { if (timer) clearTimeout(timer); timer = undefined }
 
 async function refresh() {
@@ -204,8 +254,8 @@ async function loadBridgeSeries() {
       const data = await client.post('/api/library/catalog', { operation: 'list_series', arguments: { dataset_id: dataset, limit: 100, offset: cursor } })
       if (ownGeneration !== generation || selected.value?.id !== assetId || datasetOf.value !== dataset) return
       bridgeSeries.value.push(...(data.series || []))
-      if (data.next_offset == null) { if (data.truncated) throw new Error('字段目录不完整，请重试。'); break }
-      if (data.next_offset <= cursor) throw new Error('字段目录分页异常。')
+      if (data.next_offset == null) { if (data.truncated) throw new Error('指标列表没有读全，请重新读取表格字段。'); break }
+      if (data.next_offset <= cursor) throw new Error('指标列表没有读全，请重新读取表格字段。')
       cursor = data.next_offset
     }
   } catch (e) { if (ownGeneration === generation && selected.value?.id === assetId) notify(e) }
@@ -221,8 +271,8 @@ async function previewBridge() {
     if (ownGeneration !== generation || selected.value?.id !== asset.id) return
     await openDetail(asset, false)
     if (op.status === 'needs_mapping') await showMapping(op)
-    else if (op.status === 'failed') throw new Error(op.error || '字段接入失败')
-    else MessagePlugin.success('已按确认格式接入研究。')
+    else if (op.status === 'failed') throw new Error('所选指标尚未加入研究数据，请重新预览后确认。', { cause: op.error })
+    else MessagePlugin.success('所选数据已加入研究指标。')
   } catch (e) { notify(e) }
   finally { actionBusy.value = false }
 }
@@ -244,7 +294,7 @@ async function commitMapping() {
   finally { actionBusy.value = false }
 }
 function openReview(op: LibraryOperation) { reviewImport.value = op.remote_ids?.import_id || op.result?.import_id || ''; reviewOpen.value = true }
-function authReview() { reviewFrame.value?.contentWindow?.postMessage({ type: 'structured-auth', token: auth.token, tenant: auth.effectiveTenantId, userId: auth.user?.id || '' }, window.location.origin) }
+function authReview() { reviewFrame.value?.contentWindow?.postMessage({ type: 'structured-auth', token: auth.token, tenant: auth.effectiveTenantId, userId: auth.user?.id || '', canViewDiagnostics: canViewDiagnostics.value }, window.location.origin) }
 function sendTheme() { if (reviewOpen.value) reviewFrame.value?.contentWindow?.postMessage({ type: 'workspace-theme', mode: effectiveTheme.value }, window.location.origin) }
 async function closeReview() { reviewOpen.value = false; if (selected.value) await openDetail(selected.value, false); await refresh() }
 async function page(next: boolean) { offset.value = next ? nextOffset.value || offset.value : Math.max(0, offset.value - 25); await refresh() }
@@ -252,7 +302,7 @@ async function reset() {
   if (optionsOpen) confirmStore.rejectConfirm()
   generation++; legacyRequest++; detailRequest++; stopPolling(); if (searchTimer) clearTimeout(searchTimer); searchTimer = undefined; client = createMaterialClient(scope(), scope)
   assets.value = []; libraries.value = []; legacyDatasets.value = []; legacyDocuments.value = []; selected.value = undefined; operations.value = []
-  search.value = ''; kindFilter.value = 'all'; sourceFilter.value = 'manual'; error.value = ''; batchStatus.value = ''; legacyErrors.value = {};
+  search.value = ''; kindFilter.value = 'all'; sourceFilter.value = 'manual'; error.value = ''; diagnostic.value = undefined; batchStatus.value = ''; legacyErrors.value = {};
   selectedRows.value = []; mappings.value = {}; indicators.value = []; bridgeSeries.value = []; pickedSeries.value = ''; bridgeTarget.value = ''; bridgeUnit.value = ''; bridgeFactor.value = 1; allowConflicts.value = false; registerNew.value = false; loadingSeries.value = false; actionBusy.value = false; automaticRouting.value = false; includeStructured.value = canWriteFacts.value; includeKnowledge.value = false;
   pendingFiles.value = []; detailOpen.value = false; reviewOpen.value = false; mappingOperation.value = undefined; uploading.value = false; offset.value = 0
   pickedKb.value = typeof route.query.kb_id === 'string' ? route.query.kb_id : ''; folder.value = typeof route.query.folder === 'string' ? route.query.folder : ''
@@ -270,7 +320,7 @@ watch(() => route.fullPath, reset)
 watch(sourceFilter, () => { offset.value = 0; void refresh() })
 watch(kindFilter, () => { offset.value = 0; void refresh() })
 watch(search, () => { if (searchTimer) clearTimeout(searchTimer); searchTimer = setTimeout(() => { offset.value = 0; void refresh() }, 300) })
-watch(() => auth.token, authReview)
+watch(() => [auth.token, canViewDiagnostics.value], authReview)
 watch(effectiveTheme, sendTheme)
 function receiveReview(event: MessageEvent) {
   if (event.origin !== window.location.origin || event.source !== reviewFrame.value?.contentWindow || !reviewOpen.value) return
@@ -292,7 +342,7 @@ onBeforeUnmount(() => { generation++; stopPolling(); if (searchTimer) clearTimeo
         <div class="hero-copy"><span class="eyebrow">中哲物产 · 研究工作台</span><h2>一份资料，连接你的研究</h2><div class="purpose-line"><span>知识库正文</span><i></i><span>表格分析</span><i></i><span>商品研究</span></div></div>
         <div class="hero-action"><button class="primary large" @click="addFiles"><FileAddIcon />添加资料</button><span>文件 · 文件夹 · 网页</span></div>
       </section>
-      <div v-if="error" class="error-banner" role="alert">{{ error }}<button class="text-button" @click="refresh">重新加载</button></div>
+      <div v-if="error" class="error-banner" role="alert">{{ error }}<ErrorDiagnostics :detail="diagnostic" /><button class="text-button" @click="refresh">重新加载</button></div>
       <section v-if="uploadOpen" class="upload-panel">
         <div class="panel-heading"><div><h3>添加研究资料</h3></div><button class="text-button" :disabled="uploading" @click="uploadOpen = false">收起</button></div>
         <div class="upload-mode"><button :class="{ active: uploadMode === 'file' }" @click="uploadMode = 'file'">文件上传</button><button :class="{ active: uploadMode === 'url' }" @click="uploadMode = 'url'">网页采集</button></div>
@@ -320,20 +370,20 @@ onBeforeUnmount(() => { generation++; stopPolling(); if (searchTimer) clearTimeo
           <div class="library-filters"><div class="filter-tabs"><button v-for="tab in [{ id: 'all', name: '全部' }, { id: 'table', name: '表格' }, { id: 'document', name: '文档' }]" :key="tab.id" :class="{ active: kindFilter === tab.id }" @click="kindFilter = tab.id">{{ tab.name }}</button></div><label class="search-input"><SearchIcon /><input v-model="search" placeholder="查找资料名称" aria-label="查找资料"></label><select v-model="sourceFilter" aria-label="资料来源"><option value="manual">上传资料</option><option value="automatic">自动采集</option><option value="all">全部来源</option></select></div>
           <div v-if="loading && !assets.length" class="empty-state">正在读取当前空间资料…</div>
           <div v-else-if="!visibleAssets.length" class="empty-state"><FolderOpenIcon /><h4>{{ assets.length ? '没有匹配的资料' : '从第一份资料开始' }}</h4><button class="secondary" @click="addFiles">添加资料</button></div>
-          <div v-else class="asset-table-wrap"><table class="asset-table"><thead><tr><th>资料</th><th>用途与状态</th><th>加入时间</th><th></th></tr></thead><tbody><tr v-for="asset in visibleAssets" :key="asset.id"><td><button class="file-cell" @click="openDetail(asset).catch(notify)"><span class="file-symbol" :class="{ table: isTable(asset.filename) }"><FileExcelIcon v-if="isTable(asset.filename)" /><FileIcon v-else /></span><span><strong>{{ asset.filename }}</strong><small>{{ fileKind(asset.filename) }} · {{ readableSize(asset.size) }}</small></span></button></td><td><div class="badges"><span v-for="operation in asset.operations || []" :key="operation.id" class="badge" :class="statusClass(operation.status)">{{ purposeNames[operation.purpose] }} · {{ stateName(operation.status) }}</span><span v-if="!asset.operations?.length" class="badge">原件已保存</span></div></td><td class="muted">{{ dateLabel(asset.created_at) }}</td><td><button class="text-button" @click="openDetail(asset).catch(notify)">查看<ChevronRightIcon /></button></td></tr></tbody></table></div>
+          <div v-else class="asset-table-wrap"><table class="asset-table"><thead><tr><th>资料</th><th>用途与状态</th><th>加入时间</th><th></th></tr></thead><tbody><tr v-for="asset in visibleAssets" :key="asset.id"><td><button class="file-cell" @click="openDetail(asset).catch(notify)"><span class="file-symbol" :class="{ table: isTable(asset.filename) }"><FileExcelIcon v-if="isTable(asset.filename)" /><FileIcon v-else /></span><span><strong>{{ asset.filename }}</strong><small>{{ fileKind(asset.filename) }} · {{ readableSize(asset.size) }}</small></span></button></td><td><div class="badges"><span v-for="operation in asset.operations || []" :key="operation.id" class="badge" :class="statusClass(operation.status)">{{ purposeNames[operation.purpose] }} · {{ operationStatus(operation) }}</span><span v-if="!asset.operations?.length" class="badge">原件已保存</span></div></td><td class="muted">{{ dateLabel(asset.created_at) }}</td><td><button class="text-button" @click="openDetail(asset).catch(notify)">查看<ChevronRightIcon /></button></td></tr></tbody></table></div>
           <div class="pagination"><span>{{ offset + (assets.length ? 1 : 0) }}–{{ offset + assets.length }} / {{ total }} 份资料</span><div><button class="secondary" :disabled="!offset || loading" @click="page(false)">上一页</button><button class="secondary" :disabled="nextOffset === null || loading" @click="page(true)">下一页</button></div></div>
         </section>
         <aside class="library-aside"><section class="aside-card"><span class="eyebrow">本页处理概况</span><div class="overview-number"><strong>{{ pageReady }}</strong><span>份资料已就绪</span></div><div class="overview-line"><span>待确认或需恢复</span><b>{{ pagePending }}</b></div></section><section class="aside-card"><h4>使用资料</h4><router-link to="/platform/creatChat">普通对话<ChevronRightIcon /></router-link><router-link to="/platform/structured-data">表格分析<ChevronRightIcon /></router-link><router-link to="/platform/commodity-research">商品研究<ChevronRightIcon /></router-link></section></aside>
       </div>
-      <section class="legacy-panel"><div class="panel-heading"><div><h3>既有资料</h3></div><button class="text-button" @click="legacy(pickedKb)">刷新</button></div><div v-if="Object.keys(legacyErrors).length" class="error-banner" role="status">{{ Object.values(legacyErrors).join("；") }}</div><div class="legacy-columns"><div><h4>知识库文档</h4><select v-model="pickedKb" aria-label="查看既有知识库" @change="legacy(pickedKb)"><option value="">选择知识库查看</option><option v-for="kb in libraries" :key="kb.id" :value="kb.id">{{ kb.name }}</option></select><div class="legacy-items"><router-link v-for="doc in legacyDocuments.slice(0, 5)" :key="doc.id" :to="{ path: '/platform/knowledge-bases/' + pickedKb, query: { knowledge_id: doc.id } }"><FileIcon /><span>{{ doc.title || doc.file_name || doc.id }}</span><small>{{ doc.parse_status === 'completed' ? '已解析' : doc.parse_status === 'failed' ? '解析失败' : '处理中' }}</small></router-link><router-link v-if="pickedKb" :to="'/platform/knowledge-bases/' + pickedKb" class="text-button">查看知识库全部文档<ChevronRightIcon /></router-link></div></div><div><h4>表格文件版本</h4><div class="legacy-items"><router-link v-for="dataset in legacyDatasets.slice(0, 5)" :key="dataset.dataset_id" :to="{ path: '/platform/structured-data', query: { dataset: dataset.dataset_id } }"><FileExcelIcon /><span>{{ dataset.source_file }}</span><small>已保存</small></router-link><router-link to="/platform/structured-data" class="text-button">查看全部表格版本<ChevronRightIcon /></router-link></div></div></div></section>
+      <section class="legacy-panel"><div class="panel-heading"><div><h3>既有资料</h3></div><button class="text-button" @click="legacy(pickedKb)">刷新</button></div><div v-if="Object.keys(legacyErrors).length" class="error-banner" role="status">部分既有资料暂时无法读取，请刷新后查看。<ErrorDiagnostics :detail="legacyErrors" /></div><div class="legacy-columns"><div><h4>知识库文档</h4><select v-model="pickedKb" aria-label="查看既有知识库" @change="legacy(pickedKb)"><option value="">选择知识库查看</option><option v-for="kb in libraries" :key="kb.id" :value="kb.id">{{ kb.name }}</option></select><div class="legacy-items"><router-link v-for="doc in legacyDocuments.slice(0, 5)" :key="doc.id" :to="{ path: '/platform/knowledge-bases/' + pickedKb, query: { knowledge_id: doc.id } }"><FileIcon /><span>{{ doc.title || doc.file_name || '未命名文档' }}</span><small>{{ documentStatus(doc.parse_status) }}</small></router-link><router-link v-if="pickedKb" :to="'/platform/knowledge-bases/' + pickedKb" class="text-button">查看知识库全部文档<ChevronRightIcon /></router-link></div></div><div><h4>表格文件版本</h4><div class="legacy-items"><router-link v-for="dataset in legacyDatasets.slice(0, 5)" :key="dataset.dataset_id" :to="{ path: '/platform/structured-data', query: { dataset: dataset.dataset_id } }"><FileExcelIcon /><span>{{ dataset.source_file }}</span><small>已保存</small></router-link><router-link to="/platform/structured-data" class="text-button">查看全部表格版本<ChevronRightIcon /></router-link></div></div></div></section>
     </main>
     <t-drawer v-model:visible="detailOpen" :header="selected?.filename || '资料详情'" size="640px" :footer="false" @close="stopPolling">
-      <div v-if="selected" class="asset-detail"><div class="original-card"><span class="eyebrow">原文件</span><h3>{{ selected.filename }}</h3><p>{{ fileKind(selected.filename) }} · {{ readableSize(selected.size) }} · {{ selected.shared_research ? '研究空间共享' : selected.shared_structured ? '当前空间表格共享' : '依知识库与上传者权限访问' }}</p><button class="secondary" @click="download"><DownloadIcon />下载原件</button><details><summary>查看文件指纹</summary><code>{{ selected.sha256 }}</code></details></div>
-        <h3 class="detail-section-title">用途与处理状态</h3><div v-for="op in operations" :key="op.id" class="operation-card"><div><strong>{{ purposeNames[op.purpose] }}</strong><span class="badge" :class="statusClass(op.status)">{{ stateName(op.status) }}</span></div><p v-if="op.error && op.status_checked !== false" class="error-text">{{ op.error }}</p><p v-if="op.status_checked === false" class="error-text">暂时无法读取处理状态</p><p v-if="op.purpose === 'knowledge' && op.result?.parse_status">正文解析：{{ op.result.parse_status === 'completed' ? '已完成' : op.result.parse_status === 'failed' ? '失败，可重试' : '正在解析' }}</p><div class="operation-actions"><button v-if="op.status === 'needs_mapping' && op.purpose === 'research'" class="primary" @click="showMapping(op).catch(notify)">确认研究指标</button><button v-if="op.status === 'needs_mapping' && op.purpose === 'structured'" class="primary" @click="openReview(op)">确认表格范围</button><button v-if="['failed', 'interrupted'].includes(op.status)" class="secondary" :disabled="actionBusy" @click="retry(op)">恢复处理</button><router-link v-if="op.remote_ids?.dataset_id" :to="{ path: '/platform/structured-data', query: { dataset: op.remote_ids.dataset_id } }">查看表格</router-link><router-link v-if="op.remote_ids?.kb_id && op.remote_ids?.knowledge_id" :to="{ path: '/platform/knowledge-bases/' + op.remote_ids.kb_id, query: { knowledge_id: op.remote_ids.knowledge_id } }">查看正文</router-link></div></div>
+      <div v-if="selected" class="asset-detail"><div class="original-card"><span class="eyebrow">原文件</span><h3>{{ selected.filename }}</h3><p>{{ fileKind(selected.filename) }} · {{ readableSize(selected.size) }} · {{ selected.shared_research ? '研究空间共享' : selected.shared_structured ? '当前空间表格共享' : '依知识库与上传者权限访问' }}</p><button class="secondary" @click="download"><DownloadIcon />下载原件</button><p>上传于 {{ localDateTime(selected.created_at) || '时间未记录' }}</p><ErrorDiagnostics :detail="selected.sha256" /></div>
+        <h3 class="detail-section-title">用途与处理状态</h3><div v-for="op in operations" :key="op.id" class="operation-card"><div><strong>{{ purposeNames[op.purpose] }}</strong><span class="badge" :class="statusClass(op.status)">{{ operationStatus(op) }}</span></div><p v-if="op.error && op.status_checked !== false" class="error-text">{{ operationError(op) }}</p><ErrorDiagnostics :detail="op.error || op.status_refresh_error" /><p v-if="op.status_checked === false" class="error-text">暂时无法确认处理状态，请刷新后查看</p><p v-if="op.status_checked !== false && op.purpose === 'knowledge' && op.status !== 'completed' && op.result?.parse_status">正文解析：{{ documentStatus(op.result.parse_status) }}</p><div class="operation-actions"><button v-if="op.status === 'needs_mapping' && op.purpose === 'research'" class="primary" @click="showMapping(op).catch(notify)">确认研究指标</button><button v-if="op.status === 'needs_mapping' && op.purpose === 'structured'" class="primary" @click="openReview(op)">确认表格范围</button><button v-if="['failed', 'interrupted'].includes(op.status)" class="secondary" :disabled="actionBusy" @click="retry(op)">恢复处理</button><router-link v-if="op.remote_ids?.dataset_id" :to="{ path: '/platform/structured-data', query: { dataset: op.remote_ids.dataset_id } }">查看表格</router-link><router-link v-if="op.remote_ids?.kb_id && op.remote_ids?.knowledge_id" :to="{ path: '/platform/knowledge-bases/' + op.remote_ids.kb_id, query: { knowledge_id: op.remote_ids.knowledge_id } }">查看正文</router-link></div></div>
         <section v-if="mappingOperation" class="mapping-panel"><h3>确认研究指标与单位</h3>
-          <div v-if="preview.mode === 'bridge'" class="mapping-row"><strong>{{ preview.series?.sheet }} · {{ preview.series?.metric || preview.series?.description }}</strong><p>{{ preview.total }} 条记录</p><label class="form-label">研究指标<select v-model="bridgeTarget"><option value="">请选择登记指标</option><option v-for="ind in indicators" :key="ind.series_id" :value="ind.series_id">{{ ind.name }} · {{ ind.unit }}</option></select></label><div class="two-fields"><label class="form-label">原单位<input v-model="bridgeUnit" placeholder="请核对原单位"></label><label class="form-label">换算系数<input v-model.number="bridgeFactor" type="number" min="0" step="any"></label></div><div v-if="preview.mode === 'bridge' && preview.sample_rows?.length" class="preview-table"><table><thead><tr><th>日期</th><th>原单元格</th><th>原值</th></tr></thead><tbody><tr v-for="(row,i) in preview.sample_rows" :key="i"><td>{{ row.date || row.period }}</td><td>{{ row.source_cell }}</td><td>{{ row.raw_value ?? row.value }}</td></tr></tbody></table><p>{{ preview.sample_rows.length }} / {{ preview.total }} 条来源记录</p></div><div v-if="preview.import_result?.conflicts?.length" class="preview-table"><h4>需要确认的来源冲突</h4><table><thead><tr><th>时点</th><th>原单元格</th><th>已有值</th><th>本次值</th></tr></thead><tbody><tr v-for="(conflict,i) in preview.import_result.conflicts" :key="i"><td>{{ conflict.as_of }}</td><td>{{ conflict.source_cell }}</td><td>{{ conflict.old_value ?? '—' }}</td><td>{{ conflict.new_value }}</td></tr></tbody></table></div><label v-if="preview.import_result?.conflicts?.length" class="checkbox-row"><input v-model="allowConflicts" type="checkbox">已核对来源冲突，允许保存为新的观测修订</label></div>
-          <div v-for="column in preview.columns || []" :key="column.col_key" class="mapping-row"><strong>{{ column.header }}</strong><label class="form-label">研究指标<select v-model="mappings[column.col_key].series_id"><option value="">请选择登记指标</option><option v-for="ind in indicators" :key="ind.series_id" :value="ind.series_id">{{ ind.name }} · {{ ind.unit }}</option></select></label><div class="two-fields"><label class="form-label">原单位<input v-model="mappings[column.col_key].source_unit"></label><label class="form-label">换算系数<input v-model.number="mappings[column.col_key].factor" type="number" min="0" step="any"></label></div></div><label v-if="preview.mode === 'vendor'" class="checkbox-row"><input v-model="registerNew" type="checkbox">我已核对，允许登记本次新的供应商指标</label><details open v-if="preview.rows?.length"><summary>核对本次数据（{{ preview.rows.length }} 行）</summary><div class="preview-table"><table><thead><tr><th>写入</th><th>工作表 / 单元格</th><th>日期与指标</th><th>原值</th><th>已有值</th><th>状态</th></tr></thead><tbody><tr v-for="row in preview.rows" :key="row.row_key"><td><input v-model="selectedRows" type="checkbox" :value="row.row_key" :disabled="row.category === 'skip'" :aria-label="`写入 ${row.locator?.sheet || ''} ${row.locator?.value_cell || row.row_key}`"></td><td>{{ row.locator?.sheet }} · {{ row.locator?.value_cell }}</td><td>{{ row.as_of || row.locator?.raw_date }}<br>{{ row.series_id || '待绑定指标' }}</td><td>{{ row.locator?.raw_value ?? row.value }}</td><td>{{ row.old_value ?? '—' }}</td><td>{{ row.category === 'revision' ? '修订，需逐项勾选' : row.category === 'skip' ? '已有相同值' : row.category === 'error' ? '请确认映射' : '新增' }}<small v-if="row.reason">{{ row.reason }}</small></td></tr></tbody></table><p>请勾选要写入的修订行。</p></div></details><label class="form-label">映射说明<input v-model="mappingNote"></label><button class="primary" :disabled="actionBusy || preview.mode === 'table' && !selectedRows.length" @click="commitMapping">确认并写入研究</button></section>
-        <section v-if="datasetOf && isTable(selected.filename) && canWriteFacts" class="append-purpose"><h3>从已解析的表格接入研究</h3><button class="secondary" :disabled="loadingSeries" @click="loadBridgeSeries">{{ loadingSeries ? '读取完整字段目录…' : '读取表格字段' }}</button><div v-if="bridgeSeries.length" class="knowledge-options"><label class="form-label">已确认字段<select v-model="pickedSeries"><option value="">请选择字段</option><option v-for="field in bridgeSeries" :key="field.series_id" :value="field.series_id">{{ field.sheet }} · {{ field.metric || field.description || field.series_id }} · {{ field.unit || '单位待确认' }}</option></select></label><button class="primary" :disabled="!pickedSeries || actionBusy" @click="previewBridge">预览映射</button></div></section>
+          <div v-if="preview.mode === 'bridge'" class="mapping-row"><strong>{{ preview.series?.sheet }} · {{ preview.series?.metric || preview.series?.description }}</strong><p>{{ preview.total }} 条记录</p><label class="form-label">研究指标<select v-model="bridgeTarget"><option value="">请选择登记指标</option><option v-for="ind in indicators" :key="ind.series_id" :value="ind.series_id">{{ ind.name }} · {{ ind.unit }}</option></select></label><div class="two-fields"><label class="form-label">原单位<input v-model="bridgeUnit" placeholder="请核对原单位"></label><label class="form-label">换算系数<input v-model.number="bridgeFactor" type="number" min="0" step="any"></label></div><div v-if="preview.mode === 'bridge' && preview.sample_rows?.length" class="preview-table"><table><thead><tr><th>日期</th><th>原单元格</th><th>原值</th></tr></thead><tbody><tr v-for="(row,i) in preview.sample_rows" :key="i"><td>{{ row.date || row.period }}</td><td>{{ row.source_cell }}</td><td>{{ row.raw_value ?? row.value }}</td></tr></tbody></table><p>{{ preview.sample_rows.length }} / {{ preview.total }} 条来源记录</p></div><div v-if="preview.import_result?.conflicts?.length" class="preview-table"><h4>需要确认的来源冲突</h4><table><thead><tr><th>时点</th><th>原单元格</th><th>已有值</th><th>本次值</th></tr></thead><tbody><tr v-for="(conflict,i) in preview.import_result.conflicts" :key="i"><td>{{ conflict.as_of }}<br>{{ indicatorLabel(conflict) }} · {{ conflict.unit || bridgeUnit || '单位待确认' }}</td><td>{{ conflict.source_cell }}</td><td>{{ conflict.old_value ?? '—' }}</td><td>{{ conflict.new_value }}</td></tr></tbody></table></div><label v-if="preview.import_result?.conflicts?.length" class="checkbox-row"><input v-model="allowConflicts" type="checkbox">我已对照原表核对这些不同的数值，同意保存为新版本</label></div>
+          <div v-for="column in preview.columns || []" :key="column.col_key" class="mapping-row"><strong>{{ column.header }}</strong><label class="form-label">研究指标<select v-model="mappings[column.col_key].series_id"><option value="">请选择登记指标</option><option v-for="ind in indicators" :key="ind.series_id" :value="ind.series_id">{{ ind.name }} · {{ ind.unit }}</option></select></label><div class="two-fields"><label class="form-label">原单位<input v-model="mappings[column.col_key].source_unit"></label><label class="form-label">换算系数<input v-model.number="mappings[column.col_key].factor" type="number" min="0" step="any"></label></div></div><label v-if="preview.mode === 'vendor'" class="checkbox-row"><input v-model="registerNew" type="checkbox">我已核对，允许登记本次新的供应商指标</label><details open v-if="preview.rows?.length"><summary>核对本次数据（{{ preview.rows.length }} 行）</summary><div class="preview-table"><table><thead><tr><th>写入</th><th>工作表 / 单元格</th><th>日期与指标</th><th>原值</th><th>已有值</th><th>状态</th></tr></thead><tbody><tr v-for="row in preview.rows" :key="row.row_key"><td><input v-model="selectedRows" type="checkbox" :value="row.row_key" :disabled="row.category === 'skip'" :aria-label="`写入 ${row.locator?.sheet || ''} ${row.locator?.value_cell || '本行'}`"></td><td>{{ row.locator?.sheet }} · {{ row.locator?.value_cell }}</td><td>{{ row.as_of || row.locator?.raw_date }}<br>{{ indicatorLabel(row) }}</td><td>{{ row.locator?.raw_value ?? row.value }}</td><td>{{ row.old_value ?? '—' }}</td><td>{{ row.category === 'revision' ? '修订，需逐项勾选' : row.category === 'skip' ? '已有相同值' : row.category === 'error' ? '请核对指标和单位' : '新增' }}<ErrorDiagnostics :detail="row.reason" /></td></tr></tbody></table><p>请勾选要写入的修订行。</p></div></details><label class="form-label">对应关系说明<input v-model="mappingNote"></label><button class="primary" :disabled="actionBusy || preview.mode === 'table' && !selectedRows.length" @click="commitMapping">确认并写入研究</button></section>
+        <section v-if="datasetOf && isTable(selected.filename) && canWriteFacts" class="append-purpose"><h3>从已解析的表格接入研究</h3><button class="secondary" :disabled="loadingSeries" @click="loadBridgeSeries">{{ loadingSeries ? '正在读取可用指标…' : '读取表格字段' }}</button><div v-if="bridgeSeries.length" class="knowledge-options"><label class="form-label">已确认字段<select v-model="pickedSeries"><option value="">请选择字段</option><option v-for="field in bridgeSeries" :key="field.series_id" :value="field.series_id">{{ field.sheet }} · {{ field.metric || field.description || '这一列尚未命名' }} · {{ field.unit || '单位待确认' }}</option></select></label><button class="primary" :disabled="!pickedSeries || actionBusy" @click="previewBridge">预览对应关系</button></div></section>
         <section class="append-purpose"><h3>追加用途</h3><label class="form-label">正文目标知识库<select v-model="pickedKb"><option value="">请选择知识库</option><option v-for="kb in libraries" :key="kb.id" :value="kb.id">{{ kb.name }}</option></select></label><div class="operation-actions"><button v-if="selected.capabilities.knowledge" class="secondary" :disabled="actionBusy || !pickedKb" @click="appendPurpose('knowledge')">用于正文检索</button><button v-if="selected.capabilities.structured && canWriteFacts" class="secondary" :disabled="actionBusy" @click="appendPurpose('structured')">用于表格分析</button><button v-if="selected.capabilities.research && canWriteFacts" class="secondary" :disabled="actionBusy" @click="appendPurpose('research')">{{ isTable(selected.filename) ? '用于研究指标' : '用作研究资料' }}</button></div></section>
       </div>
     </t-drawer>

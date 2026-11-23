@@ -13,7 +13,7 @@
   <div id="chart-import-result" role="status" hidden></div>
   <details id="report-chart-import" class="charts-panel">
     <summary>从往期周报导入常用图</summary>
-    <p class="charts-muted">只导入图表结构并映射真实指标，后续按最新数据绘制。往期结论不会保存；请核对映射和预览后再导入。</p>
+    <p class="charts-muted">沿用旧报告的图表样式，用所选指标重新绘制。请核对每条图例对应的指标和预览效果，再确认导入。</p>
     <div class="charts-fields">
       <label class="charts-field">查找周报<input type="search" id="report-chart-search" maxlength="200" placeholder="按文件名查找" {% if not chart_page.can_write %}disabled{% endif %}></label>
       <label class="charts-field">已授权周报（PPTX / PDF）<select id="report-chart-file" {% if not chart_page.can_write %}disabled{% endif %}><option value="">请选择周报</option></select></label>
@@ -23,6 +23,7 @@
     <button type="button" id="report-chart-more" class="charts-button" hidden>加载更多周报</button>
     <button type="button" id="report-chart-recognize" class="charts-button" disabled>识别周报中的图表</button>
     <div id="report-chart-status" role="status" aria-live="polite" hidden></div>
+    {% if can_view_diagnostics is defined and can_view_diagnostics() %}<details id="report-chart-diagnostics" hidden><summary>管理员诊断信息</summary><pre></pre></details>{% endif %}
     <p id="report-chart-progress" class="charts-muted" aria-live="polite"></p>
     <div id="report-chart-failures" class="charts-notice warning" hidden></div>
     <div id="report-chart-cards"></div>

@@ -125,7 +125,7 @@ test('a completion batch creates an independent notice for every task and ignore
     assert.equal(f.calls.notices.length, 2, 'Every consumed completion must have a corresponding notice')
     assert.equal(f.calls.closed, 0, 'The second completion must not replace the first notice')
     assert.equal(f.calls.notices[0].title, '研究分析已完成')
-    assert.equal(f.calls.notices[1].title, '产业图配置已生成')
+    assert.equal(f.calls.notices[1].title, '产业图草稿已生成')
     await f.calls.notices[0].content().children[2].props.onClick()
     assert.deepEqual(f.calls.ignored, ['job-a'])
     assert.equal(f.calls.closed, 1)

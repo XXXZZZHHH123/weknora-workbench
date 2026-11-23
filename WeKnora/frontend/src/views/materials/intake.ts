@@ -21,5 +21,5 @@ export function readableSize(bytes: number) {
   return bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`
 }
 export const purposeNames: Record<string, string> = { knowledge: '知识库正文', structured: '表格分析', research: '研究指标' }
-export const stateNames: Record<string, string> = { uploaded: '原件已保存', pending: '等待处理', running: '处理中', processing: '处理中', needs_mapping: '待确认', completed: '已就绪', failed: '处理失败', interrupted: '可恢复' }
-export function stateName(status: string) { return stateNames[status] || '状态待核对' }
+export const stateNames: Record<string, string> = { uploaded: '原件已保存', pending: '等待处理', running: '正在处理', processing: '正在处理', needs_mapping: '请确认表格范围或指标', completed: '已可使用', failed: '处理未完成', interrupted: '处理已中断，可恢复' }
+export function stateName(status: string) { return stateNames[status] || '暂时无法确认状态，请刷新查看' }

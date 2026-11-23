@@ -22,8 +22,7 @@
           </template>
           <div class="result-header">
             <div class="result-title">
-              <span class="chunk-index">{{ $t('chat.chunkIndexLabel', { index: chunk.index }) }}</span>
-              <span class="chunk-position">{{ $t('chat.chunkPositionLabel', { position: chunk.chunk_index }) }}</span>
+              <span class="chunk-index">{{ cleanSnippet(chunk.content).slice(0, 90) || $t('chat.relatedSourceExcerpt', 'Read source excerpt') }}</span>
             </div>
           </div>
         </t-popup>
@@ -37,11 +36,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
 import type { RelatedChunksData } from '@/types/tool-results';
 import ContentPopup from './ContentPopup.vue';
+import { cleanSnippet } from './contentClean';
 
-const props = defineProps<{
+defineProps<{
   data: RelatedChunksData;
 }>();
 
@@ -119,12 +118,10 @@ const props = defineProps<{
   font-size: var(--app-text-sm);
   color: var(--td-text-color-primary);
   font-weight: 600;
-  flex-shrink: 0;
-}
-
-.chunk-position {
-  font-size: var(--app-text-xs);
-  color: var(--td-text-color-placeholder);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 
