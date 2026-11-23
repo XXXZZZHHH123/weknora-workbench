@@ -132,6 +132,6 @@ def test_shared_indicator_missing_owner_does_not_reuse_visitor_records(canonical
     assert response.status_code == 200, response.text
     html = fromstring(response.text)
     root = html.get_element_by_id('indicator-workspace')
-    assert '主人归属尚未核验' in root.text_content()
+    assert '暂时无法确认这份研究台的共享范围' in root.text_content()
     assert not root.xpath('.//tr[@data-indicator-row]')
     assert 'Measured quantity' not in root.text_content()

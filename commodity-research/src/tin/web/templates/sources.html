@@ -54,8 +54,10 @@ let uploaded = null, bridged = null, opened = null, cellOffset = 0;
 const sourcePrefix = window.RESEARCH_PREFIX || '';
 const sourceElement = id => document.getElementById(id);
 const sourceDate = new Intl.DateTimeFormat('sv-SE', {timeZone:'Asia/Shanghai', dateStyle:'short', timeStyle:'short'});
-const sourceTime = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && !Number.isNaN(Date.parse(value))
-  ? sourceDate.format(new Date(value)) : value;
+function sourceTime(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(value) || Number.isNaN(Date.parse(value))) return value;
+  return /(?:Z|[+-]\d{2}:?\d{2})$/.test(value) ? sourceDate.format(new Date(value)) : value.slice(0,16).replace('T',' ');
+}
 const cellLabels = {formula_uncached:'公式没有已保存的结果',error:'单元格报错',empty:'空白',valid:'可读取'};
 const incompleteCatalog = '指标列表没有读全，暂时无法确认选择。请重新选择文件并读取数据列。';
 const sourceReadFailure = '暂时无法读取这份原件。请重新打开文件，仍无法读取时联系管理员。';

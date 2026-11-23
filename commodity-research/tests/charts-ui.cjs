@@ -127,7 +127,7 @@ const libraryHTML = renderLibrary(), detailHTML = render('chart_detail.html');
     await p.locator('[data-curve-color]').fill('#abcdef'); await p.locator('#chart-editor button[type=submit]').click();
     await p.locator('#chart-detail-status').filter({hasText: '已保存图表定义'}).waitFor();
     assert.equal(patch.revision, 2); assert.equal(patch.time.template.start, '08-01'); assert.equal(patch.time.cycles, 6); assert.equal(patch.curves[0].style.color, '#abcdef');
-    assert.equal(patch.time.transform, 'change'); assert.match(await p.locator('#chart-revisions').innerText(), /v3/);
+    assert.equal(patch.time.transform, 'change'); assert.match(await p.locator('#chart-revisions').innerText(), /第 3 版/);
     assert.equal(patch.time.visible_cycles, 2);
     assert.deepEqual(patch.time.segment_styles, [{label: '2027', color: '#AA5500', width: 1.25, dash: 'dot'}]);
     assert.equal(await p.locator('#chart-plot [data-series]').count(), 2);
@@ -178,7 +178,7 @@ const libraryHTML = renderLibrary(), detailHTML = render('chart_detail.html');
     assert.equal(reconvertPatch.revision, 1);
     assert.equal(reconvertPatch.time.template.start, '08-01');
     assert.equal(nativeSaved.revision, 2);
-    assert.match(await r.locator('#chart-revisions').innerText(), /v2/);
+    assert.match(await r.locator('#chart-revisions').innerText(), /第 2 版/);
     await reconvert.close();
 
     const readonly = await open(browser, '/sn/charts/chart-1', render('chart_detail.html', {can_write: false, write_reason: '当前账号没有研究工作台编辑权限'}), ({path, reply}) => {

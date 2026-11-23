@@ -15,7 +15,6 @@ import { humanizeCron, relativeTime } from '@/utils/cronHumanize'
 import DataSourceEditorDialog from './DataSourceEditorDialog.vue'
 import DataSourceSyncLogs from './DataSourceSyncLogs.vue'
 import DataSourceTypeIcon from './DataSourceTypeIcon.vue'
-import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useAssistantDataChange } from '@/utils/assistantDataChange'
 
@@ -314,7 +313,6 @@ onBeforeUnmount(stopPolling)
               <t-icon name="error-circle-filled" size="14px" />
               <span>{{ t('displayError.syncFailed') }}</span>
             </div>
-            <ErrorDiagnostics v-if="canManageDataSource" :detail="ds.error_message" @click.stop />
           </div>
         </component>
 
@@ -343,6 +341,7 @@ onBeforeUnmount(stopPolling)
       v-model:visible="logsVisible"
       :data-source-id="logsDsId"
       :data-source-name="logsDsName"
+      :last-error="dataSources.find(source => source.id === logsDsId)?.error_message"
     />
   </div>
 </template>

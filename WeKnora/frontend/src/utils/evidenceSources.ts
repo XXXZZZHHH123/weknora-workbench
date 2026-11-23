@@ -1,4 +1,5 @@
 import type { EvidenceDetail, EvidenceReference, EvidenceUnit } from '../api/chat/evidence'
+import { formatMessageTimestamp } from './messageTimestamp'
 import { sheetColumnLabel } from './structuredSheetView'
 import { parseSourceLocators, validSourceBox, type SourceLocator, type SourceLocateRequest } from './sourceLocator'
 
@@ -69,4 +70,10 @@ export function evidenceSourceLabel(locator: SourceLocator): string {
   const end = cell(locator.column_end, locator.row_end)
   if (!start) return locator.sheet
   return `${locator.sheet} · ${start}${end && end !== start ? `–${end}` : ''}`
+}
+
+/** Render timestamp-valued cells in local time while preserving business date labels. */
+export function evidenceTimestampText(value: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return value
+  return formatMessageTimestamp(value) || value
 }

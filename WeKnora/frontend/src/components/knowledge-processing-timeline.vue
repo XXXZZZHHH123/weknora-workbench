@@ -513,7 +513,7 @@ const stalledMin = computed<number>(() => {
 const stalledStageLabel = computed(() => {
   const stage = data.value?.current_stage
   return stage && (STAGES as readonly string[]).includes(stage)
-    ? t(`knowledgeStages.stage.${stage}`)
+    ? localizedStage(stage)
     : ''
 })
 
@@ -1460,7 +1460,7 @@ const stageBreakdown = computed<StageRowSummary[]>(() => {
   const total = totalMs.value || 1
   return stages.value.map((s) => ({
     name: s.name,
-    label: t(`knowledgeStages.stage.${s.name}`),
+    label: localizedStage(s.name),
     status: s.status,
     duration_ms: s.duration_ms,
     pct: typeof s.duration_ms === 'number' && s.duration_ms > 0 ? Math.min(100, (s.duration_ms / total) * 100) : 0,
@@ -1544,7 +1544,7 @@ const processConfigLines = computed<string[]>(() => {
     <template v-if="compact">
       <div class="kp-compact-row">
         <span v-for="s in stages" :key="s.name" class="kp-dot" :class="['kp-dot-' + s.status]"
-          :title="t(`knowledgeStages.stage.${s.name}`) + ' · ' + t(`knowledgeStages.status.${s.status}`)" />
+          :title="localizedStage(s.name) + ' · ' + localizedStatus(s.status)" />
       </div>
       <div class="kp-compact-caption">
         <template v-if="totalMs > 0">

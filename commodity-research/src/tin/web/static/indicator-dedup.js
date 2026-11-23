@@ -111,8 +111,10 @@ document.addEventListener('DOMContentLoaded', () => {
           const history = node('details'); history.append(node('summary', '决定与撤销记录'));
           for (const event of item.history) {
             const actor = event.actor || event.confirmed_by;
-            const stamp = new Date(event.at || event.created_at || event.time || '');
-            const time = Number.isNaN(stamp.getTime()) ? '' : localTime.format(stamp);
+            const recorded = event.at || event.created_at || event.time || '';
+            const stamp = new Date(recorded);
+            const time = /^\d{4}-\d{2}-\d{2}$/.test(recorded) ? recorded :
+              Number.isNaN(stamp.getTime()) ? '' : localTime.format(stamp);
             const action = event.action==='undo' ? '撤销决定' : states[event.state||event.to_state] || '更新指标对应关系';
             history.append(node('p',[actor ? accountLabel(actor) : '系统',time,action].filter(Boolean).join(' · ')));
           }

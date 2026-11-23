@@ -8,6 +8,7 @@ import * as vue from 'vue'
 import * as answerSources from '../../utils/structuredAnswerSources'
 import * as sheetView from '../../utils/structuredSheetView'
 import * as sourceRead from '../../utils/structuredSourceRead'
+import * as evidenceSources from '../../utils/evidenceSources'
 
 type HostNode = { type: string; text: string; props: Record<string, any>; children: HostNode[]; parent: HostNode | null }
 const node = (type: string, text = ''): HostNode => ({ type, text, props: {}, children: [], parent: null })
@@ -48,6 +49,7 @@ function mountEvidence(event: any = liveEvent, options: { status?: number; manif
     '@/utils/structuredAnswerSources': answerSources,
     '@/utils/structuredSheetView': sheetView,
     '@/utils/structuredSourceRead': sourceRead,
+    '@/utils/evidenceSources': evidenceSources,
     '@/utils/authFetch': { fetchWithAuthRetry: async (url: string, init: RequestInit) => {
       const headers = new Headers(init.headers)
       requests.push({ url, kb: headers.get('X-Knowledge-Base-ID'), tenant: headers.get('X-Tenant-ID') })

@@ -12,7 +12,7 @@
     </p>
     <div class="analysis-table"><table>
       <thead><tr><th v-for="(column,i) in evidence.columns" :key="i">{{ column }}</th></tr></thead>
-      <tbody><tr v-for="(row,i) in evidence.rows" :key="i"><td v-for="(value,j) in row" :key="j">{{ value === null ? '无有效值' : value }}</td></tr></tbody>
+      <tbody><tr v-for="(row,i) in evidence.rows" :key="i"><td v-for="(value,j) in row" :key="j">{{ typeof value === 'string' ? evidenceTimestampText(value) : value === null ? '无有效值' : value }}</td></tr></tbody>
     </table></div>
     <p v-if="evidence.output_truncated">仅展示部分结果行，计算使用了上述全部输入。</p>
     <p v-if="evidence.input_complete === false">{{ t('structuredReview.partialData', '本次只读到部分数据，结果不能用于全表统计。') }}</p>
@@ -99,6 +99,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { fetchWithAuthRetry } from '@/utils/authFetch'
+import { evidenceTimestampText } from '@/utils/evidenceSources'
 import DocumentPreview from '@/components/document-preview.vue'
 import type { SourceLocateRequest } from '@/utils/sourceLocator'
 import { groupStructuredAnswerSources, structuredPdfPages, isStructuredImportId, parseExcelCell, type StructuredAnswerSource, type StructuredSourceTable } from '@/utils/structuredAnswerSources'

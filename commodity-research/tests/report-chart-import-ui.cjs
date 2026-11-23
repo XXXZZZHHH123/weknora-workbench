@@ -32,7 +32,7 @@ const base = ({path, reply}) => {
         jobPolls++;
         return reply(jobPolls === 1 ? {status: 'running', progress: {completed: 1, total: 2, message: '正在识别'}} :
           {status: 'complete', progress: {completed: 2, total: 2, message: '识别完成'}, group: '合成周报.pptx', charts: [charts[1], charts[4], charts[3], charts[2], charts[0]],
-            failures: [{page: 5, source_index: 10, reason: '本页识别超时'}, {batch: 3, reason: '本批处理超时'}, {title: '缺少依据的图', reason: '缺少依据片段'}]});
+            failures: [{page: 5, source_index: 10, reason: '本页识别超时'}, {batch: 3, reason: '本批处理超过10秒'}, {title: '缺少依据的图', reason: '缺少依据片段'}]});
       }
       if (path === '/charts/import/report/preview') {
         previews.push(body);
@@ -70,17 +70,17 @@ const base = ({path, reply}) => {
     assert.equal(await missing.locator('[data-report-select]').isDisabled(), true);
     assert.equal(await missing.locator('[data-report-select]').isChecked(), false);
     assert.match(await missing.innerText(), /未找到指标：指标库中未找到，请手动选择或跳过/);
-    assert.doesNotMatch(await missing.locator('[data-report-flags]').innerText(), /定义失败/);
+    assert.doesNotMatch(await missing.locator('[data-report-flags]').innerText(), /这张图还不能生成/);
     assert.equal(previews.some(body => body.chart_id === 'report-3'), false, '缺失指标不发起无效数据预览');
-    await failedDefinition.locator('[data-report-flags]').filter({hasText: '定义失败'}).waitFor();
+    await failedDefinition.locator('[data-report-flags]').filter({hasText: '这张图还不能生成'}).waitFor();
     assert.equal(await failedDefinition.locator('[data-report-select]').isDisabled(), true);
     assert.equal(await failedDefinition.locator('[data-report-select]').isChecked(), false);
     assert.deepEqual(await p.locator('[data-report-page] > h2').allTextContents(), ['第 2 页', '第 3 页', '第 4 页', '第 5 页', '按原文顺序（该文件未提供可靠页码）']);
     assert.equal(await p.locator('[data-report-page="page:2"] [data-report-chart]').count(), 2);
     assert.equal(await p.locator('[data-report-failure]').count(), 3);
-    assert.match(await p.locator('#report-chart-failures').innerText(), /第 5 页：本页识别超时/);
-    assert.match(await p.locator('#report-chart-failures').innerText(), /第 3 批：本批处理超时/);
-    assert.match(await p.locator('#report-chart-failures').innerText(), /缺少依据的图：缺少依据片段/);
+    assert.match(await p.locator('#report-chart-failures').innerText(), /第 5 页：这部分报告暂时无法识别/);
+    assert.match(await p.locator('#report-chart-failures').innerText(), /这部分识别超时，请重新识别/);
+    assert.match(await p.locator('#report-chart-failures').innerText(), /缺少依据的图：这部分报告暂时无法识别/);
     assert.equal(applied, undefined, '识别及预览不自动导入');
     await missing.locator('[data-report-mapping]').selectOption('kb-alternate');
     await missing.locator('[data-report-plot] svg').waitFor();
@@ -124,7 +124,7 @@ const base = ({path, reply}) => {
       if (args.path.endsWith('/files')) return args.reply({items: [{citation: source, title: '合成周报.pdf'}], next_offset: null});
       if (args.path.endsWith('/recognize')) return args.reply({job_id: 'job-conflict'});
       if (args.path.endsWith('/jobs/job-conflict')) return args.reply({status: 'complete', charts: charts.slice(0, 1)});
-      if (args.path.endsWith('/preview')) return args.reply({detail: '文件版本已变化，请重新识别'}, 409);
+      if (args.path.endsWith('/preview')) return args.reply({detail: '周报文件版本已变化，请重新选择'}, 409);
       return false;
     });
     await conflict.page.locator('#report-chart-import > summary').click();
@@ -153,7 +153,7 @@ const base = ({path, reply}) => {
     await retry.page.locator('#report-chart-import > summary').click();
     await retry.page.locator('#report-chart-file').selectOption(JSON.stringify(source));
     await retry.page.locator('#report-chart-recognize').click();
-    await retry.page.locator('[data-report-notice]').filter({hasText: '请求超时'}).waitFor();
+    await retry.page.locator('[data-report-notice]').filter({hasText: '预览等待时间过长'}).waitFor();
     assert.equal(await retry.page.locator('[data-report-select]').isDisabled(), true);
     assert.equal(await retry.page.locator('[data-report-preview]').isDisabled(), false);
     await retry.page.locator('[data-report-preview]').click();
@@ -176,7 +176,7 @@ const base = ({path, reply}) => {
     await repair.page.locator('#report-chart-import > summary').click();
     await repair.page.locator('#report-chart-file').selectOption(JSON.stringify(source));
     await repair.page.locator('#report-chart-recognize').click();
-    await repair.page.locator('[data-report-notice]').filter({hasText: '图表定义校验失败'}).waitFor();
+    await repair.page.locator('[data-report-notice]').filter({hasText: '这张图还不能生成'}).waitFor();
     assert.equal(await repair.page.locator('[data-report-select]').isChecked(), false);
     assert.equal(await repair.page.locator('[data-report-select]').isDisabled(), true);
     invalidPreview = false;

@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import DocumentPreview from '@/components/document-preview.vue'
 import { getMessageEvidence, previewEvidenceSource, type EvidenceDetail, type EvidenceReference, type EvidenceUnit } from '@/api/chat/evidence'
-import { evidenceCellPosition, evidenceSourceLabel, evidenceSourceLocate, evidenceTableColumnInfo, evidenceUnitSymbol, findEvidenceReference } from '@/utils/evidenceSources'
+import { evidenceCellPosition, evidenceSourceLabel, evidenceSourceLocate, evidenceTableColumnInfo, evidenceTimestampText, evidenceUnitSymbol, findEvidenceReference } from '@/utils/evidenceSources'
 
 const props = defineProps<{ sessionId: string; messageId: string; references?: EvidenceReference[] }>()
 const { t } = useI18n()
@@ -134,6 +134,7 @@ function onLocated(value: { found: boolean; precise: boolean; page?: number }) {
 function displayCell(cell: unknown): string {
   if (cell == null) return '—'
   if (typeof cell === 'boolean') return t(cell ? 'common.yes' : 'common.no')
+  if (typeof cell === 'string') return evidenceTimestampText(cell)
   if (typeof cell !== 'object') return String(cell)
   if (Array.isArray(cell)) return cell.map(displayCell).join(' · ')
   const value = cell as Record<string, unknown>

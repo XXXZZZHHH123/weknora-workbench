@@ -1,6 +1,6 @@
 {% macro evidence_figure(figure) %}
 <figure class="report-figure" data-report-figure="{{ figure.key }}">
-<header><h4>{{ figure.title }}</h4><small data-figure-metadata>单位：{{ figure.unit or '未注明或暂不可核验' }} · 数据截至 {{ figure.as_of or selected.date }}</small></header>
+<header><h4>{{ figure.title }}</h4><small data-figure-metadata>单位：{{ figure.unit or '未注明或暂不可核验' }} · 数据截至 {{ display_time(figure.as_of or selected.date, true) or '日期未注明' }}</small></header>
 {% if figure.conclusion %}<p class="report-figure-conclusion">{{ figure.conclusion }}</p>{% endif %}
 {% if live_report %}<div data-figure-plot><p class="report-figure-state" role="status">正在准备图表…</p></div>{% endif %}
 <figcaption>{% if figure.caption %}<strong>{{ figure.caption }}</strong>{% endif %}<span data-figure-notice>{{ figure.notice or '' }}</span></figcaption>

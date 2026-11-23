@@ -24,7 +24,7 @@ async function api(path,options={}){
   if(!response.ok || !result) throw Object.assign(new Error(),{status:response.status,detail:result?.detail});
   return result;
 }
-const parseLabels={pending:'等待处理',queued:'等待处理',processing:'正在解析',indexed:'已可搜索，仍在整理',completed:'已可用',failed:'解析未完成',cancelled:'解析已停止',deleting:'正在删除'};
+const parseLabels={stored:'原件已保存，尚未开始解析',pending:'等待处理',processing:'正在解析',finalizing:'已可搜索，仍在整理',completed:'已可用',failed:'解析未完成',cancelled:'解析已停止',deleting:'正在删除'};
 let documentPage=1;
 async function refresh(){
   const result=await api('/api/materials?page='+documentPage);
@@ -63,9 +63,10 @@ const refreshFailure='暂时无法读取资料状态，请刷新页面后重试�
 function task(action,fallback){
   return async()=>{
     notice('正在处理…');
-    let message;
-    try{message=await action();}catch(error){showFailure(error,fallback);return;}
-    try{await refresh();notice(message||'资料状态已刷新。');}
+    let result;
+    try{result=await action();}catch(error){showFailure(error,fallback);return;}
+    const message=typeof result==='string'?result:result?.message;
+    try{await refresh();notice(message||'资料状态已刷新。',result?.detail);}
     catch(error){notice(message?message+' 资料列表暂时无法刷新，请稍后再查看。':refreshFailure,error.detail);}
   };
 }
@@ -79,8 +80,9 @@ $('upload').onclick=task(async()=>{
   if(!file) return '请选择要上传的文件。';
   const body=new FormData();
   body.append('file',file);
-  await api('/api/materials/upload',{method:'POST',body});
-  return `《${file.name}》原件已保存。请在资料列表查看正文何时可搜索。`;
+  const result=await api('/api/materials/upload',{method:'POST',body});
+  return {message:`《${file.name}》原件已保存。请在资料列表查看正文何时可搜索。`,
+    detail:result.sha256&&'SHA256: '+result.sha256};
 },'暂时无法确认文件是否上传成功，请先刷新资料列表再决定是否重新上传。');
 $('addUrl').onclick=task(async()=>{
   if(!$('url').value) return '请填写要添加的网页地址。';

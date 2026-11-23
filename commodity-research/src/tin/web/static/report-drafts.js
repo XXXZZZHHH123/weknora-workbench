@@ -15,6 +15,13 @@ document.addEventListener("DOMContentLoaded", () => {
   };
   const node = (tag, text, cls) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; };
   const labels = { summary: "导语", research: "研判", dashboard: "图表", watch: "策略" };
+  function referenceTitle(record) {
+    const title = record.title || (record.kind === "judgment" ? "研究判断" : "未命名策略");
+    if (record.kind !== "judgment") return title;
+    const generated = "研判 v" + record.revision;
+    return title === generated || title.startsWith(generated + " · ") ?
+      "研究判断" + title.slice(generated.length) : title;
+  }
   let draft, selected = "summary", saving = false, records = [], generation = 0;
   const titles = new Map(), options = new Map((initial.all_figure_options || initial.figure_options || []).map((x) => [x.series_id, x]));
   const initialAutomatic = initial.all_automatic_figures || initial.automatic_figures || [], extraCharts = new Map();
@@ -61,7 +68,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   async function responseJSON(response, fallback) {
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw Object.assign(new Error(fallback), {detail: body.detail});
+    if (!response.ok || body == null) throw Object.assign(new Error(fallback), {detail: body?.detail});
     return body;
   }
   async function loadModels() {
@@ -216,8 +223,10 @@ document.addEventListener("DOMContentLoaded", () => {
       records = body.items; select.replaceChildren(new Option(records.length ? "选择记录与版本" : "暂无可引用记录", ""));
       records.forEach((record, index) => {
         if (record.kind !== kind || typeof record.id !== "string" || !Number.isInteger(record.revision)) return;
-        titles.set(refKey(record), record.title);
-        select.append(new Option(`《${record.title || '未命名记录'}》 · 第 ${record.revision} 版`, String(index)));
+        const title = referenceTitle(record);
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(record.written_at) ? " · " + record.written_at : "";
+        titles.set(refKey(record), title);
+        select.append(new Option(`《${title}》 · 第 ${record.revision} 版${date}`, String(index)));
       });
       if (body.truncated) status("当前列出最近50条记录；引用保留所选记录的明确版本。");
     } catch (error) { if (own === generation) { select.replaceChildren(new Option("读取未完成", "")); status("暂时无法读取可引用的记录，请重新打开引用列表。", error.message); } }
@@ -235,7 +244,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!response.ok) await responseJSON(response, changed);
       const actual = await response.json();
       if (actual.id !== record.id || actual.revision !== record.revision || actual.kind !== record.kind) throw new Error(changed);
-      draft.references.push(reference); titles.set(refKey(record), actual.title);
+      draft.references.push(reference); titles.set(refKey(record), referenceTitle(actual));
       extraCharts.set(refKey(record), actual.chart_references || []);
       (actual.series_ids || []).forEach((id) => { if (!options.has(id)) options.set(id, { series_id: id, name: "未命名引用指标" }); });
       renderReferences(); renderFigures(); status("已加入引用，保存时将保留这个版本。");
@@ -283,7 +292,8 @@ document.addEventListener("DOMContentLoaded", () => {
         const byStatus = {403: "当前账号没有保存这份草稿的权限，请联系研究台负责人。", 409: versionChanged,
           413: "草稿超过保存上限，请缩短正文或减少引用后再保存。",
           422: "草稿尚未保存，请核对填写内容和所选引用。"};
-        status(Object.hasOwn(messages, body.detail) ? messages[body.detail] : (byStatus[response.status] || uncertain), body.detail);
+        const detail = body?.detail;
+        status(Object.hasOwn(messages, detail) ? messages[detail] : (byStatus[response.status] || uncertain), detail);
         return;
       }
       const saved = await response.json().catch(() => null);

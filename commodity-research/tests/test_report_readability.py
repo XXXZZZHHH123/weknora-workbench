@@ -13,9 +13,10 @@ def test_integrated_report_is_readable_and_truthful_about_current_source(isolate
     assert 'id="report-readable"' in response.text
     assert 'Quantity' in response.text and field in response.text
     assert '截至所选日期的最新指标' in response.text
-    assert '当前已确认数据' in response.text
-    assert '并非历史冻结归档' in response.text
-    assert '原始 JSON' in response.text and '<details' in response.text
+    assert '用目前已确认的数据回看所选期间' in response.text
+    assert '研究判断取自当前版本，可能晚于报告日期' in response.text
+    assert '报告使用的资料和数据缺口' in response.text and '<details' in response.text
+    assert '下载报告诊断数据' not in response.text
     assert '已冻结' not in response.text and '份归档' not in response.text
     assert '未登记研究判断' in response.text
     assert '<td class="report-value">0</td>' in response.text
@@ -59,7 +60,7 @@ def test_frozen_archive_uses_its_actual_payload_and_remains_escaped(loaded, monk
     from fastapi.testclient import TestClient
     response=TestClient(web.app).get('/sn/reports')
     assert response.status_code==200
-    assert '历史冻结归档' in response.text
+    assert '查看当时保存的报告，保留生成时的数据和判断' in response.text
     assert '&lt;script&gt;alert(1)&lt;/script&gt;' in response.text
     assert '<script>alert(1)</script>' not in response.text
-    assert 'stored-id' in response.text
+    assert '下载报告诊断数据' not in response.text

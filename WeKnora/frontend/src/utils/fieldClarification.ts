@@ -140,7 +140,7 @@ export function structuredFieldIssue(
       if(typeof chunk!=='string' || chunk.length>100000)continue;
       try {
         const data=JSON.parse(chunk.slice(chunk.indexOf('{')));
-        if (data.kind === 'structured_tool_notice') {
+        if (data.kind === 'structured_tool_notice' && typeof data.message === 'string') {
           issue = data.status === 'dataset_required' ? translate('structuredReview.chooseFile', '请先选择要查询的文件。')
             : data.status === 'invalid_scope' ? translate('structuredReview.chooseSheet', '找不到要查询的工作表，请核对文件和工作表后重试。')
             : translate('structuredReview.fieldQueryFailed', '本次查询未完成，请重试。');

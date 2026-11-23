@@ -33,6 +33,9 @@ export default {
     checkUnits: "請對照來源核對公式、原單位和目標單位，再使用換算結果。",
   },
   displayError: {
+    storageCredentialsPair: "請同時填寫存取金鑰編號和金鑰。如果伺服器已設定 AWS 存取權限，可將兩項都留空。",
+    storageConnectionFailed: "無法連線至檔案儲存。請核對儲存空間名稱、服務位址和存取權限後再試。",
+    usernameRegistered: "這個使用者名稱已被使用，請換一個名稱再註冊。",
     runtimeTaskFailed: "工作未能完成，請查看受影響的資料後再試。",
     memberUnknown: "暫時無法取得成員姓名",
     modelLengthHelp: "token 是模型計量文字長度的單位，和字數並非一一對應。",
@@ -122,7 +125,7 @@ export default {
     pageLocation: "僅定位至原件頁",
     noCoordinates: "未記錄確切的儲存格位置，請開啟原件核對。",
   },
-  pdfProcessing: {"title": "PDF 表格处理", "timingHint": "排队和实际解析分别计时。", "overlap": "相邻批次重叠", "batch": "每批内容上限", "queue": "排队最长保留", "execution": "实际解析时限", "pages": "页", "hours": "小时", "minutes": "分钟", "retry": "重试", "restore": "恢复推荐值", "save": "保存设置", "saved": "已保存，新启动的任务使用此设置。", "applyHint": "保存后对新启动的任务生效。", "failed": "读取或保存设置失败，请重试。", "invalid": "请输入有效的整数。"},
+  pdfProcessing: {"title": "PDF 表格處理", "timingHint": "排隊和實際解析分開計時。", "overlap": "相鄰兩批重複讀取的頁數", "batch": "每批內容上限", "queue": "排隊最長保留時間", "execution": "每批實際處理的最長時間", "pages": "頁", "hours": "小時", "minutes": "分鐘", "retry": "重試", "restore": "恢復建議值", "save": "儲存設定", "saved": "已儲存，新啟動的工作會使用這項設定。", "applyHint": "儲存後會套用到新啟動的工作。", "failed": "暫時無法讀取或儲存 PDF 處理設定，請核對頁數和時間後再試。", "invalid": "請輸入有效的整數。"},
   chartRendering: {"type": "資料繪圖", "rendering": "正在繪圖", "completed": "圖表已儲存", "failed": "繪圖未完成"},
   imageGeneration: {
       "bindingDisabled": "工具未启用，聊天无法生成图片。",

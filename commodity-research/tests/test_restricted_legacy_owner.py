@@ -97,7 +97,7 @@ def test_legacy_judgment_requires_current_owner_and_page_grant(canonical):
     delegated(state, ('judgments',))
     state['owner_missing'] = True
     missing = client.get(page(LEGACY, '/sn/judgment'), headers=headers)
-    assert missing.status_code == 200 and '主人归属信息尚未同步' in missing.text
+    assert missing.status_code == 200 and '暂时无法确认这份研究台的共享范围' in missing.text
     assert 'researcher original thesis' not in missing.text
     state['owner_missing'] = False
     delegated(state, ('diagram',))

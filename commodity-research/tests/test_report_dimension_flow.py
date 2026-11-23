@@ -196,7 +196,7 @@ def test_frozen_archive_keeps_custom_dimensions_and_never_reads_dimension_data(l
     page = client.get('/sn/reports?date=2026-09-18')
     assert page.status_code == 200, page.text
     html = fromstring(page.text)
-    assert '历史冻结归档' in page.text
+    assert '查看当时保存的报告' in page.text
     assert html.xpath('//*[@id="report-overview"]//tr[@data-report-dimension]/@data-report-dimension') == ['d-frozen01']
     assert '归档指标 21 件（较 09-11 +1）' in html.get_element_by_id('report-overview').text_content()
     markdown = client.get('/sn/reports/2026-09-18/daily.md')

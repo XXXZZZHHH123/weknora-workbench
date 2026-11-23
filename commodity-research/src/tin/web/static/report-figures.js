@@ -42,7 +42,8 @@ document.addEventListener("DOMContentLoaded", () => {
         if (data.figure?.key && data.figure.key !== figure.key) throw new Error("图表身份已变化，请重新打开。");
         plot.replaceChildren();
         const actual = data.figure || figure;
-        card.querySelector("[data-figure-metadata]").textContent = `单位：${actual.unit || "原表未注明单位"} · 数据截至 ${actual.as_of || host.dataset.day}`;
+        const asOf = String(actual.as_of || host.dataset.day).slice(0,10);
+        card.querySelector("[data-figure-metadata]").textContent = `单位：${actual.unit || "原表未注明单位"} · 数据截至 ${asOf}`;
         if (figure.kind === "chart") {
           const rendered = data.rendered;
           if (!rendered?.payload || !window.ChartKit) throw new Error("引用图表未返回可渲染数据。");

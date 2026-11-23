@@ -33,6 +33,9 @@ export default {
     checkUnits: "请对照来源核对公式、原单位和目标单位，再使用换算结果。",
   },
   displayError: {
+    storageCredentialsPair: "请同时填写访问密钥编号和密钥。如果服务器已配置 AWS 访问权限，可将两项都留空。",
+    storageConnectionFailed: "未能连接文件存储，请核对存储空间名称、服务地址和访问权限后重试。",
+    usernameRegistered: "这个用户名已被使用，请换一个名字再注册。",
     runtimeTaskFailed: "任务未能完成，请查看受影响的资料后重试。",
     memberUnknown: "成员姓名暂不可用",
     modelLengthHelp: "token 是模型计量文字长度所用的单位，与字数并不一一对应。",
@@ -122,7 +125,7 @@ export default {
     pageLocation: "仅定位到原件页",
     noCoordinates: "未记录确切的单元格位置，请打开原件核对。",
   },
-  pdfProcessing: {"title": "PDF 表格处理", "timingHint": "排队和实际解析分别计时。", "overlap": "相邻批次重叠", "batch": "每批内容上限", "queue": "排队最长保留", "execution": "实际解析时限", "pages": "页", "hours": "小时", "minutes": "分钟", "retry": "重试", "restore": "恢复推荐值", "save": "保存设置", "saved": "已保存，新启动的任务使用此设置。", "applyHint": "保存后对新启动的任务生效。", "failed": "读取或保存设置失败，请重试。", "invalid": "请输入有效的整数。"},
+  pdfProcessing: {"title": "PDF 表格处理", "timingHint": "排队和实际解析分别计时。", "overlap": "相邻两批重复读取的页数", "batch": "每批内容上限", "queue": "排队最长保留", "execution": "每批实际处理最长时间", "pages": "页", "hours": "小时", "minutes": "分钟", "retry": "重试", "restore": "恢复推荐值", "save": "保存设置", "saved": "已保存，新启动的任务使用此设置。", "applyHint": "保存后对新启动的任务生效。", "failed": "暂时无法读取或保存 PDF 处理设置，请核对页数和时长后重试。", "invalid": "请输入有效的整数。"},
   chartRendering: {"type": "数据绘图", "rendering": "正在绘图", "completed": "图表已保存", "failed": "绘图未完成"},
   imageGeneration: {
       "bindingDisabled": "工具未启用，聊天无法生成图片。",

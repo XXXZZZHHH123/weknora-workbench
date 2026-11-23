@@ -101,12 +101,14 @@ def test_html_and_markdown_show_the_same_saved_judgment_fallback(loaded, monkeyp
     (folder/'2026-09-18.json').write_text(json.dumps(payload))
     monkeypatch.setattr(web,'archive_days',lambda *_:[{'date':'2026-09-18','weekday':'五',
         'tone':None,'main':None,'gaps':0,'generated_at':payload['generated_at']}])
-    response=TestClient(web.app).get('/sn/reports')
+    client=TestClient(web.app)
+    response=client.get('/sn/reports')
     assert response.status_code == 200
     top=response.text.split('本周主要变化')[0].split('主要变化')[0]
     assert '已保存研判回放' in top and payload['judgment']['tone_note'] in top
     assert '暂无已保存研究结论' not in top
-    main, audit = response.text.split('原始 JSON',1)
+    main = response.text
     assert '试算值 0.512</small>' in main
     assert '0.5120000000000005' not in main
-    assert '0.5120000000000005' in audit
+    archive = client.get('/sn/reports/2026-09-18.json').json()
+    assert archive['rule_preview']['signals'][0]['current_value'] == 0.5120000000000005

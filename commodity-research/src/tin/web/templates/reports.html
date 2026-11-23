@@ -9,7 +9,9 @@
 {% endblock %}
 {% macro note(panel, title) %}{% if panel.text %}<div class="report-note"><strong>{{ title }}</strong><p class="research-prose whitespace-pre-wrap">{{ panel.text }}</p></div>{% endif %}{% endmacro %}
 {% macro references(panel) %}{% for ref in panel.references %}
-<details class="report-reference" open><summary>{{ ref.title }} <small>引用 · 第 {{ ref.revision }} 版 · {{ '研判' if ref.kind == 'judgment' else '策略' }}</small></summary><p class="research-prose whitespace-pre-wrap">{{ ref.body_text or ref.summary }}</p>{% if ref.body_text_truncated %}<small>引用正文为节选，完整记录保留在原页面。</small>{% endif %}</details>
+{% set generated = '研判 v' ~ ref.revision %}
+{% set title = ('研究判断' ~ ref.title[generated|length:] if ref.kind == 'judgment' and ref.title and (ref.title == generated or ref.title.startswith(generated ~ ' · ')) else ref.title) %}
+<details class="report-reference" open><summary>{{ title or '未命名引用' }} <small>引用 · 第 {{ ref.revision }} 版 · {{ '研判' if ref.kind == 'judgment' else '策略' }}</small></summary><p class="research-prose whitespace-pre-wrap">{{ ref.body_text or ref.summary }}</p>{% if ref.body_text_truncated %}<small>引用正文为节选，完整记录保留在原页面。</small>{% endif %}</details>
 {% endfor %}{% endmacro %}
 {% block main %}
 {% if restricted_view %}{% include "_reports_readonly.html" %}{% else %}
