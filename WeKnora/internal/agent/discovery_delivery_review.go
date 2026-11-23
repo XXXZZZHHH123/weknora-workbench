@@ -39,6 +39,7 @@ type discoveryDeliveryReviewTurn struct {
 	FailureCode, InitialFailureCode                        string
 	SchemaFailure, InitialSchemaFailure                    string
 	ProtocolRepairAttempted                                bool
+	ByDocument                                             bool
 	budget                                                 *discoveryDeliveryReviewBudget
 	sourceObservations                                     map[string]bool
 }
@@ -91,6 +92,22 @@ func (e *AgentEngine) applyDiscoveryRecovery(decision candidateDecision, feedbac
 	e.answerReviewAction = reviewCollectEvidence
 	e.answerReviewFeedback = "当前交付尚未完成实际用户目标。以下是模型依据本轮来源进度和授权范围提出的恢复建议，不能作为新事实、权限或工具执行记录：" + feedback + " 以用户原始要求为准，不把计划自增的精度或比较当成必需交付；保留明确来源范围和原口径，使用当前真实工具目录自主决定后续发现与读取；不得绕过字段审核或来源门禁，也不重复相同目录查询。"
 	return decision
+}
+
+func (e *AgentEngine) applyDocumentDiscoveryRecovery(decision candidateDecision, feedback string, coverage *documentCoverageView) candidateDecision {
+	if coverage != nil {
+		feedback += " 核实断言、期次、页码和原句或表头。若下一轮仍缺证据，保留已核实的结论，并具体说明哪份来源或哪项比较仍无法核实。"
+		if gap := coverage.gapNotice(); gap != "" {
+			feedback += " " + gap
+		}
+		if e.turnReview.DocumentCoverageRecoveryUsed {
+			decision.Disposition, decision.ReasonCode = candidateRevise, "document_coverage_limited"
+			e.answerReviewAction = reviewReviseAnswer
+			e.answerReviewFeedback = "补读机会已用完。请依据已经取得的内容完成可核实的部分，具体说明剩余缺口。" + feedback
+			return decision
+		}
+	}
+	return e.applyDiscoveryRecovery(decision, feedback)
 }
 
 // Only actual directory observations or an explicit native binding protocol
@@ -178,16 +195,18 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 		return decision
 	}
 	previous := e.turnReview.DiscoveryReview
+	coverage := e.documentCoverage(state)
 	sourceObservations := e.discoverySourceObservations(state)
 	var sharedBudget *discoveryDeliveryReviewBudget
 	if previous != nil && previous.Phase == "progress" {
-		// A progress keep/error is never a verdict on a later candidate. Only
-		// genuinely new native source observations permit a delivery review,
-		// under the SAME allowance, task and permission scope.
+		// A progress keep/error is never a verdict on a later candidate.
+		// Comparison claims can only be assessed once the draft exists, even
+		// when the real source views are unchanged. Both phases share a budget.
 		status := "not_checked_no_new_source_evidence"
 		if phase != "delivery" || previous.TaskHash != decision.TaskHash || previous.SourceScopeHash != decision.SourceScopeHash {
 			status = "not_checked_progress_binding_changed"
-		} else if decision.EvidenceHash != "" && decision.EvidenceHash != previous.EvidenceHash && discoveryHasNewSourceObservations(previous.sourceObservations, sourceObservations) {
+		} else if (coverage != nil && strings.TrimSpace(decision.Candidate) != "") ||
+			(decision.EvidenceHash != "" && decision.EvidenceHash != previous.EvidenceHash && discoveryHasNewSourceObservations(previous.sourceObservations, sourceObservations)) {
 			sharedBudget = previous.budget
 			status = "not_checked_shared_review_budget"
 		}
@@ -201,7 +220,7 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 		// the shared repair allowance; the executor owns exhaustion behavior.
 		if previous.Action == "recover" && previous.CandidateHash == decision.CandidateHash &&
 			previous.TaskHash == decision.TaskHash && previous.EvidenceHash == decision.EvidenceHash && previous.SourceScopeHash == decision.SourceScopeHash {
-			return e.applyDiscoveryRecovery(decision, previous.Feedback)
+			return e.applyDocumentDiscoveryRecovery(decision, previous.Feedback, coverage)
 		}
 		return decision
 	}
@@ -210,7 +229,7 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 	}
 	observations := discoveryOnlyObservations(state)
 	readObservations := e.discoveryReadObservations(state)
-	if len(observations) == 0 && readObservations == nil && progress == nil {
+	if len(observations) == 0 && readObservations == nil && progress == nil && coverage == nil {
 		return decision
 	}
 	runtimeScope := e.RenderUserTurnContent("", "")
@@ -228,7 +247,7 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 		}
 	}
 	humanConversation, omitted := reviewConversationView(e.semanticReviewConversation(conversation), 4096, 8)
-	input, err := json.Marshal(map[string]any{
+	reviewInput := map[string]any{
 		"phase": phase, "actual_execution_progress": progress,
 		"question": query, "conversation": humanConversation, "omitted_conversation_messages": omitted,
 		"candidate_answer": decision.Candidate, "actual_discovery_or_binding_observations": observations,
@@ -236,7 +255,22 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 		"other_successful_source_evidence_omitted": true,
 		"runtime_scope":                            runtimeScope, "advisory_plan": e.taskPlan,
 		"available_source_protocol_tools": capabilities, "other_registered_tools_omitted": true,
-	})
+	}
+	if coverage != nil {
+		reviewInput["actual_document_coverage"] = coverage
+		if bodies := e.documentCoverageReviewBodies(state, conversation, coverage); bodies != nil {
+			reviewInput["actual_comparison_body_evidence"] = bodies
+		}
+	}
+	input, err := json.Marshal(reviewInput)
+	if coverage != nil && len(input) > discoveryReviewInputBytes {
+		reviewInput["actual_comparison_body_evidence"] = map[string]any{"omitted_for_review_budget": true}
+		input, err = json.Marshal(reviewInput)
+	}
+	if coverage != nil && len(input) > discoveryReviewInputBytes && readObservations != nil {
+		reviewInput["actual_source_read_progress"] = map[string]any{"omitted_for_review_budget": true}
+		input, err = json.Marshal(reviewInput)
+	}
 	if err != nil || len(input) > discoveryReviewInputBytes || len(decision.Candidate) > 8192 || ctx.Err() != nil {
 		common.PipelineInfo(ctx, "Agent", "discovery_delivery_review", map[string]any{
 			"phase": phase, "status": "not_checked_input_budget_or_cancelled", "candidate_hash": decision.CandidateHash, "input_bytes": len(input),
@@ -246,7 +280,7 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 	if sharedBudget == nil {
 		sharedBudget = &discoveryDeliveryReviewBudget{generation: reviewGenerationBudget{purpose: "discovery_delivery", completionLimit: discoveryReviewTokens}}
 	}
-	receipt := &discoveryDeliveryReviewTurn{Phase: phase, CandidateHash: decision.CandidateHash, TaskHash: decision.TaskHash, EvidenceHash: decision.EvidenceHash, SourceScopeHash: decision.SourceScopeHash, budget: sharedBudget, sourceObservations: sourceObservations}
+	receipt := &discoveryDeliveryReviewTurn{Phase: phase, CandidateHash: decision.CandidateHash, TaskHash: decision.TaskHash, EvidenceHash: decision.EvidenceHash, SourceScopeHash: decision.SourceScopeHash, ByDocument: coverage != nil, budget: sharedBudget, sourceObservations: sourceObservations}
 	e.turnReview.DiscoveryReview = receipt
 	status := "not_checked_response"
 	started := time.Now()
@@ -265,6 +299,9 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 	checkCtx = context.WithValue(checkCtx, reviewGenerationBudgetKey{}, generationBudget)
 	disabled := false
 	instructions := discoveryDeliveryReviewInstructions
+	if coverage != nil {
+		instructions += "\n" + documentComparisonGuidance + " Use actual_document_coverage to distinguish an unbound or unread required document, unsuccessful search, incomplete retrieval, text returned, and original image read. Use actual_comparison_body_evidence for material old and new statements, including uncited sources, when present. Shared bodies carry separate document identities and physical pages. Review matching table definitions and changes in period or precision even when all documents returned some text. Coverage rows and continuations are scoped to actual tools; consult them only insofar as the human request requires comparison or a full set of sources."
+	}
 	if phase == "progress" {
 		instructions += "\nPROGRESS PHASE: there is no candidate answer yet. Review whether the current investigation is making useful progress toward the ORIGINAL human task. The runtime cadence is not proof of failure or a requirement to change tools. Keep an appropriate structured-only investigation, including exact statistics actually requested, even if it needs several calls. Recover only a concrete observed scope/representation obstacle, repeated unproductive source discovery, or a planner-added precision requirement when a meaningful authorized alternative is available. Consider current execution diagnostics and all actually available source capabilities; successful directory/status calls do not by themselves prove task progress. Do not demand a draft merely because several batches elapsed, terminate the task, force another channel, select a file, or supply source values. Feedback is a plan-reassessment suggestion to the executing model, not a mandatory tool sequence. A keep here approves neither a future candidate nor source facts; ordinary numeric, citation and answer checks remain mandatory."
 	}
@@ -311,7 +348,7 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 			// Neither parsing nor feedback grants source identity or permission.
 			receipt.Action, receipt.Feedback = action, feedback
 			if action == "recover" {
-				decision = e.applyDiscoveryRecovery(decision, feedback)
+				decision = e.applyDocumentDiscoveryRecovery(decision, feedback, coverage)
 			}
 			return decision
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"slices"
 	"strings"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
@@ -215,7 +216,9 @@ func (e *AgentEngine) citationUnverifiedPresentation(ctx context.Context, state 
 	views := currentCitationSourceViews(state)
 	selected := map[string]bool{}
 	for _, id := range uniqueCandidateCitationIDs(base) {
-		if !e.citationWarningIdentitySafe(id, views[id]) {
+		if !e.citationWarningIdentitySafe(id, views[id]) || !slices.ContainsFunc(views[id], func(view citationSourceView) bool {
+			return view.currentDocumentScope(e.toolRegistry)
+		}) {
 			return "", 0, 0, nil, nil, false
 		}
 		selected[id] = true

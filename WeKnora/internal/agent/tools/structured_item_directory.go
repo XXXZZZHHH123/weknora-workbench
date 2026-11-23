@@ -9,6 +9,8 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
+const briefFieldDescriptionRunes = 320
+
 // Catalog identities must survive before any individual item's verbose detail.
 // Only Output is projected: canonical source records, permissions and their
 // pagination remain available to application code and source validation.
@@ -50,11 +52,6 @@ func fitStructuredItemDirectory(ctx context.Context, operation string, result *t
 			// Declared units remain valid metadata; keep their origin visible
 			// even when full source-evidence details do not fit this view.
 			brief["field_metadata"] = structuredDirectoryKeys(metadata, "unit_source")
-			if metadata["unit_source"] == "declared" {
-				if description, exists := item["description"]; exists {
-					brief["description"] = description
-				}
-			}
 		}
 		if operation == "list_charts" {
 			brief["curve_summary_complete"] = false
@@ -161,6 +158,20 @@ func fitStructuredItemDirectory(ctx context.Context, operation string, result *t
 				encoded = []byte("0")
 			}
 		}
+	} else if operation == "list_series" {
+		// Preserve complete rows and exact header locations first. Include
+		// short definitions when they fit without dropping another row.
+		for index, row := range rows {
+			description, ok := original[index]["description"].(string)
+			if !ok || utf8.RuneCountInString(description) > briefFieldDescriptionRunes {
+				continue
+			}
+			row["description"] = description
+			if !render() {
+				delete(row, "description")
+			}
+		}
+		render()
 	}
 	copy := *result
 	copy.Output = string(encoded)

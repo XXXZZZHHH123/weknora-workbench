@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/models/chat"
@@ -200,13 +202,27 @@ func (e *AgentEngine) currentCandidateKnowledgeReferences(candidate string, stat
 	if e == nil || state == nil || e.modelContext == nil {
 		return refs
 	}
+	ids := uniqueCandidateCitationIDs(candidate)
+	if len(ids) == 0 {
+		return refs
+	}
 	records, conflicts := citationChunksFromMessages(e.sourceConsistencyMessages(state, conversation))
 	rows, rowConflicts := currentCitationReferenceRows(state)
-	for _, id := range uniqueCandidateCitationIDs(candidate) {
+	enforceScope := agenttools.HasDocumentScope(e.toolRegistry)
+	var views map[string][]citationSourceView
+	if enforceScope {
+		views = currentCitationSourceViews(state)
+	}
+	for _, id := range ids {
 		record, ok := records[id]
 		ref := rows[id]
 		if !ok || conflicts[id] || rowConflicts[id] || ref == nil || e.modelContext.CitableChunkHandle(id) == "" ||
 			!record.contentKnown || strings.TrimSpace(record.content) == "" || record.knowledgeID != ref.KnowledgeID || record.content != ref.Content {
+			continue
+		}
+		if enforceScope && !slices.ContainsFunc(views[id], func(view citationSourceView) bool {
+			return view.currentDocumentScope(e.toolRegistry)
+		}) {
 			continue
 		}
 		refs = append(refs, ref)
@@ -269,7 +285,7 @@ func currentCitationReferenceRows(state *types.AgentState) (map[string]*types.Se
 				if decoder.Decode(&batch) != nil {
 					continue
 				}
-				for _, row := range batch {
+				for _, row := range citationResultRows(batch) {
 					selected := selectCitationFields(row, []string{"content", "knowledge_id", "knowledge_base_id", "knowledge_title", "knowledge_filename", "knowledge_source", "knowledge_channel", "chunk_index", "chunk_type", "start_at", "end_at", "parent_chunk_id", "image_info", "matched_images", "source_locators", "chunk_metadata"})
 					encoded, _ := json.Marshal(selected)
 					var ref types.SearchResult

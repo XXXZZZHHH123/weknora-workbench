@@ -124,13 +124,18 @@ func (s *imageScoringReranker) RerankImages(
 	return out, nil
 }
 
-func TestDifferentImagesWithIdenticalCaptionsRemainSeparateCandidates(t *testing.T) {
+func TestDifferentImagesWithIdenticalCaptionsRemainSeparate(t *testing.T) {
 	a := imageRow("a", types.ChunkTypeImageVector, "resource://a")
 	b := imageRow("b", types.ChunkTypeImageVector, "resource://b")
 	a.Content, b.Content = "a chart", "a chart"
 	tool := &SearchKnowledgeTool{}
 	require.Len(t, tool.deduplicateResultsForRerank([]*searchResultWithMeta{a, b}), 2)
 	final := tool.deduplicateResults([]*searchResultWithMeta{a, b})
-	require.Len(t, final, 1)
-	require.Len(t, final[0].MatchedImages, 2, "merging text after rerank must retain both images")
+	require.Len(t, final, 2, "identical captions cannot combine different pixels")
+	caption := imageRow("caption-a", types.ChunkTypeImageCaption, "resource://a")
+	caption.Content, caption.Score = a.Content, 0.9
+	final = tool.deduplicateResults([]*searchResultWithMeta{caption, a})
+	require.Len(t, final, 1, "a caption and vector match for the same image can share an entry")
+	require.Len(t, final[0].MatchedImages, 1, "the caption keeps the matched image")
+	require.Equal(t, a.ID, final[0].Origins[0].ID)
 }

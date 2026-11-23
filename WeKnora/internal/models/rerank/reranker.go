@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/logger"
@@ -15,11 +16,6 @@ import (
 	"github.com/Tencent/WeKnora/internal/models/api/pineconerank"
 	"github.com/Tencent/WeKnora/internal/models/api/teirank"
 	modelruntime "github.com/Tencent/WeKnora/internal/models/runtime"
-
-	// modelruntime.Resolve answers from the vendor catalog, which is empty until
-	// the vendor packages have run their init. Without this import every row
-	// resolves to the generic vendor: LKEAP and Volcengine would lose their
-	// signed clients and Aliyun its native protocol.
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -179,10 +175,6 @@ func newReranker(config *RerankerConfig) (Reranker, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := validateRerankBaseURL(resolved.BaseURL); err != nil {
-		return nil, err
-	}
-
 	vendor := resolved.Vendor
 	endpoint, err := resolved.Endpoint(types.ModelTypeRerank, modelruntime.Connection{
 		ModelID:     config.ModelID,
@@ -192,6 +184,15 @@ func newReranker(config *RerankerConfig) (Reranker, error) {
 		Client:      newRerankHTTPClient(time.Duration(resolved.Rerank.RequestTimeout) * time.Second),
 	})
 	if err != nil {
+		return nil, err
+	}
+	if resolved.RerankAPI.HTTPServed() {
+		address, err := url.Parse(endpoint.Resolve(resolved.Rerank.Path))
+		if err != nil || address.Hostname() == "" || (address.Scheme != "http" && address.Scheme != "https") {
+			return nil, fmt.Errorf("用于调整检索结果顺序的模型 %q 的服务地址无效，请填写完整的网址", config.ModelName)
+		}
+	}
+	if err := validateRerankBaseURL(resolved.BaseURL); err != nil {
 		return nil, err
 	}
 

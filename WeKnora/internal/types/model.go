@@ -3,6 +3,7 @@ package types
 import (
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"log"
 	"time"
 
@@ -280,12 +281,16 @@ func (c ModelParameters) Value() (driver.Value, error) {
 // Scan implements the sql.Scanner interface, used to convert database value to ModelParameters.
 // Decrypts APIKey and AppSecret after loading from database; legacy plaintext is returned as-is.
 func (c *ModelParameters) Scan(value interface{}) error {
-	if value == nil {
+	var b []byte
+	switch v := value.(type) {
+	case nil:
 		return nil
-	}
-	b, ok := value.([]byte)
-	if !ok {
-		return nil
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return errors.New("无法读取模型配置，保存的配置格式不受支持")
 	}
 	if err := json.Unmarshal(b, c); err != nil {
 		return err

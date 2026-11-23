@@ -14,9 +14,10 @@ import tempfile
 
 from .field_index import normalize, tokens
 
-VERSION = 'discovery-headers-v2'
+VERSION = 'discovery-headers-v3'
 SHEET_PREVIEW_LIMIT = 8
 FIELD_LIMIT = 24
+DESCRIPTION_LIMIT = 320
 
 
 def _stamp(folder):
@@ -60,8 +61,12 @@ def _build(folder, path, stamp):
             for field in fields:
                 item = {key: field[key] for key in (
                     'series_id', 'sheet', 'metric', 'unit', 'unit_status', 'date_mode',
-                    'dimensions', 'header_cells', 'frequency', 'field_metadata', 'record_count', 'valid_count',
-                    'first_date', 'last_date', 'first_valid_date', 'last_valid_date') if key in field}
+                    'dimensions', 'source_metric', 'header_cells', 'frequency', 'field_metadata',
+                    'record_count', 'valid_count', 'first_date', 'last_date', 'first_valid_date',
+                    'last_valid_date') if key in field}
+                description = field.get('description')
+                if isinstance(description, str) and len(description) <= DESCRIPTION_LIMIT:
+                    item['description'] = description
                 metric = str(field['metric'])
                 context = json.dumps({key: field.get(key) for key in (
                     'sheet', 'dimensions', 'unit', 'aliases')}, ensure_ascii=False)

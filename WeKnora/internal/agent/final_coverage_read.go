@@ -46,6 +46,12 @@ func (e *AgentEngine) finalCoverageRead(ctx context.Context, query string, state
 	if len(known) == 0 {
 		return nil, nil
 	}
+	if review := e.turnReview.DiscoveryReview; review != nil && review.ByDocument {
+		if e.turnReview.DocumentCoverageRecoveryUsed {
+			return nil, nil
+		}
+		e.turnReview.DocumentCoverageRecoveryUsed = true
+	}
 	e.turnReview.FinalCoverageReadAttempted = true
 	status := "no_reads"
 	defer func() {

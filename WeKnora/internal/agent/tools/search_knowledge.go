@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -114,9 +115,10 @@ type SearchKnowledgeInput struct {
 type searchResultWithMeta struct {
 	*types.SearchResult
 	SourceQuery       string
-	QueryType         string // retrieval path that produced the row
-	KnowledgeBaseID   string // ID of the knowledge base this result came from
-	KnowledgeBaseType string // Type of the knowledge base (document, faq, etc.)
+	QueryType         string         // retrieval path that produced the row
+	KnowledgeBaseID   string         // ID of the knowledge base this result came from
+	KnowledgeBaseType string         // Type of the knowledge base (document, faq, etc.)
+	Origins           []searchOrigin // Original authorized hits sharing the exact displayed text
 }
 
 // SearchKnowledgeTool searches chunk-indexed knowledge bases in semantic,
@@ -321,6 +323,7 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 			Execute(ctx, args)
 	}
 
+	byDocument := t.documentConstraint != nil && t.documentConstraint.ByDocument() && len(searchTargets) > 1 && len(input.DocumentIDs) > 1
 	kbIDs := searchTargets.GetAllKnowledgeBaseIDs()
 	kbList, err := t.knowledgeBaseService.GetKnowledgeBasesByIDsOnly(ctx, kbIDs)
 	if err != nil {
@@ -328,6 +331,12 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 	}
 	kbModes, msg := resolveKBSearchModes(mode, kbList)
 	if msg != "" {
+		if byDocument {
+			msg = "所选文档当前无法检索，请尝试直接读取原文或核对文档范围。"
+			return &types.ToolResult{Success: false, Output: msg, Error: msg, Data: map[string]any{
+				"document_coverage": documentSearchCoverage(input.DocumentIDs, nil, nil, nil, nil),
+			}}, nil
+		}
 		return &types.ToolResult{Success: false, Error: msg}, fmt.Errorf("%s", msg)
 	}
 	kbTypeMap := make(map[string]string, len(kbList))
@@ -346,7 +355,7 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 		"[Tool][SearchKnowledge] query=%q mode=%s limit=%d top_k=%d targets=%d kbs=%d",
 		query, mode, limit, topK, len(searchTargets), len(kbIDs))
 
-	allResults, searchFailures, searchCalls, embedFallbacks := t.concurrentSearchByTargets(ctx, query, mode,
+	allResults, searchFailures, searchCalls, embedFallbacks, documentSearches := t.concurrentSearchByTargets(ctx, query, mode,
 		kbModes, searchTargets, kbList, topK, vectorThreshold, keywordThreshold, kbTypeMap)
 	// A hybrid search that ran keyword-only is reported like any other mode
 	// fallback, so an empty result is not read as "no semantic match".
@@ -359,30 +368,30 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 	if searchCalls > 0 && len(searchFailures) >= searchCalls {
 		msg := "Knowledge search failed: " + strings.Join(searchFailures, "; ") +
 			". The knowledge bases were not searched, so this is not evidence that they lack the answer."
+		if byDocument {
+			msg = "这次检索未能完成，暂时无法核对所选文档。"
+			return &types.ToolResult{Success: false, Output: msg, Error: msg, Data: map[string]any{
+				"document_coverage": documentSearchCoverage(input.DocumentIDs, documentSearches, nil, nil, nil),
+			}}, nil
+		}
 		return &types.ToolResult{Success: false, Output: msg, Error: msg}, nil
 	}
-	// Enforce the document boundary even if an index provider ignores its
-	// KnowledgeIDs filter. Never let a foreign same-name chart reach reranking.
-	if len(input.DocumentIDs) > 0 {
-		wanted := make(map[string]bool, len(input.DocumentIDs))
-		for _, id := range input.DocumentIDs {
-			wanted[id] = true
-		}
-		filtered := allResults[:0]
-		for _, row := range allResults {
-			if wanted[row.KnowledgeID] {
-				filtered = append(filtered, row)
-			}
-		}
-		allResults = filtered
-	}
+	// Verify each result before grouping identical passages. An unauthorized
+	// copy can never inherit the representative's source grant.
+	allResults = t.filterScopedSearchRows(ctx, searchTargets, allResults)
+	allResults, withheldWikiChunks := t.filterWikiSearchResults(ctx, allResults)
 
 	deduplicated := t.deduplicateResultsForRerank(allResults)
+	originCandidates := searchCandidateOrigins(deduplicated)
 
 	ranked := deduplicated
 	rerankRejected := 0
 	if t.rerankModel != nil && len(deduplicated) > 0 {
-		reranked, err := t.rerankResults(ctx, query, deduplicated, mode == SearchModeKeyword)
+		candidates := deduplicated
+		if byDocument {
+			candidates = roundRobinSearchCandidates(candidates, input.DocumentIDs, reranking.DefaultMaxCandidates)
+		}
+		reranked, err := t.rerankResults(ctx, query, candidates, mode == SearchModeKeyword)
 		if err != nil {
 			logger.Warnf(ctx, "[Tool][SearchKnowledge] Rerank failed, using retrieval order: %v", err)
 		} else {
@@ -397,32 +406,22 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 	// text reranker could not judge) skip MMR and the limit, and follow the
 	// ranked results.
 	ranked, keptOutside := splitKeptOutsideTopK(ranked)
-	if len(ranked) > 0 {
-		if selected := selectMMR(ctx, ranked, min(len(ranked), retrievalLimit)); len(selected) > 0 {
-			ranked = selected
-		}
-	}
-
-	final := t.deduplicateResults(ranked)
-	sort.Slice(final, func(i, j int) bool {
-		if final[i].Score != final[j].Score {
-			return final[i].Score > final[j].Score
-		}
-		return final[i].KnowledgeID < final[j].KnowledgeID
-	})
 	if t.patternFilter != nil {
-		final = t.matchingPattern(ctx, final)
+		ranked = t.matchingPattern(ctx, ranked)
 		keptOutside = t.matchingPattern(ctx, keptOutside)
 	}
+	// Deduplicate before MMR so a disposable copy never consumes a display slot
+	// or loses its independent source location in the diversity pass.
+	ranked = t.deduplicateResults(ranked)
+	qualified := coveredSearchDocuments(append(slices.Clone(ranked), keptOutside...))
+	final := selectSearchRows(ctx, ranked, retrievalLimit, byDocument)
 	if len(final) > limit {
 		final = final[:limit]
 	}
 	if len(keptOutside) > 0 {
-		// A kept image whose caption hit made the list is a copy of it; the
-		// caption hit stays and takes the image along.
 		final = t.deduplicateResults(append(final, keptOutside...))
 	}
-	final, withheldWikiChunks := t.filterWikiSearchResults(ctx, final)
+	retainSearchCandidateOrigins(final, originCandidates)
 	if t.documentConstraint != nil && len(t.documentConstraint.selectedIDs()) == 0 && len(final) > 0 {
 		candidates := t.documentCandidates(ctx, final, query)
 		if withheldWikiChunks > 0 {
@@ -449,14 +448,18 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 	if observe != nil {
 		observe(final)
 	}
-	result, omitted := t.formatWithinBudget(ctx, final, kbIDs, query, mode)
+	result, shown := t.formatWithinBudget(ctx, final, kbIDs, query, mode, byDocument)
+	omitted := len(final) - len(shown)
+	if byDocument {
+		result.Data["document_coverage"] = documentSearchCoverage(input.DocumentIDs, documentSearches, qualified, coveredSearchDocuments(final), coveredSearchDocuments(shown))
+	}
 	if withheldWikiChunks > 0 {
 		result.Data["withheld_retracted_or_unverified_wiki_chunks"] = withheldWikiChunks
 	}
 	if omitted > 0 {
 		result.Data["omitted_for_budget"] = omitted
 	}
-	t.attachContextImages(ctx, result, final[:len(final)-omitted])
+	t.attachContextImages(ctx, result, shown)
 	if len(searchFailures) > 0 {
 		result.Data["partial_failures"] = searchFailures
 	}
@@ -474,6 +477,8 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 		result.Output = fmt.Sprintf("Withheld %d Wiki page chunk(s) because their current retraction status could not be verified or review is pending; consult current source documents.", withheldWikiChunks)
 	} else if len(final) == 0 {
 		result.Output = emptySearchStatement(query, result.Data, len(kbIDs))
+	} else if byDocument && len(shown) == 0 {
+		result.Output = "检索找到了可用内容，但本次返回空间不足，未能展示原文。可按对应文档或页码补查。"
 	}
 	return result, nil
 }
@@ -485,7 +490,7 @@ func (t *SearchKnowledgeTool) filterWikiSearchResults(ctx context.Context, resul
 		if result == nil || result.SearchResult == nil {
 			continue
 		}
-		if result.ChunkType != string(types.ChunkTypeWikiPage) && !strings.HasPrefix(result.ID, "wp-") {
+		if !isSearchWikiResult(result) {
 			visible = append(visible, result)
 			continue
 		}
@@ -555,31 +560,38 @@ func (t *SearchKnowledgeTool) attachContextImages(
 		len(images), strings.Join(ids, ", "))
 }
 
-// formatWithinBudget renders results, dropping the lowest-ranked ones until
-// the rendering fits in four fifths of the tool output budget, and reports
-// how many were dropped. The model reads a view rebuilt from Data, which the
-// registry's output truncation does not reach, so 30 full chunks used to go
-// into the context whatever the budget. The best result is always kept.
+// formatWithinBudget budgets both the shared body and its independent source
+// locations before Data is used to rebuild the model view.
 func (t *SearchKnowledgeTool) formatWithinBudget(
 	ctx context.Context,
 	results []*searchResultWithMeta,
 	kbIDs []string,
 	query, mode string,
-) (*types.ToolResult, int) {
+	byDocument bool,
+) (*types.ToolResult, []*searchResultWithMeta) {
 	budget := OutputBudget(ctx) * 4 / 5
-	kept := results
+	kept := slices.Clone(results)
 	result := t.formatOutput(ctx, kept, kbIDs, query, mode)
-	for len(kept) > 1 {
-		size := utf8.RuneCountInString(result.Output)
-		if size <= budget {
-			break
-		}
-		// Shrink in proportion to the overshoot, at least one row per round.
-		n := min(len(kept)-1, max(1, len(kept)*budget/size))
-		kept = kept[:n]
+	if byDocument && utf8.RuneCountInString(result.Output) > budget {
+		// A passage that cannot fit on its own must not displace shorter
+		// evidence from other documents.
+		kept = slices.DeleteFunc(kept, func(row *searchResultWithMeta) bool {
+			single := t.formatOutput(ctx, []*searchResultWithMeta{row}, kbIDs, query, mode)
+			return utf8.RuneCountInString(single.Output) > budget
+		})
 		result = t.formatOutput(ctx, kept, kbIDs, query, mode)
 	}
-	return result, len(results) - len(kept)
+	for len(kept) > 0 && utf8.RuneCountInString(result.Output) > budget {
+		index := len(kept) - 1
+		if byDocument {
+			index = leastCoverageLoss(kept)
+		} else if len(kept) == 1 {
+			break
+		}
+		kept = slices.Delete(kept, index, index+1)
+		result = t.formatOutput(ctx, kept, kbIDs, query, mode)
+	}
+	return result, kept
 }
 
 // emptySearchStatement describes an empty result, including any mode
@@ -737,7 +749,7 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 	topK int,
 	vectorThreshold, keywordThreshold float64,
 	kbTypeMap map[string]string,
-) (_ []*searchResultWithMeta, failures []string, calls int, embedFallbacks map[string]string) {
+) (_ []*searchResultWithMeta, failures []string, calls int, embedFallbacks map[string]string, documentSearches map[string]bool) {
 	// Filter out non-searchable KBs (wiki-only / graph-only). Feeding a
 	// wiki-only KB into HybridSearch causes spurious "model ID cannot be
 	// empty" errors because such KBs have no EmbeddingModelID configured.
@@ -769,7 +781,7 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 			st.KnowledgeBaseID)
 	}
 	if len(filteredTargets) == 0 {
-		return nil, nil, 0, nil
+		return nil, nil, 0, nil, nil
 	}
 	searchTargets = filteredTargets
 
@@ -786,12 +798,16 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	allResults := make([]*searchResultWithMeta, 0)
+	documentSearches = make(map[string]bool)
 	// fail records one search that returned an error, or a search that
 	// could not run; calls counts every search attempted.
-	fail := func(kbIDs []string, err error) {
+	fail := func(kbIDs, docIDs []string, err error) {
 		mu.Lock()
 		defer mu.Unlock()
 		failures = append(failures, fmt.Sprintf("%v: %v", kbIDs, err))
+		for _, id := range docIDs {
+			documentSearches[id] = false
+		}
 	}
 	attempt := func() {
 		mu.Lock()
@@ -808,10 +824,19 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 		}
 		embedFallbacks[kbID] = fmt.Sprintf("query embedding failed, semantic search skipped: %v", err)
 	}
-	collect := func(rows []*types.SearchResult, usedMode string) {
+	collect := func(rows []*types.SearchResult, usedMode string, kbIDs, docIDs []string) {
 		mu.Lock()
 		defer mu.Unlock()
+		for _, id := range docIDs {
+			documentSearches[id] = true
+		}
 		for _, r := range rows {
+			// An index adapter may ignore a document filter. Associate results
+			// with the exact target that successfully returned them.
+			if r == nil || !slices.Contains(kbIDs, r.KnowledgeBaseID) ||
+				(len(docIDs) > 0 && !slices.Contains(docIDs, r.KnowledgeID)) {
+				continue
+			}
 			allResults = append(allResults, &searchResultWithMeta{
 				SearchResult:      r,
 				SourceQuery:       query,
@@ -830,11 +855,10 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 			// panic from it is contained and every target still pending in the
 			// group is reported as failed instead of ending the process.
 			defer RecoverGoroutine(ctx, "search knowledge embedding group", func() {
-				ids := make([]string, 0, len(targets))
 				for _, st := range targets {
-					ids = append(ids, st.KnowledgeBaseID)
+					attempt()
+					fail([]string{st.KnowledgeBaseID}, st.KnowledgeIDs, errSearchPanicked)
 				}
-				fail(ids, errSearchPanicked)
 			})
 
 			needsEmbedding := false
@@ -872,7 +896,7 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 			for _, st := range targets {
 				if m, _ := groupModeFor(st.KnowledgeBaseID); embedErr != nil && m == SearchModeSemantic {
 					attempt()
-					fail([]string{st.KnowledgeBaseID}, fmt.Errorf("query embedding failed: %w", embedErr))
+					fail([]string{st.KnowledgeBaseID}, st.KnowledgeIDs, fmt.Errorf("query embedding failed: %w", embedErr))
 					continue
 				}
 				if m, _ := modeFor(st.KnowledgeBaseID); embedErr != nil && m == SearchModeHybrid {
@@ -901,7 +925,7 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 				go func(usedMode string, fullKBIDs []string) {
 					defer innerWg.Done()
 					defer RecoverGoroutine(ctx, "search knowledge combined retrieval", func() {
-						fail(fullKBIDs, errSearchPanicked)
+						fail(fullKBIDs, nil, errSearchPanicked)
 					})
 					attempt()
 					kbResults, err := t.knowledgeBaseService.HybridSearch(ctx, fullKBIDs[0], types.SearchParams{
@@ -922,10 +946,10 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 					if err != nil {
 						logger.Warnf(ctx, "[Tool][SearchKnowledge] Combined search failed for KBs %v: %v",
 							fullKBIDs, err)
-						fail(fullKBIDs, err)
+						fail(fullKBIDs, nil, err)
 						return
 					}
-					collect(kbResults, usedMode)
+					collect(kbResults, usedMode, fullKBIDs, nil)
 				}(usedMode, fullKBIDs)
 			}
 
@@ -935,7 +959,7 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 				go func() {
 					defer innerWg.Done()
 					defer RecoverGoroutine(ctx, "search knowledge retrieval", func() {
-						fail([]string{st.KnowledgeBaseID}, errSearchPanicked)
+						fail([]string{st.KnowledgeBaseID}, st.KnowledgeIDs, errSearchPanicked)
 					})
 					attempt()
 					usedMode, _ := groupModeFor(st.KnowledgeBaseID)
@@ -959,17 +983,17 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 					})
 					if err != nil {
 						logger.Warnf(ctx, "[Tool][SearchKnowledge] Failed to search KB %s: %v", st.KnowledgeBaseID, err)
-						fail([]string{st.KnowledgeBaseID}, err)
+						fail([]string{st.KnowledgeBaseID}, st.KnowledgeIDs, err)
 						return
 					}
-					collect(kbResults, usedMode)
+					collect(kbResults, usedMode, []string{st.KnowledgeBaseID}, st.KnowledgeIDs)
 				}()
 			}
 			innerWg.Wait()
 		}(modelKey, targets)
 	}
 	wg.Wait()
-	return allResults, failures, calls, embedFallbacks
+	return allResults, failures, calls, embedFallbacks, documentSearches
 }
 
 // rerankResults scores all search results (including FAQ entries) with the
@@ -1055,81 +1079,6 @@ func (t *SearchKnowledgeTool) rerankThreshold() float64 {
 		return t.config.Conversation.RerankThreshold
 	}
 	return reranking.DefaultThreshold
-}
-
-// deduplicateResults removes duplicate chunks. Uses the chunk ID, the
-// document position of text chunks and a content signature for near-duplicate
-// detection, and returns the survivors best score first.
-//
-// Rows are visited best score first (stable), so of two duplicates the
-// better-scored one survives rather than whichever search returned first.
-// Sibling chunks under one parent are distinct text and are kept: keying on
-// the parent dropped the child that held the answer whenever a sibling
-// arrived first. The document-position key applies to text chunks only;
-// image and FAQ chunks all carry chunk_index 0, so it collapsed every image
-// chunk of a document, and the document's first text chunk, into one row.
-func (t *SearchKnowledgeTool) deduplicateResults(results []*searchResultWithMeta) []*searchResultWithMeta {
-	return t.deduplicateResultsWithImageCandidates(results, false)
-}
-
-// Image vectors and captions can have identical text but must be judged
-// independently. Only collapse their text copies after reranking.
-func (t *SearchKnowledgeTool) deduplicateResultsForRerank(results []*searchResultWithMeta) []*searchResultWithMeta {
-	return t.deduplicateResultsWithImageCandidates(results, true)
-}
-
-func (t *SearchKnowledgeTool) deduplicateResultsWithImageCandidates(
-	results []*searchResultWithMeta, beforeRerank bool,
-) []*searchResultWithMeta {
-	seen := make(map[string]bool)
-	contentSig := make(map[string]*searchResultWithMeta)
-	uniqueResults := make([]*searchResultWithMeta, 0, len(results))
-
-	ordered := make([]*searchResultWithMeta, 0, len(results))
-	for _, r := range results {
-		if r != nil && r.SearchResult != nil {
-			ordered = append(ordered, r)
-		}
-	}
-	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Score > ordered[j].Score })
-
-	for _, r := range ordered {
-		keys := []string{r.ID}
-		isText := r.ChunkType == "" || r.ChunkType == string(types.ChunkTypeText)
-		if r.KnowledgeID != "" && isText {
-			keys = append(keys, fmt.Sprintf("kb:%s#%d", r.KnowledgeID, r.ChunkIndex))
-		}
-		dup := false
-		for _, k := range keys {
-			if seen[k] {
-				dup = true
-				break
-			}
-		}
-		if dup {
-			continue
-		}
-		sig := searchutil.BuildContentSignature(r.Content)
-		if beforeRerank && searchutil.IsImageEvidence(r.SearchResult) {
-			// Exact chunk-ID dedup above still applies. Distinct image hits
-			// must not collapse even when their captions are identical.
-			sig = ""
-		}
-		if sig != "" {
-			if kept, ok := contentSig[sig]; ok {
-				// An image hit and its caption hit read the same once merged;
-				// the image goes with whichever copy stays.
-				searchutil.InheritImageEvidence(kept.SearchResult, r.SearchResult)
-				continue
-			}
-			contentSig[sig] = r
-		}
-		for _, k := range keys {
-			seen[k] = true
-		}
-		uniqueResults = append(uniqueResults, r)
-	}
-	return uniqueResults
 }
 
 // writeKnowledgeMetadataHeader emits document-scoped metadata once per
@@ -1270,8 +1219,6 @@ func (t *SearchKnowledgeTool) formatOutput(
 		if isFAQ {
 			writeFAQFieldsXML(&ob, faqMeta)
 		}
-		fmt.Fprintf(&ob, "</%s>\n", tag)
-
 		row := map[string]interface{}{
 			"result_index":        i + 1,
 			"content":             result.Content,
@@ -1301,29 +1248,26 @@ func (t *SearchKnowledgeTool) formatOutput(
 				row["faq_answers"] = faqMeta.Answers
 			}
 		} else {
-			row["chunk_id"] = result.ID
-			row["chunk_index"] = result.ChunkIndex
-			// Preserve the retrieved chunk identity exactly as read_document does.
-			// A page projection must be checked against this actual revision and
-			// source span, rather than treating omitted metadata as revision zero.
-			row["content_revision"] = result.ContentRevision
-			row["start_at"] = result.StartAt
-			row["end_at"] = result.EndAt
-			row["parent_chunk_id"] = result.ParentChunkID
-			if len(result.SourceLocators) > 0 {
-				row["source_locators"] = result.SourceLocators
+			appendSearchSourceIdentity(row, result.SearchResult)
+			if len(result.Origins) > 0 {
+				origins := make([]map[string]any, 0, len(result.Origins))
+				for _, origin := range result.Origins {
+					item := map[string]any{
+						"knowledge_id":      origin.KnowledgeID,
+						"knowledge_base_id": origin.KnowledgeBaseID,
+						"knowledge_title":   origin.KnowledgeTitle,
+					}
+					appendSearchSourceIdentity(item, origin.SearchResult)
+					if origin.navigationOnly || !verifiedSearchOrigin(origin.SearchResult) {
+						item["navigation_only"] = true
+					}
+					origins = append(origins, item)
+				}
+				row["origins"] = origins
+				appendSearchOriginLocations(&ob, origins)
 			}
-			if result.ContentRewritten {
-				row["content_rewritten"] = true
-			}
-			// SearchResult.Content is the complete indexed chunk body (not the
-			// match snippet). Make that exact source span explicit so later
-			// citation review can reconcile it with read_document(offset=0).
-			row["content_offset"] = 0
-			row["content_offset_space"] = "chunk_unicode_runes"
-			row["content_complete"] = true
-			appendSearchChunkProjection(row, result.SearchResult)
 		}
+		fmt.Fprintf(&ob, "</%s>\n", tag)
 		formattedResults = append(formattedResults, row)
 	}
 	ob.WriteString("</search_results>")

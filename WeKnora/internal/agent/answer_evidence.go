@@ -38,8 +38,9 @@ func (e *AgentEngine) answerNumericEvidence(answer string, steps []types.AgentSt
 						continue
 					}
 					kept := []map[string]any{}
-					for _, row := range rows {
+					for _, row := range citationResultRows(rows) {
 						if agenttools.IsCurrentDocumentSearchChunk(e.toolRegistry, call.Result, citationString(row["knowledge_id"])) {
+							delete(row, "origins")
 							kept = append(kept, row)
 						}
 					}

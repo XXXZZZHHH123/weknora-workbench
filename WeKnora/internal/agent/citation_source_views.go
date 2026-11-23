@@ -9,12 +9,31 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
 type citationSourceView struct {
-	row  map[string]any
-	data map[string]any
+	row    map[string]any
+	data   map[string]any
+	result *types.ToolResult
+	tool   string
+}
+
+func (view citationSourceView) currentDocumentScope(registry *agenttools.ToolRegistry) bool {
+	return documentCitationRowInScope(registry, view.tool, view.result, view.row)
+}
+
+func documentCitationRowInScope(registry *agenttools.ToolRegistry, tool string, result *types.ToolResult, row map[string]any) bool {
+	// The turn binding check supplements the existing evidence checks only
+	// when the native document boundary is installed.
+	if !agenttools.HasDocumentScope(registry) {
+		return true
+	}
+	if tool == agenttools.ToolSearchKnowledge {
+		return agenttools.IsCurrentDocumentSearchChunk(registry, result, citationString(row["knowledge_id"]))
+	}
+	return agenttools.IsCurrentDocumentRead(registry, result)
 }
 
 // A partial presentation is compatible only with a full body actually read

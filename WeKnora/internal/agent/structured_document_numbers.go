@@ -20,7 +20,11 @@ type fetchedDocumentChunk struct {
 	KnowledgeID string `json:"knowledge_id"`
 	Content     string `json:"content"`
 	body        string // Exact returned body, before attached captions/OCR.
-	Images      []struct {
+	Origins     []struct {
+		ID             string `json:"chunk_id"`
+		NavigationOnly bool   `json:"navigation_only"`
+	} `json:"origins,omitempty"`
+	Images []struct {
 		URL     string `json:"url"`
 		Caption string `json:"caption"`
 		OCRText string `json:"ocr_text"`
@@ -85,6 +89,14 @@ func scopedCitedDocumentNumbers(answer string, steps []types.AgentStep) []float6
 			}
 			texts := []string{}
 			for _, chunk := range fetchedDocumentChunks(call) {
+				for _, origin := range chunk.Origins {
+					if origin.NavigationOnly || !cited[origin.ID] || conflicts[origin.ID] {
+						continue
+					}
+					if ref := canonical[origin.ID]; ref != nil && ref.Content == chunk.body {
+						texts = append(texts, ref.Content)
+					}
+				}
 				if chunk.ID == "" || !cited[chunk.ID] || conflicts[chunk.ID] || strings.TrimSpace(chunk.Content) == "" {
 					continue
 				}

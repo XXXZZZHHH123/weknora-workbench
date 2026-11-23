@@ -40,7 +40,7 @@ func (r *sourceRegistry) ModelOutput(result *types.ToolResult) string {
 		return r.modelWebFetchOutput(mapsValue(result.Data["results"]), result.Output)
 	}
 	if !result.Success {
-		return failedToolModelText(result.Output, result.Error)
+		return r.appendDocumentSearchCoverage(failedToolModelText(result.Output, result.Error), result.Data)
 	}
 	switch displayType {
 	case "grep_results":
@@ -56,7 +56,7 @@ func (r *sourceRegistry) ModelOutput(result *types.ToolResult) string {
 		if scope := r.documentScopeFooter(result.Data); scope != "" && strings.HasSuffix(output, "</retrieval>") {
 			output = strings.TrimSuffix(output, "</retrieval>") + scope + "</retrieval>"
 		}
-		return annotateSearchNotes(r.annotateModeFallbacks(output, result.Data), result.Data)
+		return r.appendDocumentSearchCoverage(annotateSearchNotes(r.annotateModeFallbacks(output, result.Data), result.Data), result.Data)
 	case "knowledge_chunks_list":
 		output := r.modelKnowledgeChunksOutput(result.Data, result.Output)
 		if scope, ok := result.Data["query_scope"].(map[string]any); ok {
@@ -80,6 +80,24 @@ func (r *sourceRegistry) ModelOutput(result *types.ToolResult) string {
 		r.registerStructuredReferences(result.Output)
 		return r.CompactKnownText(result.Output)
 	}
+}
+
+func (r *sourceRegistry) appendDocumentSearchCoverage(output string, data map[string]any) string {
+	rows := mapsValue(data["document_coverage"])
+	if len(rows) == 0 {
+		return output
+	}
+	var b strings.Builder
+	b.WriteString("\n<document_search_coverage>\n")
+	for _, row := range rows {
+		doc := r.RegisterDocument(stringValue(row, "knowledge_id"))
+		if doc == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "  <source doc=\"%s\" status=\"%s\" />\n", escapeAttr(doc), escapeAttr(stringValue(row, "status")))
+	}
+	b.WriteString("</document_search_coverage>")
+	return output + b.String()
 }
 
 // Keep protocol observations visible after every actual source projection,
@@ -357,6 +375,12 @@ func modelDocumentNavigationOutput(row map[string]interface{}, remaining *int) s
 	return b.String()
 }
 
+type modelSearchOrigin struct {
+	doc, chunk, kb, title string
+	pages                 []int
+	navigationOnly        bool
+}
+
 type modelChunk struct {
 	handle               string
 	docHandle            string
@@ -383,6 +407,7 @@ type modelChunk struct {
 	contentOffsetSpace   string
 	page                 int
 	sourceLocators       []map[string]interface{}
+	origins              []modelSearchOrigin
 }
 
 func (r *sourceRegistry) modelKnowledgeOutput(mode string, rows []map[string]interface{}, fallback string) string {
@@ -448,6 +473,7 @@ func (r *sourceRegistry) modelChunksFromRows(mode string, rows []map[string]inte
 			answers:              stringSliceValue(row["faq_answers"]),
 			images:               mapsValue(row["images"]),
 			sourceLocators:       sourceLocatorMaps(row["source_locators"]),
+			origins:              r.modelSearchOrigins(row["origins"]),
 			docRealID:            knowledgeID,
 			kbRealID:             kbID,
 			chunkReal:            chunkID,
@@ -455,6 +481,46 @@ func (r *sourceRegistry) modelChunksFromRows(mode string, rows []map[string]inte
 		})
 	}
 	return chunks
+}
+
+func (r *sourceRegistry) modelSearchOrigins(value any) []modelSearchOrigin {
+	var origins []modelSearchOrigin
+	for _, row := range mapsValue(value) {
+		docID, kbID := stringValue(row, "knowledge_id"), stringValue(row, "knowledge_base_id")
+		if docID == "" || kbID == "" {
+			continue
+		}
+		origin := modelSearchOrigin{
+			doc: r.RegisterDocument(docID), kb: r.RegisterKnowledgeBase(kbID),
+			title: stringValue(row, "knowledge_title"), navigationOnly: boolValue(row, "navigation_only"),
+		}
+		if !origin.navigationOnly {
+			origin.chunk = r.RegisterChunk(ChunkReference{
+				ChunkID: stringValue(row, "chunk_id"), KnowledgeID: docID, KnowledgeBaseID: kbID,
+				DocumentTitle: origin.title, ChunkIndex: intValue(row, "chunk_index"), ChunkType: stringValue(row, "chunk_type"),
+			})
+		}
+		pages := make(map[int]bool)
+		for _, locator := range sourceLocatorMaps(row["source_locators"]) {
+			if stringValue(locator, "mapping") != "exact" {
+				continue
+			}
+			page := 0
+			switch stringValue(locator, "type") {
+			case string(types.SourceLocatorPDF):
+				page = intValue(locator, "page")
+			case string(types.SourceLocatorSlide):
+				page = intValue(locator, "slide")
+			}
+			if page > 0 && !pages[page] {
+				origin.pages = append(origin.pages, page)
+				pages[page] = true
+			}
+		}
+		sort.Ints(origin.pages)
+		origins = append(origins, origin)
+	}
+	return origins
 }
 
 const (
@@ -1165,6 +1231,20 @@ func renderKnowledgeChunks(mode string, chunks []modelChunk, info map[string]int
 			if summary, exists := locatorProjection.summaries[chunk.inputOrder]; exists {
 				writeSourceLocatorSummary(&b, summary)
 			}
+			for _, origin := range chunk.origins {
+				fmt.Fprintf(&b, "      <same_text_origin doc=\"%s\" kb=\"%s\" title=\"%s\"", origin.doc, origin.kb, escapeAttr(origin.title))
+				if origin.chunk != "" {
+					fmt.Fprintf(&b, " chunk=\"%s\"", origin.chunk)
+				}
+				if len(origin.pages) > 0 {
+					fmt.Fprintf(&b, " physical_pages=\"%s\"", strings.Trim(fmt.Sprint(origin.pages), "[]"))
+				}
+				if origin.navigationOnly {
+					b.WriteString(" navigation_only=\"true\"")
+				}
+				b.WriteString(" />\n")
+			}
+
 			for _, answer := range chunk.answers {
 				fmt.Fprintf(&b, "      <answer>%s</answer>\n", escapeText(answer))
 			}

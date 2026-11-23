@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"strings"
 	"unicode/utf8"
 
@@ -388,6 +389,43 @@ func uniqueCandidateCitationIDs(answer string) []string {
 	return ids
 }
 
+// Search groups equal text for display. Each verified origin still has its
+// own durable identity and source view. Navigation-only entries do not earn
+// citation eligibility, and no location or image is copied from the primary.
+func citationRowsWithSearchOrigins(row map[string]any) []map[string]any {
+	rows := []map[string]any{row}
+	origins, _ := row["origins"].([]any)
+	content, _ := row["content"].(string)
+	if content == "" {
+		return rows
+	}
+	for _, item := range origins {
+		origin, _ := item.(map[string]any)
+		if !verifiedCitationSearchOrigin(origin) {
+			continue
+		}
+		view := maps.Clone(origin)
+		view["content"] = content
+		rows = append(rows, view)
+	}
+	return rows
+}
+
+func citationResultRows(batch []map[string]any) []map[string]any {
+	rows := make([]map[string]any, 0, len(batch))
+	for _, row := range batch {
+		rows = append(rows, citationRowsWithSearchOrigins(row)...)
+	}
+	return rows
+}
+
+func verifiedCitationSearchOrigin(origin map[string]any) bool {
+	_, revisionKnown := citationViewRevision(origin["content_revision"])
+	return origin["navigation_only"] != true && citationViewIsFull(citationSourceView{row: origin}) && revisionKnown &&
+		citationString(origin["chunk_id"]) != "" && citationString(origin["knowledge_id"]) != "" &&
+		citationString(origin["knowledge_base_id"]) != ""
+}
+
 func citationChunksFromMessages(messages []chat.Message) (map[string]citationReviewChunk, map[string]bool) {
 	records := map[string]citationReviewChunk{}
 	conflicts := map[string]bool{}
@@ -414,43 +452,45 @@ func citationChunksFromMessages(messages []chat.Message) (map[string]citationRev
 				if !ok {
 					continue
 				}
-				id, _ := chunk["chunk_id"].(string)
-				knowledgeID, _ := chunk["knowledge_id"].(string)
-				content, contentOK := chunk["content"].(string)
-				if id == "" || knowledgeID == "" || !contentOK {
-					continue
-				}
-				doc := citationDocumentMetadata(data, knowledgeID)
-				item := citationReviewChunk{
-					tool: message.Name, toolCallID: message.ToolCallID, evidenceID: reviewEvidenceID(message),
-					jsonPointer: fmt.Sprintf("%s/%s/%d/content", pointerPrefix, field, index),
-					chunk:       citationChunkMetadata(chunk, content), document: doc, sourceScope: citationSourceScope(data),
-					chunkID: id, knowledgeID: knowledgeID, content: content, contentKnown: true,
-					sourceView: citationSourceView{row: chunk, data: data},
-				}
-				observations[id] = append(observations[id], item)
-				if conflicts[id] {
-					continue
-				}
-				if prior, exists := records[id]; exists {
-					if prior.knowledgeID != item.knowledgeID || prior.content != item.content || citationMapString(prior.chunk, "content_offset") != citationMapString(item.chunk, "content_offset") {
-						delete(records, id)
-						conflicts[id] = true
-					} else {
-						// The same body can be fetched through different scopes (for
-						// example a search and then an exact physical-page read).
-						// Preserve those real observations independently; never let
-						// the first search erase a later page/coverage observation.
-						if len(prior.additionalObservations) < 7 {
-							prior.additionalObservations = append(prior.additionalObservations, item)
-						} else {
-							prior.observationsOmitted++
-						}
-						records[id] = prior
+				for _, chunk := range citationRowsWithSearchOrigins(chunk) {
+					id, _ := chunk["chunk_id"].(string)
+					knowledgeID, _ := chunk["knowledge_id"].(string)
+					content, contentOK := chunk["content"].(string)
+					if id == "" || knowledgeID == "" || !contentOK {
+						continue
 					}
-					continue // Body once, actual scope observations separately.
+					doc := citationDocumentMetadata(data, knowledgeID)
+					item := citationReviewChunk{
+						tool: message.Name, toolCallID: message.ToolCallID, evidenceID: reviewEvidenceID(message),
+						jsonPointer: fmt.Sprintf("%s/%s/%d/content", pointerPrefix, field, index),
+						chunk:       citationChunkMetadata(chunk, content), document: doc, sourceScope: citationSourceScope(data),
+						chunkID: id, knowledgeID: knowledgeID, content: content, contentKnown: true,
+						sourceView: citationSourceView{row: chunk, data: data},
+					}
+					observations[id] = append(observations[id], item)
+					if conflicts[id] {
+						continue
+					}
+					if prior, exists := records[id]; exists {
+						if prior.knowledgeID != item.knowledgeID || prior.content != item.content || citationMapString(prior.chunk, "content_offset") != citationMapString(item.chunk, "content_offset") {
+							delete(records, id)
+							conflicts[id] = true
+						} else {
+							// The same body can be fetched through different scopes (for
+							// example a search and then an exact physical-page read).
+							// Preserve those real observations independently; never let
+							// the first search erase a later page/coverage observation.
+							if len(prior.additionalObservations) < 7 {
+								prior.additionalObservations = append(prior.additionalObservations, item)
+							} else {
+								prior.observationsOmitted++
+							}
+							records[id] = prior
+						}
+						continue // Body once, actual scope observations separately.
+					}
+					records[id] = item
 				}
-				records[id] = item
 			}
 		}
 	}

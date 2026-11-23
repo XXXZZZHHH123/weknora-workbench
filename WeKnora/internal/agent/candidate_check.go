@@ -64,18 +64,19 @@ type turnReviewState struct {
 	// Latest numerically grounded semantic fallback, or a source-reviewed
 	// numeric-warning delivery. The latter retains the exact checked envelope
 	// separately from its deterministic decoded presentation.
-	UnverifiedCandidate        string
-	UnverifiedCheckedCandidate string
-	UnverifiedUserNotice       string
-	UnverifiedDecision         candidateDecision
-	NumericWarningAllowed      bool
-	UnverifiedCitationDelivery *unverifiedCitationDeliveryBinding
-	NumericUnverifiedDecision  candidateDecision
-	NumericUnverifiedDelivery  *numericUnverifiedDeliveryBinding
-	CitationUnverifiedDelivery *citationUnverifiedDeliveryBinding
-	StructuredResultReview     *structuredResultReviewTurn
-	DiscoveryReview            *discoveryDeliveryReviewTurn
-	FinalCoverageReadAttempted bool
+	UnverifiedCandidate          string
+	UnverifiedCheckedCandidate   string
+	UnverifiedUserNotice         string
+	UnverifiedDecision           candidateDecision
+	NumericWarningAllowed        bool
+	UnverifiedCitationDelivery   *unverifiedCitationDeliveryBinding
+	NumericUnverifiedDecision    candidateDecision
+	NumericUnverifiedDelivery    *numericUnverifiedDeliveryBinding
+	CitationUnverifiedDelivery   *citationUnverifiedDeliveryBinding
+	StructuredResultReview       *structuredResultReviewTurn
+	DiscoveryReview              *discoveryDeliveryReviewTurn
+	DocumentCoverageRecoveryUsed bool
+	FinalCoverageReadAttempted   bool
 }
 
 // Preserve the existing two numeric and two semantic repair allowances while

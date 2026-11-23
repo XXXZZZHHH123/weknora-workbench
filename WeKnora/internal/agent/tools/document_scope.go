@@ -79,6 +79,7 @@ const documentScopePlanSchema = `{"type":"object","additionalProperties":false,"
 
 type RequestedDocumentConstraint struct {
 	mu           sync.RWMutex
+	byDocument   bool
 	sources      map[string]DocumentSourceSelection
 	order        []string
 	userMessages []string
@@ -87,6 +88,58 @@ type RequestedDocumentConstraint struct {
 
 func NewDocumentScopeState(userMessages ...string) *RequestedDocumentConstraint {
 	return &RequestedDocumentConstraint{userMessages: append([]string(nil), userMessages...), userPages: map[string]*DocumentPageConstraint{}}
+}
+
+// SetDocumentCoveragePolicy changes retrieval presentation, independently of
+// the validated source binding and user page restrictions.
+func SetDocumentCoveragePolicy(registry *ToolRegistry, enabled bool) {
+	state := registeredDocumentScope(registry)
+	if state != nil {
+		state.mu.Lock()
+		state.byDocument = enabled
+		state.mu.Unlock()
+	}
+}
+
+func (r *RequestedDocumentConstraint) ByDocument() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.byDocument
+}
+
+// BoundDocumentSelections snapshots the currently validated scope in plan
+// order. Discovery candidates and a model's unexecuted plans never enter it.
+func BoundDocumentSelections(registry *ToolRegistry) []DocumentSourceSelection {
+	state := registeredDocumentScope(registry)
+	if state == nil {
+		return nil
+	}
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	rows := make([]DocumentSourceSelection, 0, len(state.order))
+	for _, id := range state.order {
+		rows = append(rows, cloneDocumentSelection(state.sources[id]))
+	}
+	return rows
+}
+
+// HasDocumentScope reports whether a native turn boundary was installed.
+func HasDocumentScope(registry *ToolRegistry) bool {
+	return registeredDocumentScope(registry) != nil
+}
+
+func registeredDocumentScope(registry *ToolRegistry) *RequestedDocumentConstraint {
+	if registry == nil {
+		return nil
+	}
+	tool, err := registry.GetTool(ToolBindDocumentScope)
+	if binder, ok := tool.(*bindDocumentScopeTool); err == nil && ok {
+		return binder.state
+	}
+	return nil
 }
 
 // IsCurrentDocumentRead checks a previously executed read against the current
@@ -442,14 +495,20 @@ func (t *SearchKnowledgeTool) documentCandidates(ctx context.Context, results []
 	sourceHashes := map[string]string{}
 	documents := []map[string]any{}
 	navigationBudget := 6000
+	var hits []*types.SearchResult
 	for _, result := range results {
-		if result == nil || result.SearchResult == nil {
-			continue
+		if result != nil && result.SearchResult != nil {
+			hits = append(hits, result.SearchResult)
+			for _, origin := range result.Origins {
+				hits = append(hits, origin.SearchResult)
+			}
 		}
+	}
+	for _, result := range hits {
 		document, exists := seen[result.KnowledgeID]
 		if !exists {
 			knowledge, err := authorizeKnowledgeInSearchTargets(ctx, t.searchTargets, result.KnowledgeID, t.knowledgeService)
-			if err != nil || documentIsRetired(knowledge) {
+			if err != nil || documentIsRetired(knowledge) || (result.KnowledgeBaseID != "" && knowledge.KnowledgeBaseID != result.KnowledgeBaseID) {
 				continue
 			}
 			document = documentScopeMetadata(knowledge)

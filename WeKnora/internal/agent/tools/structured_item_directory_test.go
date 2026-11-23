@@ -189,6 +189,46 @@ func TestStructuredSeriesBriefKeepsReviewSheetsAndDeclaredUnitOrigin(t *testing.
 	require.Equal(t, before, after)
 }
 
+func TestStructuredSeriesBriefKeepsDefinitionsAndValidObservationDates(t *testing.T) {
+	const budget = 2200
+	result := wideItemCatalog(t, "list_series", 2, 0, 2)
+	rows := result.Data["series"].([]map[string]any)
+	rows[0] = map[string]any{
+		"series_id": "combined-inventory", "metric": "库存", "source_metric": "两处仓库合计库存",
+		"sheet": "库存表", "dimensions": map[string]any{"warehouse": "合计"},
+		"unit": "吨", "unit_status": "explicit", "last_date": "2025-08-01", "last_valid_date": "2025-06-01",
+		"description": "北仓和南仓合计", "header_cells": []string{"G4"},
+	}
+	rows[1] = map[string]any{
+		"series_id": "one-warehouse", "metric": "库存", "source_metric": "北仓库存",
+		"sheet": "库存表", "dimensions": map[string]any{"warehouse": "北仓"},
+		"unit": nil, "unit_status": "needs_review", "last_date": "2025-08-01", "last_valid_date": "2025-05-01",
+		"description": strings.Repeat("详细口径说明", 500), "header_cells": []string{"C4", "C5"},
+	}
+	before, err := json.Marshal(result.Data)
+	require.NoError(t, err)
+	result.Output = string(before)
+	projected := fitStructuredDirectory(WithOutputBudget(t.Context(), budget), "list_series", result)
+	view := structuredDirectoryView(t, projected, budget)
+	visible := structuredRecallRows(view["series"])
+	require.Len(t, visible, 2)
+	require.Equal(t, "两处仓库合计库存", visible[0]["source_metric"])
+	require.Equal(t, "北仓和南仓合计", visible[0]["description"])
+	require.Equal(t, "2025-06-01", visible[0]["last_valid_date"])
+	require.Equal(t, "吨", visible[0]["unit"])
+	require.Equal(t, "explicit", visible[0]["unit_status"])
+	require.Equal(t, map[string]any{"warehouse": "北仓"}, visible[1]["dimensions"])
+	require.Equal(t, []any{"C4", "C5"}, visible[1]["header_cells"])
+	require.Equal(t, "2025-05-01", visible[1]["last_valid_date"])
+	require.Equal(t, "needs_review", visible[1]["unit_status"])
+	require.Equal(t, "2025-08-01", visible[1]["last_date"])
+	require.Nil(t, visible[1]["unit"])
+	require.NotContains(t, visible[1], "description")
+	after, err := json.Marshal(projected.Data)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+}
+
 func TestStructuredItemDirectoryCannotCutAnOversizedIdentity(t *testing.T) {
 	original := wideItemCatalog(t, "list_series", 1, 5, 9)
 	rows := structuredRecallRows(original.Data["series"])

@@ -230,9 +230,9 @@ func currentCitationSourceViews(state *types.AgentState) map[string][]citationSo
 				if json.Unmarshal(raw, &batch) != nil {
 					continue
 				}
-				for _, row := range batch {
+				for _, row := range citationResultRows(batch) {
 					if id := citationString(row["chunk_id"]); id != "" {
-						views[id] = append(views[id], citationSourceView{row: row, data: call.Result.Data})
+						views[id] = append(views[id], citationSourceView{row: row, data: call.Result.Data, result: call.Result, tool: call.ExecutionName()})
 					}
 				}
 			}

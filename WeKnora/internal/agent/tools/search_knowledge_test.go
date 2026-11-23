@@ -181,7 +181,7 @@ func TestDeduplicateResultsKeepsFirstOccurrenceInOrder(t *testing.T) {
 	tool := &SearchKnowledgeTool{}
 	in := []*searchResultWithMeta{
 		{SearchResult: &types.SearchResult{ID: "c1", KnowledgeID: "d1", ChunkIndex: 0, Content: "alpha", Score: 0.9}},
-		// same document + index as c1
+		// same document + index as c1, with different text
 		{SearchResult: &types.SearchResult{ID: "c2", KnowledgeID: "d1", ChunkIndex: 0, Content: "other", Score: 0.8}},
 		// same content as c1
 		{SearchResult: &types.SearchResult{ID: "c3", KnowledgeID: "d2", ChunkIndex: 1, Content: "alpha", Score: 0.7}},
@@ -189,12 +189,12 @@ func TestDeduplicateResultsKeepsFirstOccurrenceInOrder(t *testing.T) {
 		nil,
 	}
 	out := tool.deduplicateResults(in)
-	if len(out) != 2 || out[0].ID != "c1" || out[1].ID != "c4" {
+	if len(out) != 3 || out[0].ID != "c1" || out[1].ID != "c2" || out[2].ID != "c4" {
 		ids := make([]string, 0, len(out))
 		for _, r := range out {
 			ids = append(ids, r.ID)
 		}
-		t.Fatalf("deduplicateResults = %v, want [c1 c4]", ids)
+		t.Fatalf("deduplicateResults = %v, want [c1 c2 c4]", ids)
 	}
 }
 
@@ -315,7 +315,8 @@ func TestFormatWithinBudgetDropsLowestRankedRows(t *testing.T) {
 	}
 	ctx := WithOutputBudget(context.Background(), 5000)
 
-	res, omitted := tool.formatWithinBudget(ctx, results, []string{"kb-1"}, "q", SearchModeHybrid)
+	res, shown := tool.formatWithinBudget(ctx, results, []string{"kb-1"}, "q", SearchModeHybrid, false)
+	omitted := len(results) - len(shown)
 	rows, _ := res.Data["results"].([]map[string]interface{})
 	if omitted == 0 || len(rows)+omitted != 10 {
 		t.Fatalf("rows=%d omitted=%d", len(rows), omitted)
@@ -328,9 +329,9 @@ func TestFormatWithinBudgetDropsLowestRankedRows(t *testing.T) {
 	}
 
 	// A single row is always kept, even over budget.
-	single, omittedSingle := tool.formatWithinBudget(ctx, results[:1], []string{"kb-1"}, "q", SearchModeHybrid)
-	if omittedSingle != 0 || single.Data["count"] != 1 {
-		t.Fatalf("single row dropped: omitted=%d count=%v", omittedSingle, single.Data["count"])
+	single, shownSingle := tool.formatWithinBudget(ctx, results[:1], []string{"kb-1"}, "q", SearchModeHybrid, false)
+	if len(shownSingle) != 1 || single.Data["count"] != 1 {
+		t.Fatalf("single row dropped: kept=%d count=%v", len(shownSingle), single.Data["count"])
 	}
 }
 

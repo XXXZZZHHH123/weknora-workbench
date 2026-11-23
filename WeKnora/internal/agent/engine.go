@@ -522,6 +522,7 @@ func (e *AgentEngine) Execute(
 	if e.config.WorkbenchDefault {
 		systemPrompt += "\n" + workbenchTaskScopeInstructions
 		systemPrompt += "\n" + documentVisualReadInstructions
+		systemPrompt += "\n" + documentComparisonGuidance
 	}
 	logger.Debugf(ctx, "[Agent] SystemPrompt: %d chars", len(systemPrompt))
 

@@ -17,6 +17,18 @@ type taskCoverageTarget struct {
 	RequestBasis string `json:"request_basis"`
 	Criteria     string `json:"criteria"`
 	SourceScope  string `json:"source_scope"`
+	ByDocument   bool   `json:"by_document,omitempty"`
+}
+
+func (e *AgentEngine) plansCoverageByDocument() bool {
+	if e.taskPlan != nil {
+		for _, target := range e.taskPlan.CoverageTargets {
+			if target.ByDocument {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func validateTaskCoverageTargets(plan *taskEvidencePlan) error {
@@ -111,6 +123,13 @@ func (e *AgentEngine) taskCoverageReview(state *types.AgentState) map[string]any
 	}
 	view["successful_calls"], view["failed_calls"] = successful, failed
 	view["omitted_calls"], view["projection_complete"] = omitted, omitted == 0
+	if coverage := e.documentCoverage(state); coverage != nil {
+		view["document_coverage"] = coverage
+		if sourceReviewProjectionSize(view) > taskCoverageReviewBudget {
+			delete(view, "document_coverage")
+			view["document_coverage_omitted"] = true
+		}
+	}
 	return view
 }
 

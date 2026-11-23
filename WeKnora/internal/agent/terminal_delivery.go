@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+
 	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -82,6 +83,14 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 				answer, outcome, markedNumbers = delivery, "numeric_unverified", marked
 				existingID, truncated = "", false
 			}
+		}
+	}
+	// A runtime fallback has no approved candidate text. Preserve the actual
+	// missing source access when the remaining synthesis could not finish.
+	if terminalCandidateFallback(answer) && e.standardPreliminaryProse() {
+		if gaps := e.documentCoverage(state).gapNotice(); gaps != "" {
+			answer += "\n\n" + gaps
+			existingID = ""
 		}
 	}
 	id := e.publishAnswer(ctx, sessionID, answer, existingID, truncated)

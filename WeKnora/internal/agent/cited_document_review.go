@@ -35,7 +35,10 @@ func (e *AgentEngine) currentCitedDocumentReviewEvidence(candidate string, state
 				if err != nil || json.Unmarshal(raw, &rows) != nil {
 					continue
 				}
-				for _, row := range rows {
+				for _, row := range citationResultRows(rows) {
+					if !documentCitationRowInScope(e.toolRegistry, call.ExecutionName(), call.Result, row) {
+						continue
+					}
 					views[citationString(row["chunk_id"])] = append(views[citationString(row["chunk_id"])], row)
 				}
 			}
@@ -91,8 +94,9 @@ func (e *AgentEngine) currentReadDocumentReviewEvidence(state *types.AgentState,
 				if err != nil || json.Unmarshal(raw, &rows) != nil {
 					return nil, false
 				}
-				for _, row := range rows {
-					if strings.TrimSpace(citationString(row["content"])) == "" {
+				for _, row := range citationResultRows(rows) {
+					if strings.TrimSpace(citationString(row["content"])) == "" ||
+						!documentCitationRowInScope(e.toolRegistry, call.ExecutionName(), call.Result, row) {
 						continue
 					}
 					id := citationString(row["chunk_id"])
@@ -112,7 +116,7 @@ func (e *AgentEngine) currentReadDocumentReviewEvidence(state *types.AgentState,
 					}
 					view := map[string]any{
 						"chunk_id": id, "knowledge_id": ref.KnowledgeID, "knowledge_base_id": ref.KnowledgeBaseID,
-						"document_title": ref.KnowledgeTitle, "content": row["content"], "content_revision": row["content_revision"],
+						"document_title": ref.KnowledgeTitle, "content": row["content"], "content_revision": ref.ContentRevision,
 						"source_locators": locators, "locator_quotes_omitted": true, "document_scope": call.Result.Data["document_scope"],
 						"source_identity": selectCitationFields(row, []string{"chunk_index", "chunk_type", "start_at", "end_at", "parent_chunk_id"}),
 						"source_view":     selectCitationFields(row, []string{"content_offset", "content_offset_space", "content_complete", "content_source_view", "content_rewritten"}),

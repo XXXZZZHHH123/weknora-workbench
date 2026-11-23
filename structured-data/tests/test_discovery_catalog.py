@@ -131,6 +131,74 @@ def test_metadata_revision_invalidates_index_and_new_snapshot_keeps_old_searchab
     assert discovery.search_fields(store, latest, '', search='Corrected header')[1] == 0
 
 
+@pytest.mark.parametrize('columns,filename,dates', [
+    (('combined', 'north'), 'synthetic-stock.xlsx', ['2024-01-01', '2024-02-01', '2024-03-01', '2024-04-01']),
+    (('north', 'combined'), 'reordered-ledger.xlsx', ['2025-07-01', '2025-08-01', '2025-09-01', '2025-10-01']),
+])
+def test_inventory_definitions_and_last_nonempty_observation_survive_discovery(
+        tmp_path, monkeypatch, columns, filename, dates):
+    from structured_data.source_inspection import inspect_source
+
+    store = DataStore(tmp_path / 'data')
+    definitions = {
+        'combined': ('两处仓库合计库存', '北仓和南仓合计', '吨', [12, 15, None, None]),
+        'north': ('北仓库存', '仅包含北仓', None, [4, None, None, None]),
+    }
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = '库存表'
+    sheet.append(['日期', *(definitions[column][0] for column in columns)])
+    for index, date in enumerate(dates):
+        sheet.append([date, *(definitions[column][3][index] for column in columns)])
+    source = tmp_path / filename
+    workbook.save(source)
+
+    series, observations, header_cells = [], [], {}
+    for column, identifier in enumerate(columns, start=2):
+        source_metric, description, unit, _ = definitions[identifier]
+        header = sheet.cell(1, column).coordinate
+        header_cells[identifier] = [header]
+        series.append({'series_id': identifier, 'sheet': sheet.title, 'metric': '库存',
+                       'source_metric': source_metric, 'description': description,
+                       'dimensions': {'scope': identifier}, 'header_cells': [header],
+                       'unit': unit, 'unit_status': 'explicit' if unit else 'needs_review'})
+        for row, date in enumerate(dates, start=2):
+            cell = sheet.cell(row, column)
+            observations.append({'series_id': identifier, 'date': date, 'value': cell.value,
+                                 'source_cell': cell.coordinate,
+                                 'value_status': 'valid' if cell.value is not None else 'blank'})
+    workbook.close()
+    with monkeypatch.context() as old_version:
+        old_version.setattr(discovery, 'VERSION', 'discovery-headers-v2')
+        dataset = store.publish({
+            'source_file': str(source), 'sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+            'rule_version': 'synthetic-v1', 'dataset_kind': 'business',
+            'sheets': [{'name': sheet.title, 'series_count': len(series), 'observations': len(observations)}],
+            'series': series, 'observations': observations, 'excluded_regions': [],
+        })['dataset_id']
+    path = store._path(dataset) / 'discovery.sqlite'
+    old_index = path.stat().st_ino
+    result = discovery.list_datasets(store, search='库存')
+    assert path.stat().st_ino != old_index  # A previous index is rebuilt for the current projection.
+    assert result['source_data_read'] is False
+    candidates = {field['series_id']: field for field in result['field_candidates']}
+    listed = {field['series_id']: field for field in store.list_series(dataset)['series']}
+    for identifier, expected_last in [('combined', dates[1]), ('north', dates[0])]:
+        field = candidates[identifier]
+        for key in ('description', 'source_metric', 'dimensions', 'header_cells', 'unit', 'unit_status',
+                    'last_date', 'last_valid_date'):
+            assert field[key] == listed[identifier][key]
+        assert field['source_file'] == filename
+        assert field['last_date'] == dates[-1]
+        assert field['last_valid_date'] == expected_last
+        assert field['header_cells'] == header_cells[identifier]
+        inspected = inspect_source(store, dataset, sheet=field['sheet'], ranges=field['header_cells'])
+        assert inspected['ranges'][0]['cells'][0]['value'] == field['source_metric']
+    assert candidates['north']['unit'] is None
+    assert candidates['north']['unit_status'] == 'needs_review'
+    assert candidates['combined']['unit'] == '吨'
+
+
 @pytest.mark.parametrize('question', ['?', '2026-01-01'])
 def test_question_without_searchable_header_tokens_keeps_dataset_available(tmp_path, question):
     store = DataStore(tmp_path)

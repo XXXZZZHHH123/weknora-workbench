@@ -180,48 +180,9 @@ func (s *sessionService) AgentQA(
 	logger.Infof(ctx, "Agent context window: %d tokens (model %s declares %d)",
 		agentConfig.MaxContextTokens, effectiveModelID, modelContextWindow)
 
-	// Get rerank model from custom agent config only when knowledge_search can
-	// actually run. A disabled KB scope makes all KB tools ineffective, so it
-	// must not force users to configure an otherwise-unused rerank model.
-	var rerankModel rerank.Reranker
-	if agentRequiresRerankModel(req.CustomAgent) && (!req.CustomAgent.WorkbenchDefault || req.CustomAgent.Config.RerankModelID != "") {
-		// Rerank model is resolved purely from the agent config now.
-		// We used to fall back to ConversationConfig.RerankModelID at
-		// the tenant level, but that path encouraged "leave rerank
-		// blank on the agent and inherit silently" which made debugging
-		// retrieval quality a guessing game across tenant settings vs
-		// agent settings. Forcing the agent to declare its own rerank
-		// model puts the configuration where the user actually edits
-		// the agent. If a Wiki-only agent doesn't need reranking,
-		// agentRequiresRerankModel() below already lets it pass.
-		rerankModelID := req.CustomAgent.Config.RerankModelID
-		if rerankModelID == "" && types.UsesWorkspaceModelFallback(req.CustomAgent) {
-			// Nobody can set a rerank model on an internal agent, so it takes
-			// the workspace's; search_knowledge keeps retrieval order without one.
-			models, listErr := s.modelService.ListModels(ctx)
-			if listErr != nil {
-				logger.Warnf(ctx, "Failed to list models for internal agent %s rerank fallback: %v",
-					req.CustomAgent.ID, listErr)
-			}
-			rerankModelID = pickWorkspaceRerankModelID(models)
-			if rerankModelID == "" {
-				logger.Infof(ctx, "No rerank model in the workspace, internal agent %s searches without reranking",
-					req.CustomAgent.ID)
-			}
-		} else if rerankModelID == "" {
-			logger.Warnf(ctx, "No rerank model configured for custom agent %s, but knowledge_search tool is enabled", req.CustomAgent.ID)
-			return errors.New("rerank model is not configured: please set rerank_model_id on the agent")
-		}
-
-		if rerankModelID != "" {
-			rerankModel, err = s.modelService.GetRerankModel(ctx, rerankModelID)
-			if err != nil {
-				logger.Warnf(ctx, "Failed to get rerank model: %v", err)
-				return fmt.Errorf("failed to get rerank model: %w", err)
-			}
-		}
-	} else {
-		logger.Infof(ctx, "knowledge_search is unavailable for the effective agent scope, skipping rerank model initialization")
+	rerankModel, err := s.resolveAgentRerankModel(ctx, req.CustomAgent)
+	if err != nil {
+		return err
 	}
 
 	// Load multi-turn history directly from DB (the single source of truth).
@@ -1093,4 +1054,36 @@ func targetsCoverDocument(targets types.SearchTargets, kbID, docID string) bool 
 		}
 	}
 	return false
+}
+
+// resolveAgentRerankModel only loads a model when the effective knowledge
+// scope and tools can use it. Local Workbench Quick Answer can inherit the
+// workspace's active model when its own setting is empty.
+func (s *sessionService) resolveAgentRerankModel(ctx context.Context, agent *types.CustomAgent) (rerank.Reranker, error) {
+	if !agentRequiresRerankModel(agent) {
+		return nil, nil
+	}
+	id := agent.Config.RerankModelID
+	if id == "" {
+		quickAnswer := agent.WorkbenchDefault && agent.IsBuiltin && agent.ID == types.BuiltinQuickAnswerID
+		if types.UsesWorkspaceModelFallback(agent) || quickAnswer {
+			models, err := s.modelService.ListModels(ctx)
+			if err != nil {
+				logger.Warnf(ctx, "Failed to list workspace models for agent %s: %v", agent.ID, err)
+			} else {
+				id = pickWorkspaceRerankModelID(models)
+			}
+		} else if !agent.WorkbenchDefault {
+			return nil, errors.New("rerank model is not configured: please set rerank_model_id on the agent")
+		}
+	}
+	if id == "" {
+		return nil, nil
+	}
+	model, err := s.modelService.GetRerankModel(ctx, id)
+	if err != nil {
+		logger.Warnf(ctx, "Failed to get rerank model: %v", err)
+		return nil, fmt.Errorf("无法加载用于调整检索结果顺序的模型：%w", err)
+	}
+	return model, nil
 }

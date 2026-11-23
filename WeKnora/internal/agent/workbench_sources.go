@@ -63,6 +63,7 @@ func (e *AgentEngine) discoverWorkbenchSources(ctx context.Context, state *types
 	// The real QA model plans sources from the complete conversation and
 	// authorized metadata; code validates the explicit plan before content reads.
 	agenttools.PrepareDocumentScope(e.toolRegistry, documentScopeUserTexts(query, messages)...)
+	agenttools.SetDocumentCoveragePolicy(e.toolRegistry, e.plansCoverageByDocument())
 	selection := map[string]bool(nil)
 	if len(planned) > 0 {
 		selection = planned[0]
