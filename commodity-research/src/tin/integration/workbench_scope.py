@@ -163,11 +163,13 @@ def canonical_workbench_id(value: str) -> str:
         raise HTTPException(400, "研究工作台编号无效") from None
 
 
-async def go_request(scope: WorkbenchScope, path: str, *, params=None):
+async def go_request(scope: WorkbenchScope, path: str, *, params=None, search=None):
     if not settings.weknora_api_url or not scope.authorization:
         raise HTTPException(401, "缺少已核验的主平台登录")
     if not path.startswith("/api/v1/") or "?" in path or "#" in path:
         raise ValueError("Only fixed main-platform API paths are accepted")
+    if search is not None and path != '/api/v1/knowledge-bases/' + quote(scope.knowledge_base_id, safe='') + '/hybrid-search':
+        raise ValueError("Only the bound knowledge base can be searched")
     headers={"Authorization":scope.authorization,"X-Tenant-ID":str(scope.identity.tenant_id)}
     if path.endswith('/source-scope'):
         if params: raise ValueError('Source-scope inventory does not accept query parameters')
@@ -175,8 +177,11 @@ async def go_request(scope: WorkbenchScope, path: str, *, params=None):
         headers.update(proof_headers(path,scope.authorization,scope.identity.tenant_id))
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as client:
-            response = await client.get(settings.weknora_api_url.rstrip("/") + path, params=params,
-                headers=headers)
+            url = settings.weknora_api_url.rstrip("/") + path
+            if search is None:
+                response = await client.get(url, params=params, headers=headers)
+            else:
+                response = await client.post(url, json=search, headers=headers)
         if response.status_code in {401, 403, 404}:
             raise HTTPException(response.status_code, "工作台或知识库授权已失效")
         if response.status_code==413:

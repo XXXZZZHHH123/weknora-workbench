@@ -281,6 +281,7 @@ def present_snapshot(payload, names=None, *, dimensions=None):
     result.update(_workflow_view(result, payload, names))
     from tin.web.report_one_page import present_one_page
     result.update(present_one_page(payload, result, dimensions))
+    _weekly_citations(result)
     return result
 
 
@@ -329,6 +330,7 @@ def _workflow_view(view, payload, names):
             'figures': figures, 'references': []}
     for key in ('dimension_notes', 'figure_conclusions'):
         draft[key] = deepcopy((saved or {}).get(key) or {})
+    draft['evidence_citations'] = deepcopy((saved or {}).get('evidence_citations') or [])
     from tin.web.report_charts import collect_figures
     figures_manifest = deepcopy(payload.get('report_figures')) if isinstance(payload.get('report_figures'), list) else collect_figures(payload)
     automatic = [row for row in figures_manifest if row['kind'] == 'chart']
@@ -343,6 +345,48 @@ def _workflow_view(view, payload, names):
         'figure_options': [{'series_id': row['series_id'], 'name': row['name'], 'unit': row.get('unit') or ''}
             for row in view['observations'] if row['series_id'] not in duplicated],
         'report_title': saved.get('title') if saved else None}
+
+
+def _weekly_citations(view):
+    checks = deepcopy((view.get('manual_report') or {}).get('evidence_checks') or {})
+    view['evidence_checks'] = checks
+    view['evidence_notes'] = notes = []
+    if not checks or not view['panels']['summary']['visible']:
+        return
+    from tin.integration.identity import research_prefix
+    saved = view['manual_report']['draft']
+    passages = {item['dimension_id']: item['passages'] for item in saved['evidence_citations']}
+    route = f"{research_prefix()}/api/sn/reports/{saved['date']}/weekly/evidence"
+    for row in view['dimension_overview']:
+        check = checks.get(row['id'])
+        if not check:
+            continue
+        row['citation_notice'] = check.get('notice')
+        row['citations'] = citations = []
+        if row['citation_notice']:
+            continue
+        for fact in check.get('facts') or []:
+            baseline = fact.get('baseline') or {}
+            unit = fact.get('unit') or ''
+            observations = [(baseline.get('date'), baseline.get('value')),
+                            (fact.get('date') or fact.get('latest_date'), fact.get('latest'))]
+            fields = [f'{stamp} {value} {unit}'.strip() for stamp, value in observations
+                      if stamp and value is not None]
+            note = {'title': fact.get('name') or '计算事实', 'location': '观测 ' + ' → '.join(fields),
+                    'number': len(notes) + 1}
+            citations.append(note)
+            notes.append(note)
+        for index, (source, ref) in enumerate(zip(check.get('sources') or [], passages.get(row['id'], []))):
+            note = {**source, 'number': len(notes) + 1,
+                    'read_url': f"{route}/{row['id']}/{index}?version={ref['fingerprint']}"}
+            citations.append(note)
+            notes.append(note)
+
+
+def citation_dates(note):
+    labels = ('观测日期', '发布日期', '入库时间')
+    return ' · '.join(f'{label} {note.get(field) or "未知"}'
+        for label, field in zip(labels, ('observation_date', 'published_at', 'ingested_at')))
 
 
 def _md(value):
@@ -533,6 +577,23 @@ def readable_markdown(payload, *, title='研究报告', names=None, dimensions=N
         lines.append('- ' + _md(item['name']) + ' · `' + _md(item['series_id']).replace('`', '') + '` · '
                      + _md(item.get('as_of')) + ' · ' + _md(item.get('source')))
     lines += ['', '</details>', '']
+    if any(check.get('notice') for check in view['evidence_checks'].values()):
+        lines += ['> 部分逐条引用需重新核对。', '']
+    if view['evidence_notes']:
+        from urllib.parse import quote
+        lines += ['## 逐条引用', '']
+        for note in view['evidence_notes']:
+            title = _md(note['title']).translate(str.maketrans({'[': '&#91;', ']': '&#93;', '`': '&#96;'}))
+            definition = title + ' · ' + _md(note['location'])
+            if 'content_sha256' in note:
+                definition += ' · ' + _md(citation_dates(note))
+                if note['background']:
+                    definition += ' · 背景资料'
+                if note['url']:
+                    definition += ' · [原始网页](<' + quote(note['url'], safe=':/?&=%#@+;,~._-') + '>)'
+                definition += ' · SHA-256 `' + note['content_sha256'] + '`'
+            lines.append(f"[^e{note['number']}]: {definition}")
+        lines.append('')
     return '\n'.join(lines)
 
 
@@ -546,9 +607,12 @@ def _one_page_lines(view):
             facts = '；'.join(fact.get('latest_text', fact['text']) if row.get('no_update') else fact['text']
                             for fact in row['facts'])
             changes = '；'.join(filter(None, (row.get('change_summary'), facts))) or '暂无可用本期指标'
-            lines.append('| ' + ' | '.join(_md(value) for value in (
-                row['label'], changes,
-                row['sentence'], row['impact_label'], f"支持 {row['support_count']} / 反对 {row['oppose_count']}")) + ' |')
+            sentence = _md(row['sentence'])
+            if row.get('citation_notice'):
+                sentence += '（' + _md(row['citation_notice']) + '）'
+            sentence += ''.join(f"[^e{note['number']}]" for note in row.get('citations') or [])
+            lines.append('| ' + ' | '.join((_md(row['label']), _md(changes), sentence,
+                _md(row['impact_label']), f"支持 {row['support_count']} / 反对 {row['oppose_count']}")) + ' |')
         lines.append('')
         for row in view['dimension_overview']:
             if row.get('warnings'):

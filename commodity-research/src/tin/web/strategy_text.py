@@ -158,7 +158,7 @@ def _record_completion(scope, model_id, prompt, purpose, envelope, error, elapse
                  LlmRequest(purpose=purpose, messages=(Message('user', prompt),)), response, elapsed_ms)
 
 
-async def completion(scope, model_id, prompt, *, purpose=None):
+async def completion(scope, model_id, prompt, *, purpose=None, audit_content=True):
     """One JSON object from the workbench's fixed strategy drafting route."""
     body = {'model_id': model_id, 'prompt': prompt, 'knowledge_base_id': scope.knowledge_base_id}
     if type(getattr(scope, 'sources_revision', None)) is int and scope.sources_revision > 0:
@@ -212,8 +212,10 @@ async def completion(scope, model_id, prompt, *, purpose=None):
     finally:
         if purpose:
             try:
-                await run_in_threadpool(_record_completion, scope, model_id, prompt, purpose,
-                                        envelope, failure, int((perf_counter() - started) * 1000))
+                await run_in_threadpool(_record_completion, scope, model_id,
+                    prompt if audit_content else '', purpose, envelope if audit_content else None,
+                    failure if audit_content or failure is None else '模型调用失败',
+                    int((perf_counter() - started) * 1000))
             except Exception:
                 logging.getLogger(__name__).exception('Platform model call audit could not be saved')
                 raise HTTPException(503, '模型调用审计未能保存，请稍后重试；建议未采用') from None

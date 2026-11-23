@@ -152,6 +152,7 @@ def dimension_overview(payload, dimensions=None):
     data.update((row['id'], row) for row in (payload.get('dimension_data') or {}).get('dimensions') or [])
     saved = ((payload.get('manual_report') or {}).get('draft') or {})
     notes = saved.get('dimension_notes') or {}
+    citation_checks = (payload.get('manual_report') or {}).get('evidence_checks') or {}
     day = (payload.get('period') or {}).get('end') or payload.get('as_of')
     rows = {dimension['id']: {'id': dimension['id'], 'label': dimension['label'],
         'facts': select_facts(data.get(dimension['id']) or dimension, day=day),
@@ -214,7 +215,8 @@ def dimension_overview(payload, dimensions=None):
         row['review_needed'] = row['id'] in valid and (
             (row['impact'] == 'bearish' and row['support_count'] > row['oppose_count'])
             or (row['impact'] == 'bullish' and row['oppose_count'] > row['support_count']))
-        if row['has_binding'] or row['evidence'] or row['sentence'].strip() or row['impact'] != 'undecided':
+        if (row['has_binding'] or row['evidence'] or row['sentence'].strip()
+                or row['impact'] != 'undecided' or row['id'] in citation_checks):
             output.append(row)
     return output
 

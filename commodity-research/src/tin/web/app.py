@@ -271,6 +271,8 @@ from tin.web.report_ppt import router as report_ppt_router
 app.include_router(report_ppt_router)
 from tin.web.report_dimension_drafts import router as report_dimension_drafts_router
 app.include_router(report_dimension_drafts_router)
+from tin.web.report_evidence import router as report_evidence_router
+app.include_router(report_evidence_router)
 from tin.web.affairs import router as affairs_router
 app.include_router(affairs_router)
 from tin.web.monitors import router as monitors_router

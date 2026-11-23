@@ -8,13 +8,14 @@ from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator, model_validator
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from starlette.concurrency import run_in_threadpool
 
 from tin.integration.workbench_scope import artifact_session, current_workbench
 from tin.models.workbench import WorkbenchArtifact
+from tin.web import report_evidence
 from tin.web.workbench_artifacts import artifact_query, record_revision
 
 FORMAT = 'research-report-draft.v1'
@@ -69,6 +70,16 @@ class ReportDraft(_Input):
     references: list[ReportReference] = Field(default_factory=list, max_length=8)
     dimension_notes: dict[str, DimensionNote] = Field(default_factory=dict, max_length=36)
     figure_conclusions: dict[str, str] = Field(default_factory=dict, max_length=100)
+    evidence_citations: list[report_evidence.EvidenceCitation] = Field(default_factory=list, max_length=36)
+
+    @model_validator(mode='after')
+    def citation_budget(self):
+        citations = self.evidence_citations
+        if (citations and self.period != 'weekly'
+                or len({item.dimension_id for item in citations}) != len(citations)
+                or len({ref.fingerprint for item in citations for ref in item.passages}) > report_evidence.MAX_PASSAGES):
+            raise ValueError('Evidence citations require a weekly report, unique dimensions and at most eight passages')
+        return self
 
     @field_validator('dimension_notes')
     @classmethod
@@ -219,7 +230,7 @@ def _row(session, scope, identifier):
     return row
 
 
-def serialize_report(session, scope, row, *, strict=False):
+def serialize_report(session, scope, row, *, strict=False, evidence_checks=None, project_evidence=True):
     saved = _stored(row)
     # An embedded quotation is not a permanent grant. Resolve exact revisions
     # again; unavailable quotations never enter HTML, JSON audit or exports.
@@ -247,31 +258,56 @@ def serialize_report(session, scope, row, *, strict=False):
                 raise HTTPException(409, '报告引用已不可读，请先在报告中调整引用再导出') from None
             unavailable.append({**reference, 'notice': '引用已删除、版本不可读或权限已变化'})
     saved['reference_snapshots'] = snapshots
+    result = {}
+    if saved['evidence_citations']:
+        if project_evidence:
+            checks = report_evidence.project_saved(scope, saved) if evidence_checks is None else evidence_checks
+            for identifier, check in checks.items():
+                if check.get('redact'):
+                    saved['dimension_notes'][identifier] = {'text': '', 'impact': 'undecided'}
+            result['evidence_checks'] = checks
+        else:
+            for item in saved['evidence_citations']:
+                saved['dimension_notes'].pop(item['dimension_id'], None)
     return jsonable_encoder({'id': row.id, 'revision': row.revision, 'draft': saved,
-        'updated_at': row.updated_at, 'unavailable_references': unavailable, 'can_write': scope.can_edit})
+        'updated_at': row.updated_at, 'unavailable_references': unavailable, 'can_write': scope.can_edit, **result})
 
 
-def load_report(session, scope, day, period, *, strict=False):
+def load_report(session, scope, day, period, *, strict=False, project_evidence=True):
     validate_period(day, period)
     if scope is None or scope.restricted or 'reports' not in scope.view_modules:
         return None
     row = _row(session, scope, report_id(scope, day, period))
-    return serialize_report(session, scope, row, strict=strict) if row else None
+    return serialize_report(session, scope, row, strict=strict, project_evidence=project_evidence) if row else None
 
 
-def attach_saved_report(session, scope, payload, *, strict=False):
+def attach_saved_report(session, scope, payload, *, strict=False, project_evidence=True):
     value = deepcopy(payload)
     period = value.get('period') or {'kind': 'daily', 'end': value.get('as_of')}
-    saved = load_report(session, scope, period['end'], period['kind'], strict=strict)
+    saved = load_report(session, scope, period['end'], period['kind'], strict=strict, project_evidence=project_evidence)
     if saved is not None:
         value['manual_report'] = saved
     return value
+
+
+def _check_report_facts(scope, saved, checks):
+    from tin.web.report_ppt import read_report_view
+    current = read_report_view(scope, saved['date'], saved['period'], allow_unavailable_references=True,
+                               project_evidence=False)
+    report_evidence.check_facts(checks, saved['evidence_citations'],
+                                [*current.get('editable_dimensions', []), *current['dimension_overview']])
 
 
 def save_report(scope, body, identifier=None):
     from tin.web.report_figures import validate_selection
     day = validate_period(body.draft.date, body.draft.period)
     expected_id = report_id(scope, body.draft.date, body.draft.period)
+    evidence_checks = None
+    if body.draft.evidence_citations:
+        report_evidence.check_receipts(scope, body.draft.date, body.draft.evidence_citations)
+        submitted = body.draft.model_dump(mode='json')
+        evidence_checks = report_evidence.project_saved(scope, submitted)
+        _check_report_facts(scope, submitted, evidence_checks)
     with artifact_session(scope) as session:
         row = _row(session, scope, identifier or expected_id)
         if identifier:
@@ -283,6 +319,10 @@ def save_report(scope, body, identifier=None):
                 raise HTTPException(400, '请携带当前版本，避免覆盖其他修改')
             if row.revision != body.revision:
                 raise HTTPException(409, '报告已有新版本，请重新打开后继续修改')
+            previous = {item['dimension_id'] for item in _stored(row)['evidence_citations']}
+            removed = previous - {item.dimension_id for item in body.draft.evidence_citations}
+            if any(note and note.text.strip() for note in (body.draft.dimension_notes.get(k) for k in removed)):
+                raise HTTPException(422, '移除知识库引用时请同时清空对应原句，或重新起草并保留新引用')
         elif row is not None:
             raise HTTPException(409, '本期已有个人报告，请重新打开后继续修改')
         from tin.web.reference_writes import fence_reference
@@ -323,7 +363,7 @@ def save_report(scope, body, identifier=None):
             remember_record_scope(session, 'artifact', row.id)
         record_revision(session, row, scope.identity.user_id)
         session.commit()
-        return serialize_report(session, scope, row)
+        return serialize_report(session, scope, row, evidence_checks=evidence_checks)
 
 
 def _no_duplicates(items):
@@ -355,8 +395,11 @@ def get_report(date: str, period: str = 'daily'):
     scope = require_scope()
     validate_period(date, period)
     with artifact_session(scope) as session:
-        return load_report(session, scope, date, period) or {'id': None, 'revision': None,
-            'draft': None, 'can_write': scope.can_edit, 'unavailable_references': []}
+        saved = load_report(session, scope, date, period)
+    if saved and saved.get('evidence_checks'):
+        _check_report_facts(scope, saved['draft'], saved['evidence_checks'])
+    return saved or {'id': None, 'revision': None, 'draft': None, 'can_write': scope.can_edit,
+                     'unavailable_references': []}
 
 
 @router.post('', status_code=201)
