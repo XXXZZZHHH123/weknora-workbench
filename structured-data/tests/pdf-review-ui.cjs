@@ -143,7 +143,7 @@ async function main() {
     await call('Page.enable');
     await call('Page.navigate', {url: origin + '/'});
     await wait("document.querySelector('#pdfUpload')");
-    await wait("document.querySelector('#pdfDraftList')?.textContent.includes('pdfd_fixture')");
+    await wait("document.querySelector('#pdfDraftList')?.textContent.includes('suspicious.pdf') && !document.querySelector('#pdfDraftList')?.textContent.includes('pdfd_fixture')");
     await evaluate(`(()=>{const i=document.querySelector('#pdfUploadFile');const f=new File(['%PDF-1.4'],'table.pdf',{type:'application/pdf'});Object.defineProperty(i,'files',{value:[f],configurable:true});i.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#pdfUpload').click()})()`);
     await wait("document.querySelector('#pdfDraftDetail')?.textContent.includes('12.50 <img')");
     await wait("document.querySelector('#pdfTogglePreview')");
