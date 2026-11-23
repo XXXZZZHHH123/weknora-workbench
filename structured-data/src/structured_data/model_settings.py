@@ -8,9 +8,9 @@ from urllib.parse import urlsplit
 from .workspaces import current_identity
 
 
-NO_FIELD_MODEL = '没有可用的字段模型。请在 WeKnora「模型管理」添加并启用对话模型，再在知识库设置选择摘要模型，或在结构化页面的「字段模型」中选择。'
-AMBIGUOUS_FIELD_MODEL = '当前空间有多个可用对话模型，且未确定唯一默认模型。请在知识库设置选择摘要模型，或在结构化页面的「字段模型」中选择。'
-FOREIGN_KB_MODEL = '字段模型只支持当前空间的知识库。请切换到该知识库所属空间后重试。'
+NO_FIELD_MODEL = '还没有可用于识别表头的模型。请先在「模型管理」里添加并启用一个对话模型，再在知识库设置里选好摘要模型，或在表格页面的「表头识别模型」里直接选择。'
+AMBIGUOUS_FIELD_MODEL = '当前空间有多个对话模型，系统未确定唯一默认模型，无法自动选用。请在知识库设置里选好摘要模型，或在表格页面的「表头识别模型」里选择一个。'
+FOREIGN_KB_MODEL = '只能为当前空间的知识库识别表头。请切换到这个知识库所在的空间后再试。'
 
 
 def _native_selection(root):
@@ -47,7 +47,7 @@ def platform_model_settings(root):
         models = available_models()
         if explicit_id:
             effective = next((model for model in models if model['id'] == explicit_id), None)
-            error = '' if effective else '已选择的字段模型不可用，请在结构化页面的「字段模型」中重新选择已启用的对话模型。'
+            error = '' if effective else '之前选的表头识别模型已停用或被删除。请在表格页面的「表头识别模型」里重新选择一个可用的模型。'
         else:
             effective, error = _automatic_model(models, identity.summary_model_id)
 
