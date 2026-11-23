@@ -393,18 +393,22 @@ func uniqueCandidateCitationIDs(answer string) []string {
 // own durable identity and source view. Navigation-only entries do not earn
 // citation eligibility, and no location or image is copied from the primary.
 func citationRowsWithSearchOrigins(row map[string]any) []map[string]any {
+	if row["navigation_only"] == true {
+		return nil
+	}
 	rows := []map[string]any{row}
-	origins, _ := row["origins"].([]any)
 	content, _ := row["content"].(string)
 	if content == "" {
 		return rows
 	}
-	for _, item := range origins {
-		origin, _ := item.(map[string]any)
-		if !verifiedCitationSearchOrigin(origin) {
+	for _, origin := range sourceNavigationRows(row["origins"]) {
+		if !verifiedCitationSearchOrigin(origin) ||
+			citationString(origin["knowledge_id"]) != citationString(row["knowledge_id"]) ||
+			citationString(origin["knowledge_base_id"]) != citationString(row["knowledge_base_id"]) {
 			continue
 		}
 		view := maps.Clone(origin)
+		delete(view, "images")
 		view["content"] = content
 		rows = append(rows, view)
 	}

@@ -16,15 +16,12 @@ var documentMarkdownLink = regexp.MustCompile(`!?\[([^\]\n]*)\]\([^\)\n]+\)`)
 var documentSourceURL = regexp.MustCompile(`(?i)\b(?:https?://|resource://)[^\s<>"']+`)
 
 type fetchedDocumentChunk struct {
-	ID          string `json:"chunk_id"`
-	KnowledgeID string `json:"knowledge_id"`
-	Content     string `json:"content"`
-	body        string // Exact returned body, before attached captions/OCR.
-	Origins     []struct {
-		ID             string `json:"chunk_id"`
-		NavigationOnly bool   `json:"navigation_only"`
-	} `json:"origins,omitempty"`
-	Images []struct {
+	ID             string `json:"chunk_id"`
+	KnowledgeID    string `json:"knowledge_id"`
+	Content        string `json:"content"`
+	NavigationOnly bool   `json:"navigation_only"`
+	body           string // Exact returned body, before attached captions/OCR.
+	Images         []struct {
 		URL     string `json:"url"`
 		Caption string `json:"caption"`
 		OCRText string `json:"ocr_text"`
@@ -89,15 +86,8 @@ func scopedCitedDocumentNumbers(answer string, steps []types.AgentStep) []float6
 			}
 			texts := []string{}
 			for _, chunk := range fetchedDocumentChunks(call) {
-				for _, origin := range chunk.Origins {
-					if origin.NavigationOnly || !cited[origin.ID] || conflicts[origin.ID] {
-						continue
-					}
-					if ref := canonical[origin.ID]; ref != nil && ref.Content == chunk.body {
-						texts = append(texts, ref.Content)
-					}
-				}
-				if chunk.ID == "" || !cited[chunk.ID] || conflicts[chunk.ID] || strings.TrimSpace(chunk.Content) == "" {
+
+				if chunk.NavigationOnly || chunk.ID == "" || !cited[chunk.ID] || conflicts[chunk.ID] || strings.TrimSpace(chunk.Content) == "" {
 					continue
 				}
 				if ref := canonical[chunk.ID]; ref != nil && ref.Content != chunk.body {
@@ -107,6 +97,19 @@ func scopedCitedDocumentNumbers(answer string, steps []types.AgentStep) []float6
 					continue
 				}
 				texts = append(texts, chunk.Content)
+			}
+			for _, row := range sourceNavigationRows(call.Result.Data["results"]) {
+				views := citationRowsWithSearchOrigins(row)
+				for _, origin := range views[min(1, len(views)):] {
+					id := citationString(origin["chunk_id"])
+					revision, _ := citationViewRevision(origin["content_revision"])
+					if ref := canonical[id]; cited[id] && ref != nil && ref.ContentRevision == revision &&
+						ref.Content == citationString(origin["content"]) &&
+						ref.KnowledgeID == citationString(origin["knowledge_id"]) &&
+						ref.KnowledgeBaseID == citationString(origin["knowledge_base_id"]) {
+						texts = append(texts, ref.Content)
+					}
+				}
 			}
 			texts = append(texts, citedImageObservations(call, cited)...)
 			for _, content := range texts {

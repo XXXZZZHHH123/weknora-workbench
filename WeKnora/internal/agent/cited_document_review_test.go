@@ -244,15 +244,25 @@ func TestReadDocumentReviewOmitsOnlyLocatorQuotesAndSharesMetadataLosslessly(t *
 func TestDocumentBodyPoolPreservesIndependentSourcesAndEveryByte(t *testing.T) {
 	body := "The same source text.\n汉字🙂\n"
 	views := []map[string]any{
-		{"content": body, "citation_handle": "first", "knowledge_id": "document-a", "content_revision": 2, "source_view": map[string]any{"content_offset": 0, "content_complete": true}, "source_locators": []map[string]any{{"page": 4, "quote": body}}},
-		{"content": body, "citation_handle": "second", "knowledge_id": "document-b", "content_revision": 7, "source_view": map[string]any{"content_offset": 6, "content_complete": false}, "source_locators": []map[string]any{{"page": 9, "quote": body}}},
-		{"content": body + " ", "citation_handle": "third", "knowledge_id": "document-b", "content_revision": 8, "source_view": map[string]any{"content_offset": 6, "content_complete": false}, "source_locators": []map[string]any{{"page": 9}}},
+		{"content": body, "citation_handle": "first", "knowledge_base_id": "library", "knowledge_id": "document-a", "content_revision": 2, "source_view": map[string]any{"content_offset": 0, "content_complete": true}, "source_locators": []map[string]any{{"page": 4, "quote": body}}},
+		{"content": body, "citation_handle": "second", "knowledge_base_id": "library", "knowledge_id": "document-b", "content_revision": 7, "source_view": map[string]any{"content_offset": 6, "content_complete": false}, "source_locators": []map[string]any{{"page": 9, "quote": body}}},
+		{"content": body, "citation_handle": "repeat", "knowledge_base_id": "library", "knowledge_id": "document-b", "content_revision": 8, "source_view": map[string]any{"content_offset": 6, "content_complete": false}, "source_locators": []map[string]any{{"page": 9}}},
+		{"content": body + " ", "citation_handle": "third", "knowledge_base_id": "library", "knowledge_id": "document-b", "content_revision": 9},
+		{"content": body, "citation_handle": "other-library", "knowledge_base_id": "other-library", "knowledge_id": "document-b", "content_revision": 2},
 	}
 	before := reviewDigest(views)
 	groups, bodies, complete := compactDocumentReviewBodies(views)
 	require.True(t, complete)
 	require.Len(t, bodies, 1)
 	require.Equal(t, body, bodies["body_1"])
+	for _, group := range groups {
+		for _, row := range group["views"].([]map[string]any) {
+			if row["content_ref"] != nil {
+				require.Equal(t, "document-b", group["shared_fields"].(map[string]any)["knowledge_id"])
+				require.Equal(t, "library", group["shared_fields"].(map[string]any)["knowledge_base_id"])
+			}
+		}
+	}
 	decoded := map[string]map[string]any{}
 	for _, group := range groups {
 		for _, raw := range group["views"].([]map[string]any) {

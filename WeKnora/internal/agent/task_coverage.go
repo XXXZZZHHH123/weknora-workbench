@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -13,22 +14,22 @@ import (
 // status or a source grant. RequestBasis is checked against human messages;
 // actual source identities are supplied only by successful tool observations.
 type taskCoverageTarget struct {
-	GoalIndex    int    `json:"goal_index"`
-	RequestBasis string `json:"request_basis"`
-	Criteria     string `json:"criteria"`
-	SourceScope  string `json:"source_scope"`
-	ByDocument   bool   `json:"by_document,omitempty"`
+	GoalIndex         int                                   `json:"goal_index"`
+	RequestBasis      string                                `json:"request_basis"`
+	Criteria          string                                `json:"criteria"`
+	SourceScope       string                                `json:"source_scope"`
+	ByDocument        bool                                  `json:"by_document,omitempty"`
+	RequiredLocations []agenttools.DocumentRequiredLocation `json:"required_locations,omitempty"`
 }
 
-func (e *AgentEngine) plansCoverageByDocument() bool {
+func (e *AgentEngine) setDocumentCoverageTargets() {
+	var targets []agenttools.DocumentCoverageTarget
 	if e.taskPlan != nil {
 		for _, target := range e.taskPlan.CoverageTargets {
-			if target.ByDocument {
-				return true
-			}
+			targets = append(targets, agenttools.DocumentCoverageTarget{ByDocument: target.ByDocument, Locations: target.RequiredLocations})
 		}
 	}
-	return false
+	agenttools.SetDocumentCoverageTargets(e.toolRegistry, targets)
 }
 
 func validateTaskCoverageTargets(plan *taskEvidencePlan) error {
@@ -38,6 +39,17 @@ func validateTaskCoverageTargets(plan *taskEvidencePlan) error {
 	for _, target := range plan.CoverageTargets {
 		if target.GoalIndex < 0 || target.GoalIndex >= len(plan.Goals) {
 			return fmt.Errorf("coverage target requires an existing goal index")
+		}
+		if len(target.RequiredLocations) > 8 {
+			return fmt.Errorf("coverage locations exceed protocol budget")
+		}
+		for _, location := range target.RequiredLocations {
+			if !agenttools.ValidDocumentCoveragePages(location.Pages) ||
+				(strings.TrimSpace(location.Period) == "" && len(location.Pages) == 0) ||
+				utf8.RuneCountInString(location.Period) > 128 ||
+				strings.TrimSpace(location.Fact) == "" || utf8.RuneCountInString(location.Fact) > 512 {
+				return fmt.Errorf("coverage location requires a reporting period or physical pages and a bounded requested fact")
+			}
 		}
 		for _, text := range []string{target.RequestBasis, target.Criteria, target.SourceScope} {
 			if strings.TrimSpace(text) == "" || len(text) > 2048 || utf8.RuneCountInString(text) > 512 {

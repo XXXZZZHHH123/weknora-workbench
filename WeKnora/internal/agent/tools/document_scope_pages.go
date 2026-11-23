@@ -7,7 +7,7 @@ import (
 	"unicode/utf8"
 )
 
-const readDocumentMaxPages = 8
+const MaxPhysicalPagesPerRead = 8
 
 func validateDocumentPages(pages []int, maxPages int) error {
 	if len(pages) == 0 || len(pages) > maxPages {
@@ -35,7 +35,7 @@ func validateDocumentPageHints(selection DocumentSourceSelection) error {
 		return fmt.Errorf("use either page or pages with positive physical page numbers")
 	}
 	if len(selection.Pages) > 0 {
-		return validateDocumentPages(selection.Pages, readDocumentMaxPages)
+		return validateDocumentPages(selection.Pages, MaxPhysicalPagesPerRead)
 	}
 	return nil
 }
@@ -75,7 +75,16 @@ func cloneDocumentPageConstraint(constraint *DocumentPageConstraint) *DocumentPa
 }
 
 func cloneDocumentSelection(selection DocumentSourceSelection) DocumentSourceSelection {
-	selection.Pages = append([]int(nil), selection.Pages...)
+	selection.Pages = slices.Clone(selection.Pages)
+	selection.Coverage = slices.Clone(selection.Coverage)
+	for i := range selection.Coverage {
+		binding := &selection.Coverage[i]
+		binding.Pages = slices.Clone(binding.Pages)
+		if binding.Location != nil {
+			index := *binding.Location
+			binding.Location = &index
+		}
+	}
 	selection.UserPages = cloneDocumentPageConstraint(selection.UserPages)
 	if selection.Date != nil {
 		date := *selection.Date
@@ -95,14 +104,14 @@ func resolveReadPages(input ReadDocumentInput, selection DocumentSourceSelection
 		pages = []int{input.Page}
 	}
 	if len(pages) > 0 {
-		if err := validateDocumentPages(pages, readDocumentMaxPages); err != nil {
+		if err := validateDocumentPages(pages, MaxPhysicalPagesPerRead); err != nil {
 			return nil, err
 		}
 	}
 	if selection.UserPages != nil {
 		if len(pages) == 0 {
-			if len(selection.UserPages.Pages) > readDocumentMaxPages {
-				return nil, fmt.Errorf("用户限定多个物理页；每次 pages 读取最多 %d 页，请在限定范围内分批读取", readDocumentMaxPages)
+			if len(selection.UserPages.Pages) > MaxPhysicalPagesPerRead {
+				return nil, fmt.Errorf("用户限定多个物理页；每次 pages 读取最多 %d 页，请在限定范围内分批读取", MaxPhysicalPagesPerRead)
 			}
 			pages = append([]int(nil), selection.UserPages.Pages...)
 		}

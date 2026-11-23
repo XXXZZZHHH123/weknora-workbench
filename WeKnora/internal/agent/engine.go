@@ -1424,6 +1424,7 @@ func (e *AgentEngine) runReActIteration(
 		e.recordArtifactInventory(ctx, state, messagesPtr, sessionID)
 	}
 	needsAnswerRepair := false
+	var checkedCandidate candidateDecision
 	runtimeAnswerFailure := response.FinishReason == "content_filter"
 	// Agents without the workbench source critic retain their existing
 	// independent source-audit path; direct acceptance requires that critic.
@@ -1431,6 +1432,7 @@ func (e *AgentEngine) runReActIteration(
 	if len(response.ToolCalls) == 0 && (!pendingLegacySourceRewrite || suspectAnswerFragment(response.Content, response.ReasoningContent)) && (strings.TrimSpace(response.Content) != "" || strings.TrimSpace(response.ReasoningContent) != "") && (isNaturalStopFinishReason(response.FinishReason) || isLengthFinishReason(response.FinishReason)) {
 		reviewConversation, _ := restoreStructuredReviewConversation(*messagesPtr, guards)
 		decision := e.checkCandidate(ctx, query, response.Content, response.ReasoningContent, state, reviewConversation, false)
+		checkedCandidate = decision
 		if decision.Candidate != response.Content {
 			response.Content = decision.Candidate
 			step.Thought = decision.Candidate
@@ -1481,8 +1483,23 @@ func (e *AgentEngine) runReActIteration(
 	if needsAnswerRepair {
 		state.RoundSteps = append(state.RoundSteps, step)
 		if e.answerReviewAction == reviewCollectEvidence && guards.evidenceRecoveryAttempts < maxEvidenceRecoveryAttempts {
-			e.resumeEvidenceCollection(ctx, state, messagesPtr, guards, sessionID)
-			return iterOutcomeNext, nil
+			if checkedCandidate.ReasonCode == "discovery_coverage_recovery" && e.documentCoverage(state) != nil {
+				readStep, err := e.boundedCoverageRead(ctx, query, state, sessionID, assistantMessageID, *messagesPtr, checkedCandidate, false)
+				if err != nil {
+					return iterOutcomeBreak, err
+				}
+				if readStep != nil {
+					*messagesPtr = e.appendToolResults(*messagesPtr, *readStep)
+				}
+				feedback := "请依据已取得的内容回答原问题，并具体说明仍无法核实的部分。"
+				e.answerReviewAction, e.answerReviewFeedback = reviewReviseAnswer, feedback
+				if readStep == nil {
+					e.turnReview.DocumentCoverageRecoveryUsed = true
+				}
+			} else {
+				e.resumeEvidenceCollection(ctx, state, messagesPtr, guards, sessionID)
+				return iterOutcomeNext, nil
+			}
 		}
 		guards.incompleteAnswerRetries++
 		if guards.incompleteAnswerRetries <= 2 && e.spendCandidateRepair() {

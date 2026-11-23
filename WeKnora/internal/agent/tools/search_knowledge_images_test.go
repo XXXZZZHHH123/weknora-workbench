@@ -33,7 +33,7 @@ func (s *imageReadingKBService) ReadChunkImage(_ context.Context, r *types.Searc
 func imageRow(id string, chunkType types.ChunkType, url string) *searchResultWithMeta {
 	info, _ := json.Marshal([]types.ImageInfo{{URL: url}})
 	return &searchResultWithMeta{SearchResult: &types.SearchResult{
-		ID: id, ChunkType: string(chunkType), ImageInfo: string(info), Content: id,
+		ID: id, KnowledgeID: "chart-report", KnowledgeBaseID: "chart-library", ChunkType: string(chunkType), ImageInfo: string(info), Content: id,
 	}}
 }
 
@@ -138,4 +138,16 @@ func TestDifferentImagesWithIdenticalCaptionsRemainSeparate(t *testing.T) {
 	require.Len(t, final, 1, "a caption and vector match for the same image can share an entry")
 	require.Len(t, final[0].MatchedImages, 1, "the caption keeps the matched image")
 	require.Equal(t, a.ID, final[0].Origins[0].ID)
+}
+
+func TestSameImageDescriptionAcrossDocumentsNeverInheritsEvidence(t *testing.T) {
+	a := imageRow("a", types.ChunkTypeImageVector, "resource://shared-image")
+	b := imageRow("b", types.ChunkTypeImageCaption, "resource://shared-image")
+	b.SearchResult.KnowledgeID = "other-document"
+	a.Content, b.Content = "设备运行图", "设备运行图"
+	tool := &SearchKnowledgeTool{}
+	require.Len(t, tool.deduplicateResultsForRerank([]*searchResultWithMeta{a, b}), 2)
+	require.Len(t, tool.deduplicateResults([]*searchResultWithMeta{a, b}), 2)
+	mergeSearchOrigins(a, b)
+	require.Empty(t, a.Origins)
 }

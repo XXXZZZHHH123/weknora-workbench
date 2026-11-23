@@ -532,7 +532,7 @@ func TestCitationRealSearchExcerptUsesOnlyReturnedBodyUntilFullRead(t *testing.T
 	require.Empty(t, currentDocumentNumberCheck("Later value 78.9.", state.RoundSteps), "the later actual full read exposes the rest of the source")
 }
 
-func TestSharedSearchBodyUsesEachVerifiedOriginsOwnCitation(t *testing.T) {
+func TestSearchBodyExpandsOnlyVerifiedSameDocumentOrigins(t *testing.T) {
 	const body = "设备完成 31 次检查。"
 	origin := func(id, doc, kb string, page int, navigationOnly bool) map[string]any {
 		return map[string]any{
@@ -545,34 +545,41 @@ func TestSharedSearchBodyUsesEachVerifiedOriginsOwnCitation(t *testing.T) {
 	row := origin("first-passage", "first-report", "first-library", 2, false)
 	row["content"] = body
 	row["origins"] = []map[string]any{
-		origin("second-passage", "second-report", "second-library", 7, false),
-		origin("navigation-passage", "third-report", "third-library", 11, true),
+		origin("second-passage", "first-report", "first-library", 7, false),
+		origin("foreign-document", "second-report", "first-library", 9, false),
+		origin("foreign-library", "first-report", "second-library", 10, false),
+		origin("navigation-passage", "first-report", "first-library", 11, true),
 	}
 	search := &types.ToolResult{Success: true, Data: map[string]any{"display_type": "search_results", "results": []map[string]any{row}}}
 	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{{Name: agenttools.ToolSearchKnowledge, ID: "comparison-search", Result: search}}}}}
 	e := sourceConsistencyEngine(t, &mockChat{})
 	e.appendToolResults(emptyMessages(), state.RoundSteps[0])
 
-	answer := body + `<kb chunk_id="second-passage" knowledge_id="second-report" kb_id="second-library" />`
+	answer := body + `<kb chunk_id="second-passage" knowledge_id="first-report" kb_id="first-library" />`
 	refs := e.currentCandidateKnowledgeReferences(answer, state, nil)
 	require.Len(t, refs, 1)
-	require.Equal(t, "second-report", refs[0].KnowledgeID)
-	require.Equal(t, "second-library", refs[0].KnowledgeBaseID)
+	require.Equal(t, "first-report", refs[0].KnowledgeID)
+	require.Equal(t, "first-library", refs[0].KnowledgeBaseID)
 	require.Equal(t, 7, refs[0].ContentRevision)
 	require.Equal(t, 7, refs[0].SourceLocators[0].Page)
 	require.False(t, e.candidateCitationsInvalid(answer, state, nil))
 	require.Equal(t, []float64{31}, scopedCitedDocumentNumbers(answer, state.RoundSteps))
-	require.Empty(t, e.currentCandidateKnowledgeReferences(`<kb chunk_id="navigation-passage" />`, state, nil))
-	require.True(t, e.candidateCitationsInvalid(`<kb chunk_id="second-passage" knowledge_id="first-report" />`, state, nil))
+	for _, rejected := range []string{"foreign-document", "foreign-library", "navigation-passage"} {
+		citation := `<kb chunk_id="` + rejected + `" />`
+		require.Empty(t, e.modelContext.CitableChunkHandle(rejected))
+		require.Empty(t, e.currentCandidateKnowledgeReferences(citation, state, nil))
+		require.True(t, e.candidateCitationsInvalid(citation, state, nil))
+		require.Empty(t, scopedCitedDocumentNumbers(citation, state.RoundSteps))
+	}
+	require.True(t, e.candidateCitationsInvalid(`<kb chunk_id="second-passage" knowledge_id="second-report" />`, state, nil))
 
 	views, ok := e.currentReadDocumentReviewEvidence(state, nil)
 	require.True(t, ok)
 	require.Len(t, views, 2)
-	require.Equal(t, "second-report", views[1]["knowledge_id"])
+	require.Equal(t, "first-report", views[1]["knowledge_id"])
 	require.Equal(t, 7, views[1]["content_revision"])
 
-	// A revised source plan restricts each origin independently, even though
-	// the representative's paragraph is still valid in the new scope.
+	// A current source binding preserves both valid locations of this document.
 	doc := &types.Knowledge{ID: "first-report", KnowledgeBaseID: "first-library", TenantID: 7, Title: "First report"}
 	e.toolRegistry = agenttools.NewToolRegistry()
 	e.toolRegistry.RegisterTool(agenttools.NewReadDocumentTool(&plannedDocumentKnowledge{document: doc}, nil,
@@ -583,13 +590,10 @@ func TestSharedSearchBodyUsesEachVerifiedOriginsOwnCitation(t *testing.T) {
 	bound, err := binder.Execute(t.Context(), json.RawMessage(`{"selection_reason":"只核对第一份报告","sources":[{"knowledge_id":"first-report","expected_title":"First report"}]}`))
 	require.NoError(t, err)
 	require.True(t, bound.Success, bound.Error)
-	require.Empty(t, e.currentCandidateKnowledgeReferences(answer, state, nil))
+	require.Len(t, e.currentCandidateKnowledgeReferences(answer, state, nil), 1)
 	require.Len(t, e.currentCandidateKnowledgeReferences(`<kb chunk_id="first-passage" />`, state, nil), 1)
-	for _, observation := range e.answerNumericEvidence(answer, state.RoundSteps) {
-		require.NotContains(t, observation.Content, "cited_document_values")
-	}
 	views, ok = e.currentReadDocumentReviewEvidence(state, nil)
 	require.True(t, ok)
-	require.Len(t, views, 1)
+	require.Len(t, views, 2)
 	require.Equal(t, "first-report", views[0]["knowledge_id"])
 }

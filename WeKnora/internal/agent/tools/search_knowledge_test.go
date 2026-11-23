@@ -183,18 +183,18 @@ func TestDeduplicateResultsKeepsFirstOccurrenceInOrder(t *testing.T) {
 		{SearchResult: &types.SearchResult{ID: "c1", KnowledgeID: "d1", ChunkIndex: 0, Content: "alpha", Score: 0.9}},
 		// same document + index as c1, with different text
 		{SearchResult: &types.SearchResult{ID: "c2", KnowledgeID: "d1", ChunkIndex: 0, Content: "other", Score: 0.8}},
-		// same content as c1
+		// same content as c1 but in another document: kept, each document keeps its own source
 		{SearchResult: &types.SearchResult{ID: "c3", KnowledgeID: "d2", ChunkIndex: 1, Content: "alpha", Score: 0.7}},
 		{SearchResult: &types.SearchResult{ID: "c4", KnowledgeID: "d3", ChunkIndex: 2, Content: "gamma", Score: 0.6}},
 		nil,
 	}
 	out := tool.deduplicateResults(in)
-	if len(out) != 3 || out[0].ID != "c1" || out[1].ID != "c2" || out[2].ID != "c4" {
+	if len(out) != 4 || out[0].ID != "c1" || out[1].ID != "c2" || out[2].ID != "c3" || out[3].ID != "c4" {
 		ids := make([]string, 0, len(out))
 		for _, r := range out {
 			ids = append(ids, r.ID)
 		}
-		t.Fatalf("deduplicateResults = %v, want [c1 c2 c4]", ids)
+		t.Fatalf("deduplicateResults = %v, want [c1 c2 c3 c4]", ids)
 	}
 }
 
@@ -315,7 +315,7 @@ func TestFormatWithinBudgetDropsLowestRankedRows(t *testing.T) {
 	}
 	ctx := WithOutputBudget(context.Background(), 5000)
 
-	res, shown := tool.formatWithinBudget(ctx, results, []string{"kb-1"}, "q", SearchModeHybrid, false)
+	res, shown := tool.formatWithinBudget(ctx, results, []string{"kb-1"}, "q", SearchModeHybrid, nil)
 	omitted := len(results) - len(shown)
 	rows, _ := res.Data["results"].([]map[string]interface{})
 	if omitted == 0 || len(rows)+omitted != 10 {
@@ -329,7 +329,7 @@ func TestFormatWithinBudgetDropsLowestRankedRows(t *testing.T) {
 	}
 
 	// A single row is always kept, even over budget.
-	single, shownSingle := tool.formatWithinBudget(ctx, results[:1], []string{"kb-1"}, "q", SearchModeHybrid, false)
+	single, shownSingle := tool.formatWithinBudget(ctx, results[:1], []string{"kb-1"}, "q", SearchModeHybrid, nil)
 	if len(shownSingle) != 1 || single.Data["count"] != 1 {
 		t.Fatalf("single row dropped: kept=%d count=%v", len(shownSingle), single.Data["count"])
 	}

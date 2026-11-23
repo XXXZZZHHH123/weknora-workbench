@@ -96,7 +96,7 @@ func (e *AgentEngine) applyDiscoveryRecovery(decision candidateDecision, feedbac
 
 func (e *AgentEngine) applyDocumentDiscoveryRecovery(decision candidateDecision, feedback string, coverage *documentCoverageView) candidateDecision {
 	if coverage != nil {
-		feedback += " 核实断言、期次、页码和原句或表头。若下一轮仍缺证据，保留已核实的结论，并具体说明哪份来源或哪项比较仍无法核实。"
+		feedback += " 按实际页码补读；页码未知时，依据已绑定文档中的目录或标题定向查找。核实断言、期次、页码和原句或表头。若下一轮仍缺证据，保留已核实的结论，并具体说明哪份来源或哪项比较仍无法核实。"
 		if gap := coverage.gapNotice(); gap != "" {
 			feedback += " " + gap
 		}
@@ -222,7 +222,13 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 			previous.TaskHash == decision.TaskHash && previous.EvidenceHash == decision.EvidenceHash && previous.SourceScopeHash == decision.SourceScopeHash {
 			return e.applyDocumentDiscoveryRecovery(decision, previous.Feedback, coverage)
 		}
-		return decision
+		if phase != "delivery" || coverage == nil || !e.turnReview.DocumentCoverageRecoveryUsed ||
+			previous.TaskHash != decision.TaskHash || previous.SourceScopeHash != decision.SourceScopeHash ||
+			previous.budget == nil || previous.budget.generation.remaining() == 0 || previous.budget.elapsed >= discoveryReviewTimeout ||
+			!discoveryHasNewSourceObservations(previous.sourceObservations, sourceObservations) {
+			return decision
+		}
+		sharedBudget = previous.budget
 	}
 	if e.turnReview.Repairs >= maxTurnCandidateRepairs {
 		return decision
@@ -300,7 +306,7 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 	disabled := false
 	instructions := discoveryDeliveryReviewInstructions
 	if coverage != nil {
-		instructions += "\n" + documentComparisonGuidance + " Use actual_document_coverage to distinguish an unbound or unread required document, unsuccessful search, incomplete retrieval, text returned, and original image read. Use actual_comparison_body_evidence for material old and new statements, including uncited sources, when present. Shared bodies carry separate document identities and physical pages. Review matching table definitions and changes in period or precision even when all documents returned some text. Coverage rows and continuations are scoped to actual tools; consult them only insofar as the human request requires comparison or a full set of sources."
+		instructions += "\n" + documentComparisonGuidance + " Use actual_document_coverage to distinguish an unbound or unread required document, unsuccessful search, incomplete retrieval, text returned, and original image read. Use actual_comparison_body_evidence for material old and new statements, including uncited sources, when present. Check each requested location separately. A physical page or period can have multiple versions. Text from another page or a completed literal scan does not fill a gap. If the same document repeats a body, its verified locations are recorded separately. Review matching table definitions and changes in period or precision even when all documents returned some text. Coverage rows and continuations are scoped to actual tools; consult them only insofar as the human request requires comparison or a full set of sources."
 	}
 	if phase == "progress" {
 		instructions += "\nPROGRESS PHASE: there is no candidate answer yet. Review whether the current investigation is making useful progress toward the ORIGINAL human task. The runtime cadence is not proof of failure or a requirement to change tools. Keep an appropriate structured-only investigation, including exact statistics actually requested, even if it needs several calls. Recover only a concrete observed scope/representation obstacle, repeated unproductive source discovery, or a planner-added precision requirement when a meaningful authorized alternative is available. Consider current execution diagnostics and all actually available source capabilities; successful directory/status calls do not by themselves prove task progress. Do not demand a draft merely because several batches elapsed, terminate the task, force another channel, select a file, or supply source values. Feedback is a plan-reassessment suggestion to the executing model, not a mandatory tool sequence. A keep here approves neither a future candidate nor source facts; ordinary numeric, citation and answer checks remain mandatory."

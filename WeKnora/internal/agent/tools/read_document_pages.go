@@ -72,7 +72,7 @@ func (t *ReadDocumentTool) collectPhysicalPages(ctx context.Context, knowledge *
 }
 
 func (t *ReadDocumentTool) readPhysicalPages(ctx context.Context, knowledge *types.Knowledge, requested []int, offset, limit int, segment *chunkContentSegment, query string, matchers []*regexp.Regexp, regexMode bool) (*types.ToolResult, error) {
-	if err := validateDocumentPages(requested, readDocumentMaxPages); err != nil {
+	if err := validateDocumentPages(requested, MaxPhysicalPagesPerRead); err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error()}, nil
 	}
 	// Keep enough budget for each page's wrapper and continuation state. Asking

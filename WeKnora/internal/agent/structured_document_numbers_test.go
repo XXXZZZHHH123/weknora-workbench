@@ -144,3 +144,23 @@ func TestScopedVisualDocumentDoesNotInheritEarlierTableGuard(t *testing.T) {
 	step.ToolCalls[0].Result.Data["document_scope"] = map[string]any{"matched": true, "knowledge_id": "other-report", "page": 12, "has_visual_evidence": true}
 	require.True(t, needsStructuredAnswerReviewForQuery(query, []types.AgentStep{step}, history, answer))
 }
+
+func TestSharedSearchTextCannotLendAnotherPageOCR(t *testing.T) {
+	origin := func(id, document, library string) map[string]any {
+		return map[string]any{"chunk_id": id, "knowledge_id": document, "knowledge_base_id": library,
+			"content_complete": true, "content_revision": 1, "content_offset": 0, "content_offset_space": "chunk_unicode_runes"}
+	}
+	row := origin("actual-page", "report", "library")
+	row["content"] = "本月检查 31 次。"
+	row["images"] = []map[string]any{{"url": "resource://chart", "ocr_text": "检验用时 47 分钟。"}}
+	sameDocument := origin("verified-other-page", "report", "library")
+	sameDocument["images"] = row["images"] // Old display payload must not become a second image read.
+	row["origins"] = []map[string]any{sameDocument, origin("other-report", "another-report", "library"),
+		origin("other-library", "report", "another-library")}
+	step := documentNumbersStep("search_knowledge", true, "results", []map[string]any{row})
+	for id, want := range map[string][]float64{
+		"actual-page": {31, 47}, "verified-other-page": {31}, "other-report": nil, "other-library": nil,
+	} {
+		require.ElementsMatch(t, want, scopedCitedDocumentNumbers(`<kb chunk_id="`+id+`" />`, []types.AgentStep{step}))
+	}
+}

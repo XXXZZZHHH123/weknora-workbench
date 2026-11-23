@@ -30,7 +30,8 @@ func (r *sourceRegistry) ModelOutput(result *types.ToolResult) string {
 	// not become current source evidence until an authorized reader verifies
 	// the selected document, even when the catalog call succeeded.
 	navigationOnly := displayType == "document_info" && boolValue(result.Data, "requires_source_scope")
-	if result.Success && !navigationOnly {
+	structuredSearch := displayType == "search_results" && len(mapsValue(result.Data["results"])) > 0
+	if result.Success && !navigationOnly && !structuredSearch {
 		r.registerLegacyToolReferences(result.Output, true)
 		copyResult := *result
 		copyResult.Output = r.CompactPublicCitations(result.Output, true)
@@ -94,7 +95,18 @@ func (r *sourceRegistry) appendDocumentSearchCoverage(output string, data map[st
 		if doc == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "  <source doc=\"%s\" status=\"%s\" />\n", escapeAttr(doc), escapeAttr(stringValue(row, "status")))
+		fmt.Fprintf(&b, "  <source doc=\"%s\" status=\"%s\"", escapeAttr(doc), escapeAttr(stringValue(row, "status")))
+		if page := intValue(row, "page"); page > 0 {
+			fmt.Fprintf(&b, " physical_page=\"%d\"", page)
+		}
+		if period := stringValue(row, "period"); period != "" {
+			fmt.Fprintf(&b, " period=\"%s\"", escapeAttr(period))
+		}
+		if fact := stringValue(row, "fact"); fact != "" {
+			fmt.Fprintf(&b, ">%s</source>\n", escapeText(fact))
+		} else {
+			b.WriteString(" />\n")
+		}
 	}
 	b.WriteString("</document_search_coverage>")
 	return output + b.String()
@@ -432,7 +444,7 @@ func (r *sourceRegistry) modelChunksFromRows(mode string, rows []map[string]inte
 		knowledgeID := stringValue(row, "knowledge_id")
 		kbID := firstNonEmpty(stringValue(row, "knowledge_base_id"), stringValue(row, "knowledge_base"))
 		title := firstNonEmpty(stringValue(row, "knowledge_title"), stringValue(row, "title"))
-		if chunkID == "" {
+		if chunkID == "" || boolValue(row, "navigation_only") {
 			continue
 		}
 		chunkType := stringValue(row, "chunk_type")
@@ -473,7 +485,7 @@ func (r *sourceRegistry) modelChunksFromRows(mode string, rows []map[string]inte
 			answers:              stringSliceValue(row["faq_answers"]),
 			images:               mapsValue(row["images"]),
 			sourceLocators:       sourceLocatorMaps(row["source_locators"]),
-			origins:              r.modelSearchOrigins(row["origins"]),
+			origins:              r.modelSearchOrigins(row["origins"], knowledgeID, kbID),
 			docRealID:            knowledgeID,
 			kbRealID:             kbID,
 			chunkReal:            chunkID,
@@ -483,11 +495,11 @@ func (r *sourceRegistry) modelChunksFromRows(mode string, rows []map[string]inte
 	return chunks
 }
 
-func (r *sourceRegistry) modelSearchOrigins(value any) []modelSearchOrigin {
+func (r *sourceRegistry) modelSearchOrigins(value any, documentID, baseID string) []modelSearchOrigin {
 	var origins []modelSearchOrigin
 	for _, row := range mapsValue(value) {
 		docID, kbID := stringValue(row, "knowledge_id"), stringValue(row, "knowledge_base_id")
-		if docID == "" || kbID == "" {
+		if docID == "" || kbID == "" || docID != documentID || kbID != baseID {
 			continue
 		}
 		origin := modelSearchOrigin{
@@ -502,7 +514,7 @@ func (r *sourceRegistry) modelSearchOrigins(value any) []modelSearchOrigin {
 		}
 		pages := make(map[int]bool)
 		for _, locator := range sourceLocatorMaps(row["source_locators"]) {
-			if stringValue(locator, "mapping") != "exact" {
+			if origin.navigationOnly || stringValue(locator, "mapping") != "exact" {
 				continue
 			}
 			page := 0
@@ -1142,12 +1154,13 @@ func renderKnowledgeChunks(mode string, chunks []modelChunk, info map[string]int
 		chunks   []modelChunk
 		order    int
 	}
-	groupsByKey := make(map[string]*docGroup)
+	type groupKey struct{ kb, document, chunk string }
+	groupsByKey := make(map[groupKey]*docGroup)
 	var groups []*docGroup
 	for _, chunk := range chunks {
-		key := chunk.docHandle
-		if key == "" {
-			key = "chunk:" + chunk.handle
+		key := groupKey{kb: chunk.kbHandle, document: chunk.docHandle}
+		if chunk.docHandle == "" {
+			key.chunk = chunk.handle
 		}
 		group := groupsByKey[key]
 		if group == nil {

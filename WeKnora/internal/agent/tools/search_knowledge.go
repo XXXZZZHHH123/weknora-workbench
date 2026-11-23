@@ -84,6 +84,12 @@ var searchKnowledgeTool = BaseTool{
       "items": { "type": "string" },
       "maxItems": 10
     },
+    "coverage_target_index": {
+      "type": "integer",
+      "description": "Optional zero-based task coverage target being searched. Use only an actual task-plan target bound through the source plan. Omit for general searches.",
+      "minimum": 0,
+      "maximum": 7
+    },
     "page": {
       "type": "integer",
       "description": "Exact 1-based physical page / PPT slide within one selected document; requires parsed page markers",
@@ -102,23 +108,25 @@ var searchKnowledgeTool = BaseTool{
 
 // SearchKnowledgeInput defines the input parameters for search_knowledge.
 type SearchKnowledgeInput struct {
-	Query            string             `json:"query"`
-	Mode             string             `json:"mode,omitempty"`
-	KnowledgeBaseIDs []string           `json:"knowledge_base_ids,omitempty"`
-	Limit            int                `json:"limit,omitempty"`
-	DocumentIDs      []string           `json:"document_ids,omitempty"`
-	Page             int                `json:"page,omitempty"`
-	SourceScope      *DocumentScopePlan `json:"source_scope,omitempty"`
+	Query               string             `json:"query"`
+	Mode                string             `json:"mode,omitempty"`
+	KnowledgeBaseIDs    []string           `json:"knowledge_base_ids,omitempty"`
+	Limit               int                `json:"limit,omitempty"`
+	DocumentIDs         []string           `json:"document_ids,omitempty"`
+	Page                int                `json:"page,omitempty"`
+	SourceScope         *DocumentScopePlan `json:"source_scope,omitempty"`
+	CoverageTargetIndex *int               `json:"coverage_target_index,omitempty"`
 }
 
 // searchResultWithMeta wraps search result with metadata about which query matched it
 type searchResultWithMeta struct {
 	*types.SearchResult
-	SourceQuery       string
-	QueryType         string         // retrieval path that produced the row
-	KnowledgeBaseID   string         // ID of the knowledge base this result came from
-	KnowledgeBaseType string         // Type of the knowledge base (document, faq, etc.)
-	Origins           []searchOrigin // Original authorized hits sharing the exact displayed text
+	SourceQuery          string
+	QueryType            string // retrieval path that produced the row
+	KnowledgeBaseID      string // ID of the knowledge base this result came from
+	KnowledgeBaseType    string // Type of the knowledge base (document, faq, etc.)
+	belowRerankThreshold bool
+	Origins              []searchOrigin // Original authorized hits sharing the exact displayed text
 }
 
 // SearchKnowledgeTool searches chunk-indexed knowledge bases in semantic,
@@ -323,7 +331,9 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 			Execute(ctx, args)
 	}
 
-	byDocument := t.documentConstraint != nil && t.documentConstraint.ByDocument() && len(searchTargets) > 1 && len(input.DocumentIDs) > 1
+	comparisonDocuments, requirements := t.documentConstraint.searchCoverage(input.CoverageTargetIndex, input.DocumentIDs)
+	byDocument := len(comparisonDocuments) > 0
+	locations := searchLocations(requirements)
 	kbIDs := searchTargets.GetAllKnowledgeBaseIDs()
 	kbList, err := t.knowledgeBaseService.GetKnowledgeBasesByIDsOnly(ctx, kbIDs)
 	if err != nil {
@@ -331,10 +341,10 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 	}
 	kbModes, msg := resolveKBSearchModes(mode, kbList)
 	if msg != "" {
-		if byDocument {
+		if byDocument || len(locations) > 0 {
 			msg = "所选文档当前无法检索，请尝试直接读取原文或核对文档范围。"
 			return &types.ToolResult{Success: false, Output: msg, Error: msg, Data: map[string]any{
-				"document_coverage": documentSearchCoverage(input.DocumentIDs, nil, nil, nil, nil),
+				"document_coverage": append(documentSearchCoverage(comparisonDocuments, nil, nil, nil, nil), locationSearchCoverage(requirements, nil, locations)...),
 			}}, nil
 		}
 		return &types.ToolResult{Success: false, Error: msg}, fmt.Errorf("%s", msg)
@@ -368,10 +378,10 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 	if searchCalls > 0 && len(searchFailures) >= searchCalls {
 		msg := "Knowledge search failed: " + strings.Join(searchFailures, "; ") +
 			". The knowledge bases were not searched, so this is not evidence that they lack the answer."
-		if byDocument {
+		if byDocument || len(locations) > 0 {
 			msg = "这次检索未能完成，暂时无法核对所选文档。"
 			return &types.ToolResult{Success: false, Output: msg, Error: msg, Data: map[string]any{
-				"document_coverage": documentSearchCoverage(input.DocumentIDs, documentSearches, nil, nil, nil),
+				"document_coverage": append(documentSearchCoverage(comparisonDocuments, documentSearches, nil, nil, nil), locationSearchCoverage(requirements, documentSearches, locations)...),
 			}}, nil
 		}
 		return &types.ToolResult{Success: false, Output: msg, Error: msg}, nil
@@ -384,19 +394,21 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 	deduplicated := t.deduplicateResultsForRerank(allResults)
 	originCandidates := searchCandidateOrigins(deduplicated)
 
-	ranked := deduplicated
+	ranked, candidates := deduplicated, deduplicated
 	rerankRejected := 0
 	if t.rerankModel != nil && len(deduplicated) > 0 {
-		candidates := deduplicated
-		if byDocument {
-			candidates = roundRobinSearchCandidates(candidates, input.DocumentIDs, reranking.DefaultMaxCandidates)
+		if byDocument || len(locations) > 0 {
+			candidates = roundRobinSearchCandidates(candidates, comparisonDocuments, reranking.DefaultMaxCandidates, locations...)
 		}
 		reranked, err := t.rerankResults(ctx, query, candidates, mode == SearchModeKeyword)
 		if err != nil {
 			logger.Warnf(ctx, "[Tool][SearchKnowledge] Rerank failed, using retrieval order: %v", err)
 		} else {
 			ranked = reranked
-			if len(reranked) == 0 {
+			if len(locations) > 0 {
+				ranked = slices.DeleteFunc(ranked, func(row *searchResultWithMeta) bool { return row.belowRerankThreshold })
+			}
+			if len(ranked) == 0 {
 				rerankRejected = len(deduplicated)
 			}
 		}
@@ -413,17 +425,30 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 	// Deduplicate before MMR so a disposable copy never consumes a display slot
 	// or loses its independent source location in the diversity pass.
 	ranked = t.deduplicateResults(ranked)
-	qualified := coveredSearchDocuments(append(slices.Clone(ranked), keptOutside...))
-	final := selectSearchRows(ctx, ranked, retrievalLimit, byDocument)
+	qualifiedRows := append(slices.Clone(ranked), keptOutside...)
+	qualified := coveredSearchDocuments(qualifiedRows)
+	selectionRows := ranked
+	if len(locations) > 0 {
+		// Existing unscored image fallbacks still remain outside the normal
+		// limit, but an image on a target page may also reserve a placement.
+		selectionRows = qualifiedRows
+	}
+	final := selectSearchRows(ctx, selectionRows, retrievalLimit, comparisonDocuments, locations...)
 	if len(final) > limit {
 		final = final[:limit]
 	}
 	if len(keptOutside) > 0 {
-		final = t.deduplicateResults(append(final, keptOutside...))
+		var outside []*searchResultWithMeta
+		for _, row := range keptOutside {
+			if !slices.Contains(final, row) {
+				outside = append(outside, row)
+			}
+		}
+		final = t.deduplicateResults(append(final, outside...))
 	}
 	retainSearchCandidateOrigins(final, originCandidates)
 	if t.documentConstraint != nil && len(t.documentConstraint.selectedIDs()) == 0 && len(final) > 0 {
-		candidates := t.documentCandidates(ctx, final, query)
+		candidates := t.documentCandidates(ctx, append(slices.Clone(final), deduplicated...), query, max(searchKnowledgeDefaultLimit, len(final)))
 		if withheldWikiChunks > 0 {
 			candidates.Data["withheld_retracted_or_unverified_wiki_chunks"] = withheldWikiChunks
 		}
@@ -448,10 +473,12 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 	if observe != nil {
 		observe(final)
 	}
-	result, shown := t.formatWithinBudget(ctx, final, kbIDs, query, mode, byDocument)
+	result, shown := t.formatWithinBudget(ctx, final, kbIDs, query, mode, comparisonDocuments, locations...)
 	omitted := len(final) - len(shown)
-	if byDocument {
-		result.Data["document_coverage"] = documentSearchCoverage(input.DocumentIDs, documentSearches, qualified, coveredSearchDocuments(final), coveredSearchDocuments(shown))
+	if byDocument || len(locations) > 0 {
+		result.Data["document_coverage"] = append(
+			documentSearchCoverage(comparisonDocuments, documentSearches, qualified, coveredSearchDocuments(final), coveredSearchDocuments(shown)),
+			locationSearchCoverage(requirements, documentSearches, locations, deduplicated, candidates, qualifiedRows, final, shown)...)
 	}
 	if withheldWikiChunks > 0 {
 		result.Data["withheld_retracted_or_unverified_wiki_chunks"] = withheldWikiChunks
@@ -477,7 +504,7 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 		result.Output = fmt.Sprintf("Withheld %d Wiki page chunk(s) because their current retraction status could not be verified or review is pending; consult current source documents.", withheldWikiChunks)
 	} else if len(final) == 0 {
 		result.Output = emptySearchStatement(query, result.Data, len(kbIDs))
-	} else if byDocument && len(shown) == 0 {
+	} else if (byDocument || len(locations) > 0) && len(shown) == 0 {
 		result.Output = "检索找到了可用内容，但本次返回空间不足，未能展示原文。可按对应文档或页码补查。"
 	}
 	return result, nil
@@ -567,12 +594,14 @@ func (t *SearchKnowledgeTool) formatWithinBudget(
 	results []*searchResultWithMeta,
 	kbIDs []string,
 	query, mode string,
-	byDocument bool,
+	documents []string,
+	locations ...searchLocation,
 ) (*types.ToolResult, []*searchResultWithMeta) {
 	budget := OutputBudget(ctx) * 4 / 5
 	kept := slices.Clone(results)
 	result := t.formatOutput(ctx, kept, kbIDs, query, mode)
-	if byDocument && utf8.RuneCountInString(result.Output) > budget {
+	protectCoverage := len(documents) > 0 || len(locations) > 0
+	if protectCoverage && utf8.RuneCountInString(result.Output) > budget {
 		// A passage that cannot fit on its own must not displace shorter
 		// evidence from other documents.
 		kept = slices.DeleteFunc(kept, func(row *searchResultWithMeta) bool {
@@ -583,13 +612,16 @@ func (t *SearchKnowledgeTool) formatWithinBudget(
 	}
 	for len(kept) > 0 && utf8.RuneCountInString(result.Output) > budget {
 		index := len(kept) - 1
-		if byDocument {
-			index = leastCoverageLoss(kept)
+		if protectCoverage {
+			index = leastCoverageLoss(kept, documents, locations)
 		} else if len(kept) == 1 {
 			break
 		}
 		kept = slices.Delete(kept, index, index+1)
 		result = t.formatOutput(ctx, kept, kbIDs, query, mode)
+	}
+	if count, _ := result.Data["count"].(int); count != len(kept) {
+		kept, _ = t.filterWikiSearchResults(ctx, kept)
 	}
 	return result, kept
 }
@@ -1055,6 +1087,8 @@ func (t *SearchKnowledgeTool) rerankResults(
 	for i, row := range res.Results {
 		withMeta := *results[res.Indices[i]]
 		withMeta.SearchResult = row
+		withMeta.belowRerankThreshold = row.Metadata[types.MetadataKeptBy] != types.KeptByImageVector &&
+			(res.Diagnostics.Outcome == types.RerankOutcomeThresholdDegraded || res.Diagnostics.Outcome == types.RerankOutcomeFallbackTop1)
 		reranked = append(reranked, &withMeta)
 	}
 	logger.Infof(ctx, "[Tool][SearchKnowledge] Reranked %d/%d results above threshold %.2f (%s)",
@@ -1252,6 +1286,9 @@ func (t *SearchKnowledgeTool) formatOutput(
 			if len(result.Origins) > 0 {
 				origins := make([]map[string]any, 0, len(result.Origins))
 				for _, origin := range result.Origins {
+					if !sameSearchDocument(result.SearchResult, origin.SearchResult) {
+						continue
+					}
 					item := map[string]any{
 						"knowledge_id":      origin.KnowledgeID,
 						"knowledge_base_id": origin.KnowledgeBaseID,
@@ -1263,8 +1300,10 @@ func (t *SearchKnowledgeTool) formatOutput(
 					}
 					origins = append(origins, item)
 				}
-				row["origins"] = origins
-				appendSearchOriginLocations(&ob, origins)
+				if len(origins) > 0 {
+					row["origins"] = origins
+					appendSearchOriginLocations(&ob, origins)
+				}
 			}
 		}
 		fmt.Fprintf(&ob, "</%s>\n", tag)

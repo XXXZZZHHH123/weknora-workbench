@@ -41,13 +41,15 @@ func (p *DocumentScopePlan) UnmarshalJSON(data []byte) error {
 }
 
 type DocumentSourceSelection struct {
-	KnowledgeID string                  `json:"knowledge_id"`
-	FileName    string                  `json:"expected_file_name,omitempty"`
-	Title       string                  `json:"expected_title,omitempty"`
-	Page        int                     `json:"page,omitempty"`
-	Pages       []int                   `json:"pages,omitempty"`
-	UserPages   *DocumentPageConstraint `json:"user_page_constraint,omitempty"`
-	Date        *DocumentDateEvidence   `json:"date_evidence,omitempty"`
+	KnowledgeBaseID string                    `json:"-"`
+	Coverage        []DocumentCoverageBinding `json:"coverage_bindings,omitempty"`
+	KnowledgeID     string                    `json:"knowledge_id"`
+	FileName        string                    `json:"expected_file_name,omitempty"`
+	Title           string                    `json:"expected_title,omitempty"`
+	Page            int                       `json:"page,omitempty"`
+	Pages           []int                     `json:"pages,omitempty"`
+	UserPages       *DocumentPageConstraint   `json:"user_page_constraint,omitempty"`
+	Date            *DocumentDateEvidence     `json:"date_evidence,omitempty"`
 }
 
 // DocumentPageConstraint is a model-interpreted user restriction, distinct from
@@ -70,6 +72,9 @@ const documentScopePlanSchema = `{"type":"object","additionalProperties":false,"
 "knowledge_id":{"type":"string","minLength":1,"description":"Actual authorized doc://N document handle from search/list metadata"},
 "expected_file_name":{"type":"string","description":"Exact file_name from real source metadata; at least file_name or title is required"},
 "expected_title":{"type":"string","description":"Exact title from real source metadata"},
+"coverage_bindings":{"type":"array","minItems":1,"maxItems":32,"description":"Associate this actual document with entries from the active task plan. Use a location index for each relevant period or page requirement. Leave unmatched requirements unbound. Report publication dates and periods inside tables are different.","items":{"type":"object","additionalProperties":false,"required":["target_index"],"properties":{
+"target_index":{"type":"integer","minimum":0,"maximum":7},"location_index":{"type":"integer","minimum":0,"maximum":7},
+"pages":{"type":"array","minItems":1,"maxItems":8,"uniqueItems":true,"items":{"type":"integer","minimum":1},"description":"Physical pages located or corrected for this requirement, based on actual navigation or source evidence. A reading hint never restricts user scope or replaces explicit human pages."}}}},
 "page":{"type":"integer","minimum":1,"description":"Revisable model-selected physical-page read hint, not a user restriction or chunk offset; use page or pages, not both"},
 "pages":{"type":"array","minItems":1,"maxItems":8,"uniqueItems":true,"items":{"type":"integer","minimum":1},"description":"Revisable model-selected physical-page hints for one document; keep one source entry per document"},
 "user_page_constraint":{"type":"object","additionalProperties":false,"required":["pages","user_quote"],"properties":{"pages":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":{"type":"integer","minimum":1}},"user_quote":{"type":"string","minLength":1,"maxLength":2000}},"description":"Only when the user explicitly restricts physical pages: model interprets the full request, lists all allowed pages and quotes the exact user text. A verified restriction persists for this turn and cannot be removed by a read plan."},
@@ -78,36 +83,16 @@ const documentScopePlanSchema = `{"type":"object","additionalProperties":false,"
 }}}}}`
 
 type RequestedDocumentConstraint struct {
-	mu           sync.RWMutex
-	byDocument   bool
-	sources      map[string]DocumentSourceSelection
-	order        []string
-	userMessages []string
-	userPages    map[string]*DocumentPageConstraint
+	mu              sync.RWMutex
+	coverageTargets []DocumentCoverageTarget
+	sources         map[string]DocumentSourceSelection
+	order           []string
+	userMessages    []string
+	userPages       map[string]*DocumentPageConstraint
 }
 
 func NewDocumentScopeState(userMessages ...string) *RequestedDocumentConstraint {
 	return &RequestedDocumentConstraint{userMessages: append([]string(nil), userMessages...), userPages: map[string]*DocumentPageConstraint{}}
-}
-
-// SetDocumentCoveragePolicy changes retrieval presentation, independently of
-// the validated source binding and user page restrictions.
-func SetDocumentCoveragePolicy(registry *ToolRegistry, enabled bool) {
-	state := registeredDocumentScope(registry)
-	if state != nil {
-		state.mu.Lock()
-		state.byDocument = enabled
-		state.mu.Unlock()
-	}
-}
-
-func (r *RequestedDocumentConstraint) ByDocument() bool {
-	if r == nil {
-		return false
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.byDocument
 }
 
 // BoundDocumentSelections snapshots the currently validated scope in plan
@@ -253,7 +238,7 @@ func (r *RequestedDocumentConstraint) selectionForRead(knowledge *types.Knowledg
 		if len(r.userPages) > 0 && r.userPages[knowledge.ID] == nil {
 			return DocumentSourceSelection{}, fmt.Errorf("读取目标不在用户已限定的文档页范围内")
 		}
-		selected := DocumentSourceSelection{KnowledgeID: knowledge.ID, FileName: knowledge.FileName, Title: knowledge.Title,
+		selected := DocumentSourceSelection{KnowledgeID: knowledge.ID, KnowledgeBaseID: knowledge.KnowledgeBaseID, FileName: knowledge.FileName, Title: knowledge.Title,
 			UserPages: cloneDocumentPageConstraint(r.userPages[knowledge.ID])}
 		r.sources = map[string]DocumentSourceSelection{knowledge.ID: selected}
 		r.order = []string{knowledge.ID}
@@ -262,7 +247,7 @@ func (r *RequestedDocumentConstraint) selectionForRead(knowledge *types.Knowledg
 	if !ok {
 		return DocumentSourceSelection{}, fmt.Errorf("该文档不在已验证来源计划中，不能用另一报告的同名图替代；比较或更改来源须明确提交完整来源计划")
 	}
-	if selected.FileName != "" && selected.FileName != knowledge.FileName || selected.Title != "" && selected.Title != knowledge.Title {
+	if selected.KnowledgeBaseID != knowledge.KnowledgeBaseID || selected.FileName != "" && selected.FileName != knowledge.FileName || selected.Title != "" && selected.Title != knowledge.Title {
 		return DocumentSourceSelection{}, fmt.Errorf("当前文档身份元数据与已验证来源不一致；请核对当前版本后重新提交来源计划")
 	}
 	if err := validateDocumentDateEvidence(knowledge, selected.Date); err != nil {
@@ -308,6 +293,7 @@ func (r *RequestedDocumentConstraint) bind(ctx context.Context, plan DocumentSco
 			}
 		}
 		selection = cloneDocumentSelection(selection)
+		selection.KnowledgeBaseID = knowledge.KnowledgeBaseID
 		if err := validateDocumentDateEvidence(knowledge, selection.Date); err != nil {
 			return nil, err
 		}
@@ -331,12 +317,12 @@ func (r *RequestedDocumentConstraint) bind(ctx context.Context, plan DocumentSco
 		metadata = append(metadata, row)
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	// Only commit after every source/constraint has passed validation. A later
 	// model read plan may change hints, but cannot broaden a user restriction.
 	for id, selection := range validated {
 		if frozen := r.userPages[id]; frozen != nil {
 			if selection.UserPages != nil && !sameDocumentPages(frozen.Pages, selection.UserPages.Pages) {
-				r.mu.Unlock()
 				return nil, fmt.Errorf("来源计划不能改变当前用户已限定的物理页；请在该范围内重新规划读取")
 			}
 			selection.UserPages = cloneDocumentPageConstraint(frozen)
@@ -344,10 +330,12 @@ func (r *RequestedDocumentConstraint) bind(ctx context.Context, plan DocumentSco
 		if selection.UserPages != nil {
 			for _, hint := range documentSelectionHints(selection) {
 				if !slices.Contains(selection.UserPages.Pages, hint) {
-					r.mu.Unlock()
 					return nil, fmt.Errorf("读取计划页码超出用户明确限定的物理页")
 				}
 			}
+		}
+		if err := r.validateCoverageBindings(selection); err != nil {
+			return nil, err
 		}
 		validated[id] = selection
 	}
@@ -365,7 +353,6 @@ func (r *RequestedDocumentConstraint) bind(ctx context.Context, plan DocumentSco
 		}
 	}
 	r.sources, r.order = validated, order
-	r.mu.Unlock()
 	return metadata, nil
 }
 
@@ -490,30 +477,43 @@ func PrepareDocumentScope(registry *ToolRegistry, userMessages ...string) {
 	}
 }
 
-func (t *SearchKnowledgeTool) documentCandidates(ctx context.Context, results []*searchResultWithMeta, query string) *types.ToolResult {
-	seen := map[string]map[string]any{}
-	sourceHashes := map[string]string{}
+func (t *SearchKnowledgeTool) documentCandidates(ctx context.Context, results []*searchResultWithMeta, query string, limit int) *types.ToolResult {
+	type identity struct{ kb, document string }
+	seen := map[identity]map[string]any{}
+	sourceHashes := map[identity]string{}
 	documents := []map[string]any{}
 	navigationBudget := 6000
+	navigatedHits := map[searchOriginIdentity]bool{}
 	var hits []*types.SearchResult
 	for _, result := range results {
 		if result != nil && result.SearchResult != nil {
 			hits = append(hits, result.SearchResult)
 			for _, origin := range result.Origins {
-				hits = append(hits, origin.SearchResult)
+				if sameSearchDocument(result.SearchResult, origin.SearchResult) {
+					hits = append(hits, origin.SearchResult)
+				}
 			}
 		}
 	}
 	for _, result := range hits {
-		document, exists := seen[result.KnowledgeID]
+		hit := searchOriginID(result)
+		if navigatedHits[hit] {
+			continue
+		}
+		navigatedHits[hit] = true
+		key := identity{result.KnowledgeBaseID, result.KnowledgeID}
+		document, exists := seen[key]
 		if !exists {
+			if len(documents) >= limit {
+				continue
+			}
 			knowledge, err := authorizeKnowledgeInSearchTargets(ctx, t.searchTargets, result.KnowledgeID, t.knowledgeService)
 			if err != nil || documentIsRetired(knowledge) || (result.KnowledgeBaseID != "" && knowledge.KnowledgeBaseID != result.KnowledgeBaseID) {
 				continue
 			}
 			document = documentScopeMetadata(knowledge)
-			seen[result.KnowledgeID] = document
-			sourceHashes[result.KnowledgeID] = knowledge.FileHash
+			seen[key] = document
+			sourceHashes[key] = knowledge.FileHash
 			documents = append(documents, document)
 		}
 		// Keep why a ranked candidate matched. A report's publication date
@@ -525,7 +525,7 @@ func (t *SearchKnowledgeTool) documentCandidates(ctx context.Context, results []
 		}
 		stale := false
 		for _, locator := range result.SourceLocators {
-			if locator.SourceHash != "" && sourceHashes[result.KnowledgeID] != "" && locator.SourceHash != sourceHashes[result.KnowledgeID] {
+			if locator.SourceHash != "" && sourceHashes[key] != "" && locator.SourceHash != sourceHashes[key] {
 				stale = true
 				break
 			}

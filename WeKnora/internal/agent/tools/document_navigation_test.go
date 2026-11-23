@@ -23,7 +23,7 @@ func TestDocumentCandidatesKeepRankedNavigationWithoutBindingOrFullBody(t *testi
 		{SearchResult: &types.SearchResult{ID: "second", KnowledgeID: "report-a", Content: "Second ranked match"}},
 		{SearchResult: &types.SearchResult{ID: "third", KnowledgeID: "report-a", Content: "Third match must be omitted"}},
 	}
-	res := search.documentCandidates(context.Background(), results, "historical seasonal behavior")
+	res := search.documentCandidates(context.Background(), results, "historical seasonal behavior", searchKnowledgeDefaultLimit)
 	require.True(t, res.Success)
 	docs := res.Data["documents"].([]map[string]any)
 	require.Len(t, docs, 1)
@@ -53,7 +53,7 @@ func TestDocumentCandidatesNavigationRejectsUnauthorizedRetiredAndStaleMatches(t
 		{SearchResult: &types.SearchResult{KnowledgeID: "outside", Content: "OUTSIDE_BODY"}},
 		{SearchResult: &types.SearchResult{KnowledgeID: "retired", Content: "RETIRED_BODY"}},
 		{SearchResult: &types.SearchResult{KnowledgeID: "report-a", Content: "STALE_BODY", SourceLocators: types.SourceLocators{{Type: types.SourceLocatorSlide, Slide: 2, Mapping: "exact", SourceHash: "old-version"}}}},
-	}, "query")
+	}, "query", searchKnowledgeDefaultLimit)
 	docs := res.Data["documents"].([]map[string]any)
 	require.Len(t, docs, 1)
 	require.Equal(t, "report-a", docs[0]["knowledge_id"])
@@ -73,7 +73,7 @@ func TestDocumentCandidatesNavigationHasOneGlobalEncodedBudget(t *testing.T) {
 		results = append(results, &searchResultWithMeta{SearchResult: &types.SearchResult{KnowledgeID: id, ContextHeader: strings.Repeat("页", 100), Content: strings.Repeat("<>&图", 500)}})
 	}
 	search := NewSearchKnowledgeTool(nil, read.knowledgeService, nil, read.searchTargets, nil, nil)
-	res := search.documentCandidates(context.Background(), results, "query")
+	res := search.documentCandidates(context.Background(), results, "query", searchKnowledgeDefaultLimit)
 	total, count := 0, 0
 	for _, doc := range res.Data["documents"].([]map[string]any) {
 		if matches, ok := doc["navigation_matches"]; ok {

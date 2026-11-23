@@ -62,6 +62,7 @@ func (e *AgentEngine) currentCitedDocumentReviewEvidence(candidate string, state
 		documents = append(documents, map[string]any{
 			"citation_handle": e.modelContext.CitableChunkHandle(ref.ID),
 			"document_title":  ref.KnowledgeTitle, "content": ref.Content,
+			"knowledge_id": ref.KnowledgeID, "knowledge_base_id": ref.KnowledgeBaseID,
 			"content_revision": ref.ContentRevision, "source_locators": ref.SourceLocators,
 			"source_view": scope,
 			"scope":       "entire current cited view; source_view may bound a partial chunk; not a complete document",
@@ -121,6 +122,9 @@ func (e *AgentEngine) currentReadDocumentReviewEvidence(state *types.AgentState,
 						"source_identity": selectCitationFields(row, []string{"chunk_index", "chunk_type", "start_at", "end_at", "parent_chunk_id"}),
 						"source_view":     selectCitationFields(row, []string{"content_offset", "content_offset_space", "content_complete", "content_source_view", "content_rewritten"}),
 						"scope":           "entire current authorized read/search view; source_view may bound a partial chunk; not a complete document or a new citation",
+					}
+					if page, present := row["page"]; present {
+						view["page"] = page
 					}
 					key := reviewDigest(view)
 					if index, exists := seen[key]; exists {
@@ -207,7 +211,8 @@ func compactCurrentReadDocuments(views []map[string]any) []map[string]any {
 // projection. Locator quotes remain in the original tool evidence.
 func compactDocumentReviewBodies(views []map[string]any) ([]map[string]any, map[string]string, bool) {
 	prepared := make([]map[string]any, 0, len(views))
-	counts := map[string]int{}
+	type bodyKey struct{ kb, document, body string }
+	counts := map[bodyKey]int{}
 	for _, original := range views {
 		body, ok := original["content"].(string)
 		if !ok {
@@ -222,21 +227,23 @@ func compactDocumentReviewBodies(views []map[string]any) ([]map[string]any, map[
 			return nil, nil, false
 		}
 		view["source_locators"], view["locator_quotes_omitted"] = locators, true
-		counts[body]++
+		counts[bodyKey{citationString(original["knowledge_base_id"]), citationString(original["knowledge_id"]), body}]++
 		prepared = append(prepared, view)
 	}
 	groups := compactCurrentReadDocuments(prepared)
-	pooled, refs := map[string]string{}, map[string]string{}
+	pooled, refs := map[string]string{}, map[bodyKey]string{}
 	for _, group := range groups {
+		shared := group["shared_fields"].(map[string]any)
 		for _, view := range group["views"].([]map[string]any) {
 			body := view["content"].(string)
-			if counts[body] < 2 {
+			key := bodyKey{citationString(shared["knowledge_base_id"]), citationString(shared["knowledge_id"]), body}
+			if key.kb == "" || key.document == "" || counts[key] < 2 {
 				continue
 			}
-			ref := refs[body]
+			ref := refs[key]
 			if ref == "" {
 				ref = "body_" + strconv.Itoa(len(pooled)+1)
-				refs[body], pooled[ref] = ref, body
+				refs[key], pooled[ref] = ref, body
 			}
 			view["content_ref"] = ref
 			delete(view, "content")

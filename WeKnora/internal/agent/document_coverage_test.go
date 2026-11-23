@@ -25,14 +25,19 @@ func (c *comparisonCatalog) GetKnowledgeByIDOnly(_ context.Context, id string) (
 	return nil, fmt.Errorf("document unavailable")
 }
 
+type comparisonReadTimeoutKey struct{}
+
 type comparisonChunks struct {
 	interfaces.ChunkRepository
 	rows map[string][]*types.Chunk
 }
 
-func (c *comparisonChunks) ListPagedChunksByKnowledgeID(_ context.Context, tenant uint64, id string, pagination *types.Pagination, _ []types.ChunkType, _ []string, _ string, _ string, _ string, _ string, _ *bool) ([]*types.Chunk, int64, error) {
+func (c *comparisonChunks) ListPagedChunksByKnowledgeID(ctx context.Context, tenant uint64, id string, pagination *types.Pagination, _ []types.ChunkType, _ []string, _ string, _ string, _ string, _ string, _ *bool) ([]*types.Chunk, int64, error) {
 	if tenant != 7 {
 		return nil, 0, fmt.Errorf("unexpected tenant")
+	}
+	if ctx.Value(comparisonReadTimeoutKey{}) == id {
+		return nil, 0, context.DeadlineExceeded
 	}
 	rows := c.rows[id]
 	first := min((pagination.Page-1)*pagination.PageSize, len(rows))
@@ -52,7 +57,7 @@ func (*comparisonChunks) ListChunksByParentIDs(context.Context, uint64, []string
 
 const comparisonQuestion = "逐份比较设备周报中的月度开机率，并说明口径变化。"
 
-func comparisonCoverageFixture(t *testing.T, model *mockChat) (*AgentEngine, *types.AgentState, context.Context) {
+func comparisonCoverageFixture(t *testing.T, model *mockChat, locations ...agenttools.DocumentRequiredLocation) (*AgentEngine, *types.AgentState, context.Context) {
 	t.Helper()
 	ctx := types.WithCaller(t.Context(), types.Caller{TenantID: 7, UserID: "comparison-reader", Role: types.TenantRoleViewer})
 	catalog := &comparisonCatalog{documents: map[string]*types.Knowledge{}}
@@ -61,7 +66,7 @@ func comparisonCoverageFixture(t *testing.T, model *mockChat) (*AgentEngine, *ty
 	engine.config.WorkbenchDefault = true
 	engine.config.AnswerReviewMode = "standard"
 	engine.taskPlan = explicitTextDeliveryPlan()
-	engine.taskPlan.CoverageTargets = []taskCoverageTarget{{GoalIndex: 0, RequestBasis: comparisonQuestion, Criteria: "各期月度数据及口径变化", SourceScope: "相关周报", ByDocument: true}}
+	engine.taskPlan.CoverageTargets = []taskCoverageTarget{{GoalIndex: 0, RequestBasis: comparisonQuestion, Criteria: "各期月度数据及口径变化", SourceScope: "相关周报", ByDocument: true, RequiredLocations: locations}}
 	engine.toolRegistry = agenttools.NewToolRegistry()
 	chunks := &comparisonChunkService{repository: repo}
 	targets := types.SearchTargets{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "comparison-library", TenantID: 7}}
@@ -69,7 +74,7 @@ func comparisonCoverageFixture(t *testing.T, model *mockChat) (*AgentEngine, *ty
 	engine.toolRegistry.RegisterTool(agenttools.NewSearchKnowledgeTool(nil, catalog, chunks, targets, nil, nil))
 	engine.toolRegistry.RegisterTool(agenttools.NewListDocumentsTool(catalog, targets))
 	agenttools.PrepareDocumentScope(engine.toolRegistry, comparisonQuestion)
-	agenttools.SetDocumentCoveragePolicy(engine.toolRegistry, engine.plansCoverageByDocument())
+	engine.setDocumentCoverageTargets()
 	binder, err := engine.toolRegistry.GetTool(agenttools.ToolBindDocumentScope)
 	require.NoError(t, err)
 	plan := agenttools.DocumentScopePlan{Reason: "按同一指标核对各周报告"}
@@ -85,17 +90,35 @@ func comparisonCoverageFixture(t *testing.T, model *mockChat) (*AgentEngine, *ty
 		{"week-b", "现场设备周报", "2025-06-08", []int{9}, []string{"月度开机率（计划工时）｜56.5%"}},
 	} {
 		filename := report.title + report.date + ".pdf"
+		if len(locations) > 0 && (report.id == "week-d" || report.id == "week-a") {
+			report.title, report.date = "设备月度报告", "2025-06-30"
+			filename = report.title + report.date + "（初版）.pdf"
+			if report.id == "week-d" {
+				filename = report.title + report.date + "（修订版）.pdf"
+			}
+		}
 		catalog.documents[report.id] = &types.Knowledge{ID: report.id, Title: report.title, FileName: filename, FileType: "pdf", KnowledgeBaseID: "comparison-library", TenantID: 7, ParseStatus: types.ParseStatusCompleted}
 		for index, body := range report.bodies {
+			if len(locations) > 0 {
+				body = fmt.Sprintf("# Page %d\n%s", report.pages[index], body)
+			}
 			repo.rows[report.id] = append(repo.rows[report.id], &types.Chunk{
 				ID: fmt.Sprintf("%s-paragraph-%d", report.id, index), KnowledgeID: report.id, KnowledgeBaseID: "comparison-library",
 				TenantID: 7, IsEnabled: true, Content: body, ChunkType: types.ChunkTypeText, ChunkIndex: index, ContentRevision: i + 1,
 				SourceLocators: types.SourceLocators{{Type: types.SourceLocatorPDF, Mapping: "exact", Page: report.pages[index]}},
 			})
 		}
-		plan.Sources = append(plan.Sources, agenttools.DocumentSourceSelection{KnowledgeID: report.id, Title: report.title,
-			FileName: filename, Date: &agenttools.DocumentDateEvidence{Date: report.date, SourceField: "file_name", SourceText: report.date}})
-		navigation = append(navigation, map[string]any{"knowledge_id": report.id, "title": report.title})
+		binding := agenttools.DocumentCoverageBinding{Target: 0}
+		if len(locations) == 0 || report.id == "week-d" || report.id == "week-a" {
+			if len(locations) > 0 {
+				index := 0
+				binding.Location = &index
+				binding.Pages = []int{11}
+			}
+			plan.Sources = append(plan.Sources, agenttools.DocumentSourceSelection{KnowledgeID: report.id, Title: report.title,
+				FileName: filename, Coverage: []agenttools.DocumentCoverageBinding{binding}, Date: &agenttools.DocumentDateEvidence{Date: report.date, SourceField: "file_name", SourceText: report.date}})
+		}
+		navigation = append(navigation, map[string]any{"knowledge_id": report.id, "title": report.title, "knowledge_base_id": "comparison-library"})
 	}
 	navigation = append(navigation, map[string]any{"knowledge_id": "week-e", "title": "新增周报，可能含新口径"})
 	raw, err := json.Marshal(plan)
@@ -223,4 +246,74 @@ func TestDocumentCoverageFinalSynthesisIncludesSpecificGaps(t *testing.T) {
 	require.Contains(t, state.FinalAnswer, "《雨天设备周报》尚未读到正文")
 	require.Contains(t, state.FinalAnswer, "《检修设备周报》尚未读到正文")
 	require.Contains(t, state.FinalAnswer, "《现场设备周报》尚未读到正文")
+}
+
+func TestDocumentCoverageKeepsPeriodAndVersionGapsUntilActualPageRead(t *testing.T) {
+	for _, timedOut := range []bool{false, true} {
+		t.Run(map[bool]string{false: "page_read", true: "timeout"}[timedOut], func(t *testing.T) {
+			model := &mockChat{responses: []mockResponse{discoveryReply("recover", "年度表不能核实六月月度开机率。请查看两版第 11 页。")}}
+			e, state, ctx := comparisonCoverageFixture(t, model,
+				agenttools.DocumentRequiredLocation{Period: "六月", Fact: "月度开机率"},
+				agenttools.DocumentRequiredLocation{Period: "七月", Fact: "月度开机率"},
+			)
+			conversation := appendComparisonReads(t, e, state, ctx, "week-a")
+			view := e.documentCoverage(state)
+			require.Len(t, view.Locations, 3)
+			require.Equal(t, "navigation_only", view.Locations[0].Status, "the revised version remains unread")
+			require.Equal(t, "navigation_only", view.Locations[1].Status, "the annual table cannot fill page 11")
+			require.Equal(t, "source_not_bound", view.Locations[2].Status)
+			require.Contains(t, view.gapNotice(), "（初版）.pdf")
+			require.Contains(t, view.gapNotice(), "（修订版）.pdf")
+			require.Contains(t, view.gapNotice(), "第 11 页")
+			require.Contains(t, view.gapNotice(), "七月")
+			require.Contains(t, view.gapNotice(), "月度开机率")
+
+			candidate := candidateDecision{Disposition: candidateAccepted, Candidate: "已查看年度表。", TaskHash: "task", CandidateHash: "draft", SourceScopeHash: "scope"}
+			decision := e.checkDiscoveryOnlyDelivery(ctx, comparisonQuestion, candidate, state, conversation)
+			require.Equal(t, candidateNeedSource, decision.Disposition)
+			require.Len(t, model.calls, 1)
+			require.Contains(t, model.calls[0][1].Content, "年度开机率")
+			require.Contains(t, model.calls[0][1].Content, "七月")
+			if timedOut {
+				ctx = context.WithValue(ctx, comparisonReadTimeoutKey{}, "week-d")
+			}
+			read, err := e.boundedCoverageRead(ctx, comparisonQuestion, state, "session", "message", conversation, decision, false)
+			require.NoError(t, err)
+			require.NotNil(t, read)
+			require.Len(t, read.ToolCalls, 2)
+			for _, call := range read.ToolCalls {
+				require.Equal(t, agenttools.ToolReadDocument, call.Name)
+				require.EqualValues(t, 11, call.ExecutionArgs()["page"])
+				require.NotContains(t, call.ExecutionArgs(), "query")
+			}
+			conversation = e.appendToolResults(conversation, *read)
+			view = e.documentCoverage(state)
+			if timedOut {
+				require.Equal(t, "failed", view.Locations[0].LastRead)
+				require.Contains(t, view.gapNotice(), "（修订版）.pdf")
+			} else {
+				require.Equal(t, "page_returned_fact_needs_review", view.Locations[0].Status)
+				require.NotContains(t, view.gapNotice(), "（修订版）.pdf")
+				require.Contains(t, read.ToolCalls[0].Result.Output, "41.25%")
+			}
+			require.Contains(t, view.gapNotice(), "（初版）.pdf")
+			require.Contains(t, view.gapNotice(), "七月")
+			require.True(t, e.turnReview.DocumentCoverageRecoveryUsed)
+			again, err := e.boundedCoverageRead(ctx, comparisonQuestion, state, "session", "message", conversation, decision, false)
+			require.NoError(t, err)
+			require.Nil(t, again)
+			require.Len(t, state.RoundSteps, 3, "recovery runs only one batch")
+		})
+	}
+}
+
+func TestDocumentCoverageKeepsRequiredPageBeyondRecentReads(t *testing.T) {
+	row := &documentCoverageRow{requiredPages: []int{9}}
+	row.addEvidence(map[string]any{"chunk_id": "monthly-table", "content_offset_space": "physical_page_chunk_unicode_runes", "page": 9}, "read_body")
+	for i := 1; i <= 12; i++ {
+		row.addEvidence(map[string]any{"chunk_id": fmt.Sprintf("unrelated-%d", i),
+			"content_offset_space": "physical_page_chunk_unicode_runes", "page": i + 20}, "read_body")
+	}
+	require.Len(t, row.Evidence, 6)
+	require.Equal(t, "monthly-table", row.Evidence[0].ChunkID)
 }

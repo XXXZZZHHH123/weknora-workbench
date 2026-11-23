@@ -18,7 +18,7 @@ const maxEvidenceRecoveryAttempts = 2
 // never interprets feedback words or turns the evaluator's advice into facts.
 func (e *AgentEngine) resumeEvidenceCollection(ctx context.Context, state *types.AgentState, messages *[]chat.Message, guards *loopGuards, sessionID string) {
 	guards.evidenceRecoveryAttempts++
-	if review := e.turnReview.DiscoveryReview; review != nil && review.ByDocument && review.Action == "recover" {
+	if review := e.turnReview.DiscoveryReview; review != nil && review.ByDocument && review.Phase == "delivery" && review.Action == "recover" {
 		e.turnReview.DocumentCoverageRecoveryUsed = true
 	}
 	restored, restoredOriginal := restoreStructuredReviewConversation(*messages, guards)
