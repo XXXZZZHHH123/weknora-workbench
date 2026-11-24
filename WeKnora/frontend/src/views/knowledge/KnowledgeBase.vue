@@ -3085,7 +3085,7 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
   <t-dialog :visible="versionChoiceDialogOpen" :header="t('knowledgeBase.uploadFileVersion')"
     :confirm-btn="{ content: t('common.confirm'), disabled: versionChoicesConflict }"
     :cancel-btn="{ content: t('common.cancel') }" width="480px"
-    @confirm="submitVersionChoices" @update:visible="visible => { if (!visible) dismissVersionChoices() }">
+    @confirm="submitVersionChoices" @update:visible="(visible: boolean) => { if (!visible) dismissVersionChoices() }">
     <div class="upload-version-choices">
       <SourceFileVersionOptions v-for="choice in versionChoices" :key="choice.index" :choice="choice" v-model:knowledge-id="choice.knowledgeId" />
     </div>

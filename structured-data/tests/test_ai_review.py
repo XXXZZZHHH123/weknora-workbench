@@ -6,6 +6,7 @@ import httpx
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 import pytest
+from starlette.testclient import TestClient
 
 from structured_data import ai_review, model_gateway
 from structured_data.ai_review import MAX_INPUT_BYTES, AIRequestBudget, assist_mapping, suggest_mapping
@@ -37,7 +38,11 @@ def fixture(tmp_path, *, annotation=None):
 
 
 def mock_model(monkeypatch, suggestions, calls):
+    passthrough = httpx.Client.post
+
     def post(self, url, **kwargs):
+        if isinstance(self, TestClient):  # TestClient subclasses httpx.Client when httpx2 is absent.
+            return passthrough(self, url, **kwargs)
         calls.append(kwargs['json'])
         suggestion = suggestions.pop(0)
         return httpx.Response(200, request=httpx.Request('POST', url), json={'choices': [{
