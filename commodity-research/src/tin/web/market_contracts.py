@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import date, datetime, time
 import math
 import re
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import HTTPException
@@ -26,6 +27,36 @@ CONFIG_FIELDS = {'contract', 'delivery_month', 'settle', 'close', 'volume', 'oi'
                  'price_unit', 'volume_unit', 'oi_unit', 'main',
                  'variety', 'multiplier', 'tick_size', 'spec_source'}
 SPEC_FIELDS = {'variety', 'multiplier', 'tick_size', 'spec_source'}
+MAX_SOURCE_LINKS = 4
+LEGACY_SHFE_SPEC = 'legacy-shfe-sn'
+CONTRACT_SOURCE_LINK_PRESETS = {
+    '上海期货交易所': (
+        {'label': '上海期货交易所 · 日交易快讯',
+         'url': 'https://www.shfe.com.cn/reports/tradedata/dailyandweeklydata/?query_params=kx'},
+        {'label': '数据下载', 'url': 'https://www.shfe.com.cn/reports/tradedata/datadownload/'},
+    ),
+    '上海国际能源交易中心': (
+        {'label': '上期能源 · 日行情', 'url': 'https://www.ine.cn/reports/tradedata/dailyandweeklydata/'},
+        {'label': '上期能源 · 数据下载', 'url': 'https://www.ine.cn/reports/tradedata/datadownload/'},
+    ),
+    '郑州商品交易所': (
+        {'label': '郑商所 · 每日行情', 'url': 'https://www.czce.com.cn/cn/jysj/mrhq/H770301index_1.htm'},
+        {'label': '郑商所 · 2025 年期货行情下载',
+         'url': 'https://www.czce.com.cn/cn/DFSStaticFiles/Future/2025/ALLFUTURES2025.zip'},
+    ),
+    '大连商品交易所': (
+        {'label': '大商所 · 日行情', 'url': 'https://www.dce.com.cn/dalianshangpin/xqsj/tjsj26/rtj/rxq/index.html'},
+        {'label': '大商所 · 数据服务入口', 'url': 'https://www.dce.com.cn/'},
+    ),
+    '广州期货交易所': (
+        {'label': '广期所 · 日行情', 'url': 'https://www.gfex.com.cn/gfex/rihq/hqsj_tjsj.shtml'},
+        {'label': '广期所 · 历史行情下载', 'url': 'https://www.gfex.com.cn/gfex/lshq/lshqxz_new.shtml'},
+    ),
+    '中国金融期货交易所': (
+        {'label': '中金所 · 日统计', 'url': 'https://www.cffex.com.cn/cn/rtj.html'},
+        {'label': '中金所 · 历史数据下载', 'url': 'https://www.cffex.com.cn/cn/lssjxz.html'},
+    ),
+}
 
 
 def execution_spec(contract):
@@ -33,7 +64,7 @@ def execution_spec(contract):
         return {key: contract[key] for key in SPEC_FIELDS}
     # Preserve the old, explicit SHFE adapter without guessing new products' terms.
     if re.fullmatch(r'SN\d{2}(0[1-9]|1[0-2])', contract['contract']):
-        return {'variety': 'SN', 'multiplier': 1, 'tick_size': 10, 'spec_source': 'legacy-shfe-sn'}
+        return {'variety': 'SN', 'multiplier': 1, 'tick_size': 10, 'spec_source': LEGACY_SHFE_SPEC}
     return None
 
 
@@ -108,15 +139,47 @@ def _validate(contracts):
     return sorted(result, key=lambda row: row['delivery_month'])
 
 
-def contract_config(session):
+def _validate_source_links(links):
+    if not isinstance(links, list) or len(links) > MAX_SOURCE_LINKS:
+        raise HTTPException(409, '最多设置 4 个合约数据来源链接')
+    for link in links:
+        if not isinstance(link, dict) or set(link) != {'label', 'url'}:
+            raise HTTPException(409, '合约数据来源需要填写名称和网址')
+        label, url = link['label'], link['url']
+        if (not isinstance(label, str) or not label.strip() or len(label) > 40
+                or any(ord(char) < 32 for char in label)):
+            raise HTTPException(409, '合约数据来源名称须为 1 至 40 字')
+        if (not isinstance(url, str) or not 1 <= len(url) <= 300
+                or any(char.isspace() or ord(char) < 32 or char in '\\<>"' for char in url)):
+            raise HTTPException(409, '合约数据来源网址须为最多 300 字的 HTTPS 链接')
+        try:
+            parts = urlsplit(url)
+            valid = (parts.scheme == 'https' and parts.hostname and parts.username is None
+                     and (parts.port is None or parts.port > 0))
+        except ValueError:
+            valid = False
+        if not valid:
+            raise HTTPException(409, '合约数据来源网址须为有效的 HTTPS 链接')
+    return [{'label': link['label'].strip(), 'url': link['url']} for link in links]
+
+
+def _read_contract_config(session):
     if not session.info.get('workbench_id'):
         raise HTTPException(409, '请从绑定知识库的研究工作台进入')
     row = session.get(SourceMapping, mapping_key(session, CONTRACTS_KEY))
     if row is None:
-        return []
-    if not isinstance(row.config, dict) or set(row.config) != {'contracts'}:
+        return {'contracts': []}
+    if (not isinstance(row.config, dict) or 'contracts' not in row.config
+            or set(row.config) - {'contracts', 'source_links'}):
         raise HTTPException(409, '合约来源配置无效，请重新保存')
-    return _validate(row.config['contracts'])
+    config = {'contracts': _validate(row.config['contracts'])}
+    if 'source_links' in row.config:
+        config['source_links'] = _validate_source_links(row.config['source_links'])
+    return config
+
+
+def contract_config(session):
+    return _read_contract_config(session)['contracts']
 
 
 def _identifiers(contracts):
@@ -151,18 +214,31 @@ def _readable_scope(session):
     return scope
 
 
-def save_contract_config(session, contracts):
+def save_contract_config(session, contracts=None, *, source_links=None):
     scope = _readable_scope(session)
     require_shared_write(scope)
-    contracts = _validate(contracts)
-    _verify_catalog(contracts, session.info.get('knowledge_facts_catalog'), scope)
-    remember_origins(session, _identifiers(contracts))
-    _save_mapping(session, CONTRACTS_KEY, {'contracts': contracts})
+    if contracts is None and source_links is None:
+        raise HTTPException(422, '请提供合约绑定或数据来源链接')
+    if source_links is not None:
+        source_links = _validate_source_links(source_links)
+    if contracts is not None:
+        contracts = _validate(contracts)
+        _verify_catalog(contracts, session.info.get('knowledge_facts_catalog'), scope)
+    # Serialize edits to the same SQLite mapping so a links-only save and a
+    # bindings-only save can each retain the latest value of the other field.
+    session.connection().exec_driver_sql('BEGIN IMMEDIATE')
+    config = _read_contract_config(session)
+    if contracts is not None:
+        config['contracts'] = contracts
+        remember_origins(session, _identifiers(contracts))
+    if source_links is not None:
+        config['source_links'] = source_links
+    _save_mapping(session, CONTRACTS_KEY, config)
     session.commit()
-    return {'contracts': contracts}
+    return config
 
 
-def _curve(contracts, day, values, *, notices=()):
+def _curve(contracts, day, values, *, source_links=(), notices=()):
     rows, notes = [], list(notices)
     stamp = day.isoformat() if day is not None else None
     for item in contracts:
@@ -198,10 +274,16 @@ def _curve(contracts, day, values, *, notices=()):
     def shared_unit(field):
         units = {item[field] for item in contracts if item[field] is not None}
         return next(iter(units)) if len(units) == 1 else None
+
+    guide_links = source_links
+    # The execution adapter's code-based compatibility path is not source metadata.
+    if not guide_links and any(contract.get('spec_source') == LEGACY_SHFE_SPEC for contract in contracts):
+        guide_links = CONTRACT_SOURCE_LINK_PRESETS['上海期货交易所']
     return {'rows': rows, 'points': ' '.join(points), 'shape': shape, 'min': low, 'max': high,
             'mid': low / 2 + high / 2 if prices else None, 'date': stamp, 'through': stamp,
             'unit': contracts[0]['price_unit'] if contracts else None,
             'volume_unit': shared_unit('volume_unit'), 'oi_unit': shared_unit('oi_unit'),
+            'source_links': source_links, 'guide_links': guide_links,
             'source': 'knowledge-base', 'configured': bool(contracts), 'notices': notes}
 
 
@@ -228,17 +310,20 @@ def _default_day(session, contracts):
 
 def configured_contract_curve(session, day=None):
     scope = _readable_scope(session)
-    contracts = contract_config(session)
+    config = _read_contract_config(session)
+    contracts, source_links = config['contracts'], config.get('source_links', ())
     if scope.scope_version == 2:
         unavailable = set(_identifiers(contracts)) - set(session.info.get('knowledge_facts_catalog',{}))
         if unavailable:
-            return {**_curve(contracts,None,{},notices=('部分合约指标的来源已解除或不可用，请重新绑定。',)), 'unavailable':sorted(unavailable)}
+            return {**_curve(contracts, None, {}, source_links=source_links,
+                             notices=('部分合约指标的来源已解除或不可用，请重新绑定。',)),
+                    'unavailable': sorted(unavailable)}
     _verify_catalog(contracts, session.info.get('knowledge_facts_catalog'), scope)
     if day is not None and type(day) is not date:
         raise HTTPException(400, '合约行情日期应为明确的交易日')
     day = day if day is not None else _default_day(session, contracts)
     if day is None:
-        return _curve(contracts, None, {})
+        return _curve(contracts, None, {}, source_links=source_links)
     start = datetime.combine(day, time.min, SHANGHAI)
     values = {}
     for identifier in _identifiers(contracts):
@@ -256,7 +341,7 @@ def configured_contract_curve(session, day=None):
             if type(value) not in {int, float} or not math.isfinite(value):
                 raise HTTPException(503, '合约行情包含无效数值，未展示部分结果')
             values[identifier] = {day.isoformat(): value}
-    return _curve(contracts, day, values)
+    return _curve(contracts, day, values, source_links=source_links)
 
 
 def _same_day_contract_values(scope, identifiers, settlement_ids):
@@ -322,10 +407,11 @@ def readonly_contract_curve(session, scope):
     if (not scope.restricted or not scope.source_available or 'market' not in scope.view_modules
             or session.info.get('workbench_id') != scope.workbench_id):
         raise HTTPException(403, '当前成员没有市场合约行情展示授权')
-    contracts = contract_config(session)
+    config = _read_contract_config(session)
+    contracts, source_links = config['contracts'], config.get('source_links', ())
     identifiers = _identifiers(contracts)
     if not identifiers:
-        return _curve(contracts, None, {})
+        return _curve(contracts, None, {}, source_links=source_links)
     row = session.get(SourceMapping, mapping_key(session, ORIGINS_KEY))
     origins = (row.config or {}).get('origins') if row and isinstance(row.config, dict) else None
     if not isinstance(origins, dict):
@@ -335,7 +421,9 @@ def readonly_contract_curve(session, scope):
         result = bounded_facts(scope,identifiers,'market',points=1,
             same_day=[row['settle'] for row in contracts],origins=origins)
         if result.get('unavailable_series_ids'):
-            return {**_curve(contracts,None,{},notices=('部分合约指标的来源已解除或不可用，请重新绑定。',)), 'unavailable':result['unavailable_series_ids']}
+            return {**_curve(contracts, None, {}, source_links=source_links,
+                             notices=('部分合约指标的来源已解除或不可用，请重新绑定。',)),
+                    'unavailable': result['unavailable_series_ids']}
         metadata = {field['series_id']:field for field in result['indicators']}
         _verify_catalog(contracts,metadata,scope)
         stamp = result.get('selected_date')
@@ -344,7 +432,8 @@ def readonly_contract_curve(session, scope):
         values = {row['series_id']:{row['date']:row['value']} for row in result['rows']}
         if any(row['date'] != stamp for row in result['rows']):
             raise HTTPException(503,'合约行情响应包含不同日期')
-        return _curve(contracts,date.fromisoformat(stamp) if stamp else None,values)
+        return _curve(contracts, date.fromisoformat(stamp) if stamp else None, values,
+                      source_links=source_links)
     for identifier in identifiers:
         origin = origins.get(identifier)
         if (not isinstance(origin, dict) or origin.get('knowledge_base_id') != scope.knowledge_base_id
@@ -354,4 +443,4 @@ def readonly_contract_curve(session, scope):
     source_scope = replace(scope, additional_knowledge_bases=())
     chosen, metadata, values = _same_day_contract_values(source_scope, identifiers, [row['settle'] for row in contracts])
     _verify_catalog(contracts, metadata, scope)
-    return _curve(contracts, chosen, values)
+    return _curve(contracts, chosen, values, source_links=source_links)

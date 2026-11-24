@@ -190,7 +190,7 @@ def install_ingestion_routes(app, registry):
                         progress_callback=lambda value: progress(value.get('stage', '正在整理工作表')))
                     manager = registry.objects()['manager']
                     doc = manager.publication_view(manager.get(result['import_id']))
-                    if any(sheet.get('status') not in {'auto_ready', 'template_ready', 'confirmed', 'trusted_existing', 'skip', 'chart_ready'} for sheet in doc['sheets']):
+                    if not doc.get('source_update_base_id') and any(sheet.get('status') not in {'auto_ready', 'template_ready', 'confirmed', 'trusted_existing', 'skip', 'chart_ready'} for sheet in doc['sheets']):
                         from .batch_ai_import import import_all_with_ai
                         assisted = import_all_with_ai(manager, result['import_id'], total_max_requests=64,
                             per_sheet_max_requests=8, max_seconds=1200,

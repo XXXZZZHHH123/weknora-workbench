@@ -98,6 +98,8 @@ def validate_matrix(b, sheet):
 
 
 def parse_matrix(ws,fs,b,bi,sheet,result):
+    from .generic_parser import _header_notes, _header_values
+    notes = _header_notes(b, _header_values(ws, b.get('header_note_cells', [])), sheet, bi)
     width=max(column_index_from_string(c['column']) for c in b['columns'])
     width=max(width,column_index_from_string(b['row_label_column']))
     end=b['data_end_row']
@@ -147,8 +149,8 @@ def parse_matrix(ws,fs,b,bi,sheet,result):
             evidence[field + '_evidence'] = records
         unit_source = ('source' if evidence['unit_evidence'] else 'declared') if unit else None
         metadata = FieldMetadata(role=rule.get('field_role'), unit=unit, unit_source=unit_source,
-                                 frequency=rule.get('frequency'), **evidence).model_dump()
-        result['series'].append({'field_metadata': metadata,
+                                 frequency=rule.get('frequency'), header_notes=notes or None, **evidence)
+        result['series'].append({'field_metadata': metadata.model_dump(exclude={'source_codes'} if notes else {'source_codes', 'header_notes'}),
             **({'frequency': rule['frequency'], 'frequency_cells': [e['cell'] for e in evidence['frequency_evidence']]} if rule.get('frequency') else {}),
             'series_id':sid,'sheet':sheet,'metric':metric,'unit':unit,
             'unit_status':'explicit' if unit else 'needs_review','dimensions':dims,'date_mode':'period',

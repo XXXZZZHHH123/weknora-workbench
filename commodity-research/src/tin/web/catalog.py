@@ -17,6 +17,7 @@ def indicator_row(spec):
             'unit': spec.get('unit') or '—', 'source': spec.get('source_file') or '知识库结构化', 'sheet': spec.get('sheet') or '',
             'frequency': spec.get('frequency') or '未注明', 'fetch_mode': 'readonly', 'status': '可用',
             'registered': True, 'vendor_code': None, 'is_proxy': False, 'note': quality, 'field_metadata': spec.get('field_metadata'),
+            **{key: metadata[key] for key in ('header_notes', 'source_codes') if metadata.get(key)},
             'knowledge_base_id': spec.get('knowledge_base_id'), 'source_kind': spec.get('source_kind'),
             'dedup_status': spec.get('dedup_status'), 'dedup_pairs': spec.get('dedup_pairs', [])}
 

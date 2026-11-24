@@ -21,14 +21,23 @@ SCHEMA = ('series_id VARCHAR NOT NULL, date DATE, value DOUBLE, source_cell VARC
           'period VARCHAR, period_cell VARCHAR, metric_cell VARCHAR')
 
 
+def approved_research_sheets(review, manifest):
+    approved = {sheet['name'] for sheet in review.get('sheets', []) if sheet.get('status') == 'confirmed'}
+    # Explicitly recorded only by a source update. A scanner's ordinary
+    # template_ready state does not by itself approve research facts.
+    approved.update(sheet['name'] for sheet in manifest.get('sheets', []) if sheet.get('source_update_approved'))
+    return approved
+
+
 def publish_parts(store, source, sha256, parts, metadata, *, base_id=None,
-                  replace_sheets=(), before_commit=None, source_file=None):
+                  replace_sheets=(), before_commit=None, source_file=None, source_update_approved=None):
     """Parts are consumed individually; the last manifest is the publication boundary."""
     from .store import dump
 
     replaced = set(replace_sheets)
     base = store.manifest(base_id) if base_id else None
-    if base and base['sha256'] != sha256:
+    source_update = source_update_approved is not None
+    if base and base['sha256'] != sha256 and not source_update:
         raise ValueError('源文件已改变，不能复用旧工作表。')
     with tempfile.TemporaryDirectory(prefix='.import-', dir=store.datasets) as temporary:
         work = Path(temporary)
@@ -42,10 +51,15 @@ def publish_parts(store, source, sha256, parts, metadata, *, base_id=None,
             prior_series = json.loads((base_path / 'series.json').read_text())
             series = [s for s in prior_series if s['sheet'] not in replaced]
             sheets = [s for s in base['sheets'] if s['name'] not in replaced]
+            if source_update:
+                sheets = [{**s, 'retained_dataset_id': s.get('retained_dataset_id', base_id),
+                           'source_update_approved': s['name'] in source_update_approved} for s in sheets]
             excluded = [r for r in base.get('excluded_regions', [])
                         if r.get('sheet') not in replaced and r.get('range') != 'entire_sheet']
         issues_path = work / 'issues.jsonl'
         issue_count = 0
+        added_by_sheet = {}
+        observation_key = 'coalesce(cast(date AS VARCHAR), period, source_cell)'
         with issues_path.open('w', encoding='utf-8') as issues:
             def add_issue(item):
                 nonlocal issue_count
@@ -58,8 +72,15 @@ def publish_parts(store, source, sha256, parts, metadata, *, base_id=None,
                         add_issue(item)
             with closing(duckdb.connect(str(work / 'data.duckdb'))) as con:
                 con.execute('CREATE TABLE IF NOT EXISTS observations(' + SCHEMA + ')')
+                previous_latest = None
                 if base:
                     removed = [s['series_id'] for s in prior_series if s['sheet'] in replaced]
+                    if source_update:
+                        previous_latest = con.execute('SELECT max(date) FROM observations WHERE value IS NOT NULL').fetchone()[0]
+                        if removed:
+                            con.execute('CREATE TEMP TABLE previous_observations AS SELECT series_id, '
+                                + observation_key + ' AS observation_key FROM observations WHERE '
+                                'value IS NOT NULL AND series_id IN (SELECT unnest(?))', [removed])
                     if removed:
                         con.execute('DELETE FROM observations WHERE series_id IN (SELECT unnest(?))', [removed])
                 used = {s['series_id'] for s in series}
@@ -86,6 +107,13 @@ def publish_parts(store, source, sha256, parts, metadata, *, base_id=None,
                                              'GROUP BY 1,2 HAVING count(*)>1 LIMIT 5', [new_ids]).fetchall()
                     if duplicates:
                         raise ValueError(f'发现重复日期和指标，快照未发布：{duplicates}')
+                    if source_update:
+                        new_rows = 'SELECT series_id, ' + observation_key + ' FROM observations WHERE ' \
+                                   'value IS NOT NULL AND series_id IN (SELECT unnest(?))'
+                        if removed:
+                            new_rows += ' EXCEPT SELECT series_id, observation_key FROM previous_observations'
+                        sheet_name = parsed['sheets'][0]['name']
+                        added_by_sheet[sheet_name] = con.execute('SELECT count(*) FROM (' + new_rows + ')', [new_ids]).fetchone()[0]
                     series.extend(parsed['series'])
                     sheets.extend(parsed['sheets'])
                     excluded.extend(parsed.get('excluded_regions', []))
@@ -111,6 +139,8 @@ def publish_parts(store, source, sha256, parts, metadata, *, base_id=None,
                      'parser_revision': 'incremental-stream-v1'}
         if metadata.get('use_reviewed_mappings') is False:
             signature['use_reviewed_mappings'] = False
+        if metadata.get('source_lineage'):
+            signature['source_lineage'] = metadata['source_lineage']
         rule = 'workbook-review-v2:' + hashlib.sha256(json.dumps(signature, ensure_ascii=False,
                                                               sort_keys=True, default=str).encode()).hexdigest()[:16]
         dataset_id = hashlib.sha256((sha256 + ':' + rule).encode()).hexdigest()[:24]
@@ -133,9 +163,15 @@ def publish_parts(store, source, sha256, parts, metadata, *, base_id=None,
                     'series_count': len(series), 'observation_count': sum(r[1] for r in stats),
                     'valid_count': sum(r[2] for r in stats), 'issue_count': issue_count,
                     'parent_dataset_id': base_id, 'changed_sheets': sorted(replaced) if base else [s['name'] for s in sheets]}
+        if source_update:
+            from .dataset_history import source_update_event
+            manifest['source_update'] = source_update_event(added_by_sheet,
+                [s['name'] for s in metadata['coverage'] if s['status'] == 'needs_review'],
+                previous_latest, max((r[6] for r in stats if r[6] is not None), default=None))
         manifest['excluded_regions'] += [{'sheet': s['name'], 'range': 'entire_sheet', 'reason': '; '.join(s['reasons'])}
                                          for s in metadata['coverage'] if s['status'] not in
-                                         {'auto_ready', 'template_ready', 'confirmed', 'trusted_existing'}]
+                                         {'auto_ready', 'template_ready', 'confirmed', 'trusted_existing'}
+                                         and not s.get('source_update_state')]
         dump(work / 'manifest.json', manifest)
         # All expensive parsing, copying and index work is complete. Recheck
         # authorization at the actual atomic publication boundary so a revoked

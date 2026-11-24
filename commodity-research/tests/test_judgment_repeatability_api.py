@@ -9,7 +9,7 @@ from tests.test_judgment_generation import (
 )
 from tests.test_knowledge_facts import FIRST, SECOND, canonical, page
 from tin.web import judgment_generation as generation
-from tests.test_judgment_analysis_jobs import background, scope_for_fixture
+from tests.test_judgment_analysis_jobs import background, parent_model_calls, scope_for_fixture
 
 
 @pytest.fixture
@@ -19,6 +19,8 @@ def repeated(generator, monkeypatch):
 
     async def completion(scope, model, prompt):
         calls.append({'model': model, 'prompt': prompt})
+        if prompt.startswith('research-catalog-recall.v1'):
+            return {'queries': {}}
         if 'research-source-inventory.v1' in prompt:
             state['inventory'] = True
             return {'blocks': [{'id': 's0001', 'disposition': 'research', 'reason': 'Research source'}],
@@ -185,14 +187,16 @@ def test_background_jobs_with_distinct_request_keys_reuse_the_same_interpretatio
         first = await jobs.start_job(scope, body, 'synthetic-repeat-first-key')
         await jobs.runtime.tasks[first['id']]
         initial = await jobs.job_result(scope, first['id'])
-        count = len(repeated[-1])
+        initial_calls = parent_model_calls(repeated[-1])
+        assert len(initial_calls) == 3
         second = await jobs.start_job(scope, body, 'synthetic-repeat-second-key')
         await jobs.runtime.tasks[second['id']]
         result = await jobs.job_result(scope, second['id'])
         assert first['id'] != second['id']
         assert result['draft_id'] != initial['draft_id']
         assert result['markdown'] == initial['markdown']
-        assert len(repeated[-1]) == count
+        assert result['analysis_reused'] is True
+        assert parent_model_calls(repeated[-1]) == initial_calls
         assert rows() == []
 
     asyncio.run(run())

@@ -50,6 +50,9 @@ function fixture({ context = {}, storage = new Map(), metadata = {} } = {}) {
     addEventListener() {}, location: { reload() {} } };
   const sandbox = vm.createContext({ window, document, URLSearchParams, URL, AbortController, console, setTimeout, clearTimeout });
   sandbox.researchFetch = (...args) => window.researchFetch(...args);
+  // Pages load analysis-jobs.js before their own scripts; these catalog checks only need an idle job helper.
+  sandbox.ResearchAnalysisJobs = { create: () => ({ submit: async () => null, restore: async () => null, discover: async () => null, pause() {}, busy: false }),
+    requested: async () => null, message: () => '' };
   element('market-core-catalog').textContent = JSON.stringify(metadata);
   return { window, nodes, element, sandbox, storage, ready,
     load(file) { vm.runInContext(fs.readFileSync(path.join(web, file), 'utf8'), sandbox, { filename: file }); },

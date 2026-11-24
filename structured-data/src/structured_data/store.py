@@ -192,7 +192,7 @@ class DataStore:
         binding=self._native_source_binding(manifest)
         return binding['file_name'] if binding else manifest.get('source_file')
 
-    def _native_source_binding(self, manifest, *, verify_content=False):
+    def _native_source_binding(self, manifest, *, verify_content=False, source_knowledge_id=None):
         """Return an existing exact native binding, never choose by file name."""
         from .workspaces import current_identity, valid_knowledge_base_id
         kb_id = self.root.name
@@ -222,6 +222,7 @@ class DataStore:
                 continue
             name = binding.get('file_name')
             if (binding.get('knowledge_base_id') != kb_id
+                    or source_knowledge_id is not None and binding.get('source_knowledge_id') != source_knowledge_id
                     or not valid_knowledge_base_id(binding.get('source_knowledge_id'))
                     or type(binding.get('tenant_id')) is not int or binding['tenant_id'] <= 0
                     or (identity is not None and binding['tenant_id'] != identity.knowledge_base_tenant_id)
@@ -246,16 +247,33 @@ class DataStore:
 
     def result_source(self, dataset_id, manifest=None, **metadata):
         manifest=manifest or self.manifest(dataset_id)
+        source_knowledge_id = None
+        retained = False
+        if metadata.get('sheet'):
+            source_dataset = self.sheet_source_dataset(dataset_id, metadata['sheet'], manifest=manifest)
+            if source_dataset != dataset_id:
+                retained = True
+                current = self._native_source_binding(self.raw_manifest(dataset_id), verify_content=True)
+                source_knowledge_id = current['source_knowledge_id'] if current else None
+                dataset_id, manifest = source_dataset, self.manifest(source_dataset)
+                metadata['source_dataset_id'] = source_dataset
         result={'file':manifest['source_file'],'sha256':manifest['sha256'],**metadata}
         # manifest() may already have replaced an internal import filename with
         # the native display name; validate against the stored original record.
         raw=self.raw_manifest(dataset_id)
-        binding=self._native_source_binding(raw,verify_content=True)
+        binding = (self._native_source_binding(raw, verify_content=True, source_knowledge_id=source_knowledge_id)
+                   if not retained or source_knowledge_id else None)
         if binding:
+            result['file'] = binding['file_name']
             result.update(knowledge_id=binding['source_knowledge_id'],
                 knowledge_base_id=binding['knowledge_base_id'],
                 knowledge_base_tenant_id=binding['tenant_id'],file_hash=binding['file_hash'].lower())
         return result
+
+    def sheet_source_dataset(self, dataset_id, sheet, *, manifest=None):
+        manifest = manifest if manifest is not None else self.raw_manifest(dataset_id)
+        return next((s['retained_dataset_id'] for s in manifest.get('sheets', [])
+                     if s['name'] == sheet and s.get('retained_dataset_id')), dataset_id)
 
     def chart_index(self, dataset_id):
         from .native_charts import index
@@ -264,7 +282,15 @@ class DataStore:
     def catalog(self, dataset_id, sheet=None, question=''):
         from .native_charts import catalog
         from .source_context import enrich_catalog
-        rows = enrich_catalog(self, dataset_id, catalog(self, dataset_id, sheet, question))
+        manifest = self.raw_manifest(dataset_id)
+        rows = enrich_catalog(self, dataset_id, catalog(self, dataset_id, sheet, question), manifest=manifest)
+        retained = {sheet['name']: sheet['retained_dataset_id'] for sheet in manifest.get('sheets', [])
+                    if sheet.get('retained_dataset_id')}
+        if retained:
+            reasons = {sheet['name']: '；'.join(sheet.get('reasons', [])) for sheet in manifest.get('coverage', [])}
+            rows = [{**item, 'source_dataset_id': retained[item['sheet']],
+                     'source_update_notice': reasons.get(item['sheet']) or '沿用上一版数据，待核对'}
+                    if item['sheet'] in retained else item for item in rows]
         quality = self.series_quality(dataset_id, [item['series_id'] for item in rows
                                                      if item.get('series_id')])
         return [{**item, **({'field_quality': {**quality[item['series_id']], 'field_role': (item.get('field_metadata') or {}).get('role') or ('numeric' if quality[item['series_id']]['valid_numeric_count'] else 'text_dimension' if quality[item['series_id']]['observed_type'] == 'text' else None)}}
@@ -304,6 +330,7 @@ class DataStore:
 
     def list_datasets(self, *, include_samples=False) -> list[dict]:
         from .dataset_kind import dataset_kind
+        reviews = {}
         items = []
         for path in sorted(self.datasets.glob("*/manifest.json")):
             if not re.fullmatch(r"[0-9a-f]{24}", path.parent.name):
@@ -314,12 +341,19 @@ class DataStore:
                 continue
             stored_source_file = doc.get('source_file')
             doc['source_file'] = self._display_native_source(doc)
-            items.append({'dataset_kind': kind, 'changed_sheets': doc.get('changed_sheets', []),
+            item = {'dataset_kind': kind, 'changed_sheets': doc.get('changed_sheets', []),
                           '_review_source_file': stored_source_file,
                           'import_id': doc.get('import_id'),
                           'use_reviewed_mappings': doc.get('use_reviewed_mappings', True),
                           'parent_dataset_id': doc.get('parent_dataset_id'),
-                          **{k: doc[k] for k in ("dataset_id", "source_file", "sha256", "rule_version", "imported_at", "series_count", "observation_count", "valid_count", "issue_count", "sheets", "excluded_regions")}})
+                          **({'source_update': doc['source_update']} if doc.get('source_update') else {}),
+                          **{k: doc[k] for k in ("dataset_id", "source_file", "sha256", "rule_version", "imported_at", "series_count", "observation_count", "valid_count", "issue_count", "sheets", "excluded_regions")}}
+            if doc.get('source_lineage') and not any(key[0] == 'native' for key in self._history_source_keys(item, reviews)):
+                # Source updates become visible after their exact native review
+                # binding is committed. An interrupted review write leaves the
+                # previous publication visible and the retry can reuse staging.
+                continue
+            items.append(item)
         for item in items:
             manifest = self.manifest(item["dataset_id"])
             coverage = manifest.get("coverage", [])
@@ -338,7 +372,7 @@ class DataStore:
             if coverage:
                 item["coverage_notice"] = "pending_sheets仅列工作表名称，不表示统一原因或都需要映射；请按同一数据集下pending_sheet_states的实际status和reasons分别判断，needs_review与unsupported不可混为一谈。unsupported不能表述为完成映射后即可使用。pending状态不证明原件无数据或整张表均未导入；同名工作表须按数据集身份分别判断。未指定工作表时核验真实目录字段，可按需用resolve_fields语义识别；明确指定未导入表时不可换表。已导入sheet也仅覆盖parsed_range。status、reasons和数据集身份供工具判断范围，最终回复无需复述内部键或ID。"
         items.sort(key=lambda d: d["imported_at"], reverse=True)
-        source_keys, reviews = {}, {}
+        source_keys = {}
         seen = set()
         for item in items:
             keys = self._history_source_keys(item, reviews)
@@ -825,10 +859,12 @@ class DataStore:
                              'truncated': result['truncated'],
                              'filters': filters})
         result['source']=self.result_source(dataset_id,manifest,sheet=series['sheet'],header_cells=series.get('header_cells',[]))
+        if result['source'].get('source_dataset_id'):
+            warnings.append('此工作表沿用上一版已发布数据，当前原件待核对。')
         from .result_contract import (attach_result_contract, snapshot, source_column,
                                       unknown_unit, excel_value_unit, typed_sha256)
         names=sorted(records[0]) if records else []
-        value_unit=excel_value_unit({series_id:series},manifest['sha256'])
+        value_unit=excel_value_unit({series_id:series},result['source']['sha256'])
         technical={'source_cell','date_cell','category_cell','period_cell','metric_cell','formula'}
         attach_result_contract(result,source_snapshot=snapshot(result['source'],kind='excel_observations',
             dataset_id=dataset_id,scope='returned_source_rows',input_data=records,

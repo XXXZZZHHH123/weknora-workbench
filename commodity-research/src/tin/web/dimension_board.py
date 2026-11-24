@@ -2,13 +2,16 @@
 from copy import deepcopy
 from datetime import date, datetime, timezone
 import re
+from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
+from starlette.concurrency import run_in_threadpool
 
+from tin.integration.page_facts import source_error_details
 from tin.integration.workbench_scope import artifact_session, current_workbench, require_shared_write
 from tin.models import Judgment, SourceMapping
 from tin.web.research_dimensions import (CATEGORIES, DIMENSIONS_KEY, default_dimensions, read_dimensions,
@@ -52,7 +55,7 @@ def revision(session):
     return (row.version or 1) if row else 0
 
 
-def validate_config(values, previous, *, draft=False):
+def validate_config(values, previous, *, draft=False, admitted_ids=()):
     """Keep persisted/reserved ids; all other new ids are server authored.
 
     Template drafts may temporarily retain extra dimensions and sections for
@@ -60,6 +63,7 @@ def validate_config(values, previous, *, draft=False):
     """
     values = deepcopy(values)
     known = {item['id'] for item in previous}
+    known.update(admitted_ids)
     defaults = {item['id']: item['category'] for item in default_dimensions()}
     seen_client, seen_items, section_ids = set(), set(), set()
     total = 0
@@ -167,6 +171,76 @@ def _items(dimensions):
     return [item for dim in dimensions for section in dim.get('sections', []) for item in section['items']]
 
 
+def _threshold_condition(rule):
+    from tin.compute.rule_values import decimal_value
+    from tin.schemas.judgment import MovingAverageTarget
+    value = rule.value
+    if isinstance(value, MovingAverageTarget):
+        operator = {'crosses_below': '下穿', 'crosses_above': '上穿'}.get(rule.operator, rule.operator)
+        return f'{operator}MA{value.window}'
+    if isinstance(value, list):
+        return '–'.join(format(decimal_value(endpoint).normalize(), 'f') for endpoint in value)
+    return rule.operator + format(decimal_value(value).normalize(), 'f')
+
+
+def _judgment_references(session, scope, identifiers, judgment_id=None):
+    """Describe links from the saved payload, without reading observations."""
+    if not identifiers or 'judgments' not in scope.view_modules:
+        return None, {}
+    from tin.integration.research_profile import research_variety
+    from tin.judgments.service import current, to_payload
+    from tin.schemas.judgment import EXPRESSION, binding_ids
+    from tin.web.judgment_dimension_view import pending_note_entries
+    from tin.web.judgment_panels import selected_judgment
+    from tin.web.restricted_views import shared_judgment
+
+    if scope.restricted:
+        row = shared_judgment(session, scope)
+    elif judgment_id is not None:
+        row = selected_judgment(session, judgment_id, scope=scope)
+    else:
+        row = current(session, research_variety(session, scope=scope), scope=scope)
+    if row is None:
+        return None, {}
+    try:
+        payload = to_payload(row)
+    except (TypeError, ValueError):
+        # Legacy records with incomplete logic can still supply dimension counts.
+        return None, {}
+    references = {}
+
+    def append(identifier, anchor, label):
+        references.setdefault(identifier, []).append({'anchor': anchor, 'label': label})
+
+    def bind(item, anchor, label):
+        for identifier in binding_ids(item):
+            if identifier in identifiers:
+                append(identifier, anchor, label)
+
+    for side, label in (('bull', '多方依据'), ('bear', '空方依据')):
+        for index, item in enumerate(getattr(payload.contradiction, side).evidence):
+            bind(item, f'judgment-evidence-{side}{index}', label)
+    for rule in payload.thresholds:
+        bind(rule, f'judgment-threshold-{rule.id}', f'阈值 {_threshold_condition(rule)}')
+    for rule in payload.falsifiers:
+        subject, operator, value = EXPRESSION.fullmatch(rule.expression).groups()
+        condition = ('较上期变化' if subject == 'change' else '') + operator + value
+        if rule.consecutive_periods > 1:
+            condition += f'·连续{rule.consecutive_periods}期'
+        bind(rule, f'judgment-falsifier-{rule.id}', f'证伪 {condition}')
+    notes = {}
+    for index, note, _, target in pending_note_entries(payload):
+        kind, key = target or ('note', index)
+        anchor = f'judgment-{kind}-{key}'
+        for identifier in binding_ids(note):
+            if identifier in identifiers:
+                pair = identifier, anchor
+                notes[pair] = notes.get(pair, 0) + 1
+    for (identifier, anchor), count in notes.items():
+        append(identifier, anchor, f'待核对 {count}')
+    return row.id, references
+
+
 def describe_config(session, scope, dimensions=None):
     from tin.web.chart_data import catalog_fields, chart_read_scope, definition_series_ids
     from tin.web.dimension_data import pinned_definition
@@ -217,12 +291,12 @@ def describe_config(session, scope, dimensions=None):
             'evidence': extra, 'evidence_available': 'judgments' in scope.view_modules}
 
 
-def save_config(session, scope, body):
+def save_config(session, scope, body, *, admitted_ids=()):
     previous = read_dimensions(session)
     expected = revision(session)
     if expected != body.revision:
         raise HTTPException(409, {'reason': 'revision_conflict', 'message': '配置已由其他研究员修改，请刷新后重试', 'revision': expected})
-    dimensions = validate_config(body.dimensions, previous)
+    dimensions = validate_config(body.dimensions, previous, admitted_ids=admitted_ids)
     removed = {dim['id'] for dim in previous} - {dim['id'] for dim in dimensions}
     counts, _ = evidence_counts(session, previous, scope)
     referenced = {key: counts[key]['total'] for key in removed if counts[key]['total'] and key not in body.confirm_delete}
@@ -262,7 +336,7 @@ def save_config(session, scope, body):
 @router.get('')
 def get_config():
     scope = require_scope()
-    with artifact_session(scope) as session:
+    with source_error_details(), artifact_session(scope) as session:
         return describe_config(session, scope)
 
 
@@ -271,6 +345,24 @@ def put_config(body: DimensionConfig):
     scope = require_scope(write=True)
     with artifact_session(scope) as session:
         return save_config(session, scope, body)
+
+
+@router.put('/from-setup/{job_id}')
+async def put_setup_config(job_id: str, body: DimensionConfig):
+    from tin.web.workbench_setup_jobs import job_result
+    scope = require_scope(write=True)
+    result = await job_result(scope, job_id)
+    admitted_ids = {dimension['id'] for item in result['items']
+                    if item['part'] == 'dimensions' and item['state'] == 'succeeded'
+                    for dimension in item['data'].get('dimensions', [])}
+    if not admitted_ids:
+        raise HTTPException(409, '此任务没有可核对的维度草稿')
+
+    def save():
+        with artifact_session(scope) as session:
+            return save_config(session, scope, body, admitted_ids=admitted_ids)
+
+    return await run_in_threadpool(save)
 
 
 @router.get('/templates')
@@ -300,7 +392,8 @@ def template_draft(template_id: str, body: DimensionTemplateDraft):
 
 
 @router.get('/data')
-def get_data(date: str | None = None, period: str = 'weekly'):
+def get_data(date: str | None = None, period: str = 'weekly',
+             judgment_id: Annotated[int | None, Query(ge=1, le=2**63 - 1)] = None):
     from tin.web.chart_data import cutoff
     from tin.web.dimension_data import dimension_data
     scope = require_scope()
@@ -310,10 +403,18 @@ def get_data(date: str | None = None, period: str = 'weekly'):
     with artifact_session(scope) as session:
         dimensions = read_dimensions(session)
         counts, extra = evidence_counts(session, dimensions, scope)
+        identifiers = {item['id'] for item in _items(dimensions) if item['kind'] == 'indicator'}
+        selected_id, references = _judgment_references(session, scope, identifiers, judgment_id)
         rev = revision(session)
-    result = dimension_data(scope, dimensions, day, period)
+    with source_error_details():
+        result = dimension_data(scope, dimensions, day, period)
     for dim in result['dimensions']:
         dim['references'] = counts[dim['id']]
+    if references:
+        result['judgment_id'] = str(selected_id)
+        for item in _items(result['dimensions']):
+            if item['kind'] == 'indicator' and item['id'] in references:
+                item['judgment_references'] = references[item['id']]
     return {**result, 'revision': rev, 'evidence': extra, 'evidence_available': 'judgments' in scope.view_modules}
 
 
@@ -322,10 +423,12 @@ def build_page_router(templates):
 
     @pages.get('/sn/dimensions')
     def page(request: Request):
+        from tin.web.workbench_setup_entry import setup_enabled
         scope = require_scope()
         return templates.TemplateResponse(request, 'dimensions.html', {
             'nav': 'dimensions', 'ticker': [], 'names': {}, 'd': None,
-            'dimension_page': {'date': request.query_params.get('date'), 'can_write': scope.can_edit}})
+            'dimension_page': {'date': request.query_params.get('date'), 'can_write': scope.can_edit,
+                               'setup_enabled': setup_enabled(scope)}})
 
     return pages
 
@@ -348,6 +451,7 @@ def restricted_page(request, scope, templates):
         facts = bounded_facts(scope, identifiers, 'indicators', origins=origins) if identifiers else {'indicators': [], 'rows': []}
         fields = {field['series_id']: field for field in facts['indicators']}
         counts, extra = evidence_counts(session, dimensions, scope)
+        _, references = _judgment_references(session, scope, fields.keys())
         rev = revision(session)
     today = datetime.now(SHANGHAI).date()
     report_day = date.fromisoformat(max((point['date'] for point in facts['rows']
@@ -368,6 +472,8 @@ def restricted_page(request, scope, templates):
                             sheet=field.get('sheet') or '' if field else '',
                             source='已授权绑定', status='ok' if field else 'unavailable', reason='' if field else reason)
                 item.update(meta)
+                if field and item['id'] in references:
+                    item['judgment_references'] = references[item['id']]
                 points = sorted([point for point in facts['rows'] if point['series_id'] == item['id']], key=lambda point: point['date'])
                 if not field or not points:
                     item.update(status='unavailable', reason=reason)

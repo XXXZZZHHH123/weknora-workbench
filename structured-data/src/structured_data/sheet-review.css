@@ -46,7 +46,7 @@ main{max-width:1660px}
 .batch-confirm-results [data-sheet-confirm="failed"]{color:var(--danger,#b33b3b)}
 .ai-job-panel{display:flex;align-items:center;gap:9px;margin:10px 0;padding:9px 11px;border:1px solid color-mix(in srgb,var(--primary,#24477f) 28%,var(--line));border-radius:7px;background:color-mix(in srgb,var(--primary,#24477f) 6%,var(--paper));color:var(--text);font-size:12px}
 .ai-job-panel[hidden]{display:none}
-.ai-job-panel #aiJobText{flex:1;min-width:0;line-height:1.5}
+.ai-job-panel :is(#aiJobText,#headerCleanupStage){flex:1;min-width:0;line-height:1.5}
 .ai-job-panel button{flex:none;padding:5px 8px;font-size:11px}
 .ai-job-spinner{width:12px;height:12px;flex:none;border:2px solid color-mix(in srgb,var(--primary,#24477f) 22%,transparent);border-top-color:var(--primary,#24477f);border-radius:50%;animation:ai-job-spin .8s linear infinite}
 .ai-job-panel.done .ai-job-spinner{display:none}
@@ -179,6 +179,20 @@ dialog h3{margin:0 0 12px;font-size:18px}
 dialog p{font-size:13px;line-height:1.7;margin:0 0 10px}
 .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:15px}
 .dialog-actions button{font-size:13px;padding:9px 12px}
+#headerCleanupDialog{width:min(600px,calc(100% - 32px));max-height:85dvh;overflow:auto}
+#headerCleanupDialog .dialog-actions{flex-wrap:wrap}
+#headerCleanupDialog button[hidden],#headerCleanupNotice:empty{display:none}
+#headerCleanupResults{display:grid;gap:10px;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+#headerCleanupResults ul{margin:5px 0;padding-inline-start:20px}
+.header-cleanup-sheet{padding:8px 10px;border:1px solid var(--line);border-radius:6px}
+.header-cleanup-sheet label{flex-direction:row;align-items:baseline;gap:6px;min-width:0;font-weight:600}
+.header-cleanup-sheet details{margin-top:4px}
+.header-cleanup-fields,.header-cleanup-diagnostics{color:var(--muted);white-space:pre-wrap}
+.header-cleanup-fields .header-cleanup-value{margin:0}
+.header-cleanup-value[open] .header-cleanup-preview{display:none}
+.header-cleanup-conflict{color:#8c571d;font-weight:600}
+.header-cleanup-diagnostics{margin-top:4px}
+#headerCleanupNotice{margin-top:12px}
 .save-template{flex-direction:row;align-items:center;gap:7px;font-size:12px;min-width:0}
 #confirmList p{border-top:1px solid #e5eee7;padding:7px 0;margin:0;font-size:13px}
 #confirmList{max-height:260px;overflow:auto;margin-bottom:10px}

@@ -31,6 +31,8 @@ export interface UploadPayload {
   file: File
   /** Path-qualified name the backend splits into folder + file name. */
   fileName?: string
+  replaceKnowledgeId?: string
+  saveAsNew?: boolean
 }
 
 export interface KnowledgeStatusRow {
@@ -41,7 +43,7 @@ export interface KnowledgeStatusRow {
 }
 
 export interface TransferEnd {
-  /** The file reached the server, so the knowledge base has a new row. */
+  /** The file reached the server, so the knowledge base list should refresh. */
   uploaded: boolean
   /** Nothing is queued or uploading for this knowledge base any more. */
   settled: boolean

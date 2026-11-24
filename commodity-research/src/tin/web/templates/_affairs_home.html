@@ -2,13 +2,45 @@
   <div class="affairs-shortcuts">{% for item in affairs.shortcuts %}<a href="{{ research_url(item.href) }}">{{ item.title }} ↗</a>{% endfor %}</div>
 </div></header>
 
+{% if affairs.setup_enabled %}
+{% if affairs.setup_empty %}
+<section class="workbench-setup-guide research-panel" id="workbench-setup-guide" aria-labelledby="workbench-setup-guide-title" hidden>
+  <div><h2 id="workbench-setup-guide-title">从往期周报建立工作台</h2>
+    <p>选择一份已授权的周报，生成研究结构和待核对的草稿。</p></div>
+  <button type="button" class="affairs-check" data-workbench-setup-open aria-haspopup="dialog" aria-controls="workbench-setup-dialog">选择周报</button>
+  <button type="button" class="affairs-check" id="workbench-setup-dismiss" aria-label="关闭周报建立引导">关闭</button>
+</section>
+{% endif %}
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/dimensions.css?v={{ static_version() }}">
+{% include '_workbench_setup_dialog.html' %}
+{% endif %}
+
+{% set show_monitors = not restricted_view and (not research_workbench() or not research_workbench().restricted) %}
+{% macro resident(item) %}
+    {% set detail = item.detail ~ (' · 最近触发 ' ~ item.last_trigger if item.last_trigger else '') %}
+    <a class="affairs-row" data-kind="monitor-resident" data-status="{{ item.current_state }}" href="{{ research_url(item.href) }}"><div><div class="affairs-row-title"><span class="affairs-row-kind">{{ item.current_state }}</span>{{ item.title }}</div><div class="affairs-row-detail monitor-description" title="{{ detail }}">{{ detail }}</div></div><span class="affairs-row-arrow">查看 →</span></a>
+{% endmacro %}
 <section class="affairs-alerts" aria-labelledby="affairs-alert-title">
-  <div class="affairs-section-head"><h2 id="affairs-alert-title">预警与触发</h2><button id="affairs-check" type="button" class="affairs-check" {% if not affairs.can_check %}disabled{% endif %}>重新检查</button></div>
+  <div class="affairs-section-head">
+    <h2 id="affairs-alert-title">预警与触发</h2>
+    <div class="affairs-section-actions">
+      {% if show_monitors %}
+      <button id="monitor-create-toggle" type="button" class="affairs-check" aria-haspopup="dialog" aria-controls="monitors">新建监测</button>
+      <button id="monitor-list-toggle" type="button" class="affairs-check" aria-haspopup="dialog" aria-controls="monitors">监测 {{ affairs.monitor_count | default(0) }}</button>
+      {% endif %}
+      <button id="affairs-check" type="button" class="affairs-check" data-can-check-rules="{{ 'true' if affairs.can_check_rules else 'false' }}" {% if not affairs.can_check %}disabled{% endif %}>重新检查</button>
+    </div>
+  </div>
   <p id="affairs-check-status" class="affairs-status" role="status" aria-live="polite"></p>
   <div id="affairs-alert-list">
-    {% for item in affairs.alerts %}
+    {% set residents = affairs.monitors | default([]) if show_monitors else [] %}
+    {% set alerts = affairs.alerts | rejectattr('kind', 'equalto', 'monitor') | list %}
+    {% for item in residents if item.current_state == '触发' %}{{ resident(item) }}{% endfor %}
+    {% for item in alerts %}
     <a class="affairs-row" href="{{ research_url(item.href) }}"><div><div class="affairs-row-title"><span class="affairs-row-kind">{{ item.kind }}</span>{{ item.title }}</div><div class="affairs-row-detail">{{ item.detail }}{% if item.trade_date %} · 计算日期 {{ item.trade_date }}{% endif %}{% if item.recorded_at %} · 记录于 {{ item.recorded_at }}{% endif %} · 非实时记录</div></div><span class="affairs-row-arrow">查看 →</span></a>
-    {% else %}<div class="affairs-empty">{% if affairs.can_check %}暂无预警记录{% else %}暂无可检查规则{% endif %}</div>{% endfor %}
+    {% endfor %}
+    {% for item in residents if item.current_state != '触发' %}{{ resident(item) }}{% endfor %}
+    {% if not alerts and not residents %}<div class="affairs-empty">{% if affairs.can_check %}暂无预警记录{% else %}暂无可检查规则{% endif %}</div>{% endif %}
   </div>
 </section>
 
@@ -27,6 +59,4 @@
   {% endfor %}
 </div>
 {% if affairs.partial %}<p class="affairs-notice">部分结果</p>{% endif %}
-{% if not restricted_view and (not research_workbench() or not research_workbench().restricted) %}
-{% include '_monitors.html' %}
-{% endif %}
+{% if show_monitors %}<div id="affairs-monitor-toasts" role="status" aria-live="polite" aria-atomic="false"></div>{% include '_monitors.html' %}{% endif %}

@@ -173,6 +173,14 @@ def _chart_definition(scope, item):
         return definition, '已有新修订，仍显示绑定修订' if row.revision != item['revision'] else ''
 
 
+def _unavailable_indicator_details(identifier, field, configured):
+    names = (field.get('name'), field.get('metric'), configured.get('name'), configured.get('title'))
+    label = next((name for name in names if isinstance(name, str) and name.strip() not in ('', identifier)), '')
+    return {'name': indicator_name(identifier, {identifier: label}) if label else '',
+            'sheet': field.get('sheet') or configured.get('sheet') or '',
+            'unit': field.get('unit') or configured.get('unit') or ''}
+
+
 def _operand_summaries(identifiers, fields, series, effective_day, day, period):
     result = []
     for identifier in identifiers:
@@ -184,7 +192,8 @@ def _operand_summaries(identifiers, fields, series, effective_day, day, period):
             # A chart can contain a curve with no observation. Its other real
             # curves remain useful; the empty operand never becomes a zero.
             result.append({'kind': 'indicator', 'id': identifier, 'series_id': identifier,
-                           'status': 'unavailable', 'reason': _reason(error)})
+                           'status': 'unavailable', 'reason': _reason(error),
+                           **_unavailable_indicator_details(identifier, fields[identifier], {})})
     return result
 
 
@@ -357,9 +366,19 @@ def dimension_data(scope, dimensions, day=None, period='weekly'):
                 except Exception as error:
                     if isinstance(error, HTTPException) and error.status_code in {401, 403}:
                         raise
-                    reason = _reason(error)
-                    failed.append({**item, 'reason': reason})
-                    cards.append({**item, 'status': 'unavailable', 'reason': reason})
+                    failure = {**item, 'reason': _reason(error)}
+                    if item['kind'] == 'indicator':
+                        field = fields.get(item['id'], {})
+                        failure.update(_unavailable_indicator_details(item['id'], field, item))
+                    elif key in chart_definitions:
+                        failure['name'] = chart_definitions[key][0].title
+                    failed.append(failure)
+                    card = {**failure, 'status': 'unavailable'}
+                    if item['kind'] == 'indicator':
+                        metadata = field.get('field_metadata') or {}
+                        if metadata.get('header_notes') or metadata.get('source_codes'):
+                            card['field_metadata'] = deepcopy(metadata)
+                    cards.append(card)
                     summary['unavailable'] += 1
             section['items'] = cards
         dimension['summary'] = summary

@@ -6,19 +6,20 @@ program code checks only identities, the shared dimension protocol and limits.
 import asyncio
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from tin.integration.page_facts import bounded_facts, catalog_read_scope, catalog_snapshot, page_read_scope
 from tin.integration.workbench_scope import artifact_session, current_workbench, require_shared_write
-from tin.web import judgment_recall as recall, strategy_citations, strategy_text
+from tin.web import analysis_jobs, judgment_recall as recall, strategy_citations, strategy_text
 from tin.web.chart_data import cutoff
 from tin.web.judgment_generation import PROMPT_BYTES
 from tin.web.research_display import indicator_name
 from tin.web.research_dimensions import (
     CATEGORIES, dimension_prompt, read_dimensions, validate_dimension_list,
 )
+from tin.web.suggestion_ids import filter_series_suggestions, ignored_series_summary
 
 router = APIRouter(prefix='/api/sn/dimensions')
 MAX_SUGGESTIONS = 96
@@ -116,10 +117,11 @@ def section_inventory(dimensions):
     return {'items': items}
 
 
-def query_prompt(dimensions, inventory):
-    return (recall.query_prompt(structure_prompt(dimensions), inventory) +
-            '\n本任务每个条目都是研究维度的一个环节；没有环节的维度本身也是一个条目。'
-            '请逐条理解维度名称、说明和环节，各写1–3个最有代表性的指标检索说法。')
+def query_prompt(dimensions, inventory, catalog):
+    instructions = ('\n本任务每个条目都是研究维度的一个环节；没有环节的维度本身也是一个条目。'
+                    '请逐条理解维度名称、说明和环节，各写1–3个最有代表性的指标检索说法。')
+    return recall.query_prompt(structure_prompt(dimensions), inventory, catalog,
+        prompt_bytes=PROMPT_BYTES - len(instructions.encode('utf-8'))) + instructions
 
 
 def checked_queries(document, inventory):
@@ -133,14 +135,6 @@ def checked_queries(document, inventory):
                    for values in queries.values())):
         raise HTTPException(422, '模型未返回有效的逐环节检索说法，请重新生成建议；未使用固定列表')
     return recall.item_queries(document, inventory)
-
-
-def recall_sections(index, inventory, phrased, per_item):
-    # Unlike judgment evidence (which may be prose-only), every configured
-    # section needs recall even when another section has a model phrasing.
-    return [(item, index.recall([*phrased.get(item['id'], []),
-                                item['quote'][:recall.QUOTE_QUERY_CHARS]], per_item))
-            for item in inventory['items']]
 
 
 def candidate_fields(scope, catalog, identifiers, day):
@@ -181,6 +175,7 @@ def pick_prompt(groups, catalog, dimensions, day):
     candidates = {identifier: {
         'name': indicator_name(identifier, {identifier: catalog[identifier].get('name') or catalog[identifier].get('metric')}),
         **{key: catalog[identifier].get(key) or '' for key in ('unit', 'frequency', 'sheet', 'source_file')},
+        **({'dimensions': catalog[identifier]['dimensions']} if catalog[identifier].get('dimensions') else {}),
         'latest_date': catalog[identifier]['latest_date']}
         for identifier in ordered}
     items = [{**{key: item[key] for key in ('id', 'dimension', 'section', 'quote')}, 'candidates': found}
@@ -234,16 +229,23 @@ def validate_suggestions(document, catalog, dimensions, groups):
             raise HTTPException(422, '模型建议缺少有效的文字理由')
         return value.strip()
 
+    proposed = []
     for row in document['items']:
         if not isinstance(row, dict):
             raise HTTPException(422, '模型建议条目格式无效')
-        target_item = target(row)
-        key = target_item['id']
-        identifier = row.get('series_id')
-        if not isinstance(identifier, str) or identifier not in allowed[key] or identifier not in catalog:
-            raise HTTPException(422, '模型返回的指标 ID 不存在于本环节展示的候选目录，请重新生成建议；未使用固定列表')
+        proposed.append({**row, 'item_id': target(row)['id']})
+    kept, ignored = filter_series_suggestions(proposed, catalog,
+        '模型返回的指标 ID 不存在于本环节展示的候选目录，请重新生成建议；未使用固定列表',
+        allowed_for=lambda row: allowed[row['item_id']])
+    duplicates = 0
+    for row in kept:
+        key = row['item_id']
+        target_item = by_id[key]
+        identifier = row['series_id']
         if identifier in seen:
-            raise HTTPException(422, '模型重复建议了同一指标，请重新生成建议')
+            # A repeated indicator keeps its first suggestion; the repeat is counted.
+            duplicates += 1
+            continue
         seen.add(identifier)
         counts[key] += 1
         if counts[key] > MAX_PER_SECTION or len(seen) > MAX_SUGGESTIONS:
@@ -260,19 +262,28 @@ def validate_suggestions(document, catalog, dimensions, groups):
         if not isinstance(row, dict):
             raise HTTPException(422, '模型留空原因格式无效')
         key = target(row)['id']
+        # A section with selections keeps them; a repeated reason keeps the first.
         if counts[key] or key in empty:
-            raise HTTPException(422, '模型留空原因与环节选择不一致，请重新生成建议')
+            continue
         empty[key] = reason(row)
-    if any(not counts[key] and key not in empty for key in allowed):
+    for row in ignored:
+        key = row['item_id']
+        if not counts[key]:
+            empty.setdefault(key, '本环节返回的指标均不在候选目录，已忽略')
+    missing = [key for key in allowed if not counts[key] and key not in empty]
+    if missing and not items:
         raise HTTPException(422, '模型未说明每个空环节的留空原因，请重新生成建议')
+    # With usable suggestions, an omitted reason only marks that section for review.
+    for key in missing:
+        empty[key] = '模型未说明留空原因'
     sections = [{'dimension': item['dimension'], 'section': item['section'],
                  'item_id': item['id'], 'section_id': item['section_id'], 'candidate_count': len(found),
                  'selected_count': counts[item['id']], 'empty_reason': empty.get(item['id'], '')}
                 for item, found in groups]
-    return items, sections
+    return items, sections, len(ignored), duplicates
 
 
-async def generate_suggestions(scope, model_id, dimensions=None, day=None):
+async def generate_suggestions(scope, model_id, dimensions=None, day=None, *, progress=None):
     day = cutoff(day)
     dimensions = draft_dimensions(dimensions if dimensions is not None
                                   else await run_in_threadpool(dimensions_for_scope, scope))
@@ -281,30 +292,40 @@ async def generate_suggestions(scope, model_id, dimensions=None, day=None):
     if not catalog:
         raise HTTPException(422, '当前目录没有可用指标，请先确认知识库工作表')
     inventory = section_inventory(dimensions)
-    request = query_prompt(dimensions, inventory)
-    if len(request.encode('utf-8')) > PROMPT_BYTES:
-        raise HTTPException(413, '研究维度结构超过本次检索容量，请缩小范围后重试')
+    recall_catalog = recall.catalog_fields(catalog)
+    request = query_prompt(dimensions, inventory, recall_catalog)
+    if progress:
+        await progress('dimension_queries')
     document = await strategy_text.completion(scope, model_id, request, purpose='dimension_queries')
     phrased = checked_queries(document, inventory)
-    index = recall.catalog_index([{**field, 'id': identifier,
-        'name': field.get('name') or field.get('metric') or identifier} for identifier, field in catalog.items()])
-    largest = recall_sections(index, inventory, phrased, recall.RECALL_STEPS[0])
+    index = recall.catalog_index(recall_catalog)
+    # Even a section without viable candidates needs its own empty reason.
+    largest = recall.recall_groups(index, inventory, phrased, recall.RECALL_STEPS[0], all_items=True)
     identifiers = list(dict.fromkeys(identifier for _, found in largest for identifier in found))
     fields = await run_in_threadpool(candidate_fields, scope, catalog, identifiers, day)
     for per_item in recall.RECALL_STEPS:
-        groups = largest if per_item == recall.RECALL_STEPS[0] else recall_sections(index, inventory, phrased, per_item)
+        groups = [(item, found[:per_item]) for item, found in largest]
         prompt = pick_prompt(groups, fields, dimensions, day)
         if len(prompt.encode('utf-8')) <= PROMPT_BYTES:
             break
     else:
         raise HTTPException(413, '研究维度与召回候选超过本次容量，请缩小范围后重试')
+    if progress:
+        await progress('dimension_fields')
     document = await strategy_text.completion(scope, model_id, prompt, purpose='dimension_fields')
-    items, sections = validate_suggestions(document, fields, dimensions, groups)
+    items, sections, ignored_count, duplicates = validate_suggestions(document, fields, dimensions, groups)
+    ignored = ignored_series_summary(ignored_count)
+    if duplicates:
+        ignored = {'ignored_count': ignored_count + duplicates,
+                   'ignored_reason': '；'.join(part for part in (ignored['ignored_reason'],
+                                               f'模型重复建议了 {duplicates} 个指标，已只保留第一次') if part)}
     shown = {identifier for _, found in groups for identifier in found}
     return {'items': items, 'sections': sections, 'as_of': day.isoformat(),
             'notice': '模型未给出合适的指标建议，留空原因见各环节；未使用固定列表。' if not items else '',
+            **ignored,
             'truncated': False, 'field_count': len(catalog), 'selected_field_count': len(shown),
-            'recall_per_section': per_item, 'model_id': model_id}
+            'recall_per_section': per_item, 'model_id': model_id,
+            **({'_verification': {'catalog': metadata.get('version'), 'dimensions': dimensions}} if progress else {})}
 
 
 def inference_prompt(sources):
@@ -355,7 +376,7 @@ def validate_inference(document):
     return dimensions
 
 
-async def infer_dimensions(scope, body):
+async def infer_dimensions(scope, body, *, progress=None):
     # The bounded structure read preserves the source picker's direct-source,
     # selected-version and parsed-provenance checks for larger reports too.
     originals = []
@@ -365,17 +386,49 @@ async def infer_dimensions(scope, body):
         if not content.get('supported') or not content.get('text', '').strip():
             raise HTTPException(422, content.get('notice') or '所选资料没有可读正文，请重新选择')
         originals.append(content)
+    if progress:
+        await progress('analyzing')
     document = await strategy_text.completion(scope, body.model_id, inference_prompt(originals),
                                                purpose='dimension_inference')
     dimensions = validate_inference(document)
-    for citation, original in zip(body.sources, originals):
+    if progress:
+        await progress('validating')
+    result = {'dimensions': dimensions, 'model_id': body.model_id,
+            'notice': '归纳结果仅为草稿，请编辑并确认保存后应用。',
+            'sources': [strategy_citations.structure_source_summary(source) for source in originals],
+            '_verification': [source_stamp(original) for original in originals]}
+    await verify_inference(scope, body.model_dump(mode='json'), result)
+    if not progress:
+        result.pop('_verification')
+    return result
+
+
+def source_stamp(content):
+    from tin.web.judgment_jobs import digest
+    return digest([content.get('sha256'), content.get('provenance')])
+
+
+async def verify_inference(scope, body, result):
+    for citation, original in zip(InferenceInput.model_validate(body).sources, result['_verification'], strict=True):
         current = await strategy_citations.read_structure_digest(scope, citation.source_binding_id,
             citation.knowledge_id, citation.file_version)
-        if current.get('sha256') != original.get('sha256') or current.get('provenance') != original.get('provenance'):
+        if source_stamp(current) != original:
             raise HTTPException(409, '所选资料在归纳期间更新，请重新选择；当前配置尚未修改')
-    return {'dimensions': dimensions, 'model_id': body.model_id,
-            'notice': '归纳结果仅为草稿，请编辑并确认保存后应用。',
-            'sources': [strategy_citations.structure_source_summary(source) for source in originals]}
+
+
+async def verify_suggestions(scope, body, result):
+    evidence = result['_verification']
+    if body.get('dimensions') is None:
+        current = draft_dimensions(await run_in_threadpool(dimensions_for_scope, scope))
+        if current != evidence['dimensions']:
+            raise HTTPException(409, '研究维度已变化，请刷新后重新生成建议')
+    current = await run_in_threadpool(catalog_snapshot, scope)
+    if current.get('version') != evidence['catalog']:
+        raise HTTPException(409, '研究维度候选来源已变化，请刷新后重新生成建议')
+
+
+analysis_jobs.result_checks['dimension_inference'] = verify_inference
+analysis_jobs.result_checks['dimension_fields'] = verify_suggestions
 
 
 @router.get('/sources')
@@ -385,19 +438,35 @@ async def sources(search: str = Query('', max_length=200), offset: int = Query(0
     return await strategy_citations._file_options(scope, search, offset, limit)
 
 
-@router.post('/suggestions')
-async def suggest(body: SuggestionInput):
-    scope = writable_scope()
+async def run_suggestions(scope, body, progress, job_id):
+    await progress('loading_catalog')
     try:
-        return await asyncio.wait_for(generate_suggestions(scope, body.model_id, body.dimensions, body.date), timeout=SECONDS)
+        async with asyncio.timeout(SECONDS):
+            result = await generate_suggestions(scope, body['model_id'], body.get('dimensions'), body.get('date'),
+                                                progress=progress)
+            await progress('validating')
+            await verify_suggestions(scope, body, result)
+            return result
     except TimeoutError:
         raise HTTPException(503, f'生成建议超过 {SECONDS} 秒，请稍后重试；研究维度尚未修改') from None
 
 
-@router.post('/infer')
-async def infer(body: InferenceInput):
-    scope = writable_scope()
+async def run_inference(scope, body, progress, job_id):
+    await progress('reading_source')
     try:
-        return await asyncio.wait_for(infer_dimensions(scope, body), timeout=SECONDS)
+        return await asyncio.wait_for(infer_dimensions(scope, InferenceInput.model_validate(body), progress=progress),
+                                      timeout=SECONDS)
     except TimeoutError:
         raise HTTPException(503, f'归纳维度超过 {SECONDS} 秒，请稍后重试；研究维度尚未修改') from None
+
+
+@router.post('/suggestions', status_code=202)
+async def suggest(request: Request, body: SuggestionInput):
+    return await analysis_jobs.start_job(writable_scope(), 'dimension_fields', body.model_dump(mode='json'),
+                                         request.headers.get('idempotency-key'), run_suggestions)
+
+
+@router.post('/infer', status_code=202)
+async def infer(request: Request, body: InferenceInput):
+    return await analysis_jobs.start_job(writable_scope(), 'dimension_inference', body.model_dump(mode='json'),
+                                         request.headers.get('idempotency-key'), run_inference)

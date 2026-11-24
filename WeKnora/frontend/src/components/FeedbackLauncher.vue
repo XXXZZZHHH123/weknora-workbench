@@ -1,11 +1,17 @@
 <template>
-  <!-- 全局右下角「反馈」悬浮入口：登录后的所有页面都可见，登录/注册等公开页不显示。 -->
   <template v-if="enabled">
-    <button type="button" class="feedback-launcher" :class="{ 'is-open': visible, 'is-raised': onChatRoute }" aria-label="反馈与建议"
-      title="报告问题或提出建议" @click="visible = true">
-      <t-icon name="chat-bubble-smile" size="18px" aria-hidden="true" />
-      <span class="feedback-launcher__label">反馈</span>
-    </button>
+    <div ref="rail" class="feedback-dock" :class="{ 'is-dragging': dragging }"
+      :data-task-placement="opensDown ? 'down' : 'up'" :style="positionStyle">
+      <slot />
+      <button ref="handle" type="button" class="feedback-launcher" :class="{ 'is-open': visible, 'is-raised': onChatRoute }"
+        aria-label="反馈与建议" :aria-keyshortcuts="mobile ? undefined : 'Alt+ArrowUp Alt+ArrowDown'"
+        @pointerdown="startDrag" @pointermove="moveDrag" @pointerup="finishDrag"
+        @pointercancel="cancelDrag" @lostpointercapture="cancelDrag" @keydown="moveWithKeyboard"
+        @click="click" @dblclick="reset">
+        <t-icon name="chat-bubble-smile" size="18px" aria-hidden="true" />
+        <span class="feedback-launcher__label" aria-hidden="true">反馈</span>
+      </button>
+    </div>
     <FeedbackDialog v-model:visible="visible" />
   </template>
 </template>
@@ -14,59 +20,76 @@
 import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useFeedbackDock } from '@/composables/useFeedbackDock'
 import FeedbackDialog from './FeedbackDialog.vue'
 
 const route = useRoute()
 const authStore = useAuthStore()
 const visible = ref(false)
+const rail = ref<HTMLElement | null>(null)
+const handle = ref<HTMLButtonElement | null>(null)
 
 // 对话页底部是输入框，按钮上移避免挡住发送键。
 const CHAT_ROUTES = new Set(['chat', 'kbChat', 'globalCreatChat', 'kbCreatChat'])
 const onChatRoute = computed(() => CHAT_ROUTES.has(String(route.name)))
 const enabled = computed(() => authStore.isLoggedIn && route.matched.some((r) => r.meta.requiresAuth))
+const storageKey = computed(() => {
+  const tenant = authStore.effectiveTenantId
+  const user = authStore.user?.id
+  return tenant && user ? `weknora:feedback-dock:v1:${encodeURIComponent(tenant)}:${encodeURIComponent(user)}` : null
+})
+const { mobile, dragging, positionStyle, opensDown, startDrag, moveDrag, finishDrag, cancelDrag, click, reset, moveWithKeyboard } =
+  useFeedbackDock(rail, handle, storageKey, () => { visible.value = true })
 </script>
 
 <style lang="less" scoped>
-.feedback-launcher {
+.feedback-dock {
+  --feedback-size: 42px;
+  --feedback-bottom: 24px;
+  --feedback-task-gap: 12px;
+  --feedback-rail-min-height: 128px;
+  --feedback-anchor-top: clamp(0px, var(--feedback-dock-top, 100%), calc(100% - var(--feedback-size)));
   position: fixed;
+  top: 0;
   right: 24px;
-  bottom: 24px;
-  // 低于 TDesign 抽屉/弹窗（1500+），打开抽屉时不压住其底部按钮。
+  bottom: min(var(--feedback-bottom), max(0px, calc(100% - var(--feedback-rail-min-height))));
+  width: var(--feedback-size);
+  // 低于 TDesign 抽屉和弹窗，避免挡住其底部按钮。
   z-index: 1400;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 40px;
-  padding: 0 16px 0 14px;
+  pointer-events: none;
+}
+
+.feedback-dock:has(.feedback-launcher.is-raised),
+body:has([data-bottom-composer]) .feedback-dock {
+  --feedback-bottom: 160px;
+}
+
+.feedback-launcher {
+  position: absolute;
+  top: var(--feedback-anchor-top);
+  right: 0;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: var(--feedback-size);
+  height: var(--feedback-size);
+  padding: 0;
   border: none;
-  border-radius: 999px;
+  border-radius: 50%;
   background: var(--td-brand-color);
   color: var(--td-text-color-anti);
-  font-size: var(--app-text-md);
-  font-weight: 500;
-  letter-spacing: 0.02em;
   box-shadow: var(--cds-shadow-lg);
-  cursor: pointer;
-  transition: transform var(--app-motion-base) cubic-bezier(0.16, 1, 0.3, 1),
-    box-shadow var(--app-motion-base) ease, background-color var(--app-motion-base) ease, opacity var(--app-motion-base) ease;
+  cursor: grab;
+  touch-action: none;
+  pointer-events: auto;
+  transition: background-color var(--app-motion-base) ease, opacity var(--app-motion-base) ease;
 
-  &:hover {
-    transform: translateY(-2px);
-    background: var(--td-brand-color-hover);
-  }
-
-  &:active {
-    transform: translateY(0);
-    background: var(--td-brand-color-active);
-  }
+  &:hover { background: var(--td-brand-color-hover); }
+  &:active { background: var(--td-brand-color-active); }
 
   &:focus-visible {
     outline: 2px solid var(--td-brand-color);
     outline-offset: 3px;
-  }
-
-  &.is-raised {
-    bottom: 160px;
   }
 
   &.is-open {
@@ -75,57 +98,40 @@ const enabled = computed(() => authStore.isLoggedIn && route.matched.some((r) =>
   }
 }
 
+.feedback-launcher__label {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 8px);
+  transform: translateY(-50%);
+  padding: 4px 8px;
+  border-radius: var(--app-radius-sm);
+  background: var(--td-bg-color-component);
+  color: var(--td-text-color-primary);
+  box-shadow: var(--td-shadow-2);
+  font: inherit;
+  white-space: nowrap;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.feedback-dock:not(.is-dragging) .feedback-launcher:is(:hover, :focus-visible) .feedback-launcher__label {
+  visibility: visible;
+}
+
+.feedback-dock.is-dragging .feedback-launcher { cursor: grabbing; }
+
 @media (max-width: 768px) {
-  .feedback-launcher {
+  .feedback-dock {
+    --feedback-size: 44px;
+    --feedback-bottom: 16px;
+    --feedback-anchor-top: calc(100% - var(--feedback-size));
     right: 16px;
-    bottom: 16px;
-    width: 44px;
-    height: 44px;
-    padding: 0;
-    justify-content: center;
   }
 
-  .feedback-launcher__label {
-    display: none;
-  }
+  .feedback-launcher { cursor: pointer; touch-action: auto; }
 }
 
 @media print {
-  .feedback-launcher {
-    display: none;
-  }
-}
-</style>
-
-<style lang="less">
-// Other bottom-right floating entries (the platform task dock) stack above this launcher instead of
-// under it: launcher offset + its height + a 12px gap, following its raised and narrow-screen positions.
-body:has(.feedback-launcher) {
-  --feedback-launcher-clearance: 76px;
-}
-
-body:has(.feedback-launcher.is-raised) {
-  --feedback-launcher-clearance: 212px;
-}
-
-// An embedded chat panel outside the chat routes (the research workbench assistant) also keeps its
-// composer and send button at the bottom-right; it marks itself with data-bottom-composer while open.
-body:has([data-bottom-composer]) {
-  --feedback-launcher-clearance: 212px;
-
-  .feedback-launcher {
-    bottom: 160px;
-  }
-}
-
-@media (max-width: 768px) {
-  body:has(.feedback-launcher) {
-    --feedback-launcher-clearance: 72px;
-  }
-
-  body:has(.feedback-launcher.is-raised),
-  body:has([data-bottom-composer]) {
-    --feedback-launcher-clearance: 216px;
-  }
+  .feedback-launcher { display: none; }
 }
 </style>

@@ -12,15 +12,22 @@
     {% if not restricted_view and workspace_can_write and research_cards.enabled %}<button type="button" id="strategy-text-open" class="rw-btn" title="用自己的话写方案，由模型整理成方案草稿">文字整理</button>{% endif %}
     {% if not restricted_view and research_cards and research_cards.enabled %}<button type="button" id="strategy-markdown-open" class="rw-btn" title="全部方案导出为 Markdown，修改后导入">md管理</button>{% endif %}
     {% if not restricted_view and workspace_can_write %}
+      {% if platform_models %}
       <details class="strategy-generation-menu"><summary class="rw-btn">生成交易草稿</summary><div class="strategy-generation-controls">
-      {% if platform_models %}<select id="strategy-model" aria-label="策略分析模型" disabled><option value="">正在读取模型…</option></select>{% endif %}
-      <button class="button-primary" id="generate-strategies" {% if platform_models %}disabled data-platform-model="true"{% endif %}>生成待审阅草稿</button>
+      <select id="strategy-model" aria-label="策略分析模型" disabled><option value="">正在读取模型…</option></select>
+      <button class="button-primary" id="generate-strategies" type="button" disabled>生成待审阅草稿</button>
+      <button id="strategy-generation-restore" type="button" hidden>取回上次生成结果</button>
       </div></details>
+      {% endif %}
       {% if research_cards.enabled %}<button type="button" id="research-card-add" class="rw-btn rw-btn-primary">＋ 新建方案</button>{% endif %}
     {% endif %}
   </div>
 </header>
 <div id="strategy-notice" class="strategy-notice" role="status"></div>
+{% if not restricted_view and workspace_can_write and platform_models %}
+<p id="strategy-generation-status" role="status" aria-live="polite"></p>
+<section id="strategy-generation-preview" class="detail-panel" aria-label="待核对交易草稿" hidden></section>
+{% endif %}
 {% if not restricted_view %}<aside class="strategy-notice" data-dedup-references="strategy" data-dedup-reference-id="{{ workspace_selected or '' }}" data-dedup-workspace hidden></aside>{% endif %}
 {% if restricted_view %}
 <p class="strategy-small-note">图表引用暂不对受限视角开放</p>

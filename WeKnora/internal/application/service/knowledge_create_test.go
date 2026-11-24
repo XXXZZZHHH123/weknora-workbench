@@ -23,6 +23,20 @@ type createKnowledgeFileRepoStub struct {
 	createdKnowledge *types.Knowledge
 }
 
+type existingUploadRepoStub struct {
+	createKnowledgeFileRepoStub
+	checks int
+}
+
+func (r *existingUploadRepoStub) CheckKnowledgeExists(context.Context, uint64, string, *types.KnowledgeCheckParams) (bool, *types.Knowledge, error) {
+	r.checks++
+	return true, &types.Knowledge{ID: "original"}, nil
+}
+
+func (r *existingUploadRepoStub) UpdateKnowledgeColumn(context.Context, string, string, interface{}) error {
+	return nil
+}
+
 func (r *createKnowledgeFileRepoStub) CheckKnowledgeExists(
 	ctx context.Context,
 	tenantID uint64,
@@ -154,6 +168,30 @@ func TestCreateKnowledgeFromFileDoesNotPersistWhenStorageSaveFails(t *testing.T)
 	require.Nil(t, knowledge)
 	require.Equal(t, 1, fileSvc.saveCalls)
 	require.Zero(t, repo.createCalls)
+}
+
+func TestCreateKnowledgeFromFileSaveAsNewOverridesContentDeduplication(t *testing.T) {
+	t.Parallel()
+	repo := &existingUploadRepoStub{}
+	fileSvc := &createKnowledgeFileServiceStub{}
+	svc := &knowledgeService{
+		repo:      repo,
+		kbService: &createKnowledgeFileKBServiceStub{kb: &types.KnowledgeBase{ID: "kb-1"}},
+		fileSvc:   fileSvc,
+		task:      &createKnowledgeTaskEnqueuerStub{},
+	}
+	ctx := newCreateKnowledgeFileContext()
+	file := newMultipartFileHeader(t, "doc.txt", "same content")
+	duplicate, err := svc.CreateKnowledgeFromFile(ctx, "kb-1", file, nil, nil, "", nil, "", nil)
+	require.Error(t, err)
+	require.Equal(t, "original", duplicate.ID)
+	require.Zero(t, repo.createCalls)
+
+	row, err := svc.CreateKnowledgeFromFile(types.WithKnowledgeUploadSaveAsNew(ctx), "kb-1", file, nil, nil, "", nil, "", nil)
+	require.NoError(t, err)
+	require.NotEqual(t, duplicate.ID, row.ID)
+	require.Equal(t, 1, repo.checks)
+	require.Equal(t, 1, repo.createCalls)
 }
 
 func TestCreateKnowledgeFromFilePersistsStoredFilePathOnCreate(t *testing.T) {

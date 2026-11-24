@@ -141,7 +141,22 @@ def _headers(archive, wanted, rows_by_sheet, deadline):
     return result
 
 
-def enrich_catalog(store, dataset, catalog):
+def enrich_catalog(store, dataset, catalog, *, manifest=None):
+    if manifest is None:
+        manifest = store.raw_manifest(dataset)
+    retained = {s['name']: s['retained_dataset_id'] for s in manifest.get('sheets', [])
+                if s.get('retained_dataset_id')}
+    if not retained:
+        return _enrich_catalog(store, dataset, catalog)
+    groups = defaultdict(list)
+    for entry in catalog:
+        groups[retained.get(entry['sheet'], dataset)].append(entry)
+    enriched = {entry['series_id']: entry for origin, entries in groups.items()
+                for entry in _enrich_catalog(store, origin, entries) if entry.get('series_id')}
+    return [enriched.get(entry.get('series_id'), entry) for entry in catalog]
+
+
+def _enrich_catalog(store, dataset, catalog):
     groups = defaultdict(list)
     for item in catalog:
         if not item.get('chart_id'):

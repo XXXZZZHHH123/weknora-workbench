@@ -159,6 +159,45 @@ def test_detached_generation_runs_real_compiler_and_restores_private_preview_wit
     run(case, scenario)
 
 
+def test_generated_graph_recommends_unbound_nodes_in_durable_draft(case, monkeypatch):
+    from tin.web import judgment_recall
+
+    complete = generation.completion
+    extra_id = 'kb-' + '1' * 48
+    candidate = {'series_id': extra_id, 'name': 'Recorded input', 'reason': 'Same measurement'}
+
+    async def unbound(scope, model_id, prompt, image=None):
+        graph = await complete(scope, model_id, prompt, image)
+        if prompt.startswith('阶段：绑定与有界细化'):
+            graph['nodes'][0]['series_id'] = None
+        return graph
+
+    async def recommend(scope, model_id, catalog, text, inventory, *, module, shared, progress):
+        assert module == 'diagram' and shared == []
+        assert extra_id in {field['id'] for field in catalog}
+        assert 'Synthetic flow' in text
+        node, = inventory['items']
+        assert node['quote'] == 'Supply / Input'
+        await progress('analyzing')
+        return {node['id']: {'recommended': candidate, 'recommendations': [candidate], 'ambiguous': False}}
+
+    monkeypatch.setattr(generation, 'completion', unbound)
+    monkeypatch.setattr(generation, 'recommendation_catalog',
+        lambda scope: (VERSION, [*case.catalog, {'id': extra_id}]))
+    monkeypatch.setattr(judgment_recall, 'recommend', recommend)
+
+    async def scenario():
+        _, result = await completed(case)
+        assert result['bindings'] == []
+        assert extra_id not in result['markdown']
+        recommendation, = result['indicator_recommendations'].values()
+        assert recommendation['recommended'] == candidate
+        assert result['recommendation_version'] == VERSION
+        assert_no_saved_diagrams(case)
+
+    run(case, scenario)
+
+
 def test_inline_image_reaches_generation_but_is_not_persisted_or_returned(case):
     image = ('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0l'
              'EQVR42mP8/x8AAwMCAO+aYv0AAAAASUVORK5CYII=')

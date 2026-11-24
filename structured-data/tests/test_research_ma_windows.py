@@ -10,6 +10,7 @@ from structured_data.research_facts_v2 import parameters
 
 ID = 'kb-' + 'a' * 48
 OTHER = 'kb-' + 'b' * 48
+PERIOD = 'kb-' + 'c' * 48
 
 @pytest.fixture
 def store():
@@ -31,25 +32,33 @@ def selection(**extra):
 
 def test_dated_invalid_periods_stay_in_the_bounded_window_and_hide_raw_values(store):
     service, _ = store
-    rows = _bounded_rows(service,[({'dataset_id':'synthetic'},{'source':ID})],selection(),strict=True)
+    rows, undated = _bounded_rows(service,[({'dataset_id':'synthetic'},{'source':ID})],selection(),strict=True)
     assert rows == [
         {'series_id':ID,'date':'2031-01-02','value':None,'value_status':'missing'},
         {'series_id':ID,'date':'2031-01-03','value':3,'value_status':'valid'},
         {'series_id':ID,'date':'2031-01-04','value':None,'value_status':'missing'}]
+    assert not undated
     assert '987654321' not in repr(rows) and '123456789' not in repr(rows) and OTHER not in repr(rows)
 
 def test_old_default_retains_its_original_valid_only_behavior(store):
-    service, _ = store
-    rows = _bounded_rows(service,[({'dataset_id':'synthetic'},{'source':ID})],
-        {'series_ids':[ID],'as_of':'2031-01-04','points_per_series':2},strict=True)
-    assert [(row['date'],row['value']) for row in rows] == [('2031-01-01',1),('2031-01-03',3)]
-
-def test_unknown_dates_cannot_be_assigned_a_fake_position_in_the_ma_window(store):
     service, con = store
     con.execute("INSERT INTO observations VALUES ('source',NULL,50,'valid','B6')")
-    with pytest.raises(HTTPException) as error:
-        _bounded_rows(service,[({'dataset_id':'synthetic'},{'source':ID})],selection(),strict=True)
-    assert error.value.status_code == 409 and '日期' in error.value.detail
+    rows, undated = _bounded_rows(service,[({'dataset_id':'synthetic'},{'source':ID})],
+        {'series_ids':[ID],'as_of':'2031-01-04','points_per_series':2},strict=True)
+    assert [(row['date'],row['value']) for row in rows] == [('2031-01-01',1),('2031-01-03',3)]
+    assert not undated
+
+def test_undated_and_mixed_series_are_excluded_while_dated_series_keep_their_window(store):
+    service, con = store
+    con.executemany('INSERT INTO observations VALUES (?,?,?,?,?)', [
+        ('mixed','2031-01-01',30,'valid','C2'), ('mixed',None,40,'valid','C3'),
+        ('period',None,50,'valid','D2'), ('private',None,60,'valid','E2')])
+    rows, undated = _bounded_rows(service,
+        [({'dataset_id':'synthetic'},{'source':ID,'mixed':OTHER,'period':PERIOD})],
+        selection(series_ids=[ID,OTHER,PERIOD]),strict=True)
+    assert undated == {OTHER,PERIOD}
+    assert [(row['series_id'],row['date'],row['value']) for row in rows] == [
+        (ID,'2031-01-02',None),(ID,'2031-01-03',3),(ID,'2031-01-04',None)]
 
 def test_conflicting_valid_duplicates_are_not_averaged_or_arbitrarily_chosen(store):
     service, con = store

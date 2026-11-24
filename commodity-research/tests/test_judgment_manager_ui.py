@@ -1,4 +1,5 @@
-"""Exercise the actual dialog script without a browser or external network."""
+"""Exercise the dialog against isolated API fixtures."""
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -39,6 +40,8 @@ def test_judgment_manager_management_and_caliber_interactions():
     'judgment-manager-item-confirmation.test.cjs',
     'judgment-manager-number-review.test.cjs',
     'judgment-manager-picker.test.cjs',
+    'judgment-manager-indicator-recommendations.test.cjs',
+    'judgment-manager-review-alignment.test.cjs',
     'chart-palette.test.cjs',
 ])
 def test_judgment_manager_review_and_recovery_interactions(script):
@@ -48,4 +51,14 @@ def test_judgment_manager_review_and_recovery_interactions(script):
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run([node, str(root / 'tests' / script)],
         cwd=root, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_judgment_manager_item_edit_browser_flow():
+    node = shutil.which('node')
+    if not node or not os.environ.get('RESEARCH_PLAYWRIGHT'):
+        pytest.skip('Node and RESEARCH_PLAYWRIGHT are required for the isolated browser flow')
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run([node, str(root / 'tests' / 'judgment-manager-item-edit-ui.cjs')],
+                            cwd=root, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr

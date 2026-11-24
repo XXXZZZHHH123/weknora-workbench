@@ -17,6 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from tin.config import settings
 from tin.integration.identity import Identity, current_identity, research_prefix, research_static_prefix
+from tin.integration.page_facts import StructuredFactsError, source_error_details
 
 COOKIE = "research_session"
 # POST bodies that only read: viewers may run them, and they never save anything.
@@ -297,11 +298,22 @@ class ResearchAuthMiddleware(BaseHTTPMiddleware):
             request.state.research_identity = identity
             marker = current_identity.set(identity)
             try:
-                if scoped_path is not None and scope.restricted:
-                    from tin.web.restricted_views import restricted_response
-                    response = await restricted_response(request, scope, route_path)
-                else:
-                    response = await call_next(request)
+                page_read = (scoped_path is not None and request.method in {"GET", "HEAD"}
+                             and not route_path.startswith("/api/"))
+                if page_read:
+                    request.state.research_page_path = route_path
+                with source_error_details(enabled=page_read):
+                    if scoped_path is not None and scope.restricted:
+                        from tin.web.restricted_views import restricted_response
+                        try:
+                            response = await restricted_response(request, scope, route_path)
+                        except StructuredFactsError as exc:
+                            if not page_read:
+                                raise
+                            from tin.web.app import source_error_page
+                            response = source_error_page(request, exc)
+                    else:
+                        response = await call_next(request)
                 response.headers["Cache-Control"] = "no-store"
                 return response
             finally:

@@ -3,16 +3,20 @@ from datetime import date, timedelta
 
 from fastapi import HTTPException
 
+UNDATED_RULE_STATE = '无法按日期判断'
+UNDATED_RULE_NOTE = '指标含无日期观测，无法确定观测顺序。'
+
 
 def paged_observations(scope, identifiers, day, limit, *, direct_only=False,
                        versions=None, version_notice='均线来源在分页期间变化，请刷新',
-                       include_invalid=True, upstream_error_detail=False):
+                       include_invalid=True, upstream_error_detail=False, undated_series_ids=None):
     """Page backward by each series' real dates, retaining invalid slots by default.
 
     ``versions`` may be shared across window groups in one read. Catalog and
     facts envelopes vary with the query; only binding snapshot versions can be
     compared across pages. Direct reads also fence facts against the catalog.
     Callers bound the complete window; each wire request has its own budget.
+    If supplied, ``undated_series_ids`` receives the IDs excluded from the window.
     """
     from tin.integration.page_facts import bounded_facts
     identifiers = list(dict.fromkeys(identifiers))
@@ -40,7 +44,13 @@ def paged_observations(scope, identifiers, day, limit, *, direct_only=False,
                     if binding in versions and versions[binding] != version:
                         raise HTTPException(409, version_notice)
                     versions[binding] = version
+                undated = set(facts.get('undated_series_ids', ())) if include_invalid else set()
+                if undated_series_ids is not None:
+                    undated_series_ids.update(undated)
                 for sid in selected:
+                    if sid in undated:
+                        rows[sid].clear()
+                        continue
                     page = sorted([point for point in facts['rows'] if point.get('series_id') == sid],
                                   key=lambda point: point['date'])
                     # bounded_facts validates IDs, unique dates, statuses and

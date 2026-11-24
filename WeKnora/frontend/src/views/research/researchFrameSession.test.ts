@@ -50,13 +50,17 @@ test('navigation is a direct scoped path containing no auth or bootstrap hop', (
 
 test('analysis results reopen through the authorized native judgment page', () => {
   assert.equal(researchFramePath('workbench-a','judgment','analysis-job-1'),'/research/workbenches/workbench-a/sn/judgment?analysis_job=analysis-job-1')
-  assert.equal(researchFramePath('workbench-a','home','analysis-job-1'),'/research/workbenches/workbench-a/')
   assert.equal(researchFramePath('workbench-a','judgment',['analysis-job-1']),'/research/workbenches/workbench-a/sn/judgment')
   assert.equal(researchFramePath('workbench-a','judgment','../secret'),'/research/workbenches/workbench-a/sn/judgment')
   assert.equal(researchFramePath('workbench-a','judgment',undefined,'42'),'/research/workbenches/workbench-a/sn/judgment?judgment_id=42')
   assert.equal(analysisJudgmentId('9223372036854775807'),'9223372036854775807')
   assert.equal(analysisJudgmentId('9223372036854775808'),'')
   assert.equal(analysisJudgmentId(9007199254740993),'')
+})
+
+test('workbench setup drafts reopen through the authorized workbench home', () => {
+  assert.equal(researchFramePath('workbench-a','home','setup-job-1'),'/research/workbenches/workbench-a/?analysis_job=setup-job-1')
+  assert.equal(researchFramePath('workbench-a','home','../invalid'),'/research/workbenches/workbench-a/')
 })
 
 test('diagram results reopen through their own authorized page and preserve only valid layout identifiers', () => {

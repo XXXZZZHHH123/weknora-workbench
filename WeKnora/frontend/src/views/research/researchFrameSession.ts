@@ -1,6 +1,6 @@
 import { fetchWithAuthRetry } from '../../utils/authFetch'
-import { analysisJobId } from '../../api/researchAnalysisTasks'
-export { analysisJobId } from '../../api/researchAnalysisTasks'
+import { analysisJobId, isAnalysisJobView, type AnalysisJobView } from '../../api/researchAnalysisTasks'
+export { analysisJobId, isAnalysisJobView } from '../../api/researchAnalysisTasks'
 
 // Cookie exchanges are serialized across mounts. A slow request for account A
 // must finish before B's Set-Cookie, even when A's component has disappeared.
@@ -26,15 +26,23 @@ export function analysisJudgmentId(value: unknown): string {
   return /^[1-9][0-9]{0,18}$/.test(text) && BigInt(text) <= 9223372036854775807n ? text : ''
 }
 
+const paths = {
+  home: '/', diagram: '/sn/diagram', indicators: '/sn/indicators', judgment: '/sn/judgment',
+  strategies: '/sn/strategies', reports: '/sn/reports', monitors: '/', 'chart-import': '/sn/charts/import',
+  dimensions: '/sn/dimensions', market: '/sn',
+} as const satisfies Record<AnalysisJobView | 'indicators', string>
+
+export function isResearchView(value: unknown): value is keyof typeof paths {
+  return typeof value === 'string' && Object.hasOwn(paths, value)
+}
+
 export function researchFramePath(workbenchId: string, view: string, analysisJob?: unknown, judgment?: unknown, diagram?: unknown): string {
-  const paths: Record<string, string> = { home: '/', diagram: '/sn/diagram', indicators: '/sn/indicators',
-    judgment: '/sn/judgment', strategies: '/sn/strategies', reports: '/sn/reports' }
-  if (!workbenchId || !Object.hasOwn(paths,view)) return ''
+  if (!workbenchId || !isResearchView(view)) return ''
   const query = new URLSearchParams()
-  if (view === 'judgment' || view === 'diagram') {
-    if (analysisJobId(analysisJob)) query.set('analysis_job', analysisJobId(analysisJob))
-    if (view === 'judgment' && analysisJudgmentId(judgment)) query.set('judgment_id', analysisJudgmentId(judgment))
-    if (view === 'diagram' && analysisJudgmentId(diagram)) query.set('template', analysisJudgmentId(diagram))
-  }
-  return `/research/workbenches/${encodeURIComponent(workbenchId)}${paths[view]}${query.size ? '?' + query : ''}`
+  const jobId = analysisJobId(analysisJob)
+  if (isAnalysisJobView(view) && jobId) query.set('analysis_job', jobId)
+  if (view === 'judgment' && analysisJudgmentId(judgment)) query.set('judgment_id', analysisJudgmentId(judgment))
+  if (view === 'diagram' && analysisJudgmentId(diagram)) query.set('template', analysisJudgmentId(diagram))
+  const hash = view === 'chart-import' ? '#report-chart-import' : ''
+  return `/research/workbenches/${encodeURIComponent(workbenchId)}${paths[view]}${query.size ? '?' + query : ''}${hash}`
 }

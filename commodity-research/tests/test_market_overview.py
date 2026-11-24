@@ -20,8 +20,11 @@ def test_market_selector_uses_current_catalog_in_both_workbench_modes(canonical,
     assert not tree.xpath('//*[@data-market-card-series]')
     assert tree.xpath('//*[@id="market-core-suggestions-open"]')
     assert 'SHFE.SN.main.settle' not in tree.get_element_by_id('market-core-catalog').text
-    assert tree.xpath('//*[@id="market-contract-source"]//a[contains(@href,"shfe.com.cn")]')
-    assert not tree.xpath('//*[@id="market-contract-source"]//p | //*[@id="market-contract-source"]//ol')
+    guide = tree.get_element_by_id('market-contract-source')
+    assert not guide.xpath('.//a | .//summary')
+    assert '资料与来源' in guide.text_content()
+    assert '尚未设置合约数据来源，可在合约设置中添加' in guide.text_content()
+    assert guide.get_element_by_id('market-contract-settings-open').get('aria-haspopup') == 'dialog'
 
 
 @pytest.mark.parametrize('identifier', [FIRST, SECOND, LEGACY])
@@ -77,14 +80,6 @@ def test_viewer_can_read_but_revoke_or_wrong_field_cannot_fall_back(canonical):
     assert client.post(market(), headers=headers, json={'series_id': [SERIES]}).status_code == 404
     state['revoked'] = True
     assert client.get(market(), params={'series_id': SERIES}, headers=headers).status_code == 403
-
-
-def test_existing_curve_does_not_claim_the_knowledge_base_has_no_contract_semantics():
-    from tin.web.app import templates
-    template = templates.get_template('_market_contract_guide.html')
-    html = template.render(research_workbench=lambda: True, curve={'rows': [{}]})
-    assert 'shfe.com.cn/reports/tradedata/' in html
-    assert '当前通用字段确认尚未提供' not in html
 
 
 def test_market_endpoint_is_readonly_and_does_not_schedule_source_preparation():
