@@ -18,6 +18,7 @@ from tin.models import AuditLog, Judgment, SourceMapping
 from tin.models.workbench import WorkbenchArtifact
 from tin.schemas.judgment import JudgmentIn
 from tin.web import judgment_generation as generation, judgment_recall as recall
+from tin.web import judgment_quantity as quantity
 from tin.web.judgment_panels import register_panel
 from tin.web.judgment_review import digest
 from tin.web.research_dimensions import DIMENSIONS_KEY, default_dimensions
@@ -38,7 +39,8 @@ def judgment():
         'contradiction': {
             'bull': {'claim': 'Synthetic supply claim', 'evidence': [
                 {'desc': 'Synthetic observed stocks.', 'series_id': SERIES, 'note': 'Preserve this note.'},
-                {'desc': 'Synthetic seasonal evidence.', 'dimension': 'supply'}]},
+                {'desc': 'Synthetic seasonal evidence.', 'dimension': 'supply',
+                 'note': 'No matching observation was available.'}]},
             'bear': {'claim': 'Synthetic demand claim'},
             'window': {'from': '2026-01-01', 'to': '2026-06-30', 'note': 'Preserve this window.'}},
         'marginal_focus': [{'desc': 'Synthetic momentum.', 'series_id': SERIES}],
@@ -46,7 +48,7 @@ def judgment():
         'whitelist': [SERIES], 'tone': '观望', 'survey_notes': 'Preserve this survey note.',
         'thresholds': [
             {'id': 'watch', 'name': 'Synthetic stock limit', 'series_id': SERIES,
-             'operator': '>', 'value': 12, 'type': '观察位', 'horizon': '短期'},
+             'operator': '>', 'value': 12, 'type': '观察位', 'horizon': '短期', 'note': 'Review this rule unit.'},
             {'id': 'reserve', 'name': 'Synthetic unchanged sibling rule', 'series_id': SERIES,
              'operator': '<', 'value': 13, 'type': '观察位', 'horizon': '短期'}],
         'priority_rule': {'order': ['watch', 'reserve']},
@@ -165,13 +167,20 @@ def test_open_restores_saved_review_and_unchanged_save_creates_no_version(saved_
     assert to_payload(rows()[0]).model_dump(mode='json', by_alias=True) == case.before
 
 
-def test_rebind_threshold_and_apply_observation_backed_conversion_in_same_panel(saved_case):
+@pytest.mark.parametrize(('observed_date', 'range_start'), [
+    ('2026-01-02', '2023-01-02'), ('2023-09-22', '2020-09-22')])
+def test_rebind_threshold_and_apply_observation_backed_conversion_in_same_panel(
+        saved_case, monkeypatch, observed_date, range_start):
     case = saved_case
+    today = datetime(2026, 11, 24)
+    monkeypatch.setattr(quantity, 'datetime', SimpleNamespace(now=lambda _zone: today))
+    case.state['bounded_row_metadata'] = {'date': observed_date}
     preview = success(open_edit(case))
     item = items_by_id(preview)[item_id('thresholds', 0)]
     diagnostic = success(case.client.get(endpoint('/review/quantity'), headers=case.headers, params={
         'draft_id': preview['draft_id'], 'item_id': item['id'], 'series_id': OTHER_SERIES, 'exponent': 2}))
-    assert diagnostic['latest']['value'] == '1200'
+    assert diagnostic['latest'] == {'date': observed_date, 'value': '1200'}
+    assert diagnostic['range_start'] == range_start and diagnostic['range_end'] == observed_date
     assert diagnostic['converted_value'] == '1200' and diagnostic['converted_overlaps']
     assert [candidate['exponent'] for candidate in diagnostic['candidates']] == [2]
 
@@ -191,7 +200,7 @@ def test_rebind_threshold_and_apply_observation_backed_conversion_in_same_panel(
     original, current = rows()
     after = to_payload(current).model_dump(mode='json', by_alias=True)
     expected = deepcopy(case.before)
-    expected['thresholds'][0].update(series_id=OTHER_SERIES, source_value=12, scale=100, value=1200)
+    expected['thresholds'][0].update(series_id=OTHER_SERIES, source_value=12, scale=100, value=1200, note=None)
     assert after == expected
     assert to_payload(original).model_dump(mode='json', by_alias=True) == case.before
     detail = success(case.client.get(endpoint('/versions/2'), headers=case.headers,
@@ -201,6 +210,7 @@ def test_rebind_threshold_and_apply_observation_backed_conversion_in_same_panel(
         assert field['field'] == 'thresholds'
         assert [entry['id'] for entry in field['before']] == ['watch']
         assert [entry['id'] for entry in field['after']] == ['watch']
+        assert field['before'][0]['note'] == 'Review this rule unit.' and field['after'][0]['note'] is None
         assert 'Synthetic unchanged sibling rule' not in diff['markdown']
     with isolated_session_factory(17, FIRST)() as session:
         event = session.scalars(select(AuditLog).where(AuditLog.action == '研判逐条修改保存')).one()
@@ -209,6 +219,7 @@ def test_rebind_threshold_and_apply_observation_backed_conversion_in_same_panel(
         assert recorded['item_id'] == item['id']
         assert recorded['before']['series_id'] == SERIES and recorded['before']['value'] == 12
         assert recorded['after']['series_id'] == OTHER_SERIES and recorded['after']['value'] == 1200
+        assert recorded['before']['note'] == 'Review this rule unit.' and recorded['after']['note'] is None
 
 
 def test_bind_unbound_evidence_without_changing_other_fields(saved_case):
@@ -216,14 +227,62 @@ def test_bind_unbound_evidence_without_changing_other_fields(saved_case):
     preview = success(open_edit(case))
     item = items_by_id(preview)[item_id('contradiction', 'bull', 'evidence', 1)]
     changed = confirm(case, preview, item, series_id=OTHER_SERIES)
-    assert items_by_id(changed)[item['id']]['status'] == 'confirmed'
+    updated = items_by_id(changed)[item['id']]
+    assert updated['status'] == 'confirmed' and updated['description'] == 'Synthetic seasonal evidence.'
     result = success(save_edit(case, changed))
     assert result['version'] == 2
     original, current = rows()
     expected = deepcopy(case.before)
-    expected['contradiction']['bull']['evidence'][1]['series_id'] = OTHER_SERIES
+    expected['contradiction']['bull']['evidence'][1].update(series_id=OTHER_SERIES, note=None)
     assert to_payload(current).model_dump(mode='json', by_alias=True) == expected
     assert to_payload(original).model_dump(mode='json', by_alias=True) == case.before
+    version = success(case.client.get(endpoint('/versions/2'), headers=case.headers,
+        params={'judgment_id': original.id}))
+    for diff in (changed['diff'], version['diff']):
+        field, = diff['fields']
+        evidence, = field['before']['bull']['evidence']
+        assert evidence['note'] == 'No matching observation was available.'
+        assert 'No matching observation was available.' in diff['markdown']
+        assert 'Preserve this note.' not in diff['markdown']
+    with isolated_session_factory(17, FIRST)() as session:
+        event = session.scalars(select(AuditLog).where(AuditLog.action == '研判逐条修改保存')).one()
+        recorded, = event.detail['changes']
+        assert recorded['before']['note'] == 'No matching observation was available.'
+        assert recorded['after']['note'] is None
+
+
+@pytest.mark.parametrize('fields', [
+    {'related_series_ids': [OTHER_SERIES]},
+    {'caliber': {'mode': 'catalog'}},
+])
+def test_add_related_binding_or_confirm_caliber_clears_evidence_note(saved_case, fields):
+    case = saved_case
+    preview = success(open_edit(case))
+    item = items_by_id(preview)[item_id('contradiction', 'bull', 'evidence', 0)]
+    unchanged = confirm(case, preview, item, series_id=SERIES, related_series_ids=[])
+    assert not unchanged['review']['has_changes']
+    assert 'Preserve this note.' in items_by_id(unchanged)[item['id']]['description']
+
+    changed = confirm(case, unchanged, item, **fields)
+    assert changed['review']['has_changes']
+    success(save_edit(case, changed))
+    expected = deepcopy(case.before)
+    evidence = expected['contradiction']['bull']['evidence'][0]
+    evidence['note'] = None
+    if 'related_series_ids' in fields:
+        evidence['related_series_ids'] = fields['related_series_ids']
+    assert to_payload(rows()[1]).model_dump(mode='json', by_alias=True) == expected
+
+
+def test_confirm_conversion_without_rebinding_clears_rule_note(saved_case):
+    case = saved_case
+    case.state['value'] = 1200
+    preview = success(open_edit(case))
+    item = items_by_id(preview)[item_id('thresholds', 0)]
+    changed = confirm(case, preview, item, quantity_alignment={'mode': 'convert', 'exponent': 2})
+    success(save_edit(case, changed))
+    rule = to_payload(rows()[1]).thresholds[0]
+    assert rule.series_id == SERIES and rule.value == 1200 and rule.note is None
 
 
 def test_reconfirm_same_falsifier_indicator_after_catalog_unit_correction(saved_case):
@@ -396,7 +455,8 @@ def test_reopening_keeps_text_decision_and_status_after_an_excluded_item(saved_c
     assert reopened['diff']['fields'] == []
     assert reopened['review']['has_changes'] is False
     evidence = items_by_id(reopened)[item_id('contradiction', 'bull', 'evidence', 0)]
-    assert evidence['description'] == 'Synthetic seasonal evidence.' and evidence['status'] == 'pending'
+    assert evidence['description'] == 'Synthetic seasonal evidence.\nNo matching observation was available.'
+    assert evidence['status'] == 'pending'
     note = items_by_id(reopened)[item_id('unresolved', 1)]
     assert WATCH_QUOTE in note['description'] and note['status'] == 'kept_text'
 

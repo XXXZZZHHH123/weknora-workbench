@@ -193,9 +193,10 @@ def _decision(item, known):
     if caliber and caliber.get('mode') == 'catalog' and not caliber.get('scope_note') and not item.get('caliber_confirmation'):
         caliber = None
     alignment = item.get('quantity_confirmation') or {}
+    value = item['value'] if isinstance(item['value'], dict) else {}
     return {'status': item['status'], 'series_id': item['series_id'], 'unit': _binding_unit(item, known),
             'related_series_ids': item['related_series_ids'], 'source_quote': item['source_quote'],
-            'dimension': item['value'].get('dimension') if isinstance(item['value'], dict) else None,
+            'dimension': value.get('dimension'), 'note': value.get('note'),
             'caliber': _without_audit_times(caliber),
             'caliber_confirmation': _without_audit_times(item.get('caliber_confirmation')),
             'number_confirmation': _without_audit_times(item.get('number_confirmation')),
@@ -284,11 +285,14 @@ def _replacement(item, known):
     path, kind, status = item['path'], item['kind'], item['status']
     if status == 'excluded':
         return ('' if path[-1] in ('claim', 'text') else None), None
-    if isinstance(value, dict) and state['dimension'] != saved['dimension']:
-        value.pop('dimension', None)
-        if state['dimension'] is not None:
-            value['dimension'] = state['dimension']
-    if all(state[key] == saved[key] for key in state if key != 'dimension'):
+    if isinstance(value, dict):
+        if state['dimension'] != saved['dimension']:
+            value.pop('dimension', None)
+            if state['dimension'] is not None:
+                value['dimension'] = state['dimension']
+        if state['note'] != saved['note']:
+            value['note'] = state['note']
+    if all(state[key] == saved[key] for key in state if key not in ('dimension', 'note')):
         return value, None
     if kind in quantity.RULE_KINDS:
         if status == 'kept_text':
@@ -454,7 +458,7 @@ def _value_details(value, decision):
         details['unit'] = decision['unit']
     if isinstance(value, dict):
         details.update({key: value[key] for key in ('value', 'expression', 'source_value', 'scale',
-                        'unit_confirmed', 'caliber_confirmation', 'dimension') if key in value})
+                        'unit_confirmed', 'caliber_confirmation', 'dimension', 'note') if key in value})
     return details
 
 

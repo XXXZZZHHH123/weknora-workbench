@@ -44,22 +44,27 @@ async function staleDimensions(reclassify) {
 
 async function quantityAlignment() {
   const latest = {date: '2026-11-18', value: '18035.0'}, range = {min: '15123', max: '18908'};
+  const reference = {range_start: '2023-11-18', range_end: latest.date};
   const warning = '规则数值 158–163 与该指标近 3 年 15,123–18,908 相差约 100 倍，请核对原文写法或单位';
   const binding = {series_id: 'authorized-other', name: '指标', unit: null, frequency: '日'};
   const env = await generateReview({reviewSections: [{id: 'thresholds', title: '阈值', items: [{id: 'anchor', kind: 'thresholds',
-    title: '短期区间', status: 'ready', can_bind: true, binding, caliber: {catalog_unit: null, model_unit: '百元'},
+    title: '短期区间', status: 'pending', can_bind: true, binding, caliber: {catalog_unit: null, model_unit: '百元'},
+    warnings: [warning], attention_fields: ['condition'], quantity_reference: reference,
     rule: {operator: 'between', value_literal: '[158,163]', source_value: ['158.0', '163.0'], quantity_review_available: true}}]}],
     requestOverride(url) {
       if (!url.includes('/review/quantity?')) return;
       const exponent = new URL(url, 'http://unit.test').searchParams.get('exponent');
-      return response({series_id: binding.series_id, latest, range, warning,
+      return response({series_id: binding.series_id, latest, range, warning, ...reference,
         ...(exponent === '2' ? {converted_text: '15,800–16,300', converted_overlaps: true} : {})});
     }});
   assert.equal(item(env, 'confirm-item').hidden, false);
+  const referenceText = '参考区间：2023-11-18 至 2026-11-18';
+  assert.ok(item(env, 'condition').textContent.includes(referenceText));
   await item(env, 'confirm-item').fire('click');
   const modal = descendants(env.nodes['judgment-manager']).find(node => node.open);
   const control = name => descendants(modal).find(node => node.dataset.reviewControl === name);
   assert.ok(modal.textContent.includes(warning));
+  assert.ok(modal.textContent.includes(referenceText));
   assert.match(modal.textContent, /原文数字写法：158–163.*最新值 18,035（2026-11-18）/);
   assert.match(modal.textContent, /指标数据的单位（看数据：最新 18,035）/);
   assert.equal(control('confirm-unit').value, '');

@@ -757,6 +757,9 @@
   function quantityText(value) {
     return Array.isArray(value) ? value.map(decimalText).join('–') : decimalText(value);
   }
+  function quantityReferenceText({range_start: start, range_end: end} = {}) {
+    return start && end ? `参考区间：${start} 至 ${end}` : '';
+  }
   async function confirmWholeItem(item, edit) {
     if (busy || !review || !draft || !managed?.can_write) return;
     const quantitative = item.kind === 'thresholds' || item.kind === 'falsifiers';
@@ -862,6 +865,8 @@
     }
     function showAlignment() {
       if (quantity.warning) alignment.append(element('p', 'logic-quantity-warning', quantity.warning));
+      const reference = quantityReferenceText(quantity);
+      if (reference) alignment.append(element('small', 'logic-period-note', reference));
       const exponents = draft?.item_edit ? (quantity.candidates || []).map(candidate => candidate.exponent) :
         Array.from({length: 9}, (_, index) => index - 4);
       const modeLabel = element('label', 'logic-confirm-label', '核对规则数值');
@@ -1198,9 +1203,13 @@
         if (item.rule) {
           const condition = element('div', 'logic-item-condition'); condition.dataset.reviewItem = item.id; condition.dataset.reviewControl = 'condition';
           const value = element('span'), periodNote = element('small', 'logic-period-note'); condition.append(value, periodNote); field(condition, 'condition');
+          const reference = quantityReferenceText(item.quantity_reference);
+          const quantityReference = reference ? element('small', 'logic-period-note', reference) : null;
+          if (quantityReference) condition.append(quantityReference);
           edit.renderCondition = () => {
             value.textContent = ruleCondition(item, edit); condition.dataset.conditionText = value.textContent;
             periodNote.textContent = periodExplanation(item, edit); periodNote.hidden = !periodNote.textContent;
+            if (quantityReference) quantityReference.hidden = edit.bindingChanged;
           };
           edit.renderCondition(); card.append(condition);
         }

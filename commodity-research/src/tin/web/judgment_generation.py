@@ -1057,7 +1057,7 @@ def persist(scope, preview):
             warnings = pending_alignment(scope, {field['id']: field for field in catalog}, items)
             if warnings:
                 raise JudgmentError('请逐项确认数值与单位：' + '；'.join(
-                    f"{item['description']}：{warnings[item['id']]}" for item in items if item['id'] in warnings))
+                    f"{item['description']}：{warnings[item['id']]['warning']}" for item in items if item['id'] in warnings))
             if preview.get('_job_id'):
                 from tin.web.judgment_jobs import mark_applied
                 mark_applied(session, scope, preview)

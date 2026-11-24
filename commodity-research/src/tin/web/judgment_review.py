@@ -751,6 +751,7 @@ def review_response(scope, token, preview, catalog, *, dimensions=None):
                 'origin': item['origin'], 'requires_attention': status == 'pending' or bool(dimension_issue),
                 'attention_fields': fields,
                 'attention_reasons': [dimension_issue or quantity_issue or attention_message(fields)] if fields else [],
+                **({'quantity_reference': item['quantity_reference']} if item.get('quantity_reference') else {}),
                 'requires_quote': item['kind'] in ('thresholds', 'falsifiers'),
                 'warnings': errors if errors else item['warnings'] if item['status'] == 'pending'
                     and item['kind'] not in {'thresholds', 'falsifiers'} else [],
@@ -1065,6 +1066,7 @@ async def update_review(request: Request):
         known = {field['id']: field for field in state['catalog']}
         if body.quantity_alignment is not None and (body.action != 'confirm' or item['kind'] not in quantity.RULE_KINDS):
             quantity.alignment_error('仅可在核对确认规则时选择数值换算。')
+        previous_binding = item['series_id'], item['related_series_ids']
         old_unit = (item.get('caliber_confirmation') or {}).get('unit')
         if 'related_series_ids' in body.model_fields_set:
             if item['kind'] not in ('binding', 'unresolved_binding', 'thresholds', 'falsifiers'):
@@ -1194,7 +1196,13 @@ async def update_review(request: Request):
                 issues = confirmation_issues(preview, item, state['catalog'], scope)
             if issues:
                 reject_fields(attention_fields(issues), issues)
+        if item_edit and isinstance(item['value'], dict) and item['value'].get('note') and (
+                previous_binding != (item['series_id'], item['related_series_ids'])
+                or body.caliber is not None or body.quantity_alignment is not None):
+            item['value']['note'] = None
+            item['description'] = describe(item['value'])
         item.pop('quantity_warning', None)
+        item.pop('quantity_reference', None)
         try:
             preview['document'] = build_document(preview, state['catalog'])
             checked(preview, preview['document'], state['catalog'], scope)
@@ -1223,11 +1231,13 @@ async def confirm_ready(request: Request):
         known = {field['id']: field for field in state['catalog']}
         range_warnings = await run_in_threadpool(quantity.pending_alignment, scope, known, ready)
         for item in ready:
-            if item['id'] in range_warnings:
+            if history := range_warnings.get(item['id']):
                 item['status'] = 'pending'
-                item['quantity_warning'] = range_warnings[item['id']]
+                item['quantity_warning'] = history['warning']
+                item['quantity_reference'] = {key: history[key] for key in ('range_start', 'range_end')}
                 continue
             item.pop('quantity_warning', None)
+            item.pop('quantity_reference', None)
             item['status'] = 'confirmed'
             item['origin'] = 'user'
             decisions.append((item, False))

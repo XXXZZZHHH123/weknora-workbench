@@ -1,6 +1,6 @@
 """The reviewer, rather than the source unit, determines any rule scaling."""
 from copy import deepcopy
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -59,6 +59,7 @@ def test_warn_and_require_explicit_decimal_conversion(proposal):
     data = response.json()
     assert data['latest'] == {'value': '18035', 'date': '2026-01-02'}
     assert data['range'] == {'min': '15800', 'max': '18035'}
+    assert data['range_start'] == '2023-01-02' and data['range_end'] == '2026-01-02'
     assert '相差约 100 倍' in data['warning']
     assert data['converted_value'] == (['15800', '16300'] if kind == 'thresholds' else '15809')
     assert data['converted_overlaps'] and data['converted_warning'] is None
@@ -98,6 +99,8 @@ def test_keep_requires_reason_and_preserves_old_rule_shape(proposal):
     assert bulk.status_code == 200, bulk.text
     preview = bulk.json()
     assert pick(preview, kind)['requires_attention']
+    assert pick(preview, kind)['quantity_reference'] == {
+        'range_start': '2023-01-02', 'range_end': '2026-01-02'}
     denied = update(client, headers, preview, item, quantity_alignment={'mode': 'keep', 'reason': '  '})
     assert denied.status_code == 422
     assert '必须填写原因' in denied.json()['detail']['message']
@@ -162,4 +165,52 @@ def test_v2_history_uses_the_direct_indicator_window_and_excludes_old_rows(monke
     history = quantity.read_histories(scope, [SERIES], [{'id': SERIES}])[SERIES]
     assert requests == [([SERIES], 'indicators', {'day': '2026-11-19', 'points': 1100, 'direct_only': True})]
     assert history == {'latest': {'date': '2026-11-19', 'value': '18035'},
-        'range': {'min': '15000', 'max': '19000'}}
+        'range': {'min': '15000', 'max': '19000'}, 'range_start': '2023-11-19', 'range_end': '2026-11-19'}
+
+
+@pytest.mark.parametrize(('scope_version', 'trailing_gaps'), [(2, False), (1, False), (1, True)])
+def test_stale_observations_allow_the_observation_backed_conversion(monkeypatch, scope_version, trailing_gaps):
+    from tin.integration import page_facts
+    from tin.web import judgment_radar
+
+    scope = SimpleNamespace(scope_version=scope_version)
+    catalog = [{'id': SERIES}]
+    today = datetime(2026, 11, 24)
+    monkeypatch.setattr(quantity, 'datetime', SimpleNamespace(now=lambda _zone: today))
+    monkeypatch.setattr(quantity, 'LEGACY_HISTORY_PAGE', 2)
+    observations = {'2020-09-21': 800, '2020-09-22': 15600, '2021-01-01': None,
+        '2022-04-01': 16000, '2023-09-22': 16865, '2026-11-25': 1}
+    if trailing_gaps:
+        observations.update({'2023-10-01': None, '2024-01-01': None, '2025-01-01': None, '2026-01-01': None})
+
+    def visible_points(cutoff, count, include_invalid=False):
+        return [{'date': stamp, 'value': value} for stamp, value in sorted(observations.items())
+            if stamp <= cutoff and (value is not None or include_invalid)][-count:]
+
+    def bounded(actual_scope, identifiers, module, *, day, points, direct_only):
+        assert (actual_scope, identifiers, module, day, direct_only) == (
+            scope, [SERIES], 'indicators', today.date().isoformat(), True)
+        return {'rows': [{'series_id': SERIES, **point} for point in visible_points(day, points)]}
+
+    def legacy(actual_scope, identifiers, day: date, fields, points, *, include_invalid=False):
+        assert (actual_scope, identifiers, fields) == (scope, [SERIES], catalog)
+        assert day <= today.date()
+        return {SERIES: {'points': visible_points(day.isoformat(), points, include_invalid)}}
+
+    monkeypatch.setattr(page_facts, 'bounded_facts', bounded)
+    monkeypatch.setattr(judgment_radar, 'legacy_series', legacy)
+    history = quantity.read_histories(scope, [SERIES], catalog)[SERIES]
+    assert history == {'latest': {'date': '2023-09-22', 'value': '16865'},
+        'range': {'min': '15600', 'max': '16865'}, 'range_start': '2020-09-22', 'range_end': '2023-09-22'}
+
+    item = {'id': 'band', 'kind': 'thresholds', 'value': THRESHOLD, 'series_id': SERIES,
+        'source_quote': 'Stocks between [158, 163] 吨'}
+    diagnostic = quantity.diagnostic(item, {'series_id': SERIES, **history}, 2)
+    assert '相差约 100 倍' in diagnostic['warning']
+    assert diagnostic['converted_overlaps'] is True
+    assert quantity.conversion_candidates(item, history) == [{'exponent': 2}]
+    assert quantity.pending_alignment(scope, {SERIES: catalog[0]}, [item]) == {'band': {
+        'warning': diagnostic['warning'], 'range_start': '2020-09-22', 'range_end': '2023-09-22'}}
+    choice = quantity.QuantityAlignment(mode='convert', exponent=2)
+    quantity.confirm_quantity(item, choice, history, candidates_only=True)
+    assert item['quantity_confirmation']['execution']['value'] == [15800, 16300]

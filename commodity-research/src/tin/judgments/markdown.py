@@ -27,7 +27,7 @@ def dimension_text(item, dimensions):
     return ('维度：' + dimension_name(identifier, dimensions) + '（`' + identifier + '`）') if identifier else ''
 
 
-def dump_markdown(payload: JudgmentIn, *, dimensions=None):
+def dump_markdown(payload: JudgmentIn, *, dimensions=None, include_evidence_notes=False):
     from tin.web.research_dimensions import default_dimensions
     dimensions = default_dimensions() if dimensions is None else dimensions
     j = payload.model_dump(mode='json', by_alias=True)
@@ -37,6 +37,7 @@ def dump_markdown(payload: JudgmentIn, *, dimensions=None):
         lines.extend(['', '### ' + label, data['claim'] or '待确认'])
         lines.extend('- ' + e['desc'] + (' · 指标 `' + e['series_id'] + '`' if e.get('series_id') else ' · 未绑定') + related_text(e)
                      + (' · ' + dimension_text(e, dimensions) if e.get('dimension') else '')
+                     + (' · 附注：' + cell(e['note']) if include_evidence_notes and e.get('note') else '')
                      for e in data['evidence'])
     if j['contradiction'].get('text'):
         lines.extend(['', '### 主逻辑补充', j['contradiction']['text']])
@@ -122,6 +123,8 @@ def version_diff(before, after, *, dimensions=None, items_only=False):
         for field in fields:
             field['before'], field['after'] = _changed_values(field['before'], field['after'])
     return {'fields': fields, 'markdown': ''.join(difflib.unified_diff(
-        dump_markdown(before, dimensions=dimensions).splitlines(keepends=True) if before else [],
-        dump_markdown(after, dimensions=dimensions).splitlines(keepends=True), fromfile='上一版本.md',
+        dump_markdown(before, dimensions=dimensions, include_evidence_notes=items_only).splitlines(keepends=True)
+        if before else [],
+        dump_markdown(after, dimensions=dimensions, include_evidence_notes=items_only).splitlines(keepends=True),
+        fromfile='上一版本.md',
         tofile='新草稿.md', n=0 if items_only else 3))}

@@ -55,28 +55,43 @@ def _start_date(day):
         return day.replace(year=day.year - 3, day=28)
 
 
-def legacy_histories(scope, identifiers, catalog, day, start):
+def _legacy_history_points(scope, sid, catalog, day, page, latest=None):
+    from tin.web.judgment_radar import legacy_series
+
+    points = [latest] if latest is not None else []
+    start = _start_date(day).isoformat()
+    while page:
+        valid = [point for point in page if point['value'] is not None]
+        if valid and not points:
+            latest_date = max(point['date'] for point in valid)
+            start = _start_date(date.fromisoformat(latest_date)).isoformat()
+        points.extend(valid)
+        oldest = min(point['date'] for point in page)
+        if len(page) < LEGACY_HISTORY_PAGE or oldest <= start:
+            break
+        cutoff = date.fromisoformat(oldest) - timedelta(days=1)
+        page = legacy_series(scope, [sid], cutoff, catalog, LEGACY_HISTORY_PAGE,
+                             include_invalid=True)[sid]['points']
+    return points
+
+
+def legacy_histories(scope, identifiers, catalog, day):
     from tin.web.judgment_radar import legacy_series
 
     values = legacy_series(scope, identifiers, day, catalog, LEGACY_HISTORY_PAGE, include_invalid=True)
-    result = {}
-    for sid, entry in values.items():
-        points = list(entry['points'])
-        page = points
-        while len(page) == LEGACY_HISTORY_PAGE:
-            oldest = min(point['date'] for point in page)
-            if oldest <= start:
-                break
-            cutoff = date.fromisoformat(oldest) - timedelta(days=1)
-            page = legacy_series(scope, [sid], cutoff, catalog, LEGACY_HISTORY_PAGE,
-                                 include_invalid=True)[sid]['points']
-            points.extend(page)
-        result[sid] = [point for point in points if point['value'] is not None]
+    result = {sid: _legacy_history_points(scope, sid, catalog, day, entry['points'])
+        for sid, entry in values.items()}
     without_value = [sid for sid, points in result.items() if not points and values[sid]['points']]
     if without_value:
         # The latest valid sample can precede a long run of missing rows.
-        latest = legacy_series(scope, without_value, day, catalog, 1)
-        result.update((sid, entry['points']) for sid, entry in latest.items())
+        for sid, entry in legacy_series(scope, without_value, day, catalog, 1).items():
+            if entry['points']:
+                latest = entry['points'][0]
+                latest_day = date.fromisoformat(latest['date'])
+                cutoff = latest_day - timedelta(days=1)
+                page = legacy_series(scope, [sid], cutoff, catalog, LEGACY_HISTORY_PAGE,
+                                     include_invalid=True)[sid]['points']
+                result[sid] = _legacy_history_points(scope, sid, catalog, latest_day, page, latest)
     return result
 
 
@@ -87,7 +102,8 @@ def read_histories(scope, identifiers, catalog):
     from tin.integration.page_facts import bounded_facts
 
     day = datetime.now(SHANGHAI).date()
-    start, end = _start_date(day).isoformat(), day.isoformat()
+    # Observe only through today. Each indicator has its own range end.
+    today = day.isoformat()
     result = {}
     batch_size = 20000 // HISTORY_POINTS
     for index in range(0, len(identifiers), batch_size):
@@ -95,19 +111,23 @@ def read_histories(scope, identifiers, catalog):
         if scope.scope_version == 2:
             # These IDs are from the authorized preview directory. Bound the
             # read again using the current direct source authorization.
-            rows = bounded_facts(scope, batch, 'indicators', day=end, points=HISTORY_POINTS,
+            rows = bounded_facts(scope, batch, 'indicators', day=today, points=HISTORY_POINTS,
                                  direct_only=True)['rows']
             series = {identifier: [] for identifier in batch}
             for row in rows:
                 series[row['series_id']].append(row)
         else:
-            series = legacy_histories(scope, batch, catalog, day, start)
+            series = legacy_histories(scope, batch, catalog, day)
         for sid, points in series.items():
             latest = max(points, key=lambda point: point['date'], default=None)
-            values = [Decimal(str(point['value'])) for point in points if point['date'] >= start]
+            end = latest['date'] if latest else None
+            start = _start_date(date.fromisoformat(end)).isoformat() if end else None
+            values = [Decimal(str(point['value'])) for point in points if start <= point['date'] <= end]
             result[sid] = {
                 'latest': {'date': latest['date'], 'value': str(latest['value'])} if latest else None,
                 'range': {'min': str(min(values)), 'max': str(max(values))} if values else None,
+                'range_start': start,
+                'range_end': end,
             }
     return result
 
@@ -227,5 +247,6 @@ def pending_alignment(scope, catalog, items):
         history = histories.get(item['series_id'], {})
         warning = magnitude_warning(source_value(item), history.get('range'))
         if warning:
-            result[item['id']] = warning
+            result[item['id']] = {'warning': warning,
+                'range_start': history['range_start'], 'range_end': history['range_end']}
     return result

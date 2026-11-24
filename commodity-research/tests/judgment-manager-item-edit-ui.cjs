@@ -77,7 +77,8 @@ function preview(changed = false) {
         data = {items: [candidate], total: 1, next_offset: null,
           ...(url.searchParams.get('item_id') === 'limit' ? {recommendations: [candidate]} : {})};
       } else if (pathname.endsWith('/review/quantity')) {
-        data = {latest: {value: '1210', date: '2026-11-23'}, range: {min: '900', max: '1250'},
+        data = {latest: {value: '1210', date: '2023-09-22'}, range: {min: '900', max: '1250'},
+          range_start: '2020-09-22', range_end: '2023-09-22',
           warning: '数值超出观测范围。', candidates: [{exponent: 2}],
           ...(url.searchParams.has('exponent') ? {converted_text: '1200', converted_overlaps: true} : {})};
       } else if (pathname.endsWith('/review/update')) data = preview(true);
@@ -145,6 +146,7 @@ function preview(changed = false) {
     await confirm.getByText('当前版本：指标值高于 120 u', {exact: false}).waitFor();
     await confirm.getByText('采用指标单位：v').waitFor();
     await confirm.getByText('原文数字写法：12').waitFor();
+    await confirm.locator('small').filter({hasText: '参考区间：2020-09-22 至 2023-09-22'}).waitFor();
     assert.equal(await confirm.locator('[data-review-control="confirm-basis"]').inputValue(), '用户在本条确认窗口核对口径');
     const mode = confirm.locator('[data-review-control="confirm-quantity-mode"]');
     await mode.selectOption('convert');
