@@ -16,11 +16,21 @@ from tin.models import Judgment, SourceMapping, Strategy, WorkbenchArtifact
 from tin.web import affairs, analysis_jobs, judgment_jobs
 from tin.web.analysis_job_purposes import DRAFT_PURPOSES, PURPOSES, WORKBENCH_SETUP
 from tin.web.app import reports_page
+from tin.web.diagram_generation import RecommendationRequest as DiagramRecommendationRequest
 from tin.web.judgment_job_registry import GLOBAL_PENDING, GLOBAL_RUNNING, Registry
+from tin.web.judgment_recommendations import RecommendationRequest as JudgmentRecommendationRequest
 
 KEY = 'test-draft-analysis-request'
 PAYLOAD = {'text': 'synthetic private input', 'day': '2026-10-18', 'period': 'weekly', 'judgment_id': 12}
 SETUP_PAYLOAD = {'model_id': 'fixture-model', 'source': {'knowledge_id': 'report-1'}, 'parts': ['dimensions']}
+PURPOSE_PAYLOADS = {
+    WORKBENCH_SETUP: SETUP_PAYLOAD,
+    'diagram_indicator_recommendations': DiagramRecommendationRequest(
+        model_id='fixture-model', template_id=1, title='Synthetic diagram',
+        nodes=[{'id': 'fixture-node', 'label': 'Synthetic node'}]).model_dump(mode='json'),
+    'judgment_indicator_recommendations': JudgmentRecommendationRequest(
+        model_id='fixture-model', draft_id='synthetic-draft-id', item_id='fixture-item').model_dump(mode='json'),
+}
 
 
 @pytest.fixture
@@ -57,7 +67,7 @@ def run(case, scenario):
 def test_draft_admission_phase_restore_and_changed_scope(draft_case, monkeypatch, purpose):
     scope, state, runtime, app = draft_case
     phase = next(name for name in PURPOSES[purpose].phases if name not in {'queued', 'selecting'})
-    payload = SETUP_PAYLOAD if purpose == WORKBENCH_SETUP else PAYLOAD
+    payload = PURPOSE_PAYLOADS.get(purpose, PAYLOAD)
 
     async def check(_scope, request, result):
         assert request == payload
@@ -65,6 +75,8 @@ def test_draft_admission_phase_restore_and_changed_scope(draft_case, monkeypatch
             raise HTTPException(409, '事实已变化')
 
     monkeypatch.setitem(analysis_jobs.result_checks, purpose, check)
+    if purpose == 'judgment_indicator_recommendations':
+        monkeypatch.delitem(analysis_jobs.result_writers, purpose)
 
     async def scenario():
         entered, release = asyncio.Event(), asyncio.Event()
@@ -77,8 +89,8 @@ def test_draft_admission_phase_restore_and_changed_scope(draft_case, monkeypatch
             entered.set()
             await release.wait()
             result = {'draft': 'synthetic private model output', '_verification': state['facts']}
-            if purpose == WORKBENCH_SETUP:
-                result['items'] = []
+            if purpose in {WORKBENCH_SETUP, 'diagram_indicator_recommendations', 'judgment_indicator_recommendations'}:
+                result['items'] = [] if purpose == WORKBENCH_SETUP else {}
             elif purpose == 'report_chart_import':
                 result['charts'] = []
             return result
@@ -163,7 +175,7 @@ def test_legacy_and_new_drafts_share_the_same_running_and_pending_caps(draft_cas
 @pytest.mark.parametrize('purpose', sorted(DRAFT_PURPOSES))
 def test_draft_failure_and_interruption(draft_case, purpose):
     scope, _, runtime, _ = draft_case
-    payload = SETUP_PAYLOAD if purpose == WORKBENCH_SETUP else {}
+    payload = PURPOSE_PAYLOADS.get(purpose, {})
     phase = 'reading_source' if purpose == WORKBENCH_SETUP else 'analyzing'
 
     async def scenario():
