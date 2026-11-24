@@ -1484,6 +1484,11 @@ func (e *AgentEngine) runReActIteration(
 		state.RoundSteps = append(state.RoundSteps, step)
 		if e.answerReviewAction == reviewCollectEvidence && guards.evidenceRecoveryAttempts < maxEvidenceRecoveryAttempts {
 			if checkedCandidate.ReasonCode == "discovery_coverage_recovery" && e.documentCoverage(state) != nil {
+				review := e.turnReview.DiscoveryReview
+				feedback := "请依据已取得的内容回答原问题，并具体说明仍无法核实的部分。"
+				if review != nil && review.targetedRead != nil {
+					feedback += " 结合补读结果核对以下问题。仍缺的数据按原口径说明，不用其他数据期的值代替。" + review.Feedback
+				}
 				readStep, err := e.boundedCoverageRead(ctx, query, state, sessionID, assistantMessageID, *messagesPtr, checkedCandidate, false)
 				if err != nil {
 					return iterOutcomeBreak, err
@@ -1491,7 +1496,6 @@ func (e *AgentEngine) runReActIteration(
 				if readStep != nil {
 					*messagesPtr = e.appendToolResults(*messagesPtr, *readStep)
 				}
-				feedback := "请依据已取得的内容回答原问题，并具体说明仍无法核实的部分。"
 				e.answerReviewAction, e.answerReviewFeedback = reviewReviseAnswer, feedback
 				if readStep == nil {
 					e.turnReview.DocumentCoverageRecoveryUsed = true

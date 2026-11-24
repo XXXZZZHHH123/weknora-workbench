@@ -23,25 +23,26 @@ type documentCoverageEvidence struct {
 }
 
 type documentCoverageRow struct {
-	KnowledgeBaseID string                           `json:"knowledge_base_id"`
-	KnowledgeID     string                           `json:"knowledge_id"`
-	Title           string                           `json:"title,omitempty"`
-	FileName        string                           `json:"file_name,omitempty"`
-	DateEvidence    *agenttools.DocumentDateEvidence `json:"verified_date_evidence,omitempty"`
-	DocumentDates   any                              `json:"document_date_metadata,omitempty"`
-	ReadHints       []int                            `json:"planned_read_pages,omitempty"`
-	UserPages       []int                            `json:"user_requested_pages,omitempty"`
-	Status          string                           `json:"status"`
-	LastSearch      string                           `json:"last_search_status,omitempty"`
-	PageResults     []map[string]any                 `json:"latest_physical_page_results,omitempty"`
-	Evidence        []documentCoverageEvidence       `json:"evidence,omitempty"`
-	OmittedEvidence bool                             `json:"additional_evidence_omitted,omitempty"`
-	imageRead       bool
-	bodyReturned    bool
-	observedPages   []int
-	readPages       []int
-	requiredPages   []int
-	navigation      []map[string]any
+	KnowledgeBaseID    string                           `json:"knowledge_base_id"`
+	KnowledgeID        string                           `json:"knowledge_id"`
+	Title              string                           `json:"title,omitempty"`
+	FileName           string                           `json:"file_name,omitempty"`
+	DateEvidence       *agenttools.DocumentDateEvidence `json:"verified_date_evidence,omitempty"`
+	AssociationPending bool                             `json:"coverage_association_pending,omitempty"`
+	DocumentDates      any                              `json:"document_date_metadata,omitempty"`
+	ReadHints          []int                            `json:"planned_read_pages,omitempty"`
+	UserPages          []int                            `json:"user_requested_pages,omitempty"`
+	Status             string                           `json:"status"`
+	LastSearch         string                           `json:"last_search_status,omitempty"`
+	PageResults        []map[string]any                 `json:"latest_physical_page_results,omitempty"`
+	Evidence           []documentCoverageEvidence       `json:"evidence,omitempty"`
+	OmittedEvidence    bool                             `json:"additional_evidence_omitted,omitempty"`
+	imageRead          bool
+	bodyReturned       bool
+	observedPages      []int
+	readPages          []int
+	requiredPages      []int
+	Navigation         []map[string]any `json:"navigation_matches,omitempty"`
 }
 
 type documentCoverageLocation struct {
@@ -69,22 +70,23 @@ func (e *AgentEngine) documentCoverage(state *types.AgentState) *documentCoverag
 	for _, target := range e.taskPlan.CoverageTargets {
 		active = active || target.ByDocument || len(target.RequiredLocations) > 0
 	}
-	if !active {
+	selections := agenttools.BoundDocumentSelections(e.toolRegistry)
+	if !active && len(selections) == 0 {
 		return nil
 	}
-	view := &documentCoverageView{Notice: "Actual authorized binding and returned evidence only. Navigation and search misses establish neither relevance nor absence. The model must judge whether the original request needs additional documents, and whether the actual text or table supports the requested facts."}
+	view := &documentCoverageView{
+		Bound:  make([]*documentCoverageRow, 0, len(selections)),
+		Notice: "关联待核表示来源已经确认，但还要结合用户问题核对它能回答哪一部分。目录摘录只用于帮助找正文，检索未命中也不能证明资料里没有。",
+	}
 	bound := map[string]*documentCoverageRow{}
-	for _, selected := range agenttools.BoundDocumentSelections(e.toolRegistry) {
-		relevant := slices.ContainsFunc(selected.Coverage, func(binding agenttools.DocumentCoverageBinding) bool {
+	for _, selected := range selections {
+		associated := slices.ContainsFunc(selected.Coverage, func(binding agenttools.DocumentCoverageBinding) bool {
 			return binding.Target >= 0 && binding.Target < len(e.taskPlan.CoverageTargets) &&
 				(e.taskPlan.CoverageTargets[binding.Target].ByDocument || binding.Location != nil)
 		})
-		if !relevant {
-			continue
-		}
 		row := &documentCoverageRow{
 			KnowledgeBaseID: selected.KnowledgeBaseID, KnowledgeID: selected.KnowledgeID, Title: selected.Title, FileName: selected.FileName,
-			DateEvidence: selected.Date, ReadHints: selected.Pages, Status: "not_attempted",
+			DateEvidence: selected.Date, ReadHints: selected.Pages, Status: "not_attempted", AssociationPending: !associated,
 		}
 		if selected.Page > 0 {
 			row.ReadHints = []int{selected.Page}
@@ -132,9 +134,9 @@ func (e *AgentEngine) documentCoverage(state *types.AgentState) *documentCoverag
 					}
 					if row := bound[id]; row != nil && row.sameDocument(navigation) {
 						navigated[id] = true
-						row.navigation = append(row.navigation, sourceNavigationRows(navigation["navigation_matches"])...)
-						if len(row.navigation) > 4 {
-							row.navigation = row.navigation[len(row.navigation)-4:]
+						row.Navigation = append(row.Navigation, coverageNavigationMatches(navigation)...)
+						if len(row.Navigation) > 4 {
+							row.Navigation = row.Navigation[len(row.Navigation)-4:]
 						}
 						if date := discoveryReadFields(navigation, "metadata")["metadata"]; date != nil {
 							row.DocumentDates = date
@@ -145,7 +147,10 @@ func (e *AgentEngine) documentCoverage(state *types.AgentState) *documentCoverag
 						continue
 					}
 					navigated[id] = true
-					entry := discoveryReadFields(navigation, "knowledge_id", "knowledge_base_id", "title", "file_name", "metadata", "navigation_matches")
+					entry := discoveryReadFields(navigation, "knowledge_id", "knowledge_base_id", "title", "file_name", "metadata")
+					if matches := coverageNavigationMatches(navigation); len(matches) > 0 {
+						entry["navigation_matches"] = matches
+					}
 					view.Navigation = append(view.Navigation, entry)
 					if len(view.Navigation) > 12 {
 						view.Navigation = view.Navigation[1:]
@@ -271,6 +276,23 @@ func (e *AgentEngine) documentCoverage(state *types.AgentState) *documentCoverag
 	return view
 }
 
+func coverageNavigationMatches(document map[string]any) []map[string]any {
+	var matches []map[string]any
+	for _, match := range sourceNavigationRows(document["navigation_matches"]) {
+		entry := discoveryReadFields(match, "page_hint", "slide_hint")
+		for _, field := range []string{"heading", "excerpt"} {
+			if value := sourceNavigationString(match, field); value != "" {
+				entry[field] = taskPlanPrefix(value, 320)
+			}
+		}
+		matches = append(matches, entry)
+		if len(matches) == 2 {
+			break
+		}
+	}
+	return matches
+}
+
 // The read and search adapters provide the authorized document identity.
 // Some older read results put the library only in the enclosing result.
 func (row *documentCoverageRow) sameDocument(data map[string]any) bool {
@@ -345,29 +367,7 @@ func (r *documentCoverageRow) addEvidence(row map[string]any, kind string) {
 	evidence := documentCoverageEvidence{ChunkID: sourceNavigationString(row, "chunk_id"), Revision: coverageInt(row["content_revision"]), Kind: kind}
 	if kind == "search_body" || kind == "read_body" {
 		r.bodyReturned = true
-		if row["content_offset_space"] == "physical_page_chunk_unicode_runes" {
-			if page := coverageInt(row["page"]); page > 0 {
-				evidence.Pages = append(evidence.Pages, page)
-			}
-		} else if locators, err := json.Marshal(row["source_locators"]); err == nil {
-			var locations types.SourceLocators
-			_ = json.Unmarshal(locators, &locations)
-			for _, locator := range locations {
-				if locator.Mapping != "exact" {
-					continue
-				}
-				var page int
-				switch locator.Type {
-				case types.SourceLocatorPDF:
-					page = locator.Page
-				case types.SourceLocatorSlide:
-					page = locator.Slide
-				}
-				if page > 0 && !slices.Contains(evidence.Pages, page) {
-					evidence.Pages = append(evidence.Pages, page)
-				}
-			}
-		}
+		evidence.Pages = documentCoveragePhysicalPages(row, row["content_offset_space"])
 	} else {
 		r.imageRead = true
 		// An image's display hint is not proof of a physical page. Prefer
@@ -417,102 +417,119 @@ func (r *documentCoverageRow) addEvidence(row map[string]any, kind string) {
 	}
 }
 
-// Review the bodies behind current evidence, including uncited older and
-// newer versions. Use the existing independently verified source views.
-func (e *AgentEngine) documentCoverageReviewBodies(state *types.AgentState, conversation []chat.Message, coverage *documentCoverageView) map[string]any {
-	type sourceIdentity struct {
-		kb, document, chunk string
-		revision            int
+func documentCoveragePhysicalPages(row map[string]any, offsetSpace any) []int {
+	if offsetSpace == "physical_page_chunk_unicode_runes" {
+		if page := coverageInt(row["page"]); page > 0 {
+			return []int{page}
+		}
+		return nil
 	}
-	eligible := map[sourceIdentity]documentCoverageEvidence{}
-	for _, row := range coverage.Bound {
-		for _, evidence := range row.Evidence {
-			if evidence.Kind == "search_body" || evidence.Kind == "read_body" {
-				eligible[sourceIdentity{row.KnowledgeBaseID, row.KnowledgeID, evidence.ChunkID, evidence.Revision}] = evidence
-			}
+	raw, err := json.Marshal(row["source_locators"])
+	var locations types.SourceLocators
+	if err != nil || json.Unmarshal(raw, &locations) != nil {
+		return nil
+	}
+	var pages []int
+	for _, locator := range locations {
+		if locator.Mapping != "exact" {
+			continue
+		}
+		var page int
+		switch locator.Type {
+		case types.SourceLocatorPDF:
+			page = locator.Page
+		case types.SourceLocatorSlide:
+			page = locator.Slide
+		}
+		if page > 0 && !slices.Contains(pages, page) {
+			pages = append(pages, page)
 		}
 	}
-	if len(eligible) == 0 {
+	return pages
+}
+
+// These references are local to one review input. A reference identifies a
+// returned view, including its document and verifiable physical page.
+type documentComparisonBody struct {
+	Ref         int    `json:"ref"`
+	KnowledgeID string `json:"knowledge_id"`
+	Page        int    `json:"page,omitempty"`
+	Text        string `json:"text"`
+	Shortened   bool   `json:"shortened,omitempty"`
+	Partial     bool   `json:"partial,omitempty"`
+	label       string
+}
+
+type documentComparisonBodies struct {
+	Views       []documentComparisonBody `json:"views"`
+	Omitted     int                      `json:"omitted_views,omitempty"`
+	Unavailable bool                     `json:"verified_body_views_unavailable,omitempty"`
+}
+
+func (e *AgentEngine) documentCoverageReviewBodies(state *types.AgentState, conversation []chat.Message, coverage *documentCoverageView, budget int) *documentComparisonBodies {
+	if len(coverage.Bound) == 0 {
 		return nil
 	}
 	views, valid := e.currentReadDocumentReviewEvidence(state, conversation)
-	if !valid {
-		return map[string]any{"verified_body_views_unavailable": true}
+	input := &documentComparisonBodies{Unavailable: !valid}
+	var bodies []documentComparisonBody
+	sources := make(map[string]*documentCoverageRow, len(coverage.Bound))
+	for _, row := range coverage.Bound {
+		sources[row.KnowledgeID] = row
 	}
-	type reviewPage struct {
-		kb, document string
-		page         int
-	}
-	pagesFor := func(view map[string]any) []reviewPage {
-		key := sourceIdentity{citationString(view["knowledge_base_id"]), citationString(view["knowledge_id"]),
-			citationString(view["chunk_id"]), coverageInt(view["content_revision"])}
-		evidence := eligible[key]
-		var pages []reviewPage
-		for _, location := range coverage.Locations {
-			if location.KnowledgeID == key.document && location.KnowledgeBaseID == key.kb &&
-				(location.Page == 0 || slices.Contains(evidence.Pages, location.Page)) {
-				// A page-clipped view carries only its own physical page.
-				if page := coverageInt(view["page"]); location.Page == 0 || page == 0 || page == location.Page {
-					value := reviewPage{key.kb, key.document, location.Page}
-					if !slices.Contains(pages, value) {
-						pages = append(pages, value)
-					}
-				}
-			}
-		}
-		return pages
-	}
-	var retained []map[string]any
 	for _, view := range views {
-		if _, ok := eligible[sourceIdentity{citationString(view["knowledge_base_id"]), citationString(view["knowledge_id"]),
-			citationString(view["chunk_id"]), coverageInt(view["content_revision"])}]; ok {
-			retained = append(retained, view)
+		id, kb := citationString(view["knowledge_id"]), citationString(view["knowledge_base_id"])
+		row := sources[id]
+		if row == nil || row.KnowledgeBaseID != kb {
+			continue
 		}
+		sourceView := reviewAsMap(view["source_view"])
+		if sourceView["content_rewritten"] == true {
+			input.Omitted++
+			continue
+		}
+		pages := documentCoveragePhysicalPages(view, sourceView["content_offset_space"])
+		label := row.FileName
+		if label == "" {
+			label = row.Title
+		}
+		body := documentComparisonBody{Ref: len(bodies) + 1, KnowledgeID: id, Text: citationString(view["content"]),
+			Partial: sourceView["content_complete"] == false, label: cleanCoverageText(label)}
+		if len(pages) == 1 {
+			body.Page = pages[0]
+		}
+		bodies = append(bodies, body)
 	}
-	// Share exact bodies before enforcing the budget. Omitted evidence cannot
-	// be used by the reviewer to infer absence or a failed source read.
-	omitted := len(views) - len(retained)
-	for len(retained) > 0 {
-		groups, bodies, valid := compactDocumentReviewBodies(retained)
-		if !valid {
-			break
+
+	input.Views = bodies
+	if sourceReviewProjectionSize(input) <= budget {
+		return input
+	}
+	// Share the available space across returned views before dropping any.
+	// Each excerpt remains exact text from the same source and page.
+	input.Views = make([]documentComparisonBody, len(bodies))
+	for limit := budget / max(len(bodies), 1); limit >= 64; limit /= 2 {
+		for i, body := range bodies {
+			body.Text = taskPlanPrefix(body.Text, limit)
+			body.Shortened = len(body.Text) < len(bodies[i].Text)
+			input.Views[i] = body
 		}
-		input := map[string]any{"documents": groups, "shared_bodies": bodies, "omitted_views": omitted}
-		if sourceReviewProjectionSize(input) <= 11*1024 {
+		if sourceReviewProjectionSize(input) <= budget {
 			return input
 		}
-		// Remove a redundant view before discarding the sole view of a
-		// requested physical page or the only body from a document.
-		counts := map[reviewPage]int{}
-		byView := make([][]reviewPage, len(retained))
-		for i, view := range retained {
-			byView[i] = pagesFor(view)
-			doc := reviewPage{citationString(view["knowledge_base_id"]), citationString(view["knowledge_id"]), -1}
-			byView[i] = append(byView[i], doc)
-			for _, page := range byView[i] {
-				counts[page]++
-			}
-		}
-		drop, bestLoss, largest := 0, len(counts)*2+1, 0
-		for i, view := range retained {
-			loss := 0
-			for _, page := range byView[i] {
-				if counts[page] == 1 {
-					loss++
-					if page.page >= 0 {
-						loss++
-					}
-				}
-			}
-			size := len(citationString(view["content"]))
-			if loss < bestLoss || loss == bestLoss && size > largest {
-				drop, bestLoss, largest = i, loss, size
-			}
-		}
-		retained = slices.Delete(retained, drop, drop+1)
-		omitted++
 	}
-	return map[string]any{"omitted_views": omitted, "verified_body_views_unavailable": true}
+	input.Views = nil
+	for _, body := range bodies {
+		text := taskPlanPrefix(body.Text, 192)
+		body.Shortened, body.Text = len(text) < len(body.Text), text
+		input.Views = append(input.Views, body)
+		if sourceReviewProjectionSize(input) > budget-64 {
+			input.Views = input.Views[:len(input.Views)-1]
+			break
+		}
+	}
+	input.Omitted += len(bodies) - len(input.Views)
+	return input
 }
 
 func (v *documentCoverageView) gapNotice() string {
@@ -557,6 +574,8 @@ func (v *documentCoverageView) gapNotice() string {
 		case len(missingPages) > 0:
 			gaps = append(gaps, fmt.Sprintf("%s第 %s 页尚未取得可核对的内容", label, strings.Join(missingPages, "、")))
 		case slices.ContainsFunc(v.Locations, func(location *documentCoverageLocation) bool { return location.row == row }):
+			continue
+		case row.AssociationPending:
 			continue
 		case row.Status == "not_attempted" || row.Status == "navigation_only":
 			gaps = append(gaps, label+"尚未读到正文")

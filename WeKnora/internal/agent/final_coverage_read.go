@@ -21,8 +21,8 @@ const (
 )
 
 // This exception belongs only to practical source-budget synthesis. It never
-// reopens the ordinary executor or changes source bindings, iteration limits,
-// candidate repair allowances, or the shared final deadline.
+// reopens the ordinary executor or changes iteration limits, candidate repair
+// allowances, or the shared final deadline.
 func (e *AgentEngine) finalCoverageRead(ctx context.Context, query string, state *types.AgentState, sessionID, assistantMessageID string, messages []chat.Message, decision candidateDecision) (*types.AgentStep, error) {
 	return e.boundedCoverageRead(ctx, query, state, sessionID, assistantMessageID, messages, decision, true)
 }
@@ -54,7 +54,13 @@ func (e *AgentEngine) boundedCoverageRead(ctx context.Context, query string, sta
 	known := e.finalCoverageKnownDocuments(state)
 	var calls []types.LLMToolCall
 	var navigation map[string][]map[string]any
-	if coverage != nil {
+	if review := e.turnReview.DiscoveryReview; review != nil && review.targetedRead != nil {
+		if coverage == nil || review.CandidateHash != decision.CandidateHash || review.TaskHash != decision.TaskHash ||
+			review.EvidenceHash != decision.EvidenceHash || review.SourceScopeHash != decision.SourceScopeHash {
+			return nil, nil
+		}
+		calls, known = []types.LLMToolCall{physicalCoverageReadCall(0, *review.targetedRead)}, nil
+	} else if coverage != nil {
 		if len(coverage.Locations) > 0 {
 			calls, known, navigation = coverage.targetedReads()
 		} else {
@@ -150,7 +156,7 @@ func (v *documentCoverageView) targetedReads() ([]types.LLMToolCall, map[string]
 		id := row.KnowledgeID
 		if location.Page == 0 {
 			unknown[id] = true
-			navigation[id] = row.navigation
+			navigation[id] = row.Navigation
 			continue
 		}
 		if (slices.Contains(row.readPages, location.Page) && location.LastRead == "page_read_complete") ||

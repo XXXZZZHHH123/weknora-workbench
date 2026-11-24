@@ -86,8 +86,8 @@ func comparisonCoverageFixture(t *testing.T, model *mockChat, locations ...agent
 	}{
 		{"week-d", "雨天设备周报", "2025-06-22", []int{8, 11}, []string{"月度开机率约为四成，口径已调整。", "月度开机率（按本月有效运行时间）｜41.25%"}},
 		{"week-a", "班次设备周报", "2025-06-01", []int{2}, []string{"年度开机率（全年计划工时）｜78.6%"}},
-		{"week-c", "检修设备周报", "2025-06-15", []int{3}, []string{"月度开机率（计划工时）｜54.5%"}},
-		{"week-b", "现场设备周报", "2025-06-08", []int{9}, []string{"月度开机率（计划工时）｜56.5%"}},
+		{"week-c", "检修设备周报", "2025-06-15", []int{3}, []string{"六月第三周：生产线已按计划复工。月度开机率（计划工时）｜54.5%"}},
+		{"week-b", "现场设备周报", "2025-06-08", []int{9}, []string{"六月第二周：生产线已按计划复工。月度开机率（计划工时）｜56.5%"}},
 	} {
 		filename := report.title + report.date + ".pdf"
 		if len(locations) > 0 && (report.id == "week-d" || report.id == "week-a") {
@@ -110,15 +110,19 @@ func comparisonCoverageFixture(t *testing.T, model *mockChat, locations ...agent
 		}
 		binding := agenttools.DocumentCoverageBinding{Target: 0}
 		if len(locations) == 0 || report.id == "week-d" || report.id == "week-a" {
+			bindings := []agenttools.DocumentCoverageBinding{binding}
 			if len(locations) > 0 {
 				index := 0
-				binding.Location = &index
-				binding.Pages = []int{11}
+				bindings[0].Location = &index
+				bindings[0].Pages = []int{11}
+			} else if report.id == "week-b" {
+				bindings = nil
 			}
 			plan.Sources = append(plan.Sources, agenttools.DocumentSourceSelection{KnowledgeID: report.id, Title: report.title,
-				FileName: filename, Coverage: []agenttools.DocumentCoverageBinding{binding}, Date: &agenttools.DocumentDateEvidence{Date: report.date, SourceField: "file_name", SourceText: report.date}})
+				FileName: filename, Coverage: bindings, Date: &agenttools.DocumentDateEvidence{Date: report.date, SourceField: "file_name", SourceText: report.date}})
 		}
-		navigation = append(navigation, map[string]any{"knowledge_id": report.id, "title": report.title, "knowledge_base_id": "comparison-library"})
+		navigation = append(navigation, map[string]any{"knowledge_id": report.id, "title": report.title, "file_name": filename, "knowledge_base_id": "comparison-library",
+			"navigation_matches": []map[string]any{{"page_hint": report.pages[len(report.pages)-1], "excerpt": report.bodies[len(report.bodies)-1]}}})
 	}
 	navigation = append(navigation, map[string]any{"knowledge_id": "week-e", "title": "新增周报，可能含新口径"})
 	raw, err := json.Marshal(plan)
@@ -147,8 +151,8 @@ func appendComparisonReads(t *testing.T, engine *AgentEngine, state *types.Agent
 	return messages
 }
 
-func TestDocumentCoverageReviewSeesUnreadVersionAndRecoversOnce(t *testing.T) {
-	model := &mockChat{responses: []mockResponse{discoveryReply("recover", "目前只读到年度口径。补查其他周报中的月度表头及实际同口径数据。")}}
+func TestDocumentCoverageReviewTargetsMonthlyTableAndRecoversOnce(t *testing.T) {
+	model := &mockChat{responses: []mockResponse{chatAnswer(`{"action":"recover","feedback":"班次设备周报查到的是年度开机率，月度开机率还没核实到。请核对雨天设备周报的月度表。","checks":[{"claim":"月度开机率为78.6%","ref":1,"quote":"年度开机率（全年计划工时）","period":"年度","finding":"conflicts"}],"missing":{"knowledge_id":"week-d","page":11,"query":""}}`)}}
 	engine, state, ctx := comparisonCoverageFixture(t, model)
 	conversation := appendComparisonReads(t, engine, state, ctx, "week-a")
 	search := navigationCall(agenttools.ToolSearchKnowledge, map[string]any{"document_coverage": []map[string]any{
@@ -165,7 +169,7 @@ func TestDocumentCoverageReviewSeesUnreadVersionAndRecoversOnce(t *testing.T) {
 	require.Contains(t, view.gapNotice(), "《检修设备周报》本轮读取失败")
 	require.Contains(t, view.gapNotice(), "《雨天设备周报》因本轮读取或展示限额未取得完整结果")
 
-	original := candidateDecision{Disposition: candidateAccepted, Candidate: "年度表口径已查清。", CandidateHash: "candidate", TaskHash: "task", EvidenceHash: "source", SourceScopeHash: "scope"}
+	original := candidateDecision{Disposition: candidateAccepted, Candidate: "班次设备周报显示月度开机率为78.6%。", CandidateHash: "candidate", TaskHash: "task", EvidenceHash: "source", SourceScopeHash: "scope"}
 	decision := engine.checkDiscoveryOnlyDelivery(ctx, comparisonQuestion, original, state, conversation)
 	require.Equal(t, candidateNeedSource, decision.Disposition)
 	require.Contains(t, model.calls[0][1].Content, "actual_document_coverage")
@@ -173,19 +177,25 @@ func TestDocumentCoverageReviewSeesUnreadVersionAndRecoversOnce(t *testing.T) {
 	require.Contains(t, model.calls[0][1].Content, "directory_continuations")
 	require.Contains(t, model.calls[0][1].Content, "年度开机率")
 	require.Contains(t, model.calls[0][0].Content, "matching table definitions")
-
-	engine.resumeEvidenceCollection(ctx, state, &conversation, &loopGuards{}, "session")
+	require.Equal(t, "week-d", engine.turnReview.DiscoveryReview.targetedRead.ID)
+	require.Equal(t, 11, engine.turnReview.DiscoveryReview.targetedRead.Page)
+	read, err := engine.boundedCoverageRead(ctx, comparisonQuestion, state, "session", "message", conversation, decision, false)
+	require.NoError(t, err)
+	require.NotNil(t, read)
+	require.Len(t, read.ToolCalls, 1)
+	require.Equal(t, "week-d", read.ToolCalls[0].ExecutionArgs()["id"])
+	require.EqualValues(t, 11, read.ToolCalls[0].ExecutionArgs()["page"])
 	require.True(t, engine.turnReview.DocumentCoverageRecoveryUsed)
 	repeated := engine.checkDiscoveryOnlyDelivery(ctx, comparisonQuestion, original, state, conversation)
 	require.Equal(t, candidateRevise, repeated.Disposition)
-	require.Contains(t, engine.answerRepairAdvice(), "本轮检索未返回相关内容")
+	require.Contains(t, engine.answerRepairAdvice(), "月度开机率还没核实到")
 	require.Len(t, model.calls, 1)
 }
 
 func TestDocumentCoverageReviewRetainsUncitedBodiesAndTheirOwnPages(t *testing.T) {
 	model := &mockChat{responses: []mockResponse{
 		discoveryReply("keep", ""),
-		discoveryReply("recover", "旧口径与新版分开核对，不要把取整表述和表内精确值混为同一表。"),
+		chatAnswer(`{"action":"revise","feedback":"六月第二周也有同一句复工表述，应和第三周放在一起。","checks":[{"claim":"只有六月第三周提到按计划复工","ref":5,"quote":"生产线已按计划复工。","period":"六月第二周","finding":"conflicts"}],"missing":null}`),
 	}}
 	engine, state, ctx := comparisonCoverageFixture(t, model)
 	conversation := appendComparisonReads(t, engine, state, ctx, "week-c", "week-a", "week-d", "week-b")
@@ -194,14 +204,18 @@ func TestDocumentCoverageReviewRetainsUncitedBodiesAndTheirOwnPages(t *testing.T
 	require.Equal(t, []int{8}, view.Bound[0].Evidence[0].Pages)
 	require.Equal(t, []int{11}, view.Bound[0].Evidence[1].Pages)
 	require.Equal(t, 1, view.Bound[0].Evidence[0].Revision)
+	require.True(t, view.Bound[3].AssociationPending)
+	require.Equal(t, "body_returned", view.Bound[3].Status)
 	decision := candidateDecision{Disposition: candidateAccepted, TaskHash: "task", EvidenceHash: "unchanged-evidence", SourceScopeHash: "scope"}
 	progress := engine.checkDiscoveryDeliveryPhase(ctx, comparisonQuestion, decision, state, conversation, "progress", map[string]any{"source_batches": 4})
 	require.Equal(t, candidateAccepted, progress.Disposition)
 	budget := engine.turnReview.DiscoveryReview.budget
-	decision.Candidate = "各份来源都属于同一口径。"
+	decision.Candidate = "只有六月第三周提到按计划复工。"
 	decision.CandidateHash = "draft"
 	delivery := engine.checkDiscoveryOnlyDelivery(ctx, comparisonQuestion, decision, state, conversation)
-	require.Equal(t, candidateNeedSource, delivery.Disposition, "all documents returning text does not establish semantic completion")
+	require.Equal(t, candidateRevise, delivery.Disposition, "the returned wording supports regrouping without another read")
+	require.Nil(t, engine.turnReview.DiscoveryReview.targetedRead)
+	require.Contains(t, engine.answerRepairAdvice(), "原文“生产线已按计划复工。”")
 	require.Same(t, budget, engine.turnReview.DiscoveryReview.budget)
 	var input map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal([]byte(model.calls[1][1].Content), &input))
@@ -210,6 +224,46 @@ func TestDocumentCoverageReviewRetainsUncitedBodiesAndTheirOwnPages(t *testing.T
 		require.Contains(t, bodies, want)
 	}
 	require.Contains(t, string(input["actual_document_coverage"]), `"verified_date_evidence"`)
+	require.Contains(t, string(input["actual_document_coverage"]), `"coverage_association_pending":true`)
+}
+
+func TestDocumentCoverageReviewBindsOnlyMissingSameDayVersion(t *testing.T) {
+	model := &mockChat{responses: []mockResponse{chatAnswer(`{"action":"recover","feedback":"同日初版还没核对。请核实它的表头和数据期。","checks":[],"missing":{"knowledge_id":"week-a","page":2,"query":""}}`)}}
+	e, state, ctx := comparisonCoverageFixture(t, model, agenttools.DocumentRequiredLocation{Period: "六月", Fact: "开机率"})
+	original := agenttools.BoundDocumentSelections(e.toolRegistry)[0]
+	original.Coverage = nil
+	e.taskPlan.CoverageTargets = nil
+	e.setDocumentCoverageTargets()
+	binder, err := e.toolRegistry.GetTool(agenttools.ToolBindDocumentScope)
+	require.NoError(t, err)
+	args, err := json.Marshal(agenttools.DocumentScopePlan{Sources: []agenttools.DocumentSourceSelection{original}, Reason: "先核对修订版"})
+	require.NoError(t, err)
+	result, err := binder.Execute(ctx, args)
+	require.NoError(t, err)
+	require.True(t, result.Success, result.Error)
+
+	conversation := appendComparisonReads(t, e, state, ctx, "week-d")
+	candidate := candidateDecision{Disposition: candidateAccepted, Candidate: "六月两版采用同一口径。", CandidateHash: "draft", TaskHash: "task"}
+	decision := e.checkDiscoveryOnlyDelivery(ctx, "比较同一天初版和修订版的开机率口径。", candidate, state, conversation)
+	require.Equal(t, candidateNeedSource, decision.Disposition)
+	require.Contains(t, model.calls[0][1].Content, "（初版）.pdf")
+	require.Contains(t, model.calls[0][1].Content, "（修订版）.pdf")
+	read, err := e.boundedCoverageRead(ctx, comparisonQuestion, state, "session", "message", conversation, decision, false)
+	require.NoError(t, err)
+	require.NotNil(t, read)
+	require.Len(t, read.ToolCalls, 1)
+	call := read.ToolCalls[0]
+	require.True(t, call.Result.Success, call.Result.Error)
+	require.Equal(t, "week-a", call.ExecutionArgs()["id"])
+	require.EqualValues(t, 2, call.ExecutionArgs()["page"])
+	require.Contains(t, call.Result.Output, "全年计划工时")
+	view := e.documentCoverage(state)
+	require.Len(t, view.Bound, 2)
+	require.Equal(t, "week-d", view.Bound[0].KnowledgeID)
+	require.Equal(t, original.Date, view.Bound[0].DateEvidence)
+	require.Equal(t, "body_returned", view.Bound[0].Status)
+	require.Equal(t, "body_returned", view.Bound[1].Status)
+	require.Len(t, model.calls, 1)
 }
 
 func TestDocumentCoverageTaskPlanFlagIsOptional(t *testing.T) {
@@ -235,7 +289,7 @@ func TestDocumentCoverageTaskPlanFlagIsOptional(t *testing.T) {
 func TestDocumentCoverageFinalSynthesisIncludesSpecificGaps(t *testing.T) {
 	model := &mockChat{responses: []mockResponse{
 		chatAnswer("已读的班次设备周报展示了年度开机率。"),
-		discoveryReply("keep", ""),
+		chatAnswer(`{"action":"keep","feedback":"","checks":[],"missing":null}`),
 	}}
 	engine, state, ctx := comparisonCoverageFixture(t, model)
 	engine.taskPlan.DeliveryRequirements[0].Format = "prose"
@@ -245,13 +299,13 @@ func TestDocumentCoverageFinalSynthesisIncludesSpecificGaps(t *testing.T) {
 	require.Contains(t, state.FinalAnswer, "已读的班次设备周报展示了年度开机率")
 	require.Contains(t, state.FinalAnswer, "《雨天设备周报》尚未读到正文")
 	require.Contains(t, state.FinalAnswer, "《检修设备周报》尚未读到正文")
-	require.Contains(t, state.FinalAnswer, "《现场设备周报》尚未读到正文")
+	require.NotContains(t, state.FinalAnswer, "《现场设备周报》尚未读到正文")
 }
 
 func TestDocumentCoverageKeepsPeriodAndVersionGapsUntilActualPageRead(t *testing.T) {
 	for _, timedOut := range []bool{false, true} {
 		t.Run(map[bool]string{false: "page_read", true: "timeout"}[timedOut], func(t *testing.T) {
-			model := &mockChat{responses: []mockResponse{discoveryReply("recover", "年度表不能核实六月月度开机率。请查看两版第 11 页。")}}
+			model := &mockChat{responses: []mockResponse{chatAnswer(`{"action":"recover","feedback":"修订版的六月月度开机率还没核实到。","checks":[],"missing":{"knowledge_id":"week-d","page":11,"query":""}}`)}}
 			e, state, ctx := comparisonCoverageFixture(t, model,
 				agenttools.DocumentRequiredLocation{Period: "六月", Fact: "月度开机率"},
 				agenttools.DocumentRequiredLocation{Period: "七月", Fact: "月度开机率"},
@@ -280,7 +334,7 @@ func TestDocumentCoverageKeepsPeriodAndVersionGapsUntilActualPageRead(t *testing
 			read, err := e.boundedCoverageRead(ctx, comparisonQuestion, state, "session", "message", conversation, decision, false)
 			require.NoError(t, err)
 			require.NotNil(t, read)
-			require.Len(t, read.ToolCalls, 2)
+			require.Len(t, read.ToolCalls, 1)
 			for _, call := range read.ToolCalls {
 				require.Equal(t, agenttools.ToolReadDocument, call.Name)
 				require.EqualValues(t, 11, call.ExecutionArgs()["page"])

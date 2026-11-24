@@ -246,3 +246,26 @@ func TestDiscoveryDeliveryReviewHonorsParentDeadline(t *testing.T) {
 	require.NotNil(t, e.turnReview.DiscoveryReview)
 	require.Empty(t, e.answerReviewFeedback)
 }
+
+// A matching sentence in another returned report does not validate a
+// fabricated data period for the selected source.
+func TestComparisonReviewValidatesClaimAndSourcePeriod(t *testing.T) {
+	const candidate = "只有第一期写了设备已复工。"
+	bodies := &documentComparisonBodies{Views: []documentComparisonBody{
+		{Ref: 1, KnowledgeID: "earlier-report", Page: 6, Text: "五月上旬：设备已复工。"},
+		{Ref: 2, KnowledgeID: "later-report", Page: 14, Text: "五月下旬：设备已复工。"},
+	}}
+	const response = `{"action":"keep","feedback":"","checks":[{"claim":"只有第一期写了设备已复工","ref":2,"quote":"设备已复工。","period":"五月下旬","finding":"conflicts"}],"missing":null}`
+	review, failure := decodeDocumentComparisonReview(response, candidate, bodies)
+	require.Empty(t, failure)
+	require.Equal(t, "revise", review.Action)
+	require.Contains(t, review.Feedback, "五月下旬")
+	for _, replacement := range [][2]string{
+		{`"ref":2`, `"ref":1`},
+		{"设备已复工。", "设备已停工。"},
+		{"只有第一期写了设备已复工", "只有第二期写了设备已复工"},
+	} {
+		_, failure := decodeDocumentComparisonReview(strings.Replace(response, replacement[0], replacement[1], 1), candidate, bodies)
+		require.Equal(t, "comparison_witness", failure)
+	}
+}
