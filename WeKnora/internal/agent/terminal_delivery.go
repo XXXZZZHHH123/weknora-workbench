@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -54,12 +55,24 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	markedCitations := 0
 	if delivery, ok := e.numericWarningDelivery(answer, state); ok {
 		answer, outcome = delivery, "numeric_warning"
-	} else if (outcome == "answer" || outcome == "partial") && e.needsSourceConsistencyCheck(state) &&
-		!e.candidateApprovalCurrent(answer, state) {
-		answer = answerReviewUnavailableFallback
-		existingID = ""
-		outcome = "failed"
-		truncated = false
+	} else if (outcome == "answer" || outcome == "partial") && e.needsSourceConsistencyCheck(state) {
+		approved := e.turnReview.Last.Candidate
+		submittedHash := candidateTextDigest(agenttools.TrimAnswerWhitespace(answer))
+		approvedHash := candidateTextDigest(agenttools.TrimAnswerWhitespace(approved))
+		if submittedHash == approvedHash && e.candidateApprovalCurrent(approved, state) {
+			// Store the checked text so citation bindings still have its exact bytes.
+			answer = approved
+		} else {
+			common.PipelineWarn(ctx, "Agent", "terminal_approval_mismatch", map[string]interface{}{
+				"submitted_candidate_hash": candidateTextDigest(answer),
+				"checked_candidate_hash":   e.turnReview.Last.CandidateHash,
+				"checked_disposition":      e.turnReview.Last.Disposition,
+			})
+			answer = answerReviewUnavailableFallback
+			existingID = ""
+			outcome = "failed"
+			truncated = false
+		}
 	}
 	// Review failure or exhausted revisions: deliver the latest numerically
 	// grounded candidate with a notice rather than a bare failure message.

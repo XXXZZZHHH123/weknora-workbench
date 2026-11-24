@@ -546,8 +546,10 @@ def create_app(data_dir: str | Path | None = None):
                     or permission not in {'viewer', 'editor', 'admin'}):
                 raise ValueError('invalid knowledge-base grant')
             writable = permission in {'editor', 'admin'}
+            summary_model = data.get('summary_model_id')
             return replace(identity, knowledge_base_id=knowledge_base_id,
-                           knowledge_base_tenant_id=owner, knowledge_base_can_write=writable)
+                           knowledge_base_tenant_id=owner, knowledge_base_can_write=writable,
+                           summary_model_id=summary_model if isinstance(summary_model, str) else '')
         except (ValueError, TypeError, AttributeError):
             raise HTTPException(403, '知识库权限信息无效') from None
 
@@ -633,11 +635,13 @@ def create_app(data_dir: str | Path | None = None):
                 chunks.append(chunk)
             request._body = b''.join(chunks)
         marker = current_identity.set(identity)
-        from .model_gateway import current_authorization
+        from .model_gateway import current_authorization, request_model_catalog
         authorization_marker = current_authorization.set(getattr(request.state, 'verified_authorization', ''))
+        catalog_marker = request_model_catalog.set({})
         try:
             return await call_next(request)
         finally:
+            request_model_catalog.reset(catalog_marker)
             current_authorization.reset(authorization_marker)
             current_identity.reset(marker)
 
@@ -705,15 +709,11 @@ def create_app(data_dir: str | Path | None = None):
         return response
 
     @app.get('/api/model-settings')
-    async def model_settings():
-        from .model_settings import public_model
+    def model_settings():
+        from .model_settings import platform_model_settings, public_model
         identity = current_identity.get()
         if identity.knowledge_base_id:
-            from .model_gateway import available_models
-            cfg = public_model(store.root)
-            return {'native_model_id': cfg.get('native_model_id', ''), 'protocol': 'platform',
-                    'legacy_configured': cfg.get('has_api_key', False),
-                    'can_edit': identity.can_write, 'models': await available_models()}
+            return platform_model_settings(store.root)
         return public_model(store.root)
 
     @app.post('/api/model-settings')

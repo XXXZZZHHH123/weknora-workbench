@@ -2,10 +2,11 @@ package agent
 
 import (
 	"context"
+	"testing"
+
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 func TestCandidateDecisionBindsTaskCandidateAndEvidence(t *testing.T) {
@@ -37,6 +38,37 @@ func TestTerminalCannotReuseApprovalForChangedCandidate(t *testing.T) {
 	done, visible := recorder.snapshot()
 	require.Equal(t, 1, done)
 	require.Equal(t, state.FinalAnswer, visible)
+}
+
+func TestTerminalApprovalIgnoresOnlySurroundingWhitespace(t *testing.T) {
+	const candidate = "The indicator is covered area."
+	const padded = " \t" + candidate + "\r\n"
+	for _, tc := range []struct {
+		name, approved, submitted, expected string
+	}{
+		{"padded_submission", candidate, padded, candidate},
+		{"padded_approval", padded, candidate, padded},
+		{"internal_whitespace", candidate, "The indicator is  covered area.", answerReviewUnavailableFallback},
+		{"added_think_block", candidate, candidate + "<think>Unchecked</think>", answerReviewUnavailableFallback},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := sourceConsistencyEngine(t, &mockChat{responses: []mockResponse{sourceAcceptedVerdict()}})
+			state := sourceConsistencyState()
+			recorder := &terminalAnswerRecorder{}
+			recorder.attach(e.eventBus)
+			decision := e.checkCandidate(t.Context(), "Explain the indicator.", tc.approved, "", state, nil, false)
+			require.Equal(t, candidateAccepted, decision.Disposition)
+			require.Equal(t, tc.approved, decision.Candidate)
+
+			e.commitTerminalResult(t.Context(), state, "s", tc.submitted, "", "answer", false)
+
+			require.Equal(t, tc.expected, state.FinalAnswer)
+			require.Equal(t, tc.expected == tc.approved, e.candidateApprovalCurrent(state.FinalAnswer, state))
+			done, visible := recorder.snapshot()
+			require.Equal(t, 1, done)
+			require.Equal(t, tc.expected, visible)
+		})
+	}
 }
 
 func TestCancelledFinalSynthesisDoesNotCallModelOrPublish(t *testing.T) {
@@ -94,7 +126,7 @@ func TestTerminalCannotReuseApprovalAfterTaskOrEvidenceChanges(t *testing.T) {
 		} else {
 			state.RoundSteps[0].ToolCalls[0].Result.Output = "A changed observation"
 		}
-		e.commitTerminalResult(t.Context(), state, "s", candidate, "", "answer", false)
+		e.commitTerminalResult(t.Context(), state, "s", " \t"+candidate+"\n", "", "answer", false)
 		require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer, "a stale task or evidence revision must not be committed")
 	}
 }

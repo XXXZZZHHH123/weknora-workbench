@@ -33,12 +33,14 @@ func documentImageConsistencySummariesWithSources(state *types.AgentState, sourc
 		Page        int    `json:"page"`
 		Label       string `json:"label"`
 		Context     string `json:"source_context"`
+		SourcePart  string `json:"source_part"`
 	}
 	for _, step := range state.RoundSteps {
 		for _, call := range step.ToolCalls {
-			if call.Name != tools.ToolReadDocument || call.Result == nil || !call.Result.Success {
+			if call.ExecutionName() != tools.ToolReadDocument || call.Result == nil || !call.Result.Success {
 				continue
 			}
+			call.Name = call.ExecutionName()
 			result := call.Result
 			var data struct {
 				KnowledgeID string   `json:"knowledge_id"`
@@ -104,9 +106,12 @@ func documentImageConsistencySummariesWithSources(state *types.AgentState, sourc
 						"chunk_id": read.ChunkID, "page": read.Page, "label": image.Label, "source_context": string(context),
 						"sha256": read.SHA256, "evidence_version": read.Version, "original_pixels_verified": true,
 						"returned_image_index": *read.Index, "vision_observation": observation}
+					if image.SourcePart != "" {
+						view["source_part"] = image.SourcePart
+					}
 					if observation != "" {
 						pointer := fmt.Sprintf("/data/image_descriptions/%d", *read.Index)
-						if rawID, ok := exactImageDescriptionSourceID(sourceMessages, call, pointer, observation); ok {
+						if rawID, ok := exactDocumentImageTextSourceID(sourceMessages, call, pointer, observation); ok {
 							view["source_evidence_id"] = rawID
 							view["source_json_pointers"] = map[string]string{"vision_observation": pointer}
 						}
@@ -150,6 +155,19 @@ func documentImageConsistencySummariesWithSources(state *types.AgentState, sourc
 					messages = append(messages, chat.Message{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: string(encoded)})
 					break
 				}
+			}
+			for index, raw := range reviewAsSlice(rawData[types.DocumentImageTextEvidenceKey]) {
+				annotation := reviewAsMap(raw)
+				if !reviewImageTextBoundToSource(rawData, annotation) {
+					continue
+				}
+				pointer := fmt.Sprintf("/data/image_text_evidence/%d/text", index)
+				if rawID, ok := exactDocumentImageTextSourceID(sourceMessages, call, pointer, annotation["text"].(string)); ok {
+					annotation["source_evidence_id"] = rawID
+					annotation["source_json_pointers"] = map[string]string{"text": pointer}
+				}
+				encoded, _ := json.Marshal(annotation)
+				messages = append(messages, chat.Message{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: string(encoded)})
 			}
 			for geometryIndex, raw := range reviewAsSlice(rawData["image_geometry_evidence"]) {
 				figure := reviewAsMap(raw)
@@ -211,7 +229,7 @@ func documentImageConsistencySummariesWithSources(state *types.AgentState, sourc
 	return views, scope
 }
 
-func exactImageDescriptionSourceID(sourceMessages []chat.Message, call types.ToolCall, pointer, expected string) (string, bool) {
+func exactDocumentImageTextSourceID(sourceMessages []chat.Message, call types.ToolCall, pointer, expected string) (string, bool) {
 	for _, message := range sourceMessages {
 		if message.Role != "tool" || message.Name != call.Name || message.ToolCallID != call.ID {
 			continue
@@ -229,6 +247,51 @@ func exactImageDescriptionSourceID(sourceMessages []chat.Message, call types.Too
 		}
 	}
 	return "", false
+}
+
+// An OCR or caption child may be returned with a catalog listing before pixels
+// are requested. Only the native read's exact catalog and fetched chunk bind
+// it to an image. For an original-media alias, retain original page validation.
+func reviewImageTextBoundToSource(data, annotation map[string]any) bool {
+	kind, _ := annotation["kind"].(string)
+	reference, _ := annotation["reference"].(string)
+	storedReference, _ := annotation["stored_reference"].(string)
+	text, _ := annotation["text"].(string)
+	knowledgeID, _ := annotation["knowledge_id"].(string)
+	chunkID, _ := annotation["chunk_id"].(string)
+	parentID, _ := annotation["parent_chunk_id"].(string)
+	childID, _ := annotation["child_chunk_id"].(string)
+	status, _ := data["status"].(string)
+	if (kind != string(types.ChunkTypeImageOCR) && kind != string(types.ChunkTypeImageCaption)) ||
+		strings.TrimSpace(text) == "" || knowledgeID == "" || data["knowledge_id"] != knowledgeID ||
+		chunkID == "" || parentID == "" || childID == "" || annotation["page"] == nil || (status != "" && status != "ok") {
+		return false
+	}
+	if _, valid := types.ParseResourcePath(storedReference); !valid {
+		return false
+	}
+	if storedReference != reference {
+		if _, valid := reviewOriginalMediaCatalogReference(data, annotation, reference); !valid {
+			return false
+		}
+	}
+	catalog, _ := data["image_catalog"].([]any)
+	catalogBound := false
+	for _, raw := range catalog {
+		image, _ := raw.(map[string]any)
+		catalogBound = catalogBound || (image["reference"] == reference && image["knowledge_id"] == knowledgeID &&
+			image["chunk_id"] == chunkID && reviewInt(image["page"]) == reviewInt(annotation["page"]))
+	}
+	chunks, _ := data["chunks"].([]any)
+	chunkBound, parentBound := false, false
+	for _, raw := range chunks {
+		chunk, _ := raw.(map[string]any)
+		if chunk["knowledge_id"] == knowledgeID {
+			chunkBound = chunkBound || chunk["chunk_id"] == chunkID
+			parentBound = parentBound || chunk["chunk_id"] == parentID
+		}
+	}
+	return catalogBound && chunkBound && parentBound
 }
 
 func exactImageGeometrySourceID(sourceMessages []chat.Message, call types.ToolCall, pointer string, projectedImage map[string]any, projectedGeometry any) (string, bool) {
@@ -519,6 +582,9 @@ func documentReviewImageInputs(state *types.AgentState) ([]string, map[string]an
 // pixels before it can replace fallible model guesses in a fact-only view.
 // The original observations are never modified; UI/history/trace retain them.
 func nativeGeometryImageIndexes(call types.ToolCall) map[int]bool {
+	if call.Result == nil || len(call.Result.Images) == 0 || call.Result.Data["image_geometry_evidence"] == nil {
+		return nil
+	}
 	indexes := map[int]bool{}
 	views, _ := documentImageConsistencySummaries(&types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}})
 	for _, entry := range views {

@@ -13,11 +13,11 @@ func StripThinkBlocks(content string) string {
 		return ""
 	}
 	_, answer := SplitThinkContent(content)
-	return trimWhitespace(answer)
+	return TrimAnswerWhitespace(answer)
 }
 
-// trimWhitespace trims leading and trailing whitespace without importing strings.
-func trimWhitespace(s string) string {
+// TrimAnswerWhitespace applies the whitespace cleanup used for delivered answers.
+func TrimAnswerWhitespace(s string) string {
 	start, end := 0, len(s)
 	for start < end && (s[start] == ' ' || s[start] == '\n' || s[start] == '\r' || s[start] == '\t') {
 		start++

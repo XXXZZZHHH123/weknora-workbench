@@ -23,6 +23,7 @@ class Identity:
     workbench_id: str = ''
     scope_version: int = 1
     sources_revision: int = 0
+    summary_model_id: str = ''
 
     @property
     def can_write(self):

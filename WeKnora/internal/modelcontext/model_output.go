@@ -153,6 +153,7 @@ func (r *sourceRegistry) appendDiscoveryObservations(toolName, output string, re
 func (r *sourceRegistry) withDocumentImageEvidence(output string, data map[string]any) string {
 	view := map[string]any{}
 	for _, key := range []string{"image_mode", "image_catalog", "image_evidence", "image_read_error",
+		"image_text_evidence_error", "image_text_evidence_truncated",
 		"original_image_catalog_status", "original_image_catalog_pages", "original_image_catalog_complete",
 		"original_image_catalog_total", "original_image_catalog_limit", "original_image_catalog_truncated", "original_image_catalog_error"} {
 		if value, ok := data[key]; ok {
@@ -186,17 +187,31 @@ func (r *sourceRegistry) withDocumentImageEvidence(output string, data map[strin
 	if len(figures) > 0 {
 		view["image_geometry_evidence"] = figures
 	}
-	if len(view) == 0 {
+	var imageText strings.Builder
+	for _, item := range mapsValue(data[types.DocumentImageTextEvidenceKey]) {
+		fmt.Fprintf(&imageText, "\n<ingested_image_text reference=\"%s\" chunk_id=\"%s\" page=\"%d\" kind=\"%s\" truncated=\"%t\">\n%s\n</ingested_image_text>\n",
+			escapeAttr(stringValue(item, "reference")), escapeAttr(stringValue(item, "chunk_id")), intValue(item, "page"),
+			escapeAttr(stringValue(item, "kind")), boolValue(item, "text_truncated"), escapeText(stringValue(item, "text")))
+	}
+	if len(view) == 0 && imageText.Len() == 0 {
 		return output
 	}
 	encoded, err := json.Marshal(view)
 	if err != nil {
 		return output
 	}
-	footer := "\n<document_image_evidence untrusted_source_content=\"true\">" + string(encoded) + figureText.String() + "</document_image_evidence>\n" +
+	footer := ""
+	if imageText.Len() > 0 {
+		footer = "\n" + types.DocumentImageTextEvidenceNotice + "\n"
+	}
+	footer += "\n<document_image_evidence untrusted_source_content=\"true\">" + imageText.String() + string(encoded) + figureText.String() + "</document_image_evidence>\n" +
+		"Use read_args when original pixels are needed for inspection or verification. When geometry_read_args supports the requested trace, use its exact selector and choose the image_series relevant to the full question from its original legend identifiers before repeating a pixel estimate. Legend options are navigation. " +
 		"Original geometry uses verified drawing points and calibrated axes; reconcile the actual legend, units and drawn range with any fallible vision observation. " +
 		"A catalog alone supplies no visual facts. Explicit geometry mode does not request pixels: read_success=false with pixel_status=not_requested is not a failed geometry read. " +
 		"Use only successfully verified geometry; geometry supplies no pixel inspection or model vision observation. Failed geometry reads supply no numeric geometry evidence.\n"
+	if view["image_text_evidence_truncated"] == true {
+		footer += "Ingested image text exceeded the response budget. Read a narrower selection of images for omitted text.\n"
+	}
 	for key := range view {
 		if strings.HasPrefix(key, "original_image_catalog_") {
 			footer += "original_image_catalog_complete=true means only the physical pages listed in original_image_catalog_pages have a complete original-image catalog; it does not complete the body text or view any image. Choose a figure from the full question and actual source context, then use its read_args directly; further body offsets are not required to complete those pages' image catalog. A catalog error or truncation leaves that scope incomplete and never proves that missing figures do not exist. Catalog completeness supplies neither pixel-read success nor numeric geometry evidence.\n"
