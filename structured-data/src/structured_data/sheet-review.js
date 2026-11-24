@@ -761,7 +761,7 @@
   }
   function selectedAssistModel(cfg) {
     if(cfg?.can_edit===false)return '';
-    if(cfg?.protocol==='platform')return cfg.models?.find(model=>model.id===cfg.native_model_id)?.name||'';
+    if(cfg?.protocol==='platform')return cfg.effective_model?.name||cfg.models?.find(model=>model.id===cfg.native_model_id)?.name||'';
     return cfg?.has_api_key&&cfg.model?cfg.model:'';
   }
   previewMapping = async function() {

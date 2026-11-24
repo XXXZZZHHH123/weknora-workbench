@@ -1,5 +1,6 @@
 """Bounded, path-bound calls from verified WeKnora and research services."""
 import base64
+from dataclasses import replace
 import hashlib
 import hmac
 import json
@@ -94,7 +95,7 @@ async def verify_service(request):
         if identity.workbench_id:
             await verify_research_projection(request, identity)
         elif scoped and principal != 'api_key':
-            await verify_direct_knowledge(identity, authorization)
+            identity = await verify_direct_knowledge(identity, authorization)
         if (scoped or multi) and principal != 'api_key':
             request.state.verified_authorization = authorization
         return identity
@@ -121,6 +122,8 @@ async def verify_direct_knowledge(identity, authorization):
                 or kb['tenant_id'] != identity.knowledge_base_tenant_id
                 or kb.get('my_permission') not in {'viewer', 'editor', 'admin'}):
             raise HTTPException(403, '知识库读取权限信息无效')
+        summary_model = kb.get('summary_model_id')
+        return replace(identity, summary_model_id=summary_model if isinstance(summary_model, str) else '')
     except HTTPException:
         raise
     except (ValueError, TypeError, AttributeError):
