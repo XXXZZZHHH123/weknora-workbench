@@ -86,7 +86,37 @@ def _metadata(row, scope):
             or body.get('workbench_id') != scope.workbench_id
             or type(body.get('judgment_id')) is not int or type(body.get('version')) is not int):
         return None
+    history = body.get('previous_judgment_ids', [])
+    if (not isinstance(history, list) or any(type(identifier) is not int for identifier in history)
+            or row.id != panel_identifier(scope, history[0] if history else body['judgment_id'])):
+        return None
     return body
+
+
+def panel_index(session, scope):
+    rows = session.scalars(select(WorkbenchArtifact).where(
+        WorkbenchArtifact.module == 'judgments', WorkbenchArtifact.actor == scope.identity.user_id))
+    pins, history = {}, set()
+    for row in rows:
+        body = _metadata(row, scope)
+        if body is not None:
+            pins[body['judgment_id']] = (row, body)
+            history.update(body.get('previous_judgment_ids', []))
+    return pins, history
+
+
+def panel_for_judgment(session, scope, judgment, *, index=None):
+    pins, history = panel_index(session, scope) if index is None else index
+    entry = pins.get(judgment.id)
+    if entry is None:
+        historical = judgment.id in history
+        if index is None and not historical and session.get(WorkbenchArtifact, panel_identifier(scope, judgment.id)):
+            raise HTTPException(409, '研判管理记录不一致，请刷新后核对')
+        return None, historical
+    panel, body = entry
+    if body['version'] != judgment.version or panel.status == 'deleted':
+        raise HTTPException(409, '研判管理记录不一致，请刷新后核对')
+    return panel, False
 
 
 def _view(judgment, named=None):
@@ -123,6 +153,28 @@ def register_panel(session, scope, judgment, title=''):
     return _view(judgment, row)
 
 
+def advance_panel(session, scope, before, after):
+    panel, historical = panel_for_judgment(session, scope, before)
+    if historical:
+        raise HTTPException(409, '此面板已有新版本，请刷新后重新逐条修改')
+    if panel is None:
+        register_panel(session, scope, before)
+        panel = session.get(WorkbenchArtifact, panel_identifier(scope, before.id))
+    body = _metadata(panel, scope)
+    body.update(judgment_id=after.id, version=after.version,
+        previous_judgment_ids=[*body.get('previous_judgment_ids', []), before.id])
+    revision = panel.revision
+    changed = session.execute(update(WorkbenchArtifact).where(WorkbenchArtifact.id == panel.id,
+        WorkbenchArtifact.revision == revision, WorkbenchArtifact.status != 'deleted').values(
+            body=json.dumps(body, ensure_ascii=False), revision=revision + 1,
+            updated_at=datetime.now(timezone.utc)), execution_options={'synchronize_session': False})
+    if changed.rowcount != 1:
+        raise HTTPException(409, '研判面板已更新，请刷新后重新逐条修改')
+    session.refresh(panel)
+    record_revision(session, panel, scope.identity.user_id)
+    return _view(after, panel)
+
+
 def judgment_directory(session, scope):
     """Bounded metadata only; apply legacy ownership proof before pagination."""
     from tin.web.research_references import record_in_workbench
@@ -138,11 +190,12 @@ def judgment_directory(session, scope):
 
 def list_panels(session, scope, *, limit=50, offset=0):
     items = []
+    pins, history = panel_index(session, scope)
     for judgment in judgment_directory(session, scope):
-        named = session.get(WorkbenchArtifact, panel_identifier(scope, judgment.id))
-        if named is not None and (named.module != 'judgments' or named.actor != scope.identity.user_id
-                or _metadata(named, scope) != {'format': FORMAT, 'workbench_id': scope.workbench_id,
-                    'judgment_id': judgment.id, 'version': judgment.version}):
+        if judgment.id in history:
+            continue
+        named, body = pins.get(judgment.id, (None, None))
+        if body is not None and body['version'] != judgment.version:
             named = None
         items.append(_view(judgment, named))
     count = len(items)
@@ -166,6 +219,9 @@ async def add_panel(request: Request):
     body = await read_body(request, PanelInput)
     with artifact_session(scope) as session:
         judgment = selected_judgment(session, body.judgment_id, scope=scope)
+        panel, historical = panel_for_judgment(session, scope, judgment)
+        if panel is not None or historical:
+            raise HTTPException(409, '此研判已在面板中，请直接切换或修改面板名称')
         if judgment.version != body.version:
             raise HTTPException(409, '引用研判的版本不一致，请重新选择')
         if not body.title.strip():
@@ -193,8 +249,6 @@ async def rename_panel(panel_id: UUID, request: Request):
         if metadata is None:
             raise HTTPException(404, '研判面板不存在或无权访问')
         judgment = selected_judgment(session, metadata['judgment_id'], scope=scope)
-        if row.id != panel_identifier(scope, judgment.id):
-            raise HTTPException(404, '研判面板不存在或无权访问')
         if judgment.version != metadata['version']:
             raise HTTPException(409, '研判面板版本不一致，请重新选择')
         changed = session.execute(update(WorkbenchArtifact).where(WorkbenchArtifact.id == row.id,

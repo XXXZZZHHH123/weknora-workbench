@@ -208,6 +208,8 @@ def draft_targets(preview, dimensions):
 async def draft_context(scope, token, revision):
     from tin.web.judgment_review import check_revision, current_preview
     preview, state = await current_preview(scope, token, verify_setup=True)
+    if preview.get('item_edit'):
+        raise HTTPException(422, '请在逐条修改中手动选择研究维度')
     check_revision(preview, revision)
     targets = draft_targets(preview, state['research_dimensions'])
     if not targets:

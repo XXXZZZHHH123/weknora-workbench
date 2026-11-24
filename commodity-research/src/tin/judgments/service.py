@@ -59,7 +59,8 @@ def latest(session: Session, variety: str) -> Judgment | None:
 
 def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool = False,
                  expected_base_version: int | None = None,
-                 caliber_confirmations: dict | None = None) -> Judgment:
+                 caliber_confirmations: dict | None = None,
+                 saved_base: Judgment | None = None) -> Judgment:
     """每次保存都生成新版本（FR-1.5）。activate=True 时须通过全部硬校验，且旧的生效版本转为已归档。"""
     from tin.web.research_dimensions import default_dimensions, read_dimensions
     dimensions = read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()
@@ -81,14 +82,20 @@ def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool 
 
     rid = researcher_id(session)
     actor = verified_actor(session, actor)
+    if saved_base is not None and (saved_base.researcher_id != rid or saved_base.variety != j.variety):
+        raise JudgmentError('原研判与当前保存范围不一致，请刷新后重新逐条修改')
+    previous = to_payload(saved_base) if saved_base is not None else None
+    prior_rules = {rule.id: rule for rule in [*previous.thresholds, *previous.falsifiers]} if previous else {}
     declared_units = {}
     for rule in [*j.thresholds, *j.falsifiers]:
         confirmation = rule.caliber_confirmation
         if confirmation is None:
             continue
+        prior = prior_rules.get(rule.id)
+        inherited = prior is not None and prior.model_dump(exclude={'dimension'}) == rule.model_dump(exclude={'dimension'})
         if (not isinstance(caliber_confirmations, dict)
                 or caliber_confirmations.get(rule.id) != confirmation.model_dump()
-                or confirmation.confirmed_by != actor):
+                or confirmation.confirmed_by != actor and not inherited):
             raise JudgmentError('人工口径须在当前研判的确认入口核对，不能直接导入确认标记')
         if confirmation.series_id != rule.series_id:
             raise JudgmentError('人工口径与当前绑定指标不一致，请重新确认')
@@ -106,11 +113,19 @@ def save_version(session: Session, j: JudgmentIn, *, actor: str, activate: bool 
     data = j.model_dump(mode="json", by_alias=True)
     if j.chart_references:
         from copy import deepcopy
-        from tin.integration.workbench_scope import current_workbench
-        from tin.web.chart_references import freeze_chart_references
-        frozen = freeze_chart_references(session, current_workbench.get(), j.chart_references, j.written_at.isoformat())
-        for original, reference in zip(j.chart_references, frozen):
-            reference['target'] = deepcopy(original.get('target', {'kind': 'judgment'}))
+        if previous is None:
+            from tin.integration.workbench_scope import current_workbench
+            from tin.web.chart_references import freeze_chart_references
+            frozen = freeze_chart_references(session, current_workbench.get(), j.chart_references, j.written_at.isoformat())
+            for original, reference in zip(j.chart_references, frozen):
+                reference['target'] = deepcopy(original.get('target', {'kind': 'judgment'}))
+        else:
+            snapshots = [{key: value for key, value in reference.items() if key != 'target'}
+                         for reference in previous.chart_references]
+            if any({key: value for key, value in reference.items() if key != 'target'} not in snapshots
+                   for reference in j.chart_references):
+                raise JudgmentError('未找到原研判的图表快照，请刷新后重新逐条修改')
+            frozen = deepcopy(j.chart_references)
         # Reuse the existing immutable JSON snapshot. Public payloads expose the
         # pins at the top level and never present this storage detail to authors.
         data['contradiction']['chart_references'] = frozen

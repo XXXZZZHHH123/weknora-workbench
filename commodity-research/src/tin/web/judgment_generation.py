@@ -40,6 +40,7 @@ router = APIRouter(prefix='/api/sn/judgment')
 PROMPT_BYTES = 160 * 1024
 CANDIDATE_BYTES = 96 * 1024
 GENERATION_SECONDS = 270
+ITEM_EDIT_DRAFT_PREFIX = 'edit.'
 _analysis_progress = ContextVar('judgment_analysis_progress', default=None)
 _source_inventory = ContextVar('judgment_source_inventory', default=None)
 
@@ -74,15 +75,16 @@ class PreviewStore:
         self.items = {}
         self.mutations = {}
 
-    def put(self, scope, value):
+    def put(self, scope, value, *, prefix=''):
         with self.lock:
             now = time.monotonic()
             owner = scope_key(scope)[:3]
             self.items = {key: item for key, item in self.items.items()
-                if item[0] > now and item[1][:3] != owner}
+                if item[0] > now and (item[1][:3] != owner
+                    or key.startswith(ITEM_EDIT_DRAFT_PREFIX) != (prefix == ITEM_EDIT_DRAFT_PREFIX))}
             while len(self.items) >= 16: self.items.pop(next(iter(self.items)))
             self.mutations = {key: lock for key, lock in self.mutations.items() if key in self.items}
-            token = secrets.token_urlsafe(32)
+            token = prefix + secrets.token_urlsafe(32)
             self.items[token] = (now + 900, scope_key(scope), copy.deepcopy(value))
             self.mutations[token] = threading.Lock()
             return token
@@ -94,6 +96,8 @@ class PreviewStore:
         with self.lock:
             item = self.items.get(token)
             if not item or item[0] <= time.monotonic() or item[1] != scope_key(scope):
+                if token.startswith(ITEM_EDIT_DRAFT_PREFIX):
+                    raise HTTPException(409, '逐条修改草稿已失效或来源权限已改变，请刷新后重试')
                 raise HTTPException(409, '研究逻辑预览已失效，请重新分析')
             return copy.deepcopy(item[2])
 
@@ -101,6 +105,11 @@ class PreviewStore:
         with self.lock:
             self.items.pop(token, None)
             self.mutations.pop(token, None)
+
+    def belongs_to(self, scope, token):
+        with self.lock:
+            item = self.items.get(token)
+            return bool(item and item[0] > time.monotonic() and item[1][:3] == scope_key(scope)[:3])
 
     def discard(self, scope, token):
         """Remove this owner's unsaved preview; one that is already gone needs nothing more."""
@@ -732,7 +741,7 @@ def chart_targets(payload):
     return targets
 
 
-def serialize(row, session=None, scope=None):
+def serialize(row, session=None, scope=None, *, panels=None):
     if row is None: return None
     payload = to_payload(row)
     from tin.web.judgment_lifecycle import delete_revision
@@ -740,7 +749,8 @@ def serialize(row, session=None, scope=None):
     from tin.web.research_dimensions import read_dimensions
     dimensions = read_dimensions(session) if session is not None and session.info.get('workbench_id') else None
     return {'id': row.id, 'version': row.version, 'status': row.status, 'author': row.author, 'variety': row.variety,
-            'delete_revision': delete_revision(session, scope, row) if session is not None and scope is not None else 0,
+            **({'item_edit_available': row.id not in panels[1]} if panels is not None else {}),
+            'delete_revision': delete_revision(session, scope, row, index=panels) if session is not None and scope is not None else 0,
             'created_at': row.created_at.isoformat(), 'written_at': row.written_at.isoformat(),
             'chart_references': [] if scope is not None and scope.restricted else payload.chart_references,
             'chart_rules': [rule.model_dump(mode='json') for rule in [*payload.thresholds, *payload.falsifiers]],
@@ -751,7 +761,7 @@ def serialize(row, session=None, scope=None):
 @router.get('/manage')
 def manage(variety: str | None = None, judgment_id: int | None = None):
     scope = scope_for_analysis()
-    from tin.web.judgment_panels import judgment_directory, panel_scope, selected_judgment
+    from tin.web.judgment_panels import judgment_directory, panel_index, panel_scope, selected_judgment
     panel_scope()
     with result_session(scope) as session:
         if variety is not None and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,15}', variety):
@@ -774,10 +784,12 @@ def manage(variety: str | None = None, judgment_id: int | None = None):
             .where(Judgment.variety == variety), Judgment, include_deleted=True))
         from tin.web.judgment_lifecycle import delete_revision
         from tin.web.research_dimensions import read_dimensions, summaries
-        return {'variety': variety, 'current': serialize(shown, session, scope), 'latest': {'version': base} if base else None,
+        panels = panel_index(session, scope)
+        return {'variety': variety, 'current': serialize(shown, session, scope, panels=panels), 'latest': {'version': base} if base else None,
                 'research_dimensions': summaries(read_dimensions(session)),
                 'versions': [{'id': row.id, 'version': row.version, 'status': row.status, 'author': row.author,
-                    'delete_revision': delete_revision(session, scope, row)} for row in rows],
+                    'item_edit_available': row.id not in panels[1],
+                    'delete_revision': delete_revision(session, scope, row, index=panels)} for row in rows],
                 'version_total': total, 'versions_partial': total > len(rows), 'can_write': scope.can_edit}
 
 
@@ -805,8 +817,15 @@ def version_detail(version: int, variety: str | None = None, judgment_id: int | 
             if not record_in_workbench(session, scope, 'judgment', str(shown.id), record=shown):
                 shown = None
         from tin.web.research_dimensions import read_dimensions, summaries
-        return {**serialize(row, session, scope), 'research_dimensions': summaries(read_dimensions(session)),
-                'diff': version_diff(to_payload(shown) if shown else None, to_payload(row), dimensions=read_dimensions(session))}
+        from tin.web.judgment_item_edit import SAVE_ACTION
+        compared = [str(row.id), str(shown.id)] if shown is not None else []
+        item_edit = bool(compared and session.scalar(select(AuditLog.id).where(
+            AuditLog.action == SAVE_ACTION, AuditLog.target_type == 'judgment',
+            AuditLog.target_id.in_(compared)).limit(1)))
+        dimensions = read_dimensions(session)
+        return {**serialize(row, session, scope), 'research_dimensions': summaries(dimensions),
+                'diff': version_diff(to_payload(shown) if shown else None, to_payload(row),
+                    dimensions=dimensions, items_only=item_edit)}
 
 
 @router.get('/models')
@@ -1104,8 +1123,12 @@ async def discard_preview(request: Request):
 
 @router.post('/apply')
 async def apply(request: Request):
-    scope = scope_for_analysis(write=True)
+    scope = scope_for_analysis()
     body = await read_body(request, ApplyRequest)
+    if body.draft_id.startswith(ITEM_EDIT_DRAFT_PREFIX):
+        from tin.web import judgment_item_edit_flow
+        return await judgment_item_edit_flow.apply(scope, body)
+    scope = scope_for_analysis(write=True)
     async with previews.mutation(scope, body.draft_id):
         preview = previews.get(scope, body.draft_id)
         if body.base_version != preview['base_version']:

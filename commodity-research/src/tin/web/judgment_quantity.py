@@ -131,6 +131,28 @@ def diagnostic(item, history, exponent=None):
     return result
 
 
+def conversion_candidates(item, history):
+    source = source_value(item)
+    interval = history['range']
+    if not magnitude_warning(source, interval):
+        return []
+    observed_low, observed_high = Decimal(interval['min']), Decimal(interval['max'])
+    candidates = []
+    for exponent in range(MIN_SCALE_EXPONENT, MAX_SCALE_EXPONENT + 1):
+        if exponent == 0:
+            continue
+        values = scaled_values(source, Decimal(10) ** exponent)
+        if min(values) > observed_high or max(values) < observed_low:
+            continue
+        try:
+            for value in values:
+                exact_float(str(value))
+        except ValueError:
+            continue
+        candidates.append({'exponent': exponent})
+    return candidates
+
+
 def _formatted_values(values, original):
     literals = [format(number, 'f') for number in values]
     return literals if isinstance(original, list) else literals[0]
@@ -153,7 +175,7 @@ def alignment_error(message):
         'attention_fields': ['condition']})
 
 
-def confirm_quantity(item, choice, history):
+def confirm_quantity(item, choice, history, *, candidates_only=False):
     warning = magnitude_warning(source_value(item), history['range'])
     if choice is None:
         if warning and not item.get('quantity_confirmation'):
@@ -163,6 +185,11 @@ def confirm_quantity(item, choice, history):
         alignment_error('当前规则没有需要确认的数量级差异。')
     if choice.mode == 'convert' and (choice.exponent is None or choice.reason is not None):
         alignment_error('请选择换算倍率')
+    if candidates_only and choice.mode == 'convert':
+        previous = (item.get('quantity_confirmation') or {}).get('alignment', {})
+        if (choice.exponent != previous.get('exponent')
+                and not any(row['exponent'] == choice.exponent for row in conversion_candidates(item, history))):
+            alignment_error('请选择与当前指标真实观测比对所得的换算倍率。')
     if choice.mode == 'keep' and (choice.exponent is not None or not (choice.reason or '').strip()):
         alignment_error('数值无误，仍按原值时必须填写原因')
     confirmation = {'series_id': item['series_id'], 'source_quote': item['source_quote'],

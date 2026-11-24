@@ -82,6 +82,8 @@ def compatible(preview, item, field, units):
 
 async def recommendation_context(scope, body):
     preview, state = await review.current_preview(scope, body.draft_id, verify_setup=True)
+    if preview.get('item_edit'):
+        raise HTTPException(422, '逐条修改可使用指标目录推荐')
     items = {row['id']: row for row in preview['review']['items'] if review.can_bind(row)}
     if body.item_id and body.item_id not in items:
         raise HTTPException(422, '请选择可关联指标的研判条目')

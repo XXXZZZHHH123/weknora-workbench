@@ -95,11 +95,33 @@ def dump_markdown(payload: JudgmentIn, *, dimensions=None):
     return '\n'.join(lines).rstrip() + '\n'
 
 
-def version_diff(before, after, *, dimensions=None):
+def _changed_values(before, after):
+    if isinstance(before, dict) and isinstance(after, dict):
+        old, new = {}, {}
+        for key in dict.fromkeys([*before, *after]):
+            if before.get(key) != after.get(key):
+                old[key], new[key] = _changed_values(before.get(key), after.get(key))
+        return old, new
+    if isinstance(before, list) and isinstance(after, list):
+        old, new = [], []
+        left, right = ([json.dumps(item, sort_keys=True) for item in values] for values in (before, after))
+        for action, start, end, first, last in difflib.SequenceMatcher(None, left, right, autojunk=False).get_opcodes():
+            if action != 'equal':
+                old.extend(before[start:end])
+                new.extend(after[first:last])
+        return old, new
+    return before, after
+
+
+def version_diff(before, after, *, dimensions=None, items_only=False):
     left = before.model_dump(mode='json', by_alias=True) if before else {}
     right = after.model_dump(mode='json', by_alias=True)
     fields = [{'field': name, 'label': label, 'before': left.get(name), 'after': right.get(name)}
               for name, label in FIELDS.items() if left.get(name) != right.get(name)]
+    if items_only:
+        for field in fields:
+            field['before'], field['after'] = _changed_values(field['before'], field['after'])
     return {'fields': fields, 'markdown': ''.join(difflib.unified_diff(
         dump_markdown(before, dimensions=dimensions).splitlines(keepends=True) if before else [],
-        dump_markdown(after, dimensions=dimensions).splitlines(keepends=True), fromfile='上一版本.md', tofile='新草稿.md'))}
+        dump_markdown(after, dimensions=dimensions).splitlines(keepends=True), fromfile='上一版本.md',
+        tofile='新草稿.md', n=0 if items_only else 3))}
