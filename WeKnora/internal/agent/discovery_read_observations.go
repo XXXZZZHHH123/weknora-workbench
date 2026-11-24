@@ -148,7 +148,7 @@ func discoveryImageNavigation(value any) map[string]any {
 	if !rows.IsValid() || rows.Kind() != reflect.Slice {
 		return map[string]any{"samples": samples, "omitted_rows": 0}
 	}
-	keys := []string{"reference", "knowledge_id", "chunk_id", "page", "page_hint", "page_verified", "label", "source_part", "read_args", "read_success", "geometry_read_success"}
+	keys := []string{"reference", "knowledge_id", "chunk_id", "page", "page_hint", "page_verified", "label", "source_part", "read_args", "geometry_read_args", "geometry_selection_options", "read_success", "geometry_read_success"}
 	for index := 0; index < rows.Len() && index < 4; index++ {
 		value := rows.Index(index).Interface()
 		row, ok := value.(map[string]any)

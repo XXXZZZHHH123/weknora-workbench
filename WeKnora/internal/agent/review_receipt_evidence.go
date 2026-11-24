@@ -1016,6 +1016,15 @@ func reviewIdentityViewValueVisible(value any, record reviewEvidenceRecord, witn
 		return false
 	}
 	parts := strings.Split(strings.TrimPrefix(witness.JSONPointer, "/data/"), "/")
+	if len(parts) == 3 && parts[0] == "image_text_evidence" && parts[2] == "text" {
+		source, err := reviewPointerValue(record.Value, "/data/image_text_evidence/"+parts[1])
+		annotation, _ := source.(map[string]any)
+		data, _ := reviewPointerValue(record.Value, "/data")
+		dataMap, _ := data.(map[string]any)
+		return err == nil && reviewImageTextBoundToSource(dataMap, annotation) &&
+			reviewImageIdentityMatches(annotation, content) && content["child_chunk_id"] == annotation["child_chunk_id"] &&
+			content["kind"] == annotation["kind"] && reviewQuoteMatchesValue(content["text"], witness.Quote)
+	}
 	if len(parts) == 2 && parts[0] == "image_descriptions" {
 		index, err := strconv.Atoi(parts[1])
 		if err != nil || reviewInt(content["returned_image_index"]) != index {
