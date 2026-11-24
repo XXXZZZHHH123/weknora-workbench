@@ -11,10 +11,14 @@ import (
 )
 
 const (
-	toolProgressReplanRounds = 3
-	toolProgressStopRounds   = 6
-	maxChartRenderFailures   = 4
-	maxToolProgressKeys      = 4096
+	toolProgressReplanRounds       = 3
+	toolProgressStopRounds         = 6
+	maxChartRenderFailures         = 4
+	maxChartTotalFailures          = maxChartRenderFailures + 2
+	maxToolProgressKeys            = 4096
+	chartReviewProtocolFailuresKey = "chart_review_protocol_failures"
+	chartReviewProtocolFailedKey   = "chart_review_protocol_failed"
+	chartRenderFailureLimit        = "chart_render_failure_limit"
 
 	sourceProgressStalledFallback = "本轮工具执行和纠错未取得新证据，已停止重复尝试，尚未完成回答。"
 	toolProgressReplanNotice      = "Runtime diagnostic: recent tool rounds have returned only failures or already-observed source content. Reassess the COMPLETE human request, current source scope, actual tool schemas and returned diagnostics. Produce a corrected evidence/reading plan before continuing. Do not repeat reads merely by changing query wording or add optional calculations. A genuinely new authorized read or corrected operation remains available. If the required evidence cannot be obtained, state the actual bounded gap using only verified results; do not claim the task is complete or weaken source, permission, unit or numeric checks."
@@ -24,12 +28,17 @@ const (
 // completeness classifier. Only actual source content/metadata and technical
 // tool outcomes participate; a model's claim of progress never resets it.
 type toolProgressGuard struct {
-	seen           map[[sha256.Size]byte]struct{}
-	stale          int
-	warned         bool
-	saturated      bool
-	resultWorkflow bool
-	renderFailures int
+	seen                   map[[sha256.Size]byte]struct{}
+	stale                  int
+	warned                 bool
+	saturated              bool
+	resultWorkflow         bool
+	renderFailures         int
+	reviewProtocolFailures int
+}
+
+func chartRenderLimitReached(renderFailures, protocolFailures int) bool {
+	return renderFailures >= maxChartRenderFailures || renderFailures+protocolFailures >= maxChartTotalFailures
 }
 
 type toolProgressObservation struct {
@@ -53,13 +62,32 @@ func (g *toolProgressGuard) observe(calls []types.ToolCall) toolProgressObservat
 	}
 	otherProgress, sourceAttempt := false, false
 	for _, call := range calls {
-		if call.ExecutionName() == renderChartToolName && call.ExecutionArgs()["operation"] == "render" && !savedChartProgress(call) {
-			g.renderFailures++
+		if call.ExecutionName() == renderChartToolName && call.ExecutionArgs()["operation"] == "render" {
+			protocolFailed := false
+			terminal := false
+			if call.Result != nil {
+				data := call.Result.Data
+				terminal = data["terminal_reason"] == chartRenderFailureLimit
+				if terminal {
+					// Terminal results carry totals, including repeated calls
+					// that the renderer refused to execute.
+					if count, ok := metadataInteger(data["render_failure_count"]); ok {
+						g.renderFailures = max(g.renderFailures, int(count))
+					}
+					if count, ok := metadataInteger(data["review_protocol_failure_count"]); ok {
+						g.reviewProtocolFailures = max(g.reviewProtocolFailures, int(count))
+					}
+				} else if count, ok := metadataInteger(data[chartReviewProtocolFailuresKey]); ok && count > 0 && count <= 2 {
+					g.reviewProtocolFailures += int(count)
+					protocolFailed = data[chartReviewProtocolFailedKey] == true
+				}
+			}
+			if !terminal && !protocolFailed && !savedChartProgress(call) {
+				g.renderFailures++
+			}
+			out.RenderLimit = out.RenderLimit || terminal
 		}
-		if call.Result != nil && call.Result.Data["terminal_reason"] == "chart_render_failure_limit" {
-			g.renderFailures = max(g.renderFailures, maxChartRenderFailures)
-		}
-		out.RenderLimit = g.renderFailures >= maxChartRenderFailures
+		out.RenderLimit = out.RenderLimit || chartRenderLimitReached(g.renderFailures, g.reviewProtocolFailures)
 		operation, structured := structuredProgressOperation(call)
 		tracked := toolProgressOperation(call.ExecutionName()) || structured
 		g.resultWorkflow = g.resultWorkflow || call.ExecutionName() == "render_chart" || structuredProgressHasResults(operation)
