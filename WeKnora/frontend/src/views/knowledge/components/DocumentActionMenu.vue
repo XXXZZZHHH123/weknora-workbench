@@ -14,6 +14,7 @@ interface KnowledgeItem {
 const props = defineProps<{
   item: KnowledgeItem;
   canDownload: boolean;
+  canEdit?: boolean;
   canMutateKnowledge: boolean;
   traceVisible: boolean;
   /** Whether the knowledge base has a folder structure to file documents into. */
@@ -22,6 +23,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'download'): void;
+  (e: 'upload-version'): void;
   (e: 'edit'): void;
   (e: 'view-trace'): void;
   (e: 'reparse'): void;
@@ -52,6 +54,11 @@ const fileName = computed(() => props.item.file_name || props.item.title || prop
     <t-icon class="icon" name="download" />
     <span>{{ $t('common.download') }}</span>
   </div>
+
+  <button v-if="canEdit && item.type === 'file'" type="button" class="doc-action-menu-item version-action" @click.stop="emit('upload-version')">
+    <t-icon class="icon" name="upload" />
+    <span>{{ $t('knowledgeBase.uploadFileVersion') }}</span>
+  </button>
 
   <!-- 编辑文档 -->
   <div v-if="item.type === 'manual'" class="doc-action-menu-item" @click.stop="emit('edit')">
@@ -140,6 +147,12 @@ const fileName = computed(() => props.item.file_name || props.item.title || prop
   cursor: pointer;
   border-radius: var(--app-radius-xs);
   transition: background-color var(--app-motion-fast) cubic-bezier(0.2, 0, 0, 1);
+
+  &.version-action {
+    width: 100%;
+    border: 0;
+    background: transparent;
+  }
 
   &:hover {
     background: var(--td-bg-color-container-hover);

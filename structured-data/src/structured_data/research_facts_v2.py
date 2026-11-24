@@ -75,7 +75,18 @@ def _originals(source):
             continue
         if not isinstance(digest, str) or not re.fullmatch(r'(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{64})', digest):
             raise HTTPException(403, '真实来源文件哈希无效')
-        result.append({'knowledge_id':row['id'],'file_hash':digest.lower()})
+        original = {'knowledge_id': row['id'], 'file_hash': digest.lower()}
+        previous = row.get('previous_file_hashes', [])
+        if (not isinstance(previous, list) or len(previous) > 6
+                or any(not isinstance(value, str) or not re.fullmatch(r'[0-9a-fA-F]{32}', value)
+                       for value in previous)):
+            raise HTTPException(403, '真实来源的历史版本哈希无效')
+        if previous:
+            original['previous_file_hashes'] = list(dict.fromkeys(value.lower() for value in previous
+                                                                  if value.lower() != digest.lower()))
+        if isinstance(row.get('file_version_at'), str):
+            original['file_version_at'] = row['file_version_at']
+        result.append(original)
     if len(result) > 128:
         raise HTTPException(413, '单个来源超过128份结构化原件，请拆分来源；未返回部分数据')
     return result

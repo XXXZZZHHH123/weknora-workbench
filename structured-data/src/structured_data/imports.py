@@ -49,6 +49,10 @@ def atomic_json(path, value):
     os.replace(temp, path)
 
 
+def native_identity(binding):
+    return tuple(binding.get(key) for key in ('tenant_id', 'knowledge_base_id', 'source_knowledge_id'))
+
+
 class ImportManager:
     def __init__(self, root):
         self.root = Path(root)
@@ -127,6 +131,8 @@ class ImportManager:
                            'published_dataset_id': dataset_id if actual is not None else None,
                            'published_mapping': mapping,
                            'published_fingerprint': actual.get('fingerprint') if actual is not None else None,
+                           **({'published_source_dataset_id': actual['retained_dataset_id']}
+                              if actual and actual.get('retained_dataset_id') else {}),
                            'published_quality': quality_summary
                            if actual is not None and quality_available else None})
         return {**doc, 'sheets': sheets}
@@ -208,6 +214,9 @@ class ImportManager:
         with self.lock:
             doc = self.get(import_id)
             bindings = list(doc.get('native_source_bindings', []))
+            if doc.get('source_update_base_id') and not any(native_identity(binding) == native_identity(source)
+                                                           for binding in bindings):
+                raise ValueError('换版数据只属于已核验的同一知识库原件。')
             if source not in bindings:
                 bindings.append(dict(source))
                 doc['native_source_bindings'] = bindings
@@ -234,8 +243,9 @@ class ImportManager:
                 if source not in doc.get('native_source_bindings', []):
                     continue
                 if use_reviewed_mappings is not None:
-                    selected = doc
-                    break
+                    if selected is None or doc['updated_at'] > selected['updated_at']:
+                        selected = doc
+                    continue
                 if not doc.get('dataset_id'):
                     continue
                 manifest = self.store.raw_manifest(doc['dataset_id'])
@@ -280,15 +290,98 @@ class ImportManager:
         doc['updated_at'] = now()
         atomic_json(self.directory / doc['import_id'] / 'review.json', doc)
 
+    def _previous_native_publication(self, source):
+        """Find only a verified publication of this original in its own KB."""
+        if source is None or self.root.parent.name != 'knowledge-bases' or self.root.name != source['knowledge_base_id']:
+            return None
+        from .workspaces import current_identity, valid_knowledge_base_id
+        caller = current_identity.get()
+        if (not valid_knowledge_base_id(source.get('source_knowledge_id'))
+                or type(source.get('tenant_id')) is not int or source['tenant_id'] <= 0
+                or caller is not None and (caller.knowledge_base_id != source['knowledge_base_id']
+                    or caller.knowledge_base_tenant_id != source['tenant_id'])):
+            return None
+        identity = native_identity(source)
+        publications = []
+        for record in self.list():
+            if not record.get('dataset_id') or record['dataset_kind'] != 'business':
+                continue
+            for binding in record['native_source_bindings']:
+                if isinstance(binding, dict) and native_identity(binding) == identity:
+                    manifest = self.store.raw_manifest(record['dataset_id'])
+                    publications.append((manifest['imported_at'], binding))
+        if not publications:
+            return None
+        latest = max(stamp for stamp, _ in publications)
+        bindings = [binding for stamp, binding in publications if stamp == latest]
+        if any(binding != bindings[0] for binding in bindings):
+            raise NativeSourceVersionConflict('同一原件有互相冲突的最新结构化版本，请核对导入记录。')
+        if bindings[0]['file_hash'] == source['file_hash']:
+            return None
+        previous = self.find_native_source(bindings[0], use_reviewed_mappings=None)
+        return self.get(previous['import_id']) if previous else None
+
+    def _prepare_source_update(self, doc, previous):
+        from .snapshots import approved_research_sheets
+        base = self.store.raw_manifest(previous['dataset_id'])
+        prior_review = {sheet['name']: sheet for sheet in previous['sheets']}
+        prior_published = {sheet['name']: sheet for sheet in base['sheets']}
+        prior_approved = approved_research_sheets(previous, base)
+        doc['source_update_base_id'] = base['dataset_id']
+
+        names = {sheet['name'] for sheet in doc['sheets']}
+        for sheet in doc['sheets']:
+            name = sheet['name']
+            prior = prior_review.get(name)
+            published = prior_published.get(name)
+            if prior and sheet['status'] == 'template_ready' and (published or not previous.get('source_update_base_id')):
+                # The saved template passed the normal name/fingerprint and
+                # source-bound scope checks. Preserve the last mapping when it
+                # was confirmed for this same source and layout.
+                if (name in prior_approved and published.get('fingerprint') == sheet['fingerprint']
+                        and published.get('mapping') and prior.get('template_status') in {'saved', 'matched'}):
+                    sheet['mapping'] = published['mapping']
+                sheet['reasons'] = ['已匹配确认模板，按新原件全量校验。']
+                continue
+            if prior and sheet['status'] in {'empty', 'chart_ready', 'skip'} and not published:
+                continue
+            sheet['status'] = 'needs_review'
+            if published:
+                sheet['source_update_state'] = 'retained'
+                sheet['reasons'] = [
+                    '表头已变化，沿用上一版数据，待核对' if published.get('fingerprint') != sheet['fingerprint']
+                    else '本表没有可复用的已确认模板，沿用上一版数据，待核对']
+            else:
+                if prior is None:
+                    sheet['reasons'] = ['新增工作表，待核对']
+                elif prior.get('fingerprint') != sheet['fingerprint']:
+                    sheet['reasons'] = ['表头已变化，待核对']
+                else:
+                    sheet['reasons'] = ['本表没有可复用的已确认模板，待核对']
+        for name in sorted(prior_published.keys() - names):
+            doc['sheets'].append({'name': name, 'status': 'needs_review', 'layout': 'empty',
+                                  'rows': 0, 'columns': 0, 'charts': {},
+                                  'source_update_state': 'retained_deleted',
+                                  'reasons': ['原文件已删除此工作表，沿用上一版数据，待核对']})
+
     def ingest(self, path, *, use_reviewed_mappings=True, before_publish=None,
                native_source=None, progress=None):
         from .scanner import scan_workbook
         with self.lock:
+            previous = self._previous_native_publication(native_source)
+            if native_source is not None and previous is None:
+                existing = self.find_native_source(native_source, use_reviewed_mappings=None)
+                if existing and self.get(existing['import_id']).get('source_update_base_id'):
+                    if before_publish is not None:
+                        before_publish()
+                    return existing
             scan = scan_workbook(path, use_reviewed_mappings=use_reviewed_mappings,
                                  **({'progress': progress} if progress is not None else {}))
             identity = scan['sha256'] + ':' + scan['rule_version']
             if not use_reviewed_mappings:
                 identity += ':fresh-original-v1'
+            if previous:
+                identity += ':source-update:' + native_source['source_knowledge_id'] + ':' + previous['dataset_id']
             import_id = hashlib.sha256(identity.encode()).hexdigest()[:24]
             folder = self.directory / import_id
             if (folder / 'review.json').exists():
@@ -351,6 +444,9 @@ class ImportManager:
                 for sheet in doc['sheets']:
                     prefix = '' if use_reviewed_mappings else 'fresh-'
                     template_file = self.templates / (prefix + self.template_key(sheet) + '.json')
+                    if previous and not template_file.exists():
+                        other_prefix = 'fresh-' if use_reviewed_mappings else ''
+                        template_file = self.templates / (other_prefix + self.template_key(sheet) + '.json')
                     if template_file.exists():
                         template = json.loads(template_file.read_text())
                         # Sheet names can be semantic dimensions, so require them as well as layout.
@@ -371,7 +467,10 @@ class ImportManager:
                 # _publish. Save the source and review only after its final
                 # authorization guard succeeds, so a revoked first import does
                 # not leave a discoverable half-created record behind.
-                self._enrich_new_metadata(doc, before_publish=before_publish)
+                if previous:
+                    self._prepare_source_update(doc, previous)
+                else:
+                    self._enrich_new_metadata(doc, before_publish=before_publish)
                 self._validate_pending_candidates(doc, progress=progress)
                 self._publish(doc, before_publish=before_publish, progress=progress)
                 doc['publish_status'] = 'completed'
@@ -389,6 +488,8 @@ class ImportManager:
         result = {'import_id': doc['import_id'], 'dataset_id': doc.get('dataset_id'),
                   'source_file': self.display_source_file(doc),
                   'summary': doc['summary'], 'reused': reused}
+        if doc.get('source_update'):
+            result['source_update'] = doc['source_update']
         preparation = doc.get('chart_catalog_preparation')
         if isinstance(preparation, dict):
             result['chart_catalog_preparation'] = dict(preparation)
@@ -547,9 +648,13 @@ class ImportManager:
     def _publish(self, doc, changed_sheet=None, before_publish=None, progress=None):
         from .profiles.reviewed import parse_workbook, reviewed_mapping
         from .generic_parser import parse_mapped_workbook, validate_mapping
-        from .snapshots import publish_parts
+        from .snapshots import approved_research_sheets, publish_parts
         path = self.source_path(doc)
         base_id, base = self.confirmation_base(doc)
+        source_update = base_id is None and doc.get('source_update_base_id') is not None
+        if source_update:
+            base_id = doc['source_update_base_id']
+            base = self.store.raw_manifest(base_id)
         base_sheets = {s['name']: s for s in base['sheets']} if base else {}
         if changed_sheet and base_id != doc.get('dataset_id'):
             published_coverage = {s['name']: s for s in base.get('coverage', [])}
@@ -559,7 +664,7 @@ class ImportManager:
                     sheet.update({k: prior[k] for k in ('status', 'reasons')})
                     if base_sheets[sheet['name']].get('mapping'):
                         sheet['mapping'] = base_sheets[sheet['name']]['mapping']
-        legacy = reviewed_mapping(path) if doc.get('use_reviewed_mappings', True) else None
+        legacy = reviewed_mapping(path) if doc.get('use_reviewed_mappings', True) and not doc.get('source_update_base_id') else None
         if legacy:
             # Explicit user/template mappings supersede initial verified defaults.
             # Other verified tables keep their saved records and original rules.
@@ -576,6 +681,11 @@ class ImportManager:
                     'use_reviewed_mappings': doc.get('use_reviewed_mappings', True),
                     'charts': {'status': 'inventory_only', 'visual_content_parsed': False,
                                'sheets': [{'name': s['name'], **s['charts']} for s in doc['sheets']]}}
+        if doc.get('source_update_base_id'):
+            metadata['source_lineage'] = doc['import_id']
+        if source_update:
+            previous = self.get(base['import_id'])
+            prior_approved = approved_research_sheets(previous, base)
         failed = set()
         imported = []
         candidate_names = {sheet['name'] for sheet in candidates
@@ -622,7 +732,7 @@ class ImportManager:
                 observations, issues = temporary.enter_context(self._records())
                 try:
                     mapping = validate_mapping(sheet['mapping'], sheet)
-                    if (not changed_sheet and sheet['name'] in base_sheets and
+                    if (not source_update and not changed_sheet and sheet['name'] in base_sheets and
                             self._mapping_signature(mapping) ==
                             self._mapping_signature(base_sheets[sheet['name']].get('mapping'))):
                         sheet['review_state'] = self._review_success(mapping)
@@ -643,6 +753,9 @@ class ImportManager:
                         raise
                     sheet['status'] = 'needs_review'
                     sheet['reasons'] = ['全量校验未通过，未导入此表：' + str(exc)]
+                    if source_update and sheet['name'] in base_sheets:
+                        sheet['source_update_state'] = 'retained'
+                        sheet['reasons'].append('沿用上一版数据，待核对')
                     sheet['review_state'] = review
                     if isinstance(exc, NoIndicatorDataError):
                         sheet['automatic_skip'] = {'code': 'no_indicator_data', 'message': str(exc)}
@@ -650,7 +763,13 @@ class ImportManager:
                         failed.add(sheet['name'])
                 else:
                     sheet.pop('automatic_skip', None)
+                    sheet.pop('source_update_state', None)
                     sheet['review_state'] = self._review_success(mapping)
+                    if source_update:
+                        # Only these fully parsed, saved-template mappings
+                        # receive the source-update publication approval.
+                        for parsed_sheet_meta in parsed['sheets']:
+                            parsed_sheet_meta['source_update_approved'] = True
                     parts.append(parsed)
                     imported.append(sheet['name'])
                 finally:
@@ -658,12 +777,12 @@ class ImportManager:
             coverage = {s['name']: s for s in base.get('coverage', [])} if base else {}
             for sheet in doc['sheets']:
                 # A failed replacement leaves the prior published sheet intact.
-                if sheet['name'] in failed and sheet['name'] in base_sheets:
+                if not source_update and sheet['name'] in failed and sheet['name'] in base_sheets:
                     continue
-                coverage[sheet['name']] = {k: sheet[k] for k in ('name', 'status', 'reasons', 'rows', 'columns') if k in sheet}
+                coverage[sheet['name']] = {k: sheet[k] for k in ('name', 'status', 'reasons', 'rows', 'columns', 'source_update_state') if k in sheet}
             metadata['coverage'] = [coverage[s['name']] for s in doc['sheets']]
             report_progress(progress, 'publish')
-            if not parts and base and metadata['coverage'] == base.get('coverage', []):
+            if not source_update and not parts and base and metadata['coverage'] == base.get('coverage', []):
                 # Even a no-op snapshot can update review metadata below.
                 if before_publish is not None:
                     before_publish()
@@ -673,9 +792,12 @@ class ImportManager:
                 result = publish_parts(self.store, path, doc['sha256'], parts, metadata,
                                        source_file=doc.get('source_file'),
                                        base_id=base_id, replace_sheets=imported,
+                                       source_update_approved=prior_approved if source_update else None,
                                        before_commit=before_publish)
             if result:
                 doc['dataset_id'] = result['dataset_id']
+                if source_update:
+                    doc['source_update'] = result['manifest']['source_update']
                 report_progress(progress, 'index')
                 doc['chart_catalog_preparation'] = self._prepare_chart_catalog(result['dataset_id'])
         published = set(base_sheets) | set(imported)
@@ -810,6 +932,8 @@ class ImportManager:
         from .generic_parser import parse_mapped_workbook, validate_mapping
         doc = self.get(import_id)
         sheet = self.sheet(import_id, mapping.get('sheet'))
+        if sheet.get('source_update_state') == 'retained_deleted':
+            raise ValueError('原文件已删除此工作表，只有上一版数据可查询。')
         mapping = validate_mapping(mapping, sheet)
         with self._records() as (observations, issues):
             parsed = parse_mapped_workbook(self.source_path(doc), [mapping], scan=doc,

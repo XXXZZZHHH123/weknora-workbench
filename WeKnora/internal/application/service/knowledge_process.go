@@ -3060,15 +3060,13 @@ func (s *knowledgeService) ReparseKnowledge(
 	return s.reparseKnowledge(ctx, knowledgeID, processOverrides, false)
 }
 
-// reparseKnowledge implements ReparseKnowledge. tasksDequeued tells it the
-// caller already dropped the knowledge's queued tasks (ReplaceKnowledgeFile
-// does, before pointing the row at the new file), which saves a second scan
-// of every queue.
+// reparseKnowledge implements ReparseKnowledge. A source replacement has
+// already dropped the previous upload's queued tasks.
 func (s *knowledgeService) reparseKnowledge(
 	ctx context.Context,
 	knowledgeID string,
 	processOverrides *types.KnowledgeProcessOverrides,
-	tasksDequeued bool,
+	sourceReplaced bool,
 ) (*types.Knowledge, error) {
 	logger.Info(ctx, "Start re-parsing knowledge")
 
@@ -3088,7 +3086,8 @@ func (s *knowledgeService) reparseKnowledge(
 	if storedErr != nil {
 		return nil, storedErr
 	}
-	if storedOverrides != nil && storedOverrides.SourceOnly {
+	structuredOnly := sourceReplaced && fileType == "xlsx" && unifiedIngestionAvailable() && storedOverrides != nil && storedOverrides.SourceOnly
+	if storedOverrides != nil && storedOverrides.SourceOnly && !structuredOnly {
 		if processOverrides == nil {
 			return nil, werrors.NewBadRequestError("该文件仅保存原件，请明确选择解析配置后再解析")
 		}
@@ -3117,7 +3116,7 @@ func (s *knowledgeService) reparseKnowledge(
 		}
 	}
 
-	if existing.Type == "file" && unifiedIngestionAvailable() && (fileType == "pdf" || fileType == "xlsx") {
+	if !sourceReplaced && existing.Type == "file" && unifiedIngestionAvailable() && (fileType == "pdf" || fileType == "xlsx") {
 		if err := setIngestionState(existing, knowledgeIngestionState{Attempt: uuid.NewString(), SourceHash: existing.FileHash, Status: "pending", Stage: "等待自动处理"}); err != nil {
 			return nil, err
 		}
@@ -3136,7 +3135,7 @@ func (s *knowledgeService) reparseKnowledge(
 			return nil, werrors.NewBadRequestError("无法获取手工知识内容")
 		}
 		manualContent = meta.Content
-	} else {
+	} else if !structuredOnly {
 		// Cleanup synchronously; manual knowledge is cleaned up by its worker.
 		logger.Infof(ctx, "Cleaning up existing resources for knowledge: %s", knowledgeID)
 		if err := s.cleanupKnowledgeResources(ctx, existing); err != nil {
@@ -3155,7 +3154,7 @@ func (s *knowledgeService) reparseKnowledge(
 	// otherwise run against the new attempt: an old ProcessDocument wipes the
 	// new chunks and writes "processing" back, an old post-process seeds the
 	// counter for subtasks that all drop themselves as superseded.
-	if !tasksDequeued && isInFlightParseStatus(existing.ParseStatus) {
+	if !sourceReplaced && isInFlightParseStatus(existing.ParseStatus) {
 		s.dequeueKnowledgeTasks(ctx, existing.ID)
 	}
 
@@ -3246,7 +3245,7 @@ func (s *knowledgeService) reparseKnowledge(
 			KnowledgeBaseID:          existing.KnowledgeBaseID,
 			FilePath:                 existing.FilePath,
 			FileName:                 existing.FileName,
-			FileType:                 getFileType(existing.FileName),
+			FileType:                 fileType,
 			EnableMultimodel:         enableMultimodel,
 			EnableQuestionGeneration: enableQuestionGeneration,
 			QuestionCount:            questionCount,
@@ -3277,7 +3276,9 @@ func (s *knowledgeService) reparseKnowledge(
 		recordReparseStarted()
 
 		// For data tables (csv, xlsx, xls), also enqueue summary task
-		enqueueDataTableSummaryIfNeeded(ctx, s.task, tenantID, existing.ID, existing.FileName, existing.FileType, kb.SummaryModelID, kb.EmbeddingModelID)
+		if !structuredOnly {
+			enqueueDataTableSummaryIfNeeded(ctx, s.task, tenantID, existing.ID, existing.FileName, existing.FileType, kb.SummaryModelID, kb.EmbeddingModelID)
+		}
 
 		return existing, nil
 	}
@@ -4260,6 +4261,19 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 		result, processErr := s.processUnifiedTables(ctx, knowledge, kb, nil)
 		if processErr != nil {
 			return processErr
+		}
+		// Structured-data historically registers published workbooks as
+		// source-only. On a version upload they refresh the reviewed tables
+		// while their document content stays stored without an index.
+		if eff.SourceOnly {
+			knowledge.ParseStatus = types.ParseStatusStored
+			knowledge.EnableStatus = "disabled"
+			knowledge.UpdatedAt = time.Now()
+			if err := s.updateKnowledgeUnlessSourceReplaced(ctx, knowledge); err != nil {
+				return err
+			}
+			s.tracker().FinalizeAttempt(ctx, knowledge.ID, attempt, types.SpanStatusDone, nil, "", "")
+			return nil
 		}
 		convertResult, err = s.workbookIngestionDocument(ctx, knowledge, kb, result)
 		if err != nil {

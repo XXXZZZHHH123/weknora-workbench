@@ -37,7 +37,7 @@ def _readonly(path):
 
 
 # Bump when the indexed search text changes, so an index built by older code is rebuilt once.
-INDEX_FORMAT = 4
+INDEX_FORMAT = 5
 SEARCH_KEYS = ('metric','name','series_id','source_series_id','source_file','sheet','unit','frequency','dimensions')
 MAX_SEARCH_TERMS = 16
 
@@ -82,7 +82,9 @@ def current_index(store, manager, sources):
                 if connection is not None and metadata is None:
                     connection.close();connection=None
             if connection is None:
-                prepared = read_facts(store,manager,{'sources':sources,'catalog_only':True},_prepare_only=True)
+                prepared = read_facts(store, manager,
+                    {'sources': [{key: source[key] for key in ('knowledge_id', 'file_hash')} for source in sources],
+                     'catalog_only': True}, _prepare_only=True, _authorized_originals=sources)
                 if len(prepared['indicators']) > 25000:
                     raise HTTPException(413,'单个来源目录超过25000项，请拆分来源范围')
                 metadata = {'fingerprint':fingerprint,'version':prepared['version'],'datasets':prepared['datasets'],

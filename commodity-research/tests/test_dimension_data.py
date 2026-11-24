@@ -133,6 +133,42 @@ def bind(state, value):
         return data.dimension_data(current_workbench.get(), value, day, period)
 
 
+def test_source_version_refreshes_saved_dimension_and_chart_without_rebinding(chart_client):
+    from tin.web import dimension_board
+
+    client, state = chart_client
+    state.app.include_router(dimension_board.router)
+    chart = create(client)
+    dimension_path = '/api/sn/dimensions'
+    chart_path = '/api/sn/charts/' + chart['id']
+    config = {'revision': 0, 'dimensions': dimensions(
+        {'kind': 'indicator', 'id': SID},
+        {'kind': 'chart', 'id': chart['id'], 'revision': chart['revision']})}
+    saved = client.put(dimension_path, json=config)
+    assert saved.status_code == 200, saved.text
+
+    def read_latest(expected_date, expected_value):
+        response = client.get(dimension_path + '/data?date=2023-01-05&period=daily')
+        assert response.status_code == 200, response.text
+        indicator, pinned_chart = response.json()['dimensions'][0]['sections'][0]['items']
+        assert (indicator['series_id'], indicator['date'], indicator['latest']) == (SID, expected_date, expected_value)
+        assert pinned_chart['id'] == chart['id'] and pinned_chart['revision'] == chart['revision']
+        response = client.get(chart_path + '/data?date=2023-01-05')
+        assert response.status_code == 200, response.text
+        curve = response.json()['curves'][0]
+        assert curve['series_id'] == SID
+        assert (curve['points'][-1]['date'], curve['points'][-1]['value']) == (expected_date, expected_value)
+        return curve['source_version']
+
+    before = read_latest('2023-01-04', 13)
+    state.sources_revision += 1
+    state.facts_version = 'd' * 64
+    state.observations[SID].append(('2023-01-05', 19))
+    assert read_latest('2023-01-05', 19) != before
+    assert client.get(dimension_path).json()['revision'] == saved.json()['revision']
+    assert client.get(chart_path).json()['revision'] == chart['revision']
+
+
 def test_default_latest_and_summary(chart_client):
     client, state = chart_client
     state.observations[OTHER] = [('2023-01-01', 20), ('2023-01-03', 15)]

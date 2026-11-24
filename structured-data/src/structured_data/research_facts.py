@@ -281,32 +281,39 @@ def current_source_records(manager, sources, *, include_unpublished=False):
     records=manager.list()
     selected=[]
     for source in sources:
-        matches=[]
+        matches={}
+        permitted = [source['file_hash'], *source.get('previous_file_hashes', [])]
         for record in records:
             if (not include_unpublished and not record.get('dataset_id')) or record.get('dataset_kind')!='business':
                 continue
-            if any(isinstance(binding,dict)
-                   and binding.get('source_knowledge_id')==source['knowledge_id']
-                   and binding.get('file_hash','').lower()==source['file_hash']
-                   and binding.get('knowledge_base_id')==identity.knowledge_base_id
-                   and binding.get('tenant_id')==identity.knowledge_base_tenant_id
-                   for binding in record.get('native_source_bindings',[])):
-                matches.append(record)
-        if not matches:
+            for digest in {binding.get('file_hash', '').lower()
+                           for binding in record.get('native_source_bindings', [])
+                           if isinstance(binding, dict) and isinstance(binding.get('file_hash'), str)
+                           and binding.get('source_knowledge_id') == source['knowledge_id']
+                           and binding.get('knowledge_base_id') == identity.knowledge_base_id
+                           and binding.get('tenant_id') == identity.knowledge_base_tenant_id}:
+                if digest in permitted and (digest == source['file_hash'] or record.get('dataset_id')):
+                    matches.setdefault(digest, []).append(record)
+        digest = next((value for value in permitted if value in matches), None)
+        if digest is None:
             continue
-        newest=max(str(record.get('updated_at','')) for record in matches)
-        current=[record for record in matches if str(record.get('updated_at',''))==newest]
+        newest=max(str(record.get('updated_at','')) for record in matches[digest])
+        current=[record for record in matches[digest] if str(record.get('updated_at',''))==newest]
         versions = {(record.get('dataset_id'), record['import_id']) if include_unpublished
                     else record['dataset_id'] for record in current}
         if len(versions)!=1:
             raise HTTPException(409,'同一原件有互相冲突的当前结构化版本，请在知识库核对')
-        selected.append((source,current[0]))
+        selected.append((source,{**current[0], 'verified_file_hash': digest}))
     return selected
 
 
-def read_facts(store,manager,body,*,_allow_partial=False,_prepare_only=False):
+def read_facts(store,manager,body,*,_allow_partial=False,_prepare_only=False,_authorized_originals=None):
     identity=current_identity.get()
     sources,offset,limit,requested=_parameters(body)
+    if _authorized_originals is not None:
+        # Internal v2 callers obtain history from the freshly authorized Go
+        # directory. The legacy request body still only accepts current hashes.
+        sources = sorted(_authorized_originals, key=lambda item: item['knowledge_id'])
     bounded = _bounded_parameters(body,extended=_allow_partial)
     compact=body.get('encoding')==RESEARCH_ROWS_ENCODING
     selected=current_source_records(manager,sources)
@@ -329,14 +336,29 @@ def read_facts(store,manager,body,*,_allow_partial=False,_prepare_only=False):
                     raise ValueError('字段目录无效')
                 verified[dataset]=(manifest,hashes,catalog)
             manifest,hashes,catalog=verified[dataset]
-            if source['file_hash'] not in hashes:
+            if record['verified_file_hash'] not in hashes:
                 raise ValueError('结构化原件与知识库当前原件不同')
         except (ValueError,OSError,KeyError,TypeError):
             raise HTTPException(409,'当前知识库结构化快照或原件无法核验，请重新核对；未使用旧研究数值') from None
         try:
+            from .snapshots import approved_research_sheets
             review=manager.get(record['import_id'])
-            confirmed=[sheet for sheet in review.get('sheets',[]) if sheet.get('status')=='confirmed']
-            confirmed_names={sheet['name'] for sheet in confirmed}
+            confirmed_names = approved_research_sheets(review, manifest)
+            confirmed=[sheet for sheet in review.get('sheets',[]) if sheet['name'] in confirmed_names]
+            update_notices = {
+                sheet['name']: ('原文件已删除此工作表，沿用上一版数据，待核对'
+                                if sheet['source_update_state'] == 'retained_deleted'
+                                else '沿用上一版数据，待核对')
+                for sheet in confirmed if sheet.get('source_update_state')}
+            retained = {sheet['name']: sheet['retained_dataset_id'] for sheet in manifest.get('sheets', [])
+                        if sheet['name'] in confirmed_names and sheet.get('retained_dataset_id')}
+            origins = {}
+            for dataset_id in set(retained.values()):
+                original_manifest = store.raw_manifest(dataset_id)
+                saved = store._path(dataset_id) / 'source.xlsx'
+                if snapshot_metadata.hashes(saved)[1] != original_manifest['sha256']:
+                    raise ValueError('沿用的原件哈希不符')
+                origins[dataset_id] = original_manifest['sha256']
         except (ValueError,OSError,KeyError,TypeError):
             raise HTTPException(409,'工作表确认记录不可读，请在知识库重新核对') from None
         catalog=[field for field in catalog if field.get('sheet') in confirmed_names]
@@ -345,6 +367,12 @@ def read_facts(store,manager,body,*,_allow_partial=False,_prepare_only=False):
               'import_id':record['import_id'],'rule_version':manifest.get('rule_version'),
               'imported_at':manifest.get('imported_at'),
               'confirmed_sheets':sorted(confirmed_names),'review_fingerprint':_hash(confirmed)}
+        if source.get('file_version_at'):
+            info['file_version_at'] = source['file_version_at']
+        if record['verified_file_hash'] != source['file_hash']:
+            info['source_version_pending'] = True
+        if retained:
+            info['retained_sheet_datasets'] = retained
         mapping={}
         for field in catalog:
             identifier=research_series_id(identity.knowledge_base_id,source['knowledge_id'],field['series_id'])
@@ -357,7 +385,9 @@ def read_facts(store,manager,body,*,_allow_partial=False,_prepare_only=False):
                 FieldMetadata.model_validate(metadata)
             indicators.append({**field,'series_id':identifier,'source_series_id':field['series_id'],
                 'source_knowledge_id':source['knowledge_id'],'dataset_id':dataset,
-                'source_file':manifest.get('source_file'),'source_sha256':manifest['sha256']})
+                'source_file':manifest.get('source_file'),'source_sha256':origins.get(retained.get(field.get('sheet')),manifest['sha256']),
+                **({'source_update_notice': update_notices.get(field.get('sheet'), '沿用上一版数据，待核对')}
+                   if field.get('sheet') in retained else {})})
         if bounded is None or mapping:
             datasets.append(info)
             bindings.append((info,mapping))

@@ -120,7 +120,9 @@ def _remaps(store, info, current, source, version):
     current_manifest = manifest
     with ExitStack() as observations:
         new_connection = None
-        while parent := manifest.get('parent_dataset_id'):
+        # Remaps compare corrections of the same bytes. The parent of a
+        # source update supplies fallback rows from a different original.
+        while not manifest.get('source_update') and (parent := manifest.get('parent_dataset_id')):
             if parent in seen_datasets:
                 raise ValueError('历史快照关系无法完整核验')
             seen_datasets.add(parent)
