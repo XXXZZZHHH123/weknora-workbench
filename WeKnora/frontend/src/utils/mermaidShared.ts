@@ -1,3 +1,4 @@
+import { mermaidConfig } from './mermaidConfig'
 import type { Tokens } from 'marked'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github.css'
@@ -16,6 +17,7 @@ let mermaidMod: typeof import('mermaid') | null = null
 let mermaidInitialized = false
 let initPromise: Promise<void> | null = null
 
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 const MERMAID_LIGHT_THEME = {
   darkMode: false,
   background: '#ffffff',
@@ -152,6 +154,8 @@ const MERMAID_CONFIG = {
   },
 }
 
+=======
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 async function getMermaid() {
   if (!mermaidMod) {
     mermaidMod = await import('mermaid')
@@ -187,10 +191,14 @@ export const ensureMermaidInitialized = () => {
       const mermaid = await getMermaid()
       if (!mermaidInitialized) {
         mermaid.initialize({
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
           ...MERMAID_CONFIG,
           // Exported SVGs must retain the font without the host CSS tokens.
           fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--app-font-family').trim() || 'ui-sans-serif, system-ui, sans-serif',
           themeVariables: resolveMermaidThemeVariables(),
+=======
+          ...mermaidConfig(document.documentElement.getAttribute('theme-mode') === 'dark'),
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
         } as Parameters<typeof mermaid.initialize>[0])
         mermaidInitialized = true
       }

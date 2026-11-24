@@ -90,6 +90,7 @@ func TestPreferAnydocSkipsPDF(t *testing.T) {
 	}
 }
 
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 // A newer remote converter must not advertise formats that bypass this
 // workbench's source review and publication gate.
 func TestRemoteParserFormatsRespectPlatformImportPolicy(t *testing.T) {
@@ -109,4 +110,39 @@ func TestRemoteParserFormatsRespectPlatformImportPolicy(t *testing.T) {
 			t.Fatal("discovery metadata was lost or mutated")
 		}
 	}
+=======
+// Self-hosted MinerU parses xlsx natively since 3.1.0, so the engine must
+// advertise it; the parser settings UI only offers an engine for a file type
+// when the engine lists it (#4099). xls is deliberately not advertised: only
+// the 4.x docs list it and the engine cannot detect the server version, so an
+// older server would fail at parse time.
+func TestMinerUEngineAdvertisesXlsxOnly(t *testing.T) {
+	var found bool
+	for _, engine := range ListAllEngines(true, nil, nil) {
+		if engine.Name != MinerUEngineName {
+			continue
+		}
+		found = true
+		fileTypes := make(map[string]bool, len(engine.FileTypes))
+		for _, fileType := range engine.FileTypes {
+			fileTypes[fileType] = true
+		}
+		if !fileTypes["xlsx"] {
+			t.Errorf("mineru engine file types do not include %q: %v", "xlsx", engine.FileTypes)
+		}
+		// Guard against re-adding xls without a way to detect the server version.
+		if fileTypes["xls"] {
+			t.Errorf("mineru engine must not advertise %q: %v", "xls", engine.FileTypes)
+		}
+		// Formats it already served must stay.
+		for _, keep := range []string{"pdf", "docx", "pptx"} {
+			if !fileTypes[keep] {
+				t.Errorf("mineru engine dropped %q: %v", keep, engine.FileTypes)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("mineru engine not found")
+	}
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 }

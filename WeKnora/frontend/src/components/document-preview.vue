@@ -2,8 +2,12 @@
 <script setup lang="ts">
 import { indexEmbeddedSourceImages } from '@/utils/sourceImage';
 import { ref, shallowRef, watch, onMounted, onUnmounted, onErrorCaptured, nextTick, defineAsyncComponent } from 'vue';
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 import { previewKnowledgeFile, getKnowledgeDetails } from '@/api/knowledge-base/index';
 import { previewKnowledgeMedia } from '@/api/knowledge-base/preview-media';
+=======
+import { getKnowledgeDetails, listKnowledgeFiles, previewKnowledgeFile } from '@/api/knowledge-base/index';
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 import { previewTemporaryAttachment } from '@/api/chat/temporary-attachments';
 import { downloadArtifact } from '@/api/chat';
 import hljs from 'highlight.js';
@@ -19,9 +23,14 @@ import { knowledgePptxSourceKey } from '@/utils/pptxPreviewSource';
 import { createPptxViewportMedia, type PptxPageMediaView } from '@/utils/pptxViewportMedia';
 import { findMarkdownSourceRange } from '@/utils/markdownSourceLocate';
 import { renderDocumentPreviewMarkdown } from '@/utils/documentPreviewMarkdown';
+import {
+  neutralizeRelativePreviewImages,
+  PREVIEW_IMAGE_PAGE_SIZE,
+  rewriteKnowledgeMarkdownImages,
+} from '@/utils/markdownPreviewImages';
 import { buildHtmlPreview } from '@/utils/htmlPreview';
-import { openMermaidFullscreen } from '@/utils/mermaidViewer';
-import { renderMermaidToSvg } from '@/utils/mermaidShared';
+import MermaidFilePreview from './mermaid-file/MermaidFilePreview.vue';
+import { renderMermaidImages } from './mermaid-file/renderImages';
 import {
   FILE_PREVIEW_SNIFF_BYTES,
   getHighlightLang as resolveHighlightLang,
@@ -104,8 +113,14 @@ const blobUrl = ref('');
 const textContent = ref('');
 const highlightedCode = ref('');
 const markdownHtml = ref('');
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 const excelBlob = shallowRef<Blob | null>(null);
 const mermaidSvg = ref('');
+=======
+const excelHtml = ref('');
+const mermaidSource = ref<string | null>(null);
+let loadedMermaidBlob: Blob | undefined;
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 const htmlViewMode = ref<'render' | 'source'>('render');
 const pptxData = shallowRef<ArrayBuffer | null>(null);
 const pptxRenderedData = shallowRef<ArrayBuffer | null>(null);
@@ -311,6 +326,13 @@ const docxContainer = ref<HTMLElement | null>(null);
 const imageNaturalWidth = ref(0);
 const imageNaturalHeight = ref(0);
 let loadedForId = '';
+let markdownImageGeneration = 0;
+let markdownImageUrls: string[] = [];
+
+function revokeMarkdownImageUrls() {
+  for (const url of markdownImageUrls) URL.revokeObjectURL(url);
+  markdownImageUrls = [];
+}
 
 const isFullscreen = ref(false);
 const previewRoot = ref<HTMLElement | null>(null);
@@ -484,7 +506,10 @@ async function renderDocx(blob: Blob) {
 }
 
 async function renderText(blob: Blob, fileType: string) {
-  let text = await blob.text();
+  renderTextContent(await blob.text(), fileType);
+}
+
+function renderTextContent(text: string, fileType: string) {
   if (shouldPrettyPrintJson(fileType)) {
     text = prettyPrintJson(text);
   }
@@ -501,6 +526,41 @@ async function renderText(blob: Blob, fileType: string) {
   highlightedCode.value = auto.value;
 }
 
+const markdownBody = ref<HTMLElement | null>(null);
+
+watch([() => props.active, markdownHtml, markdownBody], ([active, , body], _, onCleanup) => {
+  if (!active || !body) return;
+  const blocks = [...body.querySelectorAll<HTMLPreElement>('pre[data-preview-mermaid]:not([hidden])')];
+  if (!blocks.length) return;
+  const controller = new AbortController();
+  onCleanup(() => controller.abort());
+  void renderMarkdownDiagrams(blocks, controller.signal);
+}, { flush: 'post' });
+
+async function renderMarkdownDiagrams(blocks: HTMLPreElement[], signal: AbortSignal) {
+  try {
+    const images = await renderMermaidImages(blocks.map(block => block.textContent ?? ''), signal);
+    const replaced = await Promise.all(blocks.map(async (block, index) => {
+      const src = images[index];
+      if (!src || signal.aborted) return false;
+      const image = document.createElement('img');
+      image.className = 'markdown-mermaid-diagram';
+      image.alt = t('mermaid.diagram');
+      image.src = src;
+      // Keep the source visible if the browser cannot load the generated image.
+      await image.decode().catch(() => {});
+      if (!image.naturalWidth || signal.aborted || !block.isConnected) return false;
+      block.after(image);
+      // Keep the original text in the source index for citations that span the diagram.
+      block.hidden = true;
+      return true;
+    }));
+    if (!signal.aborted && replaced.some(Boolean)) scheduleLocate();
+  } catch {
+    // The sanitized code blocks remain visible if the renderer is unavailable.
+  }
+}
+
 async function renderMarkdown(blob: Blob) {
   const text = await blob.text();
 
@@ -510,10 +570,59 @@ async function renderMarkdown(blob: Blob) {
     return;
   }
 
-  markdownHtml.value = renderDocumentPreviewMarkdown(text, undefined, {
+  const generation = ++markdownImageGeneration;
+  revokeMarkdownImageUrls();
+  const previewOptions = {
     // 预览工具栏已经显示文件名；正文第一行的同名 H1 属于重复标题。
     titles: [props.fileName],
-  });
+    renderMermaid: true,
+  };
+  // Relative images stay on a data URI unless a sibling file replaces them.
+  // Painting the original href makes the browser request it from the page route.
+  let source = props.knowledgeId ? neutralizeRelativePreviewImages(text) : text;
+  if (props.knowledgeId) {
+    markdownHtml.value = renderDocumentPreviewMarkdown(source, undefined, previewOptions);
+    try {
+      const rewritten = await rewriteKnowledgeMarkdownImages(text, props.knowledgeId, {
+        getKnowledge: async (id) => {
+          const res = await getKnowledgeDetails(id);
+          const data = res?.data || res;
+          if (!data || typeof data !== 'object') return null;
+          return {
+            knowledgeBaseId: data.knowledge_base_id || '',
+            folderPath: data.folder_path || '',
+          };
+        },
+        listFiles: async (knowledgeBaseId, folderPath, page) => {
+          const res = await listKnowledgeFiles(knowledgeBaseId, {
+            page,
+            page_size: PREVIEW_IMAGE_PAGE_SIZE,
+            folder_path: folderPath,
+          });
+          const rows = Array.isArray(res?.data) ? res.data : [];
+          return {
+            total: Number(res?.total ?? rows.length),
+            rows: rows.map((row: { id?: string; file_name?: string; folder_path?: string }) => ({
+              id: String(row?.id || ''),
+              fileName: String(row?.file_name || ''),
+              folderPath: row?.folder_path || '',
+            })),
+          };
+        },
+        loadPreview: (id) => previewKnowledgeFile(id),
+      });
+      if (generation !== markdownImageGeneration) {
+        for (const url of rewritten.objectUrls) URL.revokeObjectURL(url);
+        return;
+      }
+      markdownImageUrls = rewritten.objectUrls;
+      source = neutralizeRelativePreviewImages(rewritten.markdown);
+    } catch (err) {
+      console.warn('Relative markdown images were left unresolved', err);
+    }
+  }
+  if (generation !== markdownImageGeneration) return;
+  markdownHtml.value = renderDocumentPreviewMarkdown(source, undefined, previewOptions);
 }
 
 function onImageLoad(e: Event) {
@@ -565,33 +674,32 @@ async function fetchPreviewBlob(): Promise<Blob> {
   throw new Error('Missing preview source');
 }
 
-async function renderMermaid(blob: Blob) {
-  const text = await blob.text();
-  const svg = await renderMermaidToSvg(text, `file-preview-mermaid-${Date.now()}`);
-  if (svg) {
-    mermaidSvg.value = sanitizeMarkdownHTML(svg);
-    return;
-  }
+function mermaidFallback(source: string) {
+  if (!props.active || mermaidSource.value !== source) return;
   previewType.value = 'text';
-  await renderText(new Blob([text], { type: 'text/plain' }), 'mmd');
-}
-
-async function openMermaid() {
-  const svg = mermaidSvg.value;
-  if (!svg) return;
-  // The diagram viewer mounts on body, outside the native fullscreen element.
-  await exitPreviewFullscreen();
-  if (props.active && previewRoot.value?.isConnected) openMermaidFullscreen(svg);
+  renderTextContent(source, 'mmd');
 }
 
 async function loadPreview() {
   const sourceKey = getPreviewSourceKey();
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
   if (!sourceKey || !props.active) return;
   // Unmount the previous spreadsheet (including its chart and worker) before
   // awaiting the new source's ACL. A retained Blob must not bridge sources.
   excelBlob.value = null;
   const version = ++previewLoadVersion;
   const knowledgeId = props.sourceBlob ? '' : props.knowledgeId || '';
+=======
+  if (!sourceKey) return;
+  const sourceBlob = props.sourceBlob;
+  if (loadedForId === sourceKey && (!loadedMermaidBlob || loadedMermaidBlob === sourceBlob)) return;
+
+  cleanup();
+  loading.value = true;
+  error.value = '';
+  htmlViewMode.value = allowsHtmlScriptPreview() ? 'render' : 'source';
+
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
   let ft = resolveFilePreviewExt(props.fileName, props.fileType);
   const knowledgePptx = !!knowledgeId && resolvePreviewKind(ft) === 'pptx';
   const knowledgeExcel = !!knowledgeId && resolvePreviewKind(ft) === 'excel';
@@ -734,7 +842,11 @@ async function loadPreview() {
         break;
       }
       case 'mermaid': {
-        await renderMermaid(blob);
+        const source = await blob.text();
+        if (getPreviewSourceKey() === sourceKey && props.sourceBlob === sourceBlob && props.active) {
+          loadedMermaidBlob = sourceBlob;
+          mermaidSource.value = source;
+        }
         break;
       }
     }
@@ -753,6 +865,7 @@ async function loadPreview() {
 }
 
 function cleanup() {
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
   loadedPptxAuthority = '';
   pptxMediaCacheContext = undefined;
   stopPptxRenderWatch();
@@ -762,6 +875,10 @@ function cleanup() {
   pptxRenderFailureSourceKey = '';
   pptxRenderFailureReason = '';
   pptxRenderSignal = 'pending';
+=======
+  markdownImageGeneration += 1;
+  revokeMarkdownImageUrls();
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
   if (blobUrl.value) {
     URL.revokeObjectURL(blobUrl.value);
     blobUrl.value = '';
@@ -769,8 +886,14 @@ function cleanup() {
   textContent.value = '';
   highlightedCode.value = '';
   markdownHtml.value = '';
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
   excelBlob.value = null;
   mermaidSvg.value = '';
+=======
+  excelHtml.value = '';
+  mermaidSource.value = null;
+  loadedMermaidBlob = undefined;
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
   htmlViewMode.value = 'render';
   pptxData.value = null;
   pptxRenderedData.value = null;
@@ -1285,7 +1408,7 @@ onUnmounted(() => {
 
     <!-- Markdown -->
     <div v-else-if="previewType === 'markdown' && markdownHtml" ref="previewContent" tabindex="0" :aria-label="fileName" class="preview-markdown">
-      <div class="markdown-body" v-html="markdownHtml" />
+      <div ref="markdownBody" class="markdown-body" v-html="markdownHtml" />
     </div>
 
     <!-- Text / Code -->
@@ -1294,9 +1417,8 @@ onUnmounted(() => {
     </div>
 
     <!-- Mermaid -->
-    <div v-else-if="previewType === 'mermaid' && mermaidSvg" ref="previewContent" tabindex="0" :aria-label="fileName" class="preview-mermaid" @click="openMermaid">
-      <div class="mermaid-body" v-html="mermaidSvg" />
-    </div>
+    <MermaidFilePreview class="preview-mermaid" v-else-if="previewType === 'mermaid' && mermaidSource !== null && active"
+      :key="mermaidSource" :before-open="exitPreviewFullscreen" :source="mermaidSource" :title="fileName" @fallback="mermaidFallback" />
 
     <!-- Audio -->
     <div v-else-if="previewType === 'audio' && blobUrl" class="preview-audio">
@@ -1597,22 +1719,6 @@ onUnmounted(() => {
       word-wrap: normal;
       display: block;
       background: transparent;
-    }
-  }
-}
-
-// ── Mermaid ──
-.preview-mermaid {
-  .preview-container();
-  display: flex;
-  justify-content: center;
-  padding: 24px 16px;
-  cursor: zoom-in;
-  .mermaid-body {
-    max-width: 100%;
-    :deep(svg) {
-      max-width: 100%;
-      height: auto;
     }
   }
 }
@@ -1958,6 +2064,11 @@ onUnmounted(() => {
     font-size: 0.92em;
   }
   img { max-width: 100%; border-radius: var(--app-radius-xs); }
+  .markdown-mermaid-diagram {
+    display: block;
+    height: auto;
+    margin: 12px auto;
+  }
   hr { border: none; border-top: 1px solid @border-color; margin: 20px 0; }
   a { color: @accent; text-decoration: none; &:hover { color: @accent-hover; text-decoration: underline; } }
   strong { font-weight: 600; }

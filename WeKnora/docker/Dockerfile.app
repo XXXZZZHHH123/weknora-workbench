@@ -83,16 +83,42 @@ RUN bash ./scripts/copy-licenses.sh /license-bundle
 ARG VERSION_ARG
 ARG COMMIT_ID_ARG
 ARG BUILD_TIME_ARG
-ARG GO_VERSION_ARG
 
 # Set build-time variables
 ENV VERSION=${VERSION_ARG}
 ENV COMMIT_ID=${COMMIT_ID_ARG}
 ENV BUILD_TIME=${BUILD_TIME_ARG}
-ENV GO_VERSION=${GO_VERSION_ARG}
 
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 # Build the application with version info
 RUN --mount=type=cache,target=/root/.cache/go-build \
+=======
+# Link the anydoc parser engine (office docs converted in-process, no
+# Python docreader). Default on so Hub / compose images ship a working
+# engine; pass WITH_ANYDOC=0 to skip the Rust toolchain (~few minutes and
+# ~1 GB of build-stage layers).
+ARG WITH_ANYDOC=1
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
+ENV PATH=/usr/local/cargo/bin:$PATH
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    if [ "$WITH_ANYDOC" = "1" ]; then \
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable && \
+        ./scripts/build-anydoc-lib.sh; \
+    fi
+
+# Build the application with version info. Mount the Go build cache as well as
+# the module cache: `COPY . .` invalidates this layer on every source change,
+# and without the mount each rebuild regenerates the whole compile cache inside
+# the layer (~2.7 GB), which occupies disk locally and is uploaded to the CI
+# layer cache. Mounted, the cache lives outside the layer and repeated builds
+# reuse compiled objects instead of recompiling from scratch. Read the Go
+# version in this builder so host machines without Go still report it correctly.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    export GO_VERSION="$(go version)"; \
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
     if [ "$WITH_ANYDOC" = "1" ]; then \
         make build-prod GO_BUILD_TAGS=anydoc; \
     else \
@@ -109,7 +135,7 @@ ARG APK_MIRROR_ARG
 
 # Pairing derives the gateway URL from the user's page origin by default.
 ENV BROWSERSKILL_BINARY=/opt/weknora/browserskill/bsk \
-    BROWSERSKILL_EXTENSION_PATH=/opt/weknora/browserskill/browser-skill-weknora-0.3.1.zip
+    BROWSERSKILL_EXTENSION_PATH=/opt/weknora/browserskill/browser-skill-weknora-0.4.1.zip
 COPY --from=browserskill /opt/weknora/browserskill /opt/weknora/browserskill
 
 # Create a non-root user first

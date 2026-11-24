@@ -100,6 +100,7 @@ const contentLoading = ref(false)
 const saving = ref(false)
 const savingAction = ref<ManualStatus>('draft')
 const lastUpdatedAt = ref<string>('')
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 let editorGeneration = 0
 const editorScope = () => JSON.stringify([editorGeneration, authStore.user?.id || '', authStore.effectiveTenantId || '', route.params.kbId || '', form.kbId])
 const editorSessionScope = () => JSON.stringify([editorGeneration, authStore.user?.id || '', authStore.effectiveTenantId || '', route.params.kbId || '', mode.value, knowledgeId.value || '', uiStore.manualEditorKBId || ''])
@@ -108,6 +109,12 @@ watch(() => [authStore.user?.id, authStore.effectiveTenantId, route.params.kbId]
   editorGeneration++
   if (visible.value) uiStore.closeManualEditor()
 }, { flush: 'sync' })
+=======
+// Closing and reopening the drawer starts a new visit, even for the same ID.
+// Reads from an older visit must never replace the current editable document.
+let loadVersion = 0
+const isCurrentLoad = (version: number) => version === loadVersion && visible.value
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 
 // ---------- view mode ----------
 type ViewMode = 'edit' | 'split' | 'preview'
@@ -637,14 +644,22 @@ const lastUpdatedText = computed(() =>
   lastUpdatedAt.value ? t('manualEditor.status.lastUpdated', { time: lastUpdatedAt.value }) : '',
 )
 
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 const loadKnowledgeBases = async (session = editorSessionScope()) => {
   if (!editorSessionCurrent(session)) return
   const originalKbId = form.kbId
+=======
+const loadKnowledgeBases = async (version: number) => {
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
   kbLoading.value = true
   try {
     // ensureKnowledgeBases 同时刷新自己的与共享的知识库快照。
     await chatResources.ensureKnowledgeBases()
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
     if (!editorSessionCurrent(session)) return
+=======
+    if (!isCurrentLoad(version)) return
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
     const sharedKbs = organizationStore.sharedKnowledgeBases
 
     const isDocumentKb = (type?: string) => !type || type === 'document'
@@ -690,11 +705,19 @@ const loadKnowledgeBases = async (session = editorSessionScope()) => {
       }
     }
   } catch (error) {
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
     if (!editorSessionCurrent(session)) return
     console.error('[ManualEditor] Failed to load knowledge base list:', error)
     kbOptions.value = []
   } finally {
     if (editorSessionCurrent(session)) kbLoading.value = false
+=======
+    if (!isCurrentLoad(version)) return
+    console.error('[ManualEditor] Failed to load knowledge base list:', error)
+    kbOptions.value = []
+  } finally {
+    if (isCurrentLoad(version)) kbLoading.value = false
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
   }
 }
 
@@ -723,6 +746,7 @@ const parseManualMetadata = (
   return null
 }
 
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 const loadKnowledgeContent = async (session = editorSessionScope()) => {
   const targetId = currentKnowledgeId.value
   const expectedKbId = uiStore.manualEditorKBId || ''
@@ -733,6 +757,16 @@ const loadKnowledgeContent = async (session = editorSessionScope()) => {
   try {
     const res: any = await getKnowledgeDetails(targetId)
     if (!editorSessionCurrent(session) || currentKnowledgeId.value !== targetId) return false
+=======
+const loadKnowledgeContent = async (version: number) => {
+  if (!currentKnowledgeId.value) {
+    return
+  }
+  contentLoading.value = true
+  try {
+    const res: any = await getKnowledgeDetails(currentKnowledgeId.value)
+    if (!isCurrentLoad(version)) return
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
     const data: KnowledgeDetailResponse | undefined = res?.data
     if (!data || data.id !== targetId || !data.knowledge_base_id || (expectedKbId && data.knowledge_base_id !== expectedKbId)) {
       MessagePlugin.error(t('manualEditor.error.fetchDetailFailed'))
@@ -761,12 +795,20 @@ const loadKnowledgeContent = async (session = editorSessionScope()) => {
     }
     return true
   } catch (error) {
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
     if (!editorSessionCurrent(session)) return false
+=======
+    if (!isCurrentLoad(version)) return
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
     console.error('[ManualEditor] Failed to load manual knowledge:', error)
     MessagePlugin.error(t('manualEditor.error.fetchDetailFailed'))
     return false
   } finally {
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
     if (editorSessionCurrent(session)) contentLoading.value = false
+=======
+    if (isCurrentLoad(version)) contentLoading.value = false
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
   }
 }
 
@@ -790,6 +832,7 @@ const generateDefaultTitle = () => {
   return `${t('manualEditor.defaultTitlePrefix')}-${new Date().toLocaleString()}`
 }
 
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 const initialize = async (session = editorSessionScope()) => {
   if (!editorSessionCurrent(session)) return
   resetForm()
@@ -799,6 +842,15 @@ const initialize = async (session = editorSessionScope()) => {
   if (mode.value === 'edit') {
     if (!await loadKnowledgeContent(session)) return
     if (!editorSessionCurrent(session)) return
+=======
+const initialize = async (version: number) => {
+  resetForm()
+  await loadKnowledgeBases(version)
+  if (!isCurrentLoad(version)) return
+
+  if (mode.value === 'edit') {
+    await loadKnowledgeContent(version)
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
   } else {
     if (!form.kbId) {
     const presetKbId = uiStore.manualEditorKBId
@@ -817,6 +869,7 @@ const initialize = async (session = editorSessionScope()) => {
     form.content = form.content || ''
   }
 
+  if (!isCurrentLoad(version)) return
   initialLoaded.value = true
   markPristine()
 }
@@ -975,16 +1028,29 @@ const handleClose = () => {
 }
 
 watch(visible, async (val) => {
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
   editorGeneration++
+=======
+  const version = ++loadVersion
+  kbLoading.value = false
+  contentLoading.value = false
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
   if (val) {
     void loadPreviewMarkdown()
     const session = editorSessionScope()
     await nextTick()
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
     if (!editorSessionCurrent(session)) return
     await initialize(session)
     if (!editorSessionCurrent(session)) return
     await nextTick()
     if (!editorSessionCurrent(session)) return
+=======
+    if (!isCurrentLoad(version)) return
+    await initialize(version)
+    await nextTick()
+    if (!isCurrentLoad(version)) return
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
     const length = form.content ? form.content.length : 0
     setSelectionRange(length, length)
   } else {
@@ -997,7 +1063,11 @@ watch(visible, async (val) => {
 }, { flush: 'sync' })
 
 onBeforeUnmount(() => {
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
   editorGeneration++
+=======
+  ++loadVersion
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
   editorAreaObserver?.disconnect()
   editorAreaObserver = null
 })

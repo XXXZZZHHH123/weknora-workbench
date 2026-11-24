@@ -1,4 +1,15 @@
+import common from './zh-CN/common.ts'
+import auth from './zh-CN/auth.ts'
+import chat from './zh-CN/chat.ts'
+import agent from './zh-CN/agent.ts'
+import knowledge from './zh-CN/knowledge.ts'
+import datasource from './zh-CN/datasource.ts'
+import model from './zh-CN/model.ts'
+import settings from './zh-CN/settings.ts'
+import system from './zh-CN/system.ts'
+
 export default {
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
   evidence: {
     deliveryIncomplete: "部分生成文件未能保存为可下载附件。请以实际附件列表为准，稍后重试。",
     button: "查看数据来源",
@@ -9443,4 +9454,15 @@ export default {
       description: '先观察图片特征并进行图片描述，再根据图片特征决定是否调用OCR对图片进行识别，以节省模型调用次数并提升解析速度。当识别到图片为可校正的文档或标签页照片时，会在识别前自动摆正并裁剪页面，以提升 OCR 准确率；若校正失败则直接使用原图。'
     }
   }
+=======
+  ...common,
+  ...auth,
+  ...chat,
+  ...agent,
+  ...knowledge,
+  ...datasource,
+  ...model,
+  ...settings,
+  ...system,
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 }

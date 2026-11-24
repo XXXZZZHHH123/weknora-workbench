@@ -1,4 +1,15 @@
+import common from './ja-JP/common.ts'
+import auth from './ja-JP/auth.ts'
+import chat from './ja-JP/chat.ts'
+import agent from './ja-JP/agent.ts'
+import knowledge from './ja-JP/knowledge.ts'
+import datasource from './ja-JP/datasource.ts'
+import model from './ja-JP/model.ts'
+import settings from './ja-JP/settings.ts'
+import system from './ja-JP/system.ts'
+
 export default {
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
   evidence: {
     deliveryIncomplete: "生成されたファイルの一部をダウンロード可能な添付ファイルとして保存できませんでした。添付一覧を確認し、後でもう一度お試しください。",
     button: "データソースを表示",
@@ -9465,4 +9476,15 @@ export default {
       description: 'まず画像の特徴を観察して説明を生成し、その特徴に基づいて OCR を実行するかどうかを判断します。モデル呼び出しを節約し、解析速度を向上させます 画像が補正可能な書類やラベルの写真と判定された場合、認識前にページを傾き補正・トリミングして OCR 精度を高めます。補正に失敗した場合は元の画像を使用します。'
     }
   }
+=======
+  ...common,
+  ...auth,
+  ...chat,
+  ...agent,
+  ...knowledge,
+  ...datasource,
+  ...model,
+  ...settings,
+  ...system,
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 }

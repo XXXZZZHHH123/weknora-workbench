@@ -1,4 +1,15 @@
+import common from './zh-TW/common.ts'
+import auth from './zh-TW/auth.ts'
+import chat from './zh-TW/chat.ts'
+import agent from './zh-TW/agent.ts'
+import knowledge from './zh-TW/knowledge.ts'
+import datasource from './zh-TW/datasource.ts'
+import model from './zh-TW/model.ts'
+import settings from './zh-TW/settings.ts'
+import system from './zh-TW/system.ts'
+
 export default {
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
   evidence: {
     deliveryIncomplete: "部分產生的檔案未能儲存為可下載附件。請以實際附件清單為準，稍後再試。",
     button: "查看資料來源",
@@ -9441,4 +9452,15 @@ export default {
       description: '先觀察圖片特徵並進行圖片描述，再根據圖片特徵決定是否呼叫 OCR 對圖片進行辨識，以節省模型呼叫次數並提升解析速度。當辨識到圖片為可校正的文件或標籤頁照片時，會在辨識前自動擺正並裁切頁面，以提升 OCR 準確率；若校正失敗則直接使用原圖。',
     },
   },
+=======
+  ...common,
+  ...auth,
+  ...chat,
+  ...agent,
+  ...knowledge,
+  ...datasource,
+  ...model,
+  ...settings,
+  ...system,
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 }

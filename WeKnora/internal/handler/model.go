@@ -864,6 +864,11 @@ func (h *ModelHandler) UpdateModel(c *gin.Context) {
 	)
 	model.Parameters = newParams
 
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
+=======
+	// SDK updates omit source and type. Keep the stored source and persist
+	// the effective type used for parameter validation when they are absent.
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 	if req.Source != "" {
 		model.Source = req.Source
 	}
