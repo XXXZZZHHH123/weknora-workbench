@@ -194,7 +194,9 @@ import {
   type InviteLookup,
 } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
+import { normalizeMainLocale, setI18nLanguage } from '@/i18n'
 import { useI18n } from 'vue-i18n'
+import { getApiBaseUrl } from '@/utils/api-base'
 
 import BrandWordmark from '@/components/BrandWordmark.vue'
 
@@ -204,6 +206,36 @@ const authStore = useAuthStore()
 const { t, tm, locale } = useI18n()
 const { formatRole, roleIcon } = useRoleLabel()
 
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
+=======
+// Swiper modules
+const modules = [Autoplay, EffectFade, Pagination]
+
+// Carousel slides data
+const slides = computed(() => [
+  {
+    image: screenshot4,
+    title: t('platform.carousel.agenticRagTitle'),
+    description: t('platform.carousel.agenticRagDesc')
+  },
+  {
+    image: screenshot2,
+    title: t('platform.carousel.hybridSearchTitle'),
+    description: t('platform.carousel.hybridSearchDesc')
+  },
+  {
+    image: screenshot3,
+    title: t('platform.carousel.wikiTitle'),
+    description: t('platform.carousel.wikiDesc')
+  },
+  {
+    image: screenshot1,
+    title: t('platform.carousel.smartDocRetrievalTitle'),
+    description: t('platform.carousel.smartDocRetrievalDesc')
+  }
+])
+
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 // Form references
 const formRef = ref()
 const registerFormRef = ref()
@@ -318,11 +350,18 @@ const toggleLanguageMenu = () => {
 }
 
 // Select language
-const selectLanguage = (lang: string) => {
-  locale.value = lang
-  localStorage.setItem('locale', lang)
+const selectLanguage = async (lang: string) => {
   showLanguageMenu.value = false
-  MessagePlugin.success(t('language.languageSaved'))
+  const requested = normalizeMainLocale(lang)
+  try {
+    const applied = await setI18nLanguage(requested)
+    if (applied === requested) {
+      MessagePlugin.success(t('language.languageSaved'))
+    }
+  } catch (err) {
+    console.error('[WeKnora] Failed to switch language:', err)
+    MessagePlugin.error(t('common.failed'))
+  }
 }
 
 // Close language menu when clicking outside
@@ -397,7 +436,7 @@ const persistLoginResponse = async (response: any, skipRedirect = false) => {
   router.replace(authStore.hasValidTenant ? '/platform/knowledge-bases' : '/onboarding/workspace')
 }
 
-const getBackendOIDCRedirectURI = () => `${window.location.origin}/api/v1/auth/oidc/callback`
+const getBackendOIDCRedirectURI = () => `${window.location.origin}${getApiBaseUrl()}/api/v1/auth/oidc/callback`
 
 const loadOIDCConfig = async () => {
   try {

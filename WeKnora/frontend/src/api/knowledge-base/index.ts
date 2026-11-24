@@ -2,6 +2,8 @@ import { get, post, put, del, postUpload, getDown } from "../../utils/request";
 import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess';
 import type { AuditLog, AuditOutcome, ListAuditLogResponse } from '@/api/tenant/audit-log';
 import { buildListKnowledgeFilesQuery } from './knowledgeFileListQuery';
+import { withKnowledgeReadContext, type KnowledgeReadOptions } from './knowledgeReadOptions';
+export type { KnowledgeReadOptions } from './knowledgeReadOptions';
 
 export { buildListKnowledgeFilesQuery } from './knowledgeFileListQuery';
 
@@ -352,6 +354,7 @@ export function createKnowledgeBase(data: {
   extract_config?: any;
   faq_config?: { index_mode: string; question_index_mode?: string };
   wiki_config?: {
+    auto_generate?: boolean;
     synthesis_model_id?: string;
     max_pages_per_ingest?: number;
     extraction_granularity?: 'focused' | 'standard' | 'exhaustive';
@@ -384,6 +387,7 @@ export function updateKnowledgeBase(id: string, data: {
     image_processing_config?: ImageProcessingConfig;
     faq_config?: any;
     wiki_config?: {
+      auto_generate?: boolean;
       synthesis_model_id?: string;
       max_pages_per_ingest?: number;
       extraction_granularity?: 'focused' | 'standard' | 'exhaustive';
@@ -576,8 +580,13 @@ export interface ListKnowledgeFilesParams {
   folder_recursive?: boolean;
 }
 
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 export function listKnowledgeFiles(kbId: string, params: ListKnowledgeFilesParams, options?: { signal?: AbortSignal }) {
   return get(`/api/v1/knowledge-bases/${kbId}/knowledge?${buildListKnowledgeFilesQuery(params)}`, options);
+=======
+export function listKnowledgeFiles(kbId: string, params: ListKnowledgeFilesParams, options?: KnowledgeReadOptions) {
+  return get(withKnowledgeReadContext(`/api/v1/knowledge-bases/${kbId}/knowledge?${buildListKnowledgeFilesQuery(params)}`, options), { signal: options?.signal });
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 }
 
 /** One node of the knowledge base folder tree. */
@@ -601,8 +610,8 @@ export interface KnowledgeFolderTree {
   folders: KnowledgeFolderNode[];
 }
 
-export function listKnowledgeFolders(kbId: string) {
-  return get(`/api/v1/knowledge-bases/${kbId}/knowledge/folders`);
+export function listKnowledgeFolders(kbId: string, options?: KnowledgeReadOptions) {
+  return get(withKnowledgeReadContext(`/api/v1/knowledge-bases/${kbId}/knowledge/folders`, options), { signal: options?.signal });
 }
 
 export function createKnowledgeFolder(kbId: string, path: string) {

@@ -1,4 +1,15 @@
+import common from './ru-RU/common.ts'
+import auth from './ru-RU/auth.ts'
+import chat from './ru-RU/chat.ts'
+import agent from './ru-RU/agent.ts'
+import knowledge from './ru-RU/knowledge.ts'
+import datasource from './ru-RU/datasource.ts'
+import model from './ru-RU/model.ts'
+import settings from './ru-RU/settings.ts'
+import system from './ru-RU/system.ts'
+
 export default {
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
   evidence: {
     deliveryIncomplete: "Некоторые созданные файлы не удалось сохранить для скачивания. Проверьте список вложений и повторите попытку позже.",
     button: "Источники данных",
@@ -9444,4 +9455,15 @@ export default {
         'Сначала наблюдаются признаки изображения и создаётся его описание, затем по этим признакам решается, вызывать ли OCR. Экономит вызовы модели и ускоряет разбор Если изображение распознано как фотография выравниваемой страницы или этикетки, перед распознаванием оно автоматически выравнивается и обрезается для повышения точности OCR; при неудаче используется исходное изображение.'
     }
   }
+=======
+  ...common,
+  ...auth,
+  ...chat,
+  ...agent,
+  ...knowledge,
+  ...datasource,
+  ...model,
+  ...settings,
+  ...system,
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 }

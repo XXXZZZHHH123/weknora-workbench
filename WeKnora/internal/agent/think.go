@@ -11,7 +11,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 	"unicode"
+=======
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/agent/compaction"
@@ -1638,10 +1641,7 @@ func (e *AgentEngine) callLLMWithRetry(
 			logger.Debugf(ctx, "[Agent][Round-%d] msg[%d]: role=%s, len=%d, tool_calls=%v",
 				round, i, msg.Role, len(msg.Content), tcNames)
 		} else {
-			preview := msg.Content
-			if len(preview) > 100 {
-				preview = preview[:100] + "..."
-			}
+			preview := cutDebugPreview(msg.Content, 100)
 			logger.Debugf(ctx, "[Agent][Round-%d] msg[%d]: role=%s, len=%d, content=%s",
 				round, i, msg.Role, len(msg.Content), preview)
 		}
@@ -1819,10 +1819,7 @@ func (e *AgentEngine) callLLMWithRetry(
 		}
 	}
 	if response.Content != "" {
-		preview := response.Content
-		if len(preview) > 300 {
-			preview = preview[:300] + "..."
-		}
+		preview := cutDebugPreview(response.Content, 300)
 		logger.Debugf(ctx, "[Agent][Round-%d] LLM content preview:\n%s", round, preview)
 	}
 
@@ -1843,6 +1840,7 @@ func reportModelContextLeaks(
 		scope, len(leaks), modelcontext.SummarizeLeaks(leaks))
 }
 
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 // General concepts may be explained as background knowledge without pretending
 // the source defined them. Material-specific values, units and attributions
 // remain bound to actual evidence; the model judges this semantic distinction.
@@ -1852,3 +1850,17 @@ Separate source-specific claims from general explanatory knowledge. If the user 
 // Detailed figure semantics are disclosed only when the runtime actually has
 // bound image observations, not on a classifier over the user question.
 const documentImageReviewInstructions = `document_image_observations independently preserves the exact selected image reference, source chunk/page and verified evidence representation. When original_pixels_verified=true, the runtime checked the byte hash against fetched chunks and returned pixels; use it to associate an actual vision observation with that image, rather than a neighboring figure elsewhere on the same page. Explicit image_mode=geometry instead verifies the original resource, source file, physical page and media part without PNG conversion or pixel inspection. With original_pixels_verified=false and pixel_status=not_requested, a successful original_geometry_evidence remains valid coordinate evidence, while read_success=false means pixels were not requested. It supplies no vision observation and must not be described as a successful visual inspection. Geometry failure, unsupported geometry or ambiguity supplies no numeric geometry evidence; preserve that limitation and never substitute a catalog, label or guessed value. original_geometry_evidence contains independently extracted drawing coordinates, axis calibration and bounded estimates from the selected original file/physical page, not values inferred by a vision model. Check its real source labels, legend and time anchors. x_axis_labels_in_order and point.axis_position preserve the calibrated bounding source ticks and the first/middle/last third within that interval; omission of raw whole-plot coordinates does not mean the source axis is missing. Never merge different returned legends or neighboring figures; a vision observation cannot override verified plotted coordinates or their stated uncertainty. First/last are individual source positions; period ranges and extrema cover different positions. Different values are compatible unless they describe the same coordinate and scope; actual within-period variation is not a contradiction. For a requested trajectory, compare its actual first/last points and extrema: do not accept that a trace stops at a trough when a later drawn endpoint shows a material rebound, or omit a major visible direction change within the requested range. Check chronological key_points and their deterministic key_point_changes, together with the source samples, for the magnitude and horizontal extent of each movement. The prose and any concluding summary must assign the same movement to the same source interval; proximity to the next tick does not put a point beyond that tick. Reject qualitative strength/duration claims that materially misrepresent the plotted change. Binding establishes origin, not the accuracy of an observation: still check the actual title, axes, legend, units and requested scope, and preserve uncertainty in estimates. Source estimates and exact values have different precision. For an explicitly approximate request, qualified rounded values within the program-calibrated estimate_low/high are supported; do not require identical rounding in a summary. Geometric uncertainty is computed from axis/pen calibration, so it may be attributed to that method without being printed in the original chart. The native geometry color is the original EMF pen RGB matched to the legend, so a standard color name does not need to appear as printed OCR words. A plotted level and an endpoint-to-endpoint change are different quantities; check their named roles before alleging a contradiction. Relative period descriptions are allowed when justified by the actual ticks and position band: proximity to a monthly tick or its first third can support early in that month, without inventing an exact natural day. Do not require day labels for qualitative proximity. A missing or failed observation supplies no visual facts. Do not demand a second filename mapping when this exact source binding is present; respect any explicitly omitted binding or observation fields.`
+=======
+// cutDebugPreview keeps at most limit bytes of s for a debug log line, backing
+// off to a rune start so Chinese model output is never cut inside a character.
+func cutDebugPreview(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
+}
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21

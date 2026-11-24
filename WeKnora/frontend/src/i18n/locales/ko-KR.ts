@@ -1,4 +1,15 @@
+import common from './ko-KR/common.ts'
+import auth from './ko-KR/auth.ts'
+import chat from './ko-KR/chat.ts'
+import agent from './ko-KR/agent.ts'
+import knowledge from './ko-KR/knowledge.ts'
+import datasource from './ko-KR/datasource.ts'
+import model from './ko-KR/model.ts'
+import settings from './ko-KR/settings.ts'
+import system from './ko-KR/system.ts'
+
 export default {
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
   evidence: {
     deliveryIncomplete: "생성된 일부 파일을 다운로드 가능한 첨부 파일로 저장하지 못했습니다. 실제 첨부 목록을 확인하고 나중에 다시 시도하세요.",
     button: "데이터 출처 보기",
@@ -9444,4 +9455,15 @@ export default {
         '먼저 이미지 특징을 관찰하여 설명을 생성하고, 그 특징을 바탕으로 OCR 실행 여부를 결정합니다. 모델 호출을 절약하고 분석 속도를 높입니다 이미지가 보정 가능한 문서나 라벨 사진으로 인식되면 인식 전에 페이지를 자동으로 정렬하고 잘라내어 OCR 정확도를 높입니다. 보정에 실패하면 원본 이미지를 사용합니다.'
     }
   }
+=======
+  ...common,
+  ...auth,
+  ...chat,
+  ...agent,
+  ...knowledge,
+  ...datasource,
+  ...model,
+  ...settings,
+  ...system,
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 }

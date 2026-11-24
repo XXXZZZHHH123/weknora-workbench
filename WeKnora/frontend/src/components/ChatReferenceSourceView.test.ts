@@ -32,6 +32,11 @@ async function fixture(options: { details?: Record<string, unknown>; chunk?: Rec
     if (name === 'vue') return require('vue')
     if (name === 'vue-i18n') return { useI18n: () => ({ t: (key: string) => key }) }
     if (name === 'vue-router') return { useRouter: () => ({ resolve: () => ({ href: '/knowledge' }) }) }
+    // The KB-name lookup rides the shared keyed cache; in the sandbox it
+    // resolves instantly so the provenance line renders deterministically.
+    if (name === '@/stores/chatResources') return {
+      useChatResourcesStore: () => ({ fetchKnowledgeBaseById: async () => ({ name: '测试知识库' }) }),
+    }
     if (name === '@/api/knowledge-base/index') return {
       getKnowledgeDetails: async (id: string) => {
         requests.push(`details:${id}`)
@@ -52,6 +57,7 @@ async function fixture(options: { details?: Record<string, unknown>; chunk?: Rec
     if (name.startsWith('@/utils/')) return require(`../utils/${name.slice('@/utils/'.length)}.ts`)
     throw new Error(`Unexpected import: ${name}`)
   } })
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
   type Host = { tag?: string; props?: Record<string, unknown>; text?: string; parent?: Host; children: Host[] }
   const node = (): Host => ({ children: [] })
   const renderer = createRenderer<Host, Host>({
@@ -60,13 +66,29 @@ async function fixture(options: { details?: Record<string, unknown>; chunk?: Rec
     remove(child) { const siblings = child.parent?.children; if (siblings) siblings.splice(siblings.indexOf(child), 1) },
     setElementText(el, text) { el.text = text; el.children = [] }, setText(el, text) { el.text = text },
     patchProp(el, key, _previous, value) { el.props ||= {}; el.props[key] = value }, parentNode: el => el.parent || null, nextSibling: () => null,
+=======
+  type Host = { parent?: Host; children: Host[]; text?: string }
+  const node = (): Host => ({ children: [] })
+  const renderer = createRenderer<Host, Host>({
+    createElement: node, createText: (text: string) => ({ ...node(), text }), createComment: node,
+    insert(child, parent) { child.parent = parent; parent.children.push(child) },
+    remove(child) { const siblings = child.parent?.children; if (siblings) siblings.splice(siblings.indexOf(child), 1) },
+    setElementText(el, text) { el.text = text }, setText(el, text) { el.text = text }, patchProp() {}, parentNode: el => el.parent || null, nextSibling: () => null,
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
   })
   const root = node()
   const app = renderer.createApp({ setup: () => () => h(exports.default, { ...props, onUnavailable: () => events.push('unavailable'), onRetentionChange: (value: boolean) => retained.push(value) }) })
   for (const name of ['t-button', 't-icon', 't-loading']) app.component(name, { render: () => null })
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
   app.mount(root)
   await flush()
   return { props, requests, events, retained, preview: () => preview, mounts: () => mounts, emitLocated: (result: any) => emitLocated?.(result), root, dispose: () => app.unmount() }
+=======
+  const root = node()
+  app.mount(root)
+  await flush()
+  return { props, requests, events, preview: () => preview, mounts: () => mounts, dispose: () => app.unmount(), root }
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 }
 
 test('manual citation opens Markdown with raw chunk evidence even without source locators', async t => {
@@ -128,6 +150,7 @@ test('uploaded files keep their original preview format', async t => {
   assert.equal(f.preview().fileType, 'pdf')
 })
 
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 test('verified same-source parent slide opens as an explicit partial parent-context location', async t => {
   const sourceHash = 'd'.repeat(64)
   const childContent = 'A coastal monitoring report records an unusual current shift near the eastern marker.'
@@ -203,4 +226,22 @@ test('reopening retained PPT refreshes source hash and rejects old citation loca
   f.props.active = true; await flush()
   assert.equal(f.mounts(), 1)
   assert.equal(f.preview().locate.unavailable, true, 'old source hash never selects a precise page in a revised file')
+=======
+function nodeText(root: any): string {
+  const walk = (n: any): string => (n.text || '') + (n.children || []).map(walk).join('')
+  return walk(root)
+}
+
+test('citation header shows the source knowledge base name', async t => {
+  // 多库/跨租户检索的溯源: 引用卡头部应显示被引文档所属知识库。
+  const kbTarget = { ...target, knowledgeBaseId: 'kb-77' }
+  const f = await fixture({ target: kbTarget }); t.after(f.dispose)
+  await flush()
+  assert.ok(nodeText(f.root).includes('测试知识库'), 'KB name line must render under the title')
+
+  // 无 KB id 的引用(如手工知识)不应渲染空行
+  const f2 = await fixture(); t.after(f2.dispose)
+  await flush()
+  assert.ok(!nodeText(f2.root).includes('测试知识库'), 'no KB id, no provenance line')
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 })

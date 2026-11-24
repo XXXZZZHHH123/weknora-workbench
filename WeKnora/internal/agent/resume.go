@@ -97,14 +97,23 @@ func (e *AgentEngine) Resume(
 		}
 		return nil
 	}
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 	e.replayingEvidenceHistory = true
 	defer func() { e.replayingEvidenceHistory = false }()
+=======
+	appendBackground := func(step types.AgentStep) {
+		for _, injection := range step.BackgroundInjections {
+			messages = append(messages, chat.Message{Role: "user", Content: injection.Content})
+		}
+	}
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 	for i, step := range state.RoundSteps {
 		e.replayCollaborationDeliveries(&messages, i, true)
 		if err := appendUsers(step); err != nil {
 			return nil, err
 		}
 		e.replayCollaborationDeliveries(&messages, i, false)
+		appendBackground(step)
 		messages = e.appendToolResults(messages, step)
 		messages = e.appendToolImages(ctx, messages, step)
 	}
@@ -114,6 +123,7 @@ func (e *AgentEngine) Resume(
 		return nil, err
 	}
 	e.replayCollaborationDeliveries(&messages, len(state.RoundSteps), false)
+	appendBackground(p.Step)
 	if e.toolRegistry != nil {
 		e.toolRegistry.RestoreMCPExposure(snap.MCPToolRefs)
 		e.toolRegistry.RememberMCPHistory(messages)

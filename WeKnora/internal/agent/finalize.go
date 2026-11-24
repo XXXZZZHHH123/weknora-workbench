@@ -128,6 +128,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 				"completion_tokens": opts.MaxCompletionTokens,
 			})
 		}
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 		llmResult, err := e.streamLLMToEventBus(ctx, messages, opts, nil)
 		if llmResult != nil && llmResult.Usage != nil {
 			state.TurnUsage.Accumulate(*llmResult.Usage)
@@ -249,11 +250,48 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		return fmt.Errorf("delegated final answer could not be verified")
 	}
 	e.commitTerminalResult(ctx, state, sessionID, fullAnswer, "", outcome, truncated)
+=======
+		answerStreamed, providerDone, terminalContent = false, false, ""
+		splitter = agenttools.NewThinkStreamSplitter()
+	}
+	if err != nil {
+		logger.Errorf(ctx, "[Agent][FinalAnswer] Final answer generation failed: %v", err)
+		common.PipelineError(ctx, "Agent", "final_answer_stream_failed", map[string]interface{}{
+			"session_id": sessionID,
+			"error":      err.Error(),
+		})
+		return err
+	}
+	// Validate the visible answer before publishing a successful terminal event.
+	fullAnswer := agenttools.StripThinkBlocks(llmResult.Content)
+	if strings.TrimSpace(fullAnswer) == "" {
+		return fmt.Errorf("final answer synthesis returned no visible content")
+	}
+	_, tail := splitter.Flush()
+	truncated := isLengthFinishReason(llmResult.FinishReason)
+	_ = e.eventBus.Emit(ctx, event.Event{
+		ID: answerID, Type: event.EventAgentFinalAnswer, SessionID: sessionID,
+		Data: event.AgentFinalAnswerData{Content: terminalContent + tail, Done: true, Truncated: truncated},
+	})
+
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 	logger.Infof(ctx, "[Agent][FinalAnswer] Final answer generated: %d characters", len(fullAnswer))
 	common.PipelineInfo(ctx, "Agent", "final_answer_done", map[string]interface{}{
 		"session_id": sessionID,
 		"answer_len": len(fullAnswer),
 	})
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
+=======
+	// History is rebuilt from steps, not live answer events. Record a partial
+	// synthesis for every run so reloads and delegated callers retain the cap.
+	if truncated {
+		state.RoundSteps = append(state.RoundSteps, types.AgentStep{
+			Iteration: state.CurrentRound,
+			Thought:   fullAnswer, Truncated: true, Timestamp: time.Now(),
+		})
+	}
+	state.FinalAnswer = fullAnswer
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 	return nil
 }
 

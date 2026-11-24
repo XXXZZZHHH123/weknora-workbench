@@ -410,8 +410,13 @@ The JSON value above is the complete prior proposal that the reviewer rejected. 
 4. Preserve existing information that is still valid and still about {{.PageTitle}}.
 5. Keep [[slug|name]] wiki-link references ONLY if the slug appears in the <valid_wiki_links> list above. Remove any [[slug|name]] whose slug is NOT in that list. Do NOT invent new wiki-link slugs. The page's own slug ({{.PageSlug}}) MUST NOT appear as a [[...]] link inside its own content.
 6. Maintain the existing page structure and formatting style. Use "# {{.PageTitle}}" as the top-level heading if the page does not already have one. Do NOT introduce new heading levels beyond what the source or existing page justifies.
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 {{if .HasRetractions}}
 7. If after removing deleted content the page becomes nearly empty and there is no new information to add, output only the empty-page summary and page title: "SUMMARY: (empty page)\n# {{.PageTitle}}". Do not add a source-deletion explanation.
+=======
+{{if and .HasRetractions (not .HasAdditions)}}
+7. If after removing deleted content the page becomes nearly empty and there is no new information to add, output just: "SUMMARY: (empty page)\n# {{.PageTitle}}\n\n*This page's primary source document was removed.*"
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 {{end}}
 8. Write in {{.Language}}.
 </instructions>

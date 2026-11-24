@@ -13,8 +13,40 @@ const batchBar = readFileSync(new URL('./DocumentBatchBar.vue', import.meta.url)
 const cardView = readFileSync(new URL('./DocumentCardView.vue', import.meta.url), 'utf8')
 const listView = readFileSync(new URL('./DocumentListView.vue', import.meta.url), 'utf8')
 
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
 // Root exclusion and rename/delete state are exercised through the actual
 // compiled action component in KnowledgeResourceActions.behavior.test.ts.
+=======
+// The root folder's own path IS the empty string, so a falsy "nothing is being
+// renamed" sentinel matches it and leaves a stray rename input on the root row.
+// Two independent guards keep that from coming back.
+test('the rename sentinel cannot collide with the root folder path', () => {
+  assert.match(tree, /const renamingPath = ref<string \| null>\(null\)/)
+  assert.doesNotMatch(tree, /const renamingPath = ref\(''\)/)
+  assert.match(tree, /row\.kind === 'folder' && renamingPath\.value === row\.path/)
+})
+
+// The rename input lives inside the row, so its keydowns bubble to the row. Vue
+// applies modifiers in order: `.prevent.self` would cancel a space typed in the
+// input before `.self` looks at the target.
+test('the row only handles a space pressed on the row itself', () => {
+  assert.match(tree, /@keydown\.space\.self\.prevent="emit\('select', row\.path\)"/)
+  assert.doesNotMatch(tree, /@keydown\.space\.prevent\.self/)
+})
+
+test('deep folders stop indenting so the name stays visible', () => {
+  assert.match(tree, /--kb-folder-indent-max:\s*4/)
+  assert.match(tree, /min\(var\(--kb-folder-depth/)
+  assert.doesNotMatch(tree, /kb-folder-row__more-placeholder/)
+})
+
+test('only real folders expose a rename affordance', () => {
+  assert.match(tree, /v-if="canEdit && row\.kind === 'folder'"/)
+  assert.match(tree, /popup-menu-item/)
+  assert.match(tree, /onFolderMenuRename/)
+})
+
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 // Picking a folder is a small, reversible action, so it stays a popup: in the row
 // menu it is another level of the menu that is already open, and in the batch bar
 // it hangs off the button. Neither should escalate to a modal dialog.

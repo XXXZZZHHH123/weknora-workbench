@@ -1,4 +1,15 @@
+import common from './en-US/common.ts'
+import auth from './en-US/auth.ts'
+import chat from './en-US/chat.ts'
+import agent from './en-US/agent.ts'
+import knowledge from './en-US/knowledge.ts'
+import datasource from './en-US/datasource.ts'
+import model from './en-US/model.ts'
+import settings from './en-US/settings.ts'
+import system from './en-US/system.ts'
+
 export default {
+<<<<<<< d7d91fcc398687cff8a13d498d2ff91c00e8d109
   evidence: {
     deliveryIncomplete: "Some generated files could not be saved as downloadable attachments. Check the actual attachment list and try again later.",
     button: "View data sources",
@@ -9465,4 +9476,15 @@ export default {
       description: 'Observe the image attributes and describe the image first, then decide from the attributes whether to run OCR, saving model calls and speeding up parsing. When the image is recognised as a photograph of a correctable page or label, it is straightened and cropped before recognition to improve OCR accuracy; if that fails, the original image is used.'
     }
   }
+=======
+  ...common,
+  ...auth,
+  ...chat,
+  ...agent,
+  ...knowledge,
+  ...datasource,
+  ...model,
+  ...settings,
+  ...system,
+>>>>>>> 4020d25e0dde206f1058eada8a73aab808dace21
 }

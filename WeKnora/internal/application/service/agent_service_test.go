@@ -772,7 +772,7 @@ func TestRegisterSandboxShellIfAllowedHostIgnoresSkillsGate(t *testing.T) {
 
 	svc.registerSandboxShellIfAllowed(ctx, registry, "sess-1", &types.AgentConfig{
 		SkillsEnabled: false,
-	})
+	}, tools.HostApprovals{})
 
 	require.True(t, toolRegistered(registry, tools.ToolShellExec),
 		"the host backend is the Lite feature and must not wait on SkillsEnabled")
@@ -897,7 +897,7 @@ func TestRegisterSandboxShellIfAllowedRemoteKeepsSkillsGate(t *testing.T) {
 	svc.registerSandboxShellIfAllowed(ctx, registry, "sess-1", &types.AgentConfig{
 		SandboxConfigID: "cfg-1",
 		SkillsEnabled:   false,
-	})
+	}, tools.HostApprovals{})
 
 	require.False(t, toolRegistered(registry, tools.ToolShellExec),
 		"a remote shell still exists only to serve skill scripts")
