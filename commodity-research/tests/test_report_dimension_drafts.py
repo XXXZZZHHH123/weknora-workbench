@@ -5,13 +5,16 @@ from decimal import Decimal
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 import httpx
 import pytest
 
-from tin.integration.workbench_scope import current_workbench
-from tin.web import report_dimension_drafts as drafts
+from tin.config import settings
+from tin.integration.identity import Identity
+from tin.integration.workbench_scope import WorkbenchScope, current_workbench
+from tin.web import analysis_jobs, judgment_jobs, report_dimension_drafts as drafts
 
 URL = '/api/sn/reports/2026-01-09/weekly/draft-dimensions'
 
@@ -49,20 +52,46 @@ def review(**changes):
 
 
 @pytest.fixture(autouse=True)
-def synchronous_read(monkeypatch):
+def synchronous_read(monkeypatch, tmp_path):
     async def thread(function, *args, **kwargs):
         return function(*args, **kwargs)
+    async def resolve(*args):
+        return current_workbench.get()
     monkeypatch.setattr(drafts, 'run_in_threadpool', thread)
+    monkeypatch.setattr(judgment_jobs, 'resolve_workbench', resolve)
+    monkeypatch.setattr(settings, 'data_dir', tmp_path)
 
 
 def request(body, *, active=None, url=URL):
     app = FastAPI()
     app.include_router(drafts.router)
+    app.include_router(analysis_jobs.router)
+    if (active and active.can_edit and not active.restricted and active.authorization
+            and active.view_modules and active.metadata.get('can_read_source') is not False):
+        active = WorkbenchScope(Identity('fixture', '', 'Fixture', 7, 'owner'),
+            '10000000-0000-4000-8000-000000000123', 'fixture-kb', 7,
+            {'workspace_mode': 'isolated', 'can_edit': True}, active.authorization, view_modules=('reports',))
+
     async def run():
         marker = current_workbench.set(active)
         try:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
-                return await client.post(url, json=body)
+                response = await client.post(url, json=body, headers={'Idempotency-Key': uuid4().hex})
+                if response.status_code != 202:
+                    return response
+                job = response.json()
+                assert job['phase'] == 'queued' and job['purpose'] == 'report_dimension_draft'
+                path = '/api/sn/analysis-jobs/' + job['id']
+                for _ in range(250):
+                    status = await client.get(path)
+                    assert status.status_code == 200, status.text
+                    current = status.json()
+                    assert current['phase_label'] and current['context'] == {
+                        'day': '2026-01-09', 'period': 'daily' if '/daily/' in url else 'weekly'}
+                    if current['state'] not in {'queued', 'running'}:
+                        return await client.get(path + '/result')
+                    await asyncio.sleep(.01)
+                pytest.fail('report draft job did not complete')
         finally:
             current_workbench.reset(marker)
     return asyncio.run(run())
@@ -102,10 +131,22 @@ def test_draft_uses_only_each_dimension_and_audited_purpose_without_saving(monke
     original['dimension_overview'][1]['facts'][0]['name'] = '另一个维度指标'
     original['dimension_overview'][1]['facts'][0]['text'] = '另一个维度指标 最新12.35吨'
     original['evidence_groups'] = []
+    original['logic_strategy'] = {'tone': '当前基调', 'contradiction': '当前研判逻辑',
+        'strategies': [{'title': '测试策略', 'text': '观察研判条件'}]}
+    original['strategy_overview'] = {'text': '当前策略概况', 'triggered': []}
     observed = []
     monkeypatch.setattr(drafts, 'read_report', lambda *_: deepcopy(original))
     async def complete(_scope, model_id, prompt, *, purpose):
         observed.append((model_id, prompt, purpose))
+        if purpose == 'report_summary_draft':
+            assert '本周结论' in prompt and '当前基调' in prompt and '当前研判逻辑' in prompt
+            assert '当前策略概况' in prompt and '测试策略' in prompt
+            assert '变化仍需观察。' in prompt and '真实指标升至12.35吨' in prompt
+            return {'text': '真实指标及另一个维度指标均为12.35吨。方向仍待观察。',
+                    'metric_names': ['真实指标', '另一个维度指标']}
+        if purpose == 'report_summary_review':
+            assert '"name":"真实指标"' in prompt and '"name":"另一个维度指标"' in prompt
+            return review(metric_names=['真实指标', '另一个维度指标'])
         if purpose == 'report_dimension_review':
             return review(metric_names=[] if '另一个维度指标' in prompt else ['真实指标'])
         if '另一个维度指标' in prompt:
@@ -120,7 +161,9 @@ def test_draft_uses_only_each_dimension_and_audited_purpose_without_saving(monke
     assert response.status_code == 200, response.text
     assert [item['id'] for item in response.json()['dimensions']] == ['custom', 'other']
     assert all(item['status'] == 'ok' for item in response.json()['dimensions'])
-    assert [purpose for _, _, purpose in observed] == ['report_dimension_draft', 'report_dimension_review'] * 2
+    assert response.json()['summary'] == {'text': '真实指标及另一个维度指标均为12.35吨。方向仍待观察。', 'status': 'ok'}
+    assert [purpose for _, _, purpose in observed] == ['report_dimension_draft', 'report_dimension_review'] * 2 + [
+        'report_summary_draft', 'report_summary_review']
     assert original['dimension_overview'][0]['sentence'] == '原有研究员文字9999'
     assert '真实指标' not in observed[2][1] and '研究员自己的解释' not in observed[2][1]
 
@@ -137,7 +180,7 @@ def test_invalid_numerals_or_dates_mark_entire_sentence_and_do_not_prefill(monke
     response = request({'model_id': 'model'}, active=scope())
     result = response.json()['dimensions'][0]
     assert result['status'] == status and result['text'] == '' and result['suggestion'] == text
-    assert result['impact'] == 'undecided' and calls == ['report_dimension_draft']
+    assert result['impact'] == 'undecided' and calls == ['report_dimension_draft', 'report_summary_draft']
 
 
 def test_unlisted_metric_cannot_be_authorized_by_researcher_text(monkeypatch):
@@ -153,7 +196,7 @@ def test_unlisted_metric_cannot_be_authorized_by_researcher_text(monkeypatch):
 def test_independent_model_review_rejects_undeclared_metric_and_ungrounded_explanation(monkeypatch):
     monkeypatch.setattr(drafts, 'read_report', lambda *_: {'dimension_overview': [row()]})
     async def complete(*args, **kwargs):
-        if kwargs['purpose'] == 'report_dimension_draft':
+        if kwargs['purpose'].endswith('_draft'):
             return candidate('真实指标12.35吨，新增指标也在走高。')
         return review(grounded=False, metric_names=['真实指标', '新增指标'])
     monkeypatch.setattr(drafts.strategy_text, 'completion', complete)
@@ -162,10 +205,83 @@ def test_independent_model_review_rejects_undeclared_metric_and_ungrounded_expla
     assert response.json()['dimensions'][0]['text'] == ''
 
 
+@pytest.mark.parametrize('text,names,review_changes,expected,reviewed', [
+    ('真实指标为9999吨。后续看更新。', ['真实指标'], {}, 'numbers_unverified', False),
+    ('截至2026-01-01真实指标为12.35吨。后续看更新。', ['真实指标'], {}, 'sources_unverified', False),
+    ('其他指标为12.35吨。后续看更新。', ['其他指标'], {}, 'sources_unverified', False),
+    ('真实指标为12.35吨。其他指标预期转强。', ['真实指标'],
+     {'grounded': False, 'metric_names': ['真实指标', '其他指标']}, 'sources_unverified', True),
+])
+def test_summary_never_prefills_unsupported_observations_or_sources(
+        monkeypatch, text, names, review_changes, expected, reviewed):
+    item = {**row(), 'sentence': '已保存维度结论', 'impact': 'bearish'}
+    projection = {'dimension_overview': [item], 'logic_strategy': {'tone': '研判文字提到9999'}}
+    monkeypatch.setattr(drafts, 'read_report', lambda *_: deepcopy(projection))
+    purposes = []
+
+    async def complete(_scope, _model, prompt, *, purpose):
+        purposes.append(purpose)
+        if purpose == 'report_dimension_draft':
+            return candidate('真实指标为8888吨。')
+        if purpose == 'report_summary_draft':
+            assert '本日结论' in prompt and '研判文字提到9999' in prompt
+            assert '已保存维度结论' in prompt and '"impact":"bearish"' in prompt
+            assert '8888' not in prompt
+            return {'text': text, 'metric_names': names}
+        return review(**review_changes)
+
+    monkeypatch.setattr(drafts.strategy_text, 'completion', complete)
+    response = request({'model_id': 'model'}, active=scope(), url=URL.replace('/weekly/', '/daily/'))
+    assert response.status_code == 200, response.text
+    summary = response.json()['summary']
+    assert summary['text'] == '' and summary['suggestion'] == text and summary['status'] == expected
+    assert '未预填' in summary['reason'] and ('report_summary_review' in purposes) == reviewed
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('接下来重点看真实指标能否连续两周转正。', 'ok'),
+    ('接下来重点看真实指标能否达到2吨。', 'ok'),
+    ('真实指标减少2吨。', 'numbers_unverified'),
+    ('真实指标减少两吨。', 'numbers_unverified'),
+    ('接下来重点看真实指标能否连续三周转正。', 'numbers_unverified'),
+    ('接下来重点看真实指标能否达到7吨。', 'numbers_unverified'),
+])
+def test_only_summary_can_quote_observation_condition_numbers(monkeypatch, text, expected):
+    projection = {'dimension_overview': [row()], 'logic_strategy': {'conditions': [
+        {'name': '连续两周转正', 'condition': '达到2吨', 'stale_note': '曾达到7吨'}]}}
+    monkeypatch.setattr(drafts, 'read_report', lambda *_: deepcopy(projection))
+    purposes = []
+
+    async def complete(_scope, _model, prompt, *, purpose):
+        purposes.append(purpose)
+        if purpose == 'report_summary_draft':
+            assert '接下来要看什么' in prompt and '阈值' in prompt and '期数' in prompt
+            assert '连续两周转正' in prompt and '达到2吨' in prompt
+        if purpose == 'report_summary_review':
+            assert '后续观察的阈值与期数可引用evidence.research.conditions' in prompt
+        if purpose.endswith('_review'):
+            return review()
+        return candidate(text)
+
+    monkeypatch.setattr(drafts.strategy_text, 'completion', complete)
+    response = request({'model_id': 'model'}, active=scope())
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['dimensions'][0]['status'] == 'numbers_unverified'
+    assert result['dimensions'][0]['text'] == ''
+    assert result['summary']['status'] == expected
+    if expected == 'ok':
+        assert result['summary']['text'] == text
+        assert purposes == ['report_dimension_draft', 'report_summary_draft', 'report_summary_review']
+    else:
+        assert result['summary']['text'] == '' and result['summary']['suggestion'] == text
+        assert purposes == ['report_dimension_draft', 'report_summary_draft']
+
+
 def test_all_grouped_figure_conclusions_are_unsaved_previews(monkeypatch):
     monkeypatch.setattr(drafts, 'read_report', lambda *_: view())
     async def complete(*args, **kwargs):
-        return review() if kwargs['purpose'] == 'report_dimension_review' else candidate()
+        return review() if kwargs['purpose'].endswith('_review') else candidate()
     monkeypatch.setattr(drafts.strategy_text, 'completion', complete)
     response = request({'model_id': 'model'}, active=scope())
     assert response.status_code == 200
@@ -180,7 +296,7 @@ def test_model_failures_report_actual_error_without_fixed_prose(monkeypatch, fai
         raise failure
     monkeypatch.setattr(drafts.strategy_text, 'completion', complete)
     response = request({'model_id': 'model'}, active=scope())
-    assert response.status_code == failure.status_code and response.json()['detail'] == failure.detail
+    assert response.status_code == 409 and response.json()['detail'] == failure.detail
     assert 'dimensions' not in response.json()
 
 
@@ -188,10 +304,23 @@ def test_changed_projection_during_generation_is_rejected(monkeypatch):
     calls = [view(), {'dimension_overview': []}]
     monkeypatch.setattr(drafts, 'read_report', lambda *_: calls.pop(0))
     async def complete(*args, **kwargs):
-        return review() if kwargs['purpose'] == 'report_dimension_review' else candidate()
+        return review() if kwargs['purpose'].endswith('_review') else candidate()
     monkeypatch.setattr(drafts.strategy_text, 'completion', complete)
     response = request({'model_id': 'model'}, active=scope())
     assert response.status_code == 409
+
+
+def test_changed_judgment_during_summary_generation_is_rejected(monkeypatch):
+    first = {**view(), 'logic_strategy': {'tone': '原有研判'}}
+    later = {**first, 'logic_strategy': {'tone': '更新的研判'}}
+    projections = [first, later]
+    monkeypatch.setattr(drafts, 'read_report', lambda *_: projections.pop(0))
+
+    async def complete(*args, **kwargs):
+        return review() if kwargs['purpose'].endswith('_review') else candidate()
+
+    monkeypatch.setattr(drafts.strategy_text, 'completion', complete)
+    assert request({'model_id': 'model'}, active=scope()).status_code == 409
 
 
 @pytest.mark.parametrize('active,status', [(None, 409), (scope(restricted=True), 403),
@@ -228,7 +357,7 @@ def test_unsaved_note_in_an_empty_dimension_is_drafted_in_workbench_order(monkey
     calls = []
     async def complete(*args, **kwargs):
         calls.append(args[2])
-        if kwargs['purpose'] == 'report_dimension_review':
+        if kwargs['purpose'].endswith('_review'):
             return review(metric_names=[])
         assert '没有数字的新研究员文字' in args[2] or '真实指标' in args[2]
         return candidate('变化尚待观察。', metric_names=[])
@@ -259,6 +388,15 @@ def test_written_numerals_cannot_bypass_program_number_check():
     assert drafts.numbers_verified('一方面变化仍待观察。', facts)
 
 
+def test_written_zero_can_match_numeric_zero():
+    text = '仓单及有效预报降至零且处近6年同期最低。'
+    fact = {'name': '仓单及有效预报', 'latest': 0, 'position': {'total': 6}}
+    assert drafts.numbers_verified(text, [fact])
+    assert not drafts.numbers_verified(text, [{**fact, 'latest': 1}])
+    assert not drafts.numbers_verified(text.replace('零', '〇'), [fact])
+    assert not drafts.numbers_verified('仓单及有效预报减少零', [fact])
+
+
 @pytest.mark.parametrize('text', ['合成指标最新+12吨', '合成指标变化+2吨',
     '合成指标最新2026吨', '合成指标最新9吨', '合成指标最新1吨'])
 def test_sign_changes_and_date_fragments_do_not_pass_number_check(text):
@@ -277,12 +415,14 @@ def test_retained_uneditable_dimension_buckets_do_not_call_model(monkeypatch):
     calls = []
     async def complete(*args, **kwargs):
         calls.append(kwargs['purpose'])
-        return review() if kwargs['purpose'] == 'report_dimension_review' else candidate()
+        if kwargs['purpose'] == 'report_summary_draft':
+            assert '__unlabeled__' not in args[2] and '__deleted__' not in args[2]
+        return review() if kwargs['purpose'].endswith('_review') else candidate()
     monkeypatch.setattr(drafts.strategy_text, 'completion', complete)
     response = request({'model_id': 'model'}, active=scope())
     assert response.status_code == 200
     assert [item['id'] for item in response.json()['dimensions']] == ['custom']
-    assert calls == ['report_dimension_draft', 'report_dimension_review']
+    assert calls == ['report_dimension_draft', 'report_dimension_review', 'report_summary_draft', 'report_summary_review']
 
 
 ACCEPTANCE = json.loads((Path(__file__).parent / 'fixtures' /
@@ -324,6 +464,39 @@ def test_reversed_change_cannot_borrow_a_latest_value_or_another_metric(text):
     assert not drafts.numbers_verified(text, facts)
 
 
+def test_change_uses_full_name_over_shorter_alias_ending_at_the_same_position():
+    facts = [{'name': '仓单和有效预报:合计', 'unit': '万吨', 'latest': 0, 'change': -23.06},
+             {'name': '棉花进口:当月值:万吨 / 合计', 'aliases': ['进口'], 'latest': 10.97, 'change': -1.25}]
+    assert drafts.numbers_verified('仓单和有效预报:合计降至0万吨（较09-15减少23.06）', facts)
+    assert not drafts.numbers_verified(
+        '仓单和有效预报:合计降至0万吨，棉花进口:当月值:万吨 / 合计减少23.06', facts)
+    assert not drafts.numbers_verified('仓单和有效预报:合计降至0万吨，进口减少23.06', facts)
+
+
+def test_change_keeps_metrics_with_equally_close_alias_matches():
+    facts = [{'name': '甲指标 / 合计', 'change': -1}, {'name': '乙指标 / 合计', 'change': -2}]
+    assert drafts.numbers_verified('合计减少1', facts)
+    assert drafts.numbers_verified('合计减少2', facts)
+    assert not drafts.numbers_verified('合计减少3', facts)
+
+
+def test_scale_suffix_can_come_from_name_without_unit_conversion():
+    fact = {'name': '棉花进口:当月值:万吨 / 合计', 'unit': '', 'latest': 10.974, 'previous': 1.2,
+            'display': {'latest': '10.97'}}
+    assert drafts.numbers_verified('棉花进口:当月值:万吨 / 合计最新10.97万吨', [fact])
+    assert not drafts.numbers_verified('棉花进口:当月值 / 合计最新10.97万吨',
+                                       [{**fact, 'name': '棉花进口:当月值 / 合计'}])
+    assert not drafts.numbers_verified('合计最新109700万吨', [fact])
+    assert not drafts.numbers_verified('合计前期1.2万', [fact])
+    assert drafts.numbers_verified('合计前期1.2万', [{**fact, 'text': '前期1.2万'}])
+
+
+def test_scale_suffix_can_come_from_an_explicit_alias():
+    facts = [{'name': '合成指标', 'aliases': ['别名:亿千瓦时'], 'unit': '', 'latest': 3.5}]
+    assert drafts.numbers_verified('合成指标最新3.5亿千瓦时左右', facts)
+    assert not drafts.numbers_verified('合成指标最新3.5亿千瓦秒', facts)
+
+
 def test_names_and_alias_digits_are_removed_but_do_not_authorize_values():
     facts = [{'name': '合约99测试', 'raw_name': 'DATA / 合约99测试',
               'readable_name': '合约99测试', 'aliases': ['测试合约99'], 'latest': 12.35}]
@@ -353,13 +526,13 @@ def test_normalized_names_are_verified_in_the_independent_second_review(monkeypa
     purposes = []
     async def complete(*args, **kwargs):
         purposes.append(kwargs['purpose'])
-        if kwargs['purpose'] == 'report_dimension_review':
+        if kwargs['purpose'].endswith('_review'):
             return review(metric_names=['CZCE短纤结算价', 'ＣＺＣＥ ／ 持仓量'])
         return candidate(example['text'], metric_names=example['metric_names'])
     monkeypatch.setattr(drafts.strategy_text, 'completion', complete)
     response = request({'model_id': 'model'}, active=scope())
     assert response.json()['dimensions'][0]['status'] == 'ok'
-    assert purposes == ['report_dimension_draft', 'report_dimension_review']
+    assert purposes == ['report_dimension_draft', 'report_dimension_review', 'report_summary_draft', 'report_summary_review']
 
 
 def test_no_update_prompt_retains_latest_reference_without_authorizing_historical_change():
@@ -371,6 +544,8 @@ def test_no_update_prompt_retains_latest_reference_without_authorizing_historica
     assert facts[0]['display'] == {'latest': '16,865'}
     prompt = drafts.drafting_prompt({}, facts, '')
     assert 'no_update' in prompt and '本期无新数据' in prompt and '不写+0或持平' in prompt
+    assert '第一句直接给出结论' in prompt and '一到两个关键数字作为依据' in prompt and '不逐项复述' in prompt
+    assert '不按名称或关键词套句式' in prompt and '已有结论是否仍成立或无法判断' in prompt
     assert not drafts.numbers_verified('郑棉05合约下降0', facts)
     assert '不能据历史差值声称本期变化或持平' in drafts.review_prompt(facts, [], example['text'])
 
@@ -394,3 +569,16 @@ def test_annotation_and_text_dimensions_never_enter_model_source_facts():
     assert len(facts) == 1
     assert not drafts.metric_names_verified(['说明列', '文本维度', '旧归档说明列'], facts)
     assert not drafts.numbers_verified('数值777', facts)
+
+
+def test_direction_words_cover_rise_and_fall_with_absolute_values():
+    from tin.web import report_dimension_drafts as drafts
+    facts = [{'name': '郑棉05合约', 'unit': '元/吨', 'latest': 16865, 'change': -110,
+              'display': {'latest': '16,865', 'change': '-110'}},
+             {'name': '中国棉花价格指数:328', 'unit': '元/吨', 'latest': 18220, 'change': 54,
+              'display': {'latest': '18,220', 'change': '+54'}}]
+    assert drafts.numbers_verified('郑棉05合约报16,865元/吨，较上期下跌110', facts)
+    assert drafts.numbers_verified('中国棉花价格指数:328上涨54', facts)
+    assert not drafts.numbers_verified('郑棉05合约较上期上涨110', facts)
+    prompt = drafts.drafting_prompt({}, facts, '')
+    assert '方向词只用' in prompt and '不自行改写或缩写名称' in prompt

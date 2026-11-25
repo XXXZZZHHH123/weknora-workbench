@@ -262,9 +262,28 @@ def test_default_one_page_has_table_logo_and_exact_report_numbers(view):
     for value in ('本期综述', '逻辑与策略', '12.34', '04-01', '近 5 年', '研究员确认', '本期主要矛盾', '未触发'):
         assert value in body
     assert sum(shape.has_table for shape in deck.slides[0].shapes) == 1
+    assert not any(shape.name == 'Period conclusion' for shape in deck.slides[0].shapes)
+    assert next(shape.top for shape in deck.slides[0].shapes if shape.has_table) == Inches(1.7)
     assert len([shape for shape in deck.slides[0].shapes if shape.name == 'Chisage logo']) == 1
     assert THEME_RED in deck.slides[0]._element.xml and 'F2F2F2' in deck.slides[0]._element.xml
     assert not chart_pictures(deck)
+
+
+@pytest.mark.parametrize(('period', 'label'), [('weekly', '本周结论'), ('daily', '本日结论')])
+def test_period_conclusion_appears_above_the_first_table(view, period, label):
+    one_page_view(view)
+    view['period']['kind'] = period
+    summary = '成本支撑使价格偏多。后续关注成本能否维持。'
+    view['panels']['summary']['text'] = summary
+    deck = new_deck(view)
+    assert len(deck.slides) == 1
+    slide = deck.slides[0]
+    conclusion = next(shape for shape in slide.shapes if shape.name == 'Period conclusion')
+    table = next(shape for shape in slide.shapes if shape.has_table)
+    assert conclusion.text == f'{label} · {summary}'
+    assert conclusion.top + conclusion.height < table.top
+    assert table.table.cell(0, 2).text == '本期结论'
+    assert_one_page_text_fits(deck)
 
 
 def test_one_page_compresses_twelve_rows_and_notes_keep_full_text(view):
@@ -423,7 +442,7 @@ def test_eight_dimensions_long_content_fit_one_page_with_labels_and_full_notes(v
     notes = slide.notes_slide.notes_text_frame.text
     table = next(shape.table for shape in slide.shapes if shape.has_table)
     assert len(table.rows) == 9
-    assert [cell.text for cell in table.rows[0].cells] == ['维度', '本期变化', '研究员一句话', '影响']
+    assert [cell.text for cell in table.rows[0].cells] == ['维度', '本期变化', '本期结论', '影响']
     for index in range(8):
         assert f'维度{index + 1}' in body
         assert f'全文末尾{index}' in notes and f'全文末尾{index}' not in body

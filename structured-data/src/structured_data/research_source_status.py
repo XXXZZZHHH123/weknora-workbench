@@ -52,6 +52,7 @@ def _current_reviews(store, manager, originals):
                 if review.get('import_id') != record['import_id']:
                     raise ValueError('核对记录身份不符')
                 catalog = []
+                published = {}
                 if record.get('dataset_id'):
                     folder = store._path(record['dataset_id'])
                     manifest = document(folder / 'manifest.json')
@@ -59,20 +60,26 @@ def _current_reviews(store, manager, originals):
                     catalog = document(folder / 'series.json')
                     source_file = manifest['source_file']
                     expected_sha = manifest['sha256']
+                    published = {sheet['name']: sheet for sheet in manifest.get('sheets', [])}
                 else:
                     source_path = manager.source_path(review)
                     source_file = manager.display_source_file(review)
                     expected_sha = review['sha256']
                 files.append(snapshot_metadata.identity(source_path))
                 md5, sha = snapshot_metadata.hashes(source_path)
-                if original['file_hash'] not in {md5, sha} or expected_sha != sha:
+                if record['verified_file_hash'] not in {md5, sha} or expected_sha != sha:
                     raise ValueError('当前原件哈希不符')
                 review_sheets = review['sheets']
-                sheets = [{'name': sheet['name'], 'status': sheet['status'],
+                sheets = [{'name': sheet['name'], 'status': 'confirmed' if (
+                               published.get(sheet['name'], {}).get('source_update_approved') is True
+                               and not sheet.get('source_update_state')) else sheet['status'],
+                           **({'source_update_notice': sheet['reasons'][0]} if sheet.get('source_update_state') else {}),
                            'field_count': sheet_field_count(sheet) if sheet.get('mapping') else
                            sum(field.get('sheet') == sheet['name'] for field in catalog)}
                           for sheet in review_sheets]
                 results.append({'knowledge_id': original['knowledge_id'], 'source_file': source_file,
+                                **({'file_version_at': original['file_version_at']} if original.get('file_version_at') else {}),
+                                **({'source_version_pending': True} if original['file_hash'] != record['verified_file_hash'] else {}),
                                 'sheets': sheets, 'summary': _summary(sheets, review_sheets)})
         yield results
         with manager.lock:

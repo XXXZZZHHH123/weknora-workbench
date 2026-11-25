@@ -4,6 +4,7 @@ let dgGeneratorJob = null, dgJobTimer, dgJobEpoch = 0, dgJobReadController = nul
 let dgSubmittingJob = false, dgSubmission = null, dgGenerationContext = null, dgGenerationResult = null;
 let dgLatestResultJob = null;
 let dgDiscardingJob = false, dgPresentedJobId = null, dgPresentedMarkdown = null;
+let dgPresentedResult = null;
 const dgJobId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{16,128}$/.test(value) ? value : '';
 const dgJobActive = () => dgGeneratorJob && ['queued','running'].includes(dgGeneratorJob.state);
 const dgGeneratorOpen = () => {
@@ -43,8 +44,20 @@ function dgGenerationApplied(templateId) {
   if (dgPresentedJobId) dgAnnounceJob({id:dgPresentedJobId}, templateId);
   dgStopJobMonitor(); dgGeneratorJob = null; dgGenerationContext = null; dgGenerationResult = null; dgPresentedJobId = null; dgPresentedMarkdown = null;
   dgLatestResultJob = null; dgUpdateGenerationCapability();
+  dgPresentedResult = null;
+  dgSyncImportActions();
 }
 function dgGeneratedJobId() { return dgPresentedJobId; }
+function dgGetGenerationPreview() {
+  return dgPresentedResult?.version === dg.generatedVersion ? dgPresentedResult : null;
+}
+function dgSyncImportActions() {
+  const canvas = Boolean(dgGetGenerationPreview()?.indicator_recommendations);
+  const newLayout = document.getElementById('dg-import-new');
+  const current = document.getElementById('dg-import-current');
+  if (newLayout) newLayout.textContent = canvas ? '核对为新布局' : '导入为新布局';
+  if (current) current.textContent = canvas ? '核对当前布局' : '应用到当前布局';
+}
 function dgDiscardableJob() {
   if (dgGeneratorJob?.state === 'succeeded') return dgGeneratorJob;
   return dgLatestResultJob?.state === 'succeeded' ? dgLatestResultJob : null;
@@ -72,6 +85,7 @@ async function dgDiscardResult() {
       if (document.getElementById('dg-md-text').value === dgPresentedMarkdown) document.getElementById('dg-md-text').value = '';
       dgPresentedJobId = null;dgPresentedMarkdown = null;
       dg.generatedVersion = null;
+      dgPresentedResult = null; dgSyncImportActions();
       document.getElementById('dg-ai-bindings').hidden = true;
     }
     dgSubmission = null;
@@ -229,12 +243,16 @@ async function dgGenerate(rebuild = false) {
   dgGenerationContext = {markdown:document.getElementById('dg-md-text').value,
     instructions:document.getElementById('dg-ai-instructions').value,body:inputBody};
   dgSubmittingJob = true;button.disabled = true;status.textContent = '正在提交后台生成，可关闭窗口。';
+  if (status.dataset) status.dataset.analysisBusy = 'true';
   try {
     // Closing the drawer may abort metadata reads, but must not cancel an accepted server task.
     const job = await dgJobRequest('',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':submission.key},body:submission.body});
     dgCheckJob(job);dgGeneratorJob = job;dgSubmission = null;dgAnnounceJob(job);
     if (dgGeneratorOpen()) await dgFollowJob(job.id);
-  } catch (error) { if (dgGeneratorOpen()) status.textContent = error.message; }
+  } catch (error) {
+    if (dgGeneratorOpen()) status.textContent = error.message;
+    if (status.dataset) status.dataset.analysisBusy = 'false';
+  }
   finally { dgSubmittingJob = false;dgUpdateGenerationCapability(); }
 }
 function dgCheckJob(job) {
@@ -263,6 +281,7 @@ function dgPresentGeneration(data, force = false) {
     if (typeof data.request.instructions==='string') document.getElementById('dg-ai-instructions').value=data.request.instructions;
   }
   document.getElementById('dg-md-text').value = data.markdown;
+  dgPresentedResult = data;
   dgPresentedJobId = dgGeneratorJob?.id || null;
   dgPresentedMarkdown = data.markdown;
   dg.generatedVersion = data.version;
@@ -270,11 +289,20 @@ function dgPresentGeneration(data, force = false) {
   data.bindings.forEach(binding=>{
     const item=document.createElement('li');item.textContent=`${binding.node} → ${binding.name}（${binding.unit || '单位未注明'}）`;list.append(item);
   });
+  let recommended = 0;
+  for (const result of Object.values(data.indicator_recommendations || {})) {
+    if (result.recommended) recommended++;
+  }
   detail.hidden = data.bindings.length === 0;
+  dgSyncImportActions();
+  const canvas = Boolean(data.indicator_recommendations);
   status.textContent = (data.analysis_reused ? '已复用相同资料的研究结构。' : '') +
-    `已生成 ${data.nodes} 个节点，绑定 ${data.bindings.length} 个真实指标。请核对下方配置后导入。` +
-    (data.candidates_truncated ? ' 当前仅提供部分召回候选，可补充口径要求后重试。' : '');
-  document.getElementById('dg-md-msg').textContent = '生成结果尚未保存；导入为新布局，或确认后应用到当前布局。';
+    `已生成 ${data.nodes} 个节点，绑定 ${data.bindings.length} 个真实指标。` +
+    (canvas ? `另有 ${recommended} 个模型推荐待核对，请打开画布草稿。` : '请核对下方配置后导入。') +
+    (data.candidates_truncated ? ' 当前仅提供部分召回候选，可补充口径要求后重试。' : '') +
+    (data.recommendation_notice || '');
+  document.getElementById('dg-md-msg').textContent = canvas
+    ? '在画布逐个核对推荐，保存后生效。' : '生成结果尚未保存；导入为新布局，或确认后应用到当前布局。';
   dgGenerationContext={markdown:data.markdown,body:dgGenerationRequestBody()};
 }
 async function dgFollowJob(identifier) {
@@ -291,8 +319,9 @@ async function dgFollowJob(identifier) {
       dgCheckJob(job);
       if (job.id !== identifier) throw new Error('当前请求与返回的任务不一致，请重新打开任务。');
       dgGeneratorJob=job;
+      if (status.dataset) status.dataset.analysisBusy = String(['queued','running'].includes(job.state));
       if (['queued','running'].includes(job.state)) {
-        const labels={queued:'等待生成',reading_source:'正在读取原件',loading_catalog:'正在读取指标目录',structuring:'正在梳理研究主干',selecting:'正在匹配指标',generating:'正在补充指标与细节',reusing:'正在恢复已校验结构',validating:'正在核对覆盖与配置'};
+        const labels={queued:'等待生成',reading_source:'正在读取原件',loading_catalog:'正在读取指标目录',structuring:'正在梳理研究主干',selecting:'正在匹配指标',generating:'正在补充指标与细节',reusing:'正在恢复已校验结构',validating:'正在核对覆盖与配置',recommending:'正在为空节点推荐指标'};
         status.textContent=(labels[job.phase] || '正在后台生成')+'，可关闭窗口。';
         dgJobTimer=setTimeout(poll,2000);
       } else if (job.state==='succeeded') {
@@ -303,7 +332,12 @@ async function dgFollowJob(identifier) {
         status.textContent=job.message || ({failed:'生成未完成，请核对资料后重试。',interrupted:'生成已中断，请重新发起。',expired:'结果已过期，请重新生成。',applied:'配置已导入。',superseded:'已有更新的产业图生成结果，可在生成配置中查看最新暂存结果。'}[job.state] || '任务暂不可用，请重新打开。');
         dgAnnounceJob(job);
       }
-    } catch (error) { if (current() && error.name!=='AbortError') status.textContent=error.message; }
+    } catch (error) {
+      if (current() && error.name!=='AbortError') {
+        status.textContent = error.message;
+        if (status.dataset) status.dataset.analysisBusy = 'false';
+      }
+    }
     finally { if (current()) dgUpdateGenerationCapability(); }
   }
   return poll();
@@ -318,7 +352,26 @@ if (dgGeneratorDrawer) new MutationObserver(() => {
 window.addEventListener('pagehide',dgCancelGeneration);
 window.addEventListener('pageshow',()=>{if(dgGeneratorJob&&dgGeneratorOpen())void dgFollowJob(dgGeneratorJob.id);});
 async function dgRestoreGeneration() {
-  const identifier=dgJobId(new URL(location.href).searchParams.get('analysis_job'));
+  const setup = window.WorkbenchSetupReview;
+  const identifier = dgJobId(new URL(location.href).searchParams.get('analysis_job'));
+  if (document.getElementById('dg-generator') && await setup?.appliesTo('diagram')) {
+    try {
+      const result = await setup.load();
+      if (dg.dirty || dgGeneratorOpen()) throw new Error('请先结束当前编辑，再重新打开任务结果。');
+      const edits = new AbortController();
+      let edited = false;
+      const markEdited = () => { edited = true; };
+      dgGeneratorDrawer.addEventListener('input', markEdited, {signal: edits.signal});
+      dgGeneratorDrawer.addEventListener('change', markEdited, {signal: edits.signal});
+      try {
+        if (await dgOpenMarkdown() && dgGeneratorOpen() && !dg.dirty && !edited && !dgHasBackgroundGeneration()) {
+          dgPresentGeneration(result, true);
+        }
+      } finally { edits.abort(); }
+    } catch (error) { showToast(error.message); }
+    return;
+  }
+  if (await window.DiagramRecommendations?.restore()) return;
   if (!identifier || !document.getElementById('dg-generator')) return;
   dgGeneratorJob={id:identifier,purpose:'diagram'};dgGenerationContext=null;
   await dgOpenMarkdown();

@@ -10,6 +10,7 @@ import time
 from fastapi import HTTPException
 
 from tin.config import settings
+from tin.web.analysis_job_purposes import PURPOSES, TERMINAL_LABELS, WORKBENCH_SETUP
 
 ACTIVE = frozenset({'queued', 'running'})
 TERMINAL = frozenset({'succeeded', 'failed', 'interrupted', 'expired', 'applied', 'superseded'})
@@ -69,11 +70,16 @@ class Registry:
     def scope_key(self, row):
         return row['tenant_id'], row['user_id'], row['workbench_id'], row.get('purpose', 'judgments')
 
+    def result_key(self, row):
+        # A job that updates an existing draft can replace earlier update jobs
+        # while leaving the original draft addressable under its own ID.
+        return (*self.scope_key(row), bool(row.get('result_parent')), row.get('result_slot'))
+
     def compact(self, connection):
         groups = {}
         for row in self.rows(connection):
             if row['state'] in RESULTS:
-                groups.setdefault(self.scope_key(row), []).append(row)
+                groups.setdefault(self.result_key(row), []).append(row)
         retired = []
         for rows in groups.values():
             newest = max(rows, key=self.order)
@@ -99,9 +105,18 @@ class Registry:
                 row.update(updated_at=iso(), finished_at=iso())
                 self.write(connection, row)
         self.compact(connection)
+        for row in self.rows(connection):
+            if row['state'] != 'succeeded' or not row.get('result_parent'):
+                continue
+            parent = self.fetch(connection, row['result_parent'])
+            if parent is None or parent['state'] != 'succeeded':
+                row.update(state='expired', phase='expired', updated_at=iso(),
+                    message='原识别结果已过期或已有更新，请重新打开任务')
+                self.write(connection, row)
 
-    def create(self, scope, request_hash, idempotency_hash, worker_id, purpose='judgments'):
-        if purpose not in {'judgments', 'diagram'}:
+    def create(self, scope, request_hash, idempotency_hash, worker_id, purpose='judgments', *,
+               result_parent=None, result_slot=None):
+        if purpose not in PURPOSES:
             raise ValueError('Unsupported analysis task purpose')
         with self.transaction() as connection:
             self.expire(connection)
@@ -122,7 +137,9 @@ class Registry:
                 raise HTTPException(429, '分析任务记录已达容量，请稍后重试')
             now = time.time()
             row = {'kind': 'judgment-analysis-index.v1', 'id': secrets.token_hex(16),
-                **({'purpose': 'diagram'} if purpose == 'diagram' else {}),
+                **({'purpose': purpose} if purpose != 'judgments' else {}),
+                **({'result_parent': result_parent} if result_parent is not None else {}),
+                **({'result_slot': result_slot} if result_slot is not None else {}),
                 'tenant_id': scope.identity.tenant_id, 'user_id': scope.identity.user_id,
                 'workbench_id': scope.workbench_id, 'storage_legacy': scope.metadata.get('workspace_mode') == 'legacy',
                 'request_hash': request_hash, 'idempotency_hash': idempotency_hash,
@@ -164,7 +181,7 @@ class Registry:
             row = self.owned(self.fetch(connection, job_id), identity, workbench_id)
             if row.get('purpose', 'judgments') != purpose:
                 raise HTTPException(404, '分析任务不存在或无权访问')
-            newer = any(self.scope_key(other) == self.scope_key(row)
+            newer = any(self.result_key(other) == self.result_key(row)
                 and other['state'] in RESULTS and self.order(other) > self.order(row)
                 for other in self.rows(connection))
             if row['state'] in {'superseded', 'expired'} or row['expires_unix'] <= time.time() or newer:
@@ -179,14 +196,15 @@ class Registry:
                 and row.get('user_id') == identity.user_id and row.get('kind') == 'judgment-analysis-index.v1']
             return sorted(rows, key=self.order, reverse=True)[:limit]
 
-    def latest(self, identity, workbench_id, purpose):
-        if purpose not in {'judgments', 'diagram'}:
+    def latest(self, identity, workbench_id, purpose, *, include_active=False):
+        if purpose not in PURPOSES:
             raise ValueError('Unsupported analysis task purpose')
+        states = ACTIVE | {'succeeded'} if include_active else {'succeeded'}
         with self.transaction() as connection:
             self.expire(connection)
             rows = [row for row in self.rows(connection) if self.scope_key(row) == (
                 identity.tenant_id, identity.user_id, workbench_id, purpose)
-                and row['state'] == 'succeeded']
+                and row['state'] in states]
             return max(rows, key=self.order, default=None)
 
     def discard_result(self, identity, job_id, workbench_id, purpose):
@@ -248,7 +266,8 @@ class Registry:
             if row['state'] == 'queued':
                 if sum(other['state'] == 'running' for other in self.rows(connection)) >= GLOBAL_RUNNING:
                     return False
-                row.update(state='running', phase='selecting', updated_at=iso(), lease_until=time.time() + LEASE)
+                phase = 'reading_source' if row.get('purpose') == WORKBENCH_SETUP else 'selecting'
+                row.update(state='running', phase=phase, updated_at=iso(), lease_until=time.time() + LEASE)
                 self.write(connection, row)
             return True
 
@@ -346,7 +365,8 @@ def metadata(row):
         result['message'] = render_failure(safe)
         if safe is not None:
             result['failure'] = safe
-    return {**result, 'job_id': row['id'], 'purpose': purpose,
-        'title': '产业图配置生成' if purpose == 'diagram' else '研究逻辑分析',
+    task = PURPOSES.get(purpose, PURPOSES['judgments'])
+    return {**result, 'job_id': row['id'], 'purpose': purpose, 'title': task.title,
+        'phase_label': task.phases.get(row['phase']) or TERMINAL_LABELS.get(row['state'], '后台运行中'),
         'result_available': row['state'] == 'succeeded', 'dismissed': row.get('dismissed') is True,
         'discarded': row.get('discarded') is True}

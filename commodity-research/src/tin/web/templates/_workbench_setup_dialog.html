@@ -1,0 +1,40 @@
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/workbench-setup.css?v={{ static_version() }}">
+<script defer src="{{ research_static_prefix() }}/static/workbench-setup.js?v={{ static_version() }}"></script>
+<div class="workbench-setup-running research-panel" id="workbench-setup-running" hidden>
+  <span class="workbench-setup-status" id="workbench-setup-running-status" role="status"></span>
+  <button type="button" class="workbench-setup-link" data-workbench-setup-open aria-haspopup="dialog" aria-controls="workbench-setup-dialog">查看任务</button>
+</div>
+<dialog id="workbench-setup-dialog" class="dimensions-dialog workbench-setup-dialog" aria-labelledby="workbench-setup-title">
+  <h2 id="workbench-setup-title">从周报建立工作台</h2>
+  <form id="workbench-setup-form">
+    <div class="workbench-setup-fields">
+      <label>查找周报<input id="workbench-setup-search" type="search" maxlength="200" placeholder="按文件名查找"></label>
+      <label>已授权周报（PPTX / PDF）<select id="workbench-setup-report" required><option value="">请选择周报</option></select></label>
+      <label>平台模型<select id="workbench-setup-model" required disabled><option value="">正在读取模型…</option></select></label>
+    </div>
+    <button id="workbench-setup-more" type="button" hidden>加载更多周报</button>
+    <p id="workbench-setup-source-status" class="dimensions-muted" role="status"></p>
+    <fieldset id="workbench-setup-parts" class="workbench-setup-parts">
+      <legend>要建立的部分</legend>
+      {% set historical_note = '来自所选周报的当期观点，只生成草稿，需改成当前判断后再保存' %}
+      {% for key, label in [('dimensions', '研究维度（维度与环节）'), ('indicators', '维度绑定指标'),
+          ('charts', '图表库'), ('layout', '周报版式（维度顺序与证据图分组）'), ('focus', '核心关注'),
+          ('diagram', '产业图骨架'), ('judgment', '研判草稿'), ('strategy', '策略草稿'), ('monitors', '监测候选')] %}
+      <label><input type="checkbox" name="part" value="{{ key }}" checked>
+        <span>{{ label }}{% if key in ['judgment', 'strategy', 'monitors'] %}<small>{{ historical_note }}</small>{% endif %}</span>
+      </label>
+      {% endfor %}
+    </fieldset>
+  </form>
+  <p id="workbench-setup-status" class="workbench-setup-status" role="status" aria-live="polite"></p>
+  <section id="workbench-setup-review" aria-labelledby="workbench-setup-review-title" hidden>
+    <h3 id="workbench-setup-review-title">核对清单</h3>
+    <p id="workbench-setup-review-source" class="dimensions-muted"></p>
+    <ul id="workbench-setup-review-items" class="workbench-setup-review-items"></ul>
+  </section>
+  <footer>
+    <button type="button" id="workbench-setup-close">关闭</button>
+    <button type="button" id="workbench-setup-reopen" hidden>重新建立</button>
+    <button type="submit" form="workbench-setup-form" class="dimensions-primary" id="workbench-setup-submit" disabled>开始建立</button>
+  </footer>
+</dialog>

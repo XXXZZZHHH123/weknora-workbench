@@ -70,7 +70,7 @@ def test_no_data_is_not_presented_as_zero_or_as_a_trigger():
     assert 'data-metric-trend' not in html
 
 
-def test_chart_hover_loads_with_page_date_for_unrestricted_judgment_only():
+def test_chart_hover_loads_locally_and_library_links_stay_unrestricted():
     from lxml.html import fromstring
     html = fromstring(render())
     scripts = html.xpath('//script[@src]/@src')
@@ -80,5 +80,6 @@ def test_chart_hover_loads_with_page_date_for_unrestricted_judgment_only():
         next(index for index, script in enumerate(scripts) if '/judgment-chart.js?' in script)
     assert html.xpath('//*[@data-judgment-library]/@data-chart-date') == ['2026-01-02']
     restricted = fromstring(render(restricted_view=True))
-    assert not restricted.xpath('//script[contains(@src,"/static/chart-hover.js")]')
+    assert restricted.xpath('//script[contains(@src,"/static/chart-hover.js")]')
+    assert not restricted.xpath('//script[contains(@src,"/static/chart-references.js")]')
     assert not restricted.xpath('//*[@data-judgment-library or @data-chart-related-rule]')

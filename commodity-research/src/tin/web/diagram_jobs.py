@@ -25,7 +25,7 @@ from tin.web.judgment_job_registry import LEASE, iso, metadata
 router = APIRouter(prefix='/api/sn/diagram/jobs')
 KIND = 'diagram-generation-job.v1'
 PURPOSE = 'diagram'
-GENERATION_SECONDS = 600
+GENERATION_SECONDS = generation.GENERATION_SECONDS
 MAX_PRIVATE_BYTES = 512 * 1024
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 registry = shared.registry
@@ -127,7 +127,11 @@ def _complete(scope, meta, result, source_identity):
                 if not superseded:
                     value = {**row.config, 'result': deepcopy(result), 'source_identity': source_identity}
                     if len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode()) > MAX_PRIVATE_BYTES:
-                        raise HTTPException(413, '生成配置超过预览容量，请缩小范围')
+                        value['result'].pop('recommendation_version', None)
+                        if value['result'].pop('indicator_recommendations', None) is not None:
+                            value['result']['recommendation_notice'] = '空节点推荐超出预览容量，可以在编辑页重试。'
+                        if len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode()) > MAX_PRIVATE_BYTES:
+                            raise HTTPException(413, '生成配置超过预览容量，请缩小范围')
                     changed = session.execute(update(SourceMapping).where(SourceMapping.id == row.id,
                         SourceMapping.version == 1).values(config=value, version=2,
                             confirmed_at=datetime.now(timezone.utc)), execution_options={'synchronize_session': False})
@@ -201,6 +205,7 @@ class Runtime(shared.Runtime):
         heartbeat = asyncio.create_task(self.heartbeat(meta, asyncio.current_task()))
         try:
             async def execute():
+                started = time.monotonic()
                 deadline = time.monotonic() + shared.QUEUE_SECONDS
                 while not await run_in_threadpool(registry.claim, meta['id'], self.worker_id, meta['fence']):
                     if time.monotonic() >= deadline:
@@ -217,6 +222,8 @@ class Runtime(shared.Runtime):
                 try:
                     result = await generation.generate(body)
                     structure_ticket = result.pop('_analysis_ticket', None)
+                    result = await generation.recommend_generated(scope, result,
+                        timeout=GENERATION_SECONDS - (time.monotonic() - started) - LEASE / 4)
                     await fresh_scope(scope)
                     if source_identity is not None and await original_fingerprint(scope, body.source_id) != source_identity:
                         raise HTTPException(409, '生成期间原件已改变')
@@ -327,6 +334,7 @@ async def job_result(scope, job_id):
             raise HTTPException(410, '产业图预览已过期，请重新生成')
         result = value['result']
         await generation.verify_generation_scope(verified, result['version'])
+        result = await generation.checked_recommendation_preview(verified, result)
         source_id = value['request'].get('source_id')
         if value.get('source_identity') is not None and await original_fingerprint(verified, source_id) != value['source_identity']:
             raise HTTPException(409, '原件已改变，请重新生成产业图')
@@ -410,10 +418,13 @@ def _apply_result(scope, job_id, body):
                 '产业图结果已应用或已失效，请重新打开任务')
         marker = _application.set((scope, job_id))
         try:
-            # Reuse the existing Markdown parsing, fact/version validation and
-            # layout saving behavior; the manual Markdown endpoint stays intact.
-            from tin.web.app import diagram_from_markdown
-            saved = diagram_from_markdown(body)
+            # Both the canvas and Markdown editors pass through the regular
+            # diagram save and source validation paths.
+            from tin.web.app import diagram_from_markdown, diagram_save
+            if 'layout' in body:
+                saved = diagram_save(body)
+            else:
+                saved = diagram_from_markdown(body)
         finally:
             _application.reset(marker)
         meta.update(state='applied', phase='applied', updated_at=iso(), finished_at=iso())

@@ -12,6 +12,7 @@ from sqlalchemy.exc import DatabaseError
 from tin.integration import kb_facts,page_facts,workbench_scope
 from tin.integration.identity import current_identity
 from tin.models import Indicator
+from tests.test_knowledge_facts import canonical
 from tests.test_workbench_sources_v2 import IDENTITY,WB,source
 
 
@@ -82,6 +83,69 @@ def test_opt_in_does_not_classify_invalid_success_as_upstream_rejection(monkeypa
     with pytest.raises(HTTPException) as error:
         page_facts._request(object(), {}, upstream_error_detail=True)
     assert type(error.value) is HTTPException
+    assert error.value.status_code == 503
+
+
+@pytest.mark.parametrize(('path', 'payload', 'reason', 'restricted'), [
+    ('/sn/judgment?date=2026-01-02&judgment_id=10',
+     {'detail': '来源日期需核对 <b>错误</b>'}, '来源日期需核对 &lt;b&gt;错误&lt;/b&gt;', False),
+    ('/sn/judgment', {'detail': '  '}, '数据来源、授权或所需指标已变化，请刷新后核对', False),
+    ('/sn', {}, '数据来源、授权或所需指标已变化，请刷新后核对', False),
+    ('/sn/dimensions', {'detail': '维度指标来源已变更'}, '维度指标来源已变更', True),
+])
+def test_workbench_source_failure_keeps_the_page_and_retry_link(
+        canonical, monkeypatch, path, payload, reason, restricted):
+    from tin.provenance import bridge
+    from tin.web import dimension_board
+    client, headers, _, _ = canonical
+    bound = {**source(1, restricted), 'view_modules': ['indicators']}
+    scope = workbench_scope.WorkbenchScope(IDENTITY, WB, '', 0, {
+        'scope_version': 2, 'name': '合成研究台', 'can_read_source': not restricted, 'workspace_mode': 'isolated'},
+        'Bearer synthetic', scope_version=2, sources_revision=7, sources=(bound,))
+    sid = 'kb-' + 'a' * 48
+
+    async def resolve(identity, identifier, authorization):
+        return replace(scope, identity=identity, authorization=authorization)
+
+    monkeypatch.setattr(workbench_scope, 'resolve_workbench', resolve)
+    monkeypatch.setattr(page_facts, '_saved_plan',
+        lambda scope, request: ([{'ids': [sid], 'points': 2}], {}))
+    monkeypatch.setattr(dimension_board, 'read_dimensions',
+        lambda session: [{'sections': [{'items': [{'kind': 'indicator', 'id': sid}]}]}])
+    monkeypatch.setattr(bridge, 'structured_request', lambda *args, **kwargs: httpx.Response(409, json=payload))
+    assert client.post('/research/auth/session', headers=headers).status_code == 200
+    url = '/research/workbenches/' + WB + path
+    response = client.get(url)
+    assert response.status_code == 409, response.text
+    assert response.headers['content-type'].startswith('text/html')
+    assert '商品研究导航' in response.text and '合成研究台' in response.text
+    assert reason in response.text
+    assert 'href="' + url.replace('&', '&amp;') + '"' in response.text
+    assert '>重试</a>' in response.text
+
+
+@pytest.mark.parametrize(('flagged', 'row_id'), [
+    (['kb-' + 'a' * 48], 'kb-' + 'a' * 48),
+    (['kb-' + 'a' * 48] * 2, None),
+    (['kb-' + 'c' * 48], None),
+    ([{}], None),
+    ('kb-' + 'a' * 48, None),
+])
+def test_bounded_rejects_invalid_undated_envelope(monkeypatch, flagged, row_id):
+    bound = source(1)
+    scope = workbench_scope.WorkbenchScope(IDENTITY, WB, '', 0, {'scope_version': 2},
+        'Bearer synthetic', scope_version=2, sources_revision=7, sources=(bound,))
+    sid = 'kb-' + 'a' * 48
+    field = {'series_id': sid, 'source_binding_id': bound['id'],
+             'knowledge_base_id': bound['knowledge_base_id'], 'knowledge_base_tenant_id': bound['tenant_id'],
+             'source_id': bound['source_id'], 'source_type': bound['source_type']}
+    rows = [{'series_id': row_id, 'date': '2026-01-01', 'value': 2, 'value_status': 'valid'}] if row_id else []
+    monkeypatch.setattr(page_facts, '_request', lambda *args, **kwargs: {
+        'bounded': True, 'include_invalid': True, 'undated_series_ids': flagged,
+        'indicators': [field], 'rows': rows, 'source_versions': {bound['id']: 'a' * 64},
+    })
+    with pytest.raises(HTTPException) as error:
+        page_facts.bounded_facts(scope, [sid], 'judgments', include_invalid=True)
     assert error.value.status_code == 503
 
 

@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date, datetime, timezone
+import json
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -18,6 +19,7 @@ from tin.integration.identity import current_identity
 from tin.integration.page_facts import _page
 from tin.integration.workbench_scope import WorkbenchScope, current_workbench
 from tin.models import Indicator, SourceMapping
+from tin.models.workbench import WorkbenchArtifact
 from tin.schemas.caliber import Caliber
 from tin.schemas.chart import ChartDefinition
 from tin.schemas.observation import ObservationIn
@@ -129,6 +131,52 @@ def add_chart(focus, *, workbench=WB, deleted=False):
 
 def stored_core(focus):
     return focus.session.get(SourceMapping, restricted.mapping_key(focus.session, restricted.CORE_KEY))
+
+
+@pytest.mark.parametrize('source_kind', ['none', 'catalog', 'chart', 'favorites'])
+def test_empty_focus_uses_all_selectable_sources_for_the_worksheet_hint(focus, monkeypatch, source_kind):
+    scope = replace(focus.scope, sources=(*focus.scope.sources, {**source(2), 'kind': 'macro', 'source_type': 'central_dataset'}))
+    current_workbench.set(scope)
+    if source_kind == 'chart':
+        add_chart(focus)
+    else:
+        # Neither a deleted chart nor another workbench's chart is selectable.
+        add_chart(focus, deleted=True)
+        add_chart(focus, workbench=SECOND_WB)
+    if source_kind == 'favorites':
+        from tin.web.research_references import remember_record_scope
+        favorite = WorkbenchArtifact(id='fixture-favorites', module='favorites', title='我的自选',
+            actor=scope.identity.user_id, revision=1, status='draft', source_ids=[], source_snapshots=[],
+            body=json.dumps({'format': 'favorites.v1', 'items': [indicator()]}),
+            created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc))
+        focus.session.add(favorite)
+        focus.session.flush()
+        remember_record_scope(focus.session, 'artifact', favorite.id)
+        focus.session.commit()
+
+    calls = []
+
+    def directory(_scope, *, limit, apply_dedup):
+        calls.append((limit, apply_dedup))
+        rows = [{'series_id': SID}] if source_kind in {'catalog', 'favorites'} else []
+        return {'series': rows, 'total': len(rows), 'offset': 0, 'next_offset': None, 'version': 'fixture'}
+
+    monkeypatch.setattr('tin.integration.page_facts.catalog_page', directory)
+    monkeypatch.setattr('tin.integration.indicator_dedup.confirmed_replacements',
+                        lambda _scope: {SID: OTHER} if source_kind == 'favorites' else {})
+    metadata = market.market_catalog(focus.session, [], DAY)
+    available = source_kind != 'none'
+    assert metadata['has_selectable_items'] is available
+    assert calls == ([] if source_kind == 'chart' else [(1, False)])
+    html = web.templates.get_template('_market_core.html').render(cards=[], market_catalog=metadata,
+        restricted_view=False, source_status_hint={'message': '知识库还有 38 张工作表待确认',
+            'links': [{'url': '/fixture-original', 'source_file': '夹具原表'}]})
+    document = fromstring(html)
+    box = document.get_element_by_id('market-core-empty')
+    assert bool(box.xpath('.//*[@data-source-status-hint]')) is not available
+    assert ('从指标目录、图表库或账号自选中挑选，或按研究框架生成建议' in box.text_content()) is available
+    assert bool(box.xpath('.//*[@id="market-core-empty-open"]')) is available
+    assert box.xpath('.//*[@id="market-core-suggestions-open"]')
 
 
 def test_old_series_ids_read_in_order_and_next_write_uses_items(focus):

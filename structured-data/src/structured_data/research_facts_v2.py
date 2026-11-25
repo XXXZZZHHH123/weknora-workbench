@@ -75,7 +75,18 @@ def _originals(source):
             continue
         if not isinstance(digest, str) or not re.fullmatch(r'(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{64})', digest):
             raise HTTPException(403, '真实来源文件哈希无效')
-        result.append({'knowledge_id':row['id'],'file_hash':digest.lower()})
+        original = {'knowledge_id': row['id'], 'file_hash': digest.lower()}
+        previous = row.get('previous_file_hashes', [])
+        if (not isinstance(previous, list) or len(previous) > 6
+                or any(not isinstance(value, str) or not re.fullmatch(r'[0-9a-fA-F]{32}', value)
+                       for value in previous)):
+            raise HTTPException(403, '真实来源的历史版本哈希无效')
+        if previous:
+            original['previous_file_hashes'] = list(dict.fromkeys(value.lower() for value in previous
+                                                                  if value.lower() != digest.lower()))
+        if isinstance(row.get('file_version_at'), str):
+            original['file_version_at'] = row['file_version_at']
+        result.append(original)
     if len(result) > 128:
         raise HTTPException(413, '单个来源超过128份结构化原件，请拆分来源；未返回部分数据')
     return result
@@ -107,6 +118,11 @@ def _read_current(registry, body, sources, leases):
             from .research_catalog import current_index,page
             connection,metadata = leases.enter_context(current_index(objects['store'],objects['manager'],_originals(source)))
             selected,_,_=page(connection,series_ids=parsed['selection']['series_ids'],limit=256)
+            if source['delegated']:
+                for field in selected:
+                    if field.get('field_metadata'):
+                        field['field_metadata'].pop('header_notes', None)
+                        field['field_metadata'].pop('source_codes', None)
             prepared={'version':metadata['version'],'indicators':selected,'datasets':[],'bindings':[]}
             for info in metadata['datasets']:
                 mapping={field['source_series_id']:field['series_id'] for field in selected
@@ -143,13 +159,21 @@ def _read_current(registry, body, sources, leases):
         selected_date = None if set(selection['same_day_series_ids'])-known else _same_day_date(None,bindings,selection)
         selection = {**selection,'selected_date':selected_date}
     version = _hash({**fingerprint,'selection':selection})
-    rows = _same_day_rows(None,bindings,selection) if 'same_day_series_ids' in selection else _bounded_rows(None,bindings,selection,strict=True)
-    totals,calendar = _calendar(bindings,selection,
+    if 'same_day_series_ids' in selection:
+        rows, undated_series_ids = _same_day_rows(None,bindings,selection), set()
+    else:
+        rows, undated_series_ids = _bounded_rows(None,bindings,selection,strict=True)
+    calendar_bindings = bindings
+    if undated_series_ids:
+        calendar_bindings = [(info,{raw: identifier for raw,identifier in mapping.items()
+                                   if identifier not in undated_series_ids}) for info,mapping in bindings]
+    totals,calendar = _calendar(calendar_bindings,selection,
         include_totals=body.get('view_module')=='indicators' and selection['points_per_series']>2)
     result = {'bounded':True,'indicators':fields,'rows':rows,'total':len(rows),'offset':0,
         'next_offset':None,'truncated':False,'version':version,
         'series_totals':totals,'calendar':calendar,'source_versions':dict(parts),'unavailable_series_ids':sorted(unavailable),
-        **({'include_invalid':True} if selection.get('include_invalid') else {}),
+        **({'include_invalid':True,'undated_series_ids':sorted(undated_series_ids)}
+           if selection.get('include_invalid') else {}),
         **({'selected_date':selection['selected_date']} if 'same_day_series_ids' in selection else {})}
     if body.get('version') is not None and body['version'] != version:
         raise HTTPException(409, '来源快照在读取期间发生变化，请重新读取')

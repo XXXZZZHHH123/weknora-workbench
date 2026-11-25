@@ -201,7 +201,11 @@ def test_same_projected_numbers_markdown_structure_and_legacy_draft():
     assert '保存的主要矛盾' in md and '保存的基调' in md
     payload['manual_report']['draft'].pop('dimension_notes')
     payload['manual_report']['draft'].pop('figure_conclusions')
-    assert present_snapshot(payload)['editable_draft']['dimension_notes'] == {}
+    payload['manual_report']['draft']['sections']['summary'].pop('text')
+    legacy = present_snapshot(payload)
+    assert legacy['editable_draft']['dimension_notes'] == {}
+    assert legacy['panels']['summary']['text'] == ''
+    assert '### 本日结论\n\n待研究员填写' in readable_markdown(payload)
 
 
 def test_hidden_research_does_not_reopen_in_concise_view():

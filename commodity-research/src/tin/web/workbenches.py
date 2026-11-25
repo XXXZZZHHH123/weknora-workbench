@@ -110,7 +110,7 @@ async def source_inventory(scope: WorkbenchScope, page=1, page_size=100, source_
         selected = source_scope_for_binding(scope, source_binding_id, direct_only=True)
         result = await _native_source_page(selected, page, page_size)
         allowed = {'id', 'title', 'file_name', 'file_type', 'file_size', 'folder_path',
-                   'parse_status', 'enable_status', 'error_message', 'updated_at', 'created_at', 'type'}
+                   'parse_status', 'enable_status', 'error_message', 'updated_at', 'created_at', 'file_version_at', 'type'}
         return {'scope_version': 2, 'sources_revision': scope.sources_revision,
                 'source_binding_id': source_binding_id, 'knowledge_base_id': selected.knowledge_base_id,
                 'sources': [{**{key: value for key, value in row.items() if key in allowed},
@@ -120,7 +120,7 @@ async def source_inventory(scope: WorkbenchScope, page=1, page_size=100, source_
     result = await _native_source_page(scope, page, page_size)
     sources = result['data']
     allowed = {"id", "title", "file_name", "file_type", "file_size", "file_hash", "folder_path",
-               "parse_status", "enable_status", "error_message", "updated_at", "created_at", "type"}
+               "parse_status", "enable_status", "error_message", "updated_at", "created_at", "file_version_at", "type"}
     structured_error = None
     try:
         datasets = await run_in_threadpool(_structured_catalog, "list_datasets", {})

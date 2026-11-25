@@ -84,6 +84,27 @@ def test_non_cotton_matrix_confirm_and_versions(tmp_path):
     with pytest.raises(ValueError,match='不能重复'):parse_mapped_workbook(p,[duplicate])
 
 
+def test_matrix_header_notes_preserve_periods_and_row_metrics(tmp_path):
+    note = '  Published estimates.\nRevisions are quarterly.  '
+    path = make(tmp_path, [[None, None, None, None, None, note],
+                           ['Region', '2022', '2023', '2024'],
+                           ['Sales', 90, 110, 120], ['Inventory', 50, 55, 60]])
+    sheet = scan_workbook(path)['sheets'][0]
+    matrix = sheet['mapping']
+    block = matrix['blocks'][0]
+    old = parse_mapped_workbook(path, [matrix])
+    block['header_rows'].insert(0, 1)
+    block['header_note_cells'] = ['F1']
+    parsed = parse_mapped_workbook(path, [matrix])
+    assert parsed['observations'] == old['observations']
+    for field, original in zip(parsed['series'], old['series'], strict=True):
+        assert field['field_metadata'].pop('header_notes') == [{'cell': 'F1', 'text': note}]
+        assert field == original
+    block['header_note_cells'] = ['B2']
+    with pytest.raises(ValueError, match='重叠'):
+        parse_mapped_workbook(path, [matrix])
+
+
 @pytest.mark.skipif(os.getenv('COTTON_ACCEPTANCE')!='1',reason='Original workbook opt-in')
 def test_usda_period_versions_remain_separate(tmp_path):
     p=Path('/Users/mac/Documents/中哲物产/棉花测试集/棉花/棉花数据库(2).xlsx')

@@ -1,6 +1,8 @@
 <div class="charts-page" data-charts-page="library">
+  {% set native_import_url = research_url('/sn/charts/import') %}
+  {% set report_import_url = research_url('/sn/charts/import#report-chart-import') %}
   <header class="charts-header"><div><h1>图表库</h1></div>
-    {% if chart_page.enabled %}<div class="charts-toolbar"><button type="button" class="charts-button primary" data-chart-builder="new">新建图表</button><a class="charts-button" href="{{ research_url('/sn/charts/import') }}">从原表导入</a></div>{% endif %}
+    {% if chart_page.enabled %}<div class="charts-toolbar"><button type="button" class="charts-button primary" data-chart-builder="new">新建图表</button><a class="charts-button" href="{{ native_import_url }}">从原表导入</a><a class="charts-button" href="{{ report_import_url }}">从往期周报导入</a></div>{% endif %}
   </header>
   {% if not chart_page.enabled %}<p class="charts-notice error" role="alert">{{ chart_page.reason }}</p>{% else %}
   <details id="chart-anomalies" class="charts-panel charts-anomalies" open>
@@ -18,6 +20,7 @@
     <section aria-label="图表列表">
       <form id="chart-search-form" class="charts-toolbar" role="search"><label class="charts-field">搜索图表<input type="search" id="chart-search" maxlength="200" placeholder="输入图表标题"></label><span id="chart-count" class="charts-muted" aria-live="polite"></span></form>
       <div id="charts-status" role="status" hidden></div>
+      <template id="charts-empty-content">没有匹配图表。可<a href="{{ native_import_url }}">从原表导入</a>、<a href="{{ report_import_url }}">从往期周报导入</a>，或在单指标页另存为图表。</template>
       <div id="chart-cards" class="charts-grid"></div>
       <button type="button" id="charts-more" class="charts-button" hidden>加载更多</button>
     </section>

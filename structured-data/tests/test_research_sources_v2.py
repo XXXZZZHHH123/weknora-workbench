@@ -92,10 +92,37 @@ def test_catalog_index_built_by_older_code_is_rebuilt_once(multi):
     path=store.root/'.research-catalog'/'catalog.sqlite'
     with sqlite3.connect(path) as writer:
         manifest=json.loads(writer.execute("SELECT value FROM metadata WHERE key='manifest'").fetchone()[0])
-        manifest.pop('format')
+        manifest['format'] = 3
         writer.execute("UPDATE metadata SET value=? WHERE key='manifest'",(json.dumps(manifest),))
         writer.execute("UPDATE fields SET search_text='{}'")
     assert catalog(read,search='records')['total']>=1
+
+
+def test_catalog_searches_source_codes_and_header_note_text(multi):
+    _, read, sources, store, review, _ = multi
+    metadata = {
+        'source_codes': [{'cell': 'B3', 'text': '  S5329490  '}],
+        'header_notes': [{'cell': 'B4', 'text': '  限定口径\nQuarterly review  '}],
+    }
+    path = store._path(review['dataset_id']) / 'series.json'
+    fields = json.loads(path.read_text())
+    fields[0]['field_metadata'] = metadata
+    path.write_text(json.dumps(fields, ensure_ascii=False))
+
+    result = catalog(read, search='s5329490 限定口径 quarterly')
+    assert result['total'] == 1
+    field = result['series'][0]
+    assert field['metric'] == 'Quantity'
+    assert field['field_metadata'] == metadata
+    assert catalog(read, search='B3')['total'] == 0
+
+    direct = read({'source_bindings': ['binding-a'], 'series_ids': [field['series_id']],
+                   'view_module': 'diagram'}, sources[:1])
+    assert direct['indicators'][0]['field_metadata'] == metadata
+    delegated = [{**sources[0], 'delegated': True}]
+    restricted = read({'source_bindings': ['binding-a'], 'series_ids': [field['series_id']],
+                       'view_module': 'diagram'}, delegated)
+    assert restricted['indicators'][0]['field_metadata'] == {}
 
 
 def test_catalog_warm_index_does_not_rehash_or_reparse_the_workbook(multi,monkeypatch):
@@ -158,6 +185,29 @@ def test_regular_bounded_values_deduplicate_equal_dates_and_reject_conflicts(mul
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as error:read(body,multi[2][:1])
     assert error.value.status_code==409
+
+
+def test_judgment_window_reports_undated_series_with_current_field_ids(multi):
+    _, read, _, store, review, _ = multi
+    ids = {field['knowledge_base_id']: field['series_id'] for field in catalog(read)['series']}
+    database = store._path(review['dataset_id']) / 'data.duckdb'
+    with duckdb.connect(str(database), config={'enable_external_access':'false','threads':'1','memory_limit':'128MB'}) as connection:
+        connection.execute("UPDATE observations SET date=NULL, period='2026/27' WHERE date='2026-01-05'")
+
+    body = {'source_bindings':['binding-a','binding-b'],'series_ids':list(ids.values()),
+        'view_module':'judgments','as_of':'2026-01-05','points_per_series':2}
+    result = read({**body,'include_invalid':True})
+    assert result['undated_series_ids'] == [ids['library-a']]
+    assert {field['series_id'] for field in result['indicators']} == set(ids.values())
+    assert [(row['series_id'],row['date'],row['value']) for row in result['rows']] == [
+        (ids['library-b'],date(2026,1,3),30), (ids['library-b'],date(2026,1,4),40)]
+    assert result['calendar']['min_date'] == '2026-01-02'
+    assert result['unavailable_series_ids'] == []
+
+    regular = read(body)
+    assert 'undated_series_ids' not in regular
+    assert [row['value'] for row in regular['rows'] if row['series_id'] == ids['library-a']] == [1,3]
+    assert regular['calendar']['min_date'] == '2026-01-01'
 
 
 def test_removed_saved_binding_is_reported_missing_without_legacy_fallback(multi):

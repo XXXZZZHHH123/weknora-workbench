@@ -326,6 +326,8 @@ type KnowledgeRepository interface {
 	// statement so callers that flip several related fields (e.g. parse_status +
 	// error_message) cannot leave the row in a half-updated state.
 	UpdateKnowledgeColumns(ctx context.Context, id string, values map[string]interface{}) error
+	// UpdateKnowledgeFileSource swaps a file only if the source row still matches its snapshot.
+	UpdateKnowledgeFileSource(ctx context.Context, before *types.Knowledge, values map[string]interface{}) error
 	// UpdateActiveDeletingKnowledgeColumns updates an active, non-deleted knowledge row
 	// only when it is still in the transient deleting state.
 	UpdateActiveDeletingKnowledgeColumns(

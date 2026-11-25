@@ -10,6 +10,12 @@ class MetadataEvidence(BaseModel):
     text: str = Field(min_length=1, max_length=32767)
 
 
+class HeaderNoteCell(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    cell: str = Field(pattern=r'^[A-Z]{1,3}[1-9][0-9]*$')
+    text: str = Field(min_length=1, max_length=32767)
+
+
 class FieldMetadata(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     role: Literal['numeric', 'text_dimension', 'annotation'] | None = None
@@ -18,6 +24,8 @@ class FieldMetadata(BaseModel):
     frequency: str | None = Field(default=None, max_length=32)
     unit_evidence: list[MetadataEvidence] = Field(default_factory=list, max_length=16)
     frequency_evidence: list[MetadataEvidence] = Field(default_factory=list, max_length=16)
+    header_notes: list[HeaderNoteCell] | None = None
+    source_codes: list[HeaderNoteCell] | None = None
 
     @field_validator('unit', 'frequency')
     @classmethod

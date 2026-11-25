@@ -18,6 +18,14 @@ from tin.schemas.caliber import Caliber
 from tin.schemas.observation import ObservationIn
 
 FIX = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _accept_analysis_jobs():
+    # The app is shared across tests; one test's lifespan shutdown must not reject the next test's jobs.
+    from tin.web import analysis_jobs, diagram_jobs, judgment_jobs
+    for module in (analysis_jobs, diagram_jobs, judgment_jobs):
+        module.runtime.closing = False
 D = date(2026, 9, 18)
 
 

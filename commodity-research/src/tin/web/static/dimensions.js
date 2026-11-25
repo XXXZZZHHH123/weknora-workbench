@@ -6,13 +6,17 @@ document.addEventListener('DOMContentLoaded', () => {
   const initial = JSON.parse(bootstrap.textContent), get = id => document.getElementById('dimensions-' + id);
   const prefix = window.RESEARCH_PREFIX || '', key = item => item.kind + ':' + item.id;
   let config, current, draft, editing = false, saving = false, deleted = new Set(), generation = 0;
-  let pickerTarget, pickerNext = null, pickerToken = 0, pickerTimer, drag, modelMode = 'suggest', running = false;
+  let pickerTarget, pickerNext = null, pickerToken = 0, pickerTimer, drag, modelMode;
   let suggestions = [], inferred = [], selectedSources = new Map(), sourceNext = null, sourceToken = 0, sourceTimer;
-  let suggestionTargets = new Map();
+  let suggestionTargets = new Map(), modelReviewDirty = false, setupDimensions, modelSetupJob, draftSetupJob;
   let templates, templateApplying = false, appliedTemplate, templateToken = 0;
   const renderers = new Set(), modelDialog = get('model-dialog'), picker = get('picker'), templateDialog = get('template-dialog');
+  const indicatorChart = get('indicator-chart'), cycleQueue = [];
+  let activeCycles = 0;
   const clone = value => JSON.parse(JSON.stringify(value));
-  const itemName = item => item.name || item.title || item.id;
+  const itemName = (item, configured) => [item.name, item.title, configured?.name, configured?.title]
+    .find(name => typeof name === 'string' && name.trim() && name.trim() !== item.id)
+    || (item.kind === 'chart' ? '图表名称待核对' : '指标名称待核对');
   const warningText = value => ({history_limited:'历史观测已达到读取上限，同期统计仅覆盖已读取窗口。',observation_window_limited:'观测已达到读取上限，统计仅覆盖已读取窗口。',baseline_unavailable:'缺少可比的往期观测。',insufficient_cycles:'有效往期同期样本不足3年，不提供排名。',empty_segments_omitted:'没有观测的历史周期已省略。',current_missing:'当前周期没有有效观测。',frequency_unavailable:'无法推断观测频率。',no_observations:'没有有效观测。',segments_overlap:'历史周期有重叠。',non_finite_transform:'部分观测转换后无有效数值。',non_finite_result:'部分计算结果无有效数值。'}[value] || '数据提示：' + value);
   const knownUnit = value => String(value || '').trim() === '未注明' ? '' : String(value || '').trim();
   let activeInfo, infoSequence = 0;
@@ -21,7 +25,11 @@ document.addEventListener('DOMContentLoaded', () => {
     activeInfo.panel.hidden = true; activeInfo.trigger.setAttribute('aria-expanded', 'false'); activeInfo = null;
   }
   document.addEventListener('pointerdown', event => { if (activeInfo && !activeInfo.root.contains(event.target)) closeInfo(); });
-  document.addEventListener('keydown', event => { if (event.key === 'Escape' && activeInfo) { closeInfo(); event.preventDefault(); event.stopPropagation(); } });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || !activeInfo) return;
+    if (activeInfo.panel.contains(document.activeElement)) activeInfo.trigger.focus();
+    closeInfo(); event.preventDefault(); event.stopPropagation();
+  });
   function globalNotice(data) {
     const warnings = new Set(data.warnings || []), messages = [];
     if (data.history_coverage_limited ?? (warnings.has('history_limited') || warnings.has('observation_window_limited'))) messages.push('部分指标的历史观测已达到读取上限，同期统计覆盖不足');
@@ -44,25 +52,36 @@ document.addEventListener('DOMContentLoaded', () => {
     if ((item.history_coverage?.limited ?? item.limited) && !notes.has('history')) add('history', warningText('history_limited'));
     if (!knownUnit(item.unit) && item.kind === 'indicator') add('unit', '单位未注明');
     const rows = [...new Set(notes.values())].map(text => ({text}));
+    for (const code of item.field_metadata?.source_codes || []) rows.push({text: '代码：' + code.text, css: 'header-note-text'});
     if (item.frequency) rows.push({text: '频率：' + item.frequency});
     if (item.source && item.source !== item.source_file) rows.push({text: '来源：' + item.source});
     if (item.source_file) rows.push({text: '来源文件：' + item.source_file});
     if (item.sheet) rows.push({text: '工作表：' + item.sheet, css: 'dimensions-sheet'});
     return rows;
   }
-  function cardInfo(item) {
-    const rows = cardNotes(item);
-    if (!rows.length) return null;
+  function cardInfo(item, name, unavailable) {
+    const rows = cardNotes(item), notes = item.field_metadata?.header_notes || [];
     const root = node('div', 'dimensions-info'), trigger = button('ⓘ', () => {
       if (activeInfo?.root === root && activeInfo.pinned) closeInfo(); else show(true);
     }), panel = node('div', 'dimensions-tooltip');
-    trigger.className = 'dimensions-info-trigger'; trigger.setAttribute('aria-label', '查看' + itemName(item) + '的说明与来源');
-    panel.id = 'dimensions-info-' + ++infoSequence; panel.setAttribute('role', 'tooltip'); panel.hidden = true;
-    trigger.setAttribute('aria-controls', panel.id); trigger.setAttribute('aria-describedby', panel.id); trigger.setAttribute('aria-expanded', 'false');
+    trigger.className = 'dimensions-info-trigger'; trigger.setAttribute('aria-label', '查看' + name + '的说明与来源');
+    panel.id = 'dimensions-info-' + ++infoSequence; panel.hidden = true;
+    trigger.setAttribute('aria-controls', panel.id); trigger.setAttribute('aria-expanded', 'false');
+    if (notes.length) {
+      panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', '说明与来源');
+      trigger.setAttribute('aria-haspopup', 'dialog');
+    } else {
+      panel.setAttribute('role', 'tooltip'); trigger.setAttribute('aria-describedby', panel.id);
+    }
+    panel.append(node('p', 'dimensions-info-name', name), node('p', '', 'ID：' + item.id));
+    const unit = knownUnit(item.unit);
+    if (unavailable && unit) panel.append(node('p', '', '单位：' + unit));
     for (const row of rows) panel.append(node('p', row.css || '', row.text));
+    if (notes.length) panel.append(renderHeaderNotes(notes));
     function show(pinned = false) {
       const wasPinned = activeInfo?.root === root && activeInfo.pinned;
-      closeInfo(); window.ChartHover?.close(); panel.hidden = false; trigger.setAttribute('aria-expanded', 'true');
+      if (activeInfo?.root !== root) closeInfo();
+      panel.hidden = false; trigger.setAttribute('aria-expanded', 'true');
       panel.style.transform = '';
       const box = panel.getBoundingClientRect(), viewportWidth = document.documentElement.clientWidth;
       const shift = Math.max(8 - box.left, Math.min(0, viewportWidth - 8 - box.right));
@@ -78,6 +97,13 @@ document.addEventListener('DOMContentLoaded', () => {
   function node(tag, css, text) { const el = document.createElement(tag); if (css) el.className = css; if (text !== undefined) el.textContent = text; return el; }
   function button(label, action, disabled = false) { const el = node('button', '', label); el.type = 'button'; el.disabled = disabled; el.addEventListener('click', action); return el; }
   function status(message, error = false) { get('status').textContent = message || ''; get('status').classList.toggle('error', error); }
+  function loadError(message) {
+    status(message, true);
+    const retry = node('a', 'underline', '重试');
+    retry.href = location.pathname + location.search;
+    retry.addEventListener('click', event => { event.preventDefault(); void load(); });
+    get('status').append(' ', retry);
+  }
   async function request(path, body, method = 'GET') {
     const response = await window.researchFetch(prefix + '/api/sn' + path, body === undefined ? {} : {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
     const result = await response.json();
@@ -87,16 +113,53 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     return result;
   }
-  function query() { const q = new URLSearchParams({period: get('period').value}); if (get('date').value) q.set('date', get('date').value); return q; }
+  function query() {
+    const q = new URLSearchParams({period: get('period').value});
+    if (get('date').value) q.set('date', get('date').value);
+    const judgmentId = params.get('judgment_id');
+    if (judgmentId) q.set('judgment_id', judgmentId);
+    return q;
+  }
   function freshId(prefix = 's-') { const bytes = new Uint8Array(4); crypto.getRandomValues(bytes); return prefix + [...bytes].map(v => v.toString(16).padStart(2, '0')).join(''); }
   const editable = () => config?.can_write === true;
   const dims = () => editing ? draft : config.dimensions;
-  function clearRenderers() { closeInfo(); renderers.forEach(value => value.destroy?.()); renderers.clear(); window.ChartHover?.close(); }
+  function clearRenderers() { closeInfo(); renderers.forEach(value => value.destroy()); renderers.clear(); }
+  function startCycleReads() {
+    while (activeCycles < 4 && cycleQueue.length) cycleQueue.shift()();
+  }
+  function scheduleCycle(load, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) { reject(signal.reason); return; }
+      function cancel() {
+        cycleQueue.splice(cycleQueue.indexOf(start), 1);
+        reject(signal.reason);
+      }
+      async function start() {
+        signal.removeEventListener('abort', cancel);
+        activeCycles++;
+        try { resolve(await load()); }
+        catch (error) { reject(error); }
+        finally { activeCycles--; startCycleReads(); }
+      }
+      cycleQueue.push(start);
+      signal.addEventListener('abort', cancel, {once: true});
+      startCycleReads();
+    });
+  }
+  function chartPreferenceKey(series) {
+    const context = window.RESEARCH_CONTEXT;
+    if (!context?.tenant || !context?.user || !context?.workbench || !series) return null;
+    return 'tin.dimensions.chart.v1:' + JSON.stringify([context.tenant, context.user, context.workbench, series]);
+  }
   function allItems() { return (draft || config?.dimensions || []).flatMap(d => (d.sections || []).flatMap(s => s.items || [])); }
   function countItems() { return allItems().length; }
   function serialized(dimensions = draft) {
     return dimensions.map(d => ({...(d.id ? {id: d.id} : {}),label: d.label,category: d.category,description: d.description || '',
       sections: (d.sections || []).map(s => ({id: s.id, label: s.label,items: (s.items || []).map(i => ({kind: i.kind,id: i.id,...(i.kind === 'chart' ? {revision: i.revision} : {})}))}))}));
+  }
+  function scrollToIndicator() {
+    const anchor = location.hash.slice(1);
+    if (anchor.startsWith('dimension-indicator-')) document.getElementById(anchor)?.scrollIntoView();
   }
   async function load() {
     const own = ++generation; status('正在读取研究维度…');
@@ -106,13 +169,16 @@ document.addEventListener('DOMContentLoaded', () => {
         get('period').value = current.period || 'daily';
         if (!get('date').value) get('date').value = current.latest_data_date || current.as_of || '';
         get('date').disabled = true; get('period').disabled = true;
-        render(); status('受限视角 · 仅显示已授权最新观测。'); return;
+        render(); scrollToIndicator(); status('受限视角 · 仅显示已授权最新观测。'); return;
       }
       const loaded = await request('/dimensions');
       if (own !== generation) return;
       config = loaded; get('edit').hidden = !editable(); get('suggest').hidden = !editable();
       render(); await loadData(own);
-    } catch (error) { if (own === generation) status(error.message, true); }
+      if (own === generation) {
+        scrollToIndicator();
+      }
+    } catch (error) { if (own === generation) loadError(error.message); }
   }
   async function loadData(own = ++generation) {
     status('正在计算本期变化…');
@@ -124,7 +190,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!get('date').value) get('date').value = data.latest_data_date || data.as_of || '';
       if (!editing) render();
       status(globalNotice(data));
-    } catch (error) { if (own === generation) status(error.message, true); }
+    } catch (error) { if (own === generation) loadError(error.message); }
   }
   function startEdit() {
     if (!editable() || editing) return;
@@ -148,10 +214,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const limits = editing ? draftLimits() : [];
     get('template-limits').textContent = limits.join('；'); get('template-limits').hidden = !limits.length;
     const dataById = new Map((current?.dimensions || []).map(d => [d.id, d]));
+    const configuredItems = new Map(allItems().map(item => [key(item), item]));
+    const displayName = item => itemName(item, configuredItems.get(key(item)));
+    const mounts = [];
     for (const [index, dim] of (starting ? [] : dims()).entries()) {
       const section = node('section', 'dimensions-section'); section.dataset.dimensionId = dim.id || ''; section.dataset.dimensionIndex = index;
       if (editing) renderEditor(section, dim, index);
       else {
+        section.classList.add('dimensions-section-view');
         const observed = dataById.get(dim.id), heading = node('header', 'dimensions-heading'), title = node('div');
         title.append(node('h2', '', dim.label));
         const summary = observed?.summary;
@@ -164,11 +234,17 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         section.append(heading);
         if (dim.description) section.append(node('p', 'dimensions-muted dimensions-description', dim.description));
-        const stages = observed?.sections || dim.sections || [];
-        for (const stage of stages) {
-          const row = node('section', 'dimensions-stage'); row.append(node('h3', '', stage.label)); const grid = node('div', 'dimensions-grid');
-          for (const item of stage.items || []) grid.append(renderCard(item)); row.append(grid); section.append(row);
+        const stages = node('div', 'dimensions-stages');
+        for (const stage of observed?.sections || dim.sections || []) {
+          const items = stage.items || [];
+          const row = node('section', 'dimensions-stage');
+          if (items.length !== 1) row.classList.add('dimensions-stage-wide');
+          row.dataset.stageId = stage.id;
+          const grid = node('div', 'dimensions-grid');
+          for (const item of items) grid.append(renderCard(item, mounts, displayName(item)));
+          row.append(node('h3', '', stage.label), grid); stages.append(row);
         }
+        section.append(stages);
         if (!(dim.sections || []).some(s => s.items?.length)) {
           const empty = node('div', 'dimensions-empty', '还没有绑定指标');
           if (editable()) empty.append(button('添加', () => { startEdit(); ensureStage(index); openPicker(index, 0); }), button('让模型建议', () => openModels('suggest')));
@@ -177,11 +253,12 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       root.append(section);
     }
+    mounts.forEach(mount => mount());
     get('empty').hidden = allItems().length > 0 || editing || starting;
     const unassigned = config.evidence?.unassigned, removed = config.evidence?.deleted;
     get('evidence').textContent = config.evidence_available === false ? '' : [unassigned ? `未标注维度的研判依据 ${unassigned.total ?? unassigned} 条` : '', removed ? `已删除维度的研判依据 ${removed.total ?? removed} 条，请在研究判断中重新指派。` : ''].filter(Boolean).join('；');
     const failed = current?.failed || []; get('failed').hidden = !failed.length;
-    get('failed').querySelector('ul').replaceChildren(...failed.map(item => node('li', '', `${item.name || item.title || item.id}：${item.reason}`)));
+    get('failed').querySelector('ul').replaceChildren(...failed.map(item => node('li', '', `${displayName(item)}：${item.reason}`)));
     if (locked) {
       root.querySelectorAll('input,textarea,select,button').forEach(control => control.disabled = true);
     }
@@ -194,36 +271,80 @@ document.addEventListener('DOMContentLoaded', () => {
     for (const dim of draft) if ((dim.sections || []).length > 8) warnings.push(`“${dim.label}”有 ${dim.sections.length} 个环节，请删减至8个以内再保存`);
     return warnings;
   }
-  function renderCard(item) {
-    const card = node('article', 'dimensions-card'), body = node(initial.restricted ? 'div' : 'a', 'dimensions-card-main');
-    if (!initial.restricted) body.href = prefix + (item.kind === 'chart' ? '/sn/charts/' : '/sn/indicators/') + encodeURIComponent(item.id) + (get('date').value ? '?date=' + get('date').value : '');
-    card.dataset.itemId = item.id; body.append(node('h4', '', itemName(item))); card.append(body);
-    const info = cardInfo(item); if (info) card.append(info);
-    if (item.status === 'unavailable' || item.status === 'missing' || item.reason) { body.append(node('p', 'dimensions-error', item.reason || item.notice || '条目暂不可用')); return card; }
+  function judgmentReferences(item) {
+    if (config.evidence_available === false || !item.judgment_references?.length) return null;
+    const row = node('footer', 'dimensions-judgment-references');
+    row.append(node('span', '', '研判引用'));
+    const query = new URLSearchParams();
+    if (!initial.restricted && current?.judgment_id) {
+      query.set('judgment_id', current.judgment_id);
+      if (get('date').value) query.set('date', get('date').value);
+    }
+    const path = prefix + '/sn/judgment' + (query.size ? '?' + query : '');
+    for (const reference of item.judgment_references) {
+      const link = node('a', '', reference.label);
+      link.href = path + '#' + encodeURIComponent(reference.anchor);
+      row.append(link);
+    }
+    return row;
+  }
+  function renderCard(item, mounts, name) {
+    const card = node('article', 'dimensions-card dimensions-view-card');
+    const body = node('div', 'dimensions-card-main judgment-metric');
+    const unavailable = item.status === 'unavailable' || item.status === 'missing' || Boolean(item.reason);
+    const title = node('h4', 'judgment-metric-heading');
+    const label = node(initial.restricted ? 'span' : 'a', 'dimensions-card-title', name);
+    title.title = name;
+    if (!initial.restricted) label.href = prefix + (item.kind === 'chart' ? '/sn/charts/' : '/sn/indicators/') + encodeURIComponent(item.id) + (get('date').value ? '?date=' + get('date').value : '');
+    title.append(label); body.append(title); card.append(body, cardInfo(item, name, unavailable));
+    card.dataset.itemId = item.id;
+    if (item.kind === 'indicator') card.id = 'dimension-indicator-' + item.id;
+    const references = item.kind === 'indicator' ? judgmentReferences(item) : null;
+    if (unavailable) {
+      body.append(node('p', 'dimensions-error', item.reason || item.notice || '条目暂不可用'));
+      if (references) body.append(references);
+      return card;
+    }
     if (item.kind === 'chart') {
       const plot = node('div', 'dimensions-chart-plot'); body.append(plot);
       if (item.payload && window.ChartKit) {
-        try { renderers.add(window.ChartKit.render(plot, item.payload, {definition: item.definition, thumbnail: true, width: 500, height: 155})); } catch (error) { plot.textContent = error.message; }
+        mounts.push(() => {
+          try {
+            renderers.add(window.ChartKit.render(plot, item.payload, {
+              definition: item.definition, responsive: true, height: 220, minPlotHeight: 80
+            }));
+          } catch (error) { plot.textContent = error.message; }
+        });
       } else plot.textContent = '图表数据读取中…';
       return card;
     }
-    const unit = knownUnit(item.unit), display = item.display || {}, value = node('p', 'dimensions-value', display.latest ?? '—');
-    if (unit) value.append(node('small', '', unit));
-    body.append(value, node('p', 'dimensions-date dimensions-muted', item.date || '—'));
+    const unit = knownUnit(item.unit), display = item.display || {}, value = node('div', 'judgment-metric-value');
+    value.append(node('strong', '', display.latest ?? '—'));
+    if (unit) value.append(node('span', '', unit));
     const baselineLabel = item.baseline?.label === '较上期' ? '较上期 ' + (item.baseline.date || item.previous_date || '').slice(5) : item.baseline?.label || ('较 ' + (item.previous_date || '').slice(5));
     const noUpdate = item.update_status === 'no_update' || item.direction === 'no_update';
     const change = noUpdate ? '本期无新数据' : item.change === null || item.change === undefined ? '暂无可比观测' : `${baselineLabel} ${display.change ?? '—'}${unit ? ' ' + unit : ''}${display.change_pct ? '（' + display.change_pct + '）' : ''}`;
-    body.append(node('p', 'dimensions-change ' + (noUpdate ? 'no_update' : item.direction || ''), change));
-    body.append(node('p', 'dimensions-position', item.position?.rank != null ? item.position.text || '—' : '—'));
-    if (item.freshness?.stale) body.append(node('span', 'dimensions-stale', `停更 ${item.freshness.age_days} 天`));
-    if (item.points?.length) body.append(spark(item.points));
-    if (item.status === 'ok' && !initial.restricted) window.ChartHover?.attach(body, {key: 'dimension:' + item.id + ':' + get('date').value,title: itemName(item),load: async () => ({title: itemName(item),data: await request('/indicators/' + encodeURIComponent(item.id) + '/cycle?' + new URLSearchParams({date: get('date').value})),definition: {title: itemName(item),time: {mode: 'cycle'}}})});
+    value.append(node('small', 'dimensions-change ' + (noUpdate ? 'no_update' : item.direction || ''), change));
+    const metadata = node('div', 'dimensions-card-meta');
+    metadata.append(node('span', 'dimensions-date dimensions-muted', item.date || '—'),
+      node('span', 'dimensions-position', item.position?.rank != null ? item.position.text || '—' : '—'));
+    if (item.freshness?.stale) metadata.append(node('span', 'dimensions-stale', `停更 ${item.freshness.age_days} 天`));
+    body.append(value, metadata);
+    if (references) body.append(references);
+    if (item.points?.length) {
+      const chart = indicatorChart.content.cloneNode(true), series = item.series_id || item.id;
+      chart.querySelector('[data-chart-values]').textContent = JSON.stringify({series_id: series, unit, points: item.points});
+      chart.querySelector('[data-metric-trend]').setAttribute('aria-label', `${name}近期观测走势，横轴日期，纵轴数值${unit ? '（' + unit + '）' : ''}`);
+      body.dataset.chartDate = get('date').value;
+      body.append(chart);
+      mounts.push(() => {
+        const destroy = window.JudgmentChart.mount(body, {
+          preferenceKey: initial.restricted ? null : chartPreferenceKey(series), scheduleCycle, cycleHeight: 260
+        });
+        if (destroy) renderers.add({destroy});
+      });
+    }
     return card;
-  }
-  function spark(points) {
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 240 40'); svg.setAttribute('preserveAspectRatio', 'none'); svg.classList.add('dimensions-spark'); svg.setAttribute('aria-label', '最近 ' + points.length + ' 个观测点走势');
-    const values = points.map(p => p.value), lo = Math.min(...values), hi = Math.max(...values), dates = points.map(p => Date.parse(p.date)), first = dates[0], span = dates.at(-1) - first;
-    const line = document.createElementNS(svg.namespaceURI, 'polyline'); line.setAttribute('points', points.map((p, i) => `${span ? (dates[i] - first) / span * 236 + 2 : 120},${hi === lo ? 20 : 37 - (p.value - lo) / (hi - lo) * 34}`).join(' ')); line.setAttribute('fill', 'none'); line.setAttribute('stroke', 'currentColor'); line.setAttribute('stroke-width', '1.7'); svg.append(line); return svg;
   }
   function input(value, label, action, tag = 'input') {
     const el = node(tag); el.value = value || ''; el.setAttribute('aria-label', label); if (tag === 'input') el.type = 'text'; el.addEventListener('input', () => action(el.value)); return el;
@@ -285,8 +406,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     saving = true; render(); status('正在保存…');
     try {
-      config = await request('/dimensions', {revision: config.revision,dimensions: serialized(),confirm_delete: [...deleted]}, 'PUT');
-      editing = false; draft = undefined; current = undefined; appliedTemplate = undefined; render(); status('已保存研究维度。'); await loadData();
+      const path = draftSetupJob ? '/dimensions/from-setup/' + encodeURIComponent(draftSetupJob) : '/dimensions';
+      config = await request(path, {revision: config.revision,dimensions: serialized(),confirm_delete: [...deleted]}, 'PUT');
+      editing = false; draft = undefined; draftSetupJob = undefined; current = undefined; appliedTemplate = undefined; render(); status('已保存研究维度。'); await loadData();
     } catch (error) { status(error.status === 409 ? `${error.message} 若配置已被其他人更新，请刷新页面后再修改；当前编辑尚未保存。` : error.message, true); }
     finally { saving = false; render(); }
   }
@@ -355,13 +477,43 @@ document.addEventListener('DOMContentLoaded', () => {
       get('picker-status').textContent = list.children.length ? `已显示 ${list.children.length} / ${data.total ?? list.children.length} 个条目；已绑定条目不可重复添加。` : '没有匹配的条目。';
     } catch (error) { if (own === pickerToken) get('picker-status').textContent = error.message; }
   }
-  async function openModels(mode) {
+  const modelJobs = Object.fromEntries([
+    ['infer', 'dimension_inference', 'inference'],
+    ['suggest', 'dimension_fields', 'suggestions'],
+  ].map(([mode, purpose, key]) => [mode, window.ResearchAnalysisJobs.create({
+    purpose,
+    status: get('model-status'),
+    button: get('model-run'),
+    restoreButton: get(key + '-result'),
+    isOpen: () => modelDialog.open && modelMode === mode,
+    disabled: () => modelMode !== mode || modelRunDisabled(),
+    snapshot: () => [editing, config?.revision, config && serialized(dims()),
+      mode === 'infer' ? [...selectedSources.values()] : get('date').value],
+    present: result => presentModelResult(result, mode),
+  })]));
+  const jobControl = () => modelJobs[modelMode];
+  function modelRunDisabled() {
+    return !get('model').value || (modelMode === 'infer' && (selectedSources.size < 1 || selectedSources.size > 3));
+  }
+  async function openModels(mode, requestedJob) {
     if (!editable() || saving || templateApplying) return;
-    if (mode === 'suggest' && editing && draftLimits().length) return status(draftLimits().join('；'), true);
-    modelMode = mode; suggestions = []; inferred = []; suggestionTargets = new Map(); selectedSources = new Map(); sourceNext = null;
+    if (!requestedJob && mode === 'suggest' && editing && draftLimits().length) return status(draftLimits().join('；'), true);
+    if (mode !== modelMode || modelSetupJob || get('model-run').hidden) {
+      jobControl()?.pause();
+      modelMode = mode; suggestions = []; inferred = []; suggestionTargets = new Map();
+      sourceNext = null; sourceToken++; modelReviewDirty = false;
+      setupDimensions = undefined; modelSetupJob = undefined;
+      get('suggestions').replaceChildren(); get('model-status').textContent = '';
+    }
+    get('model').parentElement.hidden = false; get('model-run').hidden = false;
     get('model-title').textContent = mode === 'infer' ? '从往期周报归纳维度' : '让模型建议指标';
-    get('source-controls').hidden = mode !== 'infer'; get('suggestions').replaceChildren(); get('model-status').textContent = '';
-    get('model-adopt').textContent = mode === 'infer' ? '将这套维度作为编辑草稿' : '采用所选到编辑草稿'; modelDialog.showModal(); syncModel();
+    get('source-controls').hidden = mode !== 'infer';
+    get('inference-restore').hidden = mode !== 'infer';
+    get('suggestions-restore').hidden = mode !== 'suggest';
+    get('model-adopt').textContent = mode === 'infer' ? '将这套维度作为编辑草稿' : '采用所选到编辑草稿';
+    if (!modelDialog.open) modelDialog.showModal();
+    syncModel();
+    if (requestedJob) void jobControl().restore(requestedJob, {explicit: true});
     try {
       if (!get('model').dataset.loaded) {
         const result = await request('/strategies/models'); get('model').replaceChildren();
@@ -369,15 +521,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!get('model').options.length) get('model').append(new Option('暂无可用模型',''));
         get('model').disabled = false; get('model').dataset.loaded = 'true';
       }
-      if (mode === 'infer') { get('source-search').value = ''; await loadSources(); }
+      if (mode === 'infer' && modelMode === mode && modelDialog.open) { get('source-search').value = ''; await loadSources(); }
     } catch (error) { get('model-status').textContent = error.message; }
     syncModel();
+    if (!requestedJob && modelDialog.open && modelMode === mode) await jobControl().discover();
   }
   function syncModel() {
     const chosen = [...get('suggestions').querySelectorAll('input[type="checkbox"]:checked')];
     const validTargets = chosen.every(check => check.closest('.dimensions-choice').querySelector('select')?.value !== '');
-    get('model-run').disabled = running || !get('model').value || (modelMode === 'infer' && (selectedSources.size < 1 || selectedSources.size > 3));
-    get('model-adopt').disabled = running || (modelMode === 'infer' ? !inferred.length : !chosen.length || !validTargets); get('model-close').disabled = running;
+    get('model-run').disabled = !!jobControl()?.busy || modelRunDisabled();
+    get('model-adopt').disabled = modelMode === 'infer' ? !inferred.length : !chosen.length || !validTargets;
   }
   async function loadSources(append = false) {
     const own = ++sourceToken; if (!append) get('source-list').replaceChildren();
@@ -394,60 +547,93 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) { get('model-status').textContent = error.message; } syncModel();
   }
   async function generate() {
-    if (running || get('model-run').disabled) return; running = true; suggestions = []; inferred = []; suggestionTargets = new Map(); get('suggestions').replaceChildren(); syncModel();
-    get('model-status').textContent = modelMode === 'infer' ? '正在读取所选原文并归纳维度…' : '正在为每个环节召回并核对真实指标…';
+    if (jobControl().busy || get('model-run').disabled) return;
+    suggestions = []; inferred = []; suggestionTargets = new Map(); modelReviewDirty = false;
+    get('suggestions').replaceChildren(); syncModel();
+    if (modelMode === 'suggest' && editing) for (const dim of draft) if (!dim.id) dim.id = freshId('d-');
+    const inference = modelMode === 'infer';
+    await jobControl().submit('/api/sn/dimensions/' + (inference ? 'infer' : 'suggestions'), {
+      model_id: get('model').value,
+      ...(inference ? {sources: [...selectedSources.values()]} : {
+        ...(get('date').value ? {date: get('date').value} : {}), ...(editing ? {dimensions: serialized()} : {}),
+      }),
+    });
+  }
+  function presentModelResult(result, mode) {
+    if (modelReviewDirty) throw new Error('候选选择已经编辑，已保留当前内容。');
+    if (mode === 'suggest') {
+      const sourceDimensions = result.request?.dimensions || dims();
+      const targets = sourceDimensions.flatMap(d => (d.sections?.length ? d.sections : [{label:''}]).map(s => ({dimension:d.id,section:s.label,section_id:s.id})));
+      suggestionTargets = new Map(targets.map((target, index) => ['i' + (index + 1), target]));
+    }
+    renderModelResult(result); syncModel();
+  }
+  function renderModelResult(result) {
+    get('suggestions').replaceChildren();
+    if (modelMode === 'infer') {
+      inferred = result.dimensions || [];
+      for (const d of inferred) {
+        const category = config.categories.find(c => (c.id || c) === d.category);
+        const card = node('div','dimensions-choice-body dimensions-choice'); const body = node('div'); body.append(node('strong','',d.label),node('small','',[category?.label || d.category,d.description].filter(Boolean).join(' · ')),node('small','',(d.sections || []).map(s => s.label).join(' / '))); card.append(body); get('suggestions').append(card);
+      }
+    } else {
+      suggestions = result.items || [];
+      if (result.ignored_reason) get('suggestions').append(node('p', 'dimensions-muted', result.ignored_reason));
+      const available = setupDimensions || dims(), groups = new Map(), sections = result.sections || [];
+      for (const d of available) {
+        const group = node('section','dimensions-suggestion-group'); group.append(node('h3','',d.label)); groups.set(d.id,group);
+        for (const section of sections.filter(row => row.dimension === d.id)) {
+          const summary = node('p', 'dimensions-recall-summary dimensions-muted', `${section.section || d.label} · 候选 ${section.candidate_count} · 已选 ${section.selected_count}`);
+          if (section.item_id) summary.dataset.itemId = section.item_id;
+          if (section.section_id) summary.dataset.sectionId = section.section_id;
+          if (section.empty_reason) summary.append(node('span', 'dimensions-empty-reason', ` · 留空原因：${section.empty_reason}`));
+          group.append(summary);
+        }
+        if (suggestions.some(row => row.dimension === d.id) || sections.some(row => row.dimension === d.id)) get('suggestions').append(group);
+      }
+      const unresolved = node('section','dimensions-suggestion-group'); unresolved.append(node('h3','','待指定维度'));
+      for (const [index, row] of suggestions.entries()) {
+        const choice = node('label','dimensions-choice'), check = node('input'); check.type = 'checkbox'; check.checked = true; check.dataset.index = index;
+        const body = node('span','dimensions-choice-body'); body.append(node('strong','',row.name || row.series_id),node('small','dimensions-suggestion-reason',row.reason));
+        if (row.sheet) body.append(node('small','dimensions-sheet',row.sheet));
+        const target = node('select'); target.setAttribute('aria-label','建议指标的维度');
+        target.append(new Option('请选择维度','')); available.forEach((d, i) => target.append(new Option(d.label,String(i))));
+        const matched = available.findIndex(d => d.id === row.dimension); target.value = matched < 0 ? '' : String(matched); target.addEventListener('change',syncModel);
+        const stage = input(row.section || '', '建议指标的环节', () => {}); stage.placeholder = '环节名（可改放）'; stage.maxLength = 40;
+        body.append(target,stage); choice.append(check,body);
+        const group = groups.get(row.dimension); (group || unresolved).append(choice); check.addEventListener('change', syncModel);
+      }
+      if (unresolved.querySelector('.dimensions-choice')) get('suggestions').append(unresolved);
+    }
+    get('model-status').textContent = result.notice || (modelMode === 'infer' ? '这是模型草稿。采用后可以增删改；只有点击页面“保存”才会覆盖配置。' : '勾选条目并核对环节；采用后还需要保存研究维度。');
+  }
+  async function reviewSetup() {
+    const setup = window.WorkbenchSetupReview;
+    if (!editable() || !await setup?.appliesTo('dimensions', 'indicators')) return;
+    const revision = config.revision;
     try {
-      if (modelMode === 'suggest' && editing) for (const dim of draft) if (!dim.id) dim.id = freshId('d-');
-      if (modelMode === 'suggest') {
-        const targets = dims().flatMap(d => (d.sections?.length ? d.sections : [{label:''}]).map(s => ({dimension:d.id,section:s.label,section_id:s.id})));
-        suggestionTargets = new Map(targets.map((target, index) => ['i' + (index + 1), target]));
-      }
-      const result = await request('/dimensions/' + (modelMode === 'infer' ? 'infer' : 'suggestions'), {model_id: get('model').value,...(modelMode === 'infer' ? {sources: [...selectedSources.values()]} : {...(get('date').value ? {date: get('date').value} : {}),...(editing ? {dimensions: serialized()} : {})})}, 'POST');
-      if (modelMode === 'infer') {
-        inferred = result.dimensions || [];
-        for (const d of inferred) {
-          const category = config.categories.find(c => (c.id || c) === d.category);
-          const card = node('div','dimensions-choice-body dimensions-choice'); const body = node('div'); body.append(node('strong','',d.label),node('small','',[category?.label || d.category,d.description].filter(Boolean).join(' · ')),node('small','',(d.sections || []).map(s => s.label).join(' / '))); card.append(body); get('suggestions').append(card);
-        }
-      } else {
-        suggestions = result.items || [];
-        const available = dims(), groups = new Map(), sections = result.sections || [];
-        for (const d of available) {
-          const group = node('section','dimensions-suggestion-group'); group.append(node('h3','',d.label)); groups.set(d.id,group);
-          for (const section of sections.filter(row => row.dimension === d.id)) {
-            const summary = node('p', 'dimensions-recall-summary dimensions-muted', `${section.section || d.label} · 候选 ${section.candidate_count} · 已选 ${section.selected_count}`);
-            if (section.item_id) summary.dataset.itemId = section.item_id;
-            if (section.section_id) summary.dataset.sectionId = section.section_id;
-            if (section.empty_reason) summary.append(node('span', 'dimensions-empty-reason', ` · 留空原因：${section.empty_reason}`));
-            group.append(summary);
-          }
-          if (suggestions.some(row => row.dimension === d.id) || sections.some(row => row.dimension === d.id)) get('suggestions').append(group);
-        }
-        const unresolved = node('section','dimensions-suggestion-group'); unresolved.append(node('h3','','待指定维度'));
-        for (const [index, row] of suggestions.entries()) {
-          const choice = node('label','dimensions-choice'), check = node('input'); check.type = 'checkbox'; check.checked = true; check.dataset.index = index;
-          const body = node('span','dimensions-choice-body'); body.append(node('strong','',row.name || row.series_id),node('small','dimensions-suggestion-reason',row.reason));
-          if (row.sheet) body.append(node('small','dimensions-sheet',row.sheet));
-          const target = node('select'); target.setAttribute('aria-label','建议指标的维度');
-          target.append(new Option('请选择维度','')); available.forEach((d, i) => target.append(new Option(d.label,String(i))));
-          const matched = available.findIndex(d => d.id === row.dimension); target.value = matched < 0 ? '' : String(matched); target.addEventListener('change',syncModel);
-          const stage = input(row.section || '', '建议指标的环节', () => {}); stage.placeholder = '环节名（可改放）'; stage.maxLength = 40;
-          body.append(target,stage); choice.append(check,body);
-          const group = groups.get(row.dimension); (group || unresolved).append(choice); check.addEventListener('change', syncModel);
-        }
-        if (unresolved.querySelector('.dimensions-choice')) get('suggestions').append(unresolved);
-      }
-      get('model-status').textContent = result.notice || (modelMode === 'infer' ? '这是模型草稿。采用后可以增删改；只有点击页面“保存”才会覆盖配置。' : '勾选条目并核对环节；采用后还需要保存研究维度。');
-    } catch (error) { get('model-status').textContent = error.message; }
-    finally { running = false; syncModel(); }
+      const result = await setup.load();
+      if (config.revision !== revision || editing || saving || modelDialog.open || modelReviewDirty) return status('请先结束当前编辑，再重新打开任务结果。', true);
+      modelMode = setup.part === 'dimensions' ? 'infer' : 'suggest';
+      setupDimensions = modelMode === 'suggest' && config.revision === 0 && result.dimensions?.length ? result.dimensions : undefined;
+      const newOutline = setupDimensions?.some(dimension => !config.dimensions.some(row => row.id === dimension.id));
+      modelSetupJob = modelMode === 'infer' || newOutline ? setup.id : undefined;
+      get('model-title').textContent = modelMode === 'infer' ? '核对周报研究维度' : '核对周报绑定指标';
+      get('source-controls').hidden = true; get('model').parentElement.hidden = true; get('model-run').hidden = true;
+      get('inference-restore').hidden = true; get('suggestions-restore').hidden = true;
+      get('inference-result').hidden = true; get('suggestions-result').hidden = true;
+      get('model-adopt').textContent = modelMode === 'infer' ? '将这套维度作为编辑草稿' : '采用所选到编辑草稿';
+      suggestionTargets = new Map();
+      renderModelResult(result); syncModel(); modelDialog.showModal();
+    } catch (error) { status(error.message, true); }
   }
   function adopt() {
-    if (running || get('model-adopt').disabled) return;
+    if (jobControl().busy || get('model-adopt').disabled) return;
     if (modelMode === 'infer') {
       if (!window.confirm('将这套维度放入编辑草稿？当前未保存的编辑会被替换，现有配置要点击“保存”后才会覆盖。')) return;
-      startEdit(); draft = clone(inferred); appliedTemplate = undefined; render(); modelDialog.close(); status('已放入编辑草稿，可增删改后保存。'); return;
+      startEdit(); draft = clone(inferred); draftSetupJob = modelSetupJob; appliedTemplate = undefined; render(); modelDialog.close(); status('已放入编辑草稿，可增删改后保存。'); return;
     }
-    const candidate = clone(editing ? draft : config.dimensions); let merged = 0;
+    const candidate = clone(setupDimensions || (editing ? draft : config.dimensions)); let merged = 0;
     for (const check of get('suggestions').querySelectorAll('input[type="checkbox"]:checked')) {
       const row = suggestions[Number(check.dataset.index)], choice = check.closest('.dimensions-choice');
       const selectedDimension = choice.querySelector('select').value;
@@ -462,10 +648,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (stage.items.length >= 12 || candidate.flatMap(d => (d.sections || []).flatMap(s => s.items)).length >= 96) { get('model-status').textContent = '采用后将超过每环节12条或总96条上限，请减少所选或调整环节。'; return; }
       stage.items.push({kind:'indicator',id:row.series_id,name:row.name,unit:row.unit,frequency:row.frequency,sheet:row.sheet,source:row.source}); merged++;
     }
-    startEdit(); draft = candidate; render(); modelDialog.close(); status(`已合并 ${merged} 个指标到编辑草稿，请核对并保存。`);
+    startEdit(); draft = candidate; draftSetupJob = modelSetupJob || draftSetupJob; render(); modelDialog.close(); status(`已合并 ${merged} 个指标到编辑草稿，请核对并保存。`);
   }
   get('edit').addEventListener('click', startEdit); get('save').addEventListener('click', save);
-  get('cancel').addEventListener('click', () => { if (saving || templateApplying) return; editing = false; draft = undefined; appliedTemplate = undefined; deleted = new Set(); render(); status('已取消未保存的编辑。'); });
+  get('cancel').addEventListener('click', () => { if (saving || templateApplying) return; editing = false; draft = undefined; draftSetupJob = undefined; appliedTemplate = undefined; deleted = new Set(); render(); status('已取消未保存的编辑。'); });
   get('add').addEventListener('click', () => { if (draft.length >= 12) return status('最多12个维度。',true); draft.push({id:freshId('d-'),label:'新维度',category:config.categories?.[0]?.id || config.categories?.[0] || '其他',description:'',sections:[]}); render(); });
   get('templates').addEventListener('click', () => void openTemplates());
   get('start-general').addEventListener('click', () => void applyTemplate('general-six'));
@@ -478,10 +664,21 @@ document.addEventListener('DOMContentLoaded', () => {
   get('picker-search').addEventListener('input', () => { pickerToken++; clearTimeout(pickerTimer); pickerTimer = setTimeout(() => void loadChoices(),180); });
   get('suggest').addEventListener('click', () => void openModels('suggest')); get('infer').addEventListener('click', () => void openModels('infer'));
   get('model').addEventListener('change', syncModel); get('model-run').addEventListener('click', () => void generate()); get('model-adopt').addEventListener('click', adopt); get('model-close').addEventListener('click', () => modelDialog.close());
+  get('suggestions').addEventListener('input', () => { modelReviewDirty = true; });
   get('source-search').addEventListener('input', () => { sourceToken++; clearTimeout(sourceTimer); sourceTimer = setTimeout(() => void loadSources(),180); }); get('source-more').addEventListener('click', () => void loadSources(true));
-  modelDialog.addEventListener('cancel', event => { if (running) event.preventDefault(); });
+  modelDialog.addEventListener('close', () => { jobControl()?.pause(); sourceToken++; });
   templateDialog.addEventListener('cancel', event => { if (templateApplying) event.preventDefault(); });
   const params = new URLSearchParams(location.search); if (params.get('period') === 'daily') get('period').value = 'daily';
   if (params.get('date')) get('date').value = params.get('date'); else if (initial.date) get('date').value = initial.date;
-  window.addEventListener('pagehide', clearRenderers); void load();
+  window.addEventListener('pagehide', clearRenderers);
+  void load().then(async () => {
+    if (!editable()) return;
+    const view = [generation, config.revision, get('date').value, get('period').value].join(':');
+    const job = await window.ResearchAnalysisJobs.requested();
+    if (view !== [generation, config.revision, get('date').value, get('period').value].join(':')
+        || editing || saving || modelMode || templateApplying || templateDialog.open) return;
+    if (job?.purpose === 'dimension_inference') return openModels('infer', job.id);
+    if (job?.purpose === 'dimension_fields') return openModels('suggest', job.id);
+    return reviewSetup();
+  });
 });

@@ -39,7 +39,36 @@ const libraryHTML = renderLibrary(), detailHTML = render('chart_detail.html');
     await lib.page.locator('#chart-search').fill('合成图30');
     await lib.page.waitForFunction(() => document.querySelectorAll('.charts-card').length === 1);
     assert.match(await lib.page.locator('.charts-card').innerText(), /合成图30/);
+    await lib.page.locator('#chart-search').fill('没有该图表');
+    const noMatch = '没有匹配图表。可从原表导入，或在单指标页另存为图表。';
+    const searchStatus = lib.page.locator('#charts-status');
+    await searchStatus.filter({hasText: noMatch}).waitFor();
+    assert.equal(await searchStatus.innerText(), noMatch);
+    assert.equal(await searchStatus.getByRole('link').count(), 0);
     await lib.close();
+
+    const empty = await open(browser, '/sn/indicators?tab=charts', libraryHTML, ({path, reply}) => {
+      if (path === '/charts/anomalies') return reply({items: [], total: 0, failed: []});
+      if (path === '/charts') return reply({items: [], total: 0, next_offset: null});
+      return false;
+    });
+    const emptyStatus = empty.page.locator('#charts-status');
+    const importDestinations = [
+      ['从原表导入', prefix + '/sn/charts/import'],
+      ['从往期周报导入', prefix + '/sn/charts/import#report-chart-import'],
+    ];
+    for (const [name, href] of importDestinations) {
+      const link = emptyStatus.getByRole('link', {name, exact: true});
+      assert.equal(await link.isVisible(), true);
+      assert.equal(await link.getAttribute('href'), href);
+      assert.equal(await empty.page.locator('.charts-header').getByRole('link', {name, exact: true}).getAttribute('href'), href);
+    }
+    await empty.page.locator('#chart-search').fill('查找图表');
+    await emptyStatus.filter({hasText: noMatch}).waitFor();
+    assert.equal(await emptyStatus.getByRole('link').count(), 0);
+    await empty.page.locator('#chart-search').clear();
+    await emptyStatus.getByRole('link', {name: '从原表导入'}).waitFor({state: 'visible'});
+    await empty.close();
 
     const galleryRecords = records.map(item => ({...item, definition: {...item.definition, group: '整组图集'}}));
     const gallery = await open(browser, '/sn/indicators?tab=charts', libraryHTML, ({path, url, reply}) => {

@@ -16,7 +16,8 @@
     non_finite_transform: '变换结果超出有效数值范围，该日期不绘制', invalid_transform: '本期变换存在无效数值，不纳入统计',
     non_finite_result: '部分计算结果超出有效数值范围，已标为不可用',
     current_missing: '该指标在共同当前期没有有效观测',
-    already_imported: '已导入，跳过重复图表', pending_source: '曲线来源尚未接入', unsupported: '暂不支持该图型', no_data: '曲线没有可用数据', unconfirmed_sheet: '工作表尚未确认'
+    already_imported: '已导入，跳过重复图表', same_indicators: '与图表库已有图指标相同，已跳过',
+    pending_source: '曲线来源尚未接入', unsupported: '暂不支持该图型', no_data: '曲线没有可用数据', unconfirmed_sheet: '工作表尚未确认'
   };
   function message(value) {
     if (typeof value === 'string') return messages[value] || value;

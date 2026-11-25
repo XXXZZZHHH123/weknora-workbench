@@ -272,13 +272,15 @@ func (s *WorkspaceService) UpdateWorkbenchSourceSharing(ctx context.Context, id 
 }
 
 type WorkbenchSourceKnowledge struct {
-	ID            string    `json:"id"`
-	FileHash      string    `json:"file_hash"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	EnableStatus  string    `json:"enable_status"`
-	ParseStatus   string    `json:"parse_status"`
-	KnowledgeType string    `json:"knowledge_type"`
-	FileType      string    `json:"file_type"`
+	ID                 string     `json:"id"`
+	FileHash           string     `json:"file_hash"`
+	PreviousFileHashes []string   `json:"previous_file_hashes,omitempty"`
+	FileVersionAt      *time.Time `json:"file_version_at,omitempty"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	EnableStatus       string     `json:"enable_status"`
+	ParseStatus        string     `json:"parse_status"`
+	KnowledgeType      string     `json:"knowledge_type"`
+	FileType           string     `json:"file_type"`
 }
 
 type WorkbenchSourceProjection struct {
@@ -311,15 +313,43 @@ type WorkbenchSourceScope struct {
 
 func (s *WorkspaceService) sourceProjection(ctx context.Context, kb *types.KnowledgeBase, kind string, delegated bool) (WorkbenchSourceProjection, error) {
 	projection := WorkbenchSourceProjection{KnowledgeBaseID: kb.ID, TenantID: kb.TenantID, Kind: kind, Delegated: delegated, Permission: "viewer", Knowledge: []WorkbenchSourceKnowledge{}}
+	var records []types.Knowledge
 	err := s.db.WithContext(ctx).Model(&types.Knowledge{}).
-		Select("id, file_hash, updated_at, enable_status, parse_status, type AS knowledge_type, file_type").
+		Select("id, file_hash, created_at, updated_at, enable_status, parse_status, type, file_type, metadata").
 		Where("tenant_id = ? AND knowledge_base_id = ?", kb.TenantID, kb.ID).
 		Where("LOWER(LTRIM(file_type,'.')) IN ?", []string{"xlsx", "xls", "xlsm", "csv", "tsv"}).
-		Where("parse_status <> ? OR parse_status IS NULL", types.ParseStatusDeleting).Order("id").Limit(129).Scan(&projection.Knowledge).Error
-	if err == nil && len(projection.Knowledge) > 128 {
+		Where("parse_status <> ? OR parse_status IS NULL", types.ParseStatusDeleting).Order("id").Limit(129).Scan(&records).Error
+	if err != nil {
+		return projection, err
+	}
+	if len(records) > 128 {
 		return projection, &apperrors.AppError{Code: apperrors.ErrValidation, HTTPCode: http.StatusRequestEntityTooLarge, Message: "当前研究来源超过128份表格原件容量，请拆分来源后重试；未静默截断数据"}
 	}
-	return projection, err
+	for _, row := range records {
+		projected := WorkbenchSourceKnowledge{ID: row.ID, FileHash: row.FileHash, UpdatedAt: row.UpdatedAt,
+			EnableStatus: row.EnableStatus, ParseStatus: row.ParseStatus, KnowledgeType: row.Type, FileType: row.FileType}
+		versionAt := row.CreatedAt
+		if history, err := row.FileVersionHistory(); err == nil {
+			if !history.UpdatedAt.IsZero() {
+				versionAt = history.UpdatedAt
+			}
+			seen := map[string]bool{"": true, row.FileHash: true}
+			for _, version := range history.Previous {
+				if !seen[version.FileHash] {
+					seen[version.FileHash] = true
+					projected.PreviousFileHashes = append(projected.PreviousFileHashes, version.FileHash)
+				}
+			}
+			if !seen[history.LastPublishedFileHash] {
+				projected.PreviousFileHashes = append(projected.PreviousFileHashes, history.LastPublishedFileHash)
+			}
+		}
+		if row.FileHash != "" && !versionAt.IsZero() {
+			projected.FileVersionAt = &versionAt
+		}
+		projection.Knowledge = append(projection.Knowledge, projected)
+	}
+	return projection, nil
 }
 
 // This grants only an audited research projection. It never authorizes the raw
@@ -385,6 +415,15 @@ func (s *WorkspaceService) getWorkbenchSourceScope(ctx context.Context, id strin
 			}
 		}
 		scope.Sources = append(scope.Sources, projection)
+	}
+	if inventory {
+		var latest types.ResearchWorkbench
+		if err := s.db.WithContext(ctx).Select("sources_revision").Take(&latest, "id = ? AND tenant_id = ?", row.ID, row.TenantID).Error; err != nil {
+			return nil, workspaceDBError(err)
+		}
+		if latest.SourcesRevision != scope.SourcesRevision {
+			return nil, apperrors.NewConflictError("工作台来源在读取期间已更新，请重试")
+		}
 	}
 	for _, module := range types.WorkbenchViewModules() {
 		if active > 0 && allDirect || moduleSet[module] {

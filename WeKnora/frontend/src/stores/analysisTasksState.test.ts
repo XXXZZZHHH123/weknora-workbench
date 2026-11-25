@@ -110,6 +110,33 @@ test('diagram jobs share discovery and report generation stages without being la
   } finally { f.close() }
 })
 
+test('workbench setup lets researchers distinguish the running stage and drafts ready for review', () => {
+  const setup = { ...job(), purpose: 'workbench_setup', phase: 'focus' } as const
+  assert.equal(analysisPhaseLabel(setup), '核心关注建议')
+  assert.equal(analysisPhaseLabel({ ...setup, phase: 'reading_source' }), '读取周报')
+  assert.equal(analysisPhaseLabel({ ...setup, state: 'succeeded' }), '草稿待核对')
+  assert.equal(analysisPhaseLabel({ ...setup, state: 'failed' }), '建立未完成')
+})
+
+test('draft tasks share discovery, localized stages and unread counts across purposes', async () => {
+  const f = fixture()
+  try {
+    const pending = f.tasks.start()
+    const query = { ...job('running', 'query'), purpose: 'dimension_fields', phase: 'dimension_queries' } as const
+    const chart = { ...job('succeeded', 'chart'), purpose: 'report_chart_import' } as const
+    const monitor = { ...job('interrupted', 'monitor'), purpose: 'monitor_draft' } as const
+    f.calls[0]!.resolve([query, chart, monitor])
+    await pending
+    assert.equal(f.tasks.activeCount.value, 1)
+    assert.equal(analysisPhaseLabel(query), '正在归纳指标检索方向')
+    assert.equal(analysisPhaseLabel({ ...query, phase: 'dimension_fields' }), '正在选择指标')
+    assert.equal(analysisPhaseLabel(chart), '已完成 · 待核对')
+    assert.equal(analysisPhaseLabel(monitor), '已中断')
+    assert.deepEqual(f.tasks.unreadIds.value, ['chart', 'monitor'])
+    assert.deepEqual(f.tasks.takeNotifications().map(row => row.id), ['chart'])
+  } finally { f.close() }
+})
+
 test('ignore waits for the server then hides the notice while keeping the recoverable result', async () => {
   const f = fixture()
   try {
