@@ -8,6 +8,8 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
+const unverifiedNumberNotice = "标了〔未核验〕的数字没能和本轮查到的原文或数据逐项对上，请以引用的原表、原文或数据为准。"
+
 // A terminal warning is not approval. Keep a private binding for the exact
 // marked presentation and its navigation references, independently of the
 // semantic-review fallback and complete-chart receipts.
@@ -87,10 +89,7 @@ func (e *AgentEngine) numericUnverifiedPresentation(ctx context.Context, state *
 	if !ok || count == 0 {
 		return "", 0, nil, nil, false
 	}
-	delivery := marked + "\n\n> 提示：标注〔未核验〕的数字未能与本轮取数结果逐项核对，请以引用的原表、原文或数据为准。"
-	if visible := visibleNumericWarningTokens(d.Unsupported); len(visible) > 0 {
-		delivery += "未核验数字：“" + strings.Join(visible, "、") + "”。"
-	}
+	delivery := marked + "\n\n> 提示：" + unverifiedNumberNotice
 	refs, legacy := e.unverifiedNavigationReferences(delivery, state)
 	if len(refs) != len(uniqueCandidateEvidenceIDs(delivery)) || len(legacy) != len(uniqueCandidateCitationIDs(delivery)) ||
 		!numericUnverifiedReferenceBudgetFits(refs, legacy) {
