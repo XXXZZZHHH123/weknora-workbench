@@ -48,7 +48,7 @@ func (e *AgentEngine) standardPreliminaryProse() bool {
 }
 
 const standardAnswerBudgetNotice = `<preliminary_answer>
-本轮只读取证已达到阶段预算。按用户要求的格式，先给已读证据支持的具体结论或数值及出处。有要求尚未覆盖时，给出最接近的可得结果及其日期和出处，再点明具体缺口。只就实际核对的范围说明覆盖情况，保留真实引用。不得再请求工具、伪造执行或以未经核验的数字补齐答案。
+本轮只读取证已达到阶段预算。按用户要求的格式，先给已读证据支持的具体结论或数值及出处。逐值对应实际来源、指标和观测期；缺数时给同口径最近的已核值、日期和出处，确无同口径已核值时给已证事实及出处。点明实际核对范围内的缺口，当轮交付，无需请用户补材料。保留真实引用，不得再请求工具、伪造执行或填入未经核验的数字。
 </preliminary_answer>`
 
 // This is an execution-protocol allowlist, not an intent classifier. Unknown

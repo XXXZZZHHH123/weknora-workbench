@@ -65,7 +65,7 @@ type DocumentDateEvidence struct {
 }
 
 const documentScopePlanSchema = `{"type":"object","additionalProperties":false,"required":["sources","selection_reason"],"properties":{
-"selection_reason":{"type":"string","minLength":1,"maxLength":2000,"description":"Explain source restrictions inferred from the complete user request and context. Ambiguous source dates/versions require clarification, not choosing the first candidate."},
+"selection_reason":{"type":"string","minLength":1,"maxLength":2000,"description":"Explain source restrictions inferred from the complete request and context. Include each relevant identifiable version when resolving conflicting accounts; clarify only when required source identity remains unclear."},
 "sources":{"type":"array","minItems":1,"maxItems":10,"items":{"type":"object","additionalProperties":false,"required":["knowledge_id"],"properties":{
 "knowledge_id":{"type":"string","minLength":1,"description":"Actual authorized doc://N document handle from search/list metadata"},
 "expected_file_name":{"type":"string","description":"Exact file_name from real source metadata; at least file_name or title is required"},
@@ -177,7 +177,7 @@ func (r *RequestedDocumentConstraint) selection(id string) (DocumentSourceSelect
 	}
 	source, ok := r.sources[id]
 	if !ok {
-		return source, fmt.Errorf("该文档不在已验证来源计划中，不能用另一报告的同名图替代；比较或更改来源须明确提交完整来源计划")
+		return source, fmt.Errorf("该文档不在已验证来源计划中；在 source_scope.sources 传入全部获准目标文档的真实元数据，保留用户来源和页码限制")
 	}
 	return cloneDocumentSelection(source), nil
 }
@@ -207,7 +207,7 @@ func (r *RequestedDocumentConstraint) selectionForRead(knowledge *types.Knowledg
 	}
 	selected, ok := r.sources[knowledge.ID]
 	if !ok {
-		return DocumentSourceSelection{}, fmt.Errorf("该文档不在已验证来源计划中，不能用另一报告的同名图替代；比较或更改来源须明确提交完整来源计划")
+		return DocumentSourceSelection{}, fmt.Errorf("该文档不在已验证来源计划中；重试 read_document 时在 source_scope.sources 传入全部获准目标文档的真实元数据，保留用户来源和页码限制")
 	}
 	if selected.FileName != "" && selected.FileName != knowledge.FileName || selected.Title != "" && selected.Title != knowledge.Title {
 		return DocumentSourceSelection{}, fmt.Errorf("当前文档身份元数据与已验证来源不一致；请核对当前版本后重新提交来源计划")
@@ -375,7 +375,7 @@ func withDocumentScopeParameter(tool BaseTool) BaseTool {
 	tool.schema, _ = json.Marshal(schema)
 	if tool.name == ToolReadDocument {
 		tool.description += "\nChoose the read ID from authorized metadata for the complete request. When no plan is bound, a read by ID alone binds only that document. " +
-			"For initial reads of different documents in one batch, pass the same complete source_scope on every read, or bind_document_scope once before the batch. " +
+			"When navigation identifies relevant updates or competing accounts, read the pertinent pages as part of the batch. For initial reads across documents, including attribution follow-ups, pass the same complete source_scope on every read, or bind_document_scope once before the batch. Reuse a complete scope already verified this turn. " +
 			"To change sources or declare source-date or user-page constraints, supply the full plan with actual metadata. Existing bindings and user document/page limits apply. Never guess an ID or substitute a same-name source."
 	} else {
 		tool.description += "\nWhen this workbench requires a document source plan, inspect authorized document metadata first, then pass source_scope or bind_document_scope using the complete question/context: selected actual sources, exact metadata, requested pages/date proof and selection reason. Candidates are not content evidence until verified. Comparisons explicitly select multiple documents; do not decide scope from keywords."
@@ -429,7 +429,7 @@ func PrepareDocumentScope(registry *ToolRegistry, userMessages ...string) {
 			binder.targets = targets
 		}
 	} else {
-		registry.RegisterTool(&bindDocumentScopeTool{BaseTool: NewBaseTool(ToolBindDocumentScope, "Select document sources from real authorized metadata using the full question and context. Submit exact IDs/file names/titles, date proof when constrained, revisable physical-page hints and a reason. User-imposed page limits must be separately provided in user_page_constraint with an exact user quote; model read hints never become user restrictions. Clarify ambiguous dates/versions rather than silently choosing a candidate. Comparisons explicitly include all compared sources. This validates source identity, not chart facts.", json.RawMessage(documentScopePlanSchema)), state: state, service: service, targets: targets})
+		registry.RegisterTool(&bindDocumentScopeTool{BaseTool: NewBaseTool(ToolBindDocumentScope, "Select document sources from real authorized metadata using the full question and context. Submit exact IDs/file names/titles, date proof when constrained, revisable physical-page hints and a reason. User-imposed page limits must be separately provided in user_page_constraint with an exact user quote; model read hints never become user restrictions. Include all relevant identifiable versions for comparisons and attribution; clarify only when required source identity remains unclear. This validates source identity, not chart facts.", json.RawMessage(documentScopePlanSchema)), state: state, service: service, targets: targets})
 	}
 	if search != nil {
 		search.WithDocumentConstraint(state)
@@ -512,7 +512,7 @@ func (t *SearchKnowledgeTool) documentCandidates(ctx context.Context, results []
 		"notice": "候选来自授权目录，navigation_matches 仅供定位。引用、计算或判断图表数值前，用 read_document 核对正文或原图。文件名和发布日期不能说明正文覆盖期。" +
 			"根据完整问题和上下文选源，遵守用户指定文件及页码。明确选定的单文件可按 ID 直接读取，同一文件内比较无需另绑。首次读取核对身份和权限，已有来源计划仍有效。" +
 			"按问题决定比较期次还是文件。按期比较时归组同期文件，分别核对同一事项的不同版本，同期只计一次。跨文件比较按需用授权目录补齐来源，首批各 read_document 携同一完整 source_scope，或在这批读取前先 bind_document_scope。显式来源日期证明和用户限页随来源计划提交。" +
-			"跨文件比较时逐份查正文的所问主题，按相关报告类别核对重复与更新。导航摘录、摘要或一次查询未见，只能说明已查范围。不得用其他报告的同名图替代。"}
+			"导航已定位直接相关的更新、不同说法或解释时，在首批范围和页码中纳入对应正文页，用 read_document 正式核对；追问出处同样逐份核读。跨期比较按相关报告类别核对重复与更新。导航摘录、摘要或一次查询未见，只能说明已查范围。不得用其他报告的同名图替代。"}
 	encoded, _ := json.Marshal(data)
 	return &types.ToolResult{Success: true, Data: data, Output: string(encoded)}
 }

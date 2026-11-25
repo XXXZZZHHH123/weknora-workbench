@@ -29,6 +29,8 @@ func TestCitedDocumentReviewCorrectsContradictionWithoutReplacingCore(t *testing
 	require.Len(t, docs, 1)
 	require.Equal(t, "The indicator measures covered area.", docs[0].(map[string]any)["content"])
 	require.NotContains(t, model.calls[0][1].Content, "reporting organization")
+	require.Contains(t, model.calls[0][0].Content, "Unless the user explicitly limits the answer to what the source states, keep a reliable conventional expansion supported by context and labeled as general knowledge")
+	require.Contains(t, model.calls[0][0].Content, "Correct any unsupported attribution of that expansion to the source.")
 	e.checkCandidate(t.Context(), "Describe the indicator.", d.Candidate, "", state, nil, true)
 	require.Len(t, model.calls, 1, "document evidence shares the existing one-call budget")
 }
@@ -121,6 +123,9 @@ func TestReadDocumentReviewWithoutInlineCitationsRetainsAllViews(t *testing.T) {
 				require.Equal(t, "contract-document", view["knowledge_id"])
 			}
 			require.Contains(t, model.calls[0][0].Content, "apply all proposed replacements to the entire candidate")
+			require.Contains(t, model.calls[0][0].Content, "Preserve both sourced versions and a supported choice for this answer, including an explicit provisional choice among equally supported read versions.")
+			require.Contains(t, model.calls[0][0].Content, "Correct unsupported claims of formal authority or supersession while preserving each version’s citations")
+			require.Contains(t, model.calls[0][0].Content, "Preserve separate attribution for differing versions and independent sources.")
 		})
 	}
 }

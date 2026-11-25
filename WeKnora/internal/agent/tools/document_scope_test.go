@@ -154,17 +154,27 @@ func TestModelPlannedScopeRejectsForeignDocumentAndInvalidDateProof(t *testing.T
 	res, err := tool.Execute(context.Background(), json.RawMessage(`{"id":"report-b"}`))
 	require.NoError(t, err)
 	require.False(t, res.Success)
-	require.Contains(t, res.Error, "另一报告")
+	require.Contains(t, res.Error, "重试 read_document 时在 source_scope.sources 传入全部获准目标文档的真实元数据")
+	require.Contains(t, res.Error, "保留用户来源和页码限制")
 	_, err = state.bind(context.Background(), DocumentScopePlan{Reason: "model provided wrong date", Sources: []DocumentSourceSelection{{KnowledgeID: "report-b", FileName: "棉花周报20250310.pptx", Date: &DocumentDateEvidence{Date: "2024-03-10", SourceField: "file_name", SourceText: "20240310"}}}}, tool.knowledgeService, tool.searchTargets)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "日期")
 	_, err = state.selection("report-a")
 	require.NoError(t, err, "invalid plans cannot replace a previously verified source")
-	// Comparison is an explicit model plan; no comparison keyword is inspected.
-	_, err = state.bind(context.Background(), DocumentScopePlan{Reason: "user explicitly requests comparing both sources", Sources: []DocumentSourceSelection{{KnowledgeID: "report-a", FileName: "棉花周报20240310.pptx"}, {KnowledgeID: "report-b", FileName: "棉花周报20250310.pptx"}}}, tool.knowledgeService, tool.searchTargets)
+	repo := tool.chunkService.(*readDocChunkService).repo
+	repo.ordered = testDocumentChunks("report-b", 1)
+	repo.ordered[0].Content = "<!-- Slide number: 12 -->\nThe second report's page body."
+	plan := DocumentScopePlan{Reason: "user explicitly requests comparing both sources", Sources: []DocumentSourceSelection{
+		{KnowledgeID: "report-a", FileName: "棉花周报20240310.pptx"},
+		{KnowledgeID: "report-b", FileName: "棉花周报20250310.pptx", Page: 12},
+	}}
+	args, err := json.Marshal(ReadDocumentInput{ID: "report-b", SourceScope: &plan})
 	require.NoError(t, err)
-	_, err = state.selection("report-b")
+	res, err = tool.Execute(context.Background(), args)
 	require.NoError(t, err)
+	require.True(t, res.Success, res.Error)
+	require.Contains(t, res.Output, "The second report's page body.")
+	require.Equal(t, []string{"report-a", "report-b"}, state.selectedIDs())
 }
 
 func TestRequestedReportIgnoresDeletingDuplicateButRefusesRetiredExplicitSource(t *testing.T) {
@@ -361,7 +371,8 @@ func TestUnboundSearchProjectsSamePeriodFilesAndComparisonGuidance(t *testing.T)
 	require.Equal(t, 3, strings.Count(projected, `navigation_only="true" requires_read="true"`))
 	notice := res.Data["notice"].(string)
 	for _, guidance := range []string{"归组同期文件，分别核对", "首批各 read_document 携同一完整 source_scope",
-		"同一文件内比较无需另绑", "只能说明已查范围"} {
+		"同一文件内比较无需另绑", "导航已定位直接相关的更新、不同说法或解释时，在首批范围和页码中纳入对应正文页",
+		"跨期比较按相关报告类别核对重复与更新", "只能说明已查范围"} {
 		require.Contains(t, notice, guidance)
 	}
 	require.Contains(t, projected, "<hint>"+notice+"</hint>")
@@ -370,6 +381,8 @@ func TestUnboundSearchProjectsSamePeriodFilesAndComparisonGuidance(t *testing.T)
 func TestVerifiedScopeIsPerTurnAndSupportsExplicitComparativePlans(t *testing.T) {
 	read, _ := reportScopeFixture(t, "first20240310.pptx", "second20250310.pptx")
 	require.Contains(t, read.Description(), "pass the same complete source_scope on every read")
+	require.Contains(t, read.Description(), "including attribution follow-ups")
+	require.Contains(t, read.Description(), "Reuse a complete scope already verified this turn")
 	registry := NewToolRegistry()
 	registry.RegisterTool(read)
 	PrepareDocumentScope(registry)
