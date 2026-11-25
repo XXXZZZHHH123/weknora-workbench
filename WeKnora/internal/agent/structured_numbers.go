@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/models/chat"
@@ -29,6 +30,9 @@ var pdfNumberedSourceHeading = regexp.MustCompile(`^[1-9][0-9]{0,3}[.、][ \t]*(
 // Longest complete forms precede partial forms so an invalid complete date is
 // consumed once and cannot later lose its month/day to a shorter match.
 var calendarDateLiteral = regexp.MustCompile(`\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{2,4}年\d{1,2}月\d{1,2}日?|\d{4}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}|\d{2,4}年(?:\d{1,2}月)?|\d{1,2}月(?:\d{1,2}日?)?`)
+var spacedCalendarDate = regexp.MustCompile(`\d{4}[ \t]*年[ \t]*\d{1,2}[ \t]*月[ \t]*\d{1,2}[ \t]*日`)
+var qualifiedFieldCode = regexp.MustCompile(`^([A-Za-z]+\d+[A-Za-z][A-Za-z0-9_]*)\.[A-Za-z][A-Za-z0-9_]*$`)
+var fileExtension = regexp.MustCompile(`^\.[A-Za-z][A-Za-z0-9]*$`)
 var cellOrListMarker = regexp.MustCompile(`\b[A-Z]{1,3}\d+\b|(?m)^\s*(?:[#>*-]|\*\*)*\s*\d+[.)）、]`)
 var sourceCitationTag = regexp.MustCompile(`<(?:kb|web|evidence)\b[^>]*>`)
 var sourceDigestLabel = regexp.MustCompile(`(?i)\bSHA-?256\b`)
@@ -195,21 +199,36 @@ func maskValidatedCalendarDates(text string) string {
 }
 
 func standaloneDateToken(text string, start, end int) bool {
-	identifier := func(b byte) bool {
-		return b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b == '_'
-	}
-	if start > 0 && (identifier(text[start-1]) || strings.ContainsRune("./-", rune(text[start-1]))) {
+	if start > 0 && (numericASCIIWord(text[start-1]) || strings.ContainsRune("./-", rune(text[start-1]))) {
 		return false
 	}
 	if end < len(text) {
-		if identifier(text[end]) {
+		if numericASCIIWord(text[end]) {
 			return false
 		}
-		if strings.ContainsRune("./-", rune(text[end])) && end+1 < len(text) && identifier(text[end+1]) {
+		if strings.ContainsRune("./-", rune(text[end])) && end+1 < len(text) && numericASCIIWord(text[end+1]) {
 			return false
 		}
 	}
 	return true
+}
+
+func maskObservedCalendarDates(text string, observed map[time.Time]bool) string {
+	if len(observed) == 0 {
+		return text
+	}
+	masked := []byte(text)
+	for _, span := range spacedCalendarDate.FindAllStringIndex(text, -1) {
+		if !standaloneDateToken(text, span[0], span[1]) {
+			continue
+		}
+		compact := strings.Join(strings.Fields(text[span[0]:span[1]]), "")
+		date, err := time.Parse("2006年1月2日", compact)
+		if err == nil && observed[date] {
+			copy(masked[span[0]:span[1]], numericMask(text[span[0]:span[1]]))
+		}
+	}
+	return string(masked)
 }
 
 func validCalendarLiteral(value string) bool {
@@ -295,7 +314,8 @@ func ungroundedStructuredNumberOccurrences(answer string, messages []chat.Messag
 func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messages []chat.Message, checkEmptyEvidence bool, rawSteps ...[]types.AgentStep) []numericOccurrence {
 	values := []float64{}
 	percentageValues := []float64{}
-	filenames := []string{}
+	qualifiedLabels := map[string]bool{}
+	observedDates := map[time.Time]bool{}
 	identifiers := map[string]bool{}
 	digests := map[string]bool{}
 	inspectedRows := map[string]bool{}
@@ -321,7 +341,7 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 		}
 	}
 	for _, steps := range rawSteps {
-		collectDurableDocumentIdentityTitles(steps, identityLabels)
+		collectDurableDocumentIdentityTitles(steps, qualifiedLabels, observedDates)
 		collectArtifactIdentityTitles(steps, identityLabels)
 		for _, step := range steps {
 			for _, call := range step.ToolCalls {
@@ -435,9 +455,7 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 					continue
 				}
 				if key == "file" || key == "source_file" {
-					if file, ok := item.(string); ok {
-						filenames = append(filenames, file)
-					}
+					addDocumentNumericIdentity(qualifiedLabels, item, true)
 				}
 				collect(item)
 			}
@@ -447,6 +465,7 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 			}
 		case string:
 			if date, ok := numericEvidenceCalendarDate(x); ok {
+				observedDates[calendarDay(date)] = true
 				for _, v := range []float64{float64(date.Year()), float64(date.Month()), float64(date.Day())} {
 					values = append(values, v)
 					percentageValues = append(percentageValues, v, v*100)
@@ -510,7 +529,7 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 				// labels for describing the candidates; do not promote any numeric
 				// payload from an unresolved/error result into computed evidence.
 				if data["status"] != "error" {
-					collectSourceIdentityLabels(data, identityLabels)
+					collectSourceIdentityLabels(data, identityLabels, qualifiedLabels)
 				}
 				if status, _ := data["status"].(string); status != "" && status != "ok" && status != "no_data" {
 					continue
@@ -557,7 +576,7 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 			// embedded JSON in a document is not an executed aggregate.
 			if name == "search_knowledge" || name == "read_document" {
 				for _, title := range fetchedDocumentIdentityTitles(msg.Content) {
-					identityLabels[title] = true
+					addDocumentNumericIdentity(qualifiedLabels, title, false)
 				}
 				continue
 			}
@@ -576,7 +595,7 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 				if data["status"] == "error" {
 					continue
 				}
-				collectSourceIdentityLabels(data, identityLabels)
+				collectSourceIdentityLabels(data, identityLabels, qualifiedLabels)
 				if status, _ := data["status"].(string); status != "" && status != "ok" && status != "no_data" && status != "resolved" {
 					continue
 				}
@@ -589,14 +608,19 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 			userTexts = append(userTexts, humanNumericText(msg.Content))
 		}
 	}
-	labels := make([]string, 0, len(identityLabels))
+	labels := make([]string, 0, len(identityLabels)+len(qualifiedLabels))
 	for label := range identityLabels {
 		labels = append(labels, label)
+	}
+	for label := range qualifiedLabels {
+		if !identityLabels[label] {
+			labels = append(labels, label)
+		}
 	}
 	sort.Slice(labels, func(i, j int) bool { return len(labels[i]) > len(labels[j]) })
 	for _, text := range userTexts {
 		for _, label := range labels {
-			text = maskExactSourceIdentity(text, label)
+			text = maskExactSourceIdentity(text, label, qualifiedLabels[label])
 		}
 		for _, n := range proseNumber.FindAllString(text, -1) {
 			if v, e := strconv.ParseFloat(strings.ReplaceAll(n, ",", ""), 64); e == nil {
@@ -609,11 +633,8 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 		return nil
 	} // No numeric evidence; ordinary conversation.
 	answer = maskCurrentChartImageDestinations(answer, rawSteps...)
-	for _, file := range filenames {
-		answer = strings.ReplaceAll(answer, file, numericMask(file))
-	}
 	for _, label := range labels {
-		answer = maskExactSourceIdentity(answer, label)
+		answer = maskExactSourceIdentity(answer, label, qualifiedLabels[label])
 	}
 	// Exact known tokens are provenance, not numbers. Unknown hashes remain
 	// visible to the checker; removing a known prefix must not hide a forged ID.
@@ -661,6 +682,7 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 	// Citation attributes contain opaque chunk/KB IDs and source URLs, not
 	// numeric claims. Keep checking every number in the surrounding prose.
 	text := sourceCitationTag.ReplaceAllStringFunc(answer, numericMask)
+	text = maskObservedCalendarDates(text, observedDates)
 	text = maskValidatedCalendarDates(text)
 	text = cellOrListMarker.ReplaceAllStringFunc(text, numericMask)
 	unsupported := []numericOccurrence{}
@@ -717,6 +739,10 @@ func numericEvidenceCalendarDate(value string) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+func calendarDay(date time.Time) time.Time {
+	return time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 // Runtime clocks, resource IDs and routing counts are not user-supplied
@@ -929,24 +955,48 @@ func collectArtifactIdentityTitles(steps []types.AgentStep, labels map[string]bo
 	}
 }
 
-func collectDurableDocumentIdentityTitles(steps []types.AgentStep, labels map[string]bool) {
-	add := func(value any) {
-		title, ok := value.(string)
-		if !ok || strings.TrimSpace(title) == "" {
-			return
+func addDocumentNumericIdentity(labels map[string]bool, value any, file bool) {
+	name, _ := value.(string)
+	name = strings.TrimSpace(name)
+	if !proseNumber.MatchString(name) {
+		return
+	}
+	if _, err := strconv.ParseFloat(name, 64); err != nil {
+		labels[name] = true
+	}
+	if ext := path.Ext(name); file && fileExtension.MatchString(ext) {
+		addDocumentNumericIdentity(labels, strings.TrimSuffix(name, ext), false)
+	}
+}
+
+func collectDurableDocumentIdentityTitles(steps []types.AgentStep, labels map[string]bool, dates map[time.Time]bool) {
+	addDocument := func(row map[string]any) {
+		addDocumentNumericIdentity(labels, row["title"], false)
+		addDocumentNumericIdentity(labels, row["file_name"], true)
+		metadata, _ := row["metadata"].(map[string]any)
+		for _, key := range []string{"report_date", "published_date", "date"} {
+			value, _ := metadata[key].(string)
+			if date, ok := numericEvidenceCalendarDate(value); ok {
+				dates[calendarDay(date)] = true
+			}
 		}
-		if _, err := strconv.ParseFloat(strings.TrimSpace(title), 64); err == nil {
-			return
-		}
-		labels[title] = true
 	}
 	for _, step := range steps {
 		for _, call := range step.ToolCalls {
-			if (call.Name != "search_knowledge" && call.Name != "read_document") || call.Result == nil || !call.Result.Success {
+			name := call.ExecutionName()
+			if (name != "search_knowledge" && name != "read_document") || call.Result == nil || !call.Result.Success {
 				continue
 			}
-			for _, field := range []string{"results", "chunks"} {
-				encoded, _ := json.Marshal(call.Result.Data[field])
+			data := call.Result.Data
+			if status, _ := data["status"].(string); status != "" && status != "ok" {
+				continue
+			}
+			fields := []string{"results", "chunks"}
+			if name == "search_knowledge" && data["display_type"] == "document_info" {
+				fields = append(fields, "documents")
+			}
+			for _, field := range fields {
+				encoded, _ := json.Marshal(data[field])
 				var rows []map[string]any
 				if json.Unmarshal(encoded, &rows) != nil {
 					continue
@@ -954,21 +1004,18 @@ func collectDurableDocumentIdentityTitles(steps []types.AgentStep, labels map[st
 				for _, row := range rows {
 					chunkID, _ := row["chunk_id"].(string)
 					knowledgeID, _ := row["knowledge_id"].(string)
-					if strings.TrimSpace(chunkID) == "" || strings.TrimSpace(knowledgeID) == "" {
+					if strings.TrimSpace(knowledgeID) == "" || field != "documents" && strings.TrimSpace(chunkID) == "" {
 						continue
 					}
-					add(row["knowledge_title"])
-					add(row["title"])
-					add(row["file_name"])
+					addDocumentNumericIdentity(labels, row["knowledge_title"], false)
+					addDocument(row)
 				}
 			}
-			knowledgeID, _ := call.Result.Data["knowledge_id"].(string)
-			if call.Name == "read_document" && strings.TrimSpace(knowledgeID) != "" {
-				add(call.Result.Data["knowledge_title"])
-				if document, ok := call.Result.Data["document"].(map[string]any); ok {
-					add(document["title"])
-					add(document["file_name"])
-				}
+			knowledgeID, _ := data["knowledge_id"].(string)
+			if name == "read_document" && strings.TrimSpace(knowledgeID) != "" {
+				addDocumentNumericIdentity(labels, data["knowledge_title"], false)
+				document, _ := data["document"].(map[string]any)
+				addDocument(document)
 			}
 		}
 	}
@@ -1095,7 +1142,7 @@ func pdfTableNumericEvidence(data map[string]any) []float64 {
 
 // Only actual catalogue and source-context fields establish label identities.
 // SQL text, free-form notices and arbitrary metadata do not authorize labels.
-func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
+func collectSourceIdentityLabels(data map[string]any, labels, qualifiedLabels map[string]bool) {
 	add := func(value any) {
 		text, ok := value.(string)
 		if !ok || len(text) > 512 || strings.TrimSpace(text) == "" {
@@ -1106,6 +1153,15 @@ func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
 		}
 		if len(proseNumber.FindAllString(text, -1)) > 0 {
 			labels[text] = true
+		}
+	}
+	addFieldCode := func(value any) {
+		add(value)
+		label, _ := value.(string)
+		// Allow an unqualified symbol only when an actual source field has
+		// that symbol. Similar-looking amounts must still be checked.
+		if parts := qualifiedFieldCode.FindStringSubmatch(label); len(parts) == 2 {
+			qualifiedLabels[parts[1]] = true
 		}
 	}
 	pdfLabels := func(table map[string]any) {
@@ -1229,13 +1285,13 @@ func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
 			}
 			if dimensions, ok := x["dimensions"].(map[string]any); ok {
 				for _, value := range dimensions {
-					add(value)
+					addFieldCode(value)
 				}
 			}
 			if headers, ok := x["headers"].([]any); ok {
 				for _, entry := range headers {
 					if h, ok := entry.(map[string]any); ok {
-						add(h["value"])
+						addFieldCode(h["value"])
 					}
 				}
 			}
@@ -1321,12 +1377,13 @@ func collectSourceIdentityLabels(data map[string]any, labels map[string]bool) {
 	}
 }
 
-func maskExactSourceIdentity(answer, label string) string {
+func numericASCIIWord(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '_'
+}
+
+func maskExactSourceIdentity(answer, label string, qualified bool) string {
 	// A catalogue token cannot exempt the same characters inside a longer
 	// ASCII identifier (e.g. known 3128B must not approve forged 3128B9).
-	asciiWord := func(c byte) bool {
-		return c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '_'
-	}
 	var out strings.Builder
 	for {
 		index := strings.Index(answer, label)
@@ -1339,7 +1396,11 @@ func maskExactSourceIdentity(answer, label string) string {
 		// category code ending in '+'). Adjacent ASCII identifiers still
 		// extend that token; a separately grounded suffix must not turn a
 		// forged composite identity into a valid one.
-		bounded := !(index > 0 && asciiWord(answer[index-1])) && !(end < len(answer) && asciiWord(answer[end]))
+		bounded := !(index > 0 && numericASCIIWord(answer[index-1])) && !(end < len(answer) && numericASCIIWord(answer[end]))
+		if qualified && end+1 < len(answer) && strings.ContainsRune(".-", rune(answer[end])) {
+			r, _ := utf8.DecodeRuneInString(answer[end+1:])
+			bounded = bounded && !unicode.IsLetter(r) && !unicode.IsDigit(r)
+		}
 		out.WriteString(answer[:index])
 		if bounded {
 			out.WriteString(numericMask(label))
