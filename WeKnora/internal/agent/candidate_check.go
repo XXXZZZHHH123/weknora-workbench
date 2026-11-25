@@ -214,7 +214,14 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	}
 	if needsStructuredAnswerReviewForQuery(query, state.RoundSteps, conversation, candidate) {
 		evidence := e.answerNumericEvidence(candidate, state.RoundSteps, conversation)
-		decision.Unsupported = ungroundedStructuredNumbers(candidate, evidence, state.RoundSteps)
+		// The exceptional chart delivery inserts the exact coverage caption
+		// from a current receipt. Its range can name months with no result
+		// rows. Keep it in the semantic review and check every model number.
+		numericText := candidate
+		if chartAnswer, ok := ctx.Value(boundedChartAnswerKey{}).(*boundedChartAnswer); ok {
+			numericText = strings.TrimPrefix(candidate, chartAnswer.markdown+"\n\n")
+		}
+		decision.Unsupported = ungroundedStructuredNumbers(numericText, evidence, state.RoundSteps)
 		decision.NumericFeedback = buildNumericValidationFeedback(candidate, decision.Unsupported)
 		decision.RepeatedUnsupported = repeatedUnsupportedTokens(decision.Unsupported, e.turnReview.Last.Unsupported)
 		if len(decision.Unsupported) > 0 && (e.standardAnswerReview() || !e.turnReview.NumericWarningAllowed && e.turnReview.Repairs < maxTurnCandidateRepairs) {

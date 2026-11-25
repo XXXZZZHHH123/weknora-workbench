@@ -26,6 +26,7 @@ class _Dependency:
     mixed_constants: bool = False
     null: bool = False
     elements_verified: bool = False
+    direct_column: str = ''
 
     @property
     def sourced(self):
@@ -103,7 +104,7 @@ class _Binder:
         columns = [c for c in scope.columns if c.name is not None and c.name.casefold() == name
                    and (qualifier is None or c.qualifier.casefold() == qualifier)]
         if not columns and scope.outer is not None:
-            return self._lookup(names, scope.outer)
+            return replace(self._lookup(names, scope.outer), direct_column='')
         if len(columns) != 1:
             _fail('unresolved or ambiguous column; give computed CTE columns explicit aliases')
         return columns[0].dependency
@@ -166,7 +167,8 @@ class _Binder:
             dep = self.expression(children[0], outer, ctes)
             if not dep.elements_verified:
                 _fail('UNNEST requires verified source-element arrays; use explicit source columns or list aggregates')
-            return self._alias(_Relation([_Column('unnest', dep)], bool(dep.columns) or dep.cardinality), node, 'unnest')
+            return self._alias(_Relation([_Column('unnest', replace(dep, direct_column=''))],
+                                         bool(dep.columns) or dep.cardinality), node, 'unnest')
         if kind == 'PIVOT':
             return self.unpivot(node, ctes, outer)
         _fail('unsupported relation; use scoped SELECT/CTE, explicit joins, VALUES or UNPIVOT')
@@ -205,6 +207,12 @@ class _Binder:
                 yield from self._children(item, scope, ctes)
 
     def expression(self, node, scope, ctes):
+        dependency = self._expression(node, scope, ctes)
+        if dependency.direct_column and node.get('class') != 'COLUMN_REF':
+            return replace(dependency, direct_column='')
+        return dependency
+
+    def _expression(self, node, scope, ctes):
         self._visit()
         kind = node.get('class')
         if kind == 'CONSTANT':
@@ -326,7 +334,8 @@ class _Binder:
                 if len(left.columns) != len(right.columns) or node.get('setop_type') not in ('UNION', 'EXCEPT', 'INTERSECT'):
                     _fail('use a positional UNION/EXCEPT/INTERSECT with matching columns')
                 if node.get('setop_type') != 'UNION':
-                    return left
+                    return replace(left, columns=[replace(c, dependency=replace(c.dependency, direct_column=''))
+                                                  for c in left.columns])
                 columns = [_Column(a.name, _alternatives([a.dependency, b.dependency]))
                            for a, b in zip(left.columns, right.columns)]
                 return _Relation(columns, left.source_rows or right.source_rows,

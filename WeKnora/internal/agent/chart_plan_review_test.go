@@ -273,7 +273,12 @@ func TestChartReviewIncompleteFailuresDoNotSaveOrChangePlan(t *testing.T) {
 			require.Empty(t, writer.requests)
 			require.Empty(t, tool.receipts)
 			if response != nil && !test.canceled && !test.expired {
-				require.Equal(t, chartReviewCompletionBudget, state.TurnUsage.CompletionTokens)
+				attempts := 1
+				if isChartReviewProtocolFailure(incompleteChartReview(test.reason)) {
+					attempts = 2
+				}
+				require.Len(t, model.seen, attempts)
+				require.Equal(t, attempts*chartReviewCompletionBudget, state.TurnUsage.CompletionTokens)
 			} else if test.canceled || test.expired {
 				require.Empty(t, model.seen)
 				require.Zero(t, state.TurnUsage.CompletionTokens)

@@ -253,6 +253,11 @@ func (r *Runtime) cancelMessage(ctx context.Context, s Scope, messageID string) 
 func cancelGroup(g *Group) {
 	g.Status = "cancelling"
 	g.ParentWait = nil
+	stopDelegatedWork(g)
+	settle(g)
+}
+
+func stopDelegatedWork(g *Group) {
 	for _, m := range g.Members {
 		v := current(m)
 		if active(v) {
@@ -264,7 +269,6 @@ func cancelGroup(g *Group) {
 		}
 		m.Mail = nil
 	}
-	settle(g)
 }
 
 // Compact drops bulky history from a terminal group.

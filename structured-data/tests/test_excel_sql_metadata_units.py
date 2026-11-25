@@ -105,6 +105,23 @@ def test_case_from_series_id_remains_technical_even_with_business_looking_labels
     assert label['dependency']['technical_metadata'] is True
     assert label['dependency']['source_columns'] == ['series_id']
     assert label['unit']['status'] == 'unknown'
+    assert 'direct_source_column' not in label['operation']
+
+
+@pytest.mark.parametrize(('expression', 'direct'), [
+    ('series_id', True),
+    ("CASE WHEN value IS NOT NULL THEN series_id ELSE series_id END", False),
+    ("split_part(series_id, '.', 1)", False),
+    ('CAST(series_id AS VARCHAR)', False),
+])
+def test_series_id_projection_proof_follows_renamed_cte_columns(snapshot, expression, direct):
+    store, dataset, _ = snapshot
+    result = analyze_table(store, dataset, ['price', 'stock'],
+                           'WITH selected AS (SELECT ' + expression + ' AS ref, value FROM data) '
+                           'SELECT s.ref AS category, avg(value) FROM selected s GROUP BY s.ref')
+    label = assert_binding(result)['column_metadata'][0]
+    assert label['dependency']['technical_metadata'] is True
+    assert label['operation'].get('direct_source_column') == ('series_id' if direct else None)
 
 
 @pytest.mark.parametrize('sql', [
