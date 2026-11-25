@@ -283,7 +283,9 @@ class DataStore:
         from .native_charts import catalog
         from .source_context import enrich_catalog
         manifest = self.raw_manifest(dataset_id)
-        rows = enrich_catalog(self, dataset_id, catalog(self, dataset_id, sheet, question), manifest=manifest)
+        rows = enrich_catalog(self, dataset_id, catalog(self, dataset_id, question=question), manifest=manifest)
+        if sheet is not None:
+            rows = [item for item in rows if item['sheet'] == sheet or item.get('chart_sheet') == sheet]
         retained = {sheet['name']: sheet['retained_dataset_id'] for sheet in manifest.get('sheets', [])
                     if sheet.get('retained_dataset_id')}
         if retained:
