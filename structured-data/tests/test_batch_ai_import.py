@@ -289,6 +289,117 @@ def test_bulk_api_early_cancel_and_job_read_are_same_user_scoped(client, monkeyp
     assert client.get('/api/imports/' + uploaded['import_id']).json()['dataset_id'] == uploaded['dataset_id']
 
 
+@pytest.mark.parametrize('first_batch', [False, True])
+def test_ai_job_reuses_same_request_and_reports_busy_only_with_visible_job(client, tmp_path, monkeypatch, first_batch):
+    import threading
+
+    original_get = FakeAuthClient.get
+    revoked = threading.Event()
+    denied = threading.Event()
+
+    async def access(self, url, headers):
+        if '/api/v1/knowledge-bases/' in url:
+            kb = url.rsplit('/', 1)[1]
+            reply = Reply({'data': {'id': kb, 'tenant_id': 10000, 'my_permission': 'editor'}})
+            if kb == 'alpha' and revoked.is_set():
+                reply.status_code = 403
+                denied.set()
+            return reply
+        if headers.get('Authorization') == 'Bearer another':
+            return Reply({'data': {'user': {'id': 'another', 'tenant_id': 10000},
+                'memberships': [{'tenant_id': 10000, 'role': 'owner'}]}})
+        return await original_get(self, url, headers)
+
+    monkeypatch.setattr(FakeAuthClient, 'get', access)
+    def seed(kb):
+        from structured_data.imports import ImportManager
+        source = tmp_path / f'{kb}.xlsx'
+        source.write_bytes(make_workbook())
+        return ImportManager(tmp_path / 'data' / 'knowledge-bases' / kb).ingest(source)
+
+    other, uploaded = seed('beta'), seed('alpha')
+    client.headers['X-Knowledge-Base-ID'] = 'alpha'
+    url = '/api/imports/' + uploaded['import_id']
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def assist(manager, import_id, sheet, **kwargs):
+        from structured_data.workspaces import current_identity
+        kb = current_identity.get().knowledge_base_id
+        calls.append(kb)
+        assert kwargs['deadline'] > 0
+        kwargs['budget'].consume()
+        kwargs['progress']({'block_index': 1, 'completed_blocks': 1, 'total_blocks': 5})
+        if kb == 'alpha':
+            entered.set()
+            assert release.wait(30)
+        return {'mapping': kwargs['mapping'], 'review_state': {'status': 'needs_review',
+            'diagnostics': [{'code': 'MODEL_REASONING_ONLY'}]}, 'notice': '本区块保留待确认。'}
+
+    monkeypatch.setattr('structured_data.ai_review.assist_mapping', assist)
+    identifier = 'a' * 32
+    job_url = '/api/jobs/' + identifier
+    single = {'sheet': 'parallel', 'request_id': identifier}
+    batch = {'acknowledged_risk': True, 'request_id': identifier}
+    first_path = url + ('/assist-confirm-all' if first_batch else '/assist-confirm')
+    first_body = batch if first_batch else single
+    first = client.post(first_path, json=first_body)
+    assert first.json() == {'id': identifier, 'status': 'processing'}
+    try:
+        assert entered.wait(30)
+        assert client.post(first_path, json=dict(reversed(list(first_body.items())))).json() == first.json()
+        changed = {'per_sheet_max_requests': 3} if first_batch else {'max_requests': 3}
+        conflict = client.post(first_path, json=first_body | changed)
+        assert conflict.status_code == 409
+        assert conflict.json()['detail']['code'] == 'AI_REQUEST_CONFLICT'
+        assert 'Retry-After' not in conflict.headers
+
+        contender = single | {'request_id': 'b' * 32}
+        busy = client.post(url + '/assist-confirm', json=contender)
+        assert busy.status_code == 409 and busy.headers['Retry-After'] == '2'
+        detail = busy.json()['detail']
+        assert detail['code'] == 'AI_REVIEW_BUSY' and detail['active_job_id'] == identifier
+        progress = client.get(job_url).json()
+        assert progress.get('batch_ai', progress['progress'])['completed_blocks'] == 1
+        assert '_params_digest' not in progress
+
+        another_user = {'Authorization': 'Bearer another'}
+        hidden = client.post(first_path, json=first_body, headers=another_user)
+        assert hidden.status_code == 409 and hidden.json()['detail']['code'] == 'AI_REVIEW_BUSY'
+        assert 'active_job_id' not in hidden.json()['detail']
+        assert client.get(job_url, headers=another_user).status_code == 404
+        assert calls == ['alpha']
+
+        client.headers['X-Knowledge-Base-ID'] = 'beta'
+        secondary = poll(client, client.post('/api/imports/' + other['import_id'] + '/assist-confirm', json=single))
+        assert secondary['review_state']['diagnostics'][0]['code'] == 'MODEL_REASONING_ONLY'
+        client.headers['X-Knowledge-Base-ID'] = 'alpha'
+        if first_batch:
+            revoked.set()
+            release.set()
+            assert denied.wait(10)
+            assert client.get(job_url).status_code == 403
+        else:
+            assert client.post(job_url + '/cancel').status_code == 200
+    finally:
+        release.set()
+        revoked.clear()
+
+    import time
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        job = client.get(job_url).json()
+        if job['status'] != 'processing':
+            break
+        time.sleep(.01)
+    assert job['status'] == ('failed' if first_batch else 'cancelled')
+    assert client.post(first_path, json=first_body).json() == {'id': identifier, 'status': job['status']}
+    assert calls == ['alpha', 'beta']
+    assert client.get(url).json()['dataset_id'] == uploaded['dataset_id']
+    assert poll(client, client.post(url + '/assist-confirm', json=contender))
+    assert calls == ['alpha', 'beta', 'alpha']
+
+
 def test_bulk_api_live_cancel_keeps_completed_new_sheet_and_original_snapshot(client, monkeypatch):
     import threading
     import time

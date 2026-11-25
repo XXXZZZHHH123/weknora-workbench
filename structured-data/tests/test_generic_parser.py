@@ -121,7 +121,7 @@ def test_late_nondate_blocks_entire_import(tmp_path):
     rows += [[datetime(2023,2,d),d] for d in range(1,20)]
     rows += [['合计',999]]
     p=book(tmp_path,rows);s=candidate(p);assert s['status']=='auto_ready'
-    with pytest.raises(ValueError,match='阻断整页'):parse_mapped_workbook(p,[s['mapping']])
+    with pytest.raises(ValueError,match='日期无效'):parse_mapped_workbook(p,[s['mapping']])
     m=deepcopy(s['mapping']);m['blocks'][0]['data_end_row']=len(rows)-1
     assert len(parse_mapped_workbook(p,[m])['observations'])==47
 

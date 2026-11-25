@@ -74,6 +74,7 @@ def test_failed_confirm_preserves_published_data(tmp_path):
 
 def test_suggestion_does_not_publish_or_persist_credentials(tmp_path, monkeypatch):
     import httpx
+    from test_ai_review import mock_review_post
     source=tmp_path/'source.xlsx'
     workbook(source)
     manager=ImportManager(tmp_path/'data')
@@ -85,7 +86,7 @@ def test_suggestion_does_not_publish_or_persist_credentials(tmp_path, monkeypatc
     def fake_post(self,url,**kw):
         assert len(json.dumps(kw['json']))<20000
         return httpx.Response(200,json={'choices':[{'message':{'content':json.dumps({'mapping':mapping,'notice':'需确认'})}}]},request=httpx.Request('POST',url))
-    monkeypatch.setattr(httpx.Client,'post',fake_post)
+    mock_review_post(monkeypatch, fake_post)
     suggested=manager.suggest(result['import_id'],'复杂表')
     assert suggested['mapping']['sheet']=='复杂表'
     assert manager.get(result['import_id'])['dataset_id']==result['dataset_id']

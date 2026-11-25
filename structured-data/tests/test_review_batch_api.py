@@ -58,7 +58,9 @@ def test_ai_assist_checks_model_mapping_then_automatically_imports(client, monke
     seen = []
 
     def assist(manager, import_id, sheet, *, mapping=None, budget=None, cancelled=None,
-               progress=None, review=None):
+               progress=None, review=None, prepare=None, deadline=None):
+        assert time.monotonic() < deadline <= time.monotonic() + 600
+        assert prepare(mapping)['mapping'] == mapping
         budget.consume()
         seen.append((sheet, mapping))
         state = review(mapping)
@@ -230,10 +232,15 @@ def test_ai_job_can_be_cancelled_before_import_and_cannot_be_cancelled_by_others
         response = client.post(url + '/assist-confirm', json={'sheet': 'parallel'})
         assert response.status_code == 200, response.text
         assert entered.wait(2)
-        target = '/api/jobs/' + response.json()['id'] + '/cancel'
-        assert client.post(target, headers={'Authorization': 'Bearer other-user'}).status_code == 404
-        assert client.post(target, headers={'Authorization': 'Bearer other-space'}).status_code == 404
-        cancel = client.post(target)
+        target = '/api/jobs/' + response.json()['id']
+        for token in ('other-user', 'other-space'):
+            headers = {'Authorization': 'Bearer ' + token}
+            assert client.get(target, headers=headers).status_code == 404
+            # An early cancellation intent is scoped to the requester even
+            # when a job with this ID already exists in a different scope.
+            assert client.post(target + '/cancel', headers=headers).status_code == 200
+        assert not client.get(target).json().get('cancel_requested')
+        cancel = client.post(target + '/cancel')
         assert cancel.status_code == 200, cancel.text
     finally:
         release.set()
@@ -268,7 +275,7 @@ def test_ai_cancellation_can_arrive_before_create_response_without_starting_work
     assert poll(client, client.post(url + '/confirm-all', json={}))['dataset_id'] == uploaded['dataset_id']
 
 
-def test_early_ai_cancel_is_scoped_to_user_and_ids_are_not_reusable(client, monkeypatch):
+def test_early_ai_cancel_is_scoped_to_user_and_matching_request_can_reuse_job(client, monkeypatch):
     uploaded = upload(client)
     url = '/api/imports/' + uploaded['import_id']
     identifier = 'f' * 32
@@ -294,9 +301,15 @@ def test_early_ai_cancel_is_scoped_to_user_and_ids_are_not_reusable(client, monk
                   json={'sheet': 'parallel', 'request_id': identifier}))
     assert result['imported'] is False and seen == ['called']
     duplicate = client.post(url + '/assist-confirm', json={'sheet': 'parallel', 'request_id': identifier})
-    assert duplicate.status_code == 409
-    assert client.post('/api/jobs/' + identifier + '/cancel',
-                       headers={'Authorization': 'Bearer other-user'}).status_code == 404
+    assert duplicate.json() == {'id': identifier, 'status': 'completed'}
+    different = client.post(url + '/assist-confirm',
+                            json={'sheet': 'parallel', 'request_id': identifier, 'max_requests': 2})
+    assert different.status_code == 409 and different.json()['detail']['code'] == 'AI_REQUEST_CONFLICT'
+    other = {'Authorization': 'Bearer other-user'}
+    assert client.get('/api/jobs/' + identifier, headers=other).status_code == 404
+    their_job = client.post(url + '/assist-confirm', headers=other, json={'sheet': 'parallel', 'request_id': identifier})
+    assert their_job.json() == {'id': identifier, 'status': 'cancelled'}
+    assert client.get('/api/jobs/' + identifier).json()['status'] == 'completed' and seen == ['called']
 
 
 def test_pending_ai_cancel_intents_are_bounded_and_reject_invalid_ids(client):
