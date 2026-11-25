@@ -76,6 +76,7 @@ type knowledgeService struct {
 	// In-memory fallbacks for Lite mode (no Redis)
 	memFAQProgress      sync.Map // taskID -> *types.FAQImportProgress
 	memFAQRunningImport sync.Map // kbID -> *runningFAQImportInfo
+	fileReplacements    sync.Map // knowledge IDs being replaced in Lite mode
 	wikiRepo            interfaces.WikiPageRepository
 	wikiService         interfaces.WikiPageService
 
@@ -676,6 +677,15 @@ func (s *knowledgeService) ListPagedKnowledgeByKnowledgeBaseID(ctx context.Conte
 		ids := make([]string, len(knowledges))
 		for i, k := range knowledges {
 			ids[i] = k.ID
+			if k.FileHash != "" {
+				versionAt := k.CreatedAt
+				if history, err := k.FileVersionHistory(); err == nil && !history.UpdatedAt.IsZero() {
+					versionAt = history.UpdatedAt
+				}
+				if !versionAt.IsZero() {
+					k.FileVersionAt = &versionAt
+				}
+			}
 		}
 		tagMap, err := s.repo.GetKnowledgeTags(ctx, ids)
 		if err != nil {

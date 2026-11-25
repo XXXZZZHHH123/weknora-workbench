@@ -3,6 +3,7 @@ import copy
 from datetime import date
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -34,12 +35,18 @@ def test_wrong_model_unit_can_explicitly_adopt_catalog_without_switching_indicat
 
 
 def missing_catalog(monkeypatch, unit=None):
-    original = generation.snapshot
-    def missing(*args, **kwargs):
-        value = original(*args, **kwargs); value['catalog'] = copy.deepcopy(value['catalog'])
-        value['catalog'][0]['unit'] = unit
-        return value
-    monkeypatch.setattr(generation, 'snapshot', missing)
+    original = httpx.request
+
+    def missing(method, url, **kwargs):
+        response = original(method, url, **kwargs)
+        if str(url).startswith('http://structured-data:19082/') and response.status_code == 200:
+            value = response.json()
+            for field in value.get('indicators', []):
+                field['unit'] = unit
+            return httpx.Response(response.status_code, json=value, request=response.request)
+        return response
+
+    monkeypatch.setattr(httpx, 'request', missing)
 
 
 @pytest.mark.parametrize('placeholder', ['—', '未注明'])

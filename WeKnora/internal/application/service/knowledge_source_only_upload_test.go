@@ -120,6 +120,7 @@ func TestSourceOnlyUploadKeepsQuotaFAQAndUnsupportedTypeGuards(t *testing.T) {
 
 func TestSourceOnlyNativeReparseAndURLRejectBeforeProcessing(t *testing.T) {
 	f, queue := excelUploadFixture(t)
+	require.NoError(t, f.db.AutoMigrate(&types.ResearchWorkbench{}, &types.ResearchWorkbenchSourceBinding{}, &types.CentralDataset{}))
 	row, err := f.svc.CreateKnowledgeFromFile(f.ctx, "kb", newMultipartFileHeader(t, "reference.png", string(sourceOnlyFixtureBytes(t, "png"))), nil, nil, "", nil, "", sourceOnlyOverrides(t, true))
 	require.NoError(t, err)
 	originalPath := row.FilePath
@@ -130,8 +131,15 @@ func TestSourceOnlyNativeReparseAndURLRejectBeforeProcessing(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, types.ParseStatusStored, saved.ParseStatus)
 	require.Equal(t, originalPath, saved.FilePath)
-	_, err = f.svc.ReplaceKnowledgeFile(f.ctx, row.ID, newMultipartFileHeader(t, "reference.png", string(sourceOnlyFixtureBytes(t, "png"))), "", nil)
-	require.ErrorContains(t, err, "仅保存原件")
+	updated, err := f.svc.ReplaceKnowledgeFile(f.ctx, row.ID, newMultipartFileHeader(t, "reference.png", string(sourceOnlyFixtureBytes(t, "png"))), "", nil)
+	var duplicate *types.DuplicateKnowledgeError
+	require.ErrorAs(t, err, &duplicate)
+	require.Equal(t, originalPath, updated.FilePath)
+	updated, err = f.svc.ReplaceKnowledgeFile(f.ctx, row.ID, newMultipartFileHeader(t, "reference.png", string(sourceOnlyFixtureBytes(t, "png"))+"new version"), "", nil)
+	require.NoError(t, err)
+	require.Equal(t, types.ParseStatusStored, updated.ParseStatus)
+	require.Equal(t, row.ID, updated.ID)
+	require.NotEqual(t, originalPath, updated.FilePath)
 	_, err = f.svc.CreateKnowledgeFromURL(f.ctx, "kb", "https://invalid.example/reference.png", "", "", nil, "", nil, "", sourceOnlyOverrides(t, true))
 	require.ErrorContains(t, err, "只支持文件上传")
 	_, err = f.svc.createKnowledgeFromFileURL(f.ctx, "kb", "https://invalid.example/reference.png", "", "", nil, "", nil, "", sourceOnlyOverrides(t, true))

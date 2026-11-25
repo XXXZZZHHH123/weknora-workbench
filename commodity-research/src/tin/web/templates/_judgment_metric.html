@@ -1,21 +1,67 @@
-{% macro metric_view(metric) %}
+{% macro same_value_label(sources) %}
+{% if sources %}<small class="judgment-same-value">另一来源同值：{{ sources|join('、') }}</small>{% endif %}
+{% endmacro %}
+
+{% macro metric_streak(metric) %}
+{% if metric.streak %}<span class="judgment-metric-streak" data-chart-streak data-direction="{{ metric.streak.direction }}" title="{{ metric.streak.start[:10] }} 至 {{ metric.streak.end[:10] }}{% if metric.streak.change is not none %} · 累计 {{ '+' if metric.streak.change > 0 else '' }}{{ metric.streak.change|num(metric.unit) }} {{ metric.unit or '' }}{% endif %}{% if metric.streak.change_pct is not none %}（{{ '+' if metric.streak.change_pct > 0 else '' }}{{ metric.streak.change_pct|round(2) }}%）{% endif %}">{{ '↑' if metric.streak.direction == 'up' else '↓' }} {{ '至少' if metric.streak.at_least else '' }}{{ '连升' if metric.streak.direction == 'up' else '连降' }}{{ metric.streak.count }}{{ metric.streak.period }}</span>{% endif %}
+{% endmacro %}
+
+{% macro metric_chart_switch() -%}
+<div class="indicator-view-switch" role="tablist" aria-label="指标视图"><button type="button" role="tab" data-chart-view="trend" aria-selected="true">走势</button><button type="button" role="tab" data-chart-view="cycle" aria-selected="false">同期</button></div>
+{%- endmacro %}
+
+{% macro metric_chart_plot(name='', unit='', segments=[]) -%}
+<div class="judgment-chart-plot"><div class="judgment-chart-unit" data-chart-unit title="{{ unit or '数值' }}">{{ unit or '数值' }}</div><svg data-metric-trend viewBox="0 0 240 48" role="img" aria-label="{{ name }}近期观测走势，横轴日期，纵轴数值{% if unit %}（{{ unit }}）{% endif %}" preserveAspectRatio="none" tabindex="0">{% for segment in segments %}<polyline points="{{ segment }}" />{% endfor %}</svg><div class="judgment-chart-tooltip" data-chart-tooltip hidden></div></div>
+{%- endmacro %}
+
+{% macro metric_chart_cycle() -%}
+<div class="judgment-chart-cycle" data-chart-cycle hidden></div>
+{%- endmacro %}
+
+{% macro undated_message() %}按期间记录，暂无日期走势{% endmacro %}
+
+{% macro metric_view(metric, same_value_sources=[]) %}
 {% if metric %}
-<div class="judgment-metric" data-judgment-chart
-  {% if metric.series_id and j and d %}data-chart-url="{{ research_url('/api/sn/judgment/chart') }}" data-chart-series="{{ metric.series_id }}" data-chart-judgment="{{ j.id }}" data-chart-date="{{ d }}"{% endif %}>
-  <script type="application/json" data-chart-values>{{ metric|tojson }}</script>
+<div class="judgment-metric"{% if not metric.undated %} data-judgment-chart
+  {% if metric.series_id %}data-chart-series="{{ metric.series_id }}"{% endif %}
+  {% if metric.series_id and j and d %}data-chart-url="{{ research_url('/api/sn/judgment/chart') }}" data-chart-judgment="{{ j.id }}" data-chart-date="{{ d }}"{% endif %}{% endif %}>
+  {% if not metric.undated %}<script type="application/json" data-chart-values>{{ metric|tojson }}</script>{% endif %}
   <div class="judgment-metric-heading"><span title="{{ human_text(metric.name) }}">{{ human_text(metric.name) }}</span>
-    {% if metric.streak %}<span class="judgment-metric-streak" data-chart-streak data-direction="{{ metric.streak.direction }}" title="{{ metric.streak.start[:10] }} 至 {{ metric.streak.end[:10] }}{% if metric.streak.change is not none %} · 累计 {{ '+' if metric.streak.change > 0 else '' }}{{ metric.streak.change|num(metric.unit) }} {{ metric.unit or '' }}{% endif %}{% if metric.streak.change_pct is not none %}（{{ '+' if metric.streak.change_pct > 0 else '' }}{{ metric.streak.change_pct|round(2) }}%）{% endif %}">{{ '↑' if metric.streak.direction == 'up' else '↓' }} {{ '至少' if metric.streak.at_least else '' }}{{ '连升' if metric.streak.direction == 'up' else '连降' }}{{ metric.streak.count }}{{ metric.streak.period }}</span>{% endif %}
+    {{ metric_streak(metric) }}
   </div>
-  {% if metric.latest is not none %}
+  {{ same_value_label(same_value_sources) }}
+  {% if metric.undated %}<p class="judgment-metric-missing">{{ undated_message() }}</p>
+  {% elif metric.latest is not none %}
   <div class="judgment-metric-value" title="{{ metric.date[:16]|replace('T',' ') if metric.date else '' }}{% if metric.previous is not none %} · 前次 {{ metric.previous|num(metric.unit) }} {{ metric.unit or '' }} · {{ metric.previous_date[:16]|replace('T',' ') if metric.previous_date else '' }}{% endif %}"><strong>{{ metric.latest | num(metric.unit) }}</strong><span>{{ metric.unit or '' }}</span>
     {% if metric.change is not none %}<small>{{ '+' if metric.change > 0 else '' }}{{ metric.change | num(metric.unit) }}{% if metric.change_pct is not none %}（{{ '+' if metric.change_pct > 0 else '' }}{{ metric.change_pct | round(2) }}%）{% endif %}</small>{% endif %}
   </div>
   {% if metric.segments %}
-  <div class="judgment-chart-toolbar">{% if metric.series_id and not restricted_view %}<div class="indicator-view-switch" role="tablist" aria-label="指标视图"><button type="button" role="tab" data-chart-view="trend" aria-selected="true">走势</button><button type="button" role="tab" data-chart-view="cycle" aria-selected="false">同期</button></div>{% endif %}<select data-chart-semantics aria-label="连续变化的说法" title="标题旁连续变化标签的说法"><option value="change">连升/连降</option><option value="inventory">累库/去库</option></select><label>MA <select data-chart-ma aria-label="选择均线"><option value="0">关闭</option><option value="5">5</option><option value="10">10</option><option value="20">20</option><option value="60">60</option><option value="120">120</option><option value="custom">自定义</option></select></label><input data-chart-ma-custom type="number" min="2" max="120" step="1" value="20" aria-label="均线观测期数" hidden><span data-chart-status role="status" hidden></span></div>
-  <div class="judgment-chart-plot"><div class="judgment-chart-unit" data-chart-unit title="{{ metric.unit or '数值' }}">{{ metric.unit or '数值' }}</div><svg data-metric-trend viewBox="0 0 240 48" role="img" aria-label="{{ human_text(metric.name) }}近期观测走势，横轴日期，纵轴数值{% if metric.unit %}（{{ metric.unit }}）{% endif %}" preserveAspectRatio="none" tabindex="0">{% for segment in metric.segments %}<polyline points="{{ segment }}" />{% endfor %}</svg><div class="judgment-chart-tooltip" data-chart-tooltip hidden></div></div>
-  {% if metric.series_id and not restricted_view %}<div class="judgment-chart-cycle" data-chart-cycle hidden></div>{% endif %}
+  <div class="judgment-chart-toolbar">{% if metric.series_id and not restricted_view %}{{ metric_chart_switch() }}{% endif %}<select data-chart-semantics aria-label="连续变化的说法" title="标题旁连续变化标签的说法"><option value="change">连升/连降</option><option value="inventory">累库/去库</option></select><label>MA <select data-chart-ma aria-label="选择均线"><option value="0">关闭</option><option value="5">5</option><option value="10">10</option><option value="20">20</option><option value="60">60</option><option value="120">120</option><option value="custom">自定义</option></select></label><input data-chart-ma-custom type="number" min="2" max="120" step="1" value="20" aria-label="均线观测期数" hidden><span data-chart-status role="status" hidden></span></div>
+  {{ metric_chart_plot(human_text(metric.name), metric.unit, metric.segments) }}
+  {% if metric.series_id and not restricted_view %}{{ metric_chart_cycle() }}{% endif %}
   {% endif %}
   {% else %}<p class="judgment-metric-missing">暂无可用数值</p>{% endif %}
 </div>
 {% endif %}
+{% endmacro %}
+
+{% macro compact_metric(metric, thresholds, state, in_dimensions, same_value_sources=[]) %}
+{% set name = human_text(metric.name) %}
+<div class="judgment-metric-compact" data-judgment-compact="{{ metric.series_id }}"{% if metric.segments and not metric.undated %} data-compact-preview="{{ name }}" tabindex="0" role="group" aria-label="{{ name }}走势预览"{% endif %}>
+  <strong>{{ name }}</strong>
+  {% if metric.undated %}<span>{{ undated_message() }}</span>
+  {% elif metric.latest is not none %}
+    <span class="tabular">{{ metric.latest|num(metric.unit) }} {{ metric.unit or '' }}</span>
+    {% if metric.change is not none %}<span class="tabular">{{ '+' if metric.change > 0 else '' }}{{ metric.change|num(metric.unit) }}{% if metric.change_pct is not none %}（{{ '+' if metric.change_pct > 0 else '' }}{{ metric.change_pct|round(2) }}%）{% endif %}</span>{% endif %}
+  {% else %}<span>暂无可用数值</span>{% endif %}
+  {{ metric_streak(metric) }}
+  {% if state %}<span class="judgment-falsifier-state" data-state="{{ state }}">{{ state }}</span>{% endif %}
+  {% for rule in thresholds %}{% set rule_state = '无法按日期判断' if metric.undated else rule.state %}<span class="judgment-item-condition-state" data-state="{{ rule_state }}" title="{{ human_text(rule.name, names) }} · {{ human_text(rule.condition, names) }}">{{ rule_state }}</span>{% endfor %}
+  {% if in_dimensions %}
+    <a href="{{ research_url('/sn/dimensions') }}{% if not restricted_view and d %}?date={{ d }}{% endif %}{% if not restricted_view and j %}{{ '&' if d else '?' }}judgment_id={{ j.id }}{% endif %}#dimension-indicator-{{ metric.series_id|urlencode }}">在研究维度查看</a>
+  {% elif not restricted_view %}
+    <a href="{{ research_url('/sn/indicators/' ~ (metric.series_id|urlencode|replace('/', '%2F'))) }}{% if d %}?date={{ d }}{% endif %}">在研究维度查看</a>
+  {% endif %}
+  {{ same_value_label(same_value_sources) }}
+</div>
 {% endmacro %}

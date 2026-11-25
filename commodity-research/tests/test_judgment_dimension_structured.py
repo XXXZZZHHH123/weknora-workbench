@@ -45,11 +45,11 @@ def test_structured_preview_rejects_removed_ids_and_apply_rechecks_current_list(
     document = payload()
     document['contradiction']['bull']['evidence'][0]['dimension'] = 'supply'
     invalid = browser.post(path('/structured/preview'), headers=headers, json={'payload': document})
-    assert invalid.status_code == 422 and '当前研究台存在的维度' in invalid.text
+    assert invalid.status_code == 422 and '维度「供给」已不在本研究台' in invalid.json()['detail']
     document['contradiction']['bull']['evidence'][0]['dimension'] = 'desk_7'
     proposed = browser.post(path('/structured/preview'), headers=headers, json={'payload': document}).json()
     configure([{**CUSTOM[0], 'id': 'other_7'}])
     stale = browser.post(path('/structured/apply'), headers=headers,
         json={'draft_id': proposed['draft_id'], 'base_version': proposed['base_version']})
-    assert stale.status_code == 422 and '当前研究台存在的维度' in stale.text
+    assert stale.status_code == 422 and '维度「desk_7」已不在本研究台' in stale.json()['detail']
     assert saved() == []

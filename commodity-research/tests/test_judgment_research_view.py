@@ -284,3 +284,100 @@ def test_metric_labels_do_not_expose_a_catalogs_internal_id_annotation(facts):
     facts.commit()
     view = research.judgment_research_view(facts, saved(whitelist=[A]), DAY)
     assert view['metrics'][A]['name'] == 'Synthetic quantity'
+
+
+def test_full_chart_goes_to_first_evidence_before_any_falsifier_or_pending_item(facts):
+    from lxml.html import fromstring
+    from tests.test_judgment_research_template import render
+
+    point(facts, A, 1, 10)
+    point(facts, A, 2, 14)
+    point(facts, B, 1, 19)
+    row = saved(
+        bull=[{'desc': 'First observation', 'series_id': B}],
+        bear=[{'desc': 'Second observation', 'series_id': A}, {'desc': 'Same series twice', 'series_id': B}],
+        falsifiers=[rule('verify-first', A, 'bull')])
+    row.unstructured = [{'section': 'falsifiers', 'text': 'Separate condition for prior threshold',
+        'reason': 'Verify', 'business_condition': 'Own original condition < 12 kg', 'rule_kind': 'threshold',
+        'series_id': A}]
+    view = research.judgment_research_view(facts, row, DAY)
+    view['dimension_series'] = [A]
+    html = fromstring(render(**view))
+    assert html.xpath('//*[@data-judgment-chart]/@data-chart-series') == [B, A]
+    assert html.xpath('//*[@id="judgment-evidence-bear0"]//*[@data-judgment-chart]/@data-chart-series') == [A]
+    falsifier = html.xpath('//*[@id="judgment-falsifier-verify-first"]//*[@data-judgment-compact]')[0]
+    assert falsifier.get('tabindex') == '0' and falsifier.get('data-compact-preview')
+    assert falsifier.xpath('.//a/@href') == [f'/sn/dimensions?date=2026-01-02&judgment_id=1#dimension-indicator-{A}']
+    assert falsifier.xpath('.//*[@data-state="触发"]')
+    assert falsifier.xpath('.//*[@data-chart-streak]')
+    assert '14 kg' in falsifier.text_content() and '+4' in falsifier.text_content()
+    fallback = html.xpath('//*[@id="judgment-evidence-bear1"]//*[@data-judgment-compact]//a/@href')
+    assert fallback == [f'/sn/indicators/{B}?date=2026-01-02']
+    pending = html.xpath('//*[@id="judgment-note-0"]')[0]
+    assert pending.xpath('.//*[@data-judgment-compact]')
+    assert pending.xpath('.//*[@class="judgment-pending-condition"]/text()') == ['Own original condition < 12 kg']
+    assert not pending.xpath('.//*[@data-state or @data-item-threshold]')
+    restricted = fromstring(render(restricted_view=True, **view))
+    assert restricted.xpath('//*[@id="judgment-falsifier-verify-first"]//a/@href') == [
+        f'/sn/dimensions#dimension-indicator-{A}']
+    assert not restricted.xpath('//*[@id="judgment-evidence-bear1"]//a')
+
+
+def test_exact_id_notes_attach_to_unique_rule_and_ambiguity_keeps_original_condition(facts):
+    from lxml.html import fromstring
+    from tests.test_judgment_research_template import render
+    from tin.export.board import threshold_radar_values
+
+    point(facts, A, 1, 14)
+    point(facts, B, 1, 19)
+    row = saved(falsifiers=[rule('one', A, 'bull'), rule('two', B, 'bull'), rule('three', B, 'bear')])
+    row.thresholds = [{'id': 'same-id-other-kind', 'name': 'Existing measured threshold', 'series_id': A,
+        'operator': '<', 'value': 10, 'type': '观察位', 'horizon': '短期'}]
+
+    def note(text, series_id=None, kind=None):
+        return {'section': 'Synthetic observations', 'text': text, 'reason': 'Verify',
+                'business_condition': 'Own source of ' + text, 'rule_kind': kind, 'series_id': series_id}
+
+    row.unstructured = [note('Check threshold caliber', A, 'threshold'),
+        note('Check falsifier caliber', A, 'falsifier'), note('Check both falsifiers', B, 'falsifier'),
+        note('No exact threshold', B, 'threshold'), note('Missing type', A), note('Missing ID', kind='threshold')]
+    radar = threshold_radar_values(row, {})
+    view = research.judgment_research_view(facts, row, DAY)
+    html = fromstring(render(radar=radar, **view))
+    assert html.xpath('//*[@id="judgment-threshold-same-id-other-kind"]/td[1]/p/text()') == ['待核对：Check threshold caliber']
+    assert html.xpath('//*[@id="judgment-falsifier-one"]/p[contains(@class,"judgment-rule-review")]/text()') == [
+        '待核对：Check falsifier caliber']
+    assert html.xpath('//*[@id="judgment-pending"]//li/@id') == [f'judgment-note-{index}' for index in range(2, 6)]
+    assert html.xpath('//*[@id="judgment-note-5"]//div[@class="judgment-pending-condition"]/text()') == [
+        'Own source of Missing ID']
+    assert 'Check threshold caliber' not in html.xpath('//*[@id="judgment-pending"]')[0].text_content()
+    row.unstructured = row.unstructured[:2]
+    html = fromstring(render(radar=radar, **research.judgment_research_view(facts, row, DAY)))
+    assert not html.xpath('//*[@id="judgment-pending"]')
+
+
+@pytest.mark.parametrize(('related_day', 'related_value', 'merged'), [(2, 15, True), (2, 15.000001, False), (3, 15, False)])
+def test_equal_evidence_merges_only_exact_observations_without_extra_reads(facts, monkeypatch, related_day, related_value, merged):
+    from lxml.html import fromstring
+    from tests.test_judgment_research_template import render
+
+    for identifier in (A, B):
+        point(facts, identifier, 1, 10)
+    point(facts, A, 2, 15)
+    point(facts, B, related_day, related_value)
+    observed = []
+    actual = research.recent_points
+
+    def recent(session, identifier, day, count):
+        observed.append((identifier, count))
+        return actual(session, identifier, day, count)
+
+    monkeypatch.setattr(research, 'recent_points', recent)
+    row = saved(bull=[{'desc': 'Read two explicitly bound sources', 'series_id': A, 'related_series_ids': [B]}])
+    view = research.judgment_research_view(facts, row, DAY)
+    html = fromstring(render(**view))
+    evidence = html.xpath('//*[@id="judgment-evidence-bull0"]')[0]
+    assert evidence.xpath('.//*[@data-judgment-chart]/@data-chart-series') == ([A] if merged else [A, B])
+    assert evidence.xpath('.//small[@class="judgment-same-value"]/text()') == (
+        ['另一来源同值：Synthetic quantity b'] if merged else [])
+    assert observed == [(A, 24), (B, 24)]

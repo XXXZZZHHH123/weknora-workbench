@@ -10,6 +10,7 @@ from tests.test_knowledge_facts import FIRST, canonical, page  # noqa: F401
 from tin.integration.workbench_scope import artifact_session
 from tin.models import SourceMapping
 from tin.web import judgment_jobs as jobs
+from tin.web import judgment_recommendations
 
 
 def private_record(scope, job_id):
@@ -21,8 +22,17 @@ def discard(client, headers, job_id):
     return client.post(page(FIRST, f'/api/sn/judgment/jobs/{job_id}/discard'), headers=headers, json={})
 
 
-def test_discard_retires_the_result_prunes_the_preview_and_forgets_the_cached_analysis(background):
-    client, headers, _, _, calls = background
+@pytest.fixture
+def parent_analysis_only(background, monkeypatch):
+    async def skip_automatic_recommendations(*_args):
+        return None
+
+    monkeypatch.setattr(judgment_recommendations, 'start_automatic', skip_automatic_recommendations)
+    return background
+
+
+def test_discard_retires_the_result_prunes_the_preview_and_forgets_the_cached_analysis(parent_analysis_only):
+    client, headers, _, _, calls = parent_analysis_only
     scope, meta, result = asyncio.run(completed_job())
     assert len(calls) == 3
     response = discard(client, headers, meta['id'])

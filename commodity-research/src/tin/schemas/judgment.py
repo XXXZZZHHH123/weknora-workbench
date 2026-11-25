@@ -2,11 +2,13 @@
 
 import re
 from datetime import date
+from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 from tin.judgments.numbers import NUMBER, check_rule_number, exact_float
+from tin.judgments.quantity_alignment import SCALE_FACTORS, decimals, scaled_values
 
 TONES = ("偏多", "偏空", "观望", "区间震荡", "回调买入", "反弹做空", "等信号")
 PARADIGMS = ("总线合成", "对抗称重", "编排层")
@@ -168,6 +170,30 @@ class CaliberConfirmation(_Model):
 
 
 class _Rule(_DimensionBindings):
+    source_value: float | list[float] | None = None
+    scale: float | None = None
+
+    @field_validator('source_value', 'scale', mode='before')
+    @classmethod
+    def _scale_numbers(cls, value):
+        if value is not None:
+            for number in value if isinstance(value, list) else [value]:
+                check_rule_number(number)
+        return value
+
+    @model_validator(mode='after')
+    def _valid_scale(self):
+        if self.source_value is None and self.scale is None:
+            return self
+        if self.source_value is None or self.scale is None or Decimal(str(self.scale)) not in SCALE_FACTORS:
+            raise ValueError('规则数量换算须同时提供原文数字和允许的十进制倍率')
+        value = self.value
+        if (value is None or isinstance(value, MovingAverageTarget)
+                or isinstance(value, list) != isinstance(self.source_value, list)
+                or decimals(value) != scaled_values(self.source_value, self.scale)):
+            raise ValueError('执行值必须等于原文数字乘以倍率')
+        return self
+
     @model_serializer(mode='wrap')
     def _without_empty_caliber(self, handler):
         value = handler(self)
@@ -177,6 +203,9 @@ class _Rule(_DimensionBindings):
             value.pop('related_series_ids', None)
         if value.get('dimension') is None:
             value.pop('dimension', None)
+        for key in ('source_value', 'scale', 'value'):
+            if key in value and value[key] is None:
+                value.pop(key)
         return value
 
 
@@ -218,11 +247,24 @@ class Falsifier(_Rule):
     desc: str
     series_id: str
     expression: str
+    value: float | None = None
     unit_confirmed: str
     consecutive_periods: int = Field(1, ge=1)
     side: Literal["bull", "bear"] = Field(description='被证伪的原假设一方：bull为多方原假设失效，bear为空方原假设失效；不是条件触发后的价格涨跌方向。')
     note: str | None = None
     caliber_confirmation: CaliberConfirmation | None = None
+
+    @field_validator('value', mode='before')
+    @classmethod
+    def _exact_number(cls, value):
+        return check_rule_number(value) if value is not None else None
+
+    @model_validator(mode='after')
+    def _expression_value(self):
+        if self.value is not None and (self.scale is None
+                or Decimal(str(self.value)) != Decimal(EXPRESSION.fullmatch(self.expression).group(3))):
+            raise ValueError('证伪表达式中的执行值必须与换算结果一致')
+        return self
 
     @field_validator("expression")
     @classmethod

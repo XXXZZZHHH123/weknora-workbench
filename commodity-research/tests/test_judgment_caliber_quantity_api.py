@@ -17,6 +17,7 @@ SOURCE = 'Quantity >= 万吨.'
 @pytest.fixture
 def quantity_case(generator, monkeypatch, request):
     client, headers, state, _, calls = generator
+    state['value'] = 10050
     upstream_request = httpx.request
     model_unit = getattr(request, 'param', '吨')
 

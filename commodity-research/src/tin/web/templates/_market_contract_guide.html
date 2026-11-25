@@ -1,6 +1,52 @@
+{% set can_edit_contract_links = not restricted_view and market_catalog and market_catalog.can_edit_shared %}
+{% set links = curve.guide_links if curve else [] %}
+{% if links %}
 <details class="market-contract-guide" id="market-contract-source">
   <summary>合约数据来源</summary>
-  <a href="https://www.shfe.com.cn/reports/tradedata/dailyandweeklydata/?query_params=kx" target="_blank" rel="noopener noreferrer">上海期货交易所 · 日交易快讯</a>
-  <a href="https://www.shfe.com.cn/reports/tradedata/datadownload/" target="_blank" rel="noopener noreferrer">数据下载</a>
-  {% if research_workbench() and not restricted_view %}<button type="button" class="market-core-button" onclick="parent.postMessage({type:'research-open-sources'},location.origin)">资料与来源</button>{% endif %}
+  {% for link in links %}<a href="{{ link.url }}" target="_blank" rel="noopener noreferrer">{{ link.label }}</a>
+  {% endfor %}
+  {% if not restricted_view %}<button type="button" class="market-core-button" onclick="parent.postMessage({type:'research-open-sources'},location.origin)">资料与来源</button>{% endif %}
+  {% if can_edit_contract_links %}<button type="button" class="market-core-button" id="market-contract-settings-open" aria-haspopup="dialog">合约设置</button>{% endif %}
 </details>
+{% else %}
+<section class="market-contract-guide" id="market-contract-source">
+  <button type="button" class="market-core-button" {% if restricted_view %}disabled{% else %}onclick="parent.postMessage({type:'research-open-sources'},location.origin)"{% endif %}>资料与来源</button>
+  <p>尚未设置合约数据来源，可在{% if can_edit_contract_links %}<button type="button" class="market-contract-settings-link" id="market-contract-settings-open" aria-haspopup="dialog">合约设置</button>{% else %}合约设置{% endif %}中添加</p>
+</section>
+{% endif %}
+
+{% if can_edit_contract_links %}
+<dialog class="market-core-dialog" id="market-contract-settings" aria-labelledby="market-contract-settings-title">
+  <h2 id="market-contract-settings-title">合约设置</h2>
+  <form id="market-contract-settings-form">
+    <p class="market-core-muted">最多添加 4 个合约数据来源链接。</p>
+    <div id="market-contract-settings-rows"></div>
+    <div class="market-contract-settings-actions">
+      <label>交易所预设
+        <select id="market-contract-settings-preset" class="market-core-search">
+          <option value="">选择公开数据页</option>
+          {% for exchange, presets in market_contract_presets.items() %}
+          <optgroup label="{{ exchange }}">
+            {% for preset in presets %}<option value="{{ preset.url }}">{{ preset.label }}</option>{% endfor %}
+          </optgroup>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="button" id="market-contract-settings-add" class="market-core-button">手动添加</button>
+    </div>
+    <p id="market-contract-settings-error" class="market-core-error" role="alert" hidden></p>
+    <footer class="market-core-footer">
+      <button type="button" id="market-contract-settings-cancel" class="market-core-button">取消</button>
+      <button type="submit" id="market-contract-settings-save" class="market-core-button market-core-primary">保存</button>
+    </footer>
+  </form>
+  <template id="market-contract-settings-row">
+    <div class="market-contract-settings-row">
+      <label>名称<input name="label" class="market-core-search" type="text" required></label>
+      <label>网址<input name="url" class="market-core-search" type="url" maxlength="300" placeholder="https://" required></label>
+      <button type="button" class="market-core-button" aria-label="移除此来源链接">移除</button>
+    </div>
+  </template>
+  <script type="application/json" id="market-contract-settings-links">{{ curve.source_links | tojson }}</script>
+</dialog>
+{% endif %}

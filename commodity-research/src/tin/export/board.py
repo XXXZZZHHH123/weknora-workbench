@@ -83,9 +83,12 @@ def _obs_card(session: Session, key: str, label: str, series_id: str, d: date) -
     ind = session.get(Indicator, series_id)
     o = latest_obs(session, series_id, day_end(d))
     exp = expected_date(ind, d)
+    field = session.info.get('knowledge_facts_catalog', {}).get(series_id, {})
+    metadata = field.get('field_metadata') or {}
     card = Card(key=key, label=label, unit=ind.unit, status="missing", manual=ind.fetch_mode == "manual",
                 proxy=ind.is_proxy, source=SOURCE_ABBR.get(ind.source, ind.source),
                 series_id=series_id, badge=ind.source,
+                detail={key: metadata[key] for key in ('header_notes', 'source_codes') if metadata.get(key)},
                 expected_by=exp.isoformat() if exp else None)
     if o is None:
         card.note = "尚无数据"
@@ -105,8 +108,8 @@ def _obs_card(session: Session, key: str, label: str, series_id: str, d: date) -
     if prev is not None:
         card.change = o.value - prev
         card.change_pct = (card.change / prev * 100) if prev else None
-    card.detail = {"series_id": series_id, "source_url": o.source_url, "caliber": cal,
-                   "revision": o.revision, "note": o.note}
+    card.detail.update(series_id=series_id, source_url=o.source_url, caliber=cal,
+                       revision=o.revision, note=o.note)
     return card
 
 
@@ -519,6 +522,9 @@ def _threshold_radar(j, lookup, moving_lookup=None):
             row['target_value'] = target
         row["condition"] = row.get('condition') or (f"{_fmt(target[0])} – {_fmt(target[1])}" if op == "between"
                             else f"{op} {_fmt(target)}")
+        from tin.judgments.quantity_alignment import conversion_text
+        if converted := conversion_text(t):
+            row['condition'] = converted if op == 'between' else f'{op} {converted}'
         if o is None:
             out.append(row)
             continue

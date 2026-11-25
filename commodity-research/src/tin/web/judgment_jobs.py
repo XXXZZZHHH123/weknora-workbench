@@ -44,7 +44,7 @@ def job_key(scope, job_id):
 
 
 def is_job_token(token):
-    return isinstance(token, str) and token.startswith('job.')
+    return isinstance(token, str) and token.startswith(('job.', 'setup.'))
 
 
 def token_job_id(token):
@@ -98,6 +98,9 @@ def available(config):
 
 
 def load_preview(scope, token):
+    if isinstance(token, str) and token.startswith('setup.'):
+        from tin.web.workbench_setup_jobs import load_judgment
+        return load_judgment(scope, token)
     job_id = token_job_id(token)
     with artifact_session(scope) as session:
         config = owned_record(session, scope, job_id, token=token).config
@@ -108,6 +111,9 @@ def load_preview(scope, token):
 
 
 def replace_preview(session, scope, token, preview, revision):
+    if isinstance(token, str) and token.startswith('setup.'):
+        from tin.web.workbench_setup_jobs import replace_judgment
+        return replace_judgment(session, scope, token, preview, revision)
     row = owned_record(session, scope, token_job_id(token), token=token)
     available(row.config)
     if row.config['preview']['review']['revision'] != revision:
@@ -205,6 +211,7 @@ def _complete(scope, meta, preview):
                 prune_snapshots_after_success(scope, preview.get('analysis_snapshot'))
             except Exception:
                 logging.getLogger(__name__).warning('Analysis snapshot cleanup deferred')
+            return value['_draft_id']
 
 
 async def fresh_scope(scope):
@@ -254,7 +261,8 @@ def _discard_private_record(session, meta, kind):
 
 
 def cleanup_discarded(kind, index, purpose, *, job_id=None):
-    for meta in [row for row in index.discarded() if row.get('purpose', 'judgments') == purpose
+    purposes = {purpose} if isinstance(purpose, str) else purpose
+    for meta in [row for row in index.discarded() if row.get('purpose', 'judgments') in purposes
             and (job_id is None or row['id'] == job_id)][:20]:
         factory = _storage_factory(meta)
         if factory is not None:
@@ -333,7 +341,12 @@ class Runtime:
             preview, _ = await asyncio.wait_for(generation._analyze(scope, body, progress),
                 timeout=generation.GENERATION_SECONDS)
             await fresh_scope(scope)
-            await run_in_threadpool(_complete, scope, meta, preview)
+            token = await run_in_threadpool(_complete, scope, meta, preview)
+            if token:
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
+                from tin.web.judgment_recommendations import start_automatic
+                await start_automatic(scope, token, preview)
         except asyncio.CancelledError:
             await run_in_threadpool(registry.finish, meta['id'], self.worker_id, meta['fence'],
                 'interrupted', '分析已中断，请重新发起')
@@ -446,8 +459,7 @@ async def _job_result(verified, job_id):
     preview = await run_in_threadpool(load_preview, verified, token)
     from tin.web.judgment_review import review_snapshot, preview_response
     state = await run_in_threadpool(review_snapshot, verified, preview)
-    return {**preview_response(verified, token, preview, state), 'job': metadata(meta),
-        **{key: preview.get(key) for key in ('variety', 'source_name', 'panel_title', 'model_id')}}
+    return {**preview_response(verified, token, preview, state), 'job': metadata(meta)}
 
 
 def list_jobs(identity, limit=20):

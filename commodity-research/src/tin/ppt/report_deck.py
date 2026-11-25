@@ -646,7 +646,7 @@ def _table_records(rows, size=12):
 
 def _overview_table(slide, rows, y=1.7, size=12, widths=None, heights=None):
     widths = widths or _OVERVIEW_WIDTHS
-    headings = ['维度', '本期变化', '研究员一句话', '影响']
+    headings = ['维度', '本期变化', '本期结论', '影响']
     records = _table_records(rows, size)
     header_h = max(.30, size / 72 * 1.08 + .08)
     heights = heights or [height for _, height in records]
@@ -780,6 +780,17 @@ def _one_page(deck, view):
     """Jointly fit the table and logic, preserving the complete source in notes."""
     rows = _overview_rows(view)
     sources, extra = _overview_sources(view)
+    summary_panel = (view.get('panels') or {}).get('summary') or {}
+    summary_visible = summary_panel.get('visible', True)
+    summary = _s(summary_panel.get('text')).strip() if summary_visible else ''
+    label, stamp = _period(view)
+    summary_label = '本周结论' if label == '周报' else '本日结论'
+    summary_size, summary_height, summary_text = 13, 0, ''
+    if summary:
+        summary_text = _clip(_join(summary_label, summary), BODY_W - .03, 3, summary_size)
+        summary_height = len(summary_text.splitlines()) * summary_size / 72 * 1.15 + .03
+    summary_space = summary_height + .08 if summary else 0
+    first_table_top = 1.7 + summary_space
     compact, size, logic_size, widths = [], 14, 13, _overview_widths(sources, 14)
     fitted = False
     for fact_limit, lines in ((2, 2), (2, 1), (1, 1)):
@@ -788,7 +799,7 @@ def _one_page(deck, view):
             compact = [_compact_row(source, size, fact_limit, lines, widths) for source in sources]
             logic_size = min(13, max(11, size - 1))
             table_h = max(.30, size / 72 * 1.08 + .08) + sum(height for _, height in _table_records(compact, size))
-            if 1.7 + table_h + .14 + _logic_height(view, logic_size) <= 6.86:
+            if first_table_top + table_h + .14 + _logic_height(view, logic_size) <= 6.86:
                 fitted = True
                 break
         if fitted:
@@ -797,14 +808,17 @@ def _one_page(deck, view):
     table_budget = 6.86 - 1.7 - .14 - min(_logic_height(view, logic_size), 2.4)
     groups, group, used = [], [], max(.30, size / 72 * 1.08 + .08)
     for row, height in _table_records(compact, size):
-        if group and used + height > table_budget:
+        if group and used + height > table_budget - (summary_space if not groups else 0):
             groups.append(group)
             group, used = [], max(.30, size / 72 * 1.08 + .08)
         group.append(row)
         used += height
     groups.append(group)
     logic = _logic_lines(view)
-    full = ['本期综述（全文附录）'] + ['\n'.join(row) for row in rows] + ['逻辑与策略'] + logic
+    full = ['本期综述（全文附录）']
+    if summary:
+        full.append(summary_label + '\n' + summary)
+    full += ['\n'.join(row) for row in rows] + ['逻辑与策略'] + logic
     for source in sources + extra:
         if source.get('warnings') or source.get('warning_summary'):
             full.append('提示明细：' + _s(source.get('label')) + '\n' + '\n'.join(filter(None,
@@ -817,25 +831,27 @@ def _one_page(deck, view):
     full += ['省略文字保留于本页全文附录。条件触发不等于成交。']
     full_text = '\n\n'.join(full)
     shortened = compact != rows
-    summary_visible = (view.get('panels', {}).get('summary') or {}).get('visible', True)
-    label, stamp = _period(view)
     title = (_s(view.get('workbench_name')) or '研究工作台') + ' ' + label + (' · ' + stamp if stamp else '')
     for index, group in enumerate(groups):
         slide = deck.slide(title + ('（续）' if index else ''))
         if summary_visible:
             _text(slide, '本期综述', .4, 1.45, 12.5, .25, size=14, bold=True, color=THEME_RED)
+        table_top = first_table_top if index == 0 else 1.7
+        if index == 0 and summary:
+            _text(slide, summary_text, .4, 1.7, BODY_W, summary_height,
+                  size=summary_size, name='Period conclusion')
         if group:
             heights = [height for _, height in _table_records(group, size)]
             header_h = max(.30, size / 72 * 1.08 + .08)
             # Spend remaining space on comfortable rows, after reserving the
             # actual logical content. Do not leave a fixed unused lower half.
-            spare = max(0, 6.86 - 1.7 - header_h - sum(heights) - .14 - _logic_height(view, logic_size))
+            spare = max(0, 6.86 - table_top - header_h - sum(heights) - .14 - _logic_height(view, logic_size))
             heights = [height + min(.20, spare / len(group)) for height in heights]
-            y = _overview_table(slide, group, size=size, widths=widths, heights=heights)
+            y = _overview_table(slide, group, y=table_top, size=size, widths=widths, heights=heights)
         else:
-            y = 2.05 if summary_visible else 1.45
+            y = 2.05 + summary_space if summary_visible else 1.45
             if summary_visible:
-                _text(slide, '本期暂无维度综述。', .4, 1.8, 12.5, .3, size=14, color=MUTED)
+                _text(slide, '本期暂无维度综述。', .4, 1.8 + summary_space, 12.5, .3, size=14, color=MUTED)
         if index == 0:
             # Continuation slides carry only the remaining overview rows.
             shortened = _logic_block(slide, view, y + .14, logic_size) or shortened

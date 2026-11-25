@@ -1,6 +1,8 @@
 """Explicit indicator correspondence review; metadata recall never confirms a pair."""
 from typing import Literal
+from functools import partial
 
+from anyio import from_thread
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
@@ -16,7 +18,7 @@ class SourceRevision(BaseModel):
 
 
 class DecisionInput(SourceRevision):
-    ids: list[str] = Field(min_length=1, max_length=20)
+    ids: list[str] = Field(min_length=1, max_length=10000)
     revisions: dict[str, StrictInt]
     state: Literal['confirmed_default', 'keep_both', 'rejected']
     batch: StrictBool = False
@@ -34,8 +36,18 @@ def scope_for(body=None):
 
 
 @router.get('')
-def get_indicator_dedup():
-    return service.list_mappings(scope_for())
+def get_indicator_dedup(include_remaps: bool = False):
+    return service.list_mappings(scope_for(), include_remaps=include_remaps)
+
+
+def _rewrite_remaps(scope, items, *, undo=False):
+    from tin.web.workbench_remaps import authorized_workbenches, rewrite_workbenches
+    targets = from_thread.run(partial(authorized_workbenches, scope, items, undo=undo))
+    return rewrite_workbenches(targets, undo=undo, origin=scope.workbench_id)
+
+
+def _undo_remap(scope, item):
+    return _rewrite_remaps(scope, [item], undo=True)
 
 
 @router.post('/refresh')
@@ -55,7 +67,8 @@ def decide_indicator_dedup(body: DecisionInput):
     scope = scope_for(body)
     if set(body.revisions) != set(body.ids):
         raise HTTPException(422, '需要为每组候选提供当前修订版本')
-    return service.decide(scope, body.ids, body.revisions, body.state, batch=body.batch)
+    return service.decide(scope, body.ids, body.revisions, body.state, batch=body.batch,
+                          apply_remaps=_rewrite_remaps)
 
 
 @router.post('/{identifier}/verify')
@@ -65,4 +78,4 @@ def verify_indicator_dedup(identifier: str, body: SourceRevision):
 
 @router.post('/{identifier}/undo')
 def undo_indicator_dedup(identifier: str, body: UndoInput):
-    return service.undo(scope_for(body), identifier, body.revision)
+    return service.undo(scope_for(body), identifier, body.revision, undo_remap=_undo_remap)

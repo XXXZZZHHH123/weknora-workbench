@@ -117,7 +117,25 @@ func (s *knowledgeService) saveIngestionState(ctx context.Context, knowledge *ty
 	if err = setIngestionState(current, state); err != nil {
 		return err
 	}
-	if err = s.repo.UpdateKnowledgeColumn(ctx, current.ID, "metadata", current.Metadata); err != nil {
+	if current.FileType == "xlsx" && (state.Status == "completed" || state.Status == "needs_attention") {
+		var publication struct {
+			DatasetID string `json:"dataset_id"`
+		}
+		if err = json.Unmarshal(state.Result, &publication); err != nil {
+			return err
+		}
+		if publication.DatasetID != "" {
+			history, readErr := current.FileVersionHistory()
+			if readErr != nil {
+				return readErr
+			}
+			history.LastPublishedFileHash = current.FileHash
+			if err = current.SetFileVersionHistory(history); err != nil {
+				return err
+			}
+		}
+	}
+	if err = s.repo.UpdateKnowledgeFileSource(ctx, current, map[string]interface{}{"metadata": current.Metadata}); err != nil {
 		return err
 	}
 	knowledge.Metadata = current.Metadata

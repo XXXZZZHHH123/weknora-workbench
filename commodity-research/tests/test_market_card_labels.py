@@ -115,6 +115,20 @@ def test_source_precision_alone_does_not_add_a_card_details_popover():
     assert not tree.xpath('//*[@data-popover or @data-popover-trigger]')
 
 
+def test_header_metadata_is_visible_in_card_popover_even_without_observations(session):
+    identifier = 'SMM.SN.spot.1'
+    name = 'Quantity'
+    note = {'cell': 'C2', 'text': '范围说明\n  <样例>  '}
+    code = {'cell': 'C3', 'text': 'S5329490'}
+    session.info['knowledge_facts_catalog'] = {identifier: {'field_metadata': {
+        'header_notes': [note], 'source_codes': [code]}}}
+    card = _obs_card(session, 'fixture', name, identifier, date(2026, 1, 3))
+    assert card.status == 'missing' and card.label == name
+    tree = fromstring(render(card, compact=False))
+    assert tree.xpath('//*[@data-popover]//p[@class="header-note-text"]/text()') == [note['text']]
+    assert tree.xpath('//*[@data-popover]//div[@class="header-note-text"]/text()') == ['代码：S5329490']
+
+
 def test_core_refresh_and_saved_card_have_compact_title_but_preserve_catalog_identity(canonical, monkeypatch):
     import httpx
     client, headers, state, _ = canonical

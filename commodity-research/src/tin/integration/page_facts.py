@@ -14,13 +14,29 @@ from tin.config import SHANGHAI, settings
 
 _page = ContextVar('research_page_read', default=None)
 _catalog_read = ContextVar('research_catalog_read', default=None)
+_source_error_details = ContextVar('research_source_error_details', default=False)
 MODULES = {'home','market','indicators','judgments','strategies','diagram','reports'}
 SERIES = re.compile(r'kb-[0-9a-f]{48}\Z')
 LEGACY_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z')
 
 
 class StructuredFactsError(HTTPException):
-    """An upstream facts rejection exposed to a caller that opted into details."""
+    """A facts read failure exposed to a caller that opted into details."""
+
+
+@contextmanager
+def source_error_details(enabled=True):
+    """Make source failures available to the surrounding page or check."""
+    marker = _source_error_details.set(enabled)
+    try:
+        yield
+    finally:
+        _source_error_details.reset(marker)
+
+
+def _response_error(status, detail):
+    error = StructuredFactsError if _source_error_details.get() else HTTPException
+    return error(status, detail)
 
 
 @contextmanager
@@ -86,12 +102,14 @@ def _request(scope, body, *, upstream_error_detail=False):
     marker = current_workbench.set(scope)
     try:
         response = structured_request('POST','/api/research/facts',body,return_error_response=True)
-        if upstream_error_detail and 400 <= response.status_code < 600:
+        if (upstream_error_detail or _source_error_details.get()) and 400 <= response.status_code < 600:
             detail = None
             try:
                 payload = response.json()
                 if isinstance(payload, dict) and isinstance(payload.get('detail'), str):
                     detail = payload['detail'][:200]
+                    if _source_error_details.get() and not detail.strip():
+                        detail = None
             except (ValueError, TypeError):
                 pass
             if detail is None:
@@ -120,7 +138,7 @@ def _request(scope, body, *, upstream_error_detail=False):
     except HTTPException:
         raise
     except (httpx.HTTPError,ValueError,TypeError,AttributeError,KeyError,OSError):
-        raise HTTPException(503, '当前数据来源暂时不可读；未加载历史副本或全量事实') from None
+        raise _response_error(503, '当前数据来源暂时不可读；未加载历史副本或全量事实') from None
     finally:
         current_workbench.reset(marker)
 
@@ -470,49 +488,59 @@ def bounded_facts(scope, identifiers, module, *, day=None, points=2, same_day=No
     unavailable = result.get('unavailable_series_ids',[])
     if (not isinstance(unavailable,list) or any(identifier not in query_ids for identifier in unavailable)
             or len(unavailable)!=len(set(unavailable)) or direct_only and unavailable):
-        raise HTTPException(503,'页面绑定失效响应无效')
+        raise _response_error(503, '页面绑定失效响应无效')
     unavailable=[*unavailable,*sorted(legacy_unavailable)]
     result={**result,'unavailable_series_ids':unavailable}
+    available_ids = set(identifiers) - set(unavailable)
     if (result.get('bounded') is not True or not isinstance(result.get('rows'),list)
             or len(result['rows']) > len(identifiers)*points or not isinstance(result.get('indicators'),list)
-            or len(result['indicators']) != len(set(identifiers)-set(unavailable))
-            or {field.get('series_id') for field in result['indicators'] if isinstance(field,dict)} != set(identifiers)-set(unavailable)):
-        raise HTTPException(503,'页面取值响应不完整或超过必要范围')
+            or len(result['indicators']) != len(available_ids)
+            or {field.get('series_id') for field in result['indicators'] if isinstance(field,dict)} != available_ids):
+        raise _response_error(503, '页面取值响应不完整或超过必要范围')
     expected = {source['id']:source for source in targets}
     source_versions=result.get('source_versions',{})
     if (not isinstance(source_versions,dict) or set(source_versions)!=set(expected)
             or any(not isinstance(value,str) or not re.fullmatch('[a-f0-9]{64}',value) for value in source_versions.values())):
-        raise HTTPException(503,'页面来源快照版本不完整')
+        raise _response_error(503, '页面来源快照版本不完整')
     for spec in result['indicators']:
         source = expected.get(spec.get('source_binding_id'))
         if (source is None or spec.get('knowledge_base_id') != source['knowledge_base_id']
                 or type(spec.get('knowledge_base_tenant_id')) is not int or spec['knowledge_base_tenant_id'] != source['tenant_id']
                 or spec.get('source_id') != source['source_id'] or spec.get('source_type') != source['source_type']):
-            raise HTTPException(503,'页面字段来源与授权绑定不一致')
+            raise _response_error(503, '页面字段来源与授权绑定不一致')
         if direct_only:
             # Catalog and bounded-response versions use different envelopes;
             # their per-binding source versions are the common snapshot stamp.
             field = next((field for field in available['series'] if field['series_id'] == spec['series_id']), None)
             if field is not None and field.get('source_version') is not None and field['source_version'] != source_versions[spec['source_binding_id']]:
-                raise HTTPException(409, '目录与观测的来源快照已变化，请刷新后重试')
+                raise _response_error(409, '目录与观测的来源快照已变化，请刷新后重试')
     seen,counts = set(),{}
-    if include_invalid and result.get('include_invalid') is not True:
-        raise HTTPException(503, '来源服务未提供完整的均线观测窗口')
+    undated = set()
+    if include_invalid:
+        if result.get('include_invalid') is not True:
+            raise _response_error(503, '来源服务未提供完整的均线观测窗口')
+        flagged = result.get('undated_series_ids', [])
+        if (not isinstance(flagged, list)
+                or any(not isinstance(identifier, str) or identifier not in available_ids for identifier in flagged)
+                or len(flagged) != len(set(flagged))):
+            raise _response_error(503, '页面未确认日期的指标响应无效')
+        undated = set(flagged)
+        result['undated_series_ids'] = sorted(undated)
     for row in result['rows']:
         missing = include_invalid and row.get('value_status') == 'missing' and row.get('value') is None if isinstance(row, dict) else False
-        if (not isinstance(row,dict) or row.get('series_id') not in identifiers
+        if (not isinstance(row,dict) or row.get('series_id') not in identifiers or row['series_id'] in undated
                 or not missing and (type(row.get('value')) not in {int,float} or not math.isfinite(row['value'])
                 or row.get('value_status') not in {'valid','ok','正常'})
                 or not isinstance(row.get('date'),str) or row['date'] > body['as_of']
                 or (row['series_id'],row['date']) in seen):
-            raise HTTPException(503,'页面取值包含未授权或重复观测')
+            raise _response_error(503, '页面取值包含未授权或重复观测')
         try:
             if date.fromisoformat(row['date']).isoformat() != row['date']: raise ValueError
-        except ValueError: raise HTTPException(503,'页面观测日期无效') from None
+        except ValueError: raise _response_error(503, '页面观测日期无效') from None
         seen.add((row['series_id'],row['date']))
         counts[row['series_id']] = counts.get(row['series_id'],0)+1
         if counts[row['series_id']]>points:
-            raise HTTPException(503,'页面单字段观测超过必要窗口')
+            raise _response_error(503, '页面单字段观测超过必要窗口')
     return result
 
 
@@ -522,7 +550,7 @@ def _merge_calendars(calendars):
     for calendar in calendars:
         if not calendar:continue
         if result and result['as_of']!=calendar.get('as_of'):
-            raise HTTPException(503,'页面日期导航窗口不一致')
+            raise _response_error(503, '页面日期导航窗口不一致')
         result['as_of']=calendar['as_of']
         for key,choose in (('min_date',min),('max_date',max),('previous_date',max),('next_date',min)):
             value=calendar.get(key)
@@ -539,7 +567,7 @@ def _validated_calendar(calendar, requested_day):
         return None
     expected_day = requested_day or datetime.now(SHANGHAI).date().isoformat()
     if not isinstance(calendar, dict) or calendar.get('as_of') != expected_day:
-        raise HTTPException(503, '页面日期导航边界不一致')
+        raise _response_error(503, '页面日期导航边界不一致')
     today = datetime.now(SHANGHAI).date().isoformat()
     for key in ('min_date', 'max_date', 'previous_date', 'next_date', 'latest_previous_date'):
         value = calendar.get(key)
@@ -549,7 +577,7 @@ def _validated_calendar(calendar, requested_day):
             if not isinstance(value, str) or date.fromisoformat(value).isoformat() != value or value > today:
                 raise ValueError
         except (TypeError, ValueError):
-            raise HTTPException(503, '页面日期导航无效') from None
+            raise _response_error(503, '页面日期导航无效') from None
     return calendar
 
 
@@ -562,6 +590,7 @@ def verified_page_facts(scope):
     request = _page.get() or {'module':'home','series_ids':None,'day':None,'template_id':None}
     plans, origins = _saved_plan(scope,request)
     rows, fields, versions, totals, unavailable, calendars, source_versions = [], {}, [], {}, set(), [], {}
+    undated = set()
     legacy_snapshots = {}
     for plan in plans:
         if not plan['ids']: continue
@@ -574,15 +603,17 @@ def verified_page_facts(scope):
             for field in result['indicators']:
                 source, dataset = field['source_knowledge_id'], field['dataset_id']
                 if source in legacy_snapshots and legacy_snapshots[source] != dataset:
-                    raise HTTPException(409, '研判来源在不同必要窗口读取期间已变化，请刷新')
+                    raise _response_error(409, '研判来源在不同必要窗口读取期间已变化，请刷新')
                 legacy_snapshots[source] = dataset
         for binding_id,source_version in result.get('source_versions',{}).items():
             if binding_id in source_versions and source_versions[binding_id]!=source_version:
-                raise HTTPException(409,'页面不同必要窗口的来源快照已变化，请刷新后重试')
+                raise _response_error(409, '页面不同必要窗口的来源快照已变化，请刷新后重试')
             source_versions[binding_id]=source_version
         versions.append(result['version']);rows.extend(result['rows'])
         fields.update((field['series_id'],field) for field in result['indicators'])
         totals.update(result.get('series_totals',{}));unavailable.update(result.get('unavailable_series_ids',[]))
+        if plan.get('include_invalid'):
+            undated.update(result.get('undated_series_ids', []))
         calendar = _validated_calendar(result.get('calendar'), request['day'])
         if calendar is not None:
             calendars.append(calendar)
@@ -590,10 +621,12 @@ def verified_page_facts(scope):
     decoded = [{**row,**{key:fields[row['series_id']].get(key) for key in ('source_knowledge_id','dataset_id','source_series_id')}} for row in rows]
     page = {'version':version,'indicators':list(fields.values()),'datasets':[],'rows':decoded,'total':len(decoded),
             'offset':0,'next_offset':None,'truncated':False,
-            **({'include_invalid':True} if any(plan.get('include_invalid') for plan in plans) else {})}
+            **({'include_invalid': True, 'undated_series_ids': sorted(undated)}
+               if any(plan.get('include_invalid') for plan in plans) else {})}
     return page, {'knowledge_facts_series_totals': totals,
         'knowledge_facts_calendar': _merge_calendars(calendars),
-        'knowledge_facts_unavailable_series_ids': sorted(unavailable)}
+        'knowledge_facts_unavailable_series_ids': sorted(unavailable),
+        'knowledge_facts_undated_series_ids': sorted(undated)}
 
 
 def projected_page_session(engine, scope, **kwargs):

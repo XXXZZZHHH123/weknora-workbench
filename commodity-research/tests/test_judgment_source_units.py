@@ -134,7 +134,9 @@ def test_review_route_rejects_cross_unit_rebind_without_mutating_preview(generat
     from tests.test_judgment_generation import endpoint
     from tests.test_knowledge_facts import SERIES
     from tin.web import judgment_generation as generation
-    client, headers, _, model, calls = generator
+    client, headers, upstream, model, calls = generator
+    other = 'kg-field'
+    upstream['bounded_spec_metadata'] = {'series_id': other, 'unit': 'kg', 'metric': 'Other quantity'}
     source = '库存超过12吨时复核。'
     model['rule_quotes']['watch'] = source
     original_snapshot = generation.snapshot
@@ -149,7 +151,7 @@ def test_review_route_rejects_cross_unit_rebind_without_mutating_preview(generat
 
     def with_other_unit(*args, **kwargs):
         state = original_snapshot(*args, **kwargs)
-        state['catalog'].append({'id': 'kg-field', 'name': 'Other quantity', 'unit': 'kg'})
+        state['catalog'].append({'id': other, 'name': 'Other quantity', 'unit': 'kg'})
         return state
 
     monkeypatch.setattr(generation, 'snapshot', with_other_unit)
@@ -162,7 +164,7 @@ def test_review_route_rejects_cross_unit_rebind_without_mutating_preview(generat
                 if item['kind'] == 'thresholds')
     attempted = {
         'draft_id': preview['draft_id'], 'revision': preview['review']['revision'],
-        'item_id': item['id'], 'action': 'confirm', 'series_id': 'kg-field'}
+        'item_id': item['id'], 'action': 'confirm', 'series_id': other}
     changed = client.post(endpoint('/review/update'), headers=headers, json=attempted)
     assert changed.status_code == 422, changed.text
     assert changed.json()['detail']['code'] == 'binding_warning'
@@ -176,6 +178,6 @@ def test_review_route_rejects_cross_unit_rebind_without_mutating_preview(generat
     confirmed = client.post(endpoint('/review/update'), headers=headers, json={**attempted,
         'binding_warning_token': changed.json()['detail']['confirmation_token']})
     assert confirmed.status_code == 422, confirmed.text
-    assert confirmed.json()['detail'].get('code') != 'binding_warning'
+    assert confirmed.json()['detail']['code'] == 'number_review'
     after = client.get(endpoint('/review'), headers=headers, params={'draft_id': preview['draft_id']}).json()
     assert after == preview['review']
