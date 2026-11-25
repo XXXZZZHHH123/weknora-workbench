@@ -10,6 +10,7 @@ import (
 
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/asr"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/models/embedding"
@@ -739,7 +740,11 @@ func (s *modelService) GetChatModel(ctx context.Context, modelId string) (chat.C
 
 	appID, appSecret := s.resolveWeKnoraCloudCredentials(ctx, &model.Parameters)
 
-	chatModel, err := chat.NewChat(chat.ConfigFromModel(model, appID, appSecret), s.ollamaService)
+	config := chat.ConfigFromModel(model, appID, appSecret)
+	if api.IsStructuredReview(ctx) {
+		config = chat.StructuredReviewConfig(config)
+	}
+	chatModel, err := chat.NewChat(config, s.ollamaService)
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, map[string]interface{}{
 			"model_id":   model.ID,

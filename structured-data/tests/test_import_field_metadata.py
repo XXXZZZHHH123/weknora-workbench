@@ -40,7 +40,7 @@ def test_new_ready_import_uses_source_checked_model_metadata(tmp_path, monkeypat
     path = original(tmp_path)
     manager = ImportManager(tmp_path / 'data'); configured(manager)
     calls = []
-    def request(cfg, payload, budget, cancelled):
+    def request(cfg, payload, budget, cancelled, **kwargs):
         budget.consume(); calls.append(payload)
         return suggestion()
     monkeypatch.setattr('structured_data.ai_review._request', request)
@@ -70,7 +70,7 @@ def test_new_ready_import_uses_source_checked_model_metadata(tmp_path, monkeypat
 def test_unreliable_model_metadata_leaves_units_unconfirmed(tmp_path, monkeypatch):
     path = original(tmp_path, composite=False)
     manager = ImportManager(tmp_path / 'data'); configured(manager)
-    monkeypatch.setattr('structured_data.ai_review._request', lambda *args: suggestion())
+    monkeypatch.setattr('structured_data.ai_review._request', lambda *args, **kwargs: suggestion())
     result = manager.ingest(path, use_reviewed_mappings=False)
     fields = manager.store.list_series(result['dataset_id'])['series']
     assert all(f['unit'] is None and not f.get('frequency') for f in fields)
@@ -145,7 +145,7 @@ def test_model_suggested_unit_without_verbatim_evidence_remains_unadopted(tmp_pa
     first = manager.ingest(original(tmp_path, composite=False), use_reviewed_mappings=False)
     proposal = {'column_updates': [{'block_index': 0, 'column': 'B', 'unit': '模型猜测单位'}],
                 'evidence': [{'block_index': 0, 'column': 'B', 'field': 'unit', 'cells': ['B1']}]}
-    monkeypatch.setattr('structured_data.ai_review._request', lambda *args: proposal)
+    monkeypatch.setattr('structured_data.ai_review._request', lambda *args, **kwargs: proposal)
     result = suggest_mapping(manager, first['import_id'], 'Observations', strict=True, metadata_only=metadata_only)
     assert any(d.get('field') == 'unit' for d in result['diagnostics'])
     assert all(f['unit'] is None for f in manager.store.list_series(first['dataset_id'])['series'])
@@ -174,7 +174,7 @@ def test_model_unit_source_cannot_disagree_with_reviewed_evidence(tmp_path, monk
     manager = ImportManager(tmp_path / 'data')
     first = manager.ingest(original(tmp_path), use_reviewed_mappings=False)
     bad = suggestion(); bad['column_updates'][0]['unit_cells'] = ['C1']
-    monkeypatch.setattr('structured_data.ai_review._request', lambda *args: bad)
+    monkeypatch.setattr('structured_data.ai_review._request', lambda *args, **kwargs: bad)
     result = suggest_mapping(manager, first['import_id'], 'Observations', strict=True)
     assert any(d.get('field') == 'unit_cells' for d in result['diagnostics'])
     mapping = deepcopy(manager.sheet(first['import_id'], 'Observations')['mapping'])
@@ -266,7 +266,7 @@ def test_ready_matrix_also_requests_source_checked_metadata(tmp_path, monkeypatc
     doc = {**scan, 'import_id': 'a'*24, 'source_file': path.name}
     folder = manager.directory / doc['import_id']; folder.mkdir(); (folder/path.name).write_bytes(path.read_bytes())
     doc['sheets'][0]['status'] = 'template_ready'
-    def request(cfg, payload, budget, cancelled):
+    def request(cfg, payload, budget, cancelled, **kwargs):
         budget.consume()
         rule = {**payload['candidate_mapping']['blocks'][0]['row_rules'][0],
                 'unit': '实物吨', 'unit_cells': ['A2'], 'frequency': '月', 'frequency_cells': ['A2'], 'field_role': 'numeric'}
@@ -284,7 +284,7 @@ def test_workbook_title_is_a_real_metadata_location_not_an_inferred_unit(tmp_pat
     path = original(tmp_path, composite=False)
     book = load_workbook(path); book.active.title = 'Records · 元 · 周度'; book.save(path)
     manager = ImportManager(tmp_path / 'data'); configured(manager)
-    def request(cfg, payload, budget, cancelled):
+    def request(cfg, payload, budget, cancelled, **kwargs):
         budget.consume()
         assert {'cell': '$sheet_title', 'value': 'Records · 元 · 周度'} in payload['source_cells']
         return {'column_updates': [{'block_index': 0, 'column': 'B', 'unit': '元', 'unit_cells': ['$sheet_title'],

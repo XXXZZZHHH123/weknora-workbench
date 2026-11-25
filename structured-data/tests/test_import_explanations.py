@@ -10,6 +10,7 @@ from structured_data.dataset_history import describe_history
 from structured_data.generic_parser import validate_mapping
 from structured_data.imports import ImportManager
 from structured_data.mapping_suggestions import apply_suggestion
+from test_ai_review import mock_review_post
 
 
 def duplicate_workbook(tmp_path):
@@ -79,22 +80,26 @@ def test_suggestion_honors_thinking_setting_and_retains_column_identity(tmp_path
         assert candidate['blocks'][0]['columns'][0]['dimensions'] == {'原表列': 'B'}
         return httpx.Response(200, request=httpx.Request('POST', url), json={'choices': [{
             'finish_reason': 'stop', 'message': {'content': json.dumps({'mapping': candidate})}}]})
-    monkeypatch.setattr(httpx.Client, 'post', post)
+    mock_review_post(monkeypatch, post)
     result = manager.suggest(uploaded['import_id'], sheet['name'])
     assert result['mapping']['blocks'][0]['columns'][1]['dimensions'] == {'原表列': 'C'}
     assert manager.get(uploaded['import_id'])['dataset_id'] is None
 
 
-@pytest.mark.parametrize('reason,content,notice', [('length', '', '输出长度'), ('stop', '', '空响应')])
-def test_suggestion_reports_truncation_or_empty_mapping_without_provider_secrets(tmp_path, monkeypatch, reason, content, notice):
+@pytest.mark.parametrize('reason,content,notice,code', [
+    ('length', '', '思考', 'MODEL_REASONING_ONLY'),
+    ('length', '{', '回答太长', 'MODEL_TRUNCATED'),
+])
+def test_suggestion_reports_reasoning_or_truncation_without_provider_secrets(tmp_path, monkeypatch, reason, content, notice, code):
     manager, uploaded, sheet = duplicate_workbook(tmp_path); configure(manager)
     def post(self, url, **kwargs):
         return httpx.Response(200, request=httpx.Request('POST', url), json={'choices': [{
             'finish_reason': reason, 'message': {'content': content, 'reasoning_content': 'private-fixture-key'}}]})
-    monkeypatch.setattr(httpx.Client, 'post', post)
+    mock_review_post(monkeypatch, post)
     with pytest.raises(ValueError, match=notice) as error:
         manager.suggest(uploaded['import_id'], sheet['name'])
     assert 'private-fixture-key' not in str(error.value)
+    assert error.value.public_code == code
 
 
 def test_history_explains_coverage_changes_and_separates_source_updates():

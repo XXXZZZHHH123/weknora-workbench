@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,23 +14,28 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/application/access"
 	"github.com/Tencent/WeKnora/internal/middleware"
+	"github.com/Tencent/WeKnora/internal/models/api"
+	"github.com/Tencent/WeKnora/internal/models/api/openaicompletions"
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	modelruntime "github.com/Tencent/WeKnora/internal/models/runtime"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	"github.com/Tencent/WeKnora/internal/utils"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
 type structuredModelClientStub struct {
-	calls    int
-	messages []chat.Message
-	options  *chat.ChatOptions
-	caller   types.Caller
-	tenant   uint64
-	deadline time.Time
-	response *types.ChatResponse
-	err      error
-	after    func()
+	calls           int
+	messages        []chat.Message
+	options         *chat.ChatOptions
+	caller          types.Caller
+	tenant          uint64
+	deadline        time.Time
+	response        *types.ChatResponse
+	err             error
+	after           func()
+	waitForDeadline bool
 }
 
 func (s *structuredModelClientStub) Chat(ctx context.Context, messages []chat.Message, options *chat.ChatOptions) (*types.ChatResponse, error) {
@@ -38,6 +45,9 @@ func (s *structuredModelClientStub) Chat(ctx context.Context, messages []chat.Me
 	s.deadline, _ = ctx.Deadline()
 	if s.after != nil {
 		s.after()
+	}
+	if s.waitForDeadline {
+		<-ctx.Done()
 	}
 	return s.response, s.err
 }
@@ -58,6 +68,7 @@ type structuredModelsStub struct {
 	clientIDs    []string
 	lookupErr    error
 	initErr      error
+	makeClient   func(context.Context) chat.Chat
 }
 
 func (s *structuredModelsStub) GetModelByID(ctx context.Context, id string) (*types.Model, error) {
@@ -68,6 +79,9 @@ func (s *structuredModelsStub) GetModelByID(ctx context.Context, id string) (*ty
 func (s *structuredModelsStub) GetChatModel(ctx context.Context, id string) (chat.Chat, error) {
 	s.initializers = append(s.initializers, types.MustTenantIDFromContext(ctx))
 	s.clientIDs = append(s.clientIDs, id)
+	if s.makeClient != nil {
+		return s.makeClient(ctx), nil
+	}
 	return s.client, s.initErr
 }
 
@@ -398,4 +412,138 @@ func TestStructuredModelChatDoesNotLeakInvalidProviderResponses(t *testing.T) {
 			require.NotContains(t, w.Body.String(), "fields")
 		})
 	}
+}
+
+const excelModelBody = `{"model_id":"configured-chat","messages":[{"role":"user","content":"Return a JSON object."}],"response_format":"json_object"}`
+
+type structuredProviderTransport func(*http.Request) (*http.Response, error)
+
+func (f structuredProviderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestStructuredExcelFinalWireRequestAndOrdinaryStreamingIsolation(t *testing.T) {
+	utils.SetSSRFWhitelistFromRaw("dashscope.aliyuncs.com")
+	t.Cleanup(func() { utils.SetSSRFWhitelistFromRaw("") })
+
+	for _, name := range []string{"deepseek-v4-pro", "qwen3.7-flash"} {
+		t.Run(name, func(t *testing.T) {
+			f := newStructuredModelFixture(t)
+			f.models.model.Name, f.models.model.Source = name, types.ModelSourceRemote
+			f.models.model.Parameters.BaseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+			f.models.model.Parameters.Provider = "generic"
+			var calls []map[string]any
+			makeClient := func(ctx context.Context) chat.Chat {
+				config := chat.ConfigFromModel(f.models.model, "", "")
+				if api.IsStructuredReview(ctx) {
+					config = chat.StructuredReviewConfig(config)
+				}
+				resolved, err := chat.Resolve(config)
+				require.NoError(t, err)
+				endpoint, err := resolved.Endpoint(types.ModelTypeKnowledgeQA, modelruntime.Connection{ModelID: config.ModelID, Credentials: api.Credentials{APIKey: config.APIKey}})
+				require.NoError(t, err)
+				endpoint.Client = &http.Client{Transport: structuredProviderTransport(func(req *http.Request) (*http.Response, error) {
+					var body map[string]any
+					require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
+					calls = append(calls, body)
+					require.Equal(t, "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", req.URL.String())
+					require.Equal(t, "Bearer fixture-provider-secret", req.Header.Get("Authorization"))
+					contentType, reply := "application/json", `{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}`
+					if body["stream"] == true {
+						contentType, reply = "text/event-stream", "data: [DONE]\n\n"
+					} else {
+						deadline, ok := req.Context().Deadline()
+						require.True(t, ok)
+						require.WithinDuration(t, time.Now().Add(180*time.Second), deadline, 2*time.Second)
+					}
+					return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {contentType}},
+						Body: io.NopCloser(strings.NewReader(reply))}, nil
+				})}
+				return openaicompletions.New(openaicompletions.Config{Endpoint: endpoint,
+					Settings: resolved.OpenAICompletions, ThinkingLevels: resolved.ThinkingLevels,
+					Reasoning: resolved.Spec.Reasoning})
+			}
+			f.models.makeClient = makeClient
+			w := f.request(t, excelModelBody)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			require.Len(t, calls, 1)
+			require.Equal(t, false, calls[0]["enable_thinking"])
+			require.NotContains(t, calls[0], "chat_template_kwargs")
+			require.Equal(t, float64(8192), calls[0]["max_completion_tokens"])
+			require.NotContains(t, calls[0], "max_tokens")
+			require.Equal(t, map[string]any{"type": "json_object"}, calls[0]["response_format"])
+
+			off := false
+			stream, err := makeClient(context.Background()).ChatStream(context.Background(),
+				[]chat.Message{{Role: "user", Content: "ordinary chat"}},
+				&chat.ChatOptions{MaxTokens: 2048, Thinking: &off})
+			require.NoError(t, err)
+			for range stream {
+			}
+			require.Len(t, calls, 2)
+			require.Equal(t, map[string]any{"enable_thinking": false}, calls[1]["chat_template_kwargs"])
+			require.Equal(t, float64(2048), calls[1]["max_tokens"])
+			require.NotContains(t, calls[1], "enable_thinking")
+			require.NotContains(t, calls[1], "response_format")
+			require.Equal(t, "generic", f.models.model.Parameters.Provider)
+		})
+	}
+}
+
+func TestStructuredExcelClassifiesFailuresAndHonorsTimeoutBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		status       int
+		resp         *types.ChatResponse
+		err          error
+	}{
+		{"reasoning only", "MODEL_REASONING_ONLY", 502, &types.ChatResponse{ReasoningContent: "private thought"}, nil},
+		{"reasoning at length", "MODEL_REASONING_ONLY", 502, &types.ChatResponse{ReasoningContent: "private thought", FinishReason: "length"}, nil},
+		{"truncated", "MODEL_TRUNCATED", 502, &types.ChatResponse{Content: "private partial", FinishReason: "length"}, nil},
+		{"empty", "MODEL_EMPTY", 502, &types.ChatResponse{FinishReason: "length"}, nil},
+		{"no choices", "MODEL_EMPTY", 502, nil, api.ErrEmptyCompletion},
+		{"forbidden upstream", "MODEL_UPSTREAM_REJECTED", 502, nil, &api.HTTPError{StatusCode: 403, Body: "private key"}},
+		{"timeout", "MODEL_TIMEOUT", 504, nil, context.DeadlineExceeded},
+		{"connection timeout", "MODEL_CONNECTION", 502, nil, &net.OpError{Op: "dial", Err: context.DeadlineExceeded}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newStructuredModelFixture(t)
+			f.models.client.response, f.models.client.err = tc.resp, tc.err
+			w := f.request(t, strings.TrimSuffix(excelModelBody, "}")+`,"timeout_ms":300000}`)
+			require.Equal(t, tc.status, w.Code, w.Body.String())
+			require.Contains(t, w.Body.String(), `"reason":"`+tc.reason+`"`)
+			require.Contains(t, w.Body.String(), `"retry_thinking_off":false`)
+			require.NotContains(t, w.Body.String(), "private")
+			require.WithinDuration(t, time.Now().Add(300*time.Second), f.models.client.deadline, 2*time.Second)
+			require.Equal(t, 1, f.models.client.calls)
+		})
+	}
+	for _, value := range []string{`"timeout_ms":300001`, `"timeout_ms":0`, `"response_format":"json_schema"`} {
+		f := newStructuredModelFixture(t)
+		w := f.request(t, `{"model_id":"configured-chat","messages":[{"role":"user","content":"JSON"}],`+value+"}")
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		require.Zero(t, f.models.client.calls)
+	}
+}
+
+func TestStructuredExcelOnlyOffersRetryForSelectableThinkingLeftOn(t *testing.T) {
+	f := newStructuredModelFixture(t)
+	f.models.model.Name, f.models.model.Source = "fixture-qwen", types.ModelSourceRemote
+	f.models.model.Parameters.Provider = "generic"
+	f.models.model.Parameters.BaseURL = "https://fixture.invalid/v1"
+	f.models.client.response = &types.ChatResponse{ReasoningContent: "private thought", FinishReason: "length"}
+	w := f.request(t, strings.TrimSuffix(excelModelBody, "}")+`,"enable_thinking":true,"timeout_ms":25000}`)
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	require.Contains(t, w.Body.String(), `"retry_thinking_off":true`)
+	require.WithinDuration(t, time.Now().Add(25*time.Second), f.models.client.deadline, 2*time.Second)
+	require.Equal(t, 1, f.models.client.calls)
+}
+
+func TestStructuredExcelStopsWaitingAtTheDeadline(t *testing.T) {
+	f := newStructuredModelFixture(t)
+	f.models.client.waitForDeadline = true
+	w := f.request(t, strings.TrimSuffix(excelModelBody, "}")+`,"timeout_ms":20}`)
+	require.Equal(t, http.StatusGatewayTimeout, w.Code)
+	require.Contains(t, w.Body.String(), `"reason":"MODEL_TIMEOUT"`)
+	require.Equal(t, 1, f.models.client.calls)
 }

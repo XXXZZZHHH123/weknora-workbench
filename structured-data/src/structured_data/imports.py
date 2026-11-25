@@ -984,13 +984,16 @@ class ImportManager:
                     'sample': sample, 'issues': bounded_issues,
                     'notice': ('同名指标按原表列分别保存，未合并或推测品种、年度。' if any('原表列' in c.get('dimensions', {}) for b in mapping['blocks'] for c in b['columns']) else '') + '预览已执行全量结构校验，但业务指标、单位和年度口径仍需人工确认。'}
 
-    def confirm(self, import_id, mapping, save_template=True, before_publish=None, progress=None):
+    def confirm(self, import_id, mapping, save_template=True, before_publish=None, progress=None,
+                assistant_review=None):
         with self.lock:
             report_progress(progress, 'preview')
             try:
                 checked = self.preview(import_id, mapping)
                 if not checked['series_count'] or not checked['observation_count']:
                     raise ValueError('映射没有产生可查询记录，不能确认。')
+                if assistant_review and any(not block.get('valid_observation_count') for block in checked['blocks']):
+                    raise ValueError('待发布区块须各有原表数值，请核对原件。')
             except ValueError as exc:
                 doc = self.get(import_id)
                 sheet = self.sheet(import_id, mapping.get('sheet'))
@@ -998,6 +1001,18 @@ class ImportManager:
                 raise
             doc = self.get(import_id)
             sheet = next(s for s in doc['sheets'] if s['name'] == mapping['sheet'])
+            if assistant_review:
+                prior = next(s for s in self.publication_view(doc)['sheets'] if s['name'] == sheet['name'])
+                if prior['published_in_dataset']:
+                    def signature(block):
+                        return self._mapping_signature({k: v for k, v in block.items() if k != 'header_expectations'})
+                    old = (prior.get('published_mapping') or {}).get('blocks', [])
+                    new = {signature(b) for b in checked['mapping']['blocks']}
+                    if not old or any(signature(b) not in new for b in old):
+                        raise ValueError('本次可确认范围与已发布区块不同，请合并核对后再导入。')
+                sheet['partial_review'] = assistant_review
+            else:
+                sheet.pop('partial_review', None)
             sheet['mapping'] = checked['mapping']
             # Local headers inside the sheet must be rechecked on template reuse too.
             from openpyxl import load_workbook
@@ -1009,16 +1024,19 @@ class ImportManager:
                 maxrow=max(int(re.search(r'[0-9]+',cell).group()) for cell in refs) if refs else 1
                 maxcol=max((column_index_from_string(re.match(r'[A-Z]+', cell).group()) for cell in refs), default=1)
                 values={cell.coordinate:str(cell.value) for row in ws.iter_rows(max_row=maxrow, max_col=maxcol) for cell in row if getattr(cell,'coordinate',None) in refs}
+                if missing := sorted(refs - values.keys()):
+                    raise ValueError(f'原表 {missing[0]} 没有表头内容，请核对指标来源。')
                 for b in sheet['mapping']['blocks']:
                     b['header_expectations']={cell:values[cell] for c in b['columns'] for cell in c['header_cells']}
             finally:workbook.close()
             sheet['status'] = 'confirmed'
-            sheet['reasons'] = ['用户确认映射；保留原文件及单元格来源。']
+            sheet['reasons'] = ([assistant_review['notice']] if assistant_review else
+                                ['用户确认映射；保留原文件及单元格来源。'])
             self._publish(doc, changed_sheet=sheet['name'], before_publish=before_publish,
                           progress=progress)
             if sheet['status'] != 'confirmed':
                 raise ValueError('确认未通过全量校验，原版本保持有效。')
-            if save_template:
+            if save_template and not assistant_review:
                 prefix = '' if doc.get('use_reviewed_mappings', True) else 'fresh-'
                 atomic_json(self.templates / (prefix + self.template_key(sheet) + '.json'),
                             {'fingerprint':sheet['fingerprint'],'sheet':sheet['name'],

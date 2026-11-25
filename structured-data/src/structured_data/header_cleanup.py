@@ -35,8 +35,11 @@ def eligible_sheets(manager, doc, *, publication=None):
         dataset_id = doc.get('dataset_id')
     if publication is None or dataset_id != doc.get('dataset_id'):
         publication = manager.publication_view({**doc, 'dataset_id': dataset_id})
+    # Cleanup republishes the saved mapping from the current source. A pending
+    # partial draft or a retained snapshot needs the normal sheet review first.
     return [sheet for sheet in publication['sheets']
             if (sheet['status'] == 'confirmed' or sheet.get('published_in_dataset'))
+            and not sheet.get('partial_review') and not sheet.get('source_update_state')
             and any(len(block.get('header_rows', [])) >= 2
                     or any(len(column.get('header_cells') or []) >= 2 for column in block.get('columns', []))
                     for block in _mapping(sheet).get('blocks', []))]

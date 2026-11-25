@@ -31,6 +31,7 @@ type renderChartTool struct {
 	receipts                map[string]verifiedChartReceipt
 	renderReceipts          map[string]verifiedChartReceipt // Real saved images, including incomplete overall deliveries.
 	renderFailures          int
+	reviewProtocolFailures  int
 	lastRenderFailure       string
 	mu                      sync.Mutex
 }
@@ -42,7 +43,7 @@ func (e *AgentEngine) SetChartWriter(writer chart.Writer) {
 }
 func newRenderChartTool(ctx context.Context, steps func() []types.AgentStep, writer chart.Writer, session, message string) *renderChartTool {
 	return &renderChartTool{BaseTool: agenttools.NewBaseTool(renderChartToolName,
-		"从本轮真实来源确定性绘图。先inspect查看sources及input_sources；input_sources是本轮已读PDF二维单元格，须先map；sources是实际查询/读取结果，可直接render，也可按真实行列map整形。两类都只使用inspect返回的source_id，表ID/result_id不是绘图句柄。前轮文字或表格不能替代本轮来源，目录为空时先重新read_pdf_table或执行引用真实源列的query_pdf_table。由模型根据完整任务理解行列，不能把横向维度行和指标行混成观测。map提交mapping:{orientation:rows|columns,x_index,y_indexes,value_indexes,label_index?,unit_index?}：rows表示X/Y分别取真实行、value_indexes取跨列观测；columns表示X/Y取列、value_indexes取观测行。label_index从来源标签格取名；unit_index只显式复制真实列元数据中的单位。技术行ID及常量测量列不能通过转置变成观测。map返回可直接render的真实source_id。也可query_pdf_table引用真实源字段整形，不能用重抄数值的SQL常量冒充原表观测。render选择真实source_id、x_column、y_columns(最多6)、chart_type(line/bar/scatter)、x_type(category/numeric/time)、title。长表可同时选择series_column真实标签列（例如查询实际返回的metric列）和可选unit_column真实单位列，单个Y列按标签真实值拆成最多6条系列；也可在columns映射中传这两个索引。不得用CASE技术ID或手写常量代替真实标签。依据完整任务选择业务维度，内部行ID不能充当业务轴。不得提交任意观测值、代码或URL，缺失留空，不补值，未知单位保持未知。保存前核验图的指标、维度、单位、范围与完整请求是否一致；明确的语义不匹配反馈后修正真实映射。核验临时未完成或协议无效时，保留同一source_id、mapping及全部render参数重试，不要为通过核验改变x_type；连续时间或数值变化应保留实际间隔，真正的离散类别比较允许category。delivery_mode默认chart_only，只交付返回的图片Markdown；明确还要文字分析时用chart_with_analysis。保存失败不能声称交付。用户要求分析结论且未要求绘图时，绘图只是可选步骤，不要反复重画而不交付已有证据支持的结论。类别图每个X类别须唯一；长表含多个业务系列时，可选择真实series_column拆分、依据真实维度透视为独立Y列或按用户要求明确聚合。Excel分析关系已提供真实metric/unit字段，应优先引用实际字段，不用CASE技术ID手写来源标签；同一图只选择单位可比较的真实系列。",
+		"从本轮真实来源确定性绘图。先inspect查看sources及input_sources；input_sources是本轮已读PDF二维单元格，须先map；sources是实际查询/读取结果，可直接render，也可按真实行列map整形。两类都只使用inspect返回的source_id，表ID/result_id不是绘图句柄。前轮文字或表格不能替代本轮来源，目录为空时先重新read_pdf_table或执行引用真实源列的query_pdf_table。由模型根据完整任务理解行列，不能把横向维度行和指标行混成观测。map提交mapping:{orientation:rows|columns,x_index,y_indexes,value_indexes,label_index?,unit_index?}：rows表示X/Y分别取真实行、value_indexes取跨列观测；columns表示X/Y取列、value_indexes取观测行。label_index从来源标签格取名；unit_index只显式复制真实列元数据中的单位。技术行ID及常量测量列不能通过转置变成观测。map返回可直接render的真实source_id。也可query_pdf_table引用真实源字段整形，不能用重抄数值的SQL常量冒充原表观测。render选择真实source_id、x_column、y_columns(最多6)、chart_type(line/bar/scatter)、x_type(category/numeric/time)、title。长表可同时选择series_column真实标签列（例如查询实际返回的metric列）和可选unit_column真实单位列，单个Y列按标签真实值拆成最多6条系列；也可在columns映射中传这两个索引。列标记direct_series_id时可直接用作series_column，程序从已核对的来源资料取业务图例，无需改写SQL。不得用CASE技术ID或手写常量代替真实标签。依据完整任务选择业务维度，内部行ID不能充当业务轴。不得提交任意观测值、代码或URL，缺失留空，不补值，未知单位保持未知。保存前核验图的指标、维度、单位、范围与完整请求是否一致；明确的语义不匹配反馈后修正真实映射。核验协议错误时程序可在原期限内按原参数重试一次；只有收到语义不符的意见才改绘图计划。连续月度汇总可按月排序用category，其他连续时间或数值变化须保留实际间隔。delivery_mode默认chart_only；明确还要文字分析时用chart_with_analysis。保留随图的覆盖说明，并补充核验要求的随图说明。保存失败不能声称交付。用户要求分析结论且未要求绘图时，绘图只是可选步骤，不要反复重画而不交付已有证据支持的结论。类别图每个X类别须唯一；长表含多个业务系列时，可选择真实series_column拆分、依据真实维度透视为独立Y列或按用户要求明确聚合。Excel分析关系已提供真实metric/unit字段，应优先引用实际字段，不用CASE技术ID手写来源标签；同一图只选择单位可比较的真实系列。",
 		json.RawMessage(`{
   "type":"object","additionalProperties":false,"required":["operation"],
   "properties":{
@@ -65,7 +66,7 @@ func newRenderChartTool(ctx context.Context, steps func() []types.AgentStep, wri
     "chart_type":{"type":"string","enum":["line","bar","scatter"]},
     "x_column":{"type":"integer","minimum":0,"description":"render选择的来源结果列；map输出中X固定为0，不再填原表坐标。"},
     "y_columns":{"type":"array","minItems":1,"maxItems":6,"items":{"type":"integer","minimum":0},"description":"render选择的来源结果列；map输出中Y依次为1至输出列数减1，不再填原表坐标。"},
-    "series_column":{"type":"integer","minimum":0,"description":"长表真实标签列的索引；选择单个Y，按真实值拆成最多6条系列，图例逐字保留。"},
+    "series_column":{"type":"integer","minimum":0,"description":"长表真实标签列或标记direct_series_id的列索引；选择单个Y，按来源拆成最多6条系列。"},
     "unit_column":{"type":"integer","minimum":0,"description":"与series_column配合的真实单位列索引；仅复制实际字段，不接受模型填写单位。"},
     "x_type":{"type":"string","enum":["category","numeric","time"]},
     "title":{"type":"string","maxLength":512},
@@ -91,20 +92,30 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (res
 		Operation string `json:"operation"`
 	}
 	_ = json.Unmarshal(raw, &operationHeader)
+	protocolFailures := 0
+	protocolFailed := false
 	if operationHeader.Operation == "render" {
-		if t.renderFailures >= maxChartRenderFailures {
-			return chartRenderLimitFailure(t.lastRenderFailure), nil
+		if chartRenderLimitReached(t.renderFailures, t.reviewProtocolFailures) {
+			return t.chartRenderLimitFailure(), nil
 		}
 		defer func() {
 			if executionErr != nil || result == nil || !result.Success {
-				t.renderFailures++
+				if !protocolFailed {
+					t.renderFailures++
+				}
 				if result != nil {
 					t.lastRenderFailure = result.Error
 				} else if executionErr != nil {
 					t.lastRenderFailure = executionErr.Error()
 				}
-				if t.renderFailures >= maxChartRenderFailures {
-					result, executionErr = chartRenderLimitFailure(t.lastRenderFailure), nil
+				if chartRenderLimitReached(t.renderFailures, t.reviewProtocolFailures) {
+					result, executionErr = t.chartRenderLimitFailure(), nil
+				}
+			}
+			if protocolFailures > 0 && result != nil && !result.Success && result.Data["terminal_reason"] != chartRenderFailureLimit {
+				result.Data[chartReviewProtocolFailuresKey] = protocolFailures
+				if protocolFailed {
+					result.Data[chartReviewProtocolFailedKey] = true
 				}
 			}
 		}()
@@ -179,7 +190,7 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (res
 			}
 			inputViews = append(inputViews, view)
 		}
-		data := map[string]any{"kind": "chart_source_catalog", "sources": views, "input_sources": inputViews, "omitted_source_count": omitted, "rejected_source_count": rejectedCount, "source_rejections": rejected, "source_rejections_truncated": rejectedCount > len(rejected), "notice": "先根据完整问题理解真实行列。input_sources须map后绘图；sources可直接render，也可map选择/整形其真实结果坐标。map/render均用本目录source_id。全部索引0起算，sample_rows仅展示样例，真实句柄绑定全部已返回行。表ID、result_id不是绘图句柄。无来源时先本轮read_pdf_table恢复真实单元格，或执行引用真实源列的query_pdf_table，不猜ID、不重抄常量。长表可用真实metric或其他维度列作series_column，unit列作unit_column，单个Y按真实值拆为最多6条系列。"}
+		data := map[string]any{"kind": "chart_source_catalog", "sources": views, "input_sources": inputViews, "omitted_source_count": omitted, "rejected_source_count": rejectedCount, "source_rejections": rejected, "source_rejections_truncated": rejectedCount > len(rejected), "notice": "先根据完整问题理解真实行列。input_sources须map后绘图；sources可直接render，也可map选择/整形其真实结果坐标。map/render均用本目录source_id。全部索引0起算，sample_rows仅展示样例，真实句柄绑定全部已返回行。表ID、result_id不是绘图句柄。无来源时先本轮read_pdf_table恢复真实单元格，或执行引用真实源列的query_pdf_table，不猜ID、不重抄常量。长表可用真实metric、其他业务维度列或标记direct_series_id的列作series_column，单个Y拆为最多6条系列。已核对的直接系列标识会自动换成来源名称。"}
 		body, _ := json.Marshal(data)
 		return &types.ToolResult{Success: true, Data: data, Output: string(body)}, nil
 	}
@@ -293,7 +304,20 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (res
 	}
 	var validation *chartSemanticValidation
 	if t.reviewPlan != nil {
-		validation, err = t.reviewPlan(ctx, *source, spec)
+		reviewCtx, cancel := context.WithTimeout(ctx, chartReviewTimeout)
+		defer cancel()
+		for attempt := 0; ; attempt++ {
+			validation, err = t.reviewPlan(reviewCtx, *source, spec)
+			protocolFailed = isChartReviewProtocolFailure(err)
+			if !protocolFailed {
+				break
+			}
+			protocolFailures++
+			t.reviewProtocolFailures++
+			if attempt == 1 || reviewCtx.Err() != nil || chartRenderLimitReached(t.renderFailures, t.reviewProtocolFailures) {
+				break
+			}
+		}
 		if err != nil {
 			return t.sourceFailureDiagnostics(err.Error(), *source, steps), nil
 		}
@@ -313,9 +337,16 @@ func (t *renderChartTool) Execute(ctx context.Context, raw json.RawMessage) (res
 	if mapped, ok := t.mapped[source.ID]; ok {
 		data["source_mapping"] = mapped.Mapping
 	}
+	if protocolFailures > 0 {
+		data[chartReviewProtocolFailuresKey] = protocolFailures
+	}
 	output := fmt.Sprintf("![图表](%s)", delivered.Handle)
 	if validation != nil {
 		data["semantic_validation"] = validation
+		if validation.CoverageCaption != "" {
+			data["coverage_caption"] = validation.CoverageCaption
+			output += "\n\n" + validation.CoverageCaption
+		}
 		if len(validation.PendingDeliverables) > 0 {
 			notice := "图片已交付，剩余内容请在最终回答中完成：" + strings.Join(validation.PendingDeliverables, "；")
 			data["delivery_notice"] = notice
@@ -506,6 +537,7 @@ func checkedStructuredChartTable(call types.ToolCall) (chart.Table, error) {
 		}
 	}
 	cols := make([]chart.Column, len(columns))
+	var seriesLabels map[string]string
 	series, _ := data["series"].(map[string]any)
 	for i, name := range columns {
 		cols[i] = chart.Column{Name: name}
@@ -531,6 +563,18 @@ func checkedStructuredChartTable(call types.ToolCall) (chart.Table, error) {
 			cols[i].DependencyKind = metadata.Dependency.Kind
 			if metadata.Dependency.TechnicalMetadata || metadata.Dependency.Kind == "source_metadata" {
 				cols[i].Role = "source_row_identifier"
+			}
+			// The SQL binder follows aliases through their relation scopes. A
+			// top-level column name or dependency set alone cannot prove this.
+			if analysis && contract.Execution.Kind == "sql" && contract.SourceSnapshot.Kind == "excel_observations" &&
+				contract.Capabilities.ColumnDependenciesVerified && metadata.Dependency.TechnicalMetadata &&
+				metadata.Dependency.Kind == "source_value" && metadata.LogicalType == "VARCHAR" &&
+				metadata.Operation["direct_source_column"] == "series_id" &&
+				len(metadata.Dependency.SourceColumns) == 1 && metadata.Dependency.SourceColumns[0] == "series_id" {
+				cols[i].DirectSeriesID = true
+				if seriesLabels == nil {
+					seriesLabels = structuredChartSeriesLabels(data["inputs"])
+				}
 			}
 		}
 	}
@@ -587,7 +631,7 @@ func checkedStructuredChartTable(call types.ToolCall) (chart.Table, error) {
 		truncated = true
 		notice += " 来源未明确完整性，仅视为部分返回结果。"
 	}
-	return chart.Table{Columns: cols, Rows: matrix, Provenance: provenance, Truncated: truncated, Notice: notice}, nil
+	return chart.Table{Columns: cols, Rows: matrix, Provenance: provenance, Truncated: truncated, Notice: notice, SeriesLabels: seriesLabels}, nil
 }
 
 // The full canonical metadata digest binds omitted audit details without
@@ -683,13 +727,13 @@ func chartAuditMetadata(meta map[string]any) (string, bool, error) {
 	return string(encoded), true, nil
 }
 
-const dataChartInstructions = `render_chart从已授权且本轮真正读取的数值行或原文表格生成PNG。inspect同时提供可render的sources及须先map的input_sources；已读PDF二维表可直接用map按模型明确的行/列坐标整形，不必绕行原页或SQL，不重抄数值。横向表的维度行和指标行要配对成逐观测记录，内部_row_id是技术身份，不能作为业务轴。SQL替代路径必须引用真实源值，常量数组不是源表取数。inspect/map返回真实source_id，不能猜表ID。长表用series_column选择真实metric或其他业务维度，unit_column复制真实单位列，图例取真实字段值而非CASE技术ID或手写常量；已知mixed单位必须筛选真实来源或拆图，unknown可用原值绘图但图片与回答不能声称单位。最多6个Y系列；更多观测点应由正确行列整形得到，不应通过删除所需数据点来满足系列上限。按完整请求核验变量、维度、单位、范围和图型，渲染前会独立检查。保持原值、真实日期与缺失，不平滑补数，不用generate_image编造数据。图内只需标题、图形、坐标、图例和必要范围标注。只需图时delivery_mode默认chart_only，最终仅输出本轮成功返回的图片Markdown；明确同时要求分析时用chart_with_analysis。失败时保留真实未交付说明，不能以表格代替所要求的图。`
+const dataChartInstructions = `render_chart从已授权且本轮真正读取的数值行或原文表格生成PNG。inspect同时提供可render的sources及须先map的input_sources；已读PDF二维表可直接用map按模型明确的行/列坐标整形，不必绕行原页或SQL，不重抄数值。横向表的维度行和指标行要配对成逐观测记录，内部_row_id是技术身份，不能作为业务轴。SQL替代路径必须引用真实源值，常量数组不是源表取数。inspect/map返回真实source_id，不能猜表ID。长表用series_column选择真实metric、其他业务维度或标记direct_series_id的列，unit_column复制真实单位列，图例取真实字段值而非CASE技术ID或手写常量；已知mixed单位必须筛选真实来源或拆图，unknown可用原值绘图但图片与回答不能声称单位。最多6个Y系列；更多观测点应由正确行列整形得到，不应通过删除所需数据点来满足系列上限。按完整请求核验变量、维度、单位、范围和图型，渲染前会独立检查。保持原值、真实日期与缺失，不平滑补数，不用generate_image编造数据。连续月度汇总可按月排序用category。尾部缺月在准确标题、图注或随图文字说明即可。图表标题和面向用户的标签用通俗名称，不用技术字段名或ID。只需图时用默认chart_only，返回本轮成功生成的图片Markdown，保留工具提供的图注，并补充尚待交付的范围说明。明确要求分析时用chart_with_analysis。说明限制或失败原因时用通俗中文，不能以表格代替所要求的图。`
 
 // Terminal tool feedback reports the actual last failure, never an invented
 // business answer. The engine performs the no-tool final synthesis separately.
-func chartRenderLimitFailure(reason string) *types.ToolResult {
-	message := fmt.Sprintf("本轮绘图已达到%d次未交付上限，停止render。请立即基于本轮已成功取得的真实数据完成文字回答，保留数字与引用核验，并说明图未生成的真实原因：%s", maxChartRenderFailures, reason)
-	data := map[string]any{"kind": "data_chart", "status": "error", "terminal_reason": "chart_render_failure_limit", "final_answer_required": true, "render_failure_count": maxChartRenderFailures, "last_render_failure": reason}
+func (t *renderChartTool) chartRenderLimitFailure() *types.ToolResult {
+	message := "本轮绘图已达到尝试上限。请基于已取得的真实数据完成文字回答，用通俗的话说明图未能生成的原因。"
+	data := map[string]any{"kind": "data_chart", "status": "error", "terminal_reason": chartRenderFailureLimit, "final_answer_required": true, "render_failure_count": t.renderFailures, "review_protocol_failure_count": t.reviewProtocolFailures, "last_render_failure": t.lastRenderFailure}
 	body, _ := json.Marshal(data)
 	return &types.ToolResult{Success: false, Error: message, Data: data, Output: string(body)}
 }

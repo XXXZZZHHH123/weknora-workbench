@@ -7,6 +7,7 @@ from types import ModuleType
 
 import httpx
 import pytest
+from test_ai_review import mock_review_post, mock_review_transport
 
 from structured_data import model_gateway as gateway
 from structured_data.model_settings import read_model, save_model
@@ -129,6 +130,65 @@ def test_native_http_errors_do_not_fall_back_to_legacy(monkeypatch, status):
     assert len(calls) == 1 and 'legacy.invalid' not in calls[0]
 
 
+@pytest.mark.parametrize('code,status', [
+    ('MODEL_REASONING_ONLY', 502), ('MODEL_TRUNCATED', 502), ('MODEL_EMPTY', 502),
+    ('MODEL_UPSTREAM_REJECTED', 502), ('MODEL_TIMEOUT', 504),
+])
+def test_excel_gateway_preserves_platform_reason_and_bounded_wire_contract(monkeypatch, code, status):
+    from structured_data.ai_review import AIRequestBudget, _request
+    from structured_data.review_model import ReviewModelError
+
+    monkeypatch.setenv('STRUCTURED_REVIEW_MODEL_TIMEOUT_SECONDS', '300')
+    requests = []
+
+    def send(request):
+        requests.append(request)
+        return httpx.Response(status, json={'error': {'reason': code, 'retry_thinking_off': False,
+                                                     'message': 'private provider detail'}})
+
+    mock_review_transport(monkeypatch, send)
+    with context(), pytest.raises(ReviewModelError) as caught:
+        _request({'native_model_id': 'native-a'}, {}, AIRequestBudget(3), None)
+    assert caught.value.public_code == code
+    assert 'private ' not in str(caught.value)
+    if code == 'MODEL_TIMEOUT':
+        assert '300 秒' in str(caught.value)
+    assert len(requests) == 1
+    request = requests[0]
+    body = json.loads(request.content)
+    assert request.url.path.endswith('/kb-a/structured-model/chat')
+    assert request.headers['Authorization'] == 'Bearer fixture-login'
+    assert request.extensions['timeout']['connect'] == 10
+    assert request.extensions['timeout']['read'] == 305
+    assert body['timeout_ms'] == 300000 and body['max_tokens'] == 8192
+    assert body['enable_thinking'] is False and body['response_format'] == 'json_object'
+
+
+def test_excel_gateway_retries_once_after_provider_reports_off_mode_was_not_applied(monkeypatch):
+    from types import SimpleNamespace
+    from structured_data import ai_review
+
+    clock = SimpleNamespace(now=100)
+    monkeypatch.setattr(ai_review, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    requests = []
+
+    def send(request):
+        requests.append(json.loads(request.content))
+        clock.now += 25
+        if len(requests) == 1:
+            return httpx.Response(502, json={'error': {'reason': 'MODEL_REASONING_ONLY', 'retry_thinking_off': True}})
+        return httpx.Response(200, json={'success': True, 'data': {
+            'model_id': 'native-a', 'content': '{}', 'finish_reason': 'stop'}})
+
+    mock_review_transport(monkeypatch, send)
+    budget = ai_review.AIRequestBudget(3)
+    with context():
+        assert ai_review._request({'native_model_id': 'native-a', 'enable_thinking': True}, {},
+                                  budget, None, deadline=175) == {}
+    assert budget.used == 2
+    assert [(body['enable_thinking'], body['timeout_ms']) for body in requests] == [(True, 60000), (False, 35000)]
+
+
 def test_native_scope_required_and_cache_identity_separates_models_and_principals():
     with pytest.raises(ValueError, match='登录'):
         gateway.complete({'native_model_id': 'native-a'}, [])
@@ -162,6 +222,7 @@ def test_field_understanding_and_ai_review_use_native_gateway(tmp_path, monkeypa
         return httpx.Response(200, json={'success': True, 'data': {
             'model_id': 'native-a', 'content': json.dumps(replies.pop(0)), 'finish_reason': 'stop'}})
     monkeypatch.setattr(httpx.Client, 'post', post)
+    mock_review_post(monkeypatch, post)
     with context():
         assert ask_model({'question': 'fixture', '_catalog_selection': True}, tmp_path)['fields'] == [{'candidate_ids': []}]
         # Mapping shape validation is owned by ai_review and still runs after transport.

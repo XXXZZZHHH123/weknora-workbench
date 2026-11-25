@@ -39,4 +39,7 @@ def error_location(exc):
     state = getattr(exc, 'review_state', None)
     if isinstance(state, dict):
         result['review_state'] = state
+    code = getattr(exc, 'public_code', None)
+    if isinstance(code, str):
+        result['reason_code'] = code
     return result

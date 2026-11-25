@@ -1,6 +1,7 @@
 package openaicompletions
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -48,7 +49,7 @@ func (c *Client) send(
 		return nil, nil, err
 	}
 	resp, data, err := c.sendBody(ctx, body, opts, stream)
-	if !isSystemMessageOrderError(err) {
+	if api.IsStructuredReview(ctx) || !isSystemMessageOrderError(err) {
 		return resp, data, err
 	}
 	// Some compatible chat templates accept exactly one leading system turn.
@@ -307,6 +308,9 @@ func (c *Client) extractToolCallMetadata(raw json.RawMessage) types.ToolCallMeta
 }
 
 func (c *Client) parseResponse(raw []byte, opts *api.Options) (*types.ChatResponse, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, api.ErrEmptyCompletion
+	}
 	var env rawEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
@@ -315,7 +319,7 @@ func (c *Client) parseResponse(raw []byte, opts *api.Options) (*types.ChatRespon
 		return nil, fmt.Errorf("API error: %s", env.Error.Message)
 	}
 	if len(env.Choices) == 0 {
-		return nil, fmt.Errorf("no response from API")
+		return nil, api.ErrEmptyCompletion
 	}
 	choice := env.Choices[0]
 	content, inlineReasoning := splitThinkTags(choice.Message.Content)

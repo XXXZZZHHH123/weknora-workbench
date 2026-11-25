@@ -126,7 +126,29 @@ def cache_identity(config):
     return json.dumps(fields, sort_keys=True)
 
 
-def complete(config, messages, *, max_tokens=8192, temperature=0, enable_thinking=None, timeout=90, purpose='repair'):
+def _review_status(response, timeout):
+    from .review_model import ReviewModelError
+
+    # These reasons originate in our platform handler. Provider error text is
+    # never forwarded by the handler or used for a retry decision here.
+    if response.status_code in {502, 504}:
+        try:
+            envelope = response.json()
+            error = envelope.get('error') if isinstance(envelope, dict) else None
+            reason = error.get('reason') if isinstance(error, dict) else None
+        except ValueError:
+            reason = None
+        if reason in ('MODEL_REASONING_ONLY', 'MODEL_TRUNCATED', 'MODEL_EMPTY',
+                      'MODEL_TIMEOUT', 'MODEL_UPSTREAM_REJECTED', 'MODEL_HTTP_ERROR', 'MODEL_CONNECTION'):
+            raise ReviewModelError(reason, timeout=timeout,
+                retry_thinking_off=(reason == 'MODEL_REASONING_ONLY' and error.get('retry_thinking_off') is True))
+    if response.status_code >= 300 and response.status_code not in {401, 403, 404, 429}:
+        raise ReviewModelError('MODEL_TIMEOUT' if response.status_code == 504 else 'MODEL_HTTP_ERROR', timeout=timeout)
+    return _check_status(response)
+
+
+def complete(config, messages, *, max_tokens=8192, temperature=0, enable_thinking=None, timeout=90, purpose='repair',
+             response_format=None, review_timeout=None, cancelled=None):
     """An OpenAI-shaped adapter; authorization stays only in the active context."""
     identifier = _identifier(config.get('native_model_id'))
     from .ingestion import current_ingestion_claim, signed_headers
@@ -138,17 +160,29 @@ def complete(config, messages, *, max_tokens=8192, temperature=0, enable_thinkin
     body = {'model_id': identifier, 'messages': messages, 'max_tokens': max_tokens, 'temperature': temperature}
     if isinstance(enable_thinking, bool):
         body['enable_thinking'] = enable_thinking
+    if response_format:
+        body['response_format'] = response_format
+    if review_timeout is not None:
+        body['timeout_ms'] = max(1, int(review_timeout * 1000))
+    if claim:
+        raw = json.dumps(body, separators=(',', ':')).encode()
+        path = '/internal/ingestion/model'
+        headers = signed_headers(claim, 'POST', path, body=raw)
+        headers['Content-Type'] = 'application/json'
+        post_body = {'content': raw}
+    else:
+        path = '/api/v1/knowledge-bases/' + quote(identity.knowledge_base_id, safe='') + '/structured-model/' + endpoint
+        post_body = {'json': body}
+    url = _base() + path
     try:
-        with httpx.Client(timeout=timeout, trust_env=False, follow_redirects=False) as client:
-            if claim:
-                raw = json.dumps(body, separators=(',', ':')).encode()
-                path = '/internal/ingestion/model'
-                headers = signed_headers(claim, 'POST', path, body=raw)
-                headers['Content-Type'] = 'application/json'
-                data = _check_status(client.post(_base() + path, headers=headers, content=raw))
-            else:
-                data = _check_status(client.post(_base() + '/api/v1/knowledge-bases/'
-                    + quote(identity.knowledge_base_id, safe='') + '/structured-model/' + endpoint, headers=headers, json=body))
+        if review_timeout is not None:
+            from .review_model import post_review
+            response = post_review(url, headers=headers, timeout=timeout, model_timeout=review_timeout,
+                                   cancelled=cancelled, max_bytes=MAX_RESPONSE_BYTES, trust_env=False, **post_body)
+            data = _review_status(response, review_timeout)
+        else:
+            with httpx.Client(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+                data = _check_status(client.post(url, headers=headers, **post_body))
         if (not isinstance(data, dict) or data.get('model_id') != identifier
                 or not isinstance(data.get('content'), str) or not isinstance(data.get('finish_reason'), str)):
             raise ModelGatewayError('MODEL_OUTPUT_INVALID', '平台模型未返回所选模型的有效结果，未应用建议。')
