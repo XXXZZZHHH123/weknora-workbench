@@ -8,6 +8,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/Tencent/WeKnora/internal/modelcontext"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 )
@@ -40,6 +41,48 @@ func TestDocumentCandidatesKeepRankedNavigationWithoutBindingOrFullBody(t *testi
 	require.NotContains(t, res.Data, "chunks")
 	require.NotContains(t, res.Data, "results")
 	require.Empty(t, state.selectedIDs(), "previews do not silently choose or bind a source")
+}
+
+func TestDocumentNavigationGuidesTargetedReadOfLaterRevision(t *testing.T) {
+	ctx := t.Context()
+	read, repo := newReadDocumentFixture(3)
+	service := read.knowledgeService.(*readDocKnowledgeService)
+	early := &types.Knowledge{ID: "earlier", FileName: "运量简报-第一期.pdf", TenantID: 7, KnowledgeBaseID: "kb-1"}
+	later := service.docs["doc-1"]
+	later.Title, later.FileName = "运量简报-第三期", "运量简报-第三期.pdf"
+	service.docs[early.ID] = early
+	const revision = "将运量预测从80上调到90。"
+	repo.ordered[0].Content = "<!-- PDF page 1 -->\n报告前言。"
+	repo.ordered[1].Content = "<!-- PDF page 2 -->\n本次修订：" + revision
+	repo.ordered[2].Content = "<!-- PDF page 3 -->\n另一期的无关附件。"
+	state := NewDocumentScopeState()
+	read.WithDocumentConstraint(state)
+	search := NewSearchKnowledgeTool(nil, service, nil, read.searchTargets, nil, nil).WithDocumentConstraint(state)
+	res := search.documentCandidates(ctx, []*searchResultWithMeta{
+		{SearchResult: &types.SearchResult{KnowledgeID: early.ID, Content: "维持原运量预测。"}},
+		{SearchResult: &types.SearchResult{KnowledgeID: later.ID, Content: revision, SourceLocators: types.SourceLocators{{Type: types.SourceLocatorPDF, Page: 2, Mapping: "exact"}}}},
+	}, "预测后来有调整吗？")
+	prompt := modelcontext.NewRegistry(true).ModelToolResultForTool(ToolSearchKnowledge, res)
+	require.Contains(t, prompt, revision)
+	require.Contains(t, prompt, "不可直接引用、计算或认定图表数值")
+	require.Contains(t, prompt, "已看到的较晚期摘录提示有数字调整等更新，且这些更新会改变准备写入回答的结论")
+	require.Contains(t, prompt, "在用户允许的范围内一次绑定所需的前后期来源，按页码或相关内容定向补读正文或原图")
+	require.Contains(t, prompt, "只问普通定义或术语时，直接解释概念，无需逐期查找材料")
+	require.Empty(t, state.selectedIDs())
+
+	plan := DocumentScopePlan{Reason: "核对较晚期的运量预测是否有调整", Sources: []DocumentSourceSelection{
+		{KnowledgeID: early.ID, FileName: early.FileName},
+		{KnowledgeID: later.ID, FileName: later.FileName, Page: 2},
+	}}
+	args, err := json.Marshal(ReadDocumentInput{ID: later.ID, Page: 2, SourceScope: &plan})
+	require.NoError(t, err)
+	res, err = read.Execute(ctx, args)
+	require.NoError(t, err)
+	require.True(t, res.Success, res.Error)
+	require.Equal(t, []string{early.ID, later.ID}, state.selectedIDs())
+	require.Equal(t, 2, res.Data["page"])
+	require.Contains(t, res.Output, revision)
+	require.NotContains(t, res.Output, "无关附件")
 }
 
 func TestDocumentCandidatesNavigationRejectsUnauthorizedRetiredAndStaleMatches(t *testing.T) {

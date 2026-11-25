@@ -506,7 +506,8 @@ func (t *SearchKnowledgeTool) documentCandidates(ctx context.Context, results []
 		navigationBudget -= cost
 		document["navigation_matches"] = append(matches, match)
 	}
-	data := map[string]any{"display_type": "document_info", "documents": documents, "query": query, "requires_source_scope": true, "notice": "这些是实际授权文档候选元数据，不是已核内容证据。navigation_matches 仅为真实检索命中的有界导航摘录，不可直接引用、计算或认定图表数值；请据此选择来源并 read_document 核对正文或原图。文件名/发布日期不等于内容的数据覆盖期，未读正文不能据此断言历史数据不存在。根据完整问题和上下文选择真实来源，歧义时澄清。可直接用 read_document 读取明确选择的文档ID，首次读取在同一调用核对真实文件身份和权限；已有来源计划不可被读取目标覆盖。比较或显式日期、用户页码限制使用 source_scope 或 bind_document_scope 声明完整范围，不得用其他报告的同名图替代。"}
+	data := map[string]any{"display_type": "document_info", "documents": documents, "query": query, "requires_source_scope": true, "notice": "这些是实际授权文档候选元数据，不是已核内容证据。navigation_matches 仅为真实检索命中的有界导航摘录，不可直接引用、计算或认定图表数值；请据此选择来源并 read_document 核对正文或原图。文件名/发布日期不等于内容的数据覆盖期，未读正文不能据此断言历史数据不存在。根据完整问题和上下文选择真实来源，歧义时澄清。可直接用 read_document 读取明确选择的文档ID，首次读取在同一调用核对真实文件身份和权限；已有来源计划不可被读取目标覆盖。比较或显式日期、用户页码限制使用 source_scope 或 bind_document_scope 声明完整范围，不得用其他报告的同名图替代。" +
+		"若已看到的较晚期摘录提示有数字调整等更新，且这些更新会改变准备写入回答的结论，请在用户允许的范围内一次绑定所需的前后期来源，按页码或相关内容定向补读正文或原图。只问普通定义或术语时，直接解释概念，无需逐期查找材料。"}
 	encoded, _ := json.Marshal(data)
 	return &types.ToolResult{Success: true, Data: data, Output: string(encoded)}
 }
