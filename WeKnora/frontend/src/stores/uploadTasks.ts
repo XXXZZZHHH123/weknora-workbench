@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { batchQueryKnowledge, uploadKnowledgeFile } from '@/api/knowledge-base/index'
+import { batchQueryKnowledge, uploadKnowledgeFile, uploadKnowledgeFileVersion } from '@/api/knowledge-base/index'
 import { useAuthStore } from './auth'
 import type { KnowledgeStatusRow } from './uploadQueue'
 import { createUploadTasks } from './uploadTasksCore'
@@ -18,19 +18,21 @@ export const useUploadTasksStore = defineStore('uploadTasks', () => {
   const auth = useAuthStore()
 
   return createUploadTasks({
-    upload: (batch, payload, onProgress, signal) => uploadKnowledgeFile(
-      batch.kbId,
-      {
+    upload: (batch, payload, onProgress, signal) => {
+      const reportProgress = (event: { loaded?: number; total?: number; progress?: number }) => {
+        onProgress(event.progress ?? (event.total ? (event.loaded ?? 0) / event.total : 0))
+      }
+      if (payload.replaceKnowledgeId) {
+        return uploadKnowledgeFileVersion(batch.kbId, payload.replaceKnowledgeId, payload.file, reportProgress, { signal })
+      }
+      return uploadKnowledgeFile(batch.kbId, {
         file: payload.file,
         fileName: payload.fileName,
+        save_as_new: payload.saveAsNew ? 'true' : undefined,
         tag_ids: batch.tagIds,
         process_config: batch.processConfig,
-      },
-      (event: { loaded?: number; total?: number; progress?: number }) => {
-        onProgress(event.progress ?? (event.total ? (event.loaded ?? 0) / event.total : 0))
-      },
-      { signal },
-    ),
+      }, reportProgress, { signal })
+    },
     queryStatus: async (kbId, knowledgeIds) => {
       const query = knowledgeIds.map(id => `ids=${encodeURIComponent(id)}`).join('&')
       try {

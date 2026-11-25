@@ -77,8 +77,10 @@ def _metric(result, identifier, day, limit):
     from tin.web.judgment_research import metric_from_rows
     try:
         fields, rows = result['indicators'], result['rows']
+        undated = result.get('undated_series_ids', [])
         if (not isinstance(fields, list) or len(fields) != 1 or not isinstance(fields[0], dict)
-                or fields[0].get('series_id') != identifier or not isinstance(rows, list) or len(rows) > limit):
+                or fields[0].get('series_id') != identifier or not isinstance(rows, list) or len(rows) > limit
+                or undated not in ([], [identifier]) or undated and rows):
             raise ValueError('Unexpected chart scope')
         field = fields[0]
         if any(field.get(key) is not None and not isinstance(field[key], str)
@@ -100,7 +102,7 @@ def _metric(result, identifier, day, limit):
         indicator = SimpleNamespace(series_id=identifier, name=field.get('metric') or field.get('name') or '已绑定指标',
             unit=field.get('unit') or '', frequency=field.get('frequency') or '',
             caliber=field.get('caliber') if isinstance(field.get('caliber'), dict) else {})
-        return metric_from_rows(indicator, sorted(observations, key=lambda row: row.as_of), limit=limit)
+        return metric_from_rows(indicator, sorted(observations, key=lambda row: row.as_of), limit=limit, undated=bool(undated))
     except (ValueError, TypeError, KeyError, AttributeError):
         raise HTTPException(503, '图表响应超出当前指标或日期范围，未展示数据') from None
 
@@ -142,7 +144,8 @@ def chart(request: Request, judgment_id: int = Query(ge=1, le=2**63 - 1),
         result = _legacy_points(scope, series_id, day, limit, origins)
     metric = _metric(result, series_id, day, limit)
     from tin.web.judgment_research import metric_boundaries
-    metric['boundaries'] = metric_boundaries(payload, series_id)
+    if not metric.get('undated'):
+        metric['boundaries'] = metric_boundaries(payload, series_id)
     return {'metric': metric}
 
 
@@ -193,7 +196,7 @@ class LibraryReferencesInput(BaseModel):
 async def save_library_references(request: Request):
     from tin.web.judgment_generation import read_body, result_session, scope_for_analysis
     from tin.web.judgment_panels import register_panel
-    from tin.judgments.service import save_version, JudgmentError
+    from tin.judgments.service import JudgmentError, JudgmentVersionConflict, save_version
     from tin.schemas.judgment import JudgmentIn
     from tin.integration.workbench_scope import require_shared_write
     from sqlalchemy.exc import IntegrityError, OperationalError
@@ -226,6 +229,9 @@ async def save_library_references(request: Request):
             panel = register_panel(session, scope, saved)
             session.commit()
             return {'id': saved.id, 'version': saved.version, 'status': saved.status, 'panel': panel}
-        except (JudgmentError, IntegrityError, OperationalError):
+        except (JudgmentVersionConflict, IntegrityError, OperationalError):
             session.rollback()
             raise HTTPException(409, '研判或来源已变化，请刷新后保存图表引用') from None
+        except JudgmentError as error:
+            session.rollback()
+            raise HTTPException(422, str(error)) from None

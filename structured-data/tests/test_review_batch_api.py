@@ -1,9 +1,16 @@
 """Batch review jobs preserve source isolation and never publish unchecked AI output."""
 from copy import deepcopy
+from datetime import datetime
+from io import BytesIO
+import json
 import time
 
-from structured_data import review_worker
+from openpyxl import Workbook
+import pytest
+
+from structured_data import ai_review, review_worker
 from structured_data.imports import ImportManager
+from test_ai_review import mock_model
 from test_review_api import FakeAuthClient, Reply, client, make_workbook, poll
 
 
@@ -83,6 +90,102 @@ def test_ai_unresolved_mapping_remains_pending_without_publishing(client, monkey
     assert result['imported'] is False and result['dataset_id'] == uploaded['dataset_id']
     assert result['review_state'] == pending and result['mapping'] == mapping
     assert client.get(url + '/sheet', params={'name': 'parallel'}).json()['status'] == 'needs_review'
+
+
+@pytest.mark.parametrize('batch', [False, True], ids=['single', 'batch'])
+@pytest.mark.parametrize('unsupported_header', [False, True], ids=['verified', 'borrowed-header'])
+def test_wide_assist_job_checks_each_header_before_publishing(client, monkeypatch, batch, unsupported_header):
+    width = 150
+    note = '初步统计以公斤记录。修订前请先核对原表的统计覆盖范围以及填报规则。' * 4
+    book = Workbook()
+    existing = book.active
+    existing.title = 'existing'
+    existing.append(['日期', '价格'])
+    existing.append([datetime(2024, 1, 1), 10])
+    existing.append([datetime(2024, 2, 1), 11])
+    wide = book.create_sheet('wide')
+    wide.append([note])
+    wide.append(['统计日期', *(f'产量 {column:03}' for column in range(2, width + 1))])
+    wide.append([datetime(2024, 1, 1), *([10] * (width - 1))])
+    wide.append([datetime(2024, 2, 1), *([11] * (width - 1))])
+    raw = BytesIO()
+    book.save(raw)
+    uploaded = poll(client, client.post('/api/import', files={'file': ('wide.xlsx', raw.getvalue())}))
+    url = '/api/imports/' + uploaded['import_id']
+    sheet_url = url + '/sheet'
+    sheet = client.get(sheet_url, params={'name': 'wide'}).json()
+    assert sheet['status'] == 'needs_review' and not sheet['published_in_dataset']
+    original_mapping = sheet['mapping']
+    mapping = deepcopy(original_mapping)
+    block, = mapping['blocks']
+    for column in block['columns']:
+        column['metric'] = f'{note} / {column["metric"]}'
+        column['header_cells'].insert(0, 'A1')
+    # Initially review tries to infer the declared unit from A1. The note is
+    # outside B and does not constitute true unit evidence for that column.
+    block['columns'][0]['unit'] = '公斤'
+    last_column = block['columns'][-1]
+    if unsupported_header:
+        last_column['header_cells'] = ['A1', 'C2']
+    assert len(json.dumps(mapping, ensure_ascii=False).encode('utf-8')) > ai_review.MAX_INPUT_BYTES
+    preview = client.post(url + '/preview', json={'mapping': mapping})
+    assert preview.status_code == 400 and '元数据来源未覆盖' in preview.json()['detail']
+
+    suggestion = {
+        'block_updates': [{'block_index': 0, 'header_note_cells': ['A1'],
+                           'metric_header_rows': [] if batch else [2]}],
+        'evidence': [{'block_index': 0, 'field': 'header_note_cells', 'cells': ['A1']}],
+    }
+    if not batch:
+        suggestion['evidence'].append({'block_index': 0, 'field': 'metric', 'cells': ['B2']})
+    calls = []
+    monkeypatch.setattr(ai_review, 'read_model', lambda _: {
+        'model': 'fixture', 'base_url': 'https://example.invalid/v1', 'api_key': 'fixture-only',
+    })
+    mock_model(monkeypatch, [suggestion], calls)
+    if batch:
+        result = poll(client, client.post(url + '/assist-confirm-all', json={
+            'acknowledged_risk': True, 'mappings': [mapping], 'save_template': False,
+            'total_max_requests': 1, 'per_sheet_max_requests': 1,
+        }), timeout=30)
+        detail = next(row for row in result['details'] if row['sheet'] == 'wide')
+        assert result['sheets_existing'] == ['existing'] and not result['sheets_failed']
+        assert result['sheets_pending'] == (['wide'] if unsupported_header else [])
+        assert result['sheets_imported'] == ([] if unsupported_header else ['wide'])
+        assert detail['requests_used'] == result['requests_used'] == 1
+    else:
+        result = poll(client, client.post(url + '/assist-confirm', json={
+            'sheet': 'wide', 'mapping': mapping, 'save_template': False, 'max_requests': 1,
+        }), timeout=30)
+        detail = result
+        assert result['imported'] is not unsupported_header
+        assert result['model_requests'] == 1
+    body, = calls
+    payload = json.loads(body['messages'][1]['content'])
+    assert payload['mode'] == detail['scope'] == 'header_only'
+    assert 'source_cells' not in payload
+
+    saved = client.get(sheet_url, params={'name': 'wide'}).json()
+    if unsupported_header:
+        assert result['dataset_id'] == uploaded['dataset_id']
+        assert saved['status'] == 'needs_review' and not saved['published_in_dataset']
+        assert saved['mapping'] == original_mapping
+        if not batch:
+            assert result['mapping'] == mapping
+        state = detail['review_state']
+        assert state['status'] == 'needs_review'
+        assert any(item.get('field') == 'header_cells' and item.get('column') == last_column['column']
+                   and 'C2' in item.get('cells', []) for item in state['diagnostics'])
+    else:
+        assert result['dataset_id'] != uploaded['dataset_id']
+        assert saved['status'] == 'confirmed' and saved['published_in_dataset']
+        published_block, = saved['published_mapping']['blocks']
+        assert published_block['header_note_cells'] == ['A1']
+        assert [column['metric'] for column in published_block['columns']] == [
+            f'产量 {column:03}' for column in range(2, width + 1)]
+        assert detail['renamed_fields'] == width - 1
+        assert all(word in detail['header_notice'] for word in (
+            '仅表头建议', str(width - 1), '字段 ID', '指标对应确认'))
 
 
 def test_worker_review_reports_each_block_and_does_not_write(tmp_path):

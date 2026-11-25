@@ -12,7 +12,7 @@ from structured_data import discovery_catalog as discovery
 from structured_data.store import DataStore
 
 
-def publish(store, number=0, *, name=None, count=1, sheet_count=1):
+def publish(store, number=0, *, name=None, count=1, sheet_count=1, field_metadata=None):
     return store.publish({
         'source_file': name or f'source-{number}.xlsx', 'sha256': f'{number:064x}',
         'rule_version': 'synthetic-v1', 'dataset_kind': 'business',
@@ -20,7 +20,8 @@ def publish(store, number=0, *, name=None, count=1, sheet_count=1):
                    for i in range(sheet_count)],
         'series': [{'series_id': f'field-{i}', 'sheet': f'Sheet-{i % sheet_count}',
                     'metric': f'Measure-{i}', 'unit': None, 'unit_status': 'needs_review',
-                    'dimensions': {'column': f'C{i}'}, 'header_cells': ['B1']}
+                    'dimensions': {'column': f'C{i}'}, 'header_cells': ['B1'],
+                    **({'field_metadata': field_metadata} if field_metadata is not None else {})}
                    for i in range(count)],
         'observations': [{'series_id': f'field-{i}', 'date': '2026-01-01', 'value': i + 1,
                           'source_cell': 'B2', 'value_status': 'valid'} for i in range(count)],
@@ -78,6 +79,17 @@ def test_explicit_search_only_recalls_real_metadata_and_does_not_hide_files(tmp_
     assert missing['datasets'][0]['dataset_id'] == dataset
     assert missing['field_candidates'] == []
     assert '不表示没有数据' in missing['directory_notice']
+
+
+def test_discovery_retains_header_notes_without_indexing_them_as_names(tmp_path):
+    store = DataStore(tmp_path)
+    note = {'cell': 'A1', 'text': '  Provisional values.\nReview corrections quarterly.  '}
+    dataset = publish(store, field_metadata={'header_notes': [note]})
+    fields, total = discovery.search_fields(store, dataset, '', search='Measure-0')
+    assert total == 1
+    assert fields[0]['metric'] == 'Measure-0'
+    assert fields[0]['field_metadata']['header_notes'] == [note]
+    assert discovery.search_fields(store, dataset, '', search='Provisional') == ([], 0)
 
 
 def test_empty_catalog_scope_is_not_document_absence_or_another_search_retry(tmp_path):

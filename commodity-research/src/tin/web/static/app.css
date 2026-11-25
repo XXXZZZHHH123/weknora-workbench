@@ -378,6 +378,13 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
 .research-body h1, .research-body h2, .research-body h3 { font-family: var(--cds-font-display); font-weight: 600; letter-spacing: -0.025em; }
 .research-body :is(h4, h5, h6) { font-family: var(--cds-font-display); }
 .research-body button, .research-body a, .research-body summary { -webkit-tap-highlight-color: transparent; }
+.header-note { margin-block: 0.35rem; min-width: 0; color: var(--text-muted); }
+.header-note summary, .indicator-card-notes > summary { cursor: pointer; }
+.header-note-preview, .header-note-text { white-space: break-spaces; overflow-wrap: anywhere; }
+.header-note-preview { display: block; }
+.header-note[open] .header-note-preview { display: none; }
+.header-note-text { color: var(--text); }
+.indicator-card-notes { font-size: 0.75rem; color: var(--primary); }
 .research-body button:disabled { cursor: not-allowed; opacity: .45; }
 .research-body :is(a,button,summary):focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
 .research-body .tabular { font-family: var(--app-font-family); }
@@ -613,3 +620,19 @@ body.drawer-open #toast { right: auto; left: 1.5rem; }
 .rw-btn.dg-delete-btn{color:var(--text-muted)}.rw-btn.dg-delete-btn:hover:not(:disabled){color:var(--alert)}
 .judgment-research-header.rw-page-head{padding-bottom:0;border-bottom:0;align-items:flex-start}
 .judgment-section-title{font-size:15px;font-weight:650;margin:0}
+
+[data-analysis-busy=true]::before {
+  content: '';
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--line);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  margin-right: 7px;
+  animation: research-analysis-spin .7s linear infinite;
+}
+@keyframes research-analysis-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  [data-analysis-busy=true]::before { animation: none; }
+}

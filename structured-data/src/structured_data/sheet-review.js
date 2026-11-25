@@ -14,6 +14,7 @@
     checkSignature:null, mode:null, drag:null, selection:null, anchor:null, history:[],
     sample:null, sampleController:null, resultController:null, resultRequest:0, focusCell:null, restore:false, editable:false, previewMode:'table', activeAIJob:null };
   const volatileDrafts = new Map();
+  const headerCleanupJobs = new Map();
   function clearSample(){ui.sampleController?.abort();ui.sample=null;if($('samplePreview')){$('samplePreview').hidden=true;$('samplePreview').textContent='';}if($('previewBlockSample'))$('previewBlockSample').setAttribute('aria-expanded','false');}
   function clearReviewError(){ui.errorRequest=(ui.errorRequest||0)+1;ui.errorCells=[];document.querySelectorAll('.review-invalid').forEach(el=>{el.classList.remove('review-invalid');el.removeAttribute('aria-invalid');});document.querySelectorAll('.review-error-cell').forEach(el=>el.classList.remove('review-error-cell'));}
   function targetedError(message,target){const error=Error(message);error.reviewTarget=target;return error;}
@@ -57,6 +58,7 @@
   const publishedBlocks = s => isPublished(s) && Array.isArray(s?.published_mapping?.blocks) ? s.published_mapping.blocks : [];
   const waitingImport = s => !isPublished(s) && ['trusted_existing','auto_ready','template_ready','confirmed'].includes(s?.status);
   const isConfirmedSheet = s => !isChartOnly(s) && (s?.review_state ? s.review_state.status==='confirmed' : ['trusted_existing','auto_ready','template_ready','confirmed'].includes(s?.status));
+  const needsReview = s => s.partially_imported || (s.status==='needs_review' && (s.source_update_state || (!isPublished(s) && !s.automatic_skip)));
   function canonical(value) {
     if(Array.isArray(value))return value.map(canonical);
     if(!value||typeof value!=='object')return value;
@@ -107,7 +109,7 @@
     if (needle && !s.name.toLowerCase().includes(needle)) return false;
     if (ui.filter === 'all') return true;
     if (ui.filter === 'charts') return isChartOnly(s);
-    return s.partially_imported || (!isPublished(s) && !s.automatic_skip && (s.status === 'needs_review' || waitingImport(s)) && !isChartOnly(s));
+    return (needsReview(s) || waitingImport(s)) && !isChartOnly(s);
   }
   function sheetMeta(s) {
     const blocks = s.block_count ?? s.mapping?.blocks?.length ?? 0;
@@ -197,7 +199,9 @@
     saveDraft();stopViewRequests();const id=$('importSelect').value;if(!id)return;
     const version=++reviewVersion,controller=new AbortController();ui.sheetController=controller;
     const r=await timedApi('/api/imports/'+encodeURIComponent(id)+'?summary_only=true',{},controller,30000,requestApi);
-    if(version!==reviewVersion||!isCurrent())return;currentImport=r;currentSheet=null;ui.mapping=null;ui.states={};
+    if(version!==reviewVersion||!isCurrent())return;
+    if(currentImport?.import_id!==id&&$('headerCleanupDialog').open)$('headerCleanupDialog').close();
+    currentImport=r;currentSheet=null;ui.mapping=null;ui.states={};
     const sheets=r.sheets||[];updateImportSummary();
     if(!sheets.some(s=>sheetVisible(s,'')))ui.filter='all';renderSheetList();
     $('sheetDetail').innerHTML='<p class="grid-loading">选择工作表，查看原表与对应区块。</p>';
@@ -205,8 +209,8 @@
   };
   function updateImportSummary() {
     const sheets=currentImport?.sheets||[],ready=sheets.filter(isPublished).length;
-    const pending=sheets.filter(s=>s.partially_imported||(!isPublished(s)&&!s.automatic_skip&&s.status==='needs_review')).length;
-    $('importSummary').textContent=`${currentImport?.source_file||''} · ${sheets.length} 张工作表 · ${ready} 张已可查询 · ${sheets.filter(waitingImport).length} 张待导入 · ${pending} 张待核对${sheets.some(s=>s.automatic_skip&&!isPublished(s))?' · '+sheets.filter(s=>s.automatic_skip&&!isPublished(s)).length+' 张已跳过':''}`;
+    const update = currentImport?.source_update;
+    $('importSummary').textContent=`${currentImport?.source_file||''} · ${sheets.length} 张工作表 · ${ready} 张已可查询 · ${sheets.filter(waitingImport).length} 张待导入 · ${sheets.filter(needsReview).length} 张待核对${sheets.some(s=>s.automatic_skip&&!isPublished(s))?' · '+sheets.filter(s=>s.automatic_skip&&!isPublished(s)).length+' 张已跳过':''}${update?' · '+sourceUpdateText(update):''}`;
     // Said here, at import, rather than on research pages: pending sheets in which no field was recognised.
     const fieldless=sheets.filter(s=>!isPublished(s)&&!s.automatic_skip&&s.status==='needs_review'&&!isChartOnly(s)&&!mappedFieldCount(s));
     const hint=$('importFieldless');
@@ -223,6 +227,8 @@
     if(auto){auto.disabled=mappingBusy||ui.batchBusy||!ready.length;auto.textContent='确认全部已检查通过的工作表'+(ready.length?` (${ready.length})`:'');auto.title='仅确认状态为 auto_ready 的工作表，包括已自动导入的表；其他状态仍需逐表核对。';}
     const ai=$('aiImportAllSheets'),pending=(currentImport?.sheets||[]).filter(s=>!isPublished(s)&&s.status!=='empty');
     if(ai){ai.disabled=mappingBusy||ui.batchBusy||!pending.length;ai.title='逐表辅助核对并导入；无数据页跳过，无法确认的内容保留待核对。';}
+    const cleanup=$('headerCleanup'),count=currentImport?.header_cleanup_count||0;
+    if(cleanup){cleanup.hidden=!count;cleanup.disabled=mappingBusy||ui.batchBusy;cleanup.textContent=`整理已导入表的表头说明（${count} 张）`;}
   }
   const autoReadySheets = () => (currentImport?.sheets||[]).filter(sheet=>sheet.status==='auto_ready');
   function confirmedBatch() {
@@ -239,7 +245,7 @@
     }
     return {sheets,mappings};
   }
-  function tabState(s){return isPublished(s)?'ready':s.automatic_skip?'quiet':s.status==='needs_review'||waitingImport(s)?'pending':'quiet';}
+  function tabState(s){return needsReview(s)||waitingImport(s)?'pending':isPublished(s)?'ready':'quiet';}
   function renderSheetList() {
     $('sheetList').innerHTML=(currentImport?.sheets||[]).map((s,i)=>({s,i})).filter(({s})=>sheetVisible(s,'')||(ui.filter==='pending'&&s.name===currentSheet?.name&&isPublished(s))).map(({s,i})=>`<button class="sheet-tab" data-sheet-index="${i}" aria-pressed="${s.name===currentSheet?.name}" title="${esc(s.name+' · '+sheetMeta(s))}"><i class="sheet-state ${tabState(s)}" aria-hidden="true"></i><strong>${esc(s.name)}</strong><small class="sr-only">${esc(sheetMeta(s))}</small></button>`).join('')||'<p class="muted" style="font-size:12px">没有匹配的工作表。</p>';
     document.querySelectorAll('[data-sheet-filter]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.sheetFilter===ui.filter)));
@@ -258,16 +264,16 @@
     currentSheet=null;mappingConfirmed=false;mappingBusy=false;ui.checkSignature=null;
     $('sheetDetail').innerHTML='<p class="grid-loading">正在读取当前工作表…</p>';
     const sheet=await timedApi(`/api/imports/${encodeURIComponent(importId)}/sheet?name=${encodeURIComponent(s.name)}`,{},controller,30000,requestApi);
-    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,import_state:sheet.import_state,review_state:sheet.review_state,automatic_skip:sheet.automatic_skip,partially_imported:sheet.partially_imported,mapping:sheet.mapping,field_count:sheet.field_count??s.field_count,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons,published_in_dataset:sheet.published_in_dataset===true,published_dataset_id:sheet.published_dataset_id??null,published_mapping:sheet.published_mapping??null,published_fingerprint:sheet.published_fingerprint??null});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);setMappingBusy(false);
+    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,import_state:sheet.import_state,review_state:sheet.review_state,automatic_skip:sheet.automatic_skip,partially_imported:sheet.partially_imported,mapping:sheet.mapping,field_count:sheet.field_count??s.field_count,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons,source_update_state:sheet.source_update_state,published_in_dataset:sheet.published_in_dataset===true,published_dataset_id:sheet.published_dataset_id??null,published_mapping:sheet.published_mapping??null,published_fingerprint:sheet.published_fingerprint??null});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);setMappingBusy(false);
     if(isChartOnly(sheet)){showPreview('charts');return;}
     showPreview('table');await loadWindow(1,1,requestApi);
   };
   renderSheet = function(s) {
     const chartOnly = isChartOnly(s);
-    ui.editable = s.status!=='empty' && !chartOnly;
+    ui.editable = s.status!=='empty' && !chartOnly && s.source_update_state!=='retained_deleted';
     // A saved mapping may have canonical defaults or different confirmed ranges.
     // Use that actual baseline unless a local draft explicitly supersedes it.
-    const publishedSeed=isPublished(s)&&Array.isArray(s.published_mapping?.blocks)?s.published_mapping:null;
+    const publishedSeed=isPublished(s)&&(!s.source_update_state||s.source_update_state==='retained_deleted')&&Array.isArray(s.published_mapping?.blocks)?s.published_mapping:null;
     let seed = copy({...(s.partial_review?.mapping||publishedSeed||s.mapping||{blocks:[]}),sheet:s.name,fingerprint:s.fingerprint});
     ui.restore = false;
     if (ui.editable) try {
@@ -284,7 +290,8 @@
     const hasInspector=!chartOnly&&(ui.editable||ui.mapping.blocks.length>0||!!currentImport?.dataset_id);
     const strip=hasInspector?`<div class="block-strip"><div id="blockLegend" class="block-chips"></div>${ui.editable?'<button id="addMappingBlock" class="text-button" type="button">+ 添加区块</button><button id="undoMapping" class="text-button" type="button">↶ 撤销</button>':''}</div>`:'<div id="blockLegend" hidden></div>';
     const inspector=hasInspector?`<aside id="blockEditor" class="block-editor sheet-cards"><div class="editor-heading"><strong>字段与范围核对 <small class="editor-mode">${ui.editable?'可调整':'只读'}</small></strong><button id="previewBlockSample" class="secondary" type="button" aria-expanded="false" aria-controls="samplePreview">${isPublished(s)?'查看记录':'预览几条记录'}</button></div><div id="samplePreview" class="block-sample-content" role="status" hidden></div><div id="mappingForm"></div><section id="resultPanel" class="stored-data-panel" hidden aria-label="已保存记录"><div class="result-heading"><h3 id="resultTitle"></h3><button id="closeResults" class="secondary" type="button">返回字段</button></div><div id="resultContent"></div></section>${ui.editable?'<div class="editor-footer"><label><input id="ackBlock" type="checkbox"><span id="ackBlockLabel">我已核对这个区块</span></label><button id="excludeCurrentBlock" class="exclude-block" type="button">这块不导入</button></div>':''}</aside>`:'<div id="mappingForm" hidden></div>';
-    const source=`<div class="sheet-source"><div class="source-head"><h3>${esc(s.name)}</h3>${sheetStatusBadge(s)}${switcher}${isPublished(s)&&s.published_dataset_id&&!chartOnly?'<button id="storedResults" class="secondary" type="button">查看记录</button>':''}<button id="reviewFocus" class="text-button" type="button">展开核对</button></div><div id="tablePane" class="table-pane"><div class="view-tools"><button id="previousRows" class="secondary" type="button">↑ 上一段</button><button id="nextRows" class="secondary" type="button">↓ 下一段</button><button id="previousCols" class="secondary" type="button">← 左边</button><button id="nextCols" class="secondary" type="button">右边 →</button><input id="jumpCell" aria-label="定位原表单元格" placeholder="例如 AG90"><button id="jumpToCell" class="secondary" type="button">定位</button><span id="viewSummary" class="window-summary"></span></div><div id="sheetGrid" class="sheet-grid-wrap" tabindex="0" aria-label="当前工作表原表视图"><p class="grid-loading">正在加载原表…</p></div><div class="grid-caption"><strong id="selectedCaption"></strong></div><div id="rangeSelection" class="range-selection-actions" hidden><span>临时选区 <b id="selectionRange"></b></span><button id="applySelection" type="button">用于当前区块</button><button id="newBlockSelection" class="secondary" type="button">建立新区块</button><button id="cancelSelection" class="text-button" type="button">取消</button></div><div id="viewWarning" class="source-warning" role="status"></div><div id="selectionHint" class="source-note"></div></div><div id="chartPane" class="chart-pane" hidden></div></div>`;
+    const updateNotice = s.source_update_state || s.status==='needs_review' && currentImport?.source_update ? `<p class="source-warning">${esc(s.reasons?.join('；')||'待核对')}</p>` : '';
+    const source=`<div class="sheet-source"><div class="source-head"><h3>${esc(s.name)}</h3>${sheetStatusBadge(s)}${switcher}${isPublished(s)&&s.published_dataset_id&&!chartOnly?'<button id="storedResults" class="secondary" type="button">查看记录</button>':''}<button id="reviewFocus" class="text-button" type="button">展开核对</button></div>${updateNotice}<div id="tablePane" class="table-pane"><div class="view-tools"><button id="previousRows" class="secondary" type="button">↑ 上一段</button><button id="nextRows" class="secondary" type="button">↓ 下一段</button><button id="previousCols" class="secondary" type="button">← 左边</button><button id="nextCols" class="secondary" type="button">右边 →</button><input id="jumpCell" aria-label="定位原表单元格" placeholder="例如 AG90"><button id="jumpToCell" class="secondary" type="button">定位</button><span id="viewSummary" class="window-summary"></span></div><div id="sheetGrid" class="sheet-grid-wrap" tabindex="0" aria-label="当前工作表原表视图"><p class="grid-loading">正在加载原表…</p></div><div class="grid-caption"><strong id="selectedCaption"></strong></div><div id="rangeSelection" class="range-selection-actions" hidden><span>临时选区 <b id="selectionRange"></b></span><button id="applySelection" type="button">用于当前区块</button><button id="newBlockSelection" class="secondary" type="button">建立新区块</button><button id="cancelSelection" class="text-button" type="button">取消</button></div><div id="viewWarning" class="source-warning" role="status"></div><div id="selectionHint" class="source-note"></div></div><div id="chartPane" class="chart-pane" hidden></div></div>`;
     const pendingNotice=s.partial_review?.notice||s.automatic_skip?.message||'';
     const footer=ui.editable?`<div class="review-footer"><div class="footer-progress" id="confirmHint" role="status"></div><div class="footer-actions"><button id="suggestMapping" class="secondary" type="button">AI 一键辅助确认</button><button id="confirmMapping" type="button">检查并导入这张表</button></div></div><p id="draftNotice" class="source-note">${ui.restore?'草稿已恢复':''}</p><div id="mappingFeedback" class="review-feedback" role="status">${esc(pendingNotice)}</div><details class="full-check-results"><summary>完整检查结果</summary><div id="mappingPreview" class="review-results"></div></details>`:`<p class="readonly-sheet muted">${chartOnly?'图表页':s.status==='trusted_existing'?(isPublished(s)?'已可查询':'待导入'):'暂无数据区块'}</p>${chartOnly&&chartCount&&!s.automatic_skip?'<button id="suggestMapping" class="secondary" type="button">核对曲线来源</button>':''}<div id="mappingFeedback" class="review-feedback" role="status">${esc(pendingNotice)}</div>`;
     $('sheetDetail').innerHTML=`<div class="review-workspace">${strip}<div class="review-panes${hasInspector?'':' readonly'}">${source}${inspector}</div>${footer}<textarea id="mappingEditor" class="hidden">${esc(JSON.stringify(ui.mapping))}</textarea></div>`;
@@ -411,6 +418,7 @@
   }
   async function showStoredResults() {
     const dataset=isPublished(currentSheet)?currentSheet.published_dataset_id:null,sheet=currentSheet?.name,version=reviewVersion;
+    const priorRowsOnChangedSheet = currentSheet?.source_update_state==='retained';
     if(!dataset||!sheet)return;
     const panel=$('resultPanel'),content=$('resultContent');if(!panel)return;
     clearSample();$('blockEditor').classList.add('showing-records');panel.hidden=false;
@@ -432,7 +440,7 @@
       const result=await request('/api/query?'+new URLSearchParams({dataset_id:dataset,series_id:selected,operation:'rows',limit:25,offset:rowOffset}));
       if(!result)return;
       const s=result.series;
-      host.innerHTML=`<h4>${esc(s.metric)} · ${esc(dimensionsText(s.dimensions,['block','data_region'])||'无额外维度')}</h4><p>单位：${esc(s.unit||'原表未注明')} · 共 ${result.record_count} 条记录，其中 ${result.valid_count} 条有有效数值。当前 ${result.rows.length?rowOffset+1:0}–${rowOffset+result.rows.length} 条</p><div class="scroll"><table class="stored-record-table"><thead><tr><th>时间／期间</th><th>保存数值</th><th>原值／公式</th><th>来源</th></tr></thead><tbody>${result.rows.map(r=>`<tr><td>${esc(r.date||r.period||'无时间字段')}</td><td>${r.value==null?'缺失':esc(r.value)}<small>${esc(valueLabels[r.value_status]||r.value_status)}</small></td><td>${esc(r.raw_value??'空白')}${r.formula?'<details><summary>查看公式</summary><div>'+esc(r.formula)+'</div></details>':''}</td><td>${[[r.source_cell,'数值'],[r.date_cell||r.period_cell,'时间'],[r.category_cell,'类别'],[r.metric_cell,'指标']].filter(([cell])=>cell).map(([cell,label])=>`<span class="stored-source"><small>${label}</small><button class="field-source" type="button" data-result-cell="${esc(cell)}" title="在左侧原表高亮 ${esc(cell)}">${esc(cell)} ↗</button></span>`).join('')}</td></tr>`).join('')}</tbody></table></div><div class="result-pagination"><button id="storedRowsPrevious" class="secondary" ${rowOffset===0?'disabled':''}>上一页记录</button><button id="storedRowsNext" class="secondary" ${rowOffset+result.rows.length>=result.record_count?'disabled':''}>下一页记录</button></div><p class="muted">公式使用原文件缓存值；空白、错误或无缓存值保持缺失。点击来源坐标可在左侧原表高亮；记录保持展开。</p>`;
+      host.innerHTML=`<h4>${esc(s.metric)} · ${esc(dimensionsText(s.dimensions,['block','data_region'])||'无额外维度')}</h4><p>单位：${esc(s.unit||'原表未注明')} · 共 ${result.record_count} 条记录，其中 ${result.valid_count} 条有有效数值。当前 ${result.rows.length?rowOffset+1:0}–${rowOffset+result.rows.length} 条</p><div class="scroll"><table class="stored-record-table"><thead><tr><th>时间／期间</th><th>保存数值</th><th>原值／公式</th><th>来源</th></tr></thead><tbody>${result.rows.map(r=>`<tr><td>${esc(r.date||r.period||'无时间字段')}</td><td>${r.value==null?'缺失':esc(r.value)}<small>${esc(valueLabels[r.value_status]||r.value_status)}</small></td><td>${esc(r.raw_value??'空白')}${r.formula?'<details><summary>查看公式</summary><div>'+esc(r.formula)+'</div></details>':''}</td><td>${[[r.source_cell,'数值'],[r.date_cell||r.period_cell,'时间'],[r.category_cell,'类别'],[r.metric_cell,'指标']].filter(([cell])=>cell).map(([cell,label])=>`<span class="stored-source"><small>${label}</small>${priorRowsOnChangedSheet?esc(cell):`<button class="field-source" type="button" data-result-cell="${esc(cell)}" title="在左侧原表高亮 ${esc(cell)}">${esc(cell)} ↗</button>`}</span>`).join('')}</td></tr>`).join('')}</tbody></table></div><div class="result-pagination"><button id="storedRowsPrevious" class="secondary" ${rowOffset===0?'disabled':''}>上一页记录</button><button id="storedRowsNext" class="secondary" ${rowOffset+result.rows.length>=result.record_count?'disabled':''}>下一页记录</button></div><p class="muted">公式使用原文件缓存值；空白、错误或无缓存值保持缺失。${priorRowsOnChangedSheet?'坐标来自上一版原件。':'点击来源坐标可在左侧原表高亮；记录保持展开。'}</p>`;
       $('storedRowsPrevious').onclick=()=>{rowOffset=Math.max(0,rowOffset-25);rows().catch(showError);};
       $('storedRowsNext').onclick=()=>{rowOffset+=25;rows().catch(showError);};
       bindRecordSources(host);
@@ -806,6 +814,12 @@
       ui.checkSignature=signature;mappingConfirmed=true;$('mappingFeedback').textContent=`全部选定数据检查通过：${result.series_count} 个指标、${result.observation_count} 条记录。${result.notice||''}完整检查结果可展开查看。`;$('mappingPreview').innerHTML=mappingIdentityHTML(result.mapping)+blockPreviewHTML(result);$('mappingPreview').closest('details').open=true;saveDraft();
     }catch(e){e.reviewBlockIds=blockIds;throw e;}finally{if(version===reviewVersion)setMappingBusy(false);}
   };
+  function appendHeaderOnlyNotice(feedback,result,sheetName) {
+    if(result.scope!=='header_only'||!result.header_notice)return;
+    const notice=document.createElement('p');
+    notice.textContent=sheetName?`${sheetName}：${result.header_notice}`:result.header_notice;
+    feedback.append(notice);
+  }
   suggestMapping = async function(confirmed) {
     if(!confirmed){
       const scopeEpoch=authEpoch,version=reviewVersion,importId=currentImport?.import_id,sheetName=currentSheet?.name;
@@ -835,7 +849,9 @@
       ui.editable=false;
       await refreshReviewResult(importId,sheetName,result,scopeEpoch);
       if(scopeEpoch!==authEpoch||currentSheet?.name!==sheetName)return;
-      $('mappingFeedback').textContent=result.notice||(isPublished(currentSheet)?'辅助确认完成，校验通过的工作表已自动导入。':'辅助核对完成；缺少可靠依据的区块仍标红，请补齐后导入。');
+      const feedback=$('mappingFeedback');
+      feedback.textContent=result.notice||(isPublished(currentSheet)?'辅助确认完成，校验通过的工作表已自动导入。':'辅助核对完成；缺少可靠依据的区块仍标红，请补齐后导入。');
+      appendHeaderOnlyNotice(feedback,result);
     }catch(error){
       if(activeJob?.cancelRequested||version!==reviewVersion||scopeEpoch!==authEpoch){
         if(activeJob)finishAIJob(activeJob,'cancelled','AI 任务已取消；当前草稿保留，未继续自动导入。');
@@ -902,9 +918,11 @@
     await refreshReviewResult(importId,sheetName,result,scopeEpoch);
     if(scopeEpoch!==authEpoch||currentImport?.import_id!==importId)return;
     const summary=`已导入 ${(result?.sheets_imported||[]).length} 张 · 待确认 ${(result?.sheets_pending||[]).length} 张 · 跳过 ${(result?.sheets_skipped||[]).length} 张 · 模型请求 ${result?.requests_used||0} 次`;
-    $('mappingFeedback').textContent=(result?.notice||'批量辅助已结束。')+' '+summary;
+    const feedback=$('mappingFeedback');
+    feedback.textContent=(result?.notice||'批量辅助已结束。')+' '+summary;
+    for(const detail of result?.details||[])appendHeaderOnlyNotice(feedback,detail,detail.sheet);
     const rows=[...(result?.sheets_skipped||[]).map(item=>typeof item==='string'?{sheet:item,message:'没有可导入的指标数据。'}:item),...(result?.sheets_failed||[]),...(result?.details||[]).filter(item=>['needs_review','not_started','partially_imported'].includes(item.status))];
-    if(rows.length){const details=document.createElement('details'),caption=document.createElement('summary');caption.textContent='查看跳过与待确认原因';details.append(caption);for(const item of rows){const p=document.createElement('p');p.textContent=`${item.sheet}：${item.message||item.reason||'请打开工作表继续核对。'}`;details.append(p);}$('mappingFeedback').append(details);}
+    if(rows.length){const details=document.createElement('details'),caption=document.createElement('summary');caption.textContent='查看跳过与待确认原因';details.append(caption);for(const item of rows){const p=document.createElement('p');p.textContent=`${item.sheet}：${item.message||item.reason||'请打开工作表继续核对。'}`;details.append(p);}feedback.append(details);}
   }
   function applyAssistResult(result) {
     const proposed=copy(result.mapping),prior=ui.mapping,included=enabledBlocks();
@@ -961,6 +979,150 @@
     if(result?.dataset_id&&!reviewOnly){$('dataset').value=result.dataset_id;await selectDataset();}
     const pending=result?.partially_imported||(result?.imported===false&&!result?.skipped)||result?.sheets_failed?.length;
     notifyImportUpdated(importId,result?.dataset_id,pending?'needs_review':'confirmed',scopeEpoch);
+  }
+  const currentHeaderCleanup = () => headerCleanupJobs.get(currentImport?.import_id);
+  const cleanupRequestPath = record => `/api/imports/${encodeURIComponent(record.importId)}/header-cleanup`;
+  const cleanupIsCurrent = record => headerCleanupJobs.get(record.importId)===record;
+  function updateHeaderCleanupApply(record) {
+    const button=$('headerCleanupApply');
+    button.hidden=!record.sheets.some(sheet=>sheet.status==='rename'&&!record.applied.has(sheet.sheet_name));
+    button.disabled=record.applying||record.applyBlocked||!record.selected.size;
+  }
+  function headerCleanupValue(label,text) {
+    const characters=Array.from(text);
+    if(characters.length<=72&&!text.includes('\n'))return `${label}：${esc(text)}`;
+    const preview=characters.slice(0,72).join('').split('\n')[0];
+    return `<details class="header-cleanup-value"><summary>${label}：<span class="header-cleanup-preview">${esc(preview)}…</span></summary><div>${esc(text)}</div></details>`;
+  }
+  function headerCleanupMessages(sheet) {
+    return [['待核对',sheet.diagnostics],['提示',sheet.notices]].map(([label,items])=>{
+      if(!items?.length)return '';
+      const messages=items.map(item=>{
+        const location=[Number.isInteger(item.block_index)?`区块 ${item.block_index+1}`:'',
+          item.column?`${item.column} 列`:'',label==='提示'?item.cells?.join('、'):''].filter(Boolean).join(' · ');
+        return `<li>${location?`${esc(location)}：`:''}${esc(item.message)}</li>`;
+      }).join('');
+      return `<div class="header-cleanup-diagnostics"><span>${label}</span><ul>${messages}</ul></div>`;
+    }).join('');
+  }
+  function headerCleanupChange(change) {
+    const fields=[
+      ['代码',change.source_codes||[]],
+      ['单位',change.unit||[]],
+      ['频率',change.frequency||[]],
+      ['说明',change.header_notes||[]],
+    ];
+    const values=fields.flatMap(([label,items])=>items.map(item=>`<li>${headerCleanupValue(label,typeof item==='string'?item:item.text)}</li>`));
+    if(change.unit_conflict)values.push('<li class="header-cleanup-conflict">单位待核对</li>');
+    if(change.frequency_conflict)values.push('<li class="header-cleanup-conflict">频率待核对</li>');
+    return `<li><span>${esc(change.old_name)} → ${esc(change.new_name)}</span>
+      ${values.length?`<ul class="header-cleanup-fields">${values.join('')}</ul>`:''}</li>`;
+  }
+  function headerCleanupSuggestion(sheet,record) {
+    const rename=sheet.status==='rename';
+    const changes=rename?sheet.changes.map(headerCleanupChange):[];
+    const remaining=changes.slice(5);
+    return `<div class="header-cleanup-sheet">
+      <label>
+        <input type="checkbox" data-header-cleanup-sheet="${esc(sheet.sheet_name)}"${record.selected.has(sheet.sheet_name)?' checked':''}${!rename||record.applying||record.applyBlocked?' disabled':''}>
+        <span>${esc(sheet.sheet_name)} · ${rename?`${changes.length} 个指标会改名`:'需核对'}</span>
+      </label>
+      ${rename?`<details class="header-cleanup-changes">
+        <summary>查看改名和分离的表头信息</summary>
+        <ul>${changes.slice(0,5).join('')}</ul>
+        ${remaining.length?`<details><summary>其余 ${remaining.length} 个</summary><ul>${remaining.join('')}</ul></details>`:''}
+      </details>`:''}
+      ${headerCleanupMessages(sheet)}
+    </div>`;
+  }
+  function renderHeaderCleanup(record) {
+    if(currentHeaderCleanup()!==record)return;
+    const progress=$('headerCleanupProgress'),cancel=$('headerCleanupCancel');
+    progress.hidden=!(record.running||record.applying);
+    progress.classList.toggle('cancelling',record.running&&record.cancelRequested);
+    $('headerCleanupStage').textContent=record.applying?'正在检查并应用所选工作表…':record.stage;
+    cancel.hidden=!record.running;cancel.disabled=record.cancelRequested;
+    $('headerCleanupClose').disabled=record.applying;
+    $('headerCleanupRetry').hidden=record.running||record.applying;
+    $('headerCleanupNotice').textContent=[record.message,record.notice].filter(Boolean).join(' ');
+
+    const suggestions=record.sheets.filter(sheet=>['rename','needs_review'].includes(sheet.status)&&!record.applied.has(sheet.sheet_name));
+    const unchanged=record.sheets.filter(sheet=>sheet.status==='unchanged');
+    const failed=record.sheets.filter(sheet=>sheet.status==='failed');
+    const outcomes=[...record.applied.values()].map(sheet=>{
+      const success=sheet.status==='applied';
+      const outcome=success?`已应用（${esc(sheet.renamed_fields)} 个指标改名）`:esc(sheet.error||'应用未完成，请重新整理。');
+      const suggestion=record.sheets.find(item=>item.sheet_name===sheet.sheet_name);
+      return `<li data-sheet-confirm="${success?'success':'failed'}"><span>${esc(sheet.sheet_name)}：${outcome}</span>${suggestion?headerCleanupMessages(suggestion):''}</li>`;
+    }).join('');
+    const unchangedList=unchanged.map(sheet=>`<li>${esc(sheet.sheet_name)}${headerCleanupMessages(sheet)}</li>`).join('');
+    const failedList=failed.map(sheet=>`<li data-sheet-confirm="failed">${esc(sheet.sheet_name)}：${esc(sheet.error||'未能整理表头说明。')}</li>`).join('');
+    $('headerCleanupResults').innerHTML=`
+      ${outcomes?`<ul class="batch-confirm-results">${outcomes}</ul>`:''}
+      ${suggestions.map(sheet=>headerCleanupSuggestion(sheet,record)).join('')}
+      ${unchangedList?`<details><summary>无需改动（${unchanged.length} 张）</summary><ul>${unchangedList}</ul></details>`:''}
+      ${failedList?`<div>整理失败（${failed.length} 张）<ul class="batch-confirm-results">${failedList}</ul></div>`:''}`;
+    updateHeaderCleanupApply(record);
+  }
+  async function startHeaderCleanup() {
+    if(!currentImport?.header_cleanup_count||mappingBusy||ui.batchBusy)return;
+    const importId=currentImport.import_id;
+    const id=Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('');
+    const record={id,importId,running:true,stage:'正在准备逐张查看表头…',sheets:[],applied:new Map(),selected:new Set()};
+    headerCleanupJobs.set(importId,record);
+    renderHeaderCleanup(record);
+    const dialog=$('headerCleanupDialog');
+    if(!dialog.open)dialog.showModal();
+    try{
+      const job=await timedApi(cleanupRequestPath(record),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:id})});
+      if(job.id!==id)throw Error('任务编号与当前请求不一致，请重新整理。');
+      const result=await waitJob(id,(stage,progress)=>{
+        if(!record.cancelRequested){record.stage=progressLabel(stage,progress);renderHeaderCleanup(record);}
+      },()=>cleanupIsCurrent(record),path=>timedApi(path));
+      record.sheets=result.sheets||[];
+      record.message=result.notice||'整理已完成，请核对建议。';
+    }catch(error){
+      record.sheets=error.partialResult?.sheets||[];
+      record.applyBlocked=error.partialResult?.stopped==='permission_denied';
+      record.message=error.message;
+    }finally{
+      record.running=false;
+      record.selected=new Set(record.sheets.filter(sheet=>sheet.status==='rename').map(sheet=>sheet.sheet_name));
+      renderHeaderCleanup(record);
+    }
+  }
+  async function cancelHeaderCleanup() {
+    const record=currentHeaderCleanup();
+    if(!record?.running||record.cancelRequested)return;
+    record.cancelRequested=true;record.stage='正在取消任务…';
+    renderHeaderCleanup(record);
+    try{await timedApi('/api/jobs/'+encodeURIComponent(record.id)+'/cancel',{method:'POST'});}
+    catch(error){
+      if(!record.running)return;
+      record.cancelRequested=false;record.message=error.message;renderHeaderCleanup(record);
+    }
+  }
+  async function applyHeaderCleanup() {
+    const record=currentHeaderCleanup();
+    if(!record?.selected.size||record.running||record.applying||record.applyBlocked||mappingBusy||ui.batchBusy)return;
+    const scopeEpoch=authEpoch,sheetName=currentSheet?.name;
+    record.applying=true;record.message='';record.notice='';
+    renderHeaderCleanup(record);
+    try{
+      const result=await api(cleanupRequestPath(record)+'/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:record.id,sheet_names:[...record.selected]})});
+      if(!cleanupIsCurrent(record))return;
+      for(const sheet of result.sheets||[]){
+        record.applied.set(sheet.sheet_name,sheet);
+        record.selected.delete(sheet.sheet_name);
+      }
+      record.notice=result.notice;
+      if(result.sheets?.some(sheet=>sheet.status==='applied')){
+        if(currentImport?.import_id===record.importId){
+          await refreshReviewResult(record.importId,sheetName,result,scopeEpoch);
+        }else notifyImportUpdated(record.importId,result.dataset_id,'confirmed',scopeEpoch);
+      }
+    }catch(error){record.message=error.message;}
+    finally{record.applying=false;renderHeaderCleanup(record);}
   }
   function confirmAllSheets() {
     if(mappingBusy||ui.batchBusy)return;
@@ -1032,6 +1194,22 @@
   if($('confirmAllSheets'))$('confirmAllSheets').onclick=confirmAllSheets;
   if($('confirmAutoReadySheets'))$('confirmAutoReadySheets').onclick=confirmAutoReadySheets;
   if($('aiImportAllSheets'))$('aiImportAllSheets').onclick=()=>assistAllSheets().catch(mappingError);
+  $('headerCleanup').onclick=()=>{
+    const record=currentHeaderCleanup();
+    if(!record){startHeaderCleanup();return;}
+    renderHeaderCleanup(record);$('headerCleanupDialog').showModal();
+  };
+  $('headerCleanupRetry').onclick=startHeaderCleanup;
+  $('headerCleanupClose').onclick=()=>$('headerCleanupDialog').close();
+  $('headerCleanupDialog').oncancel=e=>{if(currentHeaderCleanup()?.applying)e.preventDefault();};
+  $('headerCleanupCancel').onclick=cancelHeaderCleanup;
+  $('headerCleanupApply').onclick=applyHeaderCleanup;
+  $('headerCleanupResults').onchange=e=>{
+    const sheet=e.target.dataset.headerCleanupSheet,record=currentHeaderCleanup();
+    if(sheet===undefined||!record)return;
+    if(e.target.checked)record.selected.add(sheet);else record.selected.delete(sheet);
+    updateHeaderCleanupApply(record);
+  };
   function openSheetMenu(){renderSheetMenu();$('sheetMenu').hidden=false;$('allSheets').setAttribute('aria-expanded','true');}
   $('sheetSearch').oninput=openSheetMenu;
   $('sheetSearch').onfocus=openSheetMenu;
@@ -1061,10 +1239,11 @@
     else finishAIJob(record,'detached','AI 已进入保存阶段；账号或空间已切换，请刷新原位置查看最终结果。');
   };
   window.sheetReviewAuthChanged=()=>{
-    volatileDrafts.clear();purgeUnsafeDraftKeys();
+    volatileDrafts.clear();headerCleanupJobs.clear();purgeUnsafeDraftKeys();
     ui.batchBusy=false;ui.batchOwner=null;ui.aiMode=null;ui.aiBatchScope=null;ui.aiBatchMappings=[];ui.autoReadySelection=null;
     ui.activeAIJob=null;ui.jobController?.abort();
-    for(const id of ['aiDialog','confirmDialog'])if($(id)?.open)$(id).close();
+    for(const id of ['aiDialog','confirmDialog','headerCleanupDialog'])if($(id)?.open)$(id).close();
+    for(const id of ['headerCleanupResults','headerCleanupNotice','headerCleanupStage'])$(id).textContent='';
     if($('aiJobPanel'))$('aiJobPanel').hidden=true;
   };
   window.addEventListener('pagehide',()=>{if(ui.activeAIJob)cancelActiveAIJob('关闭页面',{keepalive:true});});

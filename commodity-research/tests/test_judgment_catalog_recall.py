@@ -1,14 +1,26 @@
 """Large catalogs: per-item phrasings, ranked recall from the real catalog, bounded model picks."""
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 
 from fastapi import HTTPException
 import pytest
 
 from tests.test_judgment_catalog_capacity import directory
+from tests.analysis_job_fixtures import detached_loop, finished_job
+from tests.chart_fixtures import definition
+from tests.test_judgment_generation import endpoint, generate, generator, rows
+from tests.test_judgment_review import all_items
+from tests.test_knowledge_facts import FIRST, SERIES, canonical, page
+from tests.test_workbench_setup_jobs import active, workbench
 from tin.integration.catalog_recall import CatalogRecall
-from tin.web import judgment_generation as generation
+from tin.integration.workbench_scope import artifact_session
+from tin.models import SourceMapping, WorkbenchArtifact
+from tin.schemas.chart import ChartDefinition
+from tin.web import analysis_jobs, charts, judgment_generation as generation, judgment_recall as recall
 from tin.web.judgment_failures import failure_for
+from tin.web.research_dimensions import DIMENSIONS_KEY
+from tin.web.restricted_views import CORE_KEY, mapping_key
 
 TEXT = '下游纺纱利润持续亏损，纺企对高价原料的接受度下降。另一条：港口库存回升。'
 TARGET = {'id': 'kb-' + 'f' * 48, 'name': '棉纱即期加工利润', 'unit': '元/吨', 'frequency': '日',
@@ -37,7 +49,74 @@ def items_of(prompt):
     return json.loads(prompt.split('研究条目：', 1)[1].split('\n候选指标：', 1)[0])
 
 
-def choose(monkeypatch, answer, rows=None, value=None):
+@pytest.mark.parametrize('failure', ['unshown', 'no_observation', 'incompatible', 'ambiguous', None])
+def test_recommendation_keeps_the_first_rank_and_never_promotes_an_alternative(monkeypatch, failure):
+    text = 'Compare measurement coverage.'
+    item = {'id': 'node', 'kind': 'diagram_node', 'quote': text}
+    phases = []
+
+    async def progress(phase):
+        phases.append(phase)
+
+    async def complete(scope, model, prompt):
+        if prompt.startswith('research-catalog-recall.v1'):
+            assert '目录用语概览' in prompt
+            return {'queries': {'node': [TARGET['name'], PORT['name']]}}
+        refs = {field['name']: ref for ref, field in candidates_of(prompt).items()}
+        return {'recommendations': {'node': {'ambiguous': failure == 'ambiguous', 'candidates': [
+            {'ref': 'unshown' if failure == 'unshown' else refs[TARGET['name']], 'reason': '首选理由'},
+            {'ref': refs[PORT['name']], 'reason': '备选理由'}]}}}
+
+    def observations(scope, fields, identifiers, module):
+        assert module == 'diagram' and fields.keys() == {TARGET['id'], PORT['id']}
+        assert PORT['id'] in identifiers
+        return {PORT['id']} if failure == 'no_observation' else set(identifiers)
+
+    monkeypatch.setattr('tin.web.diagram_generation.completion', complete)
+    monkeypatch.setattr(recall, 'observed_ids', observations)
+    result = asyncio.run(recall.recommend(None, 'model', [TARGET, PORT], text, {'items': [item]},
+        module='diagram', progress=progress,
+        compatible=lambda _, field: failure != 'incompatible' or field['id'] != TARGET['id']))['node']
+    assert phases == ['selecting', 'analyzing', 'validating']
+    assert result['ambiguous'] is (failure == 'ambiguous')
+    assert result['recommendations'][-1]['series_id'] == PORT['id']
+    assert result['recommendations'][-1]['reason'] == '备选理由'
+    if failure:
+        assert result['recommended'] is None
+    else:
+        assert result['recommended']['series_id'] == TARGET['id']
+
+
+def test_recommendation_batches_cover_every_item_and_obey_prompt_budget(monkeypatch):
+    items = [{'id': f'item{i}', 'kind': 'binding', 'quote': TARGET['name']}
+             for i in range(2 * recall.RECOMMENDATION_BATCH_ITEMS + 1)]
+    seen = []
+
+    async def progress(phase):
+        pass
+
+    async def complete(scope, model, prompt):
+        assert len(prompt.encode('utf-8')) <= generation.PROMPT_BYTES
+        if prompt.startswith('research-catalog-recall.v1'):
+            return {'queries': {}}
+        shown = items_of(prompt)
+        assert 1 <= len(shown) <= recall.RECOMMENDATION_BATCH_ITEMS
+        seen.extend(item['id'] for item in shown)
+        return {'recommendations': {item['id']: {'ambiguous': False, 'candidates': [
+            {'ref': item['candidates'][0], 'reason': '字段匹配'}]} for item in shown}}
+
+    monkeypatch.setattr(generation, 'completion', complete)
+    monkeypatch.setattr(recall, 'observed_ids', lambda scope, fields, identifiers, module: set(identifiers))
+    result = asyncio.run(recall.recommend(None, 'model', [TARGET], TEXT, {'items': items}, progress=progress))
+    assert seen == [item['id'] for item in items]
+    assert all(item['recommended']['series_id'] == TARGET['id'] for item in result.values())
+    with pytest.raises(HTTPException) as oversized:
+        asyncio.run(recall.recommend(None, 'model', [TARGET], 'x' * generation.PROMPT_BYTES,
+            {'items': items}, progress=progress))
+    assert oversized.value.status_code == 413
+
+
+def choose(monkeypatch, answer, rows=None, value=None, shared=()):
     prompts = []
 
     async def completion(scope, model, prompt):
@@ -49,7 +128,7 @@ def choose(monkeypatch, answer, rows=None, value=None):
     async def run():
         marker = generation._source_inventory.set(value or inventory())
         try:
-            return await generation.choose_catalog(None, 'model', rows or catalog(), TEXT)
+            return await generation.choose_catalog(None, 'model', rows or catalog(), TEXT, shared=shared)
         finally:
             generation._source_inventory.reset(marker)
     return asyncio.run(run()), prompts
@@ -140,3 +219,118 @@ def test_recall_ranks_partial_wording_overlap_and_keeps_each_phrasing_represente
     # Each phrasing contributes its best field before any phrasing contributes a second one.
     assert set(index.recall(['港口库存', '未装运'], 2)) == {'c', 'd'}
     assert index.recall(['', '   '], 3) == [] and index.recall(['毫不相关'], 3) == []
+
+
+def test_query_prompt_shares_catalog_terms_and_shrinks_every_tables_sample_count():
+    long_name = '原表字段' * 20
+    fields = [{'name': name, 'sheet': sheet} for sheet, name in [
+        ('数据乙', long_name), ('数据乙', long_name), ('数据甲', '英文代码 ABC'),
+        ('数据乙', '第二字段'), ('数据甲', '第二字段'), ('数据甲', '第三字段')]]
+    expected = [['数据乙', [long_name[:40]]], ['数据甲', ['英文代码 ABC']]]
+    budget = len(recall._encode(expected).encode())
+    query = recall.query_prompt(TEXT, inventory(), fields, prompt_bytes=generation.PROMPT_BYTES)
+    before, overview = query.split('目录用语概览（表名与字段名样例）：', 1)
+    full, end = overview.split('\n研究条目：', 1)
+    assert json.loads(full) == [['数据乙', [long_name[:40], '第二字段']],
+                                ['数据甲', ['英文代码 ABC', '第二字段', '第三字段']]]
+    tiny = len((before + '目录用语概览（表名与字段名样例）：\n研究条目：' + end).encode()) + budget
+    query = recall.query_prompt(TEXT, inventory(), fields, prompt_bytes=tiny)
+    assert len(query.encode()) <= tiny
+    assert json.loads(query.split('目录用语概览（表名与字段名样例）：', 1)[1].split('\n研究条目：')[0]) == expected
+    assert recall.item_queries({'queries': {'i1': [str(i) for i in range(8)]}}, inventory()) == {
+        'i1': ['0', '1', '2', '3', '4']}
+
+
+def test_shared_workbench_candidate_can_be_picked_without_matching_recall(monkeypatch):
+    def answer(prompt):
+        if prompt.startswith('research-catalog-recall.v1'):
+            assert '目录用语概览' in prompt and TARGET['sheet'] in prompt
+            return {'queries': {'i1': ['Only unmatched terms']}}
+        shared = json.loads(prompt.split('本研究台已使用的指标（共享候选）：', 1)[1].split('\n研究条目：')[0])
+        assert len(shared) == 1
+        assert candidates_of(prompt)[shared[0]]['name'] == PORT['name']
+        assert shared[0] not in items_of(prompt)[0]['candidates']
+        return {'picks': {'i1': shared}}
+    (selected, partial), _ = choose(monkeypatch, answer, shared=[PORT['id']])
+    assert selected == [PORT] and partial is True
+
+
+def test_workbench_usage_collects_recent_authorized_dimensions_charts_core_and_enabled_monitors(workbench, monkeypatch):
+    scope = workbench.scope
+    chart, dimension, core, monitor, disabled, absent, other_actor = ['kb-' + c * 48 for c in 'abcdef0']
+    now = datetime.now(timezone.utc)
+    with active(scope), artifact_session(scope) as session:
+        curve = {'series_id': chart, 'label': '测试曲线', 'kind': 'line', 'axis': 'left'}
+        chart_row = charts.create_row(session, scope, ChartDefinition.model_validate(definition(curves=[curve])))
+        chart_row.updated_at = now
+        session.add(SourceMapping(id=mapping_key(session, DIMENSIONS_KEY), config={'dimensions': [
+            {'id': 'desk-1', 'label': '测试维度', 'category': '其他', 'sections': [
+                {'items': [{'kind': 'indicator', 'id': dimension}, {'kind': 'indicator', 'id': absent}]}]}]},
+            confirmed_by=scope.identity.user_id, confirmed_at=now + timedelta(seconds=1)))
+        session.add(SourceMapping(id=mapping_key(session, CORE_KEY), config={'items': [{'kind': 'indicator', 'id': core}]},
+            confirmed_by=scope.identity.user_id, confirmed_at=now + timedelta(seconds=2)))
+        for identifier, enabled, actor in [(monitor, True, scope.identity.user_id),
+                (disabled, False, scope.identity.user_id), (other_actor, True, 'other')]:
+            session.add(WorkbenchArtifact(id='monitor-' + identifier, module='monitors', actor=actor, title='测试监测',
+                body=json.dumps({'workbench_id': scope.workbench_id, 'enabled': enabled,
+                                 'rules': [{'series_id': identifier}]}), status='draft', source_ids=[],
+                revision=1, created_at=now, updated_at=now + timedelta(seconds=3)))
+        session.commit()
+    fields = [{'id': sid} for sid in (chart, dimension, core, monitor, disabled, other_actor)]
+    with active(scope):
+        assert recall.shared_candidate_ids(scope, fields) == [monitor, core, dimension, chart]
+        monkeypatch.setattr(recall, 'SHARED_CANDIDATE_LIMIT', 2)
+        assert recall.shared_candidate_ids(scope, fields) == [monitor, core]
+
+
+@pytest.mark.parametrize('bad_ref', [None, SERIES, 'r9999'])
+def test_recommendation_job_accepts_only_shown_refs_and_retains_reasons(generator, monkeypatch, bad_ref):
+    client, headers, _, _, _ = generator
+    response = generate(client, headers)
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    selected_items = [i for i in all_items(preview) if i['kind'] == 'thresholds' or i['title'] == '多方依据']
+    assert len(selected_items) == 2
+
+    async def complete(scope, model, prompt):
+        assert 'Stocks above 12 吨' in prompt
+        if prompt.startswith('research-catalog-recall.v1'):
+            assert '目录用语概览' in prompt and 'Measurements' in prompt and 'sample hint' in prompt
+            item = json.loads(prompt.split('\n研究条目：', 1)[1].split('\n研究员检索提示：', 1)[0])[0]
+            return {'queries': {item['id']: ['Measured quantity']}}
+        shown = candidates_of(prompt)
+        selected_ref = next(ref for ref, row in shown.items() if row['name'] == 'Measured quantity')
+        return {'recommendations': [{'ref': bad_ref or selected_ref, 'reason': '原文数量匹配实测字段'}]}
+
+    monkeypatch.setattr(generation, 'completion', complete)
+    job_paths = []
+
+    async def complete_job(job_id):
+        task = analysis_jobs.runtime.tasks.get(job_id)
+        if task is not None:
+            await asyncio.wait_for(asyncio.shield(task), timeout=20)
+
+    with detached_loop(client):
+        for index, item in enumerate(selected_items):
+            response = client.post(endpoint('/indicator-recommendations'), headers={**headers,
+                'Idempotency-Key': 'indicator-recommendation-test-' + str(index)}, json={
+                'draft_id': preview['draft_id'], 'item_id': item['id'], 'model_id': 'synthetic-chat', 'search': 'sample hint'})
+            assert response.status_code == 202, response.text
+            job = response.json()
+            assert job['purpose'] == 'judgment_indicator_recommendations'
+            client.portal.call(complete_job, job['id'])
+            path = page(FIRST, '/api/sn/analysis-jobs/' + job['id'])
+            status, result = finished_job(client, path, headers)
+            assert status['state'] == 'succeeded', status
+            assert result.status_code == 200, result.text
+            data = result.json()
+            assert data['item_id'] == item['id'] and data['draft_id'] == preview['draft_id']
+            if bad_ref:
+                assert data['recommended'] is None and data['recommendations'] == []
+            else:
+                assert data['recommendations'][0]['series_id'] == SERIES
+                assert data['recommendations'][0]['reason'] == '原文数量匹配实测字段'
+                job_paths.append(path)
+        for path in job_paths:
+            assert client.get(path + '/result', headers=headers).status_code == 200
+    assert rows() == []

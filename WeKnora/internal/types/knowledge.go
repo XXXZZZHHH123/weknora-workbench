@@ -1,6 +1,7 @@
 package types
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -17,6 +18,19 @@ const (
 	// KnowledgeTypeFAQ represents the FAQ knowledge type
 	KnowledgeTypeFAQ = "faq"
 )
+
+type knowledgeUploadSaveAsNewKey struct{}
+
+// WithKnowledgeUploadSaveAsNew requests a separate entry for an explicit upload.
+func WithKnowledgeUploadSaveAsNew(ctx context.Context) context.Context {
+	return context.WithValue(ctx, knowledgeUploadSaveAsNewKey{}, true)
+}
+
+// KnowledgeUploadSavesAsNew reports whether normal file deduplication is bypassed.
+func KnowledgeUploadSavesAsNew(ctx context.Context) bool {
+	saveAsNew, _ := ctx.Value(knowledgeUploadSaveAsNewKey{}).(bool)
+	return saveAsNew
+}
 
 // Channel constants identify through which channel a knowledge entry was ingested.
 // Aligned with Message.Channel values ("web", "api", "im") but allows finer granularity.
@@ -102,6 +116,8 @@ type KnowledgeListFilter struct {
 	TagIDs []string
 	// Keyword performs a LIKE match on file_name / title when non-empty.
 	Keyword string
+	// FileNames matches exact names of uploaded files when non-empty.
+	FileNames []string
 	// FileType filters by file_type, or by type for the special values "manual" / "url".
 	FileType string
 	// ParseStatus filters by parse_status when non-empty (e.g. pending, processing, completed, failed).
@@ -235,6 +251,8 @@ type Knowledge struct {
 	CreatedAt time.Time `json:"created_at" extensions:"x-agent"`
 	// Last updated time of the knowledge
 	UpdatedAt time.Time `json:"updated_at" extensions:"x-agent"`
+	// Upload time of the file currently attached to the knowledge.
+	FileVersionAt *time.Time `json:"file_version_at,omitempty" gorm:"-"`
 	// Processed time of the knowledge
 	ProcessedAt *time.Time `json:"processed_at" extensions:"x-agent"`
 	// Error message of the knowledge

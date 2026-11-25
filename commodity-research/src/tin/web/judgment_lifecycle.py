@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from tin.integration.workbench_scope import artifact_session
 from tin.models import AuditLog, Judgment, Strategy
 from tin.models.workbench import WorkbenchArtifact, WorkbenchArtifactRevision
-from tin.web.judgment_panels import FORMAT, _metadata, panel_identifier, panel_scope, selected_judgment
+from tin.web.judgment_panels import FORMAT, panel_for_judgment, panel_identifier, panel_scope, selected_judgment
 from tin.web.workbench_artifacts import record_revision
 
 router = APIRouter(prefix='/api/sn/judgment/records')
@@ -23,15 +23,9 @@ class DeleteRequest(BaseModel):
     confirmed: StrictBool
 
 
-def delete_revision(session, scope, judgment):
-    panel = session.get(WorkbenchArtifact, panel_identifier(scope, judgment.id))
-    if panel is None:
-        return 0
-    if (panel.module != 'judgments' or panel.actor != scope.identity.user_id
-            or _metadata(panel, scope) != {'format': FORMAT, 'workbench_id': scope.workbench_id,
-                'judgment_id': judgment.id, 'version': judgment.version}):
-        raise HTTPException(409, '研判管理记录不一致，请刷新后核对')
-    return panel.revision
+def delete_revision(session, scope, judgment, *, index=None):
+    panel, _ = panel_for_judgment(session, scope, judgment, index=index)
+    return panel.revision if panel is not None else 0
 
 
 def _points_to(value, identifier, version, version_field='revision'):
@@ -129,7 +123,8 @@ async def delete_judgment(request: Request, judgment_id: int = Path(ge=1, le=2**
     with artifact_session(scope) as session:
         try:
             judgment = selected_judgment(session, judgment_id, scope=scope)
-            if judgment.version != body.version or delete_revision(session, scope, judgment) != body.revision:
+            panel, historical = panel_for_judgment(session, scope, judgment)
+            if judgment.version != body.version or (panel.revision if panel is not None else 0) != body.revision:
                 raise HTTPException(409, '研判或名称已经更新，请刷新后重新确认删除')
             old_status = judgment.status
             changed = session.execute(update(Judgment).where(Judgment.id == judgment.id,
@@ -140,9 +135,8 @@ async def delete_judgment(request: Request, judgment_id: int = Path(ge=1, le=2**
                 raise HTTPException(409, '研判已经更新或删除，请刷新后继续')
             ensure_unreferenced(session, scope, judgment)
             now = datetime.now(timezone.utc)
-            identifier = panel_identifier(scope, judgment.id)
-            panel = session.get(WorkbenchArtifact, identifier)
-            if panel is None:
+            if panel is None and not historical:
+                identifier = panel_identifier(scope, judgment.id)
                 panel = WorkbenchArtifact(id=identifier, module='judgments', actor=scope.identity.user_id,
                     title=f'{judgment.variety} 研判', body=json.dumps({'format': FORMAT,
                         'workbench_id': scope.workbench_id, 'judgment_id': judgment.id,
@@ -150,22 +144,24 @@ async def delete_judgment(request: Request, judgment_id: int = Path(ge=1, le=2**
                     source_ids=[], source_snapshots=[], revision=1, created_at=now, updated_at=now)
                 session.add(panel)
                 session.flush()
-            else:
-                changed = session.execute(update(WorkbenchArtifact).where(WorkbenchArtifact.id == identifier,
+            elif panel is not None:
+                changed = session.execute(update(WorkbenchArtifact).where(WorkbenchArtifact.id == panel.id,
                     WorkbenchArtifact.revision == body.revision).values(status='deleted',
                         revision=body.revision + 1, updated_at=now),
                         execution_options={'synchronize_session': False})
                 if changed.rowcount != 1:
                     raise HTTPException(409, '研判名称已经更新，请刷新后重新确认删除')
                 session.refresh(panel)
-            record_revision(session, panel, scope.identity.user_id)
+            revision = panel.revision if panel is not None else 0
+            if panel is not None:
+                record_revision(session, panel, scope.identity.user_id)
             session.add(AuditLog(at=now, actor=scope.identity.user_id, action='研判删除',
                 target_type='judgment', target_id=str(judgment.id), detail={
                     'workbench_id': scope.workbench_id, 'judgment_id': judgment.id,
-                    'version': judgment.version, 'previous_status': old_status, 'revision': panel.revision}))
+                    'version': judgment.version, 'previous_status': old_status, 'revision': revision}))
             session.commit()
             return {'deleted': True, 'id': judgment.id, 'version': judgment.version,
-                'revision': panel.revision}
+                'revision': revision}
         except (IntegrityError, OperationalError):
             session.rollback()
             raise HTTPException(409, '研判正在更新，请刷新后重新确认删除') from None

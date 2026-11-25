@@ -1,0 +1,252 @@
+"""Compare rule literals with authorized observations during human review."""
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+from typing import Literal
+
+from fastapi import HTTPException
+from pydantic import BaseModel, ConfigDict, Field
+
+from tin.config import SHANGHAI
+from tin.judgments.numbers import check_rule_number, exact_float
+from tin.judgments.quantity_alignment import (MAX_SCALE_EXPONENT, MIN_SCALE_EXPONENT,
+    decimals, magnitude_warning, quantity_text, scaled_values)
+from tin.schemas.judgment import EXPRESSION
+
+
+# One point per date. The bound covers three calendar years, including leap days.
+HISTORY_POINTS = 1100
+LEGACY_HISTORY_PAGE = 121
+RULE_KINDS = {'thresholds', 'falsifiers'}
+
+
+class QuantityAlignment(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    mode: Literal['convert', 'keep']
+    exponent: int | None = Field(default=None, ge=MIN_SCALE_EXPONENT, le=MAX_SCALE_EXPONENT)
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+def source_value(item):
+    value = item['value']
+    if not isinstance(value, dict):
+        return None
+    if item['kind'] == 'thresholds':
+        target = value.get('value')
+        try:
+            if isinstance(target, list) and target:
+                return [check_rule_number(number) for number in target]
+            return check_rule_number(target)
+        except ValueError:
+            return None
+    if item['kind'] == 'falsifiers':
+        expression = value.get('expression')
+        match = EXPRESSION.fullmatch(expression.strip()) if isinstance(expression, str) else None
+        try:
+            return exact_float(match.group(3)) if match else None
+        except ValueError:
+            return None
+    return None
+
+
+def _start_date(day):
+    try:
+        return day.replace(year=day.year - 3)
+    except ValueError:
+        return day.replace(year=day.year - 3, day=28)
+
+
+def _legacy_history_points(scope, sid, catalog, day, page, latest=None):
+    from tin.web.judgment_radar import legacy_series
+
+    points = [latest] if latest is not None else []
+    start = _start_date(day).isoformat()
+    while page:
+        valid = [point for point in page if point['value'] is not None]
+        if valid and not points:
+            latest_date = max(point['date'] for point in valid)
+            start = _start_date(date.fromisoformat(latest_date)).isoformat()
+        points.extend(valid)
+        oldest = min(point['date'] for point in page)
+        if len(page) < LEGACY_HISTORY_PAGE or oldest <= start:
+            break
+        cutoff = date.fromisoformat(oldest) - timedelta(days=1)
+        page = legacy_series(scope, [sid], cutoff, catalog, LEGACY_HISTORY_PAGE,
+                             include_invalid=True)[sid]['points']
+    return points
+
+
+def legacy_histories(scope, identifiers, catalog, day):
+    from tin.web.judgment_radar import legacy_series
+
+    values = legacy_series(scope, identifiers, day, catalog, LEGACY_HISTORY_PAGE, include_invalid=True)
+    result = {sid: _legacy_history_points(scope, sid, catalog, day, entry['points'])
+        for sid, entry in values.items()}
+    without_value = [sid for sid, points in result.items() if not points and values[sid]['points']]
+    if without_value:
+        # The latest valid sample can precede a long run of missing rows.
+        for sid, entry in legacy_series(scope, without_value, day, catalog, 1).items():
+            if entry['points']:
+                latest = entry['points'][0]
+                latest_day = date.fromisoformat(latest['date'])
+                cutoff = latest_day - timedelta(days=1)
+                page = legacy_series(scope, [sid], cutoff, catalog, LEGACY_HISTORY_PAGE,
+                                     include_invalid=True)[sid]['points']
+                result[sid] = _legacy_history_points(scope, sid, catalog, latest_day, page, latest)
+    return result
+
+
+def read_histories(scope, identifiers, catalog):
+    identifiers = list(dict.fromkeys(identifiers))
+    if not identifiers:
+        return {}
+    from tin.integration.page_facts import bounded_facts
+
+    day = datetime.now(SHANGHAI).date()
+    # Observe only through today. Each indicator has its own range end.
+    today = day.isoformat()
+    result = {}
+    batch_size = 20000 // HISTORY_POINTS
+    for index in range(0, len(identifiers), batch_size):
+        batch = identifiers[index:index + batch_size]
+        if scope.scope_version == 2:
+            # These IDs are from the authorized preview directory. Bound the
+            # read again using the current direct source authorization.
+            rows = bounded_facts(scope, batch, 'indicators', day=today, points=HISTORY_POINTS,
+                                 direct_only=True)['rows']
+            series = {identifier: [] for identifier in batch}
+            for row in rows:
+                series[row['series_id']].append(row)
+        else:
+            series = legacy_histories(scope, batch, catalog, day)
+        for sid, points in series.items():
+            latest = max(points, key=lambda point: point['date'], default=None)
+            end = latest['date'] if latest else None
+            start = _start_date(date.fromisoformat(end)).isoformat() if end else None
+            values = [Decimal(str(point['value'])) for point in points if start <= point['date'] <= end]
+            result[sid] = {
+                'latest': {'date': latest['date'], 'value': str(latest['value'])} if latest else None,
+                'range': {'min': str(min(values)), 'max': str(max(values))} if values else None,
+                'range_start': start,
+                'range_end': end,
+            }
+    return result
+
+
+def diagnostic(item, history, exponent=None):
+    source = source_value(item)
+    result = {**history, 'warning': magnitude_warning(source, history['range']),
+        'source_value': source_literals(item)}
+    confirmation = item.get('quantity_confirmation') or {}
+    if confirmation.get('series_id') == history.get('series_id'):
+        result['alignment'] = confirmation['alignment']
+    if exponent is not None and source is not None:
+        converted = scaled_values(source, Decimal(10) ** exponent)
+        converted_value = _formatted_values(converted, source)
+        interval = history['range']
+        overlaps = (max(converted) >= Decimal(interval['min'])
+            and min(converted) <= Decimal(interval['max'])) if interval is not None else None
+        result.update(exponent=exponent, converted_value=converted_value,
+            converted_text=quantity_text(converted_value), converted_overlaps=overlaps,
+            converted_warning=magnitude_warning(converted_value, interval))
+    return result
+
+
+def conversion_candidates(item, history):
+    source = source_value(item)
+    interval = history['range']
+    if not magnitude_warning(source, interval):
+        return []
+    observed_low, observed_high = Decimal(interval['min']), Decimal(interval['max'])
+    candidates = []
+    for exponent in range(MIN_SCALE_EXPONENT, MAX_SCALE_EXPONENT + 1):
+        if exponent == 0:
+            continue
+        values = scaled_values(source, Decimal(10) ** exponent)
+        if min(values) > observed_high or max(values) < observed_low:
+            continue
+        try:
+            for value in values:
+                exact_float(str(value))
+        except ValueError:
+            continue
+        candidates.append({'exponent': exponent})
+    return candidates
+
+
+def _formatted_values(values, original):
+    literals = [format(number, 'f') for number in values]
+    return literals if isinstance(original, list) else literals[0]
+
+
+def source_literals(item):
+    source = source_value(item)
+    return _formatted_values(decimals(source), source) if source is not None else None
+
+
+def confirmed_rule(item, rule):
+    confirmation = item.get('quantity_confirmation')
+    if confirmation and confirmation['alignment']['mode'] == 'convert':
+        rule.update(confirmation['execution'])
+    return rule
+
+
+def alignment_error(message):
+    raise HTTPException(422, {'code': 'quantity_alignment', 'message': message,
+        'attention_fields': ['condition']})
+
+
+def confirm_quantity(item, choice, history, *, candidates_only=False):
+    warning = magnitude_warning(source_value(item), history['range'])
+    if choice is None:
+        if warning and not item.get('quantity_confirmation'):
+            alignment_error(warning + '。请选择换算或填写仍按原值的原因。')
+        return
+    if not warning and not item.get('quantity_confirmation'):
+        alignment_error('当前规则没有需要确认的数量级差异。')
+    if choice.mode == 'convert' and (choice.exponent is None or choice.reason is not None):
+        alignment_error('请选择换算倍率')
+    if candidates_only and choice.mode == 'convert':
+        previous = (item.get('quantity_confirmation') or {}).get('alignment', {})
+        if (choice.exponent != previous.get('exponent')
+                and not any(row['exponent'] == choice.exponent for row in conversion_candidates(item, history))):
+            alignment_error('请选择与当前指标真实观测比对所得的换算倍率。')
+    if choice.mode == 'keep' and (choice.exponent is not None or not (choice.reason or '').strip()):
+        alignment_error('数值无误，仍按原值时必须填写原因')
+    confirmation = {'series_id': item['series_id'], 'source_quote': item['source_quote'],
+        'range': history['range'], 'alignment': choice.model_dump(exclude_none=True)}
+    if choice.mode == 'keep':
+        confirmation['alignment']['reason'] = choice.reason.strip()
+    else:
+        source = source_value(item)
+        if source is None:
+            alignment_error('此规则没有可换算的原文数字。')
+        scale = Decimal(10) ** choice.exponent
+        literals = [str(value) for value in scaled_values(source, scale)]
+        try:
+            values = [exact_float(literal) for literal in literals]
+        except ValueError as error:
+            alignment_error(str(error))
+        execution = {'source_value': source, 'scale': float(scale),
+            'value': values if isinstance(source, list) else values[0]}
+        if item['kind'] == 'falsifiers':
+            match = EXPRESSION.fullmatch(item['value']['expression'].strip())
+            execution['expression'] = f'{match.group(1)} {match.group(2)} {literals[0]}'
+        confirmation['execution'] = execution
+    if confirmation != item.get('quantity_confirmation'):
+        item.pop('number_confirmation', None)
+    item['quantity_confirmation'] = confirmation
+
+
+def pending_alignment(scope, catalog, items):
+    selected = [item for item in items if item['kind'] in RULE_KINDS and item['series_id']
+        and item['series_id'] in catalog and not item.get('quantity_confirmation')
+        and source_value(item) is not None]
+    histories = read_histories(scope, [item['series_id'] for item in selected], list(catalog.values()))
+    result = {}
+    for item in selected:
+        history = histories.get(item['series_id'], {})
+        warning = magnitude_warning(source_value(item), history.get('range'))
+        if warning:
+            result[item['id']] = {'warning': warning,
+                'range_start': history['range_start'], 'range_end': history['range_end']}
+    return result

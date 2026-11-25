@@ -12,13 +12,14 @@ from tin.integration.workbench_scope import WorkbenchScope
 from tin.jobs.seed import seed_researcher
 from tin.judgments.service import save_version
 from tin.llm.platform_provider import PlatformStrategyProvider
-from tin.models import Indicator, Judgment, Observation, SourceMapping, Strategy
+from tin.models import Indicator, Judgment, LlmCall, Observation, SourceMapping, Strategy
 from tin.schemas.judgment import JudgmentIn
 from tin.schemas.strategy import StrategyPlan
 from tin.strategy.generate import build_context, generate_candidates, validate_evidence
 from tin.web.market_contracts import CONTRACTS_KEY
 from tin.web.restricted_views import mapping_key
 from tests.test_knowledge_facts import canonical, FIRST, page
+from tests.analysis_job_fixtures import detached_loop, finished_job
 
 WB = '10000000-0000-4000-8000-000000000001'
 QUOTE, FUND, OTHER = ['kb-' + digit * 48 for digit in ('1', '2', '3')]
@@ -74,7 +75,8 @@ def test_workbench_strategy_uses_saved_contract_binding_and_real_kb_ids(scoped_s
     assert validate_evidence(candidate(context), context) == []
 
 
-def test_configured_platform_model_is_invoked_and_only_a_draft_is_saved(scoped_strategy, monkeypatch):
+@pytest.mark.parametrize('persist_strategies', [True, False])
+def test_configured_platform_model_is_invoked_for_drafts(scoped_strategy, monkeypatch, persist_strategies):
     session, researcher, _ = scoped_strategy
     context, _ = build_context(session, 'SN', DAY, researcher_id=researcher)
     plan = candidate(context)
@@ -90,13 +92,20 @@ def test_configured_platform_model_is_invoked_and_only_a_draft_is_saved(scoped_s
     monkeypatch.setattr('tin.llm.platform_provider.httpx.post', post)
     monkeypatch.setattr('tin.integration.workbench_scope.resolve_workbench', resolve)
     monkeypatch.setattr('tin.llm.platform_provider.settings.weknora_api_url', 'http://native.test')
-    result = generate_candidates(session, 'SN', DAY, researcher_id=researcher, provider=provider)
+    result = generate_candidates(session, 'SN', DAY, researcher_id=researcher, provider=provider,
+                                 persist_strategies=persist_strategies)
     session.commit()
     assert result.status == 'generated' and len(result.strategies) == 1
     assert len(calls) == 1 and calls[0][0].endswith(f'/research/{WB}/strategy/generate')
     assert calls[0][1]['json']['model_id'] == 'configured-model'
-    assert result.strategies[0].status == 'draft' and result.strategies[0].published_at is None
-    assert result.strategies[0].plan['legs'][0]['quote_series_id'] == QUOTE
+    if persist_strategies:
+        assert result.strategies[0].status == 'draft' and result.strategies[0].published_at is None
+        assert result.strategies[0].plan['legs'][0]['quote_series_id'] == QUOTE
+    else:
+        assert result.strategies[0].legs[0].quote_series_id == QUOTE
+        assert session.scalars(select(Strategy)).all() == []
+        audit = session.get(LlmCall, result.call_id)
+        assert audit.model == 'configured-model' and audit.request == audit.response == {}
 
 
 def test_missing_judgment_or_contract_source_does_not_call_any_model(scoped_strategy):
@@ -142,8 +151,12 @@ def test_http_strategy_selector_uses_configured_generic_models_and_passes_the_se
     monkeypatch.setattr(platform_provider, 'PlatformStrategyProvider', Captured)
     missing = client.post(base + '/generate', headers=headers, json={})
     assert missing.status_code == 400 and selected == []
-    generated = client.post(base + '/generate', headers=headers, json={'model_id': 'configured-chat'})
-    assert generated.status_code == 200 and selected == ['configured-chat']
+    with detached_loop(client):
+        generated = client.post(base + '/generate', headers={**headers, 'Idempotency-Key': 'strategy-plan-fixture'},
+            json={'model_id': 'configured-chat'})
+        assert generated.status_code == 202 and generated.json()['purpose'] == 'strategy_generation', generated.text
+        _, generated = finished_job(client, page(FIRST, '/api/sn/analysis-jobs/' + generated.json()['id']), headers)
+    assert generated.status_code == 200 and selected == ['configured-chat'], generated.text
     assert generated.json()['status'] == 'no_candidate' and any('研究判断' in gap for gap in generated.json()['gaps'])
 
 
@@ -152,6 +165,39 @@ def test_scoped_strategy_inference_has_replaced_the_old_tenant_worker_block():
     assert not source_preparation_required('/api/sn/strategies/generate')
     assert source_preparation_required('/api/sn/import/commit')
     assert source_preparation_required('/api/sn/refresh/run')
+
+
+def test_candidate_stays_private_until_explicit_save_and_retry_uses_receipt(canonical, scoped_strategy, monkeypatch):
+    from tin.integration.workbench_scope import isolated_session_factory
+    from tin.strategy import generate
+
+    client, headers, _, _ = canonical
+    fixture_session, researcher, _ = scoped_strategy
+    context, _ = build_context(fixture_session, 'SN', DAY, researcher_id=researcher)
+    plan = candidate(context)
+
+    def preview(*args, persist_strategies, **kwargs):
+        assert persist_strategies is False
+        return generate.GenerationResult('generated', strategies=[plan])
+
+    monkeypatch.setattr(generate, 'generate_candidates', preview)
+    base = page(FIRST, '/api/sn/strategies')
+    with detached_loop(client):
+        response = client.post(base + '/generate', headers={**headers, 'Idempotency-Key': 'strategy-candidate-fixture'},
+                               json={'model_id': 'synthetic-model'})
+        assert response.status_code == 202, response.text
+        identifier = response.json()['id']
+        status, result = finished_job(client, page(FIRST, '/api/sn/analysis-jobs/' + identifier), headers)
+        assert status['state'] == 'succeeded' and result.json()['strategies'][0]['title'] == plan.title
+        with isolated_session_factory(17, FIRST)() as session:
+            assert session.scalars(select(Strategy)).all() == []
+        url = base + '/generated/' + identifier
+        saved = client.post(url, headers=headers, json={'candidate': 0})
+        assert saved.status_code == 200 and saved.json()['status'] == 'draft', saved.text
+        retry = client.post(url, headers=headers, json={'candidate': 0})
+        assert retry.status_code == 200 and retry.json()['id'] == saved.json()['id']
+        with isolated_session_factory(17, FIRST)() as session:
+            assert len(session.scalars(select(Strategy)).all()) == 1
 
 
 @pytest.mark.parametrize('with_center', [False, True])

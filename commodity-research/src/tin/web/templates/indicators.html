@@ -61,6 +61,7 @@
         <button id="indicator-expand" type="button" class="indicator-text-button">展开</button>
         <button id="indicator-collapse" type="button" class="indicator-text-button">收起</button>
       </div>
+      {% if dedup_enabled %}<a class="indicator-text-button" href="{{ research_prefix() }}/sn/indicator-dedup">指标对应确认</a>{% endif %}
       <nav class="macro-filter-bar indicator-jump" aria-label="指标分类">
         <div class="macro-filter-inner bg-[var(--surface)]/95 backdrop-blur-md">
           <div id="indicator-category-links" class="macro-filter-scroll">

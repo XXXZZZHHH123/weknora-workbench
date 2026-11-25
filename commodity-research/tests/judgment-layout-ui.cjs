@@ -12,6 +12,8 @@ const timeline = Array.from({length: 26}, (_, index) => ({date: new Date(Date.UT
 const metric = {series_id: 'synthetic-stock', name: '合成库存观测', unit: '吨', latest: 150, previous: 148,
   date: '2032-01-26', previous_date: '2032-01-25', change: 2, change_pct: 1.35,
   timeline, segments: ['12,40 220,8'], history_complete: true, boundaries: [], point_count: 26};
+// Give each card a distinct series so this historical comparison isolates layout and dimension labels.
+const alternateMetric = suffix => ({...metric, series_id: `${metric.series_id}-${suffix}`});
 const dimensions = [{id: 'supply', label: '供应变化'}, {id: 'demand', label: '需求观察'}];
 const dimensionItems = [
   {section: 'supporting', index: 0, title: '支持依据：合成库存数据与完整研究说明，需要保持文字自然换行。'.repeat(4), dimension: 'supply'},
@@ -32,11 +34,11 @@ function fixture(restricted, tagged) {
         bull: {claim: '合成多方观点较长：供给变化需要结合连续观测与库存变化核对，完整论点应留在同一栏并且在支持依据标题之前。'.repeat(3),
           evidence: [{desc: '合成多方依据一：库存数据保持完整图表与观测。', series_id: 'synthetic-stock', metric},
             {desc: '合成多方依据二：文字观察不应被空白图表替代。', metric: null}],
-          falsifiers: [{rule: {id: 'synthetic-bull-falsifier', desc: '合成多方证伪条件', side: 'bull'}, condition: '库存高于 180 吨', state: '未触发', metric}]},
+          falsifiers: [{rule: {id: 'synthetic-bull-falsifier', desc: '合成多方证伪条件', side: 'bull'}, condition: '库存高于 180 吨', state: '未触发', metric: alternateMetric('falsifier')}]},
         bear: {claim: '合成空方观点：需求仍需验证。',
-          evidence: [{desc: '合成空方依据一：与多方对照的库存解释。', series_id: 'synthetic-stock', metric}],
+          evidence: [{desc: '合成空方依据一：与多方对照的库存解释。', series_id: 'synthetic-stock-bear', metric: alternateMetric('bear')}],
           falsifiers: [{rule: {id: 'synthetic-bear-falsifier', desc: '合成空方证伪条件', side: 'bear'}, condition: '库存低于 100 吨', state: '未触发', metric: null}]}},
-      shared: [{metric, bull_texts: ['合成多方的库存解释'], bear_texts: ['合成空方的库存解释'], bull_falsifiers: [], bear_falsifiers: []}],
+      shared: [{metric: alternateMetric('shared'), bull_texts: ['合成多方的库存解释'], bear_texts: ['合成空方的库存解释'], bull_falsifiers: [], bear_falsifiers: []}],
       pending_conditions: [{text: '合成待验证条件：后续供给变化需要人工核对。', requires_manual_observation: true}]}}
   if (tagged) {
     Object.assign(data.research.sides.bull.evidence[0], {dimension: 'supply', dimension_label: '供应变化'});
@@ -118,8 +120,10 @@ async function inspect(page) {
     const research = document.querySelector('.judgment-research').cloneNode(true);
     research.querySelectorAll('.judgment-dimension-tag').forEach(node => node.remove());
     research.querySelectorAll('script, svg, [data-chart-tooltip]').forEach(node => node.remove());
+    research.querySelectorAll('[data-research-item], #judgment-thresholds tbody tr, #judgment-pending li')
+      .forEach(node => node.removeAttribute('id'));
     const walk = node => node.nodeType === Node.TEXT_NODE ? node.textContent.replace(/\s+/g, ' ').trim() : node.nodeType === Node.ELEMENT_NODE ? {
-      tag: node.tagName, attributes: [...node.attributes].filter(attr => attr.name !== 'style').map(attr => [attr.name, attr.value]),
+      tag: node.tagName, attributes: [...node.attributes].filter(attr => attr.name !== 'style').map(attr => [attr.name, attr.value]).sort(),
       children: [...node.childNodes].map(walk).filter(Boolean)} : null;
     return {viewport: innerWidth, scroll: document.documentElement.scrollWidth, structure: walk(research), researchBounds: box(document.querySelector('.judgment-research')),
       headings: [...document.querySelectorAll('.judgment-research h1,.judgment-research h2,.judgment-hypothesis>h3,.judgment-hypothesis>h4')].map(node => node.textContent),
@@ -206,6 +210,8 @@ Image.open(sys.argv[1]).crop(tuple(round(bounds[key]) for key in ('x','y','right
       sameGeometry(currentLayout, await inspect(tagged.page), name + ': labels hidden');
       if (restricted) assert.equal(await current.page.locator('#judgment-manager,[data-judgment-library-target]').count(), 0);
       else {
+        const dimensionNav = current.page.locator('.research-nav-links').getByRole('link', {name: '研究维度'});
+        assert.equal(await dimensionNav.getAttribute('href'), prefix + '/sn/dimensions?judgment_id=42');
         await current.page.locator('[data-open-logic]').click();
         await current.page.locator('#logic-dimension-editor').waitFor({state: 'visible'});
         await current.page.locator('#logic-dimension-model option').filter({hasText: '合成补标模型'}).waitFor({state: 'attached'});

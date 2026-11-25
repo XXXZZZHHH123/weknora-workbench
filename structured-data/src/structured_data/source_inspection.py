@@ -263,6 +263,7 @@ def inspect_query_source_context(store, dataset_id, sheet, records, *, max_cells
     selected = cells[:max_cells]
     value_cells_truncated = len(seen_cells) > len(selected) or bool(invalid_source_cells)
     try:
+        dataset_id = store.sheet_source_dataset(dataset_id, sheet)
         inspected = inspect_source(store, dataset_id, sheet=sheet,
                                    ranges=selected, max_cells=len(selected),
                                    max_matches=1, padding_rows=0, padding_cols=0)

@@ -1,21 +1,30 @@
-"""Review native-chart suggestions and explicitly apply selected worksheets."""
+"""Preview and save native charts by worksheet or by directory page."""
+import hashlib
+
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
 from tin.compute.chart_import import group_suggestions, propose_chart
 from tin.integration.native_charts import native_chart_page
 from tin.integration.workbench_scope import artifact_session
-from tin.schemas.chart import ChartDefinition, NativeApplyInput, NativePreviewInput
-from tin.web.chart_data import catalog_fields, cutoff, read_series
+from tin.schemas.chart import ChartDefinition, NativeApplyInput, NativeApplyPageInput, NativePreviewInput
+from tin.web.chart_data import catalog_fields, catalog_fields_with_version, cutoff, read_series
 from tin.web.charts import artifact_query, create_row, require_scope, serialize
+from tin.web.report_chart_definitions import duplicate_signature
 
 native_router = APIRouter(prefix='/api/sn/charts/import/native')
 
 
+def _identifiers(charts):
+    return [curve.series_id for chart in charts for curve in chart.curves
+            if curve.status == 'linked' and curve.series_id]
+
+
 def suggestions_for(scope, charts, *, overrides=None):
-    identifiers = [curve.series_id for chart in charts for curve in chart.curves
-                   if curve.status == 'linked' and curve.series_id]
-    fields = catalog_fields(scope, identifiers)
+    return _suggestions(charts, catalog_fields(scope, _identifiers(charts)), overrides=overrides)
+
+
+def _suggestions(charts, fields, *, overrides=None):
     # Latest dates are real observations from the indicator page projection,
     # never the native chart's cached values or the workbook's display names.
     series = read_series(list(fields), cutoff(), limit=1)
@@ -25,17 +34,33 @@ def suggestions_for(scope, charts, *, overrides=None):
                          start_override=(overrides or {}).get((chart.knowledge_id, chart.sheet))) for chart in charts]
 
 
+def _page_suggestions(scope, *, offset, limit, expected_version=None):
+    page = native_chart_page(scope, offset=offset, limit=limit)
+    identifiers = _identifiers(page.charts)
+    version, fields = page.version, None
+    if version is None:
+        # The structured service's unversioned native page uses the same
+        # authorized workbook snapshots and sheet confirmations as its catalog.
+        # Reuse the version from the field lookup, independent of requested IDs.
+        fields, catalog_version = catalog_fields_with_version(scope, identifiers)
+        version = hashlib.sha256(f'{catalog_version}:{page.total}'.encode()).hexdigest()
+    if expected_version is not None and expected_version != version:
+        raise HTTPException(409, '原表图表目录已变化，请重新开始全部导入')
+    if fields is None:
+        fields = catalog_fields(scope, identifiers)
+    return page, _suggestions(page.charts, fields), version
+
+
 @native_router.post('/preview')
 def preview(body: NativePreviewInput):
     scope = require_scope()
-    page = native_chart_page(scope, offset=body.offset, limit=body.limit)
-    suggestions = suggestions_for(scope, page.charts)
+    page, suggestions, version = _page_suggestions(scope, offset=body.offset, limit=body.limit)
     with artifact_session(scope) as session:
         refs = {ChartDefinition.model_validate_json(row.body).origin.ref for row in session.scalars(artifact_query())}
     for item in suggestions:
         item['already_imported'] = item['chart_key'] in refs
     return {'sheets': group_suggestions(suggestions), 'total': page.total, 'offset': page.offset,
-            'next_offset': page.next_offset, 'page_count': len(page.charts)}
+            'next_offset': page.next_offset, 'page_count': len(page.charts), 'version': version}
 
 
 def selected_native_charts(scope, selections):
@@ -86,6 +111,44 @@ def original_native_chart(scope, chart_key):
     return found
 
 
+def _save_suggestions(scope, suggestions):
+    created, skipped, rejected = [], [], []
+    with artifact_session(scope) as session:
+        # All source reads finish before the write lock. Serialize duplicate
+        # checks and inserts so simultaneous native imports cannot save the same chart.
+        if session.get_bind().dialect.name == 'sqlite':
+            session.connection().exec_driver_sql('BEGIN IMMEDIATE')
+        else:
+            from tin.models.workbench import WorkbenchStorageScope
+            session.execute(select(WorkbenchStorageScope).where(
+                WorkbenchStorageScope.workbench_id == scope.workbench_id).with_for_update()).all()
+        refs, signatures = {}, {}
+        for row in session.scalars(artifact_query()):
+            definition = ChartDefinition.model_validate_json(row.body)
+            refs[definition.origin.ref] = row.id
+            signatures.setdefault(duplicate_signature(definition), row.id)
+        for item in suggestions:
+            ref = item['chart_key']
+            if ref in refs:
+                skipped.append({'chart_key': ref, 'id': refs[ref], 'reason': 'already_imported'})
+                continue
+            if not item['convertible']:
+                rejected.append(item)
+                continue
+            definition = ChartDefinition.model_validate(item['definition'])
+            signature = duplicate_signature(definition)
+            if signature in signatures:
+                skipped.append({'chart_key': ref, 'id': signatures[signature], 'reason': 'same_indicators'})
+                continue
+            snapshots = [{'kind': 'native_chart', 'chart_key': ref, 'axes': item['axes'], 'curves': item['source_curves']}]
+            row = create_row(session, scope, definition, snapshots=snapshots)
+            refs[ref] = row.id
+            signatures[signature] = row.id
+            created.append(serialize(row, definition=definition))
+        session.commit()
+    return created, skipped, rejected
+
+
 @native_router.post('/apply')
 def apply(body: NativeApplyInput):
     scope = require_scope(write=True)
@@ -94,35 +157,22 @@ def apply(body: NativeApplyInput):
         raise HTTPException(422, '请勿重复确认同一工作表')
     charts = selected_native_charts(scope, selections)
     suggestions = suggestions_for(scope, charts, overrides={key: value.start for key, value in selections.items()})
-    created, skipped, rejected = [], [], []
-    with artifact_session(scope) as session:
-        # All source reads finish before the write lock. Serialize ref checks and
-        # inserts in SQLite, the existing workbench artifact store, so two apply
-        # requests cannot create the same origin concurrently.
-        if session.get_bind().dialect.name == 'sqlite':
-            session.connection().exec_driver_sql('BEGIN IMMEDIATE')
-        else:
-            from tin.models.workbench import WorkbenchStorageScope
-            session.execute(select(WorkbenchStorageScope).where(
-                WorkbenchStorageScope.workbench_id == scope.workbench_id).with_for_update()).all()
-        refs = {ChartDefinition.model_validate_json(row.body).origin.ref: row.id
-                for row in session.scalars(artifact_query())}
-        for item in suggestions:
-            ref = item['chart_key']
-            if ref in refs:
-                skipped.append({'chart_key': ref, 'id': refs[ref], 'reason': 'already_imported'})
-                continue
-            if not item['convertible']:
-                rejected.append({'chart_key': ref, 'reason': item['reason'], 'missing_curves': item['missing_curves']})
-                continue
-            definition = ChartDefinition.model_validate(item['definition'])
-            snapshots = [{'kind': 'native_chart', 'chart_key': ref, 'axes': item['axes'], 'curves': item['source_curves']}]
-            row = create_row(session, scope, definition, snapshots=snapshots)
-            refs[ref] = row.id
-            created.append(serialize(row, definition=definition))
-        session.commit()
-    return {'created': created, 'skipped': skipped, 'unconvertible': rejected,
+    created, skipped, rejected = _save_suggestions(scope, suggestions)
+    return {'created': created, 'skipped': skipped,
+            'unconvertible': [{key: item[key] for key in ('chart_key', 'reason', 'missing_curves')} for item in rejected],
             'sheets': group_suggestions(suggestions)}
+
+
+@native_router.post('/apply-page')
+def apply_page(body: NativeApplyPageInput):
+    scope = require_scope(write=True)
+    page, suggestions, version = _page_suggestions(scope, offset=body.offset, limit=body.limit,
+                                                   expected_version=body.version)
+    created, skipped, rejected = _save_suggestions(scope, suggestions)
+    keys = ('chart_key', 'title', 'sheet', 'source_file', 'reason', 'missing_curves')
+    return {'created_count': len(created), 'skipped_count': len(skipped), 'skipped': skipped,
+            'unconvertible': [{key: item[key] for key in keys} for item in rejected],
+            'next_offset': page.next_offset, 'total': page.total, 'version': version}
 
 
 # Keep the existing native-chart endpoints and workflow independent.

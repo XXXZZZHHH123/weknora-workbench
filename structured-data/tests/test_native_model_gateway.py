@@ -3,6 +3,7 @@ import asyncio
 from contextlib import contextmanager
 import json
 import shutil
+from types import ModuleType
 
 import httpx
 import pytest
@@ -29,6 +30,19 @@ def context(*, user='user-a', tenant=10000, kb='kb-a', writable=True):
 def native(identifier='native-a', **extra):
     return {'id': identifier, 'tenant_id': 10000, 'name': 'provider-internal-name',
             'display_name': 'Configured chat', 'type': 'KnowledgeQA', 'status': 'active', **extra}
+
+
+@pytest.fixture
+def gateway_client(monkeypatch):
+    class Client(httpx.Client):
+        pass
+
+    # Starlette's TestClient inherits from httpx.Client when httpx2 is absent.
+    gateway_httpx = ModuleType('httpx')
+    gateway_httpx.Client = Client
+    gateway_httpx.__getattr__ = lambda name: getattr(httpx, name)
+    monkeypatch.setattr(gateway, 'httpx', gateway_httpx)
+    return Client
 
 
 def async_metadata(monkeypatch, rows):
@@ -261,7 +275,7 @@ def test_unscoped_legacy_settings_cannot_save_native_selection(tmp_path, monkeyp
         assert not (tmp_path / 'model-settings.json').exists()
 
 
-def test_native_http_configuration_is_kb_scoped_and_permission_checked(tmp_path, monkeypatch):
+def test_native_http_configuration_is_kb_scoped_and_permission_checked(tmp_path, monkeypatch, gateway_client):
     from fastapi.testclient import TestClient
     from structured_data.server import create_app
     calls = []
@@ -292,7 +306,7 @@ def test_native_http_configuration_is_kb_scoped_and_permission_checked(tmp_path,
                 document = {'success': True, 'data': row}
             return httpx.Response(200, json=document)
     monkeypatch.setattr(httpx, 'AsyncClient', Client)
-    monkeypatch.setattr(httpx.Client, 'get', list_models)
+    monkeypatch.setattr(gateway_client, 'get', list_models)
     monkeypatch.setenv('STRUCTURED_TENANT_ID', '10000')
     monkeypatch.setenv('STRUCTURED_MODEL_CONFIG', str(tmp_path / 'missing'))
     headers = {'Authorization': 'Bearer editor', 'X-Tenant-ID': '10000', 'X-Knowledge-Base-ID': 'kb-a', 'Origin': 'http://testserver'}
@@ -338,7 +352,7 @@ def test_native_http_configuration_is_kb_scoped_and_permission_checked(tmp_path,
     ('', [native('first'), native('global', tenant_id=10001, is_builtin=True, is_default=True)],
      '', '', '未确定唯一默认模型'),
 ])
-def test_signed_source_binding_uses_effective_kb_model(duplicate_source, tmp_path, monkeypatch,
+def test_signed_source_binding_uses_effective_kb_model(duplicate_source, tmp_path, monkeypatch, gateway_client,
                                                        summary, models, explicit, expected, error_hint):
     from fastapi.testclient import TestClient
     from structured_data.server import create_app
@@ -392,8 +406,8 @@ def test_signed_source_binding_uses_effective_kb_model(duplicate_source, tmp_pat
             'model_id': expected, 'content': json.dumps(binding), 'finish_reason': 'stop'}})
 
     monkeypatch.setattr(httpx.AsyncClient, 'get', get_identity)
-    monkeypatch.setattr(httpx.Client, 'get', list_models)
-    monkeypatch.setattr(httpx.Client, 'post', complete)
+    monkeypatch.setattr(gateway_client, 'get', list_models)
+    monkeypatch.setattr(gateway_client, 'post', complete)
 
     with TestClient(create_app(root)) as client:
         settings = client.get('/api/model-settings', headers={'Authorization': 'Bearer service-reader',

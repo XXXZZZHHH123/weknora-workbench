@@ -34,6 +34,33 @@ test('diagram task metadata keeps its fixed purpose and generation phases withou
   assert.equal(jobs[1]!.purpose, 'judgments')
 })
 
+test('workbench setup keeps only known phases and uses a fixed title', () => {
+  const jobs = readAnalysisJobs({ items: [
+    { id: 'setup-job', workbench_id: 'wb-a', purpose: 'workbench_setup', state: 'running', phase: 'focus', title: 'private title' },
+    { id: 'unknown-phase', workbench_id: 'wb-a', purpose: 'workbench_setup', state: 'running', phase: 'constructor' },
+    { id: 'wrong-purpose', workbench_id: 'wb-a', purpose: 'diagram', state: 'running', phase: 'focus' },
+  ] })
+  assert.equal(jobs[0]!.purpose, 'workbench_setup')
+  assert.equal(jobs[0]!.title, '从周报建立工作台')
+  assert.equal(jobs[0]!.phase, 'focus')
+  assert.equal(jobs[1]!.phase, '')
+  assert.equal(jobs[2]!.phase, '')
+})
+
+test('draft task metadata exposes recognized purposes and phases without retaining provider data', () => {
+  const purposes = ['monitor_draft', 'report_dimension_draft', 'report_chart_import', 'dimension_inference',
+    'dimension_fields', 'focus_suggestions', 'judgment_dimensions', 'strategy_text', 'strategy_generation',
+    'judgment_indicator_recommendations', 'diagram_indicator_recommendations']
+  const jobs = readAnalysisJobs({ items: purposes.map((purpose, index) => ({
+    id: `job-${index}`, workbench_id: 'wb-a', purpose, state: 'running',
+    phase: purpose === 'dimension_fields' ? 'dimension_queries' : 'generating', title: 'provider data', result: 'provider output',
+  })) })
+  assert.deepEqual(jobs.map(job => job.purpose), purposes)
+  assert.equal(jobs.find(job => job.purpose === 'dimension_fields')!.phase, 'dimension_queries')
+  assert.equal(jobs.find(job => job.purpose === 'report_chart_import')!.title, '往期周报图表识别')
+  assert.doesNotMatch(JSON.stringify(jobs), /provider/)
+})
+
 test('dismiss metadata is explicit and cannot hide running work', () => {
   const jobs = readAnalysisJobs({ items: [
     { id: 'done', workbench_id: 'wb-a', state: 'succeeded', dismissed: true, result_available: true },

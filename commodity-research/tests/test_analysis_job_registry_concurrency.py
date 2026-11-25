@@ -19,8 +19,8 @@ def test_same_account_can_admit_multiple_workbenches_and_purposes_but_shares_exe
     first, second = Registry(path), Registry(path)
     rows = [index.create(board, 'request-' + str(number), 'key-' + str(number),
         'worker-' + str(number), purpose)[0] for number, (index, board, purpose) in enumerate([
-            (first, scope(), 'judgments'), (second, scope(), 'diagram'),
-            (first, scope('board-b'), 'diagram')])]
+            (first, scope(), 'judgments'), (second, scope(), 'diagram_indicator_recommendations'),
+            (first, scope('board-b'), 'judgment_indicator_recommendations')])]
     assert len({row['id'] for row in rows}) == 3
     assert all(row['state'] == 'queued' for row in rows)
     assert all(first.claim(row['id'], row['worker_id'], row['fence']) for row in rows[:GLOBAL_RUNNING])
@@ -55,8 +55,9 @@ def test_same_account_parallel_admissions_obey_atomic_global_queue_capacity(tmp_
         index = Registry(path)
         ready.wait(timeout=10)
         try:
+            purpose = 'diagram_indicator_recommendations' if number % 2 else 'judgment_indicator_recommendations'
             row, created = index.create(scope(), 'request-' + str(number), 'key-' + str(number),
-                'worker-' + str(number), 'diagram' if number % 2 else 'judgments')
+                'worker-' + str(number), purpose)
             assert created
             return row['id']
         except HTTPException as error:

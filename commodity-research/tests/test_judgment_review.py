@@ -444,7 +444,9 @@ def test_fully_resolved_model_draft_is_ready_and_needs_no_item_confirmations(gen
 
 
 def test_remembered_different_choice_requires_action_and_toggle_restores_auto_ready(generator, monkeypatch):
-    client, headers, _, _, _ = generator
+    client, headers, _, response, _ = generator
+    note = 'Original analysis evidence note.'
+    response['judgment']['contradiction']['bull']['evidence'][0]['note'] = note
     other = 'kb-' + 'b' * 48
     original = generation.snapshot
     def directory():
@@ -481,6 +483,7 @@ def test_remembered_different_choice_requires_action_and_toggle_restores_auto_re
     assert final.status_code == 200
     human = pick(final.json(), 'binding')
     assert human['status'] == 'confirmed' and human['origin'] == 'user' and human['binding']['series_id'] == other
+    assert note in human['description']
 
 
 def test_preview_store_rejects_cross_user_token_and_stale_revision():

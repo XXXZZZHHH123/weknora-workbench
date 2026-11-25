@@ -565,6 +565,8 @@ def detail(session: Session, series_id: str, through: date, limit: int = DETAIL_
 
     # 修订过的时点：同一 as_of 有多个修订号，说明数据商回溯改过数
     revised = [o for o in obs if o.revision > 0][:10]
+    field = session.info.get('knowledge_facts_catalog', {}).get(series_id, {})
+    metadata = field.get('field_metadata') or {}
 
     return {
         "kind": "series", "series_id": series_id, "name": ind.name,
@@ -573,6 +575,7 @@ def detail(session: Session, series_id: str, through: date, limit: int = DETAIL_
         "vendor_code": ind.vendor_code, "fetch_mode": ind.fetch_mode,
         "owner": ind.owner, "status": ind.status,
         "caliber": caliber,
+        **{key: metadata[key] for key in ('header_notes', 'source_codes') if metadata.get(key)},
         "history": [{"as_of": o.as_of.astimezone(SHANGHAI).date().isoformat(),
                      "value": o.value} for o in reversed(history)],
         "revisions": [{"as_of": o.as_of.astimezone(SHANGHAI).date().isoformat(),

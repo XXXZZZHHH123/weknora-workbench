@@ -2,8 +2,9 @@
 import asyncio
 from collections import Counter
 from copy import deepcopy
+from datetime import date
 import json
-from time import perf_counter
+from time import perf_counter, sleep
 
 from fastapi import HTTPException
 import httpx
@@ -13,19 +14,21 @@ from sqlalchemy import select
 from tin.integration.workbench_scope import current_workbench, isolated_session_factory
 from tin.models import LlmCall, SourceMapping
 from tin.models.workbench import WorkbenchArtifact
-from tin.web import report_chart_import as imports
+from tin.web import analysis_jobs, judgment_jobs, report_chart_import as imports, workbench_setup_jobs
 from tin.web.report_chart_suggestions import recognize_batch as actual_recognize_batch
 from tests.chart_fixtures import SID, OTHER, THIRD
 from tests.test_chart_api import chart_client, WB  # noqa: F401
 
 BASE = '/api/sn/charts/import/report'
+JOBS = '/api/sn/analysis-jobs'
 SOURCE = {'kind': 'knowledge_file', 'source_binding_id': 'binding', 'knowledge_id': 'report',
           'file_version': 'a' * 64}
 
 
 def candidate(identifier='chart', selected=SID):
     return {'id': identifier, 'page': 3, 'page_label': '第3页', 'title': 'Original chart title',
-        'chart_type': 'trend', 'evidence': [{'chunk_id': 'chunk', 'quote': 'Original chart title Legend'}],
+        'chart_type': 'trend', 'legend_semantics': 'indicators',
+        'evidence': [{'chunk_id': 'chunk', 'quote': 'Original chart title Legend'}],
         'series': [{'id': 's1', 'name': 'Original legend', 'unit': '件', 'selected_id': selected,
             'candidates': [{'id': key, 'name': name, 'unit': '件', 'frequency': 'weekly'}
                            for key, name in ((SID, 'First'), (OTHER, 'Second'))]}]}
@@ -35,12 +38,13 @@ def candidate(identifier='chart', selected=SID):
 def report_client(chart_client, monkeypatch):
     client, state = chart_client
     state.app.include_router(imports.router)
+    state.app.include_router(analysis_jobs.router)
+    state.app.include_router(workbench_setup_jobs.router)
     state.report_verify = 0
     state.report_changed = False
     state.recognition_error = None
     state.report_batches = 2
     state.report_result = [candidate()]
-    state.progress = []
     async def fresh(scope): return scope
     async def read(scope, citation):
         return {'filename': 'Synthetic weekly.pptx', 'file_version': SOURCE['file_version'],
@@ -59,36 +63,51 @@ def report_client(chart_client, monkeypatch):
     monkeypatch.setattr(imports.suggestions, 'read_report', read)
     monkeypatch.setattr(imports.suggestions, 'verify_report', verify)
     monkeypatch.setattr(imports.suggestions, 'recognize_batch', recognize)
-    save = imports.save_state
-    def progress(scope, identifier, **changes):
-        if 'progress' in changes: state.progress.append(deepcopy(changes['progress']))
-        return save(scope, identifier, **changes)
-    monkeypatch.setattr(imports, 'save_state', progress)
-
-    @state.app.post('/fixture/report-job')
-    async def fixture_job():
-        scope = imports.writable_scope()
-        body = imports.RecognizeInput.model_validate({'source': SOURCE, 'model_id': 'model'})
-        identifier = imports.new_job(scope, body)
-        await imports.process(scope, identifier, body)
-        return {'job_id': identifier}
+    monkeypatch.setattr(imports, 'source_status_hint', lambda scope: None)
+    async def resolve(*args):
+        return current_workbench.get()
+    monkeypatch.setattr(judgment_jobs, 'resolve_workbench', resolve)
 
     @state.app.post('/fixture/expire/{identifier}')
     def fixture_expire(identifier: str):
         scope = imports.writable_scope()
-        with imports.artifact_session(scope) as session:
-            row = imports.owned(session, scope, identifier)
-            row.config = {**row.config, 'expires': 0}
-            session.commit()
+        with analysis_jobs.registry.transaction() as connection:
+            row = analysis_jobs.registry.owned(analysis_jobs.registry.fetch(connection, identifier),
+                scope.identity, scope.workbench_id)
+            analysis_jobs.registry.write(connection, {**row, 'expires_unix': 0})
         return {}
-    return client, state
+
+    with client:
+        yield client, state
+
+
+def submit(client):
+    from uuid import uuid4
+    response = client.post(BASE + '/recognize', json={'source': SOURCE, 'model_id': 'model'},
+                           headers={'Idempotency-Key': uuid4().hex})
+    assert response.status_code == 202, response.text
+    job = response.json()
+    assert job['phase'] == 'queued' and job['purpose'] == 'report_chart_import'
+    return job['id']
+
+
+def wait(client, identifier):
+    for _ in range(500):
+        response = client.get(f'{JOBS}/{identifier}')
+        assert response.status_code == 200, response.text
+        job = response.json()
+        if job['state'] not in {'queued', 'running'}:
+            return job
+        assert job['phase_label']
+        sleep(.01)
+    pytest.fail('report chart job did not complete')
 
 
 def complete(client):
-    response = client.post('/fixture/report-job')
-    assert response.status_code == 200, response.text
-    identifier = response.json()['job_id']
-    response = client.get(BASE + '/jobs/' + identifier)
+    identifier = submit(client)
+    job = wait(client, identifier)
+    assert job['state'] == 'succeeded', job
+    response = client.get(f'{JOBS}/{identifier}/result')
     assert response.status_code == 200, response.text
     return identifier, response.json()
 
@@ -107,11 +126,28 @@ def apply(client, identifier, charts=None, **kwargs):
                                              'charts': charts or [selection()]}, **kwargs)
 
 
-def test_end_to_end_drafts_mapping_real_preview_explicit_import_and_retry_receipt(report_client):
+@pytest.mark.parametrize('purpose', ['report_chart_import', 'workbench_setup'])
+def test_end_to_end_drafts_mapping_real_preview_explicit_import_and_retry_receipt(report_client, purpose):
     client, state = report_client
-    identifier, result = complete(client)
-    assert result['status'] == 'complete' and len(result['charts']) == 2
-    assert state.progress[-1]['completed'] == state.progress[-1]['total'] == 2
+    if purpose == 'workbench_setup':
+        response = client.post('/api/sn/workbench-setup/jobs', json={
+            'source': SOURCE, 'model_id': 'model', 'parts': ['charts'],
+        }, headers={'Idempotency-Key': 'setup-chart-import-test'})
+        assert response.status_code == 202, response.text
+        identifier = response.json()['id']
+        job = wait(client, identifier)
+        assert job['state'] == 'succeeded', job
+        response = client.get(f'{JOBS}/{identifier}/result')
+        assert response.status_code == 200, response.text
+        result = response.json()['items'][0]['data']
+        assert result['job_id'] == identifier
+    else:
+        identifier, result = complete(client)
+        assert result['job']['state'] == 'succeeded'
+    assert len(result['charts']) == 2
+    assert result['progress']['completed'] == result['progress']['total'] == 2
+    assert result['charts'][0]['ready'] is True
+    assert result['charts'][1]['ready'] is False
     assert client.get('/api/sn/charts').json()['total'] == 0, 'Recognizing must not import'
     changed = selection(mappings=[OTHER])
     response = preview(client, identifier, changed)
@@ -133,12 +169,193 @@ def test_end_to_end_drafts_mapping_real_preview_explicit_import_and_retry_receip
     assert client.get('/api/sn/charts').json()['total'] == 1
 
 
+@pytest.mark.parametrize('selected,chart_changes,observations,reason,reads', [
+    pytest.param(SID, {}, None, None, 1, id='ready-without-ticks'),
+    pytest.param(SID, {'shape': {'y_ticks': {'min': '10', 'max': '15'}}}, None, None, 1,
+                 id='range-check-shares-observation-read'),
+    pytest.param(SID, {'chart_type': 'seasonal', 'shape': {'period_kind': 'contract'}},
+                 [('2023-01-04', 0)], None, 1, id='non-blocking-shape-warning'),
+    pytest.param(None, {}, None, '未找到', 0, id='missing-indicators'),
+    pytest.param(THIRD, {}, None, '定义失败', 0, id='definition-failed'),
+    pytest.param(SID, {'shape': {'y_ticks': {'min': '100', 'max': '120'}}}, None, '刻度不符', 1,
+                 id='range-mismatch'),
+    pytest.param(SID, {}, [('2023-01-05', 13)], '没有观测', 1, id='outside-redraw-window'),
+])
+def test_result_readiness_uses_the_redraw_observation_read(
+        report_client, monkeypatch, selected, chart_changes, observations, reason, reads):
+    client, state = report_client
+    monkeypatch.setattr(imports, 'cutoff', lambda: date(2023, 1, 4))
+    state.report_batches = 1
+    state.report_result = [{**candidate(selected=selected), **chart_changes}]
+    if observations is not None:
+        state.observations[SID] = observations
+
+    identifier, result = complete(client)
+    chart, = result['charts']
+    assert chart['ready'] is (reason is None)
+    if reason is None:
+        assert chart['ready_reason'] is None
+    else:
+        assert reason in chart['ready_reason']
+    if chart_changes.get('chart_type') == 'seasonal':
+        assert chart['shape_warnings']
+    restored = client.get(f'{JOBS}/{identifier}/result')
+    assert restored.status_code == 200 and restored.json()['charts'] == [chart]
+    assert sum(not request.get('catalog_only') for _, request in state.requests) == reads
+
+
+def test_candidate_errors_block_default_selection_even_with_a_definition(report_client, monkeypatch):
+    client, state = report_client
+    state.report_batches = 1
+    annotate = imports.annotate
+
+    def annotate_with_error(*args):
+        charts = annotate(*args)
+        charts[0]['errors'].append('候选图核验失败')
+        return charts
+
+    monkeypatch.setattr(imports, 'annotate', annotate_with_error)
+    _, result = complete(client)
+    chart, = result['charts']
+    assert chart['definition'] and chart['errors'] == ['候选图核验失败']
+    assert chart['ready'] is False and '错误' in chart['ready_reason']
+
+
+def test_preview_reports_observations_and_range_after_data_changes(report_client):
+    client, state = report_client
+    state.report_batches = 1
+    state.report_result = [{**candidate(), 'shape': {'y_ticks': {'min': '10', 'max': '15'}}}]
+    identifier, result = complete(client)
+    assert result['charts'][0]['ready'] is True
+
+    state.observations[SID] = [('2023-01-01', 20), ('2023-01-02', 25)]
+    mismatch = preview(client, identifier)
+    assert mismatch.status_code == 200, mismatch.text
+    assert mismatch.json()['ready'] is False and mismatch.json()['range_mismatch'] is True
+    assert '刻度不符' in mismatch.json()['ready_reason']
+
+    state.observations[SID] = []
+    empty = preview(client, identifier)
+    assert empty.status_code == 200, empty.text
+    assert empty.json()['ready'] is False and '没有观测' in empty.json()['ready_reason']
+
+
+def test_duplicate_of_preserves_source_order_and_library_flags_refresh_after_apply(report_client):
+    client, state = report_client
+    state.report_batches = 1
+    state.report_result = [candidate('first'), {**candidate('second'), 'page': 5},
+                           candidate('alternate', selected=OTHER)]
+    identifier, result = complete(client)
+    first, second, alternate = result['charts']
+    assert 'duplicate_of' not in first and not first['possible_duplicate'] and first['ready'] is True
+    assert second['duplicate_of'] == {'id': first['id'], 'page': 3, 'title': first['title']}
+    assert not second['possible_duplicate']
+    assert second['ready'] is False and '重复' in second['ready_reason']
+    assert alternate['ready'] is True
+    response = apply(client, identifier, [selection(first['id'], mappings=[OTHER])])
+    assert response.status_code == 200, response.text
+    assert response.json()['possible_duplicates'] == {first['id']: False, second['id']: False, alternate['id']: True}
+    restored = client.get(f'{JOBS}/{identifier}/result').json()
+    updated = restored['charts'][2]
+    assert updated['id'] == alternate['id'] and updated['possible_duplicate']
+    assert updated['ready'] is False and '图表库' in updated['ready_reason']
+    assert response.json()['readiness'][alternate['id']] == {
+        'ready': updated['ready'], 'ready_reason': updated['ready_reason']}
+    assert restored['applied'][first['id']]['id'] == response.json()['created'][0]['id']
+    response = apply(client, identifier, [selection(alternate['id'], mappings=[OTHER])])
+    assert len(response.json()['created']) == 1
+    assert client.get('/api/sn/charts').json()['total'] == 2
+
+
+@pytest.mark.parametrize('setup', [False, True])
+@pytest.mark.parametrize('fail', [False, True])
+def test_rematch_retrieves_original_draft_and_preserves_confirmations(report_client, monkeypatch, setup, fail):
+    client, state = report_client
+    state.report_batches = 1
+    mixed = {**candidate('unmapped', selected=None), 'title': 'Pending chart title'}
+    state.report_result = [candidate('ready'), mixed]
+    state.fields.pop(OTHER)
+    hint = {'pending': 3, 'message': '知识库还有 3 张工作表待确认'}
+    monkeypatch.setattr(imports, 'source_status_hint', lambda scope: hint)
+
+    def charts(result):
+        return result['items'][0]['data'] if setup else result
+
+    if setup:
+        response = client.post('/api/sn/workbench-setup/jobs', json={
+            'source': SOURCE, 'model_id': 'model', 'parts': ['charts'],
+        }, headers={'Idempotency-Key': 'setup-rematch-test'})
+        assert response.status_code == 202, response.text
+        identifier = response.json()['id']
+        assert wait(client, identifier)['state'] == 'succeeded'
+    else:
+        identifier = submit(client)
+        assert wait(client, identifier)['state'] == 'succeeded'
+    base_url = f'{JOBS}/{identifier}/result'
+    first = apply(client, identifier, [selection('b1-ready')]).json()['created'][0]
+    before = charts(client.get(base_url).json())
+    assert before['source_status_hint'] == hint
+    assert before['applied']['b1-ready']['id'] == first['id']
+
+    from tests.chart_fixtures import FIELDS
+    state.fields[OTHER] = FIELDS[OTHER]
+    calls = []
+
+    async def completion(scope, model_id, prompt, *, purpose):
+        assert model_id == 'new-model' and len(prompt.encode()) <= imports.suggestions.PROMPT_BYTES
+        assert 'Pending chart title' in prompt
+        assert 'b1-ready/' not in prompt
+        calls.append(purpose)
+        if purpose == 'report_chart_queries':
+            return {'queries': {'b1-unmapped/s1': ['字段乙']}}
+        assert purpose == 'report_chart_fields' and OTHER in prompt
+        if fail:
+            raise HTTPException(502, '模拟模型调用失败')
+        return {'picks': {'b1-unmapped/s1': {'series_id': OTHER, 'reason': '字段口径一致'}}}
+
+    monkeypatch.setattr(imports.suggestions.strategy_text, 'completion', completion)
+    response = client.post(BASE + '/rematch', json={'job_id': identifier, 'model_id': 'new-model'},
+                           headers={'Idempotency-Key': 'report-rematch-test'})
+    assert response.status_code == 202, response.text
+    task = response.json()
+    assert task['id'] != identifier and task['purpose'] == 'report_chart_import'
+    rematch_url = f"{JOBS}/{task['id']}/result"
+    assert wait(client, task['id'])['state'] == ('failed' if fail else 'succeeded')
+    assert calls == ['report_chart_queries', 'report_chart_fields']
+    parent = client.get(base_url)
+    assert parent.status_code == 200, parent.text
+    after = charts(parent.json())
+    response = client.get(rematch_url)
+    if fail:
+        assert response.status_code == 409
+        assert after == before
+    else:
+        assert response.status_code == 200, response.text
+        restored = response.json()
+        assert restored['id'] == identifier and restored['request']['rematch_of'] == identifier
+        assert restored['charts'] == after['charts']
+        assert restored['applied'] == before['applied'] == after['applied']
+        assert after['charts'][0] == before['charts'][0]
+        resolved = after['charts'][1]
+        assert not resolved['missing_indicators'] and after['source_status_hint'] is None
+        assert before['charts'][1]['ready'] is False and resolved['ready'] is True
+        assert resolved['series'][0]['selected_id'] == OTHER
+        for field in ('id', 'title', 'chart_type', 'evidence'):
+            assert resolved[field] == before['charts'][1][field]
+        assert resolved['series'][0]['name'] == before['charts'][1]['series'][0]['name']
+        latest = client.get(JOBS + '/latest?purpose=report_chart_import').json()['job']
+        assert latest['id'] == task['id']
+        assert client.get(rematch_url, headers={'x-actor': 'other'}).status_code == 404
+    assert apply(client, identifier, [selection('b1-ready')]).json()['created'][0]['id'] == first['id']
+    assert client.get('/api/sn/charts').json()['total'] == 1
+
+
 @pytest.mark.parametrize('operation', ['jobs', 'preview', 'apply'])
 def test_source_revision_change_409_blocks_confirmed_actions(report_client, operation):
     client, state = report_client
     identifier, _ = complete(client)
     state.report_changed = True
-    response = (client.get(BASE + '/jobs/' + identifier) if operation == 'jobs' else
+    response = (client.get(f'{JOBS}/{identifier}/result') if operation == 'jobs' else
                 preview(client, identifier) if operation == 'preview' else apply(client, identifier))
     # Completed results, previews and writes must all reject revised evidence.
     assert response.status_code == 409
@@ -147,12 +364,11 @@ def test_source_revision_change_409_blocks_confirmed_actions(report_client, oper
 
 @pytest.mark.parametrize('headers,status', [({'x-can-edit': 'false'}, 403), ({'x-role': 'viewer'}, 403),
     ({'x-restricted': 'true'}, 403), ({'x-scope-version': '1'}, 409)])
-@pytest.mark.parametrize('operation', ['files', 'recognize', 'job', 'preview', 'apply'])
+@pytest.mark.parametrize('operation', ['files', 'recognize', 'preview', 'apply'])
 def test_every_report_route_requires_write_unrestricted_current_source(report_client, headers, status, operation):
     client, state = report_client
     paths = {'files': ('GET', BASE + '/files', None),
              'recognize': ('POST', BASE + '/recognize', {'source': SOURCE, 'model_id': 'model'}),
-             'job': ('GET', BASE + '/jobs/unknown', None),
              'preview': ('POST', BASE + '/preview', {'job_id': 'unknown', **selection()}),
              'apply': ('POST', BASE + '/apply', {'job_id': 'unknown', 'group': '', 'charts': [selection()]})}
     method, url, body = paths[operation]
@@ -164,12 +380,12 @@ def test_every_report_route_requires_write_unrestricted_current_source(report_cl
 def test_drafts_private_to_owner_and_workbench_and_expire(report_client):
     client, _ = report_client
     identifier, _ = complete(client)
-    assert client.get(BASE + '/jobs/' + identifier, headers={'x-actor': 'second'}).status_code == 404
+    assert client.get(f'{JOBS}/{identifier}/result', headers={'x-actor': 'second'}).status_code == 404
     assert apply(client, identifier, headers={'x-actor': 'second'}).status_code == 404
-    assert client.get(BASE + '/jobs/' + identifier,
+    assert client.get(f'{JOBS}/{identifier}/result',
         headers={'x-workbench': '10000000-0000-4000-8000-000000000099'}).status_code == 404
     assert client.post('/fixture/expire/' + identifier).status_code == 200
-    assert client.get(BASE + '/jobs/' + identifier).status_code == 409
+    assert client.get(f'{JOBS}/{identifier}/result').status_code == 410
 
 
 def test_one_failed_batch_does_not_discard_other_pages_and_409_is_fatal(report_client):
@@ -179,8 +395,9 @@ def test_one_failed_batch_does_not_discard_other_pages_and_409_is_fatal(report_c
     assert len(result['charts']) == 1 and result['charts'][0]['id'] == 'b2-chart'
     assert result['failures'] == [{'batch': 1, 'reason': 'Synthetic malformed model output'}]
     state.recognition_error = HTTPException(409, 'Synthetic source changed')
-    identifier = client.post('/fixture/report-job').json()['job_id']
-    assert client.get(BASE + '/jobs/' + identifier).status_code == 409
+    identifier = submit(client)
+    assert wait(client, identifier)['state'] == 'failed'
+    assert client.get(f'{JOBS}/{identifier}/result').status_code == 409
 
 
 def test_timeout_isolated_to_batch(report_client, monkeypatch):
@@ -194,16 +411,32 @@ def test_timeout_isolated_to_batch(report_client, monkeypatch):
     assert len(result['charts']) == 1 and '超过' in result['failures'][0]['reason']
 
 
-def test_apply_lists_invalid_definitions_and_imports_other_selected_charts(report_client):
-    client, _ = report_client
-    identifier, _ = complete(client)
-    response = apply(client, identifier, [selection(mappings=[THIRD]), selection('b2-chart')])
+@pytest.mark.parametrize('mapping,removed,expected_reason', [
+    pytest.param(THIRD, False, '展示', id='outside-shown-candidates'),
+    pytest.param(None, False, '未找到', id='missing-submitted-mapping'),
+    pytest.param(SID, True, '来源目录', id='removed-current-indicator'),
+])
+def test_apply_lists_invalid_definitions_and_imports_other_selected_charts(
+        report_client, mapping, removed, expected_reason):
+    client, state = report_client
+    job_id, result = complete(client)
+    assert result['charts'][0]['ready'] is True
+    if removed:
+        state.fields.pop(SID)
+    invalid = selection(mappings=[mapping])
+    valid = selection('b2-chart', mappings=[OTHER], chart_type='seasonal')
+    response = apply(client, job_id, [invalid, valid])
     assert response.status_code == 200, response.text
-    assert len(response.json()['created']) == 1 and len(response.json()['failed']) == 1
-    assert '展示' in response.json()['failed'][0]['reason']
-    assert preview(client, identifier, selection(mappings=[THIRD])).status_code == 422
-    assert preview(client, identifier, selection('unknown')).status_code == 422
-    assert apply(client, identifier, [selection(), selection()]).status_code == 422
+    created, = response.json()['created']
+    failed, = response.json()['failed']
+    assert failed['chart_id'] == invalid['chart_id'] and expected_reason in failed['reason']
+    assert created['definition']['origin']['ref'] == f'report:{job_id}:b2-chart'
+    assert created['definition']['curves'][0]['series_id'] == OTHER
+    assert created['definition']['time']['mode'] == 'cycle'
+    assert client.get('/api/sn/charts').json()['total'] == 1
+    assert preview(client, job_id, invalid).status_code == 422
+    assert preview(client, job_id, selection('unknown')).status_code == 422
+    assert apply(client, job_id, [selection(), selection()]).status_code == 422
 
 
 def test_write_failure_isolated_and_retry_only_adds_missing_chart(report_client, monkeypatch):
@@ -335,13 +568,11 @@ def test_bounded_concurrency_progress_order_failure_isolation_and_serial_equival
     for concurrency in (1, 3):
         monkeypatch.setattr(imports.settings, 'report_chart_import_concurrency', concurrency)
         peak, finished = 0, []
-        state.progress.clear()
         started = perf_counter()
         _, result = complete(client)
         timing.append(perf_counter() - started)
         assert active == 0 and peak == concurrency
-        assert [p['completed'] for p in state.progress] == [0, *range(1, 13), 12]
-        assert all(p['total'] == 12 for p in state.progress)
+        assert result['progress']['completed'] == result['progress']['total'] == 12
         assert len(result['charts']) == 11
         assert result['failures'] == [{'batch': 5, 'reason': 'Synthetic malformed model output'}]
         assert [chart['id'] for chart in result['charts']] == [f'b{i + 1}-chart' for i in range(12) if i != 4]
@@ -349,7 +580,7 @@ def test_bounded_concurrency_progress_order_failure_isolation_and_serial_equival
             assert finished[0] != 0, 'Exercise completion in a different order from source'
         for chart in result['charts']:
             chart['definition']['origin']['ref'] = 'normalized-job-id'
-        results.append(result)
+        results.append({key: value for key, value in result.items() if key not in {'id', 'job'}})
     assert results[0] == results[1]
     print('report-chart benchmark ' + json.dumps({'batches': 12, 'stages_per_batch': 3,
         'serial_seconds': round(timing[0], 4), 'parallel_seconds': round(timing[1], 4),
@@ -372,8 +603,9 @@ def test_fatal_revision_change_cancels_and_drains_other_batches(report_client, m
         finally:
             cancelled.append(index)
     monkeypatch.setattr(imports.suggestions, 'recognize_batch', recognize)
-    identifier = client.post('/fixture/report-job').json()['job_id']
-    assert client.get(BASE + '/jobs/' + identifier).status_code == 409
+    identifier = submit(client)
+    assert wait(client, identifier)['state'] == 'failed'
+    assert client.get(f'{JOBS}/{identifier}/result').status_code == 409
     assert entered == [0, 1, 2] and sorted(cancelled) == [1, 2]
     assert client.get('/api/sn/charts').json()['total'] == 0
 

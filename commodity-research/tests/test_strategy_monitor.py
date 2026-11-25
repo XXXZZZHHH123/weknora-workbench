@@ -59,7 +59,7 @@ def seeded(panels, *, response='Reduce exposure step by step', citations=None, o
         return scope, {'judgment': row.id, 'card': card.id, 'series': identifier, 'engine': session.get_bind()}
 
 
-def bounded_reads(monkeypatch, scope):
+def bounded_reads(monkeypatch, scope, *, undated=()):
     requests = []
 
     @contextmanager
@@ -67,6 +67,7 @@ def bounded_reads(monkeypatch, scope):
         assert received == scope
         requests.append(dict(page_facts._page.get()))
         with workbench_scope.artifact_session(scope) as session:
+            session.info['knowledge_facts_undated_series_ids'] = undated
             yield session
     monkeypatch.setattr(workbench_scope, 'workbench_session', bounded)
     return requests
@@ -116,6 +117,18 @@ def test_untriggered_condition_and_stale_indicator_are_reported_as_such(panels, 
     assert result['conditions'][0]['state'] == '未触发'
     freshness = result['indicators'][0]['chart']['freshness']
     assert freshness['stale'] is True and freshness['age_days'] == 58
+
+
+def test_undated_cited_rule_is_reported_in_affairs(panels, monkeypatch):
+    from tin.web.affairs_check import check_current
+    scope, ids = seeded(panels, observations=())
+    bounded_reads(monkeypatch, scope, undated=[ids['series']])
+    result = check_current(scope, day=date(2026, 1, 2))
+    assert result['checked_rules'] == result['checked_strategies'] == 1
+    [judgment, strategy] = result['alerts']
+    assert judgment['kind'] == strategy['kind'] == 'undated'
+    assert '无法按日期判断' in judgment['title'] and '无法按日期判断' in strategy['detail']
+    assert judgment['evidence_dates'] == strategy['evidence_dates'] == []
 
 
 def test_condition_no_longer_in_cited_version_is_not_replaced(panels, monkeypatch):

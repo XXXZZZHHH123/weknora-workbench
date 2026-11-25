@@ -3,6 +3,7 @@ import difflib
 import json
 from tin.schemas.judgment import JudgmentIn
 from tin.judgments.markdown_protocol import TARGET_LABELS
+from tin.judgments.quantity_alignment import conversion_text
 
 FIELDS = {'contradiction': '主矛盾', 'marginal_focus': '短线边际', 'cost_line': '成本线',
           'pricing_power': '边际定价权', 'time_dimension': '时间维度', 'survey_notes': '调研信息差',
@@ -26,7 +27,7 @@ def dimension_text(item, dimensions):
     return ('维度：' + dimension_name(identifier, dimensions) + '（`' + identifier + '`）') if identifier else ''
 
 
-def dump_markdown(payload: JudgmentIn, *, dimensions=None):
+def dump_markdown(payload: JudgmentIn, *, dimensions=None, include_evidence_notes=False):
     from tin.web.research_dimensions import default_dimensions
     dimensions = default_dimensions() if dimensions is None else dimensions
     j = payload.model_dump(mode='json', by_alias=True)
@@ -36,6 +37,7 @@ def dump_markdown(payload: JudgmentIn, *, dimensions=None):
         lines.extend(['', '### ' + label, data['claim'] or '待确认'])
         lines.extend('- ' + e['desc'] + (' · 指标 `' + e['series_id'] + '`' if e.get('series_id') else ' · 未绑定') + related_text(e)
                      + (' · ' + dimension_text(e, dimensions) if e.get('dimension') else '')
+                     + (' · 附注：' + cell(e['note']) if include_evidence_notes and e.get('note') else '')
                      for e in data['evidence'])
     if j['contradiction'].get('text'):
         lines.extend(['', '### 主逻辑补充', j['contradiction']['text']])
@@ -69,6 +71,8 @@ def dump_markdown(payload: JudgmentIn, *, dimensions=None):
             lines.append('阈值维度：`' + t['id'] + '`（' + cell(t['name']) + '） · ' + dimension_text(t, dimensions))
         if t.get('related_series_ids'):
             lines.append('阈值关联：`' + t['id'] + '`（' + cell(t['name']) + '）' + related_text(t))
+        if converted := conversion_text(t):
+            lines.append('阈值换算：`' + t['id'] + '` · ' + converted)
     lines.extend(['', '## 冲突优先级', ' > '.join((j['priority_rule'] or {}).get('order', [])) or '待确认'])
     if j['priority_rule'] and j['priority_rule']['note']:
         lines.append('说明：' + j['priority_rule']['note'])
@@ -81,6 +85,8 @@ def dump_markdown(payload: JudgmentIn, *, dimensions=None):
             lines.append('  - ' + dimension_text(f, dimensions))
         if f.get('related_series_ids'):
             lines.append('  - 关联说明：' + related_text(f).removeprefix(' · '))
+        if converted := conversion_text(f):
+            lines.append('  - 数值换算：' + converted)
         if f['note']:
             lines.append('  - 说明：' + cell(f['note']))
     lines.extend(['', '## 待确认项'])
@@ -90,11 +96,35 @@ def dump_markdown(payload: JudgmentIn, *, dimensions=None):
     return '\n'.join(lines).rstrip() + '\n'
 
 
-def version_diff(before, after, *, dimensions=None):
+def _changed_values(before, after):
+    if isinstance(before, dict) and isinstance(after, dict):
+        old, new = {}, {}
+        for key in dict.fromkeys([*before, *after]):
+            if before.get(key) != after.get(key):
+                old[key], new[key] = _changed_values(before.get(key), after.get(key))
+        return old, new
+    if isinstance(before, list) and isinstance(after, list):
+        old, new = [], []
+        left, right = ([json.dumps(item, sort_keys=True) for item in values] for values in (before, after))
+        for action, start, end, first, last in difflib.SequenceMatcher(None, left, right, autojunk=False).get_opcodes():
+            if action != 'equal':
+                old.extend(before[start:end])
+                new.extend(after[first:last])
+        return old, new
+    return before, after
+
+
+def version_diff(before, after, *, dimensions=None, items_only=False):
     left = before.model_dump(mode='json', by_alias=True) if before else {}
     right = after.model_dump(mode='json', by_alias=True)
     fields = [{'field': name, 'label': label, 'before': left.get(name), 'after': right.get(name)}
               for name, label in FIELDS.items() if left.get(name) != right.get(name)]
+    if items_only:
+        for field in fields:
+            field['before'], field['after'] = _changed_values(field['before'], field['after'])
     return {'fields': fields, 'markdown': ''.join(difflib.unified_diff(
-        dump_markdown(before, dimensions=dimensions).splitlines(keepends=True) if before else [],
-        dump_markdown(after, dimensions=dimensions).splitlines(keepends=True), fromfile='上一版本.md', tofile='新草稿.md'))}
+        dump_markdown(before, dimensions=dimensions, include_evidence_notes=items_only).splitlines(keepends=True)
+        if before else [],
+        dump_markdown(after, dimensions=dimensions, include_evidence_notes=items_only).splitlines(keepends=True),
+        fromfile='上一版本.md',
+        tofile='新草稿.md', n=0 if items_only else 3))}

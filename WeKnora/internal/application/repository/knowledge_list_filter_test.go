@@ -68,6 +68,32 @@ func TestListPaged_ExcludesDeletingByDefault(t *testing.T) {
 	assert.Equal(t, int64(1), total)
 }
 
+func TestListPaged_MatchesExactUploadedFileNamesWithinKnowledgeBase(t *testing.T) {
+	db := setupKnowledgeTestDB(t)
+	repo := NewKnowledgeRepository(db).(*knowledgeRepository)
+	ctx := context.Background()
+	kbID := uuid.New().String()
+	insert := func(tenantID uint64, kbID, name, kind, status string) string {
+		id := insertKnowledgeInKB(t, db, tenantID, kbID, status)
+		require.NoError(t, db.Exec("UPDATE knowledges SET file_name = ?, type = ? WHERE id = ?", name, kind, id).Error)
+		return id
+	}
+	one := insert(1, kbID, "source.xlsx", "file", types.ParseStatusStored)
+	two := insert(1, kbID, "next.xlsx", "file", types.ParseStatusStored)
+	insert(1, kbID, "older_source.xlsx", "file", types.ParseStatusStored)
+	insert(1, kbID, "source.xlsx", "url", types.ParseStatusCompleted)
+	insert(1, kbID, "source.xlsx", "file", types.ParseStatusDeleting)
+	insert(1, uuid.New().String(), "source.xlsx", "file", types.ParseStatusStored)
+	insert(2, kbID, "source.xlsx", "file", types.ParseStatusStored)
+
+	rows, total, err := repo.ListPagedKnowledgeByKnowledgeBaseID(ctx, 1, kbID,
+		&types.Pagination{Page: 1, PageSize: 20}, types.KnowledgeListFilter{FileNames: []string{"source.xlsx", "next.xlsx"}})
+	require.NoError(t, err)
+	require.EqualValues(t, 2, total)
+	require.Len(t, rows, 2)
+	require.ElementsMatch(t, []string{one, two}, []string{rows[0].ID, rows[1].ID})
+}
+
 // The deletion UI must use the exact-ID batch endpoint: a row missing from
 // the default list may only be hidden while cleanup is still in progress.
 func TestGetKnowledgeBatch_TracksDeletionUntilSoftDelete(t *testing.T) {

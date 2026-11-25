@@ -25,7 +25,7 @@ class AuditError(LlmError):
     """落库本身失败。调用可能已经发出去并花了钱，但没有留痕，一律当失败处理。"""
 
 
-def invoke(session: Session, provider: LlmProvider, request: LlmRequest) -> LlmResponse:
+def invoke(session: Session, provider: LlmProvider, request: LlmRequest, *, private_preview=False) -> LlmResponse:
     """调用 LLM 并把这一次完整写进 `llm_calls`，然后才返回。
 
     三条路径都落库，一条不漏：
@@ -34,6 +34,7 @@ def invoke(session: Session, provider: LlmProvider, request: LlmRequest) -> LlmR
     - 抛异常 / 响应不可用 → status=error，随后抛 LlmError
 
     `session` 用调用方的：简报组装是一个事务，调用记录和简报要么一起成立要么一起不成立。
+    私有后台预览只持久记录调用元数据，输入与输出由有时限的工作台任务管理。
     """
     started = perf_counter()
     try:
@@ -45,10 +46,10 @@ def invoke(session: Session, provider: LlmProvider, request: LlmRequest) -> LlmR
             status=STATUS_ERROR, provider=getattr(provider, "name", "?"),
             model=getattr(provider, "model", ""), error=f"{type(exc).__name__}: {exc}",
         )
-        response = _persist(session, provider, request, response, _elapsed_ms(started))
+        response = _persist(session, provider, request, response, _elapsed_ms(started), private_preview)
         raise LlmError(f"{provider.name} 调用失败：{response.error}") from exc
 
-    response = _persist(session, provider, request, response, _elapsed_ms(started))
+    response = _persist(session, provider, request, response, _elapsed_ms(started), private_preview)
     if response.status == STATUS_ERROR:
         # 响应体已经进库了，这里只是不让上层拿到一个用不了的结果继续往下走
         raise LlmError(f"{provider.name} 返回了不可用的响应：{response.error}")
@@ -60,7 +61,7 @@ def _elapsed_ms(started: float) -> int:
 
 
 def _persist(session: Session, provider: LlmProvider, request: LlmRequest,
-             response: LlmResponse, elapsed_ms: int) -> LlmResponse:
+             response: LlmResponse, elapsed_ms: int, private_preview: bool = False) -> LlmResponse:
     """写 llm_calls 并 commit。写不进去就抛 AuditError——没有留痕的调用不算数。"""
     if response.latency_ms is None:
         response = replace(response, latency_ms=elapsed_ms)
@@ -68,11 +69,11 @@ def _persist(session: Session, provider: LlmProvider, request: LlmRequest,
         purpose=request.purpose,
         provider=response.provider or provider.name,
         model=response.model or provider.model,
-        request=request.dump(),
-        response=response.dump(),
+        request={} if private_preview else request.dump(),
+        response={} if private_preview else response.dump(),
         latency_ms=response.latency_ms,
         status=response.status,
-        error=response.error,
+        error=None if private_preview else response.error,
         brief_id=request.brief_id,
         created_at=datetime.now(timezone.utc),
         **usage_of(response),

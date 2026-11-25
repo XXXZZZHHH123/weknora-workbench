@@ -1,7 +1,10 @@
 """Monitor authorization, model protocol, provenance, revisions, and edge-triggered alerts."""
+import asyncio
 from dataclasses import replace
 from datetime import date
 import json
+from time import sleep
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -12,9 +15,10 @@ from sqlalchemy import select
 from tin.config import settings
 from tin.integration.identity import Identity, current_identity
 from tin.integration.workbench_scope import WorkbenchScope, artifact_session, current_workbench
-from tin.models.workbench import WorkbenchArtifactRevision
-from tin.web import monitors
+from tin.models.workbench import WorkbenchArtifact, WorkbenchArtifactRevision
+from tin.web import affairs, analysis_jobs, judgment_jobs, monitors
 
+JOBS = '/api/sn/analysis-jobs'
 URL = '/api/sn/monitors'
 SID = 'KB.fixture.warehouse'
 OTHER_SID = 'KB.fixture.basis'
@@ -41,13 +45,16 @@ def monitor_client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, 'data_dir', tmp_path)
     app, state = FastAPI(), {}
     app.include_router(monitors.router)
+    app.include_router(affairs.router)
+    app.include_router(analysis_jobs.router)
     @app.middleware('http')
     async def scoped(request, call_next):
         identity = Identity(request.headers.get('x-actor', 'first'), '', 'Fixture', 17,
             request.headers.get('x-role', 'owner'))
         scope = WorkbenchScope(identity, request.headers.get('x-workbench', '9e761d83-5abe-4adf-859d-6cd57816ddaf'),
             'fixture-kb', 17, {'workspace_mode': 'isolated', 'can_edit': True,
-            'can_read_source': request.headers.get('x-restricted') != 'true'}, 'Bearer fixture', view_modules=('home',), scope_version=2)
+            'can_read_source': request.headers.get('x-restricted') != 'true'}, 'Bearer fixture', view_modules=('home',), scope_version=2,
+            sources_revision=int(request.headers.get('x-revision', '1')))
         state['scope'] = scope
         token, actor = current_workbench.set(scope), current_identity.set(identity)
         try:
@@ -55,11 +62,31 @@ def monitor_client(tmp_path, monkeypatch):
         finally:
             current_workbench.reset(token)
             current_identity.reset(actor)
+    async def resolve(*args):
+        return current_workbench.get()
+    monkeypatch.setattr(judgment_jobs, 'resolve_workbench', resolve)
     monkeypatch.setattr(monitors, '_validate_catalog', lambda scope, rules: {})
     monkeypatch.setattr(monitors, '_candidate_metadata', lambda *args: {})
     with TestClient(app) as client:
         client.get(URL)
         yield client, state
+
+
+def draft_request(client, payload):
+    started = client.post(URL + '/draft', json=payload, headers={'Idempotency-Key': uuid4().hex})
+    assert started.status_code == 202, started.text
+    job = started.json()
+    assert job['phase'] == 'queued' and job['purpose'] == 'monitor_draft'
+    path = JOBS + '/' + job['id']
+    for _ in range(250):
+        response = client.get(path)
+        assert response.status_code == 200, response.text
+        metadata = response.json()
+        if metadata['state'] not in {'queued', 'running'}:
+            return client.get(path + '/result')
+        assert metadata['phase_label']
+        sleep(.01)
+    pytest.fail('monitor job did not complete')
 
 
 def seed_draft(state, candidates=None):
@@ -113,6 +140,26 @@ def test_personal_monitor_revisions_and_provenance(monitor_client):
     assert client.get(URL + '/' + item['id'] + '/revisions', headers={'x-actor': 'second'}).status_code == 404
 
 
+def test_monitor_summary_saved_revised_and_legacy_default(monitor_client):
+    client, state = monitor_client
+    request = body(state, summary='  库存增加两期  ')
+    assert client.post(URL, json={**request, 'summary': '字' * 41}).status_code == 422
+    saved = client.post(URL, json=request).json()
+    assert saved['summary'] == '库存增加两期'
+    url = URL + '/' + saved['id']
+    revised = client.patch(url, json={**request, 'revision': 1, 'summary': ' 库存高于阈值 '})
+    assert revised.status_code == 200 and revised.json()['summary'] == '库存高于阈值'
+    assert [row['monitor']['summary'] for row in client.get(url + '/revisions').json()['items']] == [
+        '库存高于阈值', '库存增加两期']
+    with artifact_session(state['scope']) as session:
+        row = session.get(WorkbenchArtifact, saved['id'])
+        payload = monitors._body(row)
+        del payload['summary']
+        row.body = json.dumps(payload)
+        session.commit()
+    assert client.get(URL).json()['items'][0]['summary'] == ''
+
+
 def test_draft_belongs_to_account_and_workspace(monitor_client):
     client, state = monitor_client
     request = body(state)
@@ -122,7 +169,9 @@ def test_draft_belongs_to_account_and_workspace(monitor_client):
     assert client.post(URL, json=request, headers={'x-role': 'viewer'}).status_code == 403
 
 
-def test_model_draft_recall_and_per_rule_candidate_validation(monitor_client, monkeypatch):
+@pytest.mark.parametrize(('output_summary', 'expected'), [({}, ''), ({'summary': '  '}, ''),
+    ({'summary': '字' * 41}, ''), ({'summary': ' 仓单连续增加 '}, '仓单连续增加')])
+def test_model_draft_recall_and_per_rule_candidate_validation(monitor_client, monkeypatch, output_summary, expected):
     from tin.web import strategy_text
     client, state = monitor_client
     calls = []
@@ -130,11 +179,12 @@ def test_model_draft_recall_and_per_rule_candidate_validation(monitor_client, mo
     monkeypatch.setattr(monitors, '_draft_context', lambda scope: ([], catalog))
     async def completion(scope, model, prompt, **kwargs):
         calls.append((prompt, kwargs))
-        return model_output() if len(calls) == 1 else {'picks': {'0': ['r1']}}
+        return model_output(title='仓单' * 9, **output_summary) if len(calls) == 1 else {'picks': {'0': ['r1']}}
     monkeypatch.setattr(strategy_text, 'completion', completion)
-    response = client.post(URL + '/draft', json={'sentence': '连续增加时提醒我', 'model_id': 'fixture'})
+    response = draft_request(client, {'sentence': '连续增加时提醒我', 'model_id': 'fixture'})
     assert response.status_code == 200, response.text
     draft = response.json()
+    assert draft['summary'] == expected and draft['title'] == '仓单' * 9
     assert draft['rules'][0]['series_id'] == SID
     assert draft['candidates'][0]['series_id'] == SID
     assert draft['candidates'][0]['rule_index'] == 0
@@ -142,7 +192,7 @@ def test_model_draft_recall_and_per_rule_candidate_validation(monitor_client, mo
     assert calls[1][1]['purpose'] == 'monitor_selection'
     assert '不要输出series_id' in calls[0][0]
     assert client.post(URL, json={key: draft[key] for key in (
-        'draft_id', 'title', 'sentence', 'logic', 'rules')}).status_code == 201
+        'draft_id', 'title', 'sentence', 'summary', 'logic', 'rules')}).status_code == 201
 
 
 def test_draft_displays_real_candidate_coverage_without_changing_model_selection(monitor_client, monkeypatch):
@@ -172,7 +222,7 @@ def test_draft_displays_real_candidate_coverage_without_changing_model_selection
         calls.append(1)
         return model_output() if len(calls) == 1 else {'picks': {'0': ['r1']}}
     monkeypatch.setattr(strategy_text, 'completion', completion)
-    response = client.post(URL + '/draft', json={'sentence': '连续增加时提醒我', 'model_id': 'fixture'})
+    response = draft_request(client, {'sentence': '连续增加时提醒我', 'model_id': 'fixture'})
     assert response.status_code == 200, response.text
     draft = response.json()
     assert draft['rules'][0]['series_id'] == SID
@@ -180,8 +230,11 @@ def test_draft_displays_real_candidate_coverage_without_changing_model_selection
     assert {item['series_id']: item['coverage'] for item in draft['candidates']} == coverage
     assert draft['default_window']['end'] == coverage[SID]['end']
     with artifact_session(state['scope']) as session:
-        stored = monitors._body(monitors._owned(session, state['scope'], draft['draft_id'], monitors.DRAFT_MODULE))
+        row = analysis_jobs.owned_record(session, state['scope'], draft['draft_id'], 'monitor_draft')
+        stored = row.config['result']
         assert stored['candidates'] == draft['candidates']
+    assert client.get(JOBS + '/' + draft['draft_id'] + '/result',
+                      headers={'x-revision': '2'}).status_code == 409
 
 
 @pytest.mark.parametrize('output', [
@@ -199,7 +252,7 @@ def test_illegal_model_draft_is_rejected_without_selection_or_fallback(monitor_c
         calls.append(1)
         return output
     monkeypatch.setattr(strategy_text, 'completion', completion)
-    assert client.post(URL + '/draft', json={'sentence': '请提醒', 'model_id': 'fixture'}).status_code == 422
+    assert draft_request(client, {'sentence': '请提醒', 'model_id': 'fixture'}).status_code == 409
     assert calls == [1]
     assert client.get(URL).json()['items'] == []
 
@@ -210,6 +263,96 @@ def test_suggested_threshold_requires_visible_confirmation():
     assert output.rules[0].value == 123
 
 
+def test_report_monitors_validate_individual_candidates_and_leave_unknown_rules_unbound(monitor_client, monkeypatch):
+    from tin.web import chart_data, strategy_text
+    _, state = monitor_client
+    catalog = [{'id': SID, 'series_id': SID, 'name': '仓单'},
+               {'id': OTHER_SID, 'series_id': OTHER_SID, 'name': '基差'}]
+    monkeypatch.setattr(monitors, '_draft_context', lambda scope: ([], catalog))
+    monkeypatch.setattr(chart_data, 'catalog_fields', lambda scope, ids: {SID: catalog[0]} if SID in ids else {})
+    note = '原文区间 58–63，交易单位需确认'
+    calls = []
+
+    async def completion(scope, model, prompt, *, purpose):
+        calls.append(purpose)
+        if purpose == 'monitor_draft':
+            assert '分别为每个关注点' in prompt and '勿擅自换算' in prompt
+            return {'candidates': [
+                model_output(summary='字' * 41, rules=[model_rule(), model_rule(indicator_description=None),
+                                    model_rule(indicator_description='基差')]),
+                model_output(logic='any', rules=[model_rule()] * 9),
+                model_output(title='价格观察', summary=' 价格高于58 ', confirmations=[note], rules=[
+                    model_rule(value=58, definition=note), model_rule()]),
+            ]}
+        assert '1-1' not in prompt
+        return {'picks': {'1-0': ['r1'], '1-2': ['r2'], '3-0': ['r1'], '3-1': ['unshown']}}
+
+    monkeypatch.setattr(strategy_text, 'completion', completion)
+    result = asyncio.run(monitors.draft_candidates_from_report(state['scope'], '合成周报原文', 'fixture'))
+    assert calls == ['monitor_draft', 'monitor_selection']
+    assert result['failures'] == [{'index': 2, 'reason': '每个关注点须包含 1 至 6 条规则'}]
+    first, second = result['candidates']
+    assert first['summary'] == '' and second['summary'] == '价格高于58'
+    assert [row['series_id'] for row in first['rules']] == [SID, None, None]
+    assert [row.get('needs_indicator', False) for row in first['rules']] == [False, True, True]
+    assert [row['series_id'] for row in second['rules']] == [SID, None]
+    assert second['rules'][0]['value'] == 58
+    assert second['rules'][0]['definition'] == note and second['confirmations'] == [note]
+
+
+def test_report_monitors_fail_when_all_candidates_are_invalid(monitor_client, monkeypatch):
+    from tin.web import strategy_text
+    client, state = monitor_client
+    monkeypatch.setattr(monitors, '_draft_context', lambda scope: ([], []))
+
+    async def completion(scope, model, prompt, *, purpose):
+        assert purpose == 'monitor_draft'
+        return {'candidates': [model_output(rules=[]), model_output(rules=[model_rule(value_source='suggested')])]}
+
+    monkeypatch.setattr(strategy_text, 'completion', completion)
+    with pytest.raises(monitors.ReportMonitorCandidatesError) as invalid:
+        asyncio.run(monitors.draft_candidates_from_report(state['scope'], '合成周报原文', 'fixture'))
+    assert invalid.value.status_code == 422 and '全部 2 个监测候选' in invalid.value.detail
+    assert invalid.value.failures == [
+        {'index': 1, 'reason': '每个关注点须包含 1 至 6 条规则'},
+        {'index': 2, 'reason': '建议阈值缺少明确说明或确认项'},
+    ]
+    assert client.get(URL).json()['items'] == []
+
+
+def test_report_manual_indicator_must_fill_its_own_rule_and_be_currently_authorized(monitor_client, monkeypatch):
+    client, state = monitor_client
+    scope = state['scope']
+    sentence = '合成周报原文'
+    with artifact_session(scope) as session:
+        draft = monitors._new_artifact(scope, monitors.DRAFT_MODULE, '周报草稿', {
+            'workbench_id': scope.workbench_id, 'report_candidate': True, 'sentence': sentence,
+            'rules': [rule(), rule(series_id=None, needs_indicator=True)],
+            'candidates': [{'rule_index': 0, 'series_id': SID}],
+        })
+        session.add(draft)
+        session.commit()
+        identifier = draft.id
+
+    def valid_catalog(scope, rules):
+        if any(item['series_id'] not in {SID, OTHER_SID} for item in rules):
+            raise HTTPException(422, '指标不在当前研究台授权目录中')
+
+    monkeypatch.setattr(monitors, '_validate_catalog', valid_catalog)
+    monkeypatch.setattr(monitors, 'backtest', lambda *args, **kwargs: {'current_state': '未触发'})
+    request = {'draft_id': identifier, 'title': '周报草稿', 'sentence': sentence, 'logic': 'all',
+               'rules': [rule(), rule(series_id=OTHER_SID)], 'report_rule_indexes': [0, 1]}
+    for endpoint in (URL + '/backtest', URL):
+        assert client.post(endpoint, json={**request, 'rules': [rule()], 'report_rule_indexes': [0]}).status_code == 422
+        assert client.post(endpoint, json={**request, 'report_rule_indexes': [1, 0]}).status_code == 422
+        assert client.post(endpoint, json={**request, 'rules': [rule(series_id=OTHER_SID), rule()]}).status_code == 422
+        assert client.post(endpoint, json={**request, 'rules': [rule(), rule(series_id='unauthorized')]}).status_code == 422
+    assert client.post(URL + '/backtest', json=request).status_code == 200
+    assert client.get(URL).json()['items'] == []
+    saved = client.post(URL, json=request)
+    assert saved.status_code == 201 and [item['series_id'] for item in saved.json()['rules']] == [SID, OTHER_SID]
+
+
 def test_model_failure_is_reported_without_fallback(monitor_client, monkeypatch):
     from tin.web import strategy_text
     client, _ = monitor_client
@@ -217,8 +360,8 @@ def test_model_failure_is_reported_without_fallback(monitor_client, monkeypatch)
     async def failed(*args, **kwargs):
         raise HTTPException(503, 'fixture model unavailable')
     monkeypatch.setattr(strategy_text, 'completion', failed)
-    result = client.post(URL + '/draft', json={'sentence': '请提醒', 'model_id': 'fixture'})
-    assert result.status_code == 503 and result.json()['detail'] == 'fixture model unavailable'
+    result = draft_request(client, {'sentence': '请提醒', 'model_id': 'fixture'})
+    assert result.status_code == 409 and result.json()['detail'] == 'fixture model unavailable'
     assert client.get(URL).json()['items'] == []
 
 
@@ -233,7 +376,7 @@ def test_unshown_model_candidate_rejected(monitor_client, monkeypatch, picks):
         calls.append(1)
         return model_output() if len(calls) == 1 else {'picks': picks}
     monkeypatch.setattr(strategy_text, 'completion', completion)
-    assert client.post(URL + '/draft', json={'sentence': '请提醒', 'model_id': 'fixture'}).status_code == 422
+    assert draft_request(client, {'sentence': '请提醒', 'model_id': 'fixture'}).status_code == 409
 
 
 def test_checks_alert_only_on_transition_and_persist(monitor_client, monkeypatch):
@@ -248,7 +391,7 @@ def test_checks_alert_only_on_transition_and_persist(monitor_client, monkeypatch
         return monitors.check_monitors(scope, date(2026, 1, 2), '2026-01-02T12:00:00+08:00')
     assert check()['alerts'] == []
     current['state'] = '触发'
-    assert len(check()['alerts']) == 1
+    assert [alert['detail'] for alert in check()['alerts']] == [rule()['label']]
     assert check()['alerts'] == []
     current['state'] = '数据停更'
     assert check()['alerts'] == []
@@ -258,25 +401,38 @@ def test_checks_alert_only_on_transition_and_persist(monitor_client, monkeypatch
     assert check()['alerts'] == []
     current['state'] = '触发'
     assert len(check()['alerts']) == 1
-    listed = client.get(URL).json()['items'][0]
-    assert listed['current_state'] == '触发' and listed['last_trigger'] == '2026-01-02'
+    listed = client.get(URL).json()
+    assert listed['items'][0]['current_state'] == '触发' and listed['items'][0]['last_trigger'] == '2026-01-02'
     with artifact_session(scope) as session:
-        assert len(monitors.recorded_monitor_alerts(session, scope)) == 2
+        assert listed['alerts'] == monitors.recorded_monitor_alerts(session, scope)
+        assert len(listed['alerts']) == 2
         assert len(list(session.scalars(select(WorkbenchArtifactRevision).where(
             WorkbenchArtifactRevision.artifact_id == saved['id'])))) == 1
-    client.patch(URL + '/' + saved['id'], json={'revision': 1, 'enabled': False})
+    updated = client.patch(URL + '/' + saved['id'], json={'revision': 1, 'enabled': False})
     assert check()['checked'] == 0
+    assert client.delete(URL + '/' + saved['id'], params={'revision': updated.json()['revision']}).status_code == 200
+    assert client.get(URL).json()['alerts'] == []
 
 
 def test_home_only_monitor_is_included_in_affairs_check(monitor_client, monkeypatch):
     from tin.web.affairs_check import check_current
+    from tin.web.affairs import build_affairs
     client, state = monitor_client
-    client.post(URL, json=body(state))
+    enabled = client.post(URL, json=body(state, summary='库存增加两期')).json()
+    client.post(URL, json=body(state, enabled=False))
     scope = replace(state['scope'], scope_version=2)
     monkeypatch.setattr(monitors, 'backtest', lambda *args, **kwargs: {'current_state': '触发', 'series': []})
-    first = check_current(scope, day=date(2026, 1, 2))
-    assert first['checked_monitors'] == 1 and len(first['alerts']) == 1
+    response = client.post('/api/sn/affairs/check')
+    assert response.status_code == 200, response.text
+    first = response.json()
+    assert first['checked_monitors'] == 1 and [alert['detail'] for alert in first['alerts']] == ['库存增加两期']
+    assert [(item['id'], item['current_state']) for item in first['monitors']] == [(enabled['id'], '触发')]
     assert check_current(scope, day=date(2026, 1, 2))['alerts'] == []
+    with artifact_session(scope) as session:
+        home = build_affairs(session, scope)
+    assert home['alerts'] == [] and home['monitor_count'] == 2
+    assert [(item['title'], item['current_state'], item['detail']) for item in home['monitors']] == [
+        (enabled['title'], '触发', '库存增加两期')]
 
 
 def test_expired_candidate_draft_rejected(monitor_client):
@@ -358,7 +514,7 @@ def test_model_cannot_pick_candidate_shown_only_for_another_rule(monitor_client,
         return model_output(rules=[model_rule(), model_rule(indicator_description='基差')]) if len(calls) == 1 else {
             'picks': {'0': ['r2'], '1': ['r1']}}
     monkeypatch.setattr(strategy_text, 'completion', completion)
-    assert client.post(URL + '/draft', json={'sentence': '仓单与基差', 'model_id': 'fixture'}).status_code == 422
+    assert draft_request(client, {'sentence': '仓单与基差', 'model_id': 'fixture'}).status_code == 409
 
 
 def test_same_condition_toggle_does_not_repeat_alert_and_keeps_history(monitor_client, monkeypatch):
