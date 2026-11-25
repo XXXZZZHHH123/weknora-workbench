@@ -703,7 +703,7 @@
   function renderAIJob(text,state='running') {
     const panel=$('aiJobPanel'),button=$('cancelAiJob');if(!panel)return;
     panel.hidden=false;panel.classList.toggle('cancelling',state==='cancelling');panel.classList.toggle('done',state==='done');
-    $('aiJobText').textContent=text;button.hidden=state==='done';button.disabled=state==='cancelling';
+    $('aiJobText').textContent=text;button.hidden=state==='done'||state==='watching';button.disabled=state==='cancelling';
   }
   function beginAIJob(id,context) {
     const record={id,...context,cancelRequested:false,finished:false,cancelPromise:null};ui.activeAIJob=record;
@@ -746,9 +746,46 @@
     if(!accepted){$('mappingFeedback').textContent='AI 已进入保存阶段，请等待本次导入完成后再切换。';return false;}
     return true;
   }
-  async function scopedJob(id,version,onProgress) {
+  async function scopedJob(id,version,onProgress,{watch=false,interval=1000}={}) {
     const controller=new AbortController();ui.jobController=controller;
-    for(;;){if(version!==reviewVersion||controller.signal.aborted)throw Error('工作表已切换，旧任务结果不会应用。');const r=await timedApi('/api/jobs/'+encodeURIComponent(id),{},controller);if(version!==reviewVersion||controller.signal.aborted)throw Error('工作表已切换，旧任务结果不会应用。');if(['processing','queued','pending','running'].includes(r.status)){const stage=r.stage||'正在检查全部选定数据…';if(version===reviewVersion&&mappingBusy)taskProgress($('mappingFeedback'),stage,r.progress);onProgress?.(progressLabel(stage,r.progress),r.progress);await new Promise(resolve=>setTimeout(resolve,1000));continue;}if(['failed','cancelled'].includes(r.status)){const error=targetedError(r.error||(r.status==='cancelled'?'任务已取消，当前草稿保留。':'处理失败'),r.review_target);error.reviewState=r.review_state;error.partialResult=r.result;throw error;}return r.result||r;}
+    const current=()=>version===reviewVersion&&!controller.signal.aborted;
+    for(;;){
+      if(!current())throw Error('工作表已切换，旧任务结果不会应用。');
+      const job=await timedApi('/api/jobs/'+encodeURIComponent(id),{},controller);
+      if(!current())throw Error('工作表已切换，旧任务结果不会应用。');
+      if(['processing','queued','pending','running'].includes(job.status)){
+        const stage=job.stage||'正在检查全部选定数据…';
+        if(!watch&&mappingBusy)taskProgress($('mappingFeedback'),stage,job.progress);
+        onProgress?.(progressLabel(stage,job.progress),job.progress,job);
+        await new Promise(resolve=>setTimeout(resolve,interval));
+        continue;
+      }
+      if(watch)return;
+      if(['failed','cancelled'].includes(job.status)){
+        const error=targetedError(job.error||(job.status==='cancelled'?'任务已取消，当前草稿保留。':'处理失败'),job.review_target);
+        error.reviewState=job.review_state;error.partialResult=job.result;throw error;
+      }
+      return job.result||job;
+    }
+  }
+  async function watchBusyAIJob(error,record) {
+    const current=()=>record.version===reviewVersion&&record.scopeEpoch===authEpoch;
+    const show=(text,state)=>{if(current()){$('mappingFeedback').textContent=text;renderAIJob(text,state);}};
+    finishAIJob(record,'done',error.message);
+    show(error.message,'done');
+    if(!error.activeJobId||!current())return;
+    const interval=Number.isFinite(error.retryAfter)&&error.retryAfter>0 ? error.retryAfter*1000 : 2000;
+    try{
+      await scopedJob(error.activeJobId,record.version,(_stage,progress,job)=>{
+        const {completed_blocks:completed,total_blocks:total}=job.batch_ai||progress||{};
+        const block=Number.isInteger(completed)&&Number.isInteger(total)&&completed<total;
+        show(block? `本知识库正在核对第 ${completed+1}/${total} 个区块。可查看进度，完成后再继续。`
+          : '本知识库正在处理另一项表格任务。可查看进度，完成后再继续。','watching');
+      },{watch:true,interval});
+      show('上一项表格任务已结束，可以重新提交本次核对。','done');
+    }catch{
+      show('暂时无法查看本知识库的核对进度，请稍后再试。','done');
+    }
   }
   function selectedAssistModel(cfg) {
     if(cfg?.can_edit===false)return '';
@@ -799,6 +836,7 @@
         if(version===reviewVersion&&scopeEpoch===authEpoch)$('mappingFeedback').textContent='AI 任务已取消；当前草稿保留，未继续自动导入。';
         return;
       }
+      if(error.reason==='AI_REVIEW_BUSY'){await watchBusyAIJob(error,activeJob);return;}
       if(activeJob)finishAIJob(activeJob,'failed','AI 辅助核对未完成，请按错误提示处理。');
       throw error;
     }finally{if(activeJob&&!activeJob.finished)finishAIJob(activeJob,'failed','AI 辅助核对未完成，请按错误提示处理。');if(version===reviewVersion&&scopeEpoch===authEpoch&&currentImport?.import_id===importId&&currentSheet?.name===sheetName)setMappingBusy(false);}
@@ -844,6 +882,7 @@
     }catch(error){
       if(error.partialResult)result=error.partialResult;
       else if(activeJob.cancelRequested||scopeEpoch!==authEpoch||version!==reviewVersion){finishAIJob(activeJob,'cancelled','已取消批量任务；已完成的表保留，可刷新查看结果。');return;}
+      else if(error.reason==='AI_REVIEW_BUSY'){await watchBusyAIJob(error,activeJob);return;}
       else{finishAIJob(activeJob,'failed','批量辅助未完成，原件和已导入数据保留。');throw error;}
     }finally{
       // Refresh below also changes reviewVersion. Reset this batch's busy
@@ -980,7 +1019,7 @@
   }
   $('aiCancel').onclick=()=>$('aiDialog').close();
   $('aiContinue').onclick=()=>(ui.aiMode==='all'?assistAllSheets(true):suggestMapping(true)).catch(mappingError);
-  $('cancelAiJob').onclick=()=>cancelActiveAIJob('用户取消').then(accepted=>{if(accepted)$('mappingFeedback').textContent='已请求取消 AI 任务，正在等待当前模型请求返回。';});
+  $('cancelAiJob').onclick=()=>cancelActiveAIJob('用户取消').then(accepted=>{if(accepted)$('mappingFeedback').textContent='正在停止本次核对，已完成的部分可以查看。';});
   $('confirmBack').onclick=()=>$('confirmDialog').close();
   $('confirmGo').onclick=()=>runConfirm();
   if($('confirmAllSheets'))$('confirmAllSheets').onclick=confirmAllSheets;

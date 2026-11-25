@@ -11,6 +11,8 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const importId = 'b'.repeat(24), requests = [], errors = [], checks = [];
 const cancelledJobIds = new Set();
 let allJobId='', allSlow=false, allPolls=0, structureChecked=false;
+const busyJobId='f'.repeat(32);
+let assistBusy=false,busyPolls=0;
 const allResult=()=>({import_id:importId,sheets_imported:['合成已确认表'],sheets_pending:[mapping.sheet],sheets_failed:[],sheets_skipped:[{sheet:'<img src=x onerror=alert(1)>',message:'没有指标数据，保留预览。'}],requests_used:2,notice:'批量处理已完成，无法确认的表仍待核对。'});
 let assisted = false, bulkDone = false, polls = 0, assistUnresolved = false, assistSlow = false, cancelledAssist = false, cancelPolls = 0, submitted = null, currentMapping = null, batchFailure = false, batchSubmitted = [], assistJobId = '', assistCreationSlow = false, cancelResponseSlow = false, loadingRequestSlow = false;
 const mapping = {sheet:'合成待确认表',fingerprint:'synthetic-review',blocks:[
@@ -40,6 +42,10 @@ async function main(){
     else if(url.pathname==='/api/model-settings'){if(loadingRequestSlow)await pause(600);result={model:'fixture-model',has_api_key:true};}
     else if(url.pathname.endsWith('/assist-confirm-all')){allJobId=data.request_id;allPolls=0;assert.equal(data.acknowledged_risk,true);assert.equal(data.total_max_requests,256);assert.equal(data.per_sheet_max_requests,12);result={id:allJobId,status:'processing'};}
     else if(allJobId&&url.pathname==='/api/jobs/'+allJobId){result=cancelledJobIds.has(allJobId)?{status:'cancelled',error:'用户取消',result:{...allResult(),cancelled:true,notice:'已取消，已导入的表仍保留。'}}:allSlow||allPolls++===0?{status:'processing',stage:'逐表核对 1/2',progress:{phase:'batch',completed:1,total:2}}:{status:'completed',result:allResult()};}
+    else if(url.pathname.endsWith('/assist-confirm')&&assistBusy){res.statusCode=409;res.setHeader('Retry-After','1');result={detail:{code:'AI_REVIEW_BUSY',message:'本知识库正在核对。',active_job_id:busyJobId}};}
+    else if(url.pathname==='/api/jobs/'+busyJobId){result=busyPolls++===0
+      ?{status:'processing',progress:{phase:'ai',completed:1,total:5,completed_blocks:1,total_blocks:5}}
+      :{status:'completed',result:{imported:true,mapping}};}
     else if(url.pathname.endsWith('/assist-confirm')){polls=0;submitted=data.mapping;assistJobId=data.request_id;assert.match(assistJobId,/^[a-f0-9]{32}$/);cancelledAssist=cancelledJobIds.has(assistJobId);if(assistCreationSlow)await pause(750);result={id:assistJobId,status:'processing'};}
     else if(req.method==='POST'&&/^\/api\/jobs\/[a-f0-9]{32}\/cancel$/.test(url.pathname)){if(cancelResponseSlow)await pause(350);const cancelledId=url.pathname.split('/')[3];cancelledJobIds.add(cancelledId);if(cancelledId===assistJobId)cancelledAssist=true;cancelPolls=0;result={id:cancelledId,status:'processing',cancel_requested:true};}
     else if(assistSlow&&url.pathname==='/api/jobs/'+assistJobId){result=cancelledAssist?(cancelPolls++===0?{status:'processing',stage:'正在取消，等待当前请求返回；不会自动导入'}:{status:'cancelled',error:'AI 辅助已取消，尚未确认的工作表未导入。'}):{status:'processing',stage:'AI 正在等待模型返回',progress:{phase:'ai',completed:1,total:3}};}
@@ -76,8 +82,16 @@ async function main(){
     await js('document.getElementById("confirmAllSheets").click()');await wait('document.getElementById("confirmDialog").open');await verify('Bulk confirmation describes keeping unconfirmed sheets unchanged','document.getElementById("confirmList").innerText.includes("合成已确认表")&&!document.getElementById("confirmList").innerText.includes("导入 合成待确认表")');await js('document.getElementById("confirmGo").click()');await wait('document.getElementById("mappingFeedback")?.innerText.includes("待确认表保持不变")');
     assert.equal(requests.filter(request=>request.path.endsWith('/confirm-all')&&request.method==='POST').length,1);checks.push('Confirmed-sheet batch uses explicit POST without approving failing sheets');
     await verify('Bulk refresh preserves selected failing sheet and diagnostics','document.querySelector(".source-head h3")?.innerText==="合成待确认表"&&document.querySelectorAll(".block-chip.review-block-error").length===1');
+    assistBusy=true;
+    await js('document.getElementById("suggestMapping").click()');await wait('document.getElementById("aiDialog").open');
+    await js('document.getElementById("aiContinue").click()');await wait('document.getElementById("aiJobText")?.innerText.includes("第 2/5 个区块")');
+    await verify('The competing job can be watched without a cancel action','document.getElementById("cancelAiJob").hidden');
+    await wait('document.getElementById("aiJobText")?.innerText.includes("可以重新提交本次核对")');
+    await verify('A competing result never confirms the selected sheet','document.querySelector(".source-head .badge")?.innerText.includes("待核对")');
+    assert.equal(requests.filter(request=>request.path.endsWith('/assist-confirm')).length,1);
+    assistBusy=false;
     await js('document.getElementById("suggestMapping").click()');await wait('document.getElementById("aiDialog").open');await verify('AI disclosure explains automatic validated import and unchanged values','document.getElementById("aiDialogText").innerText.includes("自动导入")&&document.getElementById("aiDialogText").innerText.includes("原始数值")');await js('document.getElementById("aiContinue").click()');await wait('document.querySelector(".source-head .badge")?.innerText.includes("已可查询")');
-    const ai=requests.find(request=>request.path.endsWith('/assist-confirm'));assert.equal(ai.data.sheet,mapping.sheet);assert.equal(ai.data.mapping.blocks[0].columns[0].metric,'合成指标');checks.push('AI receives the current mapping and leaves validated blocks intact');
+    const ai=requests.filter(request=>request.path.endsWith('/assist-confirm')).at(-1);assert.equal(ai.data.sheet,mapping.sheet);assert.equal(ai.data.mapping.blocks[0].columns[0].metric,'合成指标');checks.push('AI receives the current mapping and leaves validated blocks intact');
     assert(!requests.some(request=>request.path.endsWith('/confirm')||request.path.endsWith('/suggest')));checks.push('AI auto-import is handled atomically by its server job');
     await verify('AI completion removes stale diagnostics and shows imported state','document.querySelectorAll(".block-chip.review-block-error").length===0&&document.querySelectorAll("[data-block-id]").length===2&&document.querySelector(".source-head h3")?.innerText==="合成待确认表"');
     await js('(()=>{const input=document.querySelector(".mapping-block.selected [data-column-field=metric]");input.value="手动核对后的名称";input.dispatchEvent(new Event("input",{bubbles:true}));document.getElementById("ackBlock").click();document.querySelectorAll(".sheet-tab")[1].click()})()');await wait('document.querySelector(".source-head h3")?.innerText==="合成已确认表"');

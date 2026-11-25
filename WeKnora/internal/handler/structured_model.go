@@ -6,8 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"github.com/Tencent/WeKnora/internal/ingestion"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -16,6 +17,9 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/application/access"
 	apperrors "github.com/Tencent/WeKnora/internal/errors"
+	"github.com/Tencent/WeKnora/internal/ingestion"
+	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/gin-gonic/gin"
@@ -26,6 +30,8 @@ const (
 	structuredModelResponseBytes = 256 * 1024
 	structuredModelMaxTokens     = 8192
 	structuredModelTimeout       = 120 * time.Second
+	structuredReviewTimeout      = 180 * time.Second
+	structuredReviewMaxTimeout   = 300 * time.Second
 )
 
 type structuredModelMessage struct {
@@ -39,6 +45,52 @@ type structuredModelRequest struct {
 	MaxTokens      int                      `json:"max_tokens"`
 	Temperature    *float64                 `json:"temperature,omitempty"`
 	EnableThinking *bool                    `json:"enable_thinking,omitempty"`
+	ResponseFormat string                   `json:"response_format,omitempty"`
+	TimeoutMS      *int                     `json:"timeout_ms,omitempty"`
+}
+
+func structuredReviewFailure(ctx context.Context, response *types.ChatResponse, err error) (int, string) {
+	var upstream *api.HTTPError
+	var network net.Error
+	var dial *net.OpError
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return http.StatusGatewayTimeout, "MODEL_TIMEOUT"
+	case errors.As(err, &dial) && dial.Op == "dial":
+		return http.StatusBadGateway, "MODEL_CONNECTION"
+	case errors.Is(err, context.DeadlineExceeded),
+		errors.As(err, &network) && network.Timeout():
+		return http.StatusGatewayTimeout, "MODEL_TIMEOUT"
+	case errors.As(err, &upstream) && upstream.StatusCode >= 400 && upstream.StatusCode < 500:
+		return http.StatusBadGateway, "MODEL_UPSTREAM_REJECTED"
+	case errors.Is(err, api.ErrEmptyCompletion):
+		return http.StatusBadGateway, "MODEL_EMPTY"
+	case err != nil || ctx.Err() != nil:
+		return http.StatusBadGateway, "MODEL_HTTP_ERROR"
+	case response == nil:
+		return http.StatusBadGateway, "MODEL_EMPTY"
+	}
+	hasContent := strings.TrimSpace(response.Content) != ""
+	switch {
+	case !hasContent && (strings.TrimSpace(response.ReasoningContent) != "" || len(response.ReasoningMetadata) != 0):
+		return http.StatusBadGateway, "MODEL_REASONING_ONLY"
+	case hasContent && response.FinishReason == "length":
+		return http.StatusBadGateway, "MODEL_TRUNCATED"
+	case response.FinishReason == "content_filter":
+		return http.StatusBadGateway, "MODEL_UPSTREAM_REJECTED"
+	case !hasContent:
+		return http.StatusBadGateway, "MODEL_EMPTY"
+	default:
+		return 0, ""
+	}
+}
+
+func writeStructuredReviewFailure(c *gin.Context, status int, code string, retryThinkingOff bool) {
+	c.JSON(status, gin.H{
+		"success": false,
+		"error": gin.H{"reason": code, "retry_thinking_off": retryThinkingOff,
+			"message": "模型未能完成本区块的核对，请稍后重试。"},
+	})
 }
 
 func structuredModelIDValid(value string, limit int) bool {
@@ -173,6 +225,19 @@ func structuredModelCompletion(knowledge *KnowledgeHandler, models *ModelHandler
 			_ = c.Error(apperrors.NewBadRequestError("请选择有效模型并提供限定范围的对话参数"))
 			return
 		}
+		review := input.ResponseFormat != "" || input.TimeoutMS != nil
+		timeout := structuredModelTimeout
+		if review {
+			if minimumKBRole != types.OrgRoleEditor || (input.ResponseFormat != "" && input.ResponseFormat != "json_object") ||
+				(input.TimeoutMS != nil && (*input.TimeoutMS <= 0 || *input.TimeoutMS > int(structuredReviewMaxTimeout.Milliseconds()))) {
+				_ = c.Error(apperrors.NewBadRequestError("表格核对的输出格式或等待时间无效"))
+				return
+			}
+			timeout = structuredReviewTimeout
+			if input.TimeoutMS != nil {
+				timeout = time.Duration(*input.TimeoutMS) * time.Millisecond
+			}
+		}
 		messages := make([]chat.Message, 0, len(input.Messages))
 		messageBytes, userMessage := 0, false
 		for _, message := range input.Messages {
@@ -192,15 +257,27 @@ func structuredModelCompletion(knowledge *KnowledgeHandler, models *ModelHandler
 			_ = c.Error(err)
 			return
 		}
-		modelCtx, cancel := context.WithTimeout(types.WithExecutionTenant(ctx, caller.TenantID), structuredModelTimeout)
+		tenantCtx := types.WithExecutionTenant(ctx, caller.TenantID)
+		if review {
+			tenantCtx = api.WithStructuredReview(tenantCtx)
+		}
+		modelCtx, cancel := context.WithTimeout(tenantCtx, timeout)
 		defer cancel()
 		model, err := structuredModelConfigured(modelCtx, models, caller, input.ModelID)
 		if err != nil {
+			if review && errors.Is(modelCtx.Err(), context.DeadlineExceeded) {
+				writeStructuredReviewFailure(c, http.StatusGatewayTimeout, "MODEL_TIMEOUT", false)
+				return
+			}
 			_ = c.Error(err)
 			return
 		}
 		client, err := models.service.GetChatModel(modelCtx, model.ID)
 		if err != nil || client == nil {
+			if review && errors.Is(modelCtx.Err(), context.DeadlineExceeded) {
+				writeStructuredReviewFailure(c, http.StatusGatewayTimeout, "MODEL_TIMEOUT", false)
+				return
+			}
 			_ = c.Error(apperrors.NewServiceUnavailableError("模型初始化失败，请检查模型配置后重试"))
 			return
 		}
@@ -208,20 +285,48 @@ func structuredModelCompletion(knowledge *KnowledgeHandler, models *ModelHandler
 			input.MaxTokens = structuredModelMaxTokens
 		}
 		options := &chat.ChatOptions{MaxTokens: input.MaxTokens, Thinking: input.EnableThinking}
+		canDisable, disabled := false, false
+		if review {
+			canDisable, disabled = chat.StructuredReviewOptions(chat.ConfigFromModel(model, "", ""), options, input.ResponseFormat == "json_object")
+		}
 		if input.Temperature != nil {
 			options.Temperature = *input.Temperature
 		}
 		response, err := client.Chat(modelCtx, messages, options)
+		if review {
+			if accessErr := checkAccess(); accessErr != nil {
+				_ = c.Error(accessErr)
+				return
+			}
+			status, code := structuredReviewFailure(modelCtx, response, err)
+			if code != "" {
+				if response != nil {
+					finish := response.FinishReason
+					switch finish {
+					case "", "stop", "length", "content_filter", "tool_calls":
+					default:
+						finish = "other"
+					}
+					logger.Infof(ctx, "Excel model review reason=%s finish=%s prompt_tokens=%d completion_tokens=%d thinking_disabled=%t",
+						code, finish, response.Usage.PromptTokens, response.Usage.CompletionTokens, disabled)
+				}
+				writeStructuredReviewFailure(c, status, code, code == "MODEL_REASONING_ONLY" && canDisable && !disabled)
+				return
+			}
+		}
 		if err != nil || modelCtx.Err() != nil || response == nil || strings.TrimSpace(response.Content) == "" || len(response.Content) > structuredModelResponseBytes || len(response.ToolCalls) > 0 || len(response.FinishReason) > 64 || strings.IndexFunc(response.FinishReason, unicode.IsControl) >= 0 {
 			// Provider errors can contain headers, credentials and source excerpts.
 			_ = c.Error(apperrors.NewServiceUnavailableError("模型未返回有效结果，请调整输入或模型配置后重试"))
 			return
 		}
-		if err := checkAccess(); err != nil {
-			_ = c.Error(err)
-			return
+		if !review {
+			if err := checkAccess(); err != nil {
+				_ = c.Error(err)
+				return
+			}
+			tenantCtx = modelCtx
 		}
-		if _, err := structuredModelConfigured(modelCtx, models, caller, input.ModelID); err != nil {
+		if _, err := structuredModelConfigured(tenantCtx, models, caller, input.ModelID); err != nil {
 			_ = c.Error(err)
 			return
 		}

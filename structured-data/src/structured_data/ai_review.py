@@ -6,17 +6,21 @@ from dataclasses import dataclass
 from datetime import date, datetime
 import hashlib
 import json
+import logging
 import math
 import re
+import time
 import unicodedata
+from urllib.parse import urlsplit
 
-import httpx
 from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 
 from .generic_parser import _date as parse_date_value, validate_mapping
 from .mapping_suggestions import apply_suggestion, BLOCK_FIELDS, COLUMN_FIELDS
-from .model_settings import read_model, thinking_fields
+from .model_settings import read_model, thinking_fields, thinking_format
 from .review_errors import ReviewValidationError, clean_target
+from .review_model import (GATEWAY_MARGIN_SECONDS, MIN_MODEL_SECONDS, REVIEW_RESERVE_SECONDS,
+                           ReviewModelError, model_timeout_seconds, post_review)
 from .sheet_view import read_sheet_view
 
 
@@ -24,6 +28,7 @@ MAX_INPUT_BYTES = 48 * 1024
 MAX_RESPONSE_BYTES = 128 * 1024
 MAX_SOURCE_CELLS = 360
 MAX_BLOCKS = 64
+logger = logging.getLogger(__name__)
 _CELL = re.compile(r'([A-Z]{1,3})([1-9][0-9]{0,6})\Z')
 _TOP_FIELDS = {'mapping', 'column_updates', 'block_updates', 'notice', 'evidence', 'unresolved'}
 _MAPPING_FIELDS = {'sheet', 'fingerprint', 'blocks'}
@@ -219,7 +224,92 @@ def _validate_shape(suggestion):
             raise ValueError('AI 证据或待确认列表格式无效。')
 
 
-def _request(cfg, payload, budget, cancelled):
+def _direct_review_protocol(cfg, enabled):
+    host = (urlsplit(cfg['base_url']).hostname or '').lower()
+    model = cfg['model'].lower()
+    dashscope = host in {'dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com', 'dashscope-us.aliyuncs.com'}
+    if dashscope:
+        can_disable = model.startswith(('qwen3', 'qwen-max', 'qwen-plus', 'qwen-flash', 'qwen-turbo',
+                                        'deepseek-v3', 'deepseek-v4')) and not model.endswith('-thinking')
+        fields = thinking_fields({**cfg, 'thinking_format': 'enable-thinking'}, enabled) if can_disable else {}
+        json_mode = (model.startswith(('qwen3.7-', 'qwen3.8-', 'qwen4-max', 'deepseek-v4-pro',
+                                      'deepseek-v4.1-flash', 'deepseek-v4-flash-0731'))
+                     or (not enabled and model.startswith(('qwen3-', 'qwen3.5-', 'qwen3.6-', 'qwen-max',
+                         'qwen-plus', 'qwen-flash', 'qwen-turbo', 'qwen-long', 'qwen2.5-'))))
+        return fields, json_mode, 'max_completion_tokens', can_disable
+    # Explicit wire capability also supports custom OpenAI-compatible hosts.
+    can_disable = (cfg.get('thinking_format') in {'thinking-type', 'enable-thinking'}
+                   or (thinking_format(cfg) == 'thinking-type'
+                       and model.startswith(('deepseek-v4', 'doubao-seed-1.6', 'doubao-seed-2',
+                                             'kimi-k2.5', 'kimi-k2.6', 'kimi-k3', 'glm-4.5', 'glm-4.6',
+                                             'glm-4.7', 'glm-5'))))
+    if cfg.get('thinking_format') == 'none':
+        can_disable = False
+    fields = thinking_fields(cfg, enabled) if can_disable or isinstance(cfg.get('enable_thinking'), bool) else {}
+    json_mode = cfg.get('supports_json_object', host == 'api.deepseek.com' or
+                        (host == 'api.openai.com' and model.startswith(('gpt-4', 'gpt-5')))) is True
+    return fields, json_mode, 'max_tokens', can_disable
+
+
+def _direct_choice(cfg, messages, enabled, timeout, cancelled):
+    fields, json_mode, token_field, can_disable = _direct_review_protocol(cfg, enabled)
+    response = post_review(cfg['base_url'].rstrip('/') + '/chat/completions',
+        headers={'Authorization': 'Bearer ' + cfg['api_key']}, timeout=timeout, model_timeout=timeout,
+        cancelled=cancelled, max_bytes=MAX_RESPONSE_BYTES, trust_env=True, read_error_body=False,
+        json={'model': cfg['model'], 'temperature': 0, token_field: 8192, 'messages': messages, **fields,
+              **({'response_format': {'type': 'json_object'}} if json_mode else {})})
+    if response.is_client_error:
+        raise ReviewModelError('MODEL_UPSTREAM_REJECTED')
+    if not response.is_success:
+        raise ReviewModelError('MODEL_HTTP_ERROR')
+    if not response.content.strip():
+        raise ReviewModelError('MODEL_EMPTY')
+    data = response.json()
+    if not isinstance(data, dict):
+        raise ReviewModelError('MODEL_OUTPUT_INVALID')
+    choices = data.get('choices')
+    if choices is None and 'error' in data:
+        raise ReviewModelError('MODEL_HTTP_ERROR')
+    if choices is None or choices == []:
+        raise ReviewModelError('MODEL_EMPTY')
+    if not isinstance(choices, list) or not isinstance(choices[0], dict):
+        raise ReviewModelError('MODEL_OUTPUT_INVALID')
+    choice = choices[0]
+    usage = data.get('usage')
+    counts = [usage.get(key) if isinstance(usage, dict) else None for key in ('prompt_tokens', 'completion_tokens')]
+    finish = choice.get('finish_reason')
+    logger.info('Excel model review finish=%s prompt_tokens=%s completion_tokens=%s thinking_disabled=%s',
+                finish if finish in ('stop', 'length', 'content_filter', 'tool_calls') else 'other',
+                *(value if type(value) is int else None for value in counts), bool(fields) and not enabled)
+    return choice, can_disable and enabled
+
+
+def _completion_content(choice, retry_thinking_off):
+    message = choice.get('message')
+    if not isinstance(message, dict):
+        raise ReviewModelError('MODEL_EMPTY' if message is None else 'MODEL_OUTPUT_INVALID')
+    content = message.get('content')
+    if content is not None and not isinstance(content, str):
+        raise ReviewModelError('MODEL_OUTPUT_INVALID')
+    content = (content or '').strip()
+    has_reasoning = any(isinstance(message.get(key), str) and message[key].strip() for key in
+                        ('reasoning_content', 'reasoning', 'reasoning_text')) or bool(message.get('reasoning_details'))
+    if content.startswith('<think>'):
+        reasoning, end, answer = content[7:].rpartition('</think>')
+        has_reasoning = has_reasoning or bool((reasoning if end else answer).strip())
+        content = answer.strip() if end else ''
+    if not content and has_reasoning:
+        raise ReviewModelError('MODEL_REASONING_ONLY', retry_thinking_off=retry_thinking_off)
+    if content and choice.get('finish_reason') == 'length':
+        raise ReviewModelError('MODEL_TRUNCATED')
+    if message.get('refusal') or choice.get('finish_reason') == 'content_filter':
+        raise ReviewModelError('MODEL_UPSTREAM_REJECTED')
+    if not content:
+        raise ReviewModelError('MODEL_EMPTY')
+    return content
+
+
+def _request(cfg, payload, budget, cancelled, *, deadline=None):
     _check_cancelled(cancelled)
     key = cfg.get('api_key')
     if not cfg.get('native_model_id') and (not key or not cfg.get('base_url') or not cfg.get('model')):
@@ -227,50 +317,56 @@ def _request(cfg, payload, budget, cancelled):
     encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)
     if len(encoded.encode('utf-8')) > MAX_INPUT_BYTES:
         raise ValueError('当前区块证据超过 AI 请求大小限制，请拆分或手动核对；本次未调用模型。')
-    body = {'model': cfg.get('model'), 'temperature': 0, 'max_tokens': 8192,
-            'messages': [{'role': 'system', 'content': PROMPT}, {'role': 'user', 'content': encoded}],
-            **thinking_fields(cfg, cfg.get('enable_thinking'))}
-    budget.consume()
+    from .model_gateway import complete
+
+    messages = [{'role': 'system', 'content': PROMPT}, {'role': 'user', 'content': encoded}]
+    native = bool(cfg.get('native_model_id'))
+    gateway_margin = GATEWAY_MARGIN_SECONDS if native else 0
+    enabled = cfg.get('enable_thinking') is True
+    configured_timeout = model_timeout_seconds()
+
+    def available_time():
+        if deadline is None:
+            return configured_timeout
+        return min(configured_timeout, deadline - time.monotonic() - REVIEW_RESERVE_SECONDS - gateway_margin)
+
     try:
-        if cfg.get('native_model_id'):
-            from .model_gateway import complete
-            choice = complete(cfg, body['messages'], max_tokens=8192, temperature=0,
-                              enable_thinking=cfg.get('enable_thinking'), timeout=60)['choices'][0]
-        else:
-          with httpx.Client(timeout=httpx.Timeout(60, connect=10), trust_env=True,
-                          follow_redirects=False) as client:
-            response = client.post(str(cfg['base_url']).rstrip('/') + '/chat/completions',
-                                   headers={'Authorization': 'Bearer ' + key}, json=body)
-            response.raise_for_status()
-            if len(response.content) > MAX_RESPONSE_BYTES:
-                raise ValueError('AI 返回内容过大，未应用建议。')
-            choice = response.json()['choices'][0]
+        for attempt in range(2):
+            _check_cancelled(cancelled)
+            timeout = available_time()
+            if timeout < .001:
+                raise ReviewModelError('MODEL_TIMEOUT', message='本次核对剩余时间不足，这一部分可以稍后重试。')
+            budget.consume()
+            try:
+                if native:
+                    choice = complete(cfg, messages, max_tokens=8192, temperature=0, enable_thinking=enabled,
+                                      response_format='json_object', review_timeout=timeout,
+                                      timeout=timeout + gateway_margin, cancelled=cancelled)['choices'][0]
+                    retry_thinking_off = False
+                else:
+                    choice, retry_thinking_off = _direct_choice(cfg, messages, enabled, timeout, cancelled)
+                content = _completion_content(choice, retry_thinking_off)
+                break
+            except ReviewModelError as exc:
+                if (attempt or not enabled or not exc.retry_thinking_off or budget.used >= budget.max_requests
+                        or available_time() < MIN_MODEL_SECONDS):
+                    raise
+                enabled = False
         _check_cancelled(cancelled)
-        if not isinstance(choice, dict) or not isinstance(choice.get('message'), dict):
-            raise ValueError('模型建议未成功返回有效映射，请稍后重试或手动编辑。')
-        if choice.get('finish_reason') == 'length':
-            raise ValueError('AI 建议达到输出长度上限，映射没有返回完整；请缩小区块后重试。原数据未改变。')
-        message = choice['message']
-        if message.get('refusal') or choice.get('finish_reason') == 'content_filter':
-            raise ValueError('模型未提供可用的确认方案，该区块保留待确认。')
-        content = message.get('content')
-        if not isinstance(content, str) or not content.strip():
-            raise ValueError('AI 只返回了思考内容或空响应，没有给出表格映射；请检查模型思考设置后重试。原数据未改变。')
-        content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content.strip())
+        content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content)
+
         def reject_constant(_):
             raise ValueError('AI 返回非有限数值。')
         result = json.loads(content, object_pairs_hook=_unique_object, parse_constant=reject_constant)
-    except (httpx.ConnectError, httpx.TimeoutException):
-        raise ValueError('无法连接模型服务，请检查网络、系统代理和服务地址；原数据未改变。') from None
-    except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError):
-        raise ValueError('模型建议未成功返回有效映射，请稍后重试或手动编辑。') from None
+    except (AttributeError, KeyError, IndexError, TypeError, json.JSONDecodeError):
+        raise ReviewModelError('MODEL_OUTPUT_INVALID') from None
     _validate_shape(result)
     return result
 
 
-def _diagnostic(message, sheet, block_index, **target):
+def _diagnostic(message, sheet, block_index, *, code='ai_review_required', **target):
     location = clean_target({'sheet': sheet, 'block_index': block_index, **target})
-    return {'code': 'ai_review_required', 'message': str(message)[:1000],
+    return {'code': code, 'message': str(message)[:1000],
             'block_id': f'block-{block_index}', **location}
 
 
@@ -718,7 +814,7 @@ def _evidence_checks(candidate, proposed, suggestion, cells, sheet, *, strict):
 
 
 def suggest_mapping(manager, import_id, sheet_name, *, mapping=None, review_errors=None,
-                    budget=None, cancelled=None, strict=False, source_document=None, metadata_only=False):
+                    budget=None, cancelled=None, strict=False, source_document=None, metadata_only=False, deadline=None):
     """Return one proposal without saving; strict mode gates automatic confirmation."""
     _check_cancelled(cancelled)
     doc = source_document if source_document is not None else manager.get(import_id)
@@ -746,7 +842,7 @@ def suggest_mapping(manager, import_id, sheet_name, *, mapping=None, review_erro
                'review_errors': [{**clean_target(e), 'message': str(e.get('message', ''))[:800]}
                                  for e in (review_errors or [])[:16] if isinstance(e, dict)],
                'date_candidates': sheet.get('date_candidates', [])[:16]}
-    suggestion = _request(read_model(manager.root), payload, budget or AIRequestBudget(1), cancelled)
+    suggestion = _request(read_model(manager.root), payload, budget or AIRequestBudget(1), cancelled, deadline=deadline)
     proposed, restored = apply_suggestion(candidate, suggestion)
     notice = str(suggestion.get('notice', ''))[:1500]
     if proposed is None:
@@ -801,11 +897,11 @@ def _candidate(sheet, mapping):
 
 
 def assist_mapping(manager, import_id, sheet_name, *, mapping=None, budget=None,
-                   cancelled=None, progress=None, review=None):
+                   cancelled=None, progress=None, review=None, deadline=None):
     """Sequentially assist failed blocks, retaining all already valid source blocks.
 
     Web callers provide a resource-limited ``review`` worker; this function never
-    publishes or changes a review document and never retries a model request.
+    publishes or changes a review document.
     """
     _check_cancelled(cancelled)
     sheet = manager.sheet(import_id, sheet_name)
@@ -835,7 +931,7 @@ def assist_mapping(manager, import_id, sheet_name, *, mapping=None, budget=None,
         errors = [{**d, 'block_index': 0} for d in item.get('diagnostics', [])]
         try:
             result = suggest_mapping(manager, import_id, sheet_name, mapping=focus,
-                                     review_errors=errors, budget=budget, cancelled=cancelled, strict=True)
+                                     review_errors=errors, budget=budget, cancelled=cancelled, strict=True, deadline=deadline)
             _check_cancelled(cancelled)
             notices.append(result['notice'])
             errors = [{**d, 'block_index': bi, 'block_id': f'block-{bi}'} for d in result.get('diagnostics', [])]
@@ -860,7 +956,8 @@ def assist_mapping(manager, import_id, sheet_name, *, mapping=None, budget=None,
             _check_cancelled(cancelled)
             target = clean_target(getattr(exc, 'review_target', {}))
             target.pop('sheet', None); target.pop('block_index', None)
-            unresolved.append(_diagnostic(str(exc), sheet_name, bi, **target))
+            unresolved.append(_diagnostic(str(exc), sheet_name, bi,
+                                          code=getattr(exc, 'public_code', 'ai_review_required'), **target))
             notices.append(str(exc))
         finally:
             if progress:

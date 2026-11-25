@@ -1,12 +1,15 @@
 from copy import deepcopy
+import asyncio
 from datetime import datetime
 import json
 
 import httpx
 from openpyxl import Workbook
 import pytest
+from types import SimpleNamespace
 
-from structured_data.ai_review import AIRequestBudget, assist_mapping, suggest_mapping
+from structured_data.ai_review import AIRequestBudget, _request, assist_mapping, suggest_mapping
+from structured_data.review_model import ReviewModelError
 from structured_data.imports import ImportManager
 
 
@@ -33,13 +36,182 @@ def fixture(tmp_path, *, annotation=None):
     return manager, result, sheet, candidate
 
 
+def mock_review_transport(monkeypatch, handler):
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(httpx.AsyncClient, '_transport_for_url', lambda self, url: transport)
+
+
+def mock_review_post(monkeypatch, handler):
+    def send(request):
+        return handler(None, str(request.url), json=json.loads(request.content), headers=dict(request.headers))
+    mock_review_transport(monkeypatch, send)
+
+
 def mock_model(monkeypatch, suggestions, calls):
     def post(self, url, **kwargs):
         calls.append(kwargs['json'])
         suggestion = suggestions.pop(0)
         return httpx.Response(200, request=httpx.Request('POST', url), json={'choices': [{
             'finish_reason': 'stop', 'message': {'content': json.dumps(suggestion)}}]})
-    monkeypatch.setattr(httpx.Client, 'post', post)
+    mock_review_post(monkeypatch, post)
+
+
+DASHSCOPE = {'model': 'deepseek-v4-pro', 'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+             'api_key': 'fake'}
+
+
+@pytest.mark.parametrize('model', ['deepseek-v4-pro', 'qwen3.7-flash'])
+def test_review_sends_dashscope_wire_protocol_and_allows_a_61_second_reply(monkeypatch, model):
+    from structured_data import ai_review
+
+    clock = SimpleNamespace(now=0)
+    monkeypatch.setattr(ai_review, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    calls = []
+
+    def send(request):
+        calls.append(json.loads(request.content))
+        assert request.extensions['timeout'] == dict(connect=10, read=180, write=180, pool=180)
+        clock.now += 61
+        return httpx.Response(200, json={'choices': [{'finish_reason': 'stop', 'message': {'content': '{}'}}]})
+
+    mock_review_transport(monkeypatch, send)
+    assert _request({**DASHSCOPE, 'model': model}, {}, AIRequestBudget(), None, deadline=600) == {}
+    assert len(calls) == 1
+    body = calls[0]
+    assert body['enable_thinking'] is False
+    assert 'chat_template_kwargs' not in body and 'max_tokens' not in body
+    assert body['max_completion_tokens'] == 8192
+    assert body['response_format'] == {'type': 'json_object'}
+
+
+@pytest.mark.parametrize('finish,message,status,code', [
+    ('stop', {'reasoning_content': 'secret'}, 200, 'MODEL_REASONING_ONLY'),
+    ('length', {'reasoning_content': 'secret', 'content': ' '}, 200, 'MODEL_REASONING_ONLY'),
+    ('length', {'content': '<think>secret'}, 200, 'MODEL_REASONING_ONLY'),
+    ('length', {'content': '{"mapping":'}, 200, 'MODEL_TRUNCATED'),
+    ('length', {'content': None}, 200, 'MODEL_EMPTY'),
+    ('stop', None, 200, 'MODEL_EMPTY'),
+    ('stop', None, 403, 'MODEL_UPSTREAM_REJECTED'),
+])
+def test_model_failures_have_safe_distinct_reasons_and_do_not_retry_after_disabling(
+        monkeypatch, finish, message, status, code):
+    calls = []
+
+    def send(request):
+        calls.append(request)
+        return httpx.Response(status, json={'choices': [{'finish_reason': finish, 'message': message}],
+                                            'private': 'secret'})
+
+    mock_review_transport(monkeypatch, send)
+    budget = AIRequestBudget(3)
+    with pytest.raises(ReviewModelError) as caught:
+        _request(DASHSCOPE, {}, budget, None)
+    assert caught.value.public_code == code
+    assert 'secret' not in str(caught.value)
+    assert len(calls) == budget.used == 1
+
+
+@pytest.mark.parametrize('max_requests,remaining,model,expected', [
+    (2, 80, 'deepseek-v4-pro', 2),
+    (1, 80, 'deepseek-v4-pro', 1),
+    (2, 35, 'deepseek-v4-pro', 1),
+    (2, 80, 'deepseek-r1', 1),
+])
+def test_review_retries_only_with_a_supported_switch_and_spare_budget_and_time(
+        monkeypatch, max_requests, remaining, model, expected):
+    from structured_data import ai_review
+
+    monkeypatch.setattr(ai_review, 'time', SimpleNamespace(monotonic=lambda: 100))
+    requests = []
+
+    def send(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={'choices': [{'finish_reason': 'length',
+            'message': {'reasoning_content': 'secret'}}]})
+
+    mock_review_transport(monkeypatch, send)
+    budget = AIRequestBudget(max_requests)
+    with pytest.raises(ReviewModelError) as caught:
+        _request({**DASHSCOPE, 'model': model, 'enable_thinking': True}, {}, budget, None, deadline=100+remaining)
+    assert caught.value.public_code == 'MODEL_REASONING_ONLY'
+    assert len(requests) == budget.used == expected
+    if expected == 2:
+        assert [body['enable_thinking'] for body in requests] == [True, False]
+    if model == 'deepseek-r1':
+        assert 'enable_thinking' not in requests[0]
+
+
+def test_timeout_uses_remaining_time_and_writes_reason_on_pending_block(tmp_path, monkeypatch):
+    from structured_data import ai_review
+
+    manager, record, sheet, candidate = fixture(tmp_path)
+    candidate['blocks'][1]['columns'][0]['metric'] = ''
+    monkeypatch.setenv('STRUCTURED_REVIEW_MODEL_TIMEOUT_SECONDS', '45')
+    monkeypatch.setattr(ai_review, 'time', SimpleNamespace(monotonic=lambda: 100))
+
+    def send(request):
+        assert request.extensions['timeout']['read'] == 12
+        assert request.extensions['timeout']['connect'] == 10
+        raise httpx.ReadTimeout('private provider detail')
+
+    mock_review_transport(monkeypatch, send)
+    result = assist_mapping(manager, record['import_id'], sheet['name'], mapping=candidate, deadline=122)
+    assert result['model_requests'] == 1
+    assert result['review_state']['status'] == 'needs_review'
+    assert any(d['code'] == 'MODEL_TIMEOUT' and d['block_index'] == 1
+               for d in result['review_state']['diagnostics'])
+    assert '12 秒' in result['notice'] and 'private' not in result['notice']
+
+
+@pytest.mark.parametrize('value,expected', [('15', 30), ('90', 90), ('400', 300), ('invalid', 180)])
+def test_model_timeout_configuration_is_bounded(monkeypatch, value, expected):
+    from structured_data.review_model import model_timeout_seconds
+    monkeypatch.setenv('STRUCTURED_REVIEW_MODEL_TIMEOUT_SECONDS', value)
+    assert model_timeout_seconds() == expected
+
+
+@pytest.mark.parametrize('cancel', [True, False])
+def test_delayed_http_exchange_is_cancelled_or_times_out(monkeypatch, cancel):
+    from structured_data.review_model import post_review
+
+    state = SimpleNamespace(cancelled=False, closed=False)
+
+    async def send(request):
+        if cancel:
+            asyncio.get_running_loop().call_later(.01, setattr, state, 'cancelled', True)
+        try:
+            await asyncio.sleep(5)
+        finally:
+            state.closed = True
+
+    mock_review_transport(monkeypatch, send)
+    with pytest.raises(ReviewModelError) as caught:
+        post_review('https://example.invalid', headers={}, timeout=1 if cancel else .05,
+                    model_timeout=180, cancelled=lambda: state.cancelled, max_bytes=1024, trust_env=False, json={})
+    assert state.closed
+    assert caught.value.public_code == ('MODEL_CANCELLED' if cancel else 'MODEL_TIMEOUT')
+
+
+def test_exhausted_task_deadline_does_not_spend_a_model_request(monkeypatch):
+    from structured_data import ai_review
+
+    monkeypatch.setattr(ai_review, 'time', SimpleNamespace(monotonic=lambda: 100))
+    mock_review_transport(monkeypatch, lambda request: pytest.fail('unexpected model request'))
+    budget = AIRequestBudget()
+    with pytest.raises(ReviewModelError, match='剩余时间'):
+        _request(DASHSCOPE, {}, budget, None, deadline=105)
+    assert budget.used == 0
+
+
+def test_connection_deadline_does_not_claim_the_block_waited_for_inference(monkeypatch):
+    def send(request):
+        raise httpx.ConnectTimeout('private network detail')
+
+    mock_review_transport(monkeypatch, send)
+    with pytest.raises(ReviewModelError) as caught:
+        _request(DASHSCOPE, {}, AIRequestBudget(), None)
+    assert caught.value.public_code == 'MODEL_CONNECTION'
+    assert '180' not in str(caught.value)
 
 
 def test_ai_receives_current_draft_and_error_cell_evidence_without_publishing(tmp_path, monkeypatch):
@@ -147,7 +319,7 @@ def test_prompt_injection_stays_in_untrusted_samples_and_refusal_is_not_a_plan(t
         calls.append(kwargs['json'])
         return httpx.Response(200, request=httpx.Request('POST', url), json={'choices': [{
             'finish_reason': 'stop', 'message': {'content': None, 'refusal': 'no'}}]})
-    monkeypatch.setattr(httpx.Client, 'post', post)
+    mock_review_post(monkeypatch, post)
     result = assist_mapping(manager, record['import_id'], sheet['name'], mapping=candidate)
     assert result['review_state']['status'] == 'needs_review'
     assert len(calls[0]['messages']) == 2
@@ -210,7 +382,7 @@ def test_malformed_or_duplicate_json_never_becomes_a_plan(tmp_path, monkeypatch,
     def post(self, url, **kwargs):
         return httpx.Response(200, request=httpx.Request('POST', url), json={'choices': [{
             'finish_reason': 'stop', 'message': {'content': content}}]})
-    monkeypatch.setattr(httpx.Client, 'post', post)
+    mock_review_post(monkeypatch, post)
     with pytest.raises(ValueError):
         suggest_mapping(manager, record['import_id'], sheet['name'], mapping=candidate)
 
@@ -224,7 +396,7 @@ def test_cancel_after_model_response_does_not_apply_a_valid_proposal(tmp_path, m
         cancelled = True
         return httpx.Response(200, request=httpx.Request('POST', url), json={'choices': [{
             'message': {'content': json.dumps({'column_updates': [], 'block_updates': []})}}]})
-    monkeypatch.setattr(httpx.Client, 'post', post)
+    mock_review_post(monkeypatch, post)
     with pytest.raises(ValueError, match='取消'):
         assist_mapping(manager, record['import_id'], sheet['name'], mapping=candidate, cancelled=lambda: cancelled)
     assert manager.get(record['import_id'])['dataset_id'] == record['dataset_id']

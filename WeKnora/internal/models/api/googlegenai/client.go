@@ -301,7 +301,7 @@ func (c *Client) parseResponse(raw []byte) (*types.ChatResponse, error) {
 		if env.PromptFeedback != nil && env.PromptFeedback.BlockReason != "" {
 			return nil, fmt.Errorf("blocked: %s", env.PromptFeedback.BlockReason)
 		}
-		return nil, fmt.Errorf("no response from API")
+		return nil, api.ErrEmptyCompletion
 	}
 	cand := env.Candidates[0]
 	result := &types.ChatResponse{}

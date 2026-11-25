@@ -127,15 +127,19 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
     assist = assist or assist_mapping
     skip_source_verified = False
 
-    def guard():
+    def ensure_active():
         if cancelled():
             raise _Stopped('cancelled', '已取消；已完成工作表保留，后续工作表未导入。')
         if time.monotonic() >= deadline:
             raise _Stopped('timeout', '批量任务达到时间上限；已导入数据保留，其余工作表待确认。')
+
+    def guard():
+        ensure_active()
         try:
             check_write()
         except Exception:
             raise _Stopped('permission_denied', '编辑权限或知识库归属已改变；停止后续导入，原有数据保留。') from None
+        ensure_active()
 
     def call(action, mapping, **kwargs):
         guard()
@@ -242,8 +246,7 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
 
                     try:
                         proposal = assist(manager, import_id, name, mapping=mapping, budget=budget,
-                            cancelled=lambda: cancelled() or time.monotonic() >= deadline,
-                            progress=ai_progress,
+                            cancelled=cancelled, progress=ai_progress, deadline=deadline,
                             review=lambda candidate: call('review', candidate))
                     finally:
                         sheet_used = budget.used

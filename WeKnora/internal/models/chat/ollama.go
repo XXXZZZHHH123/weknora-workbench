@@ -166,7 +166,7 @@ func (c *OllamaChat) Chat(ctx context.Context, messages []Message, opts *ChatOpt
 	// 记录请求日志
 	logger.GetLogger(ctx).Infof("发送聊天请求到模型 %s", c.modelName)
 
-	var responseContent string
+	var responseContent, reasoningContent string
 	var toolCalls []types.LLMToolCall
 	var promptTokens, completionTokens int
 	var finishReason string
@@ -175,7 +175,9 @@ func (c *OllamaChat) Chat(ctx context.Context, messages []Message, opts *ChatOpt
 	err := c.ollamaService.Chat(ctx, chatReq, func(resp ollamaapi.ChatResponse) error {
 		responseContent = resp.Message.Content
 		// 当 Content 为空但 Thinking 有内容时（如推理模型未正确配置 thinking 参数），使用 Thinking 作为兜底
-		if responseContent == "" && resp.Message.Thinking != "" {
+		if api.IsStructuredReview(ctx) {
+			reasoningContent = resp.Message.Thinking
+		} else if responseContent == "" && resp.Message.Thinking != "" {
 			responseContent = resp.Message.Thinking
 		}
 		toolCalls = c.toolCallTo(resp.Message.ToolCalls)
@@ -208,10 +210,11 @@ func (c *OllamaChat) Chat(ctx context.Context, messages []Message, opts *ChatOpt
 	api.LogUsage(ctx, c.modelName, &usage)
 
 	return &types.ChatResponse{
-		Content:      responseContent,
-		ToolCalls:    toolCalls,
-		FinishReason: finishReason,
-		Usage:        usage,
+		Content:          responseContent,
+		ReasoningContent: reasoningContent,
+		ToolCalls:        toolCalls,
+		FinishReason:     finishReason,
+		Usage:            usage,
 	}, nil
 }
 
