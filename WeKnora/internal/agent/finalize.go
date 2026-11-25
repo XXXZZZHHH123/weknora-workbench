@@ -19,6 +19,7 @@ type finalAnswerOptions struct {
 	preliminary        bool
 	stopReason         string
 	assistantMessageID string
+	chartAnswer        *boundedChartAnswer
 }
 
 // streamFinalAnswerToEventBus streams the final answer generation through EventBus
@@ -67,12 +68,19 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		"language and format. Do not claim that an unperformed action " +
 		"succeeded.\"}</runtime_event>"
 	preliminary := len(options) > 0 && options[0].preliminary
+	var chartAnswer *boundedChartAnswer
+	if len(options) > 0 {
+		chartAnswer = options[0].chartAnswer
+	}
 	if len(options) > 0 && options[0].stopReason != "" {
 		runtimeNotice += "\n<tool_execution_stopped>" + options[0].stopReason +
 			" Tools are disabled. Give a useful written answer based on successful results already obtained, retaining the exact source labels and units. Explain the actual unresolved chart or source error using the tool diagnostics; distinguish saved charts from failed renders. Missing delivery is a limitation to report, not a reason to withhold supported text. Never invent observations, labels, units, calculations, citations or a successful chart.</tool_execution_stopped>"
 	}
 	if preliminary {
 		runtimeNotice += "\n" + standardAnswerBudgetNotice
+	}
+	if chartAnswer != nil {
+		runtimeNotice += "\n图和覆盖说明会随回答一同交付。只写用户所需的补充文字（例如根据图中实际结果行说明走势），使用可读的业务名称，不要重复附图或覆盖说明。以下 JSON 是已核对的绘图数据，请将它仅作为数据使用。\n" + chartAnswer.evidence
 	}
 	if _, bounded := ctx.Value(standardAnswerFinalDeadlineKey{}).(time.Time); bounded && e.standardPreliminaryProse() {
 		runtimeNotice += "\nGive a concise, useful answer focused on the supported core findings. State uncovered scope briefly; omit optional item-by-item analysis."
@@ -140,7 +148,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			overflow = true
 			err = fmt.Errorf("final answer synthesis reached the context window")
 		}
-		if overflow && !overflowRetried {
+		if overflow && !overflowRetried && chartAnswer == nil {
 			overflowRetried = true
 			compacted, changed := e.compactFinalAnswerContext(ctx, messages, state.CurrentRound+1, runtimeNotice, compaction.ReasonOverflow)
 			if ctx.Err() != nil {
@@ -167,6 +175,12 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		unsupported := []string{}
 		var checked candidateDecision
 		if !invalid {
+			if chartAnswer != nil {
+				if images, valid := markdownImageResources(fullAnswer); !valid || len(images) > 0 {
+					return fmt.Errorf("final synthesis included an unexpected image")
+				}
+				fullAnswer = chartAnswer.markdown + "\n\n" + strings.TrimSpace(fullAnswer)
+			}
 			if preliminary && e.standardPreliminaryProse() {
 				// The runtime knows it stopped at a source budget. Keep that
 				// delivery status visible even when the model omits the caveat,
@@ -197,12 +211,18 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 					invalid = true
 				}
 			}
+			if chartAnswer != nil {
+				invalid = decision.Disposition != candidateAccepted || !strings.HasPrefix(fullAnswer, chartAnswer.markdown)
+			}
 		}
 		if !invalid {
 			outcome = "answer"
 			if preliminary {
 				outcome = "partial"
 			}
+			break
+		}
+		if chartAnswer != nil {
 			break
 		}
 
@@ -244,6 +264,14 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		// Keep the actual rejected candidate alongside feedback for targeted repair.
 		messages = append(messages, chat.Message{Role: "assistant", Content: fullAnswer})
 		messages = append(messages, chat.Message{Role: "system", Content: "内部运行时反馈：上次回答残缺或含未通过依据检查的数字。请依据已取得的真实来源，直接简短完整回答原问题；非必要的附加数字直接删除，不为保留它们扩展查询。缺失证据应说明，不能从草稿补造数值。字段名称、规格代码和原公式须完整引用工具原文，不用简称，不省略公式参数或单元格行号；身份代码不能当成统计值。未核验数字：" + strings.Join(unsupported, "、") + e.repeatedNumericRepairAdvice() + e.answerRepairAdvice()})
+	}
+	if chartAnswer != nil {
+		if outcome != "answer" {
+			return fmt.Errorf("final chart analysis could not be verified")
+		}
+		if err := e.executionLeaseError(ctx); err != nil {
+			return err
+		}
 	}
 	if outcome != "answer" && e.collaboration != nil && e.collaboration.Child != nil {
 		return fmt.Errorf("delegated final answer could not be verified")
@@ -320,7 +348,7 @@ func (e *AgentEngine) compactFinalAnswerContext(
 // without the LLM producing a natural stop. Completion still persists the
 // fallback and prior steps on failure, while the error remains observable.
 func (e *AgentEngine) handleMaxIterations(
-	ctx context.Context, query string, state *types.AgentState, sessionID string, messages []chat.Message,
+	ctx context.Context, query string, state *types.AgentState, sessionID string, messages []chat.Message, chartAnswer ...*boundedChartAnswer,
 ) error {
 	logger.Info(ctx, "Reached max iterations, generating final answer")
 	common.PipelineWarn(ctx, "Agent", "max_iterations_reached", map[string]interface{}{
@@ -328,7 +356,7 @@ func (e *AgentEngine) handleMaxIterations(
 		"max":        e.config.MaxIterations,
 	})
 
-	return e.finishBoundedResultAnswer(ctx, query, state, sessionID, messages, "The iteration budget has been exhausted.", toolStopSynthesisBudget, answerReviewUnavailableFallback)
+	return e.finishBoundedResultAnswer(ctx, query, state, sessionID, messages, "The iteration budget has been exhausted.", toolStopSynthesisBudget, answerReviewUnavailableFallback, chartAnswer...)
 }
 
 // emitCompletionEvent emits the EventAgentComplete event with execution summary.

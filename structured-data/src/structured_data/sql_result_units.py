@@ -279,7 +279,7 @@ class _ValueRoleBinder(_Binder):
 def _bound_output_columns(node, source_columns, *, value_roles=False):
     """Reuse the scope binder without changing its source/label guarantees."""
     binder = _ValueRoleBinder([]) if value_roles else _Binder([])
-    binder.source = _Relation([_Column(name, _Dependency(frozenset({name})), 'data')
+    binder.source = _Relation([_Column(name, _Dependency(frozenset({name}), direct_column=name), 'data')
                                for name in source_columns], True)
     return binder.query(node).columns
 
@@ -364,6 +364,8 @@ def describe_excel_dependencies(connection, sql, source_columns, output_count):
             dependencies.append(dict(kind=dep.kind, source_columns=sorted(dep.columns),
                                      source_row_dependency=dep.cardinality,
                                      technical_metadata=metadata))
+            if dep.direct_column == 'series_id':
+                dependencies[-1]['direct_source_column'] = dep.direct_column
         return dependencies, True
     except (KeyError, TypeError, ValueError, RecursionError, duckdb.Error):
         return [dict(kind='unknown', source_columns=[], source_row_dependency=False,

@@ -118,6 +118,37 @@ func (b *Binding) BeforeFinish(ctx context.Context) ([]Event, error) {
 	}
 }
 
+// StopDelegation asks unfinished children to stop while the parent retains
+// authority to finish its own answer. Return events committed through this
+// boundary, including immediate child cancellations.
+func (b *Binding) StopDelegation(ctx context.Context) ([]Event, error) {
+	if b.Child != nil || b.Closing {
+		return nil, ErrConflict
+	}
+	var events []Event
+	var seen int64
+	err := b.Runtime.Store.Change(b.Context(ctx), b.Scope, func(g *Group) error {
+		if g.Status != "active" {
+			return ErrClosed
+		}
+		g.ParentWait = nil
+		stopDelegatedWork(g)
+		events = nil
+		for _, event := range g.Events {
+			if event.Sequence > b.Seen {
+				events = append(events, event)
+			}
+		}
+		seen = g.NextSequence
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	b.Seen = seen
+	return events, nil
+}
+
 // End owns cleanup, including unexpected engine exits and user cancellation.
 // A durable prompt suspension keeps the group open for the resumed engine.
 func (b *Binding) End(suspended bool) {

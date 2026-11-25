@@ -107,7 +107,7 @@ func compactChartMappingLayer(layer map[string]any, depth int) (map[string]any, 
 		view["source_provenance"] = string(encoded)
 	}
 	// Exact long-table projection coordinates cannot be replaced by a digest.
-	for _, key := range []string{"series_row_indexes", "series_labels"} {
+	for _, key := range []string{"series_row_indexes", "series_labels", "series_label_bindings"} {
 		if value, exists := layer[key]; exists {
 			view[key] = value
 		}
