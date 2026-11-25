@@ -299,6 +299,8 @@ from tin.web.report_ppt import router as report_ppt_router
 app.include_router(report_ppt_router)
 from tin.web.report_dimension_drafts import router as report_dimension_drafts_router
 app.include_router(report_dimension_drafts_router)
+from tin.web.report_evidence import router as report_evidence_router
+app.include_router(report_evidence_router)
 from tin.web.affairs import router as affairs_router
 app.include_router(affairs_router)
 from tin.web.monitors import router as monitors_router
@@ -1093,7 +1095,7 @@ def _report_dimensions(session):
     return read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()
 
 
-def _period_download(day, period, markdown=False):
+def _period_download(day, period, markdown=False, *, citation_origin=''):
     from tin.integration.research_profile import research_variety
     from tin.web.report_period import build_period
     from tin.web.report_view import readable_markdown
@@ -1115,7 +1117,8 @@ def _period_download(day, period, markdown=False):
             scope = current_workbench.get()
             title = (scope.metadata.get('name') if scope else None) or '研究工作台'
             body = readable_markdown(payload, title=title + (' 周报' if period == 'weekly' else ' 日报'),
-                                     dimensions=None if frozen else _report_dimensions(s))
+                                     dimensions=None if frozen else _report_dimensions(s),
+                                     citation_origin=citation_origin)
             return StreamingResponse(iter([body.encode('utf-8')]), media_type='text/markdown', headers={
                 'Content-Disposition': f'attachment; filename="research_{period}_{day}.md"'})
         return JSONResponse(payload, headers={
@@ -1128,8 +1131,9 @@ def weekly_report_json(day: str):
 
 
 @app.get('/sn/reports/{day}/weekly.md')
-def weekly_report_markdown(day: str):
-    return _period_download(day, 'weekly', markdown=True)
+def weekly_report_markdown(request: Request, day: str):
+    origin = str(request.base_url.replace(path=''))
+    return _period_download(day, 'weekly', markdown=True, citation_origin=origin)
 
 
 @app.get('/sn/reports/{day}/daily.md')

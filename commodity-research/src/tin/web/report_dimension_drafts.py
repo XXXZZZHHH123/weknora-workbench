@@ -16,7 +16,7 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from tin.web import analysis_jobs, judgment_jobs, strategy_text
+from tin.web import analysis_jobs, judgment_jobs, report_evidence, strategy_text
 from tin.web.report_drafts import DimensionNote, ReportDraft, _no_duplicates, require_scope, validate_period
 
 router = APIRouter(prefix='/api/sn/reports')
@@ -39,6 +39,7 @@ class DraftInput(BaseModel):
     dimension_notes: dict[str, DimensionNote] = Field(default_factory=dict, max_length=36)
     figure_conclusions: dict[str, str] = Field(default_factory=dict, max_length=100)
     summary_text: str = Field(default='', max_length=4000)
+    include_kb_evidence: bool = False
 
 
 def writable_scope():
@@ -386,12 +387,15 @@ async def draft_row(scope, model_id, row, note, *, figure=None):
                                   facts, source_evidence(row))
 
 
-async def draft_summary(scope, model_id, period, view, rows, results):
+async def draft_summary(scope, model_id, period, view, rows, results, cited_ids):
     saved = {row['id']: row for row in view.get('dimension_overview') or []}
     dimensions = []
     for row, result in zip(rows, results):
-        previous = saved.get(row['id'], {})
-        verified = result['status'] == 'ok'
+        identifier = row['id']
+        # Overall conclusions have no citation receipts. Give them the computed
+        # facts, while keeping passage-derived wording and impact in its own row.
+        previous = saved.get(identifier, {}) if identifier not in cited_ids else {}
+        verified = result['status'] == 'ok' and identifier not in cited_ids
         dimensions.append({'label': row['label'], 'facts': source_facts(row),
                            'conclusion': result['text'] if verified else previous.get('sentence', ''),
                            'impact': result['impact'] if verified else previous.get('impact', 'undecided')})
@@ -418,6 +422,12 @@ def report_fingerprint(view):
     values = {key: view.get(key) for key in ('dimension_overview', 'evidence_groups', 'manual_report',
                                            'editable_dimensions', 'dimension_data', 'logic_strategy',
                                            'strategy_overview', 'panels')}
+    manual = values['manual_report'] or {}
+    draft = manual.get('draft') or {}
+    if draft.get('evidence_citations') == []:
+        # The new default must not invalidate already completed uncited drafts.
+        values['manual_report'] = {**manual, 'draft': {
+            key: value for key, value in draft.items() if key != 'evidence_citations'}}
     return judgment_jobs.digest(jsonable_encoder(values))
 
 
@@ -426,7 +436,7 @@ async def draft_dimensions(scope, day, period, body, progress):
     view = await run_in_threadpool(read_report, scope, day, period)
     fingerprint = report_fingerprint(view)
     overview = {row['id']: row for row in view.get('dimension_overview') or []}
-    rows = []
+    rows, evidence_only = [], []
     configured = view.get('editable_dimensions') or list(overview.values())
     for dimension in configured:
         identifier = dimension['id']
@@ -436,17 +446,43 @@ async def draft_dimensions(scope, day, period, body, progress):
         elif note is not None and (note.text.strip() or note.impact != 'undecided'):
             rows.append({'id': identifier, 'label': dimension['label'], 'facts': [], 'evidence': [],
                          'sentence': note.text, 'impact': note.impact})
+        elif body.include_kb_evidence:
+            evidence_only.append({'id': identifier, 'label': dimension['label'], 'facts': []})
+    previous = ((view.get('manual_report') or {}).get('draft') or {}).get('evidence_citations') or []
+    cited_ids = {item['dimension_id'] for item in previous}
+
+    def researcher_text(row, *, for_evidence=False):
+        if row['id'] in cited_ids and (not for_evidence or not row.get('sentence')):
+            return ''
+        note = body.dimension_notes.get(row['id'])
+        return note.text if note is not None else row.get('sentence', '')
+
+    cited_results, receipts, gaps = {}, {}, []
+    await progress('analyzing')
+    if body.include_kb_evidence:
+        evidence_rows = rows + evidence_only
+        try:
+            cited_results, receipts, gaps = await asyncio.wait_for(report_evidence.draft(
+                scope, body.model_id, day, evidence_rows,
+                {row['id']: researcher_text(row, for_evidence=True) for row in evidence_rows},
+                {'workbench': scope.metadata.get('name'), 'title': view.get('report_title')}),
+                timeout=120)
+        except TimeoutError:
+            gaps = ['知识库取证或模型复核超过 120 秒，未生成引用。']
     dimensions, figures, jobs = [], [], []
     semaphore = asyncio.Semaphore(3)
     async def generate_row(row, text, figure=None):
         async with semaphore:
             return await draft_row(scope, body.model_id, row, text, figure=figure)
-    notes = body.dimension_notes
     for row in rows:
-        note = notes.get(row['id'])
-        text = note.text if note is not None else row.get('sentence', '')
         dimensions.append({'id': row['id']})
-        jobs.append((dimensions[-1], generate_row(row, text)))
+        if row['id'] in cited_results:
+            dimensions[-1].update(cited_results[row['id']])
+        else:
+            jobs.append((dimensions[-1], generate_row(row, researcher_text(row))))
+    for row in evidence_only:
+        if row['id'] in cited_results:
+            dimensions.append({'id': row['id'], **cited_results[row['id']]})
     for group in view.get('evidence_groups') or []:
         row = next((value for value in rows if value['id'] == group.get('id')), None)
         if row is None:
@@ -460,13 +496,21 @@ async def draft_dimensions(scope, day, period, body, progress):
                 body.figure_conclusions.get(key, figure.get('conclusion', '')), figure)))
     # Independent dimensions share a small concurrency limit; every call still
     # follows the same model interpretation, validation and audit path.
-    await progress('analyzing')
     results = await asyncio.gather(*(job for _, job in jobs), return_exceptions=True)
     for (destination, _), result in zip(jobs, results):
+        if body.include_kb_evidence and isinstance(result, HTTPException):
+            destination.update(status='sources_unverified', reason='常规起草或复核失败，未预填。')
+            continue
         if isinstance(result, BaseException):
             raise result
         destination.update(result)
-    summary = await draft_summary(scope, body.model_id, period, view, rows, dimensions)
+    try:
+        summary = await draft_summary(scope, body.model_id, period, view, rows, dimensions,
+                                      cited_ids | receipts.keys())
+    except HTTPException:
+        if not body.include_kb_evidence:
+            raise
+        summary = _unverified('', 'sources_unverified', '总体结论起草或复核未完成，未预填。', summary=True)
     # Detect fact/config/draft changes during generation, so a valid result never
     # becomes a preview of an obsolete or now unreadable source projection.
     await progress('validating')
@@ -475,6 +519,9 @@ async def draft_dimensions(scope, day, period, body, progress):
                 'notice': '起草结果仅供研究员核对；保存后才生效。'}
     if summary is not None:
         response['summary'] = summary
+    if body.include_kb_evidence:
+        response['_evidence_receipts'] = receipts
+        response['evidence_gaps'] = gaps
     return response
 
 
@@ -484,7 +531,26 @@ async def verify_draft_result(scope, body, result):
         raise HTTPException(409, '报告事实或来源已变化，请刷新后重新起草；草稿尚未保存')
 
 
+async def project_draft_result(scope, value):
+    result = value['result']
+    if '_evidence_receipts' not in result:
+        return result
+    # The job keeps signed receipts. Re-read the passages whenever an editor
+    # opens the result, including after a reload or permission change.
+    receipts = {identifier: report_evidence.EvidenceCitation.model_validate(receipt)
+                for identifier, receipt in result['_evidence_receipts'].items()}
+    evidence = await report_evidence.preview(scope, value['request']['day'], receipts)
+    for item in result['dimensions']:
+        if item['id'] in receipts and item['id'] not in evidence:
+            item.update(text='', impact='undecided', status='sources_unverified',
+                        reason='段落版本或授权已变化，需重新核对。')
+    if len(evidence) != len(receipts):
+        result['evidence_gaps'].append('部分段落版本或授权已变化，相关文字未预填。')
+    return {**result, 'evidence': evidence}
+
+
 analysis_jobs.result_checks[PURPOSE] = verify_draft_result
+analysis_jobs.result_views[PURPOSE] = project_draft_result
 
 
 async def run_draft(scope, payload, progress, job_id):
@@ -515,5 +581,8 @@ async def generate(day: str, period: str, request: Request):
                     figure_conclusions=body.figure_conclusions)
     except (UnicodeError, ValueError, TypeError, ValidationError, RecursionError):
         raise HTTPException(422, '请填写有效模型、每维度200字以内的文字与影响选择') from None
-    payload = {**body.model_dump(mode='json'), 'day': day, 'period': period}
+    if body.include_kb_evidence and period != 'weekly':
+        raise HTTPException(422, '知识库证据仅用于周报起草')
+    excluded = {'include_kb_evidence'} if not body.include_kb_evidence else None
+    payload = {**body.model_dump(mode='json', exclude=excluded), 'day': day, 'period': period}
     return await analysis_jobs.start_job(scope, PURPOSE, payload, request.headers.get('idempotency-key'), run_draft)

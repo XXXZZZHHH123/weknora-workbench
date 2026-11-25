@@ -15,8 +15,53 @@ document.addEventListener("DOMContentLoaded", () => {
   const impactLabels = {bullish: "偏多", bearish: "偏空", neutral: "中性", undecided: "未判断"};
   const dimensions = Array.isArray(initial.dimensions) ? initial.dimensions : [];
   const dimensionInputs = new Map(), conclusionInputs = new Map();
-  let modelsLoaded = false, keepEditor = false, openedEditor, loadedSetup = false;
+  const evidencePreviews = new Map();
+  let modelsLoaded = false, keepEditor = false, openedEditor, submittedNotes, loadedSetup = false;
   const setup = window.WorkbenchSetupReview;
+  function renderEvidence(identifier, host) {
+    host.replaceChildren();
+    const citation = draft.evidence_citations.find(item => item.dimension_id === identifier);
+    if (!citation) return;
+    const preview = evidencePreviews.get(identifier);
+    if (preview?.notice) host.append(node("p", preview.notice, "report-dimension-draft-status"));
+    for (const source of preview?.sources || []) {
+      const label = [source.title, source.location].filter(Boolean).join(" · ");
+      host.append(node("p", label, "report-muted"));
+      if (source.excerpt) host.append(node("p", "“" + source.excerpt + "”"));
+      const dates = node("p", source.date_label || "", "report-muted");
+      if (source.background_hint) {
+        const tag = node("small", "背景资料", "report-citation-tag");
+        tag.title = source.background_hint;
+        dates.append(" ", tag);
+      }
+      if (dates.textContent.trim()) host.append(dates);
+      if (typeof source.text !== "string" && !source.ingested_at) continue;
+      const details = node("details");
+      details.append(node("summary", typeof source.text === "string" ? "查看原文" : "详情"));
+      if (source.ingested_at) details.append(node("p", "入库时间 " + source.ingested_at, "report-muted"));
+      if (typeof source.text === "string") details.append(node("p", source.text, "research-prose whitespace-pre-wrap"));
+      host.append(details);
+    }
+    const remove = node("button", "清除引用及对应原句", "report-button");
+    remove.type = "button";
+    remove.addEventListener("click", () => {
+      const editor = dimensionInputs.get(identifier);
+      editor.input.value = "";
+      editor.influence.value = "undecided";
+      draft.dimension_notes[identifier] = {text: "", impact: "undecided"};
+      draft.evidence_citations = draft.evidence_citations.filter(item => item.dimension_id !== identifier);
+      evidencePreviews.delete(identifier);
+      editor.message.textContent = "";
+      renderEvidence(identifier, host);
+    });
+    host.append(remove);
+  }
+  function showGaps(gaps) {
+    const host = get("evidence-gaps");
+    if (!host) return;
+    host.replaceChildren(...gaps.map(gap => node("li", gap)));
+    host.hidden = gaps.length === 0;
+  }
   function renderDimensions() {
     const host = get("dimension-editors"); if (!host) return; host.replaceChildren(); dimensionInputs.clear();
     for (const dimension of dimensions) {
@@ -33,9 +78,30 @@ document.addEventListener("DOMContentLoaded", () => {
       input.placeholder = "该维度本期的结论：变化意味着什么、对价格偏多还是偏空、原因（≤200字）";
       input.setAttribute("aria-label", `${dimension.label}的本期结论`);
       const update = () => { draft.dimension_notes[dimension.id] = {text: input.value, impact: influence.value}; };
-      input.addEventListener("input", update); influence.addEventListener("change", update);
       const message = node("p", "", "report-dimension-draft-status"); message.dataset.draftStatus = dimension.id;
-      row.append(input, message); host.append(row); dimensionInputs.set(dimension.id, {input, influence, message});
+      const evidence = node("div");
+      input.addEventListener("input", () => {
+        update();
+        if (draft.evidence_citations.some(item => item.dimension_id === dimension.id)) {
+          evidencePreviews.set(dimension.id, {notice: "原句已编辑，证据对应关系需重新核对。"});
+          renderEvidence(dimension.id, evidence);
+        }
+      });
+      influence.addEventListener("change", update);
+      row.append(input, message, evidence); host.append(row);
+      dimensionInputs.set(dimension.id, {input, influence, message, evidence});
+      renderEvidence(dimension.id, evidence);
+    }
+    for (const citation of draft.evidence_citations) {
+      if (dimensionInputs.has(citation.dimension_id)) continue;
+      const row = node("div", undefined, "report-dimension-editor"), input = node("textarea");
+      input.hidden = true;
+      const influence = node("select");
+      const message = node("p", "该维度已删除，证据对应关系需重新核对。", "report-dimension-draft-status");
+      const evidence = node("div");
+      row.append(message, evidence); host.append(row);
+      dimensionInputs.set(citation.dimension_id, {input, influence, message, evidence});
+      renderEvidence(citation.dimension_id, evidence);
     }
     if (!dimensions.length) host.append(node("p", "暂无可编辑维度，请先配置本研究台研究维度。", "report-muted"));
   }
@@ -82,19 +148,37 @@ document.addEventListener("DOMContentLoaded", () => {
     accept: job => job.context?.day === initial.date && job.context?.period === initial.period,
     present(result, {restored}) {
       const prior = restored ? openedEditor : result.request;
-      const before = prior.dimension_notes;
+      const before = restored ? prior.dimension_notes : submittedNotes;
       const beforeFigures = prior.figure_conclusions;
       const beforeSummary = prior.summary_text ?? "";
       summaryMessage.textContent = "";
       for (const item of dimensionInputs.values()) item.message.textContent = "";
       for (const item of conclusionInputs.values()) item.message.textContent = "";
       if (!Array.isArray(result.dimensions)) throw new Error("模型起草响应无效，原有编辑内容保持不变。");
+      showGaps(result.evidence_gaps || []);
       let filled = 0, rejected = 0, changed = 0;
       for (const item of result.dimensions) {
         const editor = dimensionInputs.get(item.id); if (!editor) continue;
         if (item.status !== "ok") { editor.message.textContent = item.reason || (item.status === "numbers_unverified" ? "数字待核对" : "来源待核对"); rejected++; continue; }
         if (draft.dimension_notes[item.id]?.text !== before[item.id]?.text || draft.dimension_notes[item.id]?.impact !== before[item.id]?.impact) { editor.message.textContent = "起草期间此维度已修改，保留研究员内容。"; changed++; continue; }
         if (typeof item.text !== "string" || item.text.length > 200 || !Object.hasOwn(impactLabels, item.impact)) { editor.message.textContent = "模型返回格式无效，未填入。"; rejected++; continue; }
+        const proof = result.evidence?.[item.id];
+        const previous = draft.evidence_citations.find(ref => ref.dimension_id === item.id);
+        if (previous && !proof) {
+          editor.message.textContent = "此维度已有引用，保留原句。可重新取证，或清除引用及对应原句。";
+          changed++; continue;
+        }
+        if (proof) {
+          const citations = [...draft.evidence_citations.filter(ref => ref.dimension_id !== item.id), proof.receipt];
+          const fingerprints = new Set(citations.flatMap(ref => ref.passages.map(passage => passage.fingerprint)));
+          if (fingerprints.size > 8) {
+            editor.message.textContent = "报告的引用段落已达到 8 段上限，请先清除不再需要的引用及对应原句。";
+            rejected++; continue;
+          }
+          draft.evidence_citations = citations;
+          evidencePreviews.set(item.id, {sources: proof.sources});
+          renderEvidence(item.id, editor.evidence);
+        }
         editor.input.value = item.text; editor.influence.value = item.impact;
         draft.dimension_notes[item.id] = {text: item.text, impact: item.impact}; filled++;
       }
@@ -129,9 +213,15 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!draft || saving || reportJob.busy) return;
     const model = get("draft-model").value;
     if (!model) { status("请先选择起草模型。"); if (!modelsLoaded) loadModels(); return; }
+    submittedNotes = structuredClone(draft.dimension_notes);
+    const notes = {...submittedNotes};
+    // Keep cited notes in the editor without copying them into the background request.
+    for (const citation of draft.evidence_citations) delete notes[citation.dimension_id];
+    showGaps([]);
     void reportJob.submit(`/api/sn/reports/${encodeURIComponent(initial.date || draft.date)}/${encodeURIComponent(initial.period || draft.period)}/draft-dimensions`, {
-      model_id: model, dimension_notes: structuredClone(draft.dimension_notes),
+      model_id: model, dimension_notes: notes,
       figure_conclusions: structuredClone(draft.figure_conclusions), summary_text: draft.sections.summary.text,
+      include_kb_evidence: Boolean(get("include-kb-evidence")?.checked),
     });
   });
   function writeSection() {
@@ -268,6 +358,11 @@ document.addEventListener("DOMContentLoaded", () => {
     draft.sections.summary ||= {visible: true, text: ""};
     draft.sections.summary.text ??= "";
     draft.dimension_notes = draft.dimension_notes || {}; draft.figure_conclusions = draft.figure_conclusions || {};
+    draft.evidence_citations = draft.evidence_citations || [];
+    evidencePreviews.clear();
+    for (const [id, check] of Object.entries(initial.evidence_checks || {})) evidencePreviews.set(id, check);
+    if (get("include-kb-evidence")) get("include-kb-evidence").checked = false;
+    showGaps([]);
     for (const dimension of dimensions) if (!draft.dimension_notes[dimension.id]) draft.dimension_notes[dimension.id] = {text: "", impact: "undecided"};
     openedEditor = structuredClone({dimension_notes: draft.dimension_notes, figure_conclusions: draft.figure_conclusions,
       summary_text: draft.sections.summary.text});

@@ -60,7 +60,7 @@ class Failure(_Input):
     reason: StrictStr
 
 
-def read_report_view(scope, day, period):
+def read_report_view(scope, day, period, *, allow_unavailable_references=False, project_evidence=True):
     """Retain the page's projection, saved source versions and archive behavior."""
     from sqlalchemy import select
     from tin.integration.research_profile import research_variety
@@ -85,11 +85,14 @@ def read_report_view(scope, day, period):
     if not frozen:
         with web._page_session('reports', day=through,
                                points_per_series=8 if period == 'weekly' else 2) as session:
-            payload = build_period(session, research_variety(session), through, period)
+            if project_evidence:
+                payload = build_period(session, research_variety(session), through, period)
+            else:
+                payload = build_period(session, research_variety(session), through, period, project_evidence=False)
             names = dict(session.execute(select(Indicator.series_id, Indicator.name)).all())
             catalog = deepcopy(session.info.get('knowledge_facts_catalog') or {})
             dimensions = web._report_dimensions(session)
-        if (payload.get('manual_report') or {}).get('unavailable_references'):
+        if not allow_unavailable_references and (payload.get('manual_report') or {}).get('unavailable_references'):
             raise HTTPException(409, '报告引用已不可读，请先在报告中调整引用再导出')
     view = present_snapshot(payload, names, dimensions=dimensions)
     observations = {row['series_id']: row for row in view.get('observations') or []}
@@ -209,6 +212,8 @@ async def export_report_ppt(day: str, period: str, request: Request):
     scope = require_scope()  # Reading a report is sufficient; no editor gate.
     validate_period(day, period)
     view = await run_in_threadpool(read_report_view, scope, day, period)
+    if ((view.get('manual_report') or {}).get('draft') or {}).get('evidence_citations'):
+        raise HTTPException(409, '带逐条证据的周报请下载 Markdown，PPT 暂未支持引用脚注')
     figures = view.get('report_figures') or []
     maximum = max(256 * 1024, len(figures) * MAX_PNG_BYTES + 256 * 1024)
     length = request.headers.get('content-length')

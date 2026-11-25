@@ -120,7 +120,7 @@ def report_figures(date: str, period: str = 'daily', revision: int | None = None
     through = validate_period(date, period)
     with artifact_session(scope) as results:
         engine = results.get_bind()
-        saved = load_report(results, scope, date, period, strict=True)
+        saved = load_report(results, scope, date, period, strict=True, project_evidence=False)
         if revision is not None and (saved is None or saved['revision'] != revision):
             raise HTTPException(409, '报告选图已有新版本，请重新打开')
         snapshots = saved['draft']['reference_snapshots'] if saved else []
@@ -151,7 +151,7 @@ def report_manifest(scope, day, period, revision=None):
         raise HTTPException(409, '当前来源授权不支持有界报告图表，请重新打开研究台更新授权')
     with artifact_session(scope) as results:
         engine = results.get_bind()
-        saved = load_report(results, scope, day.isoformat(), period, strict=True)
+        saved = load_report(results, scope, day.isoformat(), period, strict=True, project_evidence=False)
         if revision is not None and (saved is None or saved['revision'] != revision):
             raise HTTPException(409, '报告选图已有新版本，请重新打开')
     with page_read_scope('reports', day=day, points_per_series=8 if period == 'weekly' else 2):

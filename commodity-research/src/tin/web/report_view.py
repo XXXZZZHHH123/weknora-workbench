@@ -1,5 +1,8 @@
 """Readable views and Markdown from actual report records, without inference."""
 from copy import deepcopy
+from decimal import Decimal
+from html import escape
+
 from tin.judgments.quantity_alignment import conversion_text
 from tin.web.number_format import format_number, source_decimals
 from tin.web.research_display import human_text, indicator_name, condition_text
@@ -284,6 +287,7 @@ def present_snapshot(payload, names=None, *, dimensions=None):
     result.update(_workflow_view(result, payload, names))
     from tin.web.report_one_page import present_one_page
     result.update(present_one_page(payload, result, dimensions))
+    _weekly_citations(result)
     return result
 
 
@@ -332,6 +336,7 @@ def _workflow_view(view, payload, names):
             'figures': figures, 'references': []}
     for key in ('dimension_notes', 'figure_conclusions'):
         draft[key] = deepcopy((saved or {}).get(key) or {})
+    draft['evidence_citations'] = deepcopy((saved or {}).get('evidence_citations') or [])
     if (saved or {}).get('layout'):
         draft['layout'] = deepcopy(saved['layout'])
     from tin.web.report_charts import collect_figures
@@ -350,9 +355,60 @@ def _workflow_view(view, payload, names):
         'report_title': saved.get('title') if saved else None}
 
 
+def _weekly_citations(view):
+    checks = deepcopy((view.get('manual_report') or {}).get('evidence_checks') or {})
+    view['evidence_checks'] = checks
+    view['evidence_notes'] = notes = []
+    if not checks or not view['panels']['summary']['visible']:
+        return
+    from tin.integration.identity import research_prefix
+    saved = view['manual_report']['draft']
+    passages = {item['dimension_id']: item['passages'] for item in saved['evidence_citations']}
+    prefix, day = research_prefix(), saved['date']
+    route = f"{prefix}/api/sn/reports/{day}/weekly/evidence"
+    report_url = f"{prefix}/sn/reports?period=weekly&date={day}"
+    for row in view['dimension_overview']:
+        check = checks.get(row['id'])
+        if not check:
+            continue
+        row['citation_notice'] = check.get('notice')
+        row['citations'] = citations = []
+        if row['citation_notice']:
+            continue
+        for fact in check.get('facts') or []:
+            baseline = fact.get('baseline') or {}
+            unit = fact.get('unit') or ''
+            observations = [(baseline.get('date'), baseline.get('value')),
+                            (fact.get('date') or fact.get('latest_date'), fact.get('latest'))]
+            fields = [f'{stamp[:10]} 为 {_citation_value(value)} {unit}'.rstrip() for stamp, value in observations
+                      if stamp and value is not None]
+            text = fact.get('name') or '计算事实'
+            if fields:
+                text += '：' + ' → '.join(fields)
+            note = {'text': text, 'number': len(notes) + 1,
+                    'data_url': f"{report_url}#report-facts-{row['id']}"}
+            citations.append(note)
+            notes.append(note)
+        for index, (source, ref) in enumerate(zip(check.get('sources') or [], passages.get(row['id'], []))):
+            note = {**source, 'number': len(notes) + 1,
+                    'read_url': f"{route}/{row['id']}/{index}?version={ref['fingerprint']}"}
+            citations.append(note)
+            notes.append(note)
+
+
+def _citation_value(value):
+    text = format(Decimal(str(value)), 'f')
+    return text.rstrip('0').rstrip('.') if '.' in text else text
+
+
 def _md(value):
     # Source text is content in exported Markdown, never active HTML or table syntax.
     return _plain(value).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('|', '\\|').replace('\n', ' ')
+
+
+def _citation_md(value):
+    return escape(_plain(value).replace('\n', ' '), quote=False).translate(
+        str.maketrans({char: f'&#{ord(char)};' for char in '[]`*_\\~'}))
 
 
 def _md_lines(text):
@@ -486,7 +542,7 @@ def _strategy_lines(view):
     return lines
 
 
-def readable_markdown(payload, *, title='研究报告', names=None, dimensions=None):
+def readable_markdown(payload, *, title='研究报告', names=None, dimensions=None, citation_origin=''):
     """One-page overview and evidence, followed by the preserved full records."""
     view = present_snapshot(payload, names, dimensions=dimensions)
     manual = view['manual_report']
@@ -537,6 +593,28 @@ def readable_markdown(payload, *, title='研究报告', names=None, dimensions=N
         lines.append('- ' + _md(item['name']) + ' · `' + _md(item['series_id']).replace('`', '') + '` · '
                      + _md(item.get('as_of')) + ' · ' + _md(item.get('source')))
     lines += ['', '</details>', '']
+    if any(check.get('notice') for check in view['evidence_checks'].values()):
+        lines += ['> 部分逐条引用需重新核对。', '']
+    if view['evidence_notes']:
+        from urllib.parse import quote
+
+        def link_url(value):
+            return quote(value, safe=':/?&=%#@+;,~._-')
+
+        lines += ['## 逐条引用', '']
+        for note in view['evidence_notes']:
+            if note.get('read_url'):
+                fields = [note['title'], note['location'], f"“{note['excerpt']}”", note['date_label']]
+                definition = ' · '.join(_citation_md(field) for field in fields if field)
+                link = link_url(citation_origin + note['read_url'])
+                definition += f' · [查看原文](<{link}> "SHA-256 {note["content_sha256"]}")'
+                if note['url']:
+                    definition += f' · [原网页](<{link_url(note["url"])}>)'
+            else:
+                link = link_url(citation_origin + note['data_url'])
+                definition = _citation_md(note['text']) + f' · [查看数据](<{link}>)'
+            lines.append(f"[^e{note['number']}]: {definition}")
+        lines.append('')
     return '\n'.join(lines)
 
 
@@ -553,9 +631,12 @@ def _one_page_lines(view):
             facts = '；'.join(fact.get('latest_text', fact['text']) if row.get('no_update') else fact['text']
                             for fact in row['facts'])
             changes = '；'.join(filter(None, (row.get('change_summary'), facts))) or '暂无可用本期指标'
-            lines.append('| ' + ' | '.join(_md(value) for value in (
-                row['label'], changes,
-                row['sentence'], row['impact_label'], f"支持 {row['support_count']} / 反对 {row['oppose_count']}")) + ' |')
+            sentence = _md(row['sentence'])
+            if row.get('citation_notice'):
+                sentence += '（' + _md(row['citation_notice']) + '）'
+            sentence += ''.join(f"[^e{note['number']}]" for note in row.get('citations') or [])
+            lines.append('| ' + ' | '.join((_md(row['label']), _md(changes), sentence,
+                _md(row['impact_label']), f"支持 {row['support_count']} / 反对 {row['oppose_count']}")) + ' |')
         lines.append('')
         for row in view['dimension_overview']:
             if row.get('warnings'):
