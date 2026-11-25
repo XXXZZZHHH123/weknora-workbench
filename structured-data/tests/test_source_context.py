@@ -102,7 +102,7 @@ def lookup_source(tmp_path):
     return publish
 
 
-def test_cross_sheet_exact_lookup_reaches_binding_and_refreshes_old_cache(lookup_source):
+def test_cross_sheet_exact_lookup_reaches_binding_and_refreshes_old_cache(lookup_source, monkeypatch):
     formula = "=VLOOKUP(A12,'期货 行情'!A:H,2,0)"
     store, dataset = lookup_source(formula)
     rows = store.catalog(dataset, sheet='期货 行情')
@@ -123,18 +123,32 @@ def test_cross_sheet_exact_lookup_reaches_binding_and_refreshes_old_cache(lookup
     cache_path.write_text(json.dumps({'stamp': old_stamp, 'contexts': {}}))
     calls = []
 
-    def model(payload):
-        calls.append(payload)
+    def complete(_config, messages, **_options):
+        calls.append(messages)
+        system, user = messages
+        assert system['role'] == 'system' and user['role'] == 'user'
+        prompt = system['content']
+        assert '表头、维度及按键等值引用共同确认所问已有序列时，选择被引原列' in prompt
+        assert '统计和作图用原列范围内的非空观测' in prompt
+        assert '用户指定的表、字段或构造方法优先' in prompt
+        assert '差值、换算和模糊匹配不能确认等值' in prompt
+        assert '选择已有序列无需证明其全历史编制规则' in prompt
+        assert '结合实际证据仍有会改变任务的未解歧义时才clarify' in prompt
+        payload = json.loads(user['content'])
+        assert payload['question'] == '某某的主力合约收盘价'
         group, = payload['source_groups']
         candidates = {candidate['series_id']: candidate for candidate in group}
         assert set(candidates) == {'main', 'month'}
         assert candidates['main']['source_context']['referenced_by'] == [evidence]
         assert 'referenced_by' not in candidates['month']['source_context']
-        return {'decision': 'resolved', 'bindings': [
-            {'considered_ids': list(candidates), 'selected_ids': ['main'],
-             'reason': '派生表的活跃收盘价表头和精确查找公式指向该列'}]}
+        reply = {'decision': 'resolved', 'bindings': [
+            {'considered_ids': list(candidates), 'selected_ids': payload['requested_series_ids'],
+             'reason': 'Fixture response to exercise the binding protocol.'}]}
+        return {'choices': [{'message': {'content': json.dumps(reply)}, 'finish_reason': 'stop'}]}
 
-    assert verify_selection(store, dataset, ['main'], '某某的主力合约收盘价', model) is None
+    monkeypatch.setattr('structured_data.model_settings.read_model', lambda _root: {'native_model_id': 'fixture'})
+    monkeypatch.setattr('structured_data.model_gateway.complete', complete)
+    assert verify_selection(store, dataset, ['main'], '某某的主力合约收盘价') is None
     assert len(calls) == 1
     assert json.loads(cache_path.read_text()) == current
     assert store.manifest(dataset) == manifest

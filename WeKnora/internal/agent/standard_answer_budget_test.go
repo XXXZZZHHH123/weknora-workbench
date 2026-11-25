@@ -75,7 +75,11 @@ func TestStandardAnswerBudgetEightSourceRoundsUseOneCheckedFinalSynthesis(t *tes
 	require.Equal(t, standardAnswerToolRounds, reader.calls)
 	require.Len(t, model.calls, standardAnswerToolRounds+1, "only one synthesis follows the eight real tool barriers")
 	require.Equal(t, candidate+" "+gap, state.FinalAnswer)
-	require.Contains(t, model.opts[len(model.opts)-1].RuntimeNotice, standardAnswerBudgetNotice)
+	notice := model.opts[len(model.opts)-1].RuntimeNotice
+	require.Contains(t, notice, standardAnswerBudgetNotice)
+	require.Contains(t, notice, "逐值对应实际来源、指标和观测期")
+	require.Contains(t, notice, "缺数时给同口径最近的已核值、日期和出处，确无同口径已核值时给已证事实及出处")
+	require.Contains(t, notice, "点明实际核对范围内的缺口，当轮交付，无需请用户补材料")
 	require.Equal(t, "none", model.opts[len(model.opts)-1].ToolChoice)
 	require.True(t, e.candidateApprovalCurrent(state.FinalAnswer, state))
 	require.Len(t, e.finalAnswerKnowledgeReferences(state), 1)
