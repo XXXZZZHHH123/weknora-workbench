@@ -27,7 +27,7 @@ import json,sys
 from types import SimpleNamespace
 from jinja2 import Environment,FileSystemLoader,DictLoader,ChoiceLoader,select_autoescape
 data=json.load(sys.stdin)
-host='''<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/static/app.css"><style>[hidden]{display:none!important}body{margin:0}main{max-width:1440px;margin:16px auto;padding:0 16px}</style><script>window.RESEARCH_PREFIX='/research/workbenches/fixture';window.researchFetch=(url,options)=>fetch(url,options)</script></head><body><main>{% block main %}{% endblock %}</main></body></html>'''
+host='''<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/static/app.css"><style>[hidden]{display:none!important}body{margin:0}main{max-width:1440px;margin:16px auto;padding:0 16px}</style><script>window.RESEARCH_PREFIX='/research/workbenches/fixture';window.RESEARCH_CONTEXT={workbench:'fixture'};window.researchFetch=(url,options)=>fetch(url,options)</script><script src="/static/analysis-jobs.js"></script></head><body><main>{% block main %}{% endblock %}</main></body></html>'''
 env=Environment(loader=ChoiceLoader([DictLoader({'base.html':host}),FileSystemLoader(sys.argv[1])]),autoescape=select_autoescape(['html']))
 env.globals.update(research_workbench=lambda:SimpleNamespace(metadata=SimpleNamespace(name='隔离研究台')),research_prefix=lambda:'/research/workbenches/fixture',research_static_prefix=lambda:'',static_version=lambda:'tools-fixture',human_text=lambda x,names=None:str(x or ''))
 [a,plan]=data
@@ -41,7 +41,7 @@ assert.match(rendered.stdout, /id="strategy-workspace-data"|strategy-workspace/)
 (async () => {
   const browser = await chromium.launch({headless: true, ...(process.env.SHEET_REVIEW_BROWSER ? {executablePath: process.env.SHEET_REVIEW_BROWSER} : {}),
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--renderer-process-limit=1']});
-  const failures = [], calls = []; let page;
+  const failures = [], calls = [], jobs = new Map(); let page;
   try {
     page = await browser.newPage({viewport: {width: 1280, height: 900}});
     page.setDefaultTimeout(10000);
@@ -80,12 +80,29 @@ assert.match(rendered.stdout, /id="strategy-workspace-data"|strategy-workspace/)
       }
       if (endpoint === '/strategies/models') return route.fulfill({json: {models: [{id: 'synthetic-model', name: '合成通用模型'}]}});
       if (endpoint === '/strategies/' + planRecord.id && method === 'GET') return route.fulfill({json: planRecord});
+      const submit = (purpose, result) => {
+        const id = 'strategy-fixture-job-' + (jobs.size + 1);
+        const job = {id, purpose, state: 'succeeded', workbench_id: 'fixture'};
+        jobs.set(id, {...result, job, request: request.postDataJSON()});
+        return route.fulfill({status: 202, json: {...job, state: 'queued'}});
+      };
+      if (endpoint === '/analysis-jobs/latest') return route.fulfill({json: {job: null}});
+      if (endpoint.startsWith('/analysis-jobs/')) {
+        const [, , id, result] = endpoint.split('/');
+        return route.fulfill({json: result ? jobs.get(id) : jobs.get(id).job});
+      }
+      if (endpoint === '/strategies/generate' && method === 'POST')
+        return submit('strategy_generation', {status: 'generated', strategies: [planRecord.plan]});
+      if (endpoint.startsWith('/strategies/generated/') && method === 'POST') {
+        assert.equal(request.postDataJSON().candidate, 0);
+        return route.fulfill({json: planRecord});
+      }
       if (endpoint === '/research-strategies/draft-from-text' && method === 'POST') {
         const body = request.postDataJSON();
         assert.equal(body.model_id, 'synthetic-model');
-        if (body.text.includes('两份')) return route.fulfill({json: {cards: [{body: drafted, notes: []}, {body: drafted, notes: []}],
-          markdown: '# 策略方案\n\n## 累库撤回方案\n- 方向：偏空观察\n- 复核日期：2030-01-31\n\n### 适用 / 触发\nA\n\n### 暂停 / 撤回\nB\n\n## 新方案\n- 复核日期：2030-01-31\n\n### 适用 / 触发\nC\n\n### 暂停 / 撤回\nD\n'}});
-        return route.fulfill({json: {cards: [{body: drafted, notes: ['依据研判按所引研判条件设置。']}]}});
+        if (body.text.includes('两份')) return submit('strategy_text', {cards: [{body: drafted, notes: []}, {body: drafted, notes: []}],
+          markdown: '# 策略方案\n\n## 累库撤回方案\n- 方向：偏空观察\n- 复核日期：2030-01-31\n\n### 适用 / 触发\nA\n\n### 暂停 / 撤回\nB\n\n## 新方案\n- 复核日期：2030-01-31\n\n### 适用 / 触发\nC\n\n### 暂停 / 撤回\nD\n'});
+        return submit('strategy_text', {cards: [{body: drafted, notes: ['依据研判按所引研判条件设置。']}]});
       }
       const selected = endpoint.match(/^\/research-strategies\/([a-f0-9-]+)$/);
       if (selected && records.has(selected[1])) return route.fulfill({json: records.get(selected[1])});
@@ -121,6 +138,10 @@ assert.match(rendered.stdout, /id="strategy-workspace-data"|strategy-workspace/)
     await md.locator('#strategy-markdown-check').click();
     await md.locator('.strategy-markdown-error').filter({hasText: '方向无法识别'}).waitFor();
     assert.equal(await apply.isDisabled(), true);
+    await text.fill(exported.replace('等待验证', '另一个未检查的方向'));
+    page.once('dialog', dialog => dialog.accept());
+    await md.locator('#strategy-markdown-export').click();
+    await md.locator('#strategy-markdown-status').filter({hasText: '已导出 1 份方案'}).waitFor();
     await md.locator('[data-tool-close]').first().click();
 
     // 文字整理: one card opens as an unsaved draft in the form with its citation and notes.
@@ -211,6 +232,18 @@ assert.match(rendered.stdout, /id="strategy-workspace-data"|strategy-workspace/)
     assert.equal(await page.locator('#plan-edit-thesis').inputValue(), planRecord.plan.thesis);
     assert.equal(await planDiscard.isHidden(), true);
     assert.equal(calls.filter(row => /^(POST|PATCH|DELETE) \/strategies(?:\/|$)/.test(row)).length, 0, 'Discarding never saves or deletes a transaction plan');
+    await page.locator('.strategy-generation-menu summary').click();
+    await page.locator('#generate-strategies').click();
+    const candidate = page.locator('#strategy-generation-preview');
+    await candidate.getByRole('heading', {name: planRecord.title}).waitFor();
+    const id = [...jobs.keys()].at(-1);
+    assert.equal(calls.filter(row => row.startsWith('POST /strategies/generated/')).length, 0);
+    await page.goto(origin + '/sn/strategies?analysis_job=' + id, {waitUntil: 'networkidle'});
+    await candidate.getByRole('heading', {name: planRecord.title}).waitFor();
+    assert.equal(calls.filter(row => row.startsWith('POST /strategies/generated/')).length, 0, 'Retrieval never creates a strategy');
+    await candidate.getByRole('button', {name: '确认保存为独立草稿'}).click();
+    await candidate.getByRole('button', {name: '草稿已保存'}).waitFor();
+    assert.equal(calls.filter(row => row.startsWith('POST /strategies/generated/')).length, 1);
     assert.deepEqual(failures, []);
     console.log('PASS real Chromium: Markdown/text tools and discarding unsaved cards or transaction-plan revisions; synthetic data only.');
   } catch (error) {

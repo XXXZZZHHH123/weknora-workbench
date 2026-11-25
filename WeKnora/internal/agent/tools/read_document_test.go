@@ -140,6 +140,7 @@ func (f *readDocKnowledgeService) ListPagedKnowledgeByKnowledgeBaseID(
 type readDocChunkRepo struct {
 	interfaces.ChunkRepository
 	ordered  []*types.Chunk // document order
+	children []*types.Chunk
 	listErr  error
 	requests []types.Pagination
 }
@@ -167,7 +168,7 @@ func (r *readDocChunkRepo) ListPagedChunksByKnowledgeID(
 }
 
 func (r *readDocChunkRepo) ListChunksByParentIDs(context.Context, uint64, []string) ([]*types.Chunk, error) {
-	return nil, nil
+	return r.children, nil
 }
 
 func (r *readDocChunkRepo) ListChunkNeighbors(

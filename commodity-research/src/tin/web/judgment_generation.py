@@ -28,7 +28,7 @@ from tin.judgments.numbers import exact_float, NumericPrecisionError
 from tin.judgments.markdown import dump_markdown, version_diff
 from tin.judgments.prompt import (GENERAL_METHOD, OUTPUT_PROTOCOL, PROMPT_VERSION, RECALL_PICK_PROTOCOL,
     RECALL_QUERY_PROTOCOL, SELECTION_PROTOCOL)
-from tin.judgments.service import JudgmentError, current, latest, latest_workbench_payload, save_version, to_payload
+from tin.judgments.service import JudgmentError, JudgmentVersionConflict, current, latest, latest_workbench_payload, save_version, to_payload
 from tin.models import AuditLog, Judgment
 from tin.ownership import scope_query, verified_actor
 from tin.integration.identity import current_identity
@@ -40,6 +40,7 @@ router = APIRouter(prefix='/api/sn/judgment')
 PROMPT_BYTES = 160 * 1024
 CANDIDATE_BYTES = 96 * 1024
 GENERATION_SECONDS = 270
+ITEM_EDIT_DRAFT_PREFIX = 'edit.'
 _analysis_progress = ContextVar('judgment_analysis_progress', default=None)
 _source_inventory = ContextVar('judgment_source_inventory', default=None)
 
@@ -74,26 +75,29 @@ class PreviewStore:
         self.items = {}
         self.mutations = {}
 
-    def put(self, scope, value):
+    def put(self, scope, value, *, prefix=''):
         with self.lock:
             now = time.monotonic()
             owner = scope_key(scope)[:3]
             self.items = {key: item for key, item in self.items.items()
-                if item[0] > now and item[1][:3] != owner}
+                if item[0] > now and (item[1][:3] != owner
+                    or key.startswith(ITEM_EDIT_DRAFT_PREFIX) != (prefix == ITEM_EDIT_DRAFT_PREFIX))}
             while len(self.items) >= 16: self.items.pop(next(iter(self.items)))
             self.mutations = {key: lock for key, lock in self.mutations.items() if key in self.items}
-            token = secrets.token_urlsafe(32)
+            token = prefix + secrets.token_urlsafe(32)
             self.items[token] = (now + 900, scope_key(scope), copy.deepcopy(value))
             self.mutations[token] = threading.Lock()
             return token
 
     def get(self, scope, token):
-        if isinstance(token, str) and token.startswith('job.'):
-            from tin.web.judgment_jobs import load_preview
+        from tin.web.judgment_jobs import is_job_token, load_preview
+        if is_job_token(token):
             return load_preview(scope, token)
         with self.lock:
             item = self.items.get(token)
             if not item or item[0] <= time.monotonic() or item[1] != scope_key(scope):
+                if token.startswith(ITEM_EDIT_DRAFT_PREFIX):
+                    raise HTTPException(409, '逐条修改草稿已失效或来源权限已改变，请刷新后重试')
                 raise HTTPException(409, '研究逻辑预览已失效，请重新分析')
             return copy.deepcopy(item[2])
 
@@ -101,6 +105,11 @@ class PreviewStore:
         with self.lock:
             self.items.pop(token, None)
             self.mutations.pop(token, None)
+
+    def belongs_to(self, scope, token):
+        with self.lock:
+            item = self.items.get(token)
+            return bool(item and item[0] > time.monotonic() and item[1][:3] == scope_key(scope)[:3])
 
     def discard(self, scope, token):
         """Remove this owner's unsaved preview; one that is already gone needs nothing more."""
@@ -122,8 +131,8 @@ class PreviewStore:
             return PreviewMutation(self.mutations.setdefault(token, threading.Lock()))
 
     def replace(self, scope, token, value, revision):
-        if isinstance(token, str) and token.startswith('job.'):
-            from tin.web.judgment_jobs import atomic_replace
+        from tin.web.judgment_jobs import atomic_replace, is_job_token
+        if is_job_token(token):
             return atomic_replace(scope, token, value, revision)
         with self.lock:
             item = self.items.get(token)
@@ -420,23 +429,28 @@ async def selection_completion(scope, model, prompt):
         raise
 
 
-async def recalled_catalog(scope, model, catalog, text, inventory):
-    """Per research item: model phrasings, ranked recall from the real catalog, bounded model picks."""
+async def recall_shortlist(scope, model, catalog, text, inventory, *, shared=(), search='',
+                           recommend=False, progress=notify_progress):
     from tin.web import judgment_recall as recall
-    request = recall.query_prompt(text, inventory)
-    if len(request.encode('utf-8')) > PROMPT_BYTES:
-        raise HTTPException(413, '完整资料超过本次指标检索容量，请缩小范围后重试')
-    await notify_progress('selecting')
+    request = recall.query_prompt(text, inventory, catalog, prompt_bytes=PROMPT_BYTES, search=search)
+    await progress('selecting')
     phrased = recall.item_queries(await selection_completion(scope, model, request), inventory)
     index, by_id = recall.catalog_index(catalog), {row['id']: row for row in catalog}
     for per_item in recall.RECALL_STEPS:
-        groups = recall.recall_groups(index, inventory, phrased, per_item)
-        prompt, mapping = recall.pick_request(text, groups, by_id)
+        groups = recall.recall_groups(index, inventory, phrased, per_item, shared=shared, search=search)
+        if not groups:
+            return '', {}
+        prompt, mapping = recall.pick_request(text, groups, by_id, shared=shared, recommend=recommend)
         if len(prompt.encode('utf-8')) <= PROMPT_BYTES:
-            break
-    else:
-        raise HTTPException(413, '完整资料与召回候选超过本次容量，请缩小范围后重试')
-    if not groups:
+            return prompt, mapping
+    raise HTTPException(413, '完整资料与召回候选超过本次容量，请缩小范围后重试')
+
+
+async def recalled_catalog(scope, model, catalog, text, inventory, *, shared=()):
+    """Per research item: model phrasings, ranked recall from the real catalog, bounded model picks."""
+    from tin.web import judgment_recall as recall
+    prompt, mapping = await recall_shortlist(scope, model, catalog, text, inventory, shared=shared)
+    if not mapping:
         return [], True
     await notify_progress('selecting')
     selected = set(recall.picked_ids(await selection_completion(scope, model, prompt), mapping))
@@ -446,7 +460,7 @@ async def recalled_catalog(scope, model, catalog, text, inventory):
     return candidates, True
 
 
-async def choose_catalog(scope, model, catalog, text, *, dimensions=None):
+async def choose_catalog(scope, model, catalog, text, *, dimensions=None, shared=()):
     try:
         make_prompt(analysis_protocol(False, dimensions), catalog, text)
     except HTTPException as error:
@@ -455,7 +469,7 @@ async def choose_catalog(scope, model, catalog, text, *, dimensions=None):
         return catalog, False
     inventory = _source_inventory.get()
     if inventory is not None:
-        return await recalled_catalog(scope, model, catalog, text, inventory)
+        return await recalled_catalog(scope, model, catalog, text, inventory, shared=shared)
     # Without an item inventory, fall back to complete batched catalog selection.
     requests = selection_requests(catalog, text)
     selected = set()
@@ -710,9 +724,10 @@ async def fresh(scope, previous):
             or verified.source_delegations != scope.source_delegations):
         raise HTTPException(409, '研究工作台的知识库来源已改变，请重新分析')
     state = await run_in_threadpool(snapshot, previous['selected_variety']) if previous.get('selected_variety') else await run_in_threadpool(snapshot)
+    saved_dimensions = previous.get('saved_research_dimensions', previous.get('research_dimensions'))
     if (state['fact_version'] != previous['fact_version'] or state['base_version'] != previous['base_version']
             or 'variety' in previous and state.get('variety') != previous['variety']
-            or 'research_dimensions' in previous and state.get('research_dimensions') != previous['research_dimensions']):
+            or saved_dimensions is not None and state.get('research_dimensions') != saved_dimensions):
         raise HTTPException(409, '研究逻辑版本或知识库来源已改变，请刷新后重新分析')
     return state
 
@@ -726,7 +741,7 @@ def chart_targets(payload):
     return targets
 
 
-def serialize(row, session=None, scope=None):
+def serialize(row, session=None, scope=None, *, panels=None):
     if row is None: return None
     payload = to_payload(row)
     from tin.web.judgment_lifecycle import delete_revision
@@ -734,7 +749,8 @@ def serialize(row, session=None, scope=None):
     from tin.web.research_dimensions import read_dimensions
     dimensions = read_dimensions(session) if session is not None and session.info.get('workbench_id') else None
     return {'id': row.id, 'version': row.version, 'status': row.status, 'author': row.author, 'variety': row.variety,
-            'delete_revision': delete_revision(session, scope, row) if session is not None and scope is not None else 0,
+            **({'item_edit_available': row.id not in panels[1]} if panels is not None else {}),
+            'delete_revision': delete_revision(session, scope, row, index=panels) if session is not None and scope is not None else 0,
             'created_at': row.created_at.isoformat(), 'written_at': row.written_at.isoformat(),
             'chart_references': [] if scope is not None and scope.restricted else payload.chart_references,
             'chart_rules': [rule.model_dump(mode='json') for rule in [*payload.thresholds, *payload.falsifiers]],
@@ -745,7 +761,7 @@ def serialize(row, session=None, scope=None):
 @router.get('/manage')
 def manage(variety: str | None = None, judgment_id: int | None = None):
     scope = scope_for_analysis()
-    from tin.web.judgment_panels import judgment_directory, panel_scope, selected_judgment
+    from tin.web.judgment_panels import judgment_directory, panel_index, panel_scope, selected_judgment
     panel_scope()
     with result_session(scope) as session:
         if variety is not None and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,15}', variety):
@@ -768,10 +784,12 @@ def manage(variety: str | None = None, judgment_id: int | None = None):
             .where(Judgment.variety == variety), Judgment, include_deleted=True))
         from tin.web.judgment_lifecycle import delete_revision
         from tin.web.research_dimensions import read_dimensions, summaries
-        return {'variety': variety, 'current': serialize(shown, session, scope), 'latest': {'version': base} if base else None,
+        panels = panel_index(session, scope)
+        return {'variety': variety, 'current': serialize(shown, session, scope, panels=panels), 'latest': {'version': base} if base else None,
                 'research_dimensions': summaries(read_dimensions(session)),
                 'versions': [{'id': row.id, 'version': row.version, 'status': row.status, 'author': row.author,
-                    'delete_revision': delete_revision(session, scope, row)} for row in rows],
+                    'item_edit_available': row.id not in panels[1],
+                    'delete_revision': delete_revision(session, scope, row, index=panels)} for row in rows],
                 'version_total': total, 'versions_partial': total > len(rows), 'can_write': scope.can_edit}
 
 
@@ -799,8 +817,15 @@ def version_detail(version: int, variety: str | None = None, judgment_id: int | 
             if not record_in_workbench(session, scope, 'judgment', str(shown.id), record=shown):
                 shown = None
         from tin.web.research_dimensions import read_dimensions, summaries
-        return {**serialize(row, session, scope), 'research_dimensions': summaries(read_dimensions(session)),
-                'diff': version_diff(to_payload(shown) if shown else None, to_payload(row), dimensions=read_dimensions(session))}
+        from tin.web.judgment_item_edit import SAVE_ACTION
+        compared = [str(row.id), str(shown.id)] if shown is not None else []
+        item_edit = bool(compared and session.scalar(select(AuditLog.id).where(
+            AuditLog.action == SAVE_ACTION, AuditLog.target_type == 'judgment',
+            AuditLog.target_id.in_(compared)).limit(1)))
+        dimensions = read_dimensions(session)
+        return {**serialize(row, session, scope), 'research_dimensions': summaries(dimensions),
+                'diff': version_diff(to_payload(shown) if shown else None, to_payload(row),
+                    dimensions=dimensions, items_only=item_edit)}
 
 
 @router.get('/models')
@@ -839,27 +864,36 @@ async def _generate_preview(request: Request):
     return response
 
 
-async def _analyze(scope, body, progress=None):
+async def _analyze(scope, body, progress=None, *, dimension_draft=None):
     identity_marker = current_identity.set(scope.identity)
     scope_marker = current_workbench.set(scope)
     progress_marker = _analysis_progress.set(progress)
     try:
-        return await _analyze_scoped(scope, body)
+        return await _analyze_scoped(scope, body, dimension_draft=dimension_draft)
     finally:
         _analysis_progress.reset(progress_marker)
         current_workbench.reset(scope_marker)
         current_identity.reset(identity_marker)
 
 
-async def _analyze_scoped(scope, body):
+def apply_dimension_draft(state, dimension_draft):
+    saved = state.get('research_dimensions', default_dimensions())
+    if dimension_draft and saved == summaries(default_dimensions()):
+        return {**state, 'saved_research_dimensions': saved, 'research_dimensions': summaries(dimension_draft)}
+    return state
+
+
+async def _analyze_scoped(scope, body, *, dimension_draft=None):
     if not body.text.strip(): raise HTTPException(400, '请先选择文件或输入完整研究逻辑')
     if len(body.text.encode('utf-8')) > SOURCE_BYTES: raise HTTPException(413, '研究逻辑原文超过48 KiB')
     before = await run_in_threadpool(snapshot, body.variety) if body.variety else await run_in_threadpool(snapshot)
+    before = apply_dimension_draft(before, dimension_draft)
     if body.variety:
         before['selected_variety'] = body.variety
     if body.base_version != before['base_version']:
         raise HTTPException(409, '研究逻辑已有新版本，请刷新后重新分析')
     from tin.web import judgment_analysis_cache as cache
+    from tin.web.judgment_recall import shared_candidate_ids
     from tin.judgments.coverage import inventory_prompt, validate_inventory, retain_coverage
     from tin.judgments.anchor_binding import binding_protocol
     try:
@@ -867,8 +901,9 @@ async def _analyze_scoped(scope, body):
     except AnalysisError as error:
         raise HTTPException(422, validation_detail(error)) from None
     model = await current_model(scope, body.model_id)
+    shared = await run_in_threadpool(shared_candidate_ids, scope, before['catalog'])
     protocol = cache.digest([PROMPT_VERSION, GENERAL_METHOD, OUTPUT_PROTOCOL, SELECTION_PROTOCOL,
-        RECALL_QUERY_PROTOCOL, RECALL_PICK_PROTOCOL,
+        RECALL_QUERY_PROTOCOL, RECALL_PICK_PROTOCOL, shared,
         inventory_request, binding_protocol([]), before.get('research_dimensions', default_dimensions())])
     key = cache.identity(scope, body, before, model, protocol)
     await fresh(scope, before)
@@ -902,7 +937,7 @@ async def _analyze_scoped(scope, body):
             marker = _source_inventory.set(inventory)
             try:
                 candidates, selected = await choose_catalog(scope, body.model_id, before['catalog'], body.text,
-                    dimensions=before.get('research_dimensions'))
+                    dimensions=before.get('research_dimensions'), shared=shared)
                 await fresh(scope, before)
                 assessment, repair_attempts = await analyzed_completion(scope, body, before, candidates, selected)
                 assessment, anchor_bindings = await refine_anchors(scope, body, before, assessment, candidates)
@@ -951,6 +986,8 @@ async def _analyze_scoped(scope, body):
                    'fact_version': before['fact_version'], 'base_version': before['base_version'],
                    'model_id': body.model_id, 'prompt_version': PROMPT_VERSION,
                    'variety': analyzed.payload.variety, 'written_at': analyzed.payload.written_at.isoformat(),
+                   'dimension_labels': {item['id']: item['label']
+                                        for item in before.get('research_dimensions', default_dimensions())},
                    'validation_issues': assessment.issues, 'repair_attempts': repair_attempts,
                    'source_coverage': coverage, 'analysis_reused': reused,
                    'anchor_bindings': anchor_bindings,
@@ -1002,14 +1039,31 @@ def persist(scope, preview):
             raise HTTPException(409, '知识库来源已改变，请重新分析')
         catalog = [{**item, 'id': item['series_id']} for item in session.info['knowledge_facts_catalog'].values()]
         try:
-            if preview.get('_job_id'):
-                from tin.web.judgment_jobs import mark_applied
-                mark_applied(session, scope, preview)
-            from tin.web.judgment_review import trusted_calibers, trusted_numbers
+            from tin.web.judgment_review import stale_review_dimensions, trusted_calibers, trusted_numbers, trusted_quantities
+            dimensions = read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()
+            if issues := stale_review_dimensions(preview, dimensions):
+                raise JudgmentError('；'.join(
+                    f"{item['title']}「{item['description']}」：{reason}" for item, reason in issues))
             declarations = trusted_calibers(preview)
             result = validate_analysis(preview['document'], preview['text'], catalog, variety=preview.get('variety', settings.variety),
                 actor=scope.identity.user_id, written_at=date.fromisoformat(preview['written_at']),
-                caliber_confirmations=declarations, number_confirmations=trusted_numbers(preview))
+                caliber_confirmations=declarations, number_confirmations=trusted_numbers(preview),
+                quantity_confirmations=trusted_quantities(preview))
+            from tin.web.judgment_quantity import RULE_KINDS, pending_alignment
+            executable = {rule.id: rule.series_id for rule in [*result.payload.thresholds, *result.payload.falsifiers]}
+            items = [{**item, 'series_id': executable[item['value']['id']]}
+                for item in preview.get('review', {}).get('items', [])
+                if item['kind'] in RULE_KINDS and item['value']['id'] in executable]
+            warnings = pending_alignment(scope, {field['id']: field for field in catalog}, items)
+            if warnings:
+                raise JudgmentError('请逐项确认数值与单位：' + '；'.join(
+                    f"{item['description']}：{warnings[item['id']]['warning']}" for item in items if item['id'] in warnings))
+            if preview.get('_job_id'):
+                from tin.web.judgment_jobs import mark_applied
+                mark_applied(session, scope, preview)
+            elif preview.get('_setup_job_id'):
+                from tin.web.workbench_setup_jobs import close_judgment
+                close_judgment(session, scope, preview['_draft_id'], preview['review']['revision'])
             row = save_version(session, result.payload, actor=scope.identity.user_id,
                                expected_base_version=preview['base_version'], caliber_confirmations=declarations)
             from tin.web.judgment_panels import register_panel
@@ -1036,10 +1090,10 @@ def persist(scope, preview):
             session.commit()
             return {'id': row.id, 'panel': panel, 'version': row.version, 'status': row.status,
                     'notice': '已保存为新的研判面板草稿，原有研判和历史保留。'}
-        except (JudgmentError, IntegrityError, OperationalError):
+        except (JudgmentVersionConflict, IntegrityError, OperationalError):
             session.rollback()
             raise HTTPException(409, '研究逻辑已有新版本或正在保存，请刷新后重新分析') from None
-        except AnalysisError as error:
+        except (JudgmentError, AnalysisError) as error:
             session.rollback()
             raise HTTPException(422, str(error)) from None
 
@@ -1057,14 +1111,24 @@ async def discard_preview(request: Request):
     if body.draft_id.startswith('job.'):
         from tin.web.judgment_jobs import discard_job, token_job_id
         return {'discarded': True, **(await discard_job(scope, token_job_id(body.draft_id)))}
+    if body.draft_id.startswith('setup.'):
+        from tin.web.workbench_setup_jobs import close_judgment
+        with artifact_session(scope) as session:
+            close_judgment(session, scope, body.draft_id)
+            session.commit()
+        return {'discarded': True}
     previews.discard(scope, body.draft_id)
     return {'discarded': True}
 
 
 @router.post('/apply')
 async def apply(request: Request):
-    scope = scope_for_analysis(write=True)
+    scope = scope_for_analysis()
     body = await read_body(request, ApplyRequest)
+    if body.draft_id.startswith(ITEM_EDIT_DRAFT_PREFIX):
+        from tin.web import judgment_item_edit_flow
+        return await judgment_item_edit_flow.apply(scope, body)
+    scope = scope_for_analysis(write=True)
     async with previews.mutation(scope, body.draft_id):
         preview = previews.get(scope, body.draft_id)
         if body.base_version != preview['base_version']:
@@ -1073,6 +1137,9 @@ async def apply(request: Request):
                 and body.review_revision != preview.get('review', {}).get('revision')):
             raise HTTPException(409, '逐项确认已更新，请刷新预览后保存')
         await fresh(scope, preview)
+        if preview.get('_setup_job_id'):
+            from tin.web.workbench_setup_jobs import verified_config
+            await verified_config(scope, preview['_setup_job_id'])
         result = await run_in_threadpool(persist, scope, preview)
         if preview.get('_job_id'):
             from tin.web.judgment_jobs import acknowledge_applied

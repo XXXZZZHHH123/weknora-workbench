@@ -192,3 +192,136 @@ def test_research_notices_cover_declared_binding_lists_without_rewriting(context
     assert notice['items'][0]['personal_id'] == SID
     assert notice['can_rewrite'] is False and '仅提示' in notice['reason']
     assert notice['items'][0]['url'].endswith('/sn/indicators/' + OTHER)
+
+
+def test_exact_remap_rewrites_and_restores_workbench_bindings(context):
+    from datetime import date
+    from tin.judgments.service import save_version
+    from tin.models import Judgment, JudgmentSeriesRef
+    from tin.schemas.judgment import JudgmentIn
+    from tin.web import monitors, report_drafts, workbench_remaps as remaps
+    from tin.web.research_dimensions import DIMENSIONS_KEY, default_dimensions
+
+    scope = context.scope
+    chart = charts.create_chart(ChartDefinition.model_validate(definition(curves=[
+        {'series_id': SID, 'label': SID},
+        {'derived': {'op': 'sub', 'a': SID, 'b': OTHER}, 'label': '差值'},
+    ])))
+    favorites.put_favorites(favorites.FavoritesInput(revision=0, items=[
+        favorites.FavoriteItem(kind='indicator', id=SID), favorites.FavoriteItem(kind='indicator', id=OTHER)]))
+    now = datetime.now(timezone.utc)
+    core = {'items': [{'kind': 'indicator', 'id': SID}]}
+    dimensions = default_dimensions()
+    dimensions[0]['sections'] = [{'id': 's-fixture', 'label': '绑定', 'items': [
+        {'kind': 'indicator', 'id': SID}, {'kind': 'chart', 'id': chart['id'], 'revision': 1}]}]
+    with artifact_session(scope) as session:
+        session.info.update(knowledge_facts=True, knowledge_facts_catalog={SID: {}, OTHER: {}})
+        judgment = save_version(session, JudgmentIn.model_validate({
+            'variety': 'TEST', 'author': 'first', 'written_at': date(2026, 1, 2), 'contradiction': {},
+            'whitelist': [SID, OTHER],
+        }), actor='first')
+        reference = {'kind': 'judgment', 'id': str(judgment.id), 'revision': judgment.version, 'section': 'research'}
+        report = {'format': report_drafts.FORMAT, 'period': 'weekly', 'date': '2026-01-09', 'title': '周报',
+                  'workbench_id': scope.workbench_id, 'source_revision': 'a' * 64,
+                  'figures': [{'series_id': SID, 'caption': SID}], 'references': [reference],
+                  'reference_snapshots': report_drafts.freeze_references(session, scope, [reference]),
+                  'figure_conclusions': {'indicator:' + SID: '记录原值'}}
+        report_row = monitors._new_artifact(scope, 'briefs', '周报', report)
+        session.add(report_row)
+        remember_record_scope(session, 'artifact', report_row.id)
+        monitor = {'workbench_id': scope.workbench_id, 'logic': 'all', 'rules': [{'series_id': SID}],
+                   'sentence': SID, 'enabled': True}
+        monitor_row = monitors._new_artifact(scope, monitors.MODULE, '监测', monitor)
+        alert = {'monitor_id': monitor_row.id, 'workbench_id': scope.workbench_id,
+                 'condition_key': monitors._condition_key(monitor), 'monitor_revision': 1,
+                 'triggered': True, 'rule_states': [{'series_id': SID}]}
+        alert_row = monitors._new_artifact(scope, monitors.STATE_MODULE, '监测状态', alert,
+                                           identifier=monitors._state_id(scope, monitor_row.id))
+        session.add_all([monitor_row, alert_row])
+        for name, config in ((restricted_views.CORE_KEY, core), (DIMENSIONS_KEY, {'dimensions': dimensions})):
+            session.add(SourceMapping(id=restricted_views.mapping_key(session, name), config=config,
+                                      version=1, confirmed_by=scope.identity.user_id, confirmed_at=now))
+        session.commit()
+        report_id, monitor_id, judgment_id = report_row.id, monitor_row.id, judgment.id
+
+    with different_scope(context, identity={'user_id': 'second'}):
+        favorites.put_favorites(favorites.FavoritesInput(revision=0, items=[
+            favorites.FavoriteItem(kind='indicator', id=SID)]))
+    item = {'id': 'exact-pair', 'revision': 2, 'personal': {'series_id': SID}, 'default': {
+        'series_id': OTHER, 'metric': '短名称', 'knowledge_base_id': scope.sources[0]['knowledge_base_id'],
+        'knowledge_base_tenant_id': 17, 'source_knowledge_id': 'fixture-document'}}
+    assert remaps.rewrite_workbenches([(scope, [item])]) == {item['id']: [scope.workbench_id]}
+    assert remaps.rewrite_workbenches([(scope, [item])]) == {item['id']: [scope.workbench_id]}, 'retry is idempotent'
+    with artifact_session(scope) as session:
+        row = charts.load_artifact(session, chart['id'])
+        current = charts.decode_definition(row)
+        assert row.revision == 2 and current.curves[0].series_id == OTHER
+        assert current.curves[0].descriptor.metric == '短名称' and current.curves[0].label == SID
+        assert current.curves[1].derived.a == OTHER
+        assert SID in session.get(WorkbenchArtifactRevision, (row.id, 1)).body
+        assert restricted_views.core_items(session) == [{'kind': 'indicator', 'id': OTHER}]
+        valid = remaps._artifact_body(session.get(WorkbenchArtifact, report_id))
+        assert valid['figures'] == [{'series_id': OTHER, 'caption': SID}]
+        assert valid['figure_conclusions'] == {'indicator:' + OTHER: '记录原值'}
+        assert valid['reference_snapshots'][0]['series_ids'] == [OTHER]
+        assert not report_drafts.serialize_report(session, scope, session.get(WorkbenchArtifact, report_id),
+                                                   strict=True)['unavailable_references']
+        bound = session.get(SourceMapping, restricted_views.mapping_key(session, DIMENSIONS_KEY)).config
+        assert bound['dimensions'][0]['sections'][0]['items'] == [
+            {'kind': 'indicator', 'id': OTHER}, {'kind': 'chart', 'id': chart['id'], 'revision': 2}]
+        judgment = session.get(Judgment, judgment_id)
+        assert judgment.version == 1 and judgment.whitelist == [OTHER]
+        assert set(session.scalars(select(JudgmentSeriesRef.series_id).where(
+            JudgmentSeriesRef.judgment_id == judgment_id))) == {OTHER}
+        body = monitors._body(session.get(WorkbenchArtifact, monitor_id))
+        assert body['rules'][0]['series_id'] == OTHER and body['sentence'] == SID
+        assert monitors._state(session, scope, monitor_id)['condition_key'] == monitors._condition_key(body)
+    assert [entry['id'] for entry in favorites.get_favorites()['items']] == [OTHER]
+    with different_scope(context, identity={'user_id': 'second'}):
+        assert [entry['id'] for entry in favorites.get_favorites()['items']] == [SID]
+
+    favorites.put_favorites(favorites.FavoritesInput(revision=2, items=[
+        favorites.FavoriteItem(kind='indicator', id=OTHER), favorites.FavoriteItem(kind='indicator', id=THIRD)]))
+    with pytest.raises(HTTPException, match='绑定后来又被编辑'):
+        remaps.rewrite_workbenches([(scope, [item])], undo=True)
+    assert [entry['id'] for entry in favorites.get_favorites()['items']] == [OTHER, THIRD]
+    favorites.put_favorites(favorites.FavoritesInput(revision=3, items=[favorites.FavoriteItem(kind='indicator', id=OTHER)]))
+    remaps.rewrite_workbenches([(scope, [item])], undo=True)
+    with artifact_session(scope) as session:
+        row = charts.load_artifact(session, chart['id'])
+        assert row.revision == 3 and charts.decode_definition(row).curves[0].series_id == SID
+        assert restricted_views.core_items(session) == core['items']
+        assert session.get(Judgment, judgment_id).whitelist == [SID, OTHER]
+        assert remaps._artifact_body(session.get(WorkbenchArtifact, report_id)) == report
+        assert monitors._body(session.get(WorkbenchArtifact, monitor_id)) == monitor
+        assert monitors._state(session, scope, monitor_id)['monitor_revision'] == 3
+    assert [entry['id'] for entry in favorites.get_favorites()['items']] == [SID, OTHER]
+
+
+def test_remap_resolves_other_workbenches_and_fences_undo(context, monkeypatch):
+    from asyncio import run
+    from tin.web import workbench_remaps as remaps
+    original = context.scope
+    second_id = '10000000-0000-4000-8000-000000000002'
+    third_id = '10000000-0000-4000-8000-000000000003'
+    directly_bound = replace(original, workbench_id=second_id, sources=(
+        {**original.sources[0], 'knowledge': [{'id': 'fixture-document'}]},))
+    unbound = replace(original, workbench_id=third_id, sources=(source(2),))
+
+    async def platform(scope, path):
+        assert scope == original and path == '/api/v1/workspaces/research'
+        return {'data': [{'id': identifier, 'can_edit': True}
+                         for identifier in (original.workbench_id, second_id, third_id)]}
+
+    async def resolve(identity, identifier, authorization):
+        assert (identity, authorization) == (original.identity, original.authorization)
+        return {second_id: directly_bound, third_id: unbound}[identifier]
+
+    monkeypatch.setattr(remaps, 'go_request', platform)
+    monkeypatch.setattr(remaps, 'resolve_workbench', resolve)
+    item = {'id': 'exact', 'revision': 2, 'default': {'series_id': OTHER, 'source_knowledge_id': 'fixture-document',
+             'knowledge_base_id': original.sources[0]['knowledge_base_id'], 'knowledge_base_tenant_id': 17}}
+    assert run(remaps.authorized_workbenches(original, [item])) == [(original, [item]), (directly_bound, [item])]
+    item['workbench_ids'] = ['10000000-0000-4000-8000-000000000004']
+    with pytest.raises(HTTPException, match='恢复相应工作台和来源权限'):
+        run(remaps.authorized_workbenches(original, [item], undo=True))

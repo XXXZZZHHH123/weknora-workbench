@@ -1,5 +1,6 @@
 import { computed, ref, watch } from 'vue'
-import { analysisJobId, readDismissedAnalysisJobIds, type AnalysisJob, type AnalysisTaskOwner } from '../api/researchAnalysisTasks'
+import { analysisJobId, readDismissedAnalysisJobIds, type AnalysisJob, type AnalysisJobPurpose, type AnalysisTaskOwner } from '../api/researchAnalysisTasks'
+import { workbenchSetupPhases, workbenchSetupTask } from '../api/workbenchSetupTask'
 
 interface Timers { setTimer: (callback: () => void, delay: number) => unknown; clearTimer: (handle: unknown) => void }
 interface Dependencies {
@@ -16,12 +17,44 @@ const needsRead = (job: AnalysisJob) => ['succeeded', 'failed', 'interrupted', '
 const keyFor = (owner: AnalysisTaskOwner | null) => owner?.token && owner.userId && /^[1-9][0-9]*$/.test(owner.tenantId)
   && Number.isSafeInteger(Number(owner.tenantId)) ? `weknora:analysis-tasks:${encodeURIComponent(owner.userId)}:${owner.tenantId}` : ''
 
+const draftPhases: Record<string, string> = {
+  queued: '等待处理', reading_source: '读取原件', loading_catalog: '读取指标目录', selecting: '核对资料范围',
+  analyzing: '正在分析', generating: '正在生成', validating: '核对处理结果',
+  succeeded: '已完成 · 待核对', failed: '未完成', interrupted: '已中断',
+  expired: '已过期', applied: '已应用', superseded: '已有更新结果',
+}
+const drafting = { queued: '等待起草', analyzing: '正在起草', validating: '正在核对草稿' }
+const suggesting = { queued: '等待生成', analyzing: '正在生成建议', validating: '正在核对候选' }
+const recommending = { ...suggesting, selecting: '正在匹配指标', analyzing: '正在挑选指标' }
+const purposePhases: Partial<Record<AnalysisJobPurpose, Record<string, string>>> = {
+  monitor_draft: { ...drafting, selecting: '正在匹配监测指标' },
+  report_dimension_draft: { ...drafting, reading_source: '正在读取报告事实与依据' },
+  report_chart_import: { queued: '等待识别', reading_source: '正在读取周报', analyzing: '正在识别图表',
+    generating: '正在匹配图表指标', validating: '正在核对图表候选' },
+  dimension_inference: { ...suggesting, reading_source: '正在读取周报', analyzing: '正在归纳研究维度' },
+  dimension_fields: { ...suggesting, dimension_queries: '正在归纳指标检索方向', dimension_fields: '正在选择指标' },
+  focus_suggestions: suggesting,
+  judgment_dimensions: { ...suggesting, analyzing: '正在补标维度' },
+  judgment_indicator_recommendations: recommending,
+  diagram_indicator_recommendations: recommending,
+  strategy_text: { ...drafting, reading_source: '正在读取策略原文与依据', generating: '正在整理策略原文' },
+  strategy_generation: { ...drafting, analyzing: '正在生成策略方案', generating: '正在生成策略方案' },
+}
+
 export function analysisPhaseLabel(job: AnalysisJob): string {
+  if (job.purpose === workbenchSetupTask.purpose) {
+    const phase = active(job) ? job.phase : job.state
+    return Object.hasOwn(workbenchSetupPhases, phase) ? workbenchSetupPhases[phase]! : '后台建立中'
+  }
   if (job.purpose === 'diagram') {
     const diagramPhases: Record<string, string> = { queued: '等待生成', reading_source: '读取原件', loading_catalog: '读取指标目录',
-      selecting: '匹配指标', generating: '生成图结构', validating: '核对配置', succeeded: '配置已生成',
+      selecting: '匹配指标', generating: '生成图结构', validating: '核对配置', recommending: '正在为空节点推荐指标', succeeded: '配置已生成',
       failed: '生成未完成', interrupted: '生成已中断', expired: '结果已过期', applied: '已导入配置', superseded: '已有更新结果' }
     return diagramPhases[active(job) ? job.phase : job.state] || '后台生成中'
+  }
+  if (job.purpose && job.purpose !== 'judgments') {
+    const phase = active(job) ? job.phase : job.state
+    return purposePhases[job.purpose]?.[phase] || draftPhases[phase] || '后台运行中'
   }
   const phases: Record<string, string> = { queued: '等待分析', selecting: '核对资料范围', analyzing: '正在分析', validating: '核对分析结果',
     succeeded: '分析完成', failed: '分析未完成', interrupted: '分析已中断', expired: '结果已过期', applied: '已保存草稿', superseded: '已有更新结果' }

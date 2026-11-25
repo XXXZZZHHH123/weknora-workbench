@@ -33,7 +33,7 @@ func TestNonceThinkTagsAcrossEveryChunkBoundary(t *testing.T) {
 				)
 			}
 		}
-		if got := StripThinkBlocks(tc.input); got != trimWhitespace(tc.answer) {
+		if got := StripThinkBlocks(tc.input); got != TrimAnswerWhitespace(tc.answer) {
 			t.Fatalf("persisted answer %q differs from streamed answer %q", got, tc.answer)
 		}
 	}

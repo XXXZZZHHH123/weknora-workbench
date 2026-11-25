@@ -6,10 +6,36 @@
   const api = (window.RESEARCH_PREFIX || '') + '/api/sn';
   let draft = null, busy = false, canWrite = false, tested = false, listToken = 0;
   let viewedItem = null, customDraftWindow = false;
+  let monitorItems = [];
+  let opener = null, editingItem = null, highlightedId = null, deepLinkId = null;
   const overlapWarning = '规则之间重叠数据不足，建议更换覆盖更长的指标';
-  const selected = new URLSearchParams(window.location.search).get('monitor');
-  let selectedOpened = false;
   const displays = new Map();
+  const setupDrafts = new Map();
+  const savedSetupCandidates = new Set();
+  function showMode(mode, trigger) {
+    const create = mode === 'create';
+    get('create-panel').hidden = !create;
+    get('list-panel').hidden = create;
+    get('dialog-create').hidden = create;
+    get('refresh').hidden = create;
+    get('dialog-list').hidden = !create;
+    get('mode-title').textContent = create ? (editingItem ? '修订监测' : '新建监测') : '我的监测';
+    if (trigger && !root.open) {
+      opener = trigger;
+      root.showModal();
+    }
+    if (root.open) {
+      root.scrollTop = 0;
+      (create ? get('sentence') : get('mode-title')).focus({preventScroll: true});
+    }
+  }
+  function openDeepLink() {
+    const id = new URLSearchParams(window.location.search).get('monitor');
+    if (window.location.hash !== '#monitors' && !id) return false;
+    highlightedId = deepLinkId = id;
+    showMode('list', get('list-toggle'));
+    return true;
+  }
   function node(tag, text, className) {
     const element = document.createElement(tag);
     if (text !== undefined) element.textContent = String(text);
@@ -28,17 +54,23 @@
     return result;
   }
   function sync() {
-    get('generate').disabled = busy || !canWrite || !get('model').value || !get('sentence').value.trim();
-    get('backtest').disabled = busy || !draft || !draft.rules.length;
+    get('generate').disabled = draftJob.busy || generationDisabled();
+    get('backtest').disabled = busy || !draft?.rules.length || draft.rules.some(rule => !rule.series_id);
     get('save').disabled = busy || !canWrite || !tested || !get('confirm').checked;
+    get('setup-choice').disabled = busy;
     get('refresh').disabled = busy;
+    get('dialog-create').disabled = busy;
+    get('dialog-list').disabled = busy;
     for (const control of get('draft').querySelectorAll('input,select,button')) {
-      if (!['monitor-save', 'monitor-backtest'].includes(control.id)) control.disabled = busy;
+      if (!['monitor-save', 'monitor-backtest'].includes(control.id)) control.disabled = busy || control.dataset.unavailable === 'true';
     }
     for (const control of get('list').querySelectorAll('input,button')) {
       control.disabled = busy || (control.dataset.write === 'true' && !canWrite);
     }
     for (const control of get('view').querySelectorAll('input,button')) control.disabled = busy;
+  }
+  function generationDisabled() {
+    return busy || !canWrite || !get('model').value || !get('sentence').value.trim();
   }
   function clearDisplay(target) {
     for (const view of displays.get(target) || []) { view.observer?.disconnect(); view.renderer?.destroy(); }
@@ -48,9 +80,27 @@
     tested = false; get('confirm').checked = false;
     clearDisplay(get('backtest-result')); get('backtest-result').hidden = true; sync();
   }
+  function clearDraft() {
+    get('draft').hidden = true;
+    get('setup-choice').value = '';
+    draft = null;
+    invalidate();
+  }
+  function openCreate(trigger, item = null, {discover = true} = {}) {
+    if (!busy && item !== editingItem) {
+      editingItem = item;
+      get('sentence').value = item?.sentence || '';
+      clearDraft();
+    }
+    showMode('create', trigger);
+    if (discover) void draftJob.discover();
+  }
   function body() {
     return {draft_id: draft.draft_id, title: get('title').value.trim(), sentence: draft.sentence,
-      logic: get('logic').value, enabled: true, rules: draft.rules.map(rule => {
+      summary: get('summary').value.trim(),
+      logic: get('logic').value, enabled: editingItem?.enabled ?? true,
+      ...(draft.report_candidate ? {report_rule_indexes: draft.rules.map(rule => rule._originalIndex)} : {}),
+      rules: draft.rules.map(rule => {
         const result = {};
         for (const key of ['series_id', 'metric', 'operator', 'value', 'consecutive_periods', 'label', 'definition']) result[key] = rule[key];
         return result;
@@ -91,7 +141,9 @@
     const sparse = coverages.some(item => Number.isInteger(item.point_count) && item.point_count < 10);
     const insufficient = draft.rules.length > 1 && (serverOverlap?.insufficient || sparse || (days !== null && days < 180));
     for (const [index, row] of [...get('rules').children].entries()) {
-      row.querySelector('[data-coverage]').textContent = coverageText(coverages[index]);
+      const rule = draft.rules[index];
+      row.querySelector('[data-coverage]').textContent = !rule.series_id ? '需研究员指定指标' :
+        draft.fromSetup && !Object.keys(coverages[index]).length ? '回测时核对数据覆盖' : coverageText(coverages[index]);
       const warning = row.querySelector('[data-overlap-warning]');
       warning.textContent = insufficient ? overlapWarning : '';
       warning.hidden = !insufficient;
@@ -122,6 +174,55 @@
     const day = Math.min(date.getUTCDate(), new Date(Date.UTC(year, month + 1, 0)).getUTCDate());
     setWindow('', {start: new Date(Date.UTC(year, month, day)).toISOString().slice(0, 10), end});
   }
+  function indicatorSearch(index, choose) {
+    const details = node('details', undefined, 'monitor-candidates');
+    details.append(node('summary', '在授权指标目录中选取'));
+    const fields = node('div', undefined, 'monitor-fields');
+    const search = node('input'); search.type = 'search'; search.maxLength = 200;
+    const lookup = node('button', '搜索', 'affairs-check'); lookup.type = 'button';
+    const result = node('select'); result.setAttribute('aria-label', `第${index + 1}条规则目录搜索结果`);
+    const previous = node('button', '上一页', 'affairs-check'); previous.type = 'button';
+    const next = node('button', '下一页', 'affairs-check'); next.type = 'button';
+    const message = node('p', '', 'affairs-row-detail'); message.setAttribute('role', 'status');
+    let rows = [], offset = 0, nextOffset = null, query = '', token = 0;
+    function updatePage() {
+      previous.dataset.unavailable = String(offset === 0);
+      next.dataset.unavailable = String(nextOffset == null);
+      sync();
+    }
+    async function read(pageOffset) {
+      const own = ++token;
+      message.textContent = '正在读取指标目录…';
+      try {
+        const page = await window.ResearchCatalog.read({search: query, offset: pageOffset});
+        if (token !== own || !details.isConnected) return;
+        rows = page.indicators; offset = page.offset; nextOffset = page.next_offset;
+        result.replaceChildren(new Option('请选择指标', ''), ...rows.map(item => new Option(
+          [item.name, item.unit, item.sheet].filter(Boolean).join(' · '), item.series_id)));
+        message.textContent = rows.length ? '' : '没有匹配指标。';
+        updatePage();
+      } catch (error) {
+        if (token === own && details.isConnected) message.textContent = error.message;
+      }
+    }
+    function startSearch() { query = search.value.trim(); void read(0); }
+    lookup.addEventListener('click', startSearch);
+    search.addEventListener('keydown', event => {
+      if (event.key === 'Enter') { event.preventDefault(); startSearch(); }
+    });
+    details.addEventListener('toggle', () => { if (details.open && !token) startSearch(); });
+    previous.addEventListener('click', () => void read(Math.max(0, offset - 200)));
+    next.addEventListener('click', () => { if (nextOffset !== null) void read(nextOffset); });
+    result.addEventListener('change', () => {
+      const selected = rows.find(item => item.series_id === result.value);
+      if (selected) choose(selected);
+    });
+    result.append(new Option('请选择指标', ''));
+    previous.dataset.unavailable = next.dataset.unavailable = 'true';
+    fields.append(field(`搜索第${index + 1}条规则指标`, search), lookup, result, previous, next);
+    details.append(fields, message);
+    return details;
+  }
   function renderRules(overlap) {
     const rows = draft.rules.map((rule, index) => {
       const row = node('div', undefined, 'affairs-row monitor-rule'); row.dataset.monitorRule = String(index);
@@ -132,10 +233,16 @@
       }
       summarize(); row.append(summary);
       const controls = node('div', undefined, 'monitor-fields');
-      const choices = select(rule._candidates.map(item => [item.series_id,
-        [item.name, item.unit, coverageText(item)].filter(Boolean).join(' · ')]), rule.series_id, 'series_id');
+      const options = rule._candidates.map(item => [item.series_id,
+        [item.name, item.unit, item.coverage ? coverageText(item) : ''].filter(Boolean).join(' · ')]);
+      if (rule.needs_indicator) options.unshift(['', '需研究员指定指标']);
+      const choices = select(options, rule.series_id || '', 'series_id');
       choices.setAttribute('aria-label', `第${index + 1}条规则指标`);
-      choices.addEventListener('change', () => { rule.series_id = choices.value; summarize(); resetDraftWindow(); showRuleCoverage(); invalidate(); });
+      function chooseIndicator() {
+        rule.series_id = choices.value;
+        summarize(); resetDraftWindow(); showRuleCoverage(); invalidate();
+      }
+      choices.addEventListener('change', chooseIndicator);
       controls.append(field('指标', choices));
       const metric = select([['value', '本期值'], ['change', '本期变化']], rule.metric, 'metric');
       const operator = select(['>', '>=', '<', '<='].map(value => [value, value]), rule.operator, 'operator');
@@ -154,6 +261,7 @@
         }); controls.append(field(label, input));
       }
       const remove = node('button', '删除规则', 'affairs-check'); remove.type = 'button';
+      remove.hidden = rule.needs_indicator === true;
       remove.addEventListener('click', () => { draft.rules.splice(index, 1); resetDraftWindow(); invalidate(); renderRules(); });
       controls.append(remove); row.append(controls);
       const definition = node('input'); definition.type = 'text'; definition.maxLength = 1000;
@@ -165,19 +273,53 @@
       const warning = node('p', '', 'monitor-warning'); warning.dataset.overlapWarning = 'true'; warning.hidden = true; row.append(warning);
       const candidates = node('details', undefined, 'monitor-candidates'); candidates.append(node('summary', '候选指标与数据覆盖'));
       const list = node('ul', undefined, 'affairs-row-detail');
-      for (const candidate of rule._candidates) list.append(node('li', `${candidate.name || candidate.series_id} · ${coverageText(candidate)}`));
-      candidates.append(list); row.append(candidates); return row;
+      for (const candidate of rule._candidates) list.append(node('li',
+        `${candidate.name || candidate.series_id} · ${candidate.coverage ? coverageText(candidate) : '回测时核对数据覆盖'}`));
+      candidates.append(list);
+      if (rule._candidates.length) row.append(candidates);
+      if (rule.needs_indicator) row.append(indicatorSearch(index, selected => {
+        if (!rule._candidates.some(item => item.series_id === selected.series_id)) {
+          rule._candidates.push(selected);
+          choices.append(new Option([selected.name, selected.unit, selected.sheet].filter(Boolean).join(' · '), selected.series_id));
+        }
+        choices.value = selected.series_id;
+        chooseIndicator();
+      }));
+      return row;
     });
     get('rules').replaceChildren(...rows); showRuleCoverage(overlap); sync();
   }
-  function setDraft(result) {
-    draft = {...result, rules: result.rules.map((rule, index) => ({...rule,
-      _candidates: result.candidates.filter(item => item.rule_index === index)}))};
-    get('title').value = result.title; get('logic').value = result.logic;
-    customDraftWindow = false; setWindow('', result.default_window || {});
+  function setDraft(result, edits) {
+    draft = {...result, rules: result.rules.map((rule, index) => ({...rule, _originalIndex: rule._originalIndex ?? index,
+        _candidates: rule._candidates || result.candidates.filter(item => item.rule_index === index)}))};
+    get('setup-candidates').hidden = !result.fromSetup;
+    get('title').value = edits?.title ?? (editingItem?.title || result.title);
+    get('summary').value = edits?.summary ?? editingItem?.summary ?? result.summary ?? '';
+    get('logic').value = edits?.logic ?? result.logic;
+    customDraftWindow = edits?.customWindow || false;
+    setWindow('', edits?.window || result.default_window || {});
     get('confirmation-list').replaceChildren(...(result.confirmations || []).map(text => node('li', text)));
     if (!(result.confirmations || []).length) get('confirmation-list').append(node('li', '请核对所选指标、比较方式和连续期数是否符合原意。'));
     get('draft').hidden = false; invalidate(); renderRules(result.overlap);
+  }
+  function showSetupDraft(result, edits) {
+    const setup = window.WorkbenchSetupReview;
+    const candidate = result.setup_candidate ?? 0;
+    get('setup-choice').replaceChildren(new Option('请选择监测候选', ''),
+      ...(result.setup_titles || [result.title]).map((title, index) => {
+        const saved = savedSetupCandidates.has(index);
+        const option = new Option(title + (saved ? '（已保存）' : ''), index);
+        option.disabled = saved;
+        return option;
+      }));
+    get('setup-choice').value = String(candidate);
+    const failures = result.setup_failures || [];
+    get('setup-failures').replaceChildren(...failures.map(item => node('li', `第 ${item.index} 个候选未保留：${item.reason}`)));
+    get('setup-failures').hidden = !failures.length;
+    get('sentence').value = edits?.sentence ?? result.sentence;
+    const confirmations = result.fromSetup ? result.confirmations : [setup.historicalNotice, ...(result.confirmations || [])];
+    setDraft({...result, fromSetup: true, setup_candidate: candidate, confirmations}, edits);
+    status('监测候选已载入，请逐条调整并回测。');
   }
   function display(target, result) {
     clearDisplay(target); target.hidden = false;
@@ -217,6 +359,7 @@
       const plot = node('div'); section.append(plot); target.append(section);
       const points = (item.points || []).map(point => ({...point, raw: point.value}));
       if (!points.some(point => Number.isFinite(point.value))) {
+        if (item.state === '无法按日期判断') continue;
         plot.append(node('p', item.state === '无法判断' ? '指标暂不可读，无法展示观测。' : '该指标在回测范围内无有效观测。', 'affairs-empty'));
         continue;
       }
@@ -239,22 +382,31 @@
       if (typeof ResizeObserver === 'function') { view.observer = new ResizeObserver(draw); view.observer.observe(plot); }
     }
   }
-  function signalList(items) {
-    window.dispatchEvent(new CustomEvent('monitors-changed', {detail: {enabled: items.some(item => item.enabled)}}));
-  }
-  async function viewItem(item, adjust = false) {
+  async function viewItem(item, {adjust = false, scroll = true} = {}) {
     const query = adjust ? new URLSearchParams(windowParams('view-')).toString() : '';
     const result = await request('/monitors/' + encodeURIComponent(item.id) + '/backtest' + (query ? '?' + query : ''));
+    if (viewedItem?.id !== item.id) get('view-source').open = false;
+    get('view-sentence').textContent = item.sentence;
     viewedItem = item; setWindow('view-', result);
     get('view').hidden = false; get('view-title').textContent = item.title + ' · 历史回测';
-    display(get('view-result'), result); get('view').scrollIntoView({block: 'nearest'}); status('历史回测已更新。');
+    display(get('view-result'), result);
+    if (scroll) get('view').scrollIntoView({block: 'nearest'});
+    status('历史回测已更新。');
+  }
+  function closeView() {
+    viewedItem = null;
+    get('view').hidden = true;
+    clearDisplay(get('view-result'));
   }
   function renderList(items) {
     const rows = items.map(item => {
       const row = node('div', undefined, 'affairs-row monitor-list-row'); row.dataset.monitorId = item.id;
+      if (item.id === highlightedId) row.setAttribute('aria-current', 'true');
       const copy = node('div', undefined, 'monitor-list-copy');
       const title = node('div', undefined, 'affairs-row-title'); title.append(node('span', item.current_state || '未检查', 'affairs-row-kind'), node('span', item.title));
-      copy.append(title, node('div', item.sentence, 'affairs-row-detail'), node('div',
+      const description = item.summary || item.rules.map(rule => rule.label).join(item.logic === 'any' ? ' 或 ' : ' 且 ');
+      const detail = node('div', description, 'affairs-row-detail monitor-description'); detail.title = description;
+      copy.append(title, detail, node('div',
         `最近触发 ${item.last_trigger || '无'} · v${item.revision}` + (item.checked_at ? ' · 检查于 ' + item.checked_at.slice(0, 16).replace('T', ' ') : ''), 'affairs-row-detail'));
       for (const rule of item.rule_states || []) copy.append(node('p',
         [`第${rule.rule_index + 1}条规则`, rule.label, rule.state, rule.notice].filter(Boolean).join(' · '), 'affairs-row-detail'));
@@ -263,27 +415,41 @@
       enabled.setAttribute('aria-label', '启用 ' + item.title);
       enabled.addEventListener('change', () => void act(async () => {
         await request('/monitors/' + encodeURIComponent(item.id), {revision: item.revision, enabled: enabled.checked}, 'PATCH');
-        await loadList(); status(enabled.checked ? '监测已启用，下一次检查将核对条件。' : '监测已停用。');
+        await loadList({changed: true}); status(enabled.checked ? '监测已启用，下一次检查将核对条件。' : '监测已停用。');
       }, () => { enabled.checked = item.enabled; }));
       actions.append(field('启用', enabled));
       const view = node('button', '查看', 'affairs-check'); view.type = 'button';
       view.addEventListener('click', () => void act(() => viewItem(item)));
+      const revise = node('button', '修订', 'affairs-check'); revise.type = 'button'; revise.dataset.write = 'true';
+      revise.addEventListener('click', () => openCreate(null, item));
       const remove = node('button', '删除', 'affairs-check'); remove.type = 'button'; remove.dataset.write = 'true';
       remove.addEventListener('click', () => void act(async () => {
         await request('/monitors/' + encodeURIComponent(item.id) + '?revision=' + item.revision, undefined, 'DELETE');
-        get('view').hidden = true; clearDisplay(get('view-result')); await loadList(); status('监测已删除，版本记录已保留。');
-      })); actions.append(view, remove); row.append(copy, actions); return row;
+        if (viewedItem?.id === item.id) closeView();
+        await loadList({changed: true}); status('监测已删除，版本记录已保留。');
+      })); actions.append(view, revise, remove); row.append(copy, actions); return row;
     });
-    get('list').replaceChildren(...(rows.length ? rows : [node('div', '还没有保存监测。先用一句话生成草稿。', 'affairs-empty')]));
-    signalList(items); sync();
+    get('list').replaceChildren(...(rows.length ? rows : [node('div', '还没有保存监测。', 'affairs-empty')]));
+    sync();
   }
-  async function loadList() {
+  let pendingChange = false;
+  async function loadList({reveal = false, changed = false} = {}) {
+    pendingChange ||= changed;
     const token = ++listToken, result = await request('/monitors');
     if (token !== listToken) return;
-    canWrite = result.can_write === true; renderList(result.items || []);
-    if (selected && !selectedOpened) {
-      const item = (result.items || []).find(item => item.id === selected);
-      if (item) { selectedOpened = true; void act(() => viewItem(item)); }
+    const items = result.items || [];
+    monitorItems = items;
+    canWrite = result.can_write === true; renderList(items);
+    window.dispatchEvent(new CustomEvent('monitors-changed', {detail: {
+      count: items.length, enabled: items.some(item => item.enabled), alerts: result.alerts, items, changed: pendingChange}}));
+    pendingChange = false;
+    if (root.open && !get('list-panel').hidden) {
+      if (reveal || deepLinkId) get('list').querySelector('[aria-current=true]')?.scrollIntoView({block: 'nearest'});
+      if (deepLinkId && !busy) {
+        const item = items.find(item => item.id === deepLinkId);
+        deepLinkId = null;
+        if (item) void act(() => viewItem(item, {scroll: false}));
+      }
     }
   }
   async function act(action, failure) {
@@ -291,14 +457,83 @@
     try { await action(); } catch (error) { failure?.(); status(error.message, true); }
     finally { busy = false; sync(); }
   }
+  const draftJob = ResearchAnalysisJobs.create({
+    purpose: 'monitor_draft',
+    button: get('generate'),
+    status: get('status'),
+    restoreButton: get('restore'),
+    disabled: generationDisabled,
+    isOpen: () => root.open && !get('create-panel').hidden,
+    snapshot: () => [editingItem?.id, editingItem?.revision, get('sentence').value,
+      draft && body(), get('start').value, get('end').value, get('confirm').checked],
+    async present(result, {restored, current}) {
+      const request = result.request;
+      if (restored) {
+        await initialList;
+        if (!current()) return;
+        const target = request.monitor_id && monitorItems.find(item => item.id === request.monitor_id);
+        const sentence = get('sentence').value.trim();
+        if (draft || (editingItem && editingItem.id !== request.monitor_id) || (sentence && sentence !== request.sentence)) {
+          status('草稿已生成，保留研究员当前编辑内容。'); return;
+        }
+        if (request.monitor_id && (!target || target.revision !== request.revision)) {
+          status('监测已更新，请刷新后重新生成草稿。', true); return;
+        }
+        editingItem = target || null;
+        get('sentence').value = request.sentence;
+        showMode('create');
+      }
+      setDraft(result); status('草稿已生成。请逐条核对指标和口径，再回测。');
+    },
+  });
+  get('create-toggle').addEventListener('click', () => openCreate(get('create-toggle')));
+  get('list-toggle').addEventListener('click', () => showMode('list', get('list-toggle')));
+  get('dialog-create').addEventListener('click', () => openCreate());
+  get('dialog-list').addEventListener('click', () => showMode('list'));
+  get('close').addEventListener('click', () => root.close());
+  root.addEventListener('close', () => {
+    if (root.open) return;
+    deepLinkId = null;
+    opener?.focus({preventScroll: true});
+  });
+  function followDeepLink() {
+    if (openDeepLink()) void loadList().catch(error => status(error.message, true));
+  }
+  window.addEventListener('hashchange', followDeepLink);
+  document.addEventListener('click', event => {
+    if (event.defaultPrevented || event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const link = event.target.closest('a[data-kind="monitor-resident"], a[data-monitor-toast]');
+    if (!link) return;
+    event.preventDefault();
+    if (link.href !== window.location.href) window.history.pushState(null, '', link.href);
+    followDeepLink();
+  });
+  openDeepLink();
   get('sentence').addEventListener('input', sync); get('model').addEventListener('change', sync);
+  get('setup-choice').addEventListener('change', () => {
+    const selected = get('setup-choice').value;
+    const previous = draft?.setup_candidate;
+    const restoreChoice = () => { get('setup-choice').value = previous ?? ''; };
+    if (!selected) { restoreChoice(); return; }
+    void act(async () => {
+      const sentence = get('sentence').value;
+      const cached = setupDrafts.get(Number(selected));
+      const result = cached?.draft || await window.WorkbenchSetupReview.load({candidate: Number(selected)});
+      if (!root.open || get('create-panel').hidden || get('sentence').value !== sentence) {
+        restoreChoice(); return;
+      }
+      if (draft?.fromSetup) setupDrafts.set(previous, {draft, sentence, title: get('title').value, logic: get('logic').value,
+        summary: get('summary').value,
+        customWindow: customDraftWindow, window: {start: get('start').value, end: get('end').value}});
+      showSetupDraft(result, cached);
+    }, restoreChoice);
+  });
   get('title').addEventListener('input', invalidate); get('logic').addEventListener('change', invalidate);
   for (const key of ['start', 'end']) get(key).addEventListener('input', () => { customDraftWindow = true; invalidate(); });
   get('confirm').addEventListener('change', sync);
-  get('generate').addEventListener('click', () => void act(async () => {
-    status('正在理解原话、召回并核对授权指标…');
-    const result = await request('/monitors/draft', {sentence: get('sentence').value.trim(), model_id: get('model').value}, 'POST');
-    setDraft(result); status('草稿已生成。请逐条核对指标和口径，再回测。');
+  get('generate').addEventListener('click', () => draftJob.submit('/api/sn/monitors/draft', {
+    sentence: get('sentence').value.trim(), model_id: get('model').value,
+    ...(editingItem ? {monitor_id: editingItem.id, revision: editingItem.revision} : {}),
   }));
   get('backtest').addEventListener('click', () => void act(async () => {
     for (const input of get('draft').querySelectorAll('input[type=number]')) if (!input.checkValidity()) throw new Error('请填写有效阈值和连续期数。');
@@ -309,15 +544,51 @@
   }));
   get('save').addEventListener('click', () => void act(async () => {
     if (!tested || !get('confirm').checked) return;
-    await request('/monitors', body(), 'POST'); await loadList(); get('draft').hidden = true;
-    draft = null; tested = false; clearDisplay(get('backtest-result')); status('监测已保存并启用。重新检查时会判断是否触发。');
+    if (draft.fromSetup && !window.confirm('请确认监测规则已经按当前判断调整，再保存并启用。')) return;
+    const saved = editingItem
+      ? await request('/monitors/' + encodeURIComponent(editingItem.id), {...body(), revision: editingItem.revision}, 'PATCH')
+      : await request('/monitors', body(), 'POST');
+    const message = editingItem ? '监测修订已保存。' : '监测已保存并启用。重新检查时会判断是否触发。';
+    highlightedId = saved.id;
+    if (viewedItem?.id === saved.id) closeView();
+    const remaining = draft.fromSetup && (draft.setup_titles || []).length > savedSetupCandidates.size + 1;
+    if (draft.fromSetup) {
+      savedSetupCandidates.add(draft.setup_candidate);
+      setupDrafts.delete(draft.setup_candidate);
+      const option = get('setup-choice').selectedOptions[0];
+      option.disabled = true;
+      option.textContent += '（已保存）';
+    }
+    editingItem = null; get('sentence').value = ''; clearDraft();
+    if (!remaining) showMode('list');
+    else if (root.open) get('setup-choice').focus({preventScroll: true});
+    await loadList({reveal: true, changed: true});
+    status(remaining ? `${message} 可继续选择其他周报监测候选。` : message);
   }));
-  get('cancel').addEventListener('click', () => { get('draft').hidden = true; clearDisplay(get('backtest-result')); draft = null; tested = false; sync(); });
-  get('view-close').addEventListener('click', () => { get('view').hidden = true; clearDisplay(get('view-result')); });
-  get('view-backtest').addEventListener('click', () => { if (viewedItem) void act(() => viewItem(viewedItem, true)); });
+  get('cancel').addEventListener('click', clearDraft);
+  get('view-close').addEventListener('click', closeView);
+  get('view-backtest').addEventListener('click', () => { if (viewedItem) void act(() => viewItem(viewedItem, {adjust: true})); });
   get('refresh').addEventListener('click', () => void act(loadList));
   window.addEventListener('affairs-checked', () => { void loadList().catch(error => status(error.message, true)); });
-  void loadList().catch(error => { get('list').replaceChildren(node('div', '监测读取失败，请刷新列表重试。', 'affairs-empty')); status(error.message, true); });
+  const initialList = loadList().catch(error => {
+    get('list').replaceChildren(node('div', '监测读取失败，请刷新列表重试。', 'affairs-empty')); status(error.message, true);
+  });
+  void ResearchAnalysisJobs.requested('monitor_draft').then(async job => {
+    const setup = window.WorkbenchSetupReview;
+    if (!job && !await setup?.appliesTo('monitors')) return;
+    await initialList;
+    if (!canWrite || root.open || draft || editingItem || get('sentence').value) return;
+    if (job) {
+      openCreate(get('create-toggle'), null, {discover: false});
+      return draftJob.restore(job.id, {explicit: true});
+    }
+    try {
+      const result = await setup.load();
+      if (root.open || draft || editingItem || get('sentence').value) return;
+      openCreate(get('create-toggle'), null, {discover: false});
+      showSetupDraft(result);
+    } catch (error) { status(error.message, true); }
+  });
   void request('/strategies/models').then(result => {
     get('model').replaceChildren(...(result.models || []).map(model => new Option(model.name, model.id)));
     if (!get('model').options.length) get('model').append(new Option('暂无可用模型', ''));

@@ -14,8 +14,59 @@
 
   const generator = document.getElementById('generate-strategies');
   const model = document.getElementById('strategy-model');
-  if (model && generator?.dataset.platformModel === 'true') {
-    researchFetch((window.RESEARCH_PREFIX || '') + '/api/sn/strategies/models').then(async response => {
+  if (model && generator && window.ResearchAnalysisJobs) {
+    const prefix = (window.RESEARCH_PREFIX || '') + '/api/sn/strategies';
+    const note = document.getElementById('strategy-generation-status');
+    const preview = document.getElementById('strategy-generation-preview');
+    const menu = generator.closest('details');
+    let openingLinkedJob = false;
+    const renderText = (parent, tag, value) => {
+      const node = document.createElement(tag); node.textContent = value; parent.append(node); return node;
+    };
+    const job = window.ResearchAnalysisJobs.create({
+      purpose: 'strategy_generation',
+      status: note,
+      button: generator,
+      restoreButton: document.getElementById('strategy-generation-restore'),
+      disabled: () => model.disabled || !model.value,
+      snapshot: () => JSON.stringify([model.value, window.ResearchStrategyEditor?.editStamp()]),
+      present(result) {
+        preview.replaceChildren();
+        preview.hidden = !result.strategies.length;
+        if (result.status !== 'generated') {
+          note.textContent = (result.gaps || ['暂无可用策略']).join('；');
+          return;
+        }
+        note.textContent = `已取回 ${result.strategies.length} 条模拟草稿，请核对后分别保存。`;
+        for (const [candidate, plan] of result.strategies.entries()) {
+          const article = document.createElement('article'); preview.append(article);
+          renderText(article, 'h3', plan.title);
+          renderText(article, 'p', plan.thesis);
+          const details = document.createElement('details'); article.append(details);
+          renderText(details, 'summary', '核对合约、计划与引用证据');
+          const list = document.createElement('dl'); details.append(list);
+          const append = (label, value) => { renderText(list, 'dt', label); renderText(list, 'dd', value); };
+          for (const leg of plan.legs) append('合约', [leg.side === 'buy' ? '买入' : '卖出', leg.contract, '×' + leg.ratio].join(' '));
+          for (const [key, label] of [['entry', '入场'], ['target', '目标'], ['stop', '止损']])
+            append(label, `${plan[key].low} – ${plan[key].high} · ${plan[key].reason}`);
+          for (const [key, label] of [['entry_condition', '入场条件'], ['invalidation', '失效条件'], ['catalyst', '催化剂'],
+            ['market_expectation', '市场预期'], ['alternative_explanation', '竞争性解释'], ['review_at', '复核时间'],
+            ['horizon_days', '期限（天）'], ['risk_budget', '计划风险预算']]) append(label, plan[key]);
+          for (const evidence of plan.evidence)
+            append('引用证据', [evidence.series_id, evidence.value, evidence.as_of, evidence.source, evidence.statement].filter(value => value != null).join(' · '));
+          const save = renderText(article, 'button', '确认保存为独立草稿'); save.type = 'button';
+          save.addEventListener('click', async () => {
+            save.disabled = true;
+            try {
+              const value = await request(prefix + '/generated/' + encodeURIComponent(result.job.id), {candidate});
+              window.ResearchStrategyEditor?.savedPlan(value);
+              save.textContent = '草稿已保存';
+            } catch (error) { show(error.message, true); save.disabled = false; }
+          });
+        }
+      },
+    });
+    const models = researchFetch(prefix + '/models').then(async response => {
       const value = await response.json();
       if (!response.ok || !Array.isArray(value.models)) throw new Error(typeof value.detail === 'string' ? value.detail : '无法读取配置模型');
       model.replaceChildren();
@@ -23,25 +74,24 @@
         const option = document.createElement('option'); option.value = item.id; option.textContent = item.name; model.append(option);
       }
       if (!value.models.length) { model.append(new Option('暂无可用通用模型', '')); return; }
-      model.disabled = false; generator.disabled = false;
+      model.disabled = false; generator.disabled = job.busy;
     }).catch(error => show(error.message, true));
+    generator.addEventListener('click', () => {
+      if (generator.disabled || !model.value || job.busy) return;
+      preview.hidden = true;
+      void job.submit('/api/sn/strategies/generate',
+        {date: new URLSearchParams(location.search).get('date'), model_id: model.value});
+    });
+    menu.addEventListener('toggle', () => { if (menu.open && !openingLinkedJob && !job.busy) void models.then(() => job.discover()); });
+    void window.ResearchAnalysisJobs.requested('strategy_generation').then(async meta => {
+      if (!meta) return;
+      await models;
+      openingLinkedJob = true;
+      menu.open = true;
+      try { await job.restore(meta.id, {explicit: true}); }
+      finally { openingLinkedJob = false; }
+    });
   }
-
-  document.getElementById('generate-strategies')?.addEventListener('click', async event => {
-    const button = event.currentTarget;
-    button.disabled = true;
-    show('正在核对当日具体合约行情、产业证据和有效研究判断…');
-    try {
-      const result = await request((window.RESEARCH_PREFIX || "") + '/api/sn/strategies/generate', {date: new URLSearchParams(location.search).get('date'), ...(model ? {model_id: model.value} : {})});
-      if (result.status === 'generated') {
-        show(`已生成 ${result.strategies.length} 条待审阅模拟草稿。`);
-        location.reload();
-      } else {
-        show((result.gaps || ['暂无可用策略']).join('；'), true);
-      }
-    } catch (error) { show(error.message, true); }
-    finally { button.disabled = false; }
-  });
 
   document.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', async () => {
     const action = button.dataset.action;

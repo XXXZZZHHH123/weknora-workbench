@@ -5,6 +5,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
+MAX_VISIBLE_CYCLES = 40
+
 
 class ChartModel(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
@@ -152,7 +154,7 @@ class CycleTime(ChartModel):
     mode: Literal['cycle']
     template: CycleTemplate
     cycles: int = Field(default=8, ge=1, strict=True)
-    visible_cycles: int | None = Field(default=None, ge=1, le=40, strict=True)
+    visible_cycles: int | None = Field(default=None, ge=1, le=MAX_VISIBLE_CYCLES, strict=True)
     band_cycles: int = Field(default=5, ge=1, strict=True)
     transform: Literal['raw', 'change', 'rebase'] = 'raw'
     curve_cycles: Literal['current', 'current_and_previous'] = 'current'
@@ -243,3 +245,9 @@ class NativeSheetSelection(ChartModel):
 
 class NativeApplyInput(ChartModel):
     sheets: list[NativeSheetSelection] = Field(min_length=1, max_length=200)
+
+
+class NativeApplyPageInput(ChartModel):
+    offset: int = Field(ge=0, strict=True)
+    limit: int = Field(ge=1, le=200, strict=True)
+    version: str | None = None

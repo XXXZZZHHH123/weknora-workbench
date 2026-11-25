@@ -10,6 +10,7 @@ from datetime import date, datetime
 from fastapi import HTTPException
 
 from tin.config import SHANGHAI
+from tin.integration.observation_windows import UNDATED_RULE_NOTE, UNDATED_RULE_STATE
 from tin.integration.page_facts import page_read_scope
 from tin.integration import workbench_scope
 
@@ -90,6 +91,10 @@ def _judgment_states(scope, judgment_id, wanted, cutoff):
                         'chart': _chart(_metric(session, rule['series_id'], cutoff, CHART_POINTS), cutoff)}
             finally:
                 _transient_signals.reset(marker)
+            undated = set(session.info.get('knowledge_facts_undated_series_ids', ()))
+            for state in states.values():
+                if state['series_id'] in undated:
+                    state.update(state=UNDATED_RULE_STATE, value=None, as_of=None, distance=UNDATED_RULE_NOTE, chart=None)
             version = {'id': str(judgment.id), 'revision': judgment.version, 'status': judgment.status,
                        'tone': judgment.tone or '', 'current_revision': latest.version if latest else None,
                        'is_current': latest is not None and latest.id == judgment.id}
@@ -175,7 +180,8 @@ def monitor_cards(scope, cards, *, day=None, include_indicators=True):
         triggered = [row for row in conditions if row['state'] == '触发']
         results[card['id']] = {'card_id': card['id'], 'as_of': cutoff.isoformat(), 'conditions': conditions,
             'indicators': series, 'counts': {'conditions': len(conditions), 'triggered': len(triggered),
-                'missing': sum(row['state'] in {'数据缺失', '无法核对'} for row in conditions), 'indicators': len(series)},
+                'missing': sum(row['state'] in {'数据缺失', '无法核对', UNDATED_RULE_STATE} for row in conditions),
+                'indicators': len(series)},
             'notice': f'按截至 {cutoff.isoformat()} 的可读数据试算所引条件；不写入信号，也不执行或改变交易。'}
         if library_charts:
             results[card['id']]['charts'] = library_charts

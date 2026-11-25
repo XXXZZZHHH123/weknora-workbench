@@ -5,7 +5,6 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from hashlib import sha256
 import json
-import os
 from pathlib import Path
 import re
 import uuid
@@ -145,10 +144,11 @@ def narrow_catalogue(payload, root, call):
 
 
 def ask_model(payload, root=None):
-    from .model_settings import read_model
+    from .model_settings import NO_FIELD_MODEL, read_model
     cfg=read_model(root)
-    key=cfg.get('api_key') or os.environ.get(cfg.get('api_key_env',''),'')
-    if not cfg.get('native_model_id') and (not key or not cfg.get('base_url') or not cfg.get('model')):raise ValueError('语义识别模型配置不完整')
+    key=cfg.get('api_key')
+    if not cfg.get('native_model_id') and (not key or not cfg.get('base_url') or not cfg.get('model')):
+        raise ValueError(cfg.get('model_error') or NO_FIELD_MODEL)
     auxiliary=any(payload.get(k) for k in ('_intent','_context_resolution','_catalog_selection','_metadata_catalog_query','_metadata_scope','_expand_query','_source_binding'))
     semantic=payload.get('semantic_task')
     if not auxiliary and semantic is None:

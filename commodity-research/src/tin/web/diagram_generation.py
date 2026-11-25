@@ -1,20 +1,21 @@
 """Model-authored diagram drafts; only current, explicit KB IDs may bind."""
+import asyncio
 import base64
-from datetime import date
+from datetime import date, datetime, timezone
 from contextvars import ContextVar
 import json
 import logging
 from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from tin.config import settings
 from tin.db import SessionLocal
 from tin.export import diagram_md
-from tin.integration.workbench_scope import current_workbench, go_request, require_shared_write, resolve_workbench, source_scope_for_binding
+from tin.integration.workbench_scope import artifact_session, current_workbench, go_request, require_shared_write, resolve_workbench, source_scope_for_binding
 from tin.web.diagram_draft import compile_graph
 from tin.web.workbench_sources import source_content
 from tin.compute.frequency import observed_frequency
@@ -27,7 +28,10 @@ CATALOG_MAX_BATCHES = 4
 CANDIDATES_PER_CONCEPT = 3
 CATALOG_SELECTION_LIMIT = 96
 PROMPT_VERSION = 'diagram-outline-v3'
+REPORT_CATALOG_PREFIX = 'report.'
+RECOMMENDATION_PURPOSE = 'diagram_indicator_recommendations'
 MODEL_PROMPT_BYTES = 160 * 1024
+GENERATION_SECONDS = 600
 INVALID_OUTPUT_MESSAGE = '模型没有返回完整有效的配置，请调整资料后重试'
 STATUS_POINTS = 24
 _generation_progress = ContextVar('diagram_generation_progress', default=None)
@@ -57,6 +61,18 @@ class SelectionPlanError(ValueError):
         message = SELECTION_ISSUES[code]
         super().__init__(message)
         self.code, self.message = code, message
+
+
+class CatalogCapacityError(HTTPException):
+    """The current byte and shard limits could fit only this prefix."""
+
+    def __init__(self, detail, fitting_count):
+        super().__init__(413, detail)
+        self.fitting_count = fitting_count
+
+
+class EmptyScopedCatalog(Exception):
+    pass
 
 
 def selection_ids(result, batch, concepts=None):
@@ -170,12 +186,32 @@ def catalog_snapshot(scope=None):
         return session.info['knowledge_facts_version'], catalog_fields(session.info['knowledge_facts_catalog'])
 
 
+def report_catalog_snapshot(scope, series_ids):
+    """Reuse the authorized real-ID read, including saved bindings hidden by dedup."""
+    from tin.web.chart_data import catalog_fields_with_version
+    fields, version = catalog_fields_with_version(scope, sorted(series_ids))
+    return REPORT_CATALOG_PREFIX + version, catalog_fields(fields)
+
+
 def catalog_fields(catalog):
     return [{'id':spec['series_id'],'name':spec.get('metric') or spec.get('name'),
              'unit':spec.get('unit'),'frequency':spec.get('frequency'),
              'sheet':spec.get('sheet'),'dimensions':spec.get('dimensions'),
              'source_file':spec.get('source_file'), 'knowledge_base_id':spec.get('knowledge_base_id'),
              'source_kind':spec.get('source_kind')} for spec in catalog.values()]
+
+
+def recommendation_catalog(scope):
+    if getattr(scope, 'scope_version', 1) != 2:
+        return catalog_snapshot(scope)
+    from tin.integration.kb_facts import catalog_snapshot as source_catalog_snapshot
+    metadata = source_catalog_snapshot(scope)
+    catalog = metadata['catalog']
+    fields = catalog_fields(catalog)
+    for field in fields:
+        row = catalog[field['id']]
+        field.update(source_binding_id=row.get('source_binding_id'), source_version=row.get('source_version'))
+    return metadata['version'], fields
 
 
 async def verify_generation_scope(scope, expected_version):
@@ -186,17 +222,34 @@ async def verify_generation_scope(scope, expected_version):
         raise HTTPException(403, '当前权限不能生成或复用产业图结构')
     if scope_key(fresh) != scope_key(scope):
         raise HTTPException(409, '工作台数据来源或授权已改变，请重新生成')
-    version, _ = await run_in_threadpool(catalog_snapshot, fresh)
+    if isinstance(expected_version, str) and expected_version.startswith(REPORT_CATALOG_PREFIX):
+        version, _ = await run_in_threadpool(report_catalog_snapshot, fresh, ())
+    else:
+        version, _ = await run_in_threadpool(catalog_snapshot, fresh)
     if version != expected_version:
         raise HTTPException(409, '生成期间知识库来源已改变，请重新生成')
 
 
 def validate_generated_configuration(markdown, expected_version):
-    """Recheck the full catalog marker, independent of a page's fact window."""
+    """Recheck the generation catalog marker and current indicator authorization."""
+    return validate_generated_layout(_generated_layout(markdown), expected_version)
+
+
+def validate_generated_layout(layout, expected_version, *, canvas=False):
+    if canvas and (not isinstance(layout.get('nodes'), list) or len(layout['nodes']) > 256
+            or not isinstance(layout.get('edges', []), list) or len(layout.get('edges', [])) > 512):
+        raise HTTPException(422, '产业图节点或连线超出有效配置范围')
+    if isinstance(expected_version, str) and expected_version.startswith(REPORT_CATALOG_PREFIX):
+        ids = {binding['series_id'] for node in layout['nodes']
+               if (binding := node.get('binding') or {}).get('kind') == 'series' and 'series_id' in binding}
+        version, catalog = report_catalog_snapshot(current_workbench.get(), ids)
+        if expected_version != version:
+            raise HTTPException(409, '知识库来源已改变，请重新生成或核对产业图配置')
+        return _validate_bindings(layout, catalog, canvas=canvas)
     version, catalog = catalog_snapshot()
     if expected_version != version:
         raise HTTPException(409, '知识库来源已改变，请重新生成或核对产业图配置')
-    return validate_draft(markdown, catalog)
+    return _validate_bindings(layout, catalog, canvas=canvas)
 
 
 def macro_options(catalog):
@@ -211,14 +264,14 @@ def catalog_json(fields):
 
 def catalog_batches(catalog):
     batches,current,size = [],[],2
-    for field in catalog:
+    for index, field in enumerate(catalog):
         field_size = len(catalog_json(field).encode('utf-8'))
         if field_size+2>CATALOG_BYTES:
-            raise HTTPException(413,'单个指标的目录信息过大，请缩小资料或指标范围后重试')
+            raise CatalogCapacityError('单个指标的目录信息过大，请缩小资料或指标范围后重试', index)
         if current and size+1+field_size>CATALOG_BYTES:
             batches.append(current)
             if len(batches)>=CATALOG_MAX_BATCHES:
-                raise HTTPException(413,'指标目录超过本次生成容量，请缩小研究范围后重试')
+                raise CatalogCapacityError('指标目录超过本次生成容量，请缩小研究范围后重试', index)
             current,size = [],2
         size += field_size+(1 if current else 0)
         current.append(field)
@@ -485,7 +538,7 @@ async def completion(scope,model_id,prompt,image=None):
         raise HTTPException(503,'模型服务暂时不可用，现有产业图保持原样') from None
 
 
-def validate_draft(markdown,catalog):
+def _generated_layout(markdown):
     if not isinstance(markdown,str) or not markdown.strip() or len(markdown.encode('utf-8'))>64000:
         raise HTTPException(422,'产业图 Markdown 为空或过大')
     try:
@@ -494,12 +547,20 @@ def validate_draft(markdown,catalog):
         raise HTTPException(422,'产业图配置无法解析，请核对分组、节点和连线') from None
     if len(layout['nodes'])>256 or len(layout['edges'])>512:
         raise HTTPException(422,'产业图超过256个节点或512条连线，请缩小范围')
+    return layout
+
+
+def validate_draft(markdown, catalog):
+    return _validate_bindings(_generated_layout(markdown), catalog)
+
+
+def _validate_bindings(layout, catalog, *, canvas=False):
     known = {spec['id']:spec for spec in catalog}
     bindings = []
     for node in layout['nodes']:
-        binding = node.get('binding',{})
+        binding = node.get('binding') or {}
         kind = binding.get('kind')
-        if kind not in {None,'none','series'}:
+        if kind not in (None, 'none', 'series') and not (canvas and kind in ('derived', 'agg')):
             raise HTTPException(422,'生成助手仅允许绑定当前知识库真实指标，不推定聚合或计算公式')
         if kind == 'series':
             identifier = binding.get('series_id')
@@ -632,8 +693,12 @@ def final_constraint_schema():
         selection_context(), final_constraint()]
 
 
-@router.post('')
-async def generate(body:GenerateRequest):
+@router.post('', name='generate')
+async def generate_route(body: GenerateRequest):
+    return await generate(body)
+
+
+async def generate(body: GenerateRequest, *, series_ids: set[str] | None = None):
     scope = scope_for_generation()
     await notify_progress('reading_source')
     text,image = body.instructions.strip(),body.image
@@ -671,10 +736,21 @@ async def generate(body:GenerateRequest):
         except (ValueError,TypeError):
             raise HTTPException(400,'请选择5 MiB以内的PNG、JPEG、WebP或GIF图片') from None
     await notify_progress('loading_catalog')
-    version, catalog = await run_in_threadpool(catalog_snapshot)
+    if series_ids is None:
+        version, catalog = await run_in_threadpool(catalog_snapshot)
+    else:
+        version, catalog = await run_in_threadpool(report_catalog_snapshot, scope, series_ids)
+        if not catalog:
+            raise EmptyScopedCatalog()
     # Stable ordering makes shard boundaries independent of database iteration.
     catalog = sorted(catalog, key=lambda item: item['id'])
-    catalog_batches(catalog)  # Capacity preflight before any model invocation.
+    try:
+        catalog_batches(catalog)  # Capacity preflight before any model invocation.
+    except CatalogCapacityError as error:
+        if series_ids is None:
+            raise
+        raise HTTPException(413,
+            f'本次识别出的指标有 {len(catalog)} 个，超过产业图生成上限 {error.fitting_count} 个') from None
     from tin.web import diagram_analysis_cache as cache
     from tin.web.diagram_outline import (outline_prompt, validate_outline,
         final_constraint, validate_final)
@@ -793,6 +869,163 @@ async def generate(body:GenerateRequest):
         await run_in_threadpool(cache.abandon, scope, ticket)
         raise
 
+
+class RecommendationNode(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    id: str = Field(min_length=1, max_length=128)
+    label: str = Field(min_length=1, max_length=160)
+    context: str = Field(default='', max_length=600)
+
+
+class RecommendationRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    model_id: str = Field(min_length=1, max_length=128)
+    template_id: int = Field(gt=0)
+    title: str = Field(min_length=1, max_length=160)
+    nodes: list[RecommendationNode] = Field(min_length=1, max_length=256)
+    shared_ids: list[str] = Field(default_factory=list, max_length=256)
+
+    @model_validator(mode='after')
+    def distinct_nodes(self):
+        if len({node.id for node in self.nodes}) != len(self.nodes):
+            raise ValueError('节点编号必须唯一')
+        if any(not identifier or len(identifier) > 128 for identifier in self.shared_ids):
+            raise ValueError('绑定指标编号无效')
+        return self
+
+
+class PreviewRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid', strict=True)
+    markdown: str = Field(min_length=1, max_length=64000)
+
+
+def recommendation_nodes(layout):
+    nodes = {node['id']: node for node in layout['nodes']}
+    connected = {identifier: [] for identifier in nodes}
+    for edge in layout['edges']:
+        for first, second in ((edge['from'], edge['to']), (edge['to'], edge['from'])):
+            labels = connected[first]
+            if len(labels) < 4 and nodes[second]['label'] not in labels:
+                labels.append(nodes[second]['label'])
+    for node in nodes.values():
+        if node.get('kind') == 'group' or (node.get('binding') or {}).get('kind') not in (None, 'none'):
+            continue
+        trail = []
+        parent = nodes.get(node.get('parent'))
+        while parent is not None and len(trail) < 3:
+            trail.append(parent['label'])
+            parent = nodes.get(parent.get('parent'))
+        context = ' / '.join(reversed(trail))
+        if connected[node['id']]:
+            context += '；关联节点：' + ' / '.join(connected[node['id']])
+        yield RecommendationNode(id=node['id'], label=node['label'], context=context[:600])
+
+
+async def recommend_nodes(scope, model_id, title, nodes, shared_ids, progress):
+    from tin.web.judgment_recall import recommend
+
+    await progress('loading_catalog')
+    version, catalog = await run_in_threadpool(recommendation_catalog, scope)
+    inventory = {'items': [{'id': node.id, 'kind': 'diagram_node',
+                            'quote': f'{node.context} / {node.label}' if node.context else node.label}
+                           for node in nodes]}
+    items = await recommend(scope, model_id, catalog, json.dumps({'产业图': title}, ensure_ascii=False),
+                            inventory, shared=shared_ids, module='diagram', progress=progress)
+    await verify_generation_scope(scope, version)
+    return items, version
+
+
+async def recommend_generated(scope, result, *, timeout):
+    """Supplement a completed graph within its existing background job."""
+    bindings = result.get('bindings')
+    if bindings is None or len(bindings) >= result['nodes']:
+        return result
+    layout = _generated_layout(result['markdown'])
+
+    async def progress(_phase):
+        await notify_progress('recommending')
+
+    try:
+        items, version = await asyncio.wait_for(recommend_nodes(scope, result['model_id'], layout['name'],
+            list(recommendation_nodes(layout)), [binding['series_id'] for binding in bindings], progress), timeout)
+    except (HTTPException, TimeoutError) as error:
+        logger.warning('Diagram indicator recommendations unavailable (%s)', type(error).__name__)
+        return {**result, 'recommendation_notice': '空节点推荐未完成，可以在编辑页重试。'}
+    return {**result, 'indicator_recommendations': items, 'recommendation_version': version}
+
+
+async def checked_recommendation_preview(scope, result):
+    version = result.get('recommendation_version')
+    if version is None:
+        return result
+    try:
+        await verify_generation_scope(scope, version)
+    except HTTPException as error:
+        if error.status_code != 409:
+            raise
+        result = {key: value for key, value in result.items()
+                  if key not in {'indicator_recommendations', 'recommendation_version'}}
+        result['recommendation_notice'] = '指标目录已改变，可以在编辑页重新推荐。'
+    return result
+
+
+def _verify_template(scope, template_id):
+    from tin.models import DiagramTemplate
+
+    with artifact_session(scope) as session:
+        if session.get(DiagramTemplate, template_id) is None:
+            raise HTTPException(404, '当前工作台没有该产业图')
+
+
+async def _run_recommendations(scope, request, progress, _job_id):
+    body = RecommendationRequest.model_validate(request)
+    await run_in_threadpool(_verify_template, scope, body.template_id)
+    model = await current_model(scope, body.model_id)
+    items, version = await recommend_nodes(scope, body.model_id, body.title, body.nodes, body.shared_ids, progress)
+    if await current_model(scope, body.model_id) != model:
+        raise HTTPException(409, '推荐期间模型配置已改变，请重新推荐')
+    return {'items': items, 'version': version}
+
+
+async def _verify_recommendation_result(scope, request, result):
+    await run_in_threadpool(_verify_template, scope, request['template_id'])
+    await verify_generation_scope(scope, result['version'])
+
+
+def _audit_recommendations(session, scope, job_id, body, result=None):
+    from tin.models import AuditLog
+    from tin.ownership import verified_actor
+
+    detail = {'workbench_id': scope.workbench_id, 'template_id': body['template_id'],
+              'model_id': body['model_id'], 'node_count': len(body['nodes'])}
+    if result is not None:
+        detail['recommended_count'] = sum(item['recommended'] is not None for item in result['items'].values())
+    session.add(AuditLog(at=datetime.now(timezone.utc), actor=verified_actor(session, ''),
+        action='提交产业图指标推荐' if result is None else '完成产业图指标推荐',
+        target_type=RECOMMENDATION_PURPOSE, target_id=job_id, detail=detail))
+
+
+@router.post('/indicator-recommendations', status_code=202)
+async def create_recommendations(body: RecommendationRequest, request: Request):
+    from tin.web import analysis_jobs
+
+    scope = scope_for_generation()
+    return await analysis_jobs.start_job(scope, RECOMMENDATION_PURPOSE, body.model_dump(mode='json'),
+        request.headers.get('Idempotency-Key'), _run_recommendations,
+        timeout=GENERATION_SECONDS, result_slot=str(body.template_id))
+
+
+@router.post('/preview')
+def preview_canvas(body: PreviewRequest):
+    scope_for_generation()
+    return _generated_layout(body.markdown)
+
+
+def register_recommendation_jobs():
+    from tin.web import analysis_jobs
+
+    analysis_jobs.result_checks[RECOMMENDATION_PURPOSE] = _verify_recommendation_result
+    analysis_jobs.record_audits[RECOMMENDATION_PURPOSE] = _audit_recommendations
 
 
 async def original_identity(scope, knowledge_id):

@@ -89,10 +89,13 @@ def model_output_schema():
     }]
     for name in ('Threshold', 'Falsifier'):
         definitions[name]['properties'].pop('caliber_confirmation', None)
+        for key in ('source_value', 'scale'):
+            definitions[name]['properties'].pop(key, None)
         definitions[name]['properties']['id']['pattern'] = r'^[A-Za-z][A-Za-z0-9_-]{0,63}$'
         definitions[name]['properties']['series_id']['minLength'] = 1
     definitions.pop('CaliberConfirmation', None)
     falsifier = definitions['Falsifier']['properties']
+    falsifier.pop('value', None)
     falsifier['expression']['pattern'] = EXPRESSION.pattern
     falsifier['consecutive_periods']['maximum'] = 120
     for name in ('Evidence', 'MarginalItem', 'CostItem', 'UnstructuredItem'):

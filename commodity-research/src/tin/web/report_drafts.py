@@ -16,6 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from tin.integration.workbench_scope import artifact_session, current_workbench
 from tin.models.workbench import WorkbenchArtifact
 from tin.web import report_evidence
+from tin.web.report_layout import ReportLayout, validate_layout
 from tin.web.workbench_artifacts import artifact_query, record_revision
 
 FORMAT = 'research-report-draft.v1'
@@ -70,6 +71,7 @@ class ReportDraft(_Input):
     references: list[ReportReference] = Field(default_factory=list, max_length=8)
     dimension_notes: dict[str, DimensionNote] = Field(default_factory=dict, max_length=36)
     figure_conclusions: dict[str, str] = Field(default_factory=dict, max_length=100)
+    layout: ReportLayout | None = None
     evidence_citations: list[report_evidence.EvidenceCitation] = Field(default_factory=list, max_length=36)
 
     @model_validator(mode='after')
@@ -332,6 +334,8 @@ def save_report(scope, body, identifier=None):
         snapshots = freeze_references(session, scope, body.draft.references)
         allowed = bound_series(session, scope, snapshots)
         chosen = validate_selection([item.series_id for item in body.draft.figures], allowed)
+        if body.draft.layout:
+            validate_layout(session, scope, body.draft.layout)
         version = current_source_version(scope, chosen, day)
         if not isinstance(version, str) or not re.fullmatch('[a-f0-9]{64}', version):
             raise HTTPException(503, '报告来源版本无法核验，未保存')

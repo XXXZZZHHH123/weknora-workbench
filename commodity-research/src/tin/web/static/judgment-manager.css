@@ -57,6 +57,9 @@
 .logic-confirm-content > p { margin: 5px 0; overflow-wrap: anywhere; }
 .logic-confirm-condition { padding: 7px 9px; border-radius: 5px; background: var(--surface-soft); }
 .logic-confirm-source { color: var(--text-muted); }
+.logic-quantity-warning { color: var(--alert); font-weight: 600; }
+.logic-review-job-toolbar { margin-bottom: 0; }
+.logic-review-job-toolbar > span:empty { display: none; }
 .logic-confirm-label { display: grid; gap: 4px; margin-top: 10px; font-size: 11px; }
 .logic-confirm-label input, .logic-confirm-label select, .logic-confirm-label textarea { box-sizing: border-box; width: 100%; margin: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text); font: inherit; }
 .logic-confirm-label textarea { min-height: 58px; max-height: 130px; }
@@ -65,6 +68,11 @@
 .logic-ai-binding > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .logic-ai-badge { flex-shrink: 0; padding: 1px 4px; border-radius: 3px; color: var(--primary); background: var(--primary-soft); font-size: 9px; }
 .logic-binding-picker { position: relative; }
+.logic-binding-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 3px; }
+.logic-dialog .logic-recommend-indicator { padding: 3px 7px; font-size: 11px; }
+.logic-recommendation-heading { padding: 3px 7px; font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.logic-recommendation-note { margin: .3rem 0 0; font-size: 12px; color: var(--primary); overflow-wrap: anywhere; }
+.logic-binding-option small.logic-indicator-reason { white-space: normal; }
 .logic-binding-picker:after { content: '⌄'; position: absolute; right: 9px; top: 5px; color: var(--text-muted); pointer-events: none; }
 .logic-dialog .logic-binding-search { display: block; box-sizing: border-box; width: 100%; height: 30px; padding: 5px 26px 5px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text); font: inherit; font-size: 11px; }
 .logic-binding-meta { margin: 5px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 10px; line-height: 1.5; }

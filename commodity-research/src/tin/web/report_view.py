@@ -2,6 +2,8 @@
 from copy import deepcopy
 from decimal import Decimal
 from html import escape
+
+from tin.judgments.quantity_alignment import conversion_text
 from tin.web.number_format import format_number, source_decimals
 from tin.web.research_display import human_text, indicator_name, condition_text
 
@@ -19,11 +21,11 @@ def _stale_note(freshness):
             if isinstance(freshness, dict) and freshness.get('stale') else '')
 
 
-def _condition(expression, metadata=None):
+def _condition(expression, metadata=None, *, converted=''):
     from tin.schemas.judgment import EXPRESSION
     match = EXPRESSION.fullmatch(str(expression or '').strip())
     if match:
-        return condition_text(expression).removesuffix(match[3]) + _number(match[3], metadata)
+        return condition_text(expression).removesuffix(match[3]) + (converted or _number(match[3], metadata))
     return condition_text(expression)
 
 
@@ -69,17 +71,19 @@ def _judgment_view(payload, names, signals, preview=None, metrics=None, dimensio
             rule['stale_note'] = _stale_note(metric.get('freshness'))
             rule['name'] = human_text(item.get('name') or item.get('desc'), names) or '已保存观察条件'
             rule['series_name'] = indicator_name(item.get('series_id'), names)
+            converted = conversion_text(item)
             if kind == 'thresholds':
                 if isinstance(value, dict) and value.get('kind') == 'sma':
                     comparison = {'>': '高于', '>=': '不低于', '<': '低于', '<=': '不高于',
                         'crosses_below': '下穿', 'crosses_above': '上穿'}.get(item.get('operator'), '')
                     rule['condition'] = comparison + ' MA' + str(value['window'])
                 else:
-                    rule['condition'] = (' – '.join(_number(part, metric) for part in value)
+                    rule['condition'] = ((converted or ' – '.join(_number(part, metric) for part in value))
                         if item.get('operator') == 'between' and isinstance(value, list)
-                        else _plain(item.get('operator')) + ' ' + _number(value, metric))
+                        else _plain(item.get('operator')) + ' ' + (converted or _number(value, metric)))
             else:
-                rule['condition'] = _condition(item.get('expression'), metric) + ' · 连续 ' + str(item.get('consecutive_periods') or 1) + ' 期'
+                rule['condition'] = (_condition(item.get('expression'), metric, converted=converted)
+                    + ' · 连续 ' + str(item.get('consecutive_periods') or 1) + ' 期')
             saved = states.get(item.get('id')) or {}
             computed = trial.get(item.get('id'))
             signal = computed if computed is not None else saved
@@ -333,6 +337,8 @@ def _workflow_view(view, payload, names):
     for key in ('dimension_notes', 'figure_conclusions'):
         draft[key] = deepcopy((saved or {}).get(key) or {})
     draft['evidence_citations'] = deepcopy((saved or {}).get('evidence_citations') or [])
+    if (saved or {}).get('layout'):
+        draft['layout'] = deepcopy(saved['layout'])
     from tin.web.report_charts import collect_figures
     figures_manifest = deepcopy(payload.get('report_figures')) if isinstance(payload.get('report_figures'), list) else collect_figures(payload)
     automatic = [row for row in figures_manifest if row['kind'] == 'chart']
@@ -555,7 +561,6 @@ def readable_markdown(payload, *, title='研究报告', names=None, dimensions=N
     lines += ['<details><summary>完整记录</summary>', '']
     if panels['summary']['visible']:
         lines += ['## 导语', '']
-        lines += _md_lines(panels['summary']['text']) + ([''] if panels['summary']['text'] else [])
         conclusion = view['conclusion']
         lines += ['- 研判结论：' + (_md((conclusion['tone'] + '，' if conclusion['tone'] else '') + conclusion['text'])
                                     + '（' + conclusion['source'] + '）' if conclusion else '暂无已保存研究结论'),
@@ -617,7 +622,10 @@ def _one_page_lines(view):
     panels = view['panels']
     lines = []
     if panels['summary']['visible']:
-        lines += ['## 本期综述', '', '| 维度 | 本期变化 | 研究员一句话 | 影响 | 研判依据 |',
+        summary_label = '本周结论' if (view.get('period') or {}).get('kind') == 'weekly' else '本日结论'
+        lines += ['## 本期综述', '', '### ' + summary_label, '',
+                  *_md_lines(panels['summary']['text'] or '待研究员填写'), '',
+                  '| 维度 | 本期变化 | 本期结论 | 影响 | 研判依据 |',
                   '| --- | --- | --- | --- | --- |']
         for row in view['dimension_overview']:
             facts = '；'.join(fact.get('latest_text', fact['text']) if row.get('no_update') else fact['text']

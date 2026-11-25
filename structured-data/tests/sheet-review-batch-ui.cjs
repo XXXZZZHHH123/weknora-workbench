@@ -34,6 +34,7 @@ async function main(){
     let result;
     if(url.pathname==='/api/ui-config')result={title:'合成核对',workspace_label:'Fixture',weknora_url:'/'};
     else if(url.pathname==='/api/datasets')result={datasets:[]};
+    else if(url.pathname==='/api/pdf/tables')result={tables:[]};
     else if(url.pathname==='/api/imports')result={imports:[{import_id:importId,source_file:'合成测试.xlsx'}]};
     else if(url.pathname.endsWith('/sheet'))result=url.searchParams.get('name')==='合成已确认表'?readySheet():pendingSheet();
     else if(url.pathname.endsWith('/sheet-view'))result=sheetView(pendingSheet());

@@ -39,6 +39,7 @@ import {
   batchReparseKnowledge,
   getKnowledgeSpans,
   getKnowledgeDetails,
+  listKnowledgeFiles,
   listKnowledgeFolders,
   createKnowledgeFolder,
   moveKnowledgeToFolder,
@@ -54,6 +55,7 @@ import DocumentCardView from './components/DocumentCardView.vue';
 import DocumentBatchBar from './components/DocumentBatchBar.vue';
 import AssistantActionsButton from '@/components/assistant/AssistantActionsButton.vue';
 import KbUploadSourceDropdown from './components/KbUploadSourceDropdown.vue';
+import SourceFileVersionOptions from './components/SourceFileVersionOptions.vue';
 import { isExcelFilename, isStructuredSource, sameNativeUploadScope, structuredSourceLocation } from './excelSource';
 import KbFolderTree from './components/KbFolderTree.vue';
 import KnowledgeBaseActions from './components/KnowledgeBaseActions.vue';
@@ -62,6 +64,7 @@ import BatchTagDialog from './components/BatchTagDialog.vue';
 import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess';
 import { useUploadConfirmStore, type UploadConfirmResult } from '@/stores/uploadConfirm';
 import { useUploadTasksStore } from '@/stores/uploadTasks';
+import { buildSourceFileUploads, findSourceFileVersionChoices, sourceFileVersionConflict, type SourceFileVersionChoice } from './sourceFileVersion';
 import WikiBrowser from './wiki/WikiBrowser.vue';
 import ImageGallery from './gallery/ImageGallery.vue';
 import { getWikiStats } from '@/api/wiki';
@@ -74,7 +77,6 @@ import { stalledMinutes, STALLED_POLL_INTERVAL_MS } from '@/utils/knowledgeProce
 import { listMoveTargets, moveKnowledge, getKnowledgeMoveProgress } from '@/api/knowledge-base';
 import { resolveKnowledgeDownloadFileName } from './knowledgeDownloadFileName';
 import {
-  buildUploadFileName,
   canMoveFolderTo,
   childFolders,
   folderBreadcrumbs as buildFolderBreadcrumbs,
@@ -497,6 +499,7 @@ const initViewMode = (): DocViewMode => {
   } catch { return 'list'; }
 };
 const viewMode = ref<DocViewMode>(initViewMode());
+const hasDocumentTable = computed(() => viewMode.value === 'list' && cardList.value.length > 0);
 watch(viewMode, (v) => {
   try { localStorage.setItem(VIEW_MODE_KEY, v); } catch { /* ignore */ }
 });
@@ -1949,6 +1952,81 @@ const ensureDocumentKbReady = () => {
 const uploadConfirmStore = useUploadConfirmStore();
 
 const uploadTasksStore = useUploadTasksStore();
+const replacementInput = ref<HTMLInputElement | null>(null);
+let replacementTarget: { id: string; scope: ReturnType<typeof captureKnowledgeScope> } | null = null;
+
+const pickKnowledgeFileVersion = (item: { id: string; type?: string }) => {
+  if (!canEdit.value || item.type !== 'file' || !replacementInput.value) return;
+  const scope = captureKnowledgeScope();
+  if (scope.knowledgeBaseId !== kbId.value) return;
+  replacementTarget = { id: item.id, scope };
+  replacementInput.value.value = '';
+  replacementInput.value.click();
+};
+
+const uploadPickedKnowledgeFileVersion = (event: Event) => {
+  const file = (event.target as HTMLInputElement).files?.[0];
+  const target = replacementTarget;
+  replacementTarget = null;
+  if (!file || !target || !canEdit.value) return;
+  if (!sameNativeUploadScope(target.scope, captureKnowledgeScope())) {
+    MessagePlugin.warning(t('knowledgeBase.uploadScopeChanged'));
+    return;
+  }
+  uploadTasksStore.enqueue({
+    kbId: target.scope.knowledgeBaseId,
+    kbName: kbInfo.value?.name || '',
+    uploads: [{ file, replaceKnowledgeId: target.id }],
+  });
+};
+
+const versionChoices = ref<SourceFileVersionChoice[]>([]);
+const versionChoiceDialogOpen = ref(false);
+const checkingUploadNames = ref(false);
+type VersionSelections = Map<number, string>;
+let resolveVersionChoices: ((choices: VersionSelections | null) => void) | undefined;
+const versionChoicesConflict = computed(() => sourceFileVersionConflict(versionChoices.value));
+
+const dismissVersionChoices = (choices: VersionSelections | null = null) => {
+  resolveVersionChoices?.(choices);
+  resolveVersionChoices = undefined;
+  versionChoiceDialogOpen.value = false;
+  versionChoices.value = [];
+};
+
+const submitVersionChoices = () => {
+  if (versionChoicesConflict.value) return;
+  dismissVersionChoices(new Map(versionChoices.value.map(choice => [choice.index, choice.knowledgeId])));
+};
+
+watch(captureKnowledgeScope, (current, previous) => {
+  if (!sameNativeUploadScope(current, previous)) dismissVersionChoices();
+});
+onUnmounted(() => dismissVersionChoices());
+
+const chooseUploadVersions = async (files: File[], targetFolder: string, isScopeCurrent: () => boolean) => {
+  if (checkingUploadNames.value) return null;
+  checkingUploadNames.value = true;
+  try {
+    const targetKbId = kbId.value;
+    const matches = await findSourceFileVersionChoices(files, targetFolder, params => {
+      if (!isScopeCurrent()) throw new Error('Knowledge upload scope changed');
+      return listKnowledgeFiles(targetKbId, params);
+    });
+    if (!isScopeCurrent() || !canEdit.value) return null;
+    if (!matches.length) return new Map<number, string>();
+    return await new Promise<VersionSelections | null>(resolve => {
+      resolveVersionChoices = resolve;
+      versionChoices.value = matches;
+      versionChoiceDialogOpen.value = true;
+    });
+  } catch {
+    if (isScopeCurrent()) MessagePlugin.error(t('knowledgeBase.fileVersionLookupFailed'));
+    return null;
+  } finally {
+    checkingUploadNames.value = false;
+  }
+};
 
 // Hands the batch to the global upload queue, which runs the transfers,
 // reports progress in its floating panel and refreshes this page as files land.
@@ -1959,6 +2037,7 @@ const enqueueUploads = (
     tagIds?: string[];
     /** Destination folder confirmed in the upload dialog; '' is the root. */
     targetFolder?: string;
+    versionSelections?: VersionSelections;
   } = {},
 ) => {
   const targetKbId = kbId.value;
@@ -1970,7 +2049,7 @@ const enqueueUploads = (
     targetFolder,
     tagIds: options.tagIds,
     processConfig: options.processConfig,
-    uploads: files.map(file => ({ file, fileName: buildUploadFileName(file, targetFolder) })),
+    uploads: buildSourceFileUploads(files, targetFolder, options.versionSelections),
   });
 };
 
@@ -2037,10 +2116,13 @@ const handleUploadConfirmResult = async (result: UploadConfirmResult, allowURL =
   if ((urls.length > 0 || files.some(file => !isExcelFilename(file.name))) && !ensureDocumentKbReady()) return;
 
   if (files.length > 0) {
+    const versionSelections = await chooseUploadVersions(files, result.targetFolder || ROOT_FOLDER_PATH, isScopeCurrent);
+    if (!versionSelections || !isScopeCurrent() || !canEdit.value) return;
     enqueueUploads(files, {
       processConfig,
       tagIds,
       targetFolder: result.targetFolder || ROOT_FOLDER_PATH,
+      versionSelections,
     });
   }
 
@@ -2088,7 +2170,7 @@ const openUploadConfirmDialog = async (files: File[], urls: string[] = []) => {
 };
 
 const handleUploadSourceFiles = (files: File[]) => {
-  if (!canEdit.value) return;
+  if (!canEdit.value || checkingUploadNames.value) return;
   if (files.length === 0) return;
   if (files.some(file => !isExcelFilename(file.name)) && !ensureDocumentKbReady()) return;
   void openUploadConfirmDialog(files);
@@ -2518,11 +2600,12 @@ const openStructuredSource = (item: KnowledgeCard) => {
 
 // Bridge card-view actions back to existing per-card handlers.
 const handleCardAction = (
-  action: 'download' | 'edit' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'delete' | 'view-trace' | 'batch-manage' | 'structured-parse',
+  action: 'download' | 'upload-version' | 'edit' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'delete' | 'view-trace' | 'batch-manage' | 'structured-parse',
   item: KnowledgeCard,
 ) => {
   const idx = (cardList.value || []).findIndex((i: KnowledgeCard) => i.id === item.id);
   if (action === 'download') return downloadKnowledge(item);
+  if (action === 'upload-version') return pickKnowledgeFileVersion(item);
   if (action === 'structured-parse') return openStructuredSource(item);
   if (action === 'edit') return handleManualEdit(idx, item);
   if (action === 'reparse') {
@@ -2538,11 +2621,12 @@ const handleCardAction = (
 
 // Bridge list-view actions back to existing per-card handlers.
 const handleListAction = (
-  action: 'download' | 'edit' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'delete' | 'view-trace' | 'batch-manage' | 'structured-parse',
+  action: 'download' | 'upload-version' | 'edit' | 'reparse' | 'cancel-parse' | 'move' | 'move-folder' | 'delete' | 'view-trace' | 'batch-manage' | 'structured-parse',
   item: KnowledgeCard,
 ) => {
   const idx = (cardList.value || []).findIndex((i: KnowledgeCard) => i.id === item.id);
   if (action === 'download') return downloadKnowledge(item);
+  if (action === 'upload-version') return pickKnowledgeFileVersion(item);
   if (action === 'structured-parse') return openStructuredSource(item);
   if (action === 'edit') return handleManualEdit(idx, item);
   if (action === 'reparse') return confirmRebuildKnowledge(idx, item);
@@ -2654,14 +2738,13 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
             </div>
           </div>
           <p v-if="kbInfo?.description" class="document-subtitle">{{ kbInfo.description }}</p>
-          <p v-if="canEdit && unsupportedFileTypes.length" class="parser-hint" @click="goToParserSettings">
-            <t-icon name="info-circle" class="parser-hint-icon" />
-            <span>{{$t('knowledgeBase.unsupportedTypesHint', {
-              types: unsupportedFileTypes.map(t => '.' + t).join('、')
-            })
-              }}</span>
-            <span class="parser-hint-link">{{ $t('knowledgeBase.goToParserSettings') }} →</span>
-          </p>
+          <button v-if="canEdit && unsupportedFileTypes.length" type="button" class="parser-hint" @click="goToParserSettings">
+            <t-icon name="info-circle" class="parser-hint-icon" aria-hidden="true" />
+            <span class="parser-hint-text">
+              {{ $t('knowledgeBase.unsupportedTypesHint', { types: unsupportedFileTypes.map(t => '.' + t).join('、') }) }}
+              <span class="parser-hint-link">{{ $t('knowledgeBase.goToParserSettings') }} →</span>
+            </span>
+          </button>
           <p v-if="missingStorageEngine" class="storage-engine-warning" @click="handleOpenKBSettings">
             <t-icon name="info-circle" class="warning-icon" />
             <span>{{ $t('knowledgeBase.missingStorageEngine') }}</span>
@@ -2860,7 +2943,11 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
                 :class="{
                   'is-empty': !cardList.length && !visibleSubFolders.length && !docListLoading,
                   'is-marquee-active': docMarqueeVisible,
+                  'is-document-table': hasDocumentTable,
                 }"
+                :tabindex="hasDocumentTable ? 0 : undefined"
+                :role="hasDocumentTable ? 'region' : undefined"
+                :aria-label="hasDocumentTable ? $t('knowledgeEditor.document.title') : undefined"
                 ref="knowledgeScroll" @scroll="handleScroll" @mousedown="onDocMarqueeMouseDown">
                 <div v-if="docMarqueeVisible" class="doc-marquee-box"
                   :class="{ 'is-add': docMarqueeMode === 'add', 'is-subtract': docMarqueeMode === 'subtract' }"
@@ -2998,6 +3085,17 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
 
   <ContextualGuide tour="kbDetail" :when="showKbDetailContextualGuide" />
 
+  <input ref="replacementInput" type="file" hidden :accept="acceptFileTypes" @change="uploadPickedKnowledgeFileVersion" />
+  <t-dialog :visible="versionChoiceDialogOpen" :header="t('knowledgeBase.uploadFileVersion')"
+    :confirm-btn="{ content: t('common.confirm'), disabled: versionChoicesConflict }"
+    :cancel-btn="{ content: t('common.cancel') }" width="480px"
+    @confirm="submitVersionChoices" @update:visible="(visible: boolean) => { if (!visible) dismissVersionChoices() }">
+    <div class="upload-version-choices">
+      <SourceFileVersionOptions v-for="choice in versionChoices" :key="choice.index" :choice="choice" v-model:knowledge-id="choice.knowledgeId" />
+    </div>
+    <t-alert v-if="versionChoicesConflict" theme="warning" :message="t('knowledgeBase.fileVersionChoiceConflict')" />
+  </t-dialog>
+
   <t-dialog v-model:visible="createFolderOpen" :header="t('knowledgeBase.folderTree.create')"
     :confirm-btn="{ content: t('knowledgeBase.moveToFolder.newFolderCreate'), loading: createFolderBusy }" :cancel-btn="{ content: t('common.cancel') }"
     :close-on-overlay-click="!createFolderBusy" :close-btn="!createFolderBusy" width="440px" @confirm="submitCreateFolder">
@@ -3031,6 +3129,13 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
 }
 .create-folder-error { margin-top: 12px; }
 
+.upload-version-choices {
+  max-height: 55vh;
+  overflow: auto;
+  display: grid;
+  gap: 12px;
+}
+
 .knowledge-layout {
   display: flex;
   flex-direction: column;
@@ -3042,6 +3147,13 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
   min-width: 0;
   padding: 20px 28px 0;
   box-sizing: border-box;
+}
+
+@media (max-width: 600px) {
+  .knowledge-layout {
+    margin-inline-end: 0;
+    padding-inline: 16px;
+  }
 }
 
 // View switch (文档 / Wiki / 图谱 / 画廊): a segmented control after the
@@ -3215,10 +3327,9 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
   .doc-filter-actions {
     display: inline-flex;
     align-items: center;
-    flex-wrap: nowrap;
-    flex: none;
+    flex-wrap: wrap;
+    max-width: 100%;
     gap: 8px;
-    white-space: nowrap;
   }
 }
 .doc-folder-path {
@@ -3438,7 +3549,7 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
   align-items: center;
   justify-content: center;
   gap: 6px;
-  max-width: 220px;
+  max-width: min(220px, 100%);
   height: 32px;
   padding: 0 10px;
   border: 1px solid var(--td-component-stroke);
@@ -3471,8 +3582,9 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
 }
 
 @container doc-card-area (max-width: 540px) {
-  .doc-filter-bar__trailing { flex-wrap: wrap; }
+  .doc-filter-bar__trailing { justify-content: flex-start; }
   .doc-filter-bar .doc-search-input { flex: 1 0 100%; }
+  .doc-filter-bar__trailing > .doc-sort-trigger { flex: 1 1 120px; min-width: 0; }
 }
 
 .doc-scroll-container {
@@ -3488,6 +3600,15 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
     align-items: center;
     justify-content: center;
     overflow-y: hidden;
+  }
+
+  &.is-document-table {
+    overflow-x: auto;
+
+    &:focus-visible {
+      outline: 2px solid var(--app-focus-border);
+      outline-offset: -2px;
+    }
   }
 
   &.is-marquee-active {
@@ -3542,6 +3663,8 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
     display: flex;
     flex-direction: column;
     gap: 4px;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .document-title-row {
@@ -3643,32 +3766,41 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
 
   .parser-hint {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 4px;
+    align-self: flex-start;
+    max-width: 100%;
     margin: 2px 0 0;
-    color: var(--td-warning-color);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--td-warning-color-8);
+    font: inherit;
     font-size: var(--app-text-sm);
     line-height: 1.4;
+    text-align: start;
     cursor: pointer;
-    transition: color var(--app-motion-fast) ease;
-
-    &:hover {
-      color: var(--td-warning-color-active);
-
-      .parser-hint-link {
-        text-decoration: underline;
-      }
-    }
 
     .parser-hint-icon {
       font-size: var(--app-text-sm);
       flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .parser-hint-text {
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
 
     .parser-hint-link {
+      display: inline-block;
+      max-width: 100%;
       color: var(--td-brand-color);
-      margin-left: 2px;
-      white-space: nowrap;
+      margin-inline-start: 2px;
+    }
+
+    &:is(:hover, :focus-visible) .parser-hint-link {
+      text-decoration: underline;
     }
   }
 

@@ -53,7 +53,7 @@
   <header><div><h2 id="strategy-text-title">文字整理</h2></div><button type="button" class="button-muted" data-tool-close aria-label="关闭文字整理">×</button></header>
   <label class="sr-only" for="strategy-text-input">方案文字</label>
   <textarea id="strategy-text-input" rows="7" maxlength="6000" placeholder="例如：锡价跌到 40 万以下、VIX 回落到 19 以下时分批低吸；跌破 38 万或社库连续两周累库就撤回；月底复核。"></textarea>
-  <div class="strategy-tool-row"><label for="strategy-text-model">模型</label><select id="strategy-text-model" disabled><option value="">正在读取模型…</option></select><span id="strategy-text-count" class="strategy-small-note">0 / 6000</span></div>
+  <div class="strategy-tool-row"><label for="strategy-text-model">模型</label><select id="strategy-text-model" disabled><option value="">正在读取模型…</option></select><span id="strategy-text-count" class="strategy-small-note">0 / 6000</span><button type="button" id="strategy-text-restore" hidden>取回上次整理结果</button></div>
   <p id="strategy-text-status" class="strategy-tool-status" role="status" aria-live="polite"></p>
   <footer><button type="button" class="button-muted" data-tool-close>取消</button><button type="button" id="strategy-text-run" class="button-primary" disabled>整理成方案</button></footer>
 </dialog>

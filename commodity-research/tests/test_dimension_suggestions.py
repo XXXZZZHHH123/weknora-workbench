@@ -14,6 +14,7 @@ from tin.models import SourceMapping
 from tin.web import dimension_suggestions as suggestions
 from tin.web.research_dimensions import default_dimensions, dimension_prompt
 from tests.test_chart_api import chart_client  # noqa: F401
+from tests.analysis_job_fixtures import detached_loop, finished_job
 
 
 def scope(**changes):
@@ -92,7 +93,7 @@ def test_model_prompts_use_current_dimensions_and_representativeness_requirement
     assert len(inventory['items']) == 3
     groups = validation_groups(dimensions)
     data = {identifier: {**field, 'latest_date': '2024-03-21'} for identifier, field in catalog().items()}
-    query = suggestions.query_prompt(dimensions, inventory)
+    query = suggestions.query_prompt(dimensions, inventory, suggestions.recall.catalog_fields(data))
     prompt = suggestions.pick_prompt(groups, data, dimensions, date(2024, 3, 29))
     assert dimension_prompt(dimensions) in query and dimension_prompt(dimensions) in prompt
     assert 'Model context' in query and 'Synthetic downstream' in query
@@ -117,16 +118,9 @@ def test_unsaved_template_structure_drives_recall_without_saving(monkeypatch, se
             return {'queries': {'i1': ['Synthetic']}}
         return response_for(groups_of(prompt), [choice(dimension='d-template', section='Draft stage')])
     monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
-    app = FastAPI()
-    app.include_router(suggestions.router)
-    async def check():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
-            response = await client.post('/api/sn/dimensions/suggestions', json={
-                'model_id': 'model', 'dimensions': dimensions, 'date': '2024-03-29'})
-        assert response.status_code == 200
-        assert response.json()['items'][0]['section'] == 'Draft stage'
-        assert response.json()['as_of'] == '2024-03-29'
-    asyncio.run(check())
+    result = asyncio.run(suggestions.generate_suggestions(active, 'model', dimensions, '2024-03-29'))
+    assert result['items'][0]['section'] == 'Draft stage'
+    assert result['as_of'] == '2024-03-29'
     assert calls == ['dimension_queries', 'dimension_fields'] and dimensions == before
     assert list(session.scalars(select(SourceMapping))) == []
 
@@ -177,6 +171,30 @@ def test_every_section_recalled_from_whole_catalog_with_partial_queries(monkeypa
     assert result['items'][0]['name'] == 'Readable upstream target' and len(calls) == 2
 
 
+def test_catalog_overview_supplies_search_phrasing_for_unmatched_section(monkeypatch):
+    dimensions = [{'id': 'water', 'label': '美棉产区墒情', 'category': '供给',
+                   'sections': [{'label': '美棉主产区旱情'}]}]
+    data = catalog()
+    data['field-1'].update(metric='种植季累计降水', dimensions={'station': '博州:精河'})
+    data['field-3'].update(metric='DSCI', sheet='Drought Monitor', dimensions={'State': 'Texas'})
+    monkeypatch.setattr(suggestions, 'catalog_snapshot', lambda active: {'catalog': data})
+
+    async def complete(active, model_id, prompt, *, purpose):
+        if purpose == 'dimension_queries':
+            overview = json.loads(prompt.split('目录用语概览（表名与字段名样例）：', 1)[1].split('\n', 1)[0])
+            assert ['Drought Monitor', ['DSCI / Texas']] in overview
+            assert '美棉主产区旱情' in prompt
+            return {'queries': {'i1': ['Texas DSCI']}}
+        groups = groups_of(prompt)
+        assert groups[0]['candidates'][0] == 'field-3'
+        assert fields_of(prompt)['field-3']['dimensions'] == {'State': 'Texas'}
+        return response_for(groups, [choice('field-3', 'water', section='美棉主产区旱情')])
+
+    monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
+    result = asyncio.run(suggestions.generate_suggestions(scope(), 'model', dimensions))
+    assert [row['series_id'] for row in result['items']] == ['field-3']
+
+
 @pytest.mark.parametrize('document', [None, [], {'queries': []}, {'queries': {'unknown': ['Synthetic']}},
     {'queries': {'i1': ['']}}, {'queries': {'i1': 'Synthetic'}}, {'queries': {'i1': [5]}},
     {'queries': {'i1': ['x' * 61]}}, {'queries': {'i1': ['a'] * 4}}])
@@ -202,17 +220,51 @@ def test_picks_cannot_authorize_unshown_id_or_another_sections_candidate():
         assert caught.value.status_code == 422
 
 
+@pytest.mark.parametrize('all_invalid', [False, True])
+def test_dimension_generation_ignores_only_ids_outside_their_own_section(monkeypatch, all_invalid):
+    monkeypatch.setattr(suggestions, 'catalog_snapshot', lambda active: {'catalog': catalog()})
+    monkeypatch.setattr(suggestions.recall, 'recall_groups', lambda index, inventory, phrased, per_item, *, all_items:
+                        list(zip(inventory['items'], [['field-0'], ['field-1'], ['field-2']], strict=True)))
+
+    async def complete(active, model_id, prompt, *, purpose):
+        if purpose == 'dimension_queries':
+            return {'queries': {}}
+        wrong_section = choice('field-0', section='Synthetic downstream')
+        absent = choice('same-name-id', section='Synthetic downstream')
+        malformed = choice([], section='Synthetic downstream')
+        items = [wrong_section, absent, malformed]
+        if not all_invalid:
+            items.append(choice('field-0', section='Synthetic upstream'))
+        return response_for(groups_of(prompt), items)
+
+    monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
+    if all_invalid:
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(suggestions.generate_suggestions(scope(), 'model', axes()))
+        assert caught.value.status_code == 422 and '本环节展示的候选目录' in caught.value.detail
+        return
+
+    result = asyncio.run(suggestions.generate_suggestions(scope(), 'model', axes()))
+    assert [row['series_id'] for row in result['items']] == ['field-0']
+    assert result['ignored_count'] == 3
+    assert result['ignored_reason'] == '模型返回 3 个不在候选目录的指标，已忽略'
+    assert [row['selected_count'] for row in result['sections']] == [1, 0, 0]
+    assert result['sections'][1]['empty_reason'] == '本环节返回的指标均不在候选目录，已忽略'
+    assert result['sections'][2]['empty_reason'] == 'No representative evidence'
+
+
 def test_picks_preserve_model_order_without_name_or_date_filtering():
     dimensions, data = axes(), catalog()
     groups = validation_groups(dimensions, data)
     document = response_for([item for item, _ in groups], [choice('field-2', 'inventory', section=''),
                                                         choice('field-0', section='Synthetic upstream')])
     renamed = {identifier: {**field, 'metric': 'unrelated', 'latest_date': '1990-01-01'} for identifier, field in data.items()}
-    before, sections = suggestions.validate_suggestions(document, data, dimensions, groups)
-    after, _ = suggestions.validate_suggestions(document, renamed, dimensions, groups)
+    before, sections, ignored, duplicates = suggestions.validate_suggestions(document, data, dimensions, groups)
+    after, _, _, _ = suggestions.validate_suggestions(document, renamed, dimensions, groups)
     assert [(row['series_id'], row['dimension'], row['section']) for row in before] == [
         (row['series_id'], row['dimension'], row['section']) for row in after]
     assert sections[1]['empty_reason'] == 'No representative evidence'
+    assert ignored == 0 and duplicates == 0
 
 
 @pytest.mark.parametrize('document', [None, {'items': []}, {'items': 'invalid', 'empty_reasons': []},
@@ -323,7 +375,7 @@ def test_duplicate_section_labels_keep_each_real_section_identity(with_ids):
     document = {'items': [choice('field-0', section='Same label', item_id='i2')],
                 'empty_reasons': [{'dimension': 'supply', 'section': 'Same label', 'item_id': 'i1',
                                    'reason': 'No matching evidence'}]}
-    items, sections = suggestions.validate_suggestions(document, catalog(), clean, groups)
+    items, sections, _, _ = suggestions.validate_suggestions(document, catalog(), clean, groups)
     assert items[0]['item_id'] == 'i2' and items[0]['section_id'] == ('s-second' if with_ids else '')
     assert sections[0]['empty_reason'] == 'No matching evidence' and sections[1]['selected_count'] == 1
     document['items'][0].pop('item_id')
@@ -336,7 +388,12 @@ def test_candidate_latest_date_through_real_bounded_source_projection(chart_clie
     from tin.integration.page_facts import bounded_facts, page_read_scope
     from tests.chart_fixtures import SID, OTHER
     client, state = chart_client
+    from tin.web import analysis_jobs
     state.app.include_router(suggestions.router)
+    state.app.include_router(analysis_jobs.router)
+    async def fresh(scope, _purpose):
+        return scope
+    monkeypatch.setattr(analysis_jobs, 'fresh_scope', fresh)
     monkeypatch.setattr(suggestions, 'bounded_facts', bounded_facts)
     monkeypatch.setattr(suggestions, 'page_read_scope', page_read_scope)
     state.observations[SID] = [('2024-03-20', 10), ('2024-03-22', 11), ('2024-04-01', 12)]
@@ -351,8 +408,12 @@ def test_candidate_latest_date_through_real_bounded_source_projection(chart_clie
         assert fields[OTHER]['latest_date'] is None
         return response_for(groups_of(prompt), [choice(SID, 'supply', section='')])
     monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
-    response = client.post('/api/sn/dimensions/suggestions', json={'model_id': 'model', 'date': '2024-03-29',
-        'dimensions': [{'id': 'supply', 'label': '字段', 'category': '供给'}]})
+    with detached_loop(client):
+        response = client.post('/api/sn/dimensions/suggestions', headers={'Idempotency-Key': 'dimension-fields-fixture'},
+            json={'model_id': 'model', 'date': '2024-03-29',
+            'dimensions': [{'id': 'supply', 'label': '字段', 'category': '供给'}]})
+        assert response.status_code == 202 and response.json()['purpose'] == 'dimension_fields', response.text
+        _, response = finished_job(client, '/api/sn/analysis-jobs/' + response.json()['id'])
     assert response.status_code == 200, response.text
     assert response.json()['items'][0]['latest_date'] == '2024-03-22'
     bounded = [body for _, body in state.requests if not body.get('catalog_only')]
@@ -406,17 +467,8 @@ def test_inference_reads_selected_versioned_digests_and_never_saves(monkeypatch,
         return {'dimensions': [{'label': 'Custom', 'category': '其他', 'sections': ['Stage']}]}
     monkeypatch.setattr(suggestions.strategy_citations, 'read_structure_digest', content)
     monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
-    monkeypatch.setattr(suggestions, 'current_workbench', SimpleNamespace(get=lambda: active))
-    monkeypatch.setattr(suggestions, 'require_shared_write', lambda value: None)
-    app = FastAPI()
-    app.include_router(suggestions.router)
-    async def invoke():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
-            response = await client.post('/api/sn/dimensions/infer',
-                json={'model_id': 'model', 'sources': [source('first'), source('second')]})
-            assert response.status_code == 200, response.text
-            return response.json()
-    result = asyncio.run(invoke())
+    body = suggestions.InferenceInput(model_id='model', sources=[source('first'), source('second')])
+    result = asyncio.run(suggestions.infer_dimensions(active, body))
     assert len(result['dimensions']) == 1 and len(calls) == 4
     assert calls[:2] == calls[2:]
     assert all(row['truncated'] and '已按摘要读取（全文 12 段，摘要 443 段）' in row['notice']
@@ -444,6 +496,39 @@ def test_inference_refuses_unreadable_or_changed_originals(monkeypatch):
     assert caught.value.status_code == 422
 
 
+def test_inference_job_rechecks_document_at_result_retrieval(chart_client, monkeypatch):
+    from tin.web import analysis_jobs
+    client, state = chart_client
+    state.app.include_router(suggestions.router)
+    state.app.include_router(analysis_jobs.router)
+    revision = ['a']
+
+    async def fresh(scope, _purpose):
+        return scope
+
+    async def content(scope, binding, identifier, version):
+        return {'knowledge_id': identifier, 'filename': 'synthetic.md', 'file_version': version,
+                'supported': True, 'text': 'Synthetic source', 'sha256': revision[0]}
+
+    async def complete(*args, **kwargs):
+        assert kwargs['purpose'] == 'dimension_inference'
+        return {'dimensions': [{'label': 'Inferred draft', 'category': '其他'}]}
+
+    monkeypatch.setattr(analysis_jobs, 'fresh_scope', fresh)
+    monkeypatch.setattr(suggestions.strategy_citations, 'read_structure_digest', content)
+    monkeypatch.setattr(suggestions.strategy_text, 'completion', complete)
+    with detached_loop(client):
+        response = client.post('/api/sn/dimensions/infer', headers={'Idempotency-Key': 'dimension-infer-fixture'},
+                               json={'model_id': 'model', 'sources': [source()]})
+        assert response.status_code == 202 and response.json()['purpose'] == 'dimension_inference', response.text
+        path = '/api/sn/analysis-jobs/' + response.json()['id']
+        status, result = finished_job(client, path)
+        assert status['state'] == 'succeeded' and result.json()['dimensions'][0]['label'] == 'Inferred draft'
+        revision[0] = 'b'
+        changed = client.get(path + '/result')
+        assert changed.status_code == 409 and '资料在归纳期间更新' in changed.json()['detail']
+
+
 def test_inference_rechecks_all_chunk_provenance_when_visible_digest_is_unchanged(monkeypatch):
     replies = [{'supported': True, 'text': 'same digest', 'sha256': 'same',
                 'provenance': {'chunks': [{'id': 'outside-digest', 'revision': revision}]}}
@@ -467,9 +552,12 @@ def test_api_scope_permissions_input_limits_and_model_failures(monkeypatch):
     monkeypatch.setattr(suggestions, 'current_workbench', SimpleNamespace(get=lambda: active[0]))
     monkeypatch.setattr(suggestions, 'require_shared_write', lambda value: None)
 
-    async def generate(*args):
-        raise HTTPException(503, 'Model unavailable; no fixed fallback')
-    monkeypatch.setattr(suggestions, 'generate_suggestions', generate)
+    async def start(scope, purpose, body, key, run):
+        assert scope is active[0] and body['model_id'] == 'model'
+        assert (purpose, run) in {('dimension_fields', suggestions.run_suggestions),
+                                  ('dimension_inference', suggestions.run_inference)}
+        return {'purpose': purpose, 'id': 'synthetic-dimension-job'}
+    monkeypatch.setattr(suggestions.analysis_jobs, 'start_job', start)
     async def files(*args):
         return {'items': [{'title': 'Selected file', 'citation': source()}], 'next_offset': None}
     monkeypatch.setattr(suggestions.strategy_citations, '_file_options', files)
@@ -479,7 +567,9 @@ def test_api_scope_permissions_input_limits_and_model_failures(monkeypatch):
             assert (await client.post('/api/sn/dimensions/suggestions', json={})).status_code == 422
             assert (await client.post('/api/sn/dimensions/suggestions', json={'model_id': 'model', 'token': 'extra'})).status_code == 422
             response = await client.post('/api/sn/dimensions/suggestions', json={'model_id': 'model'})
-            assert response.status_code == 503 and 'fallback' in response.json()['detail']
+            assert response.status_code == 202 and response.json()['purpose'] == 'dimension_fields'
+            response = await client.post('/api/sn/dimensions/infer', json={'model_id': 'model', 'sources': [source()]})
+            assert response.status_code == 202 and response.json()['purpose'] == 'dimension_inference'
             for files in ([], [source()] * 2, [source(str(i)) for i in range(4)]):
                 assert (await client.post('/api/sn/dimensions/infer', json={'model_id': 'model', 'sources': files})).status_code == 422
             assert (await client.get('/api/sn/dimensions/sources')).json()['items'][0]['title'] == 'Selected file'
@@ -493,3 +583,35 @@ def test_api_scope_permissions_input_limits_and_model_failures(monkeypatch):
                     assert (await client.post('/api/sn/dimensions/' + path, json=body)).status_code == 403
                 assert (await client.get('/api/sn/dimensions/sources')).status_code == 403
     asyncio.run(check())
+
+
+def test_repeated_indicator_keeps_first_suggestion_and_is_counted():
+    dimensions, data = axes(), catalog()
+    groups = validation_groups(dimensions, data)
+    document = response_for([item for item, _ in groups], [choice('field-0', section='Synthetic upstream'),
+                                                        choice('field-0', section='Synthetic upstream')])
+    items, sections, ignored, duplicates = suggestions.validate_suggestions(document, data, dimensions, groups)
+    assert [row['series_id'] for row in items] == ['field-0']
+    assert ignored == 0 and duplicates == 1 and sections[0]['selected_count'] == 1
+
+
+def test_missing_empty_reason_with_usable_items_marks_the_section():
+    dimensions, data = axes(), catalog()
+    groups = validation_groups(dimensions, data)
+    document = {'items': [choice('field-0', section='Synthetic upstream')], 'empty_reasons': []}
+    items, sections, ignored, duplicates = suggestions.validate_suggestions(document, data, dimensions, groups)
+    assert [row['series_id'] for row in items] == ['field-0']
+    assert all(row['empty_reason'] == '模型未说明留空原因' for row in sections if not row['selected_count'])
+
+
+def test_empty_reason_for_a_selected_section_keeps_the_selection():
+    dimensions, data = axes(), catalog()
+    groups = validation_groups(dimensions, data)
+    document = response_for([item for item, _ in groups], [choice('field-0', section='Synthetic upstream')])
+    document['empty_reasons'].append({'dimension': 'supply', 'section': 'Synthetic upstream', 'reason': 'Conflicting'})
+    document['empty_reasons'].append(dict(document['empty_reasons'][0], reason='Repeated'))
+    items, sections, ignored, duplicates = suggestions.validate_suggestions(document, data, dimensions, groups)
+    assert [row['series_id'] for row in items] == ['field-0']
+    selected = [row for row in sections if row['selected_count']]
+    assert selected and all(row['empty_reason'] == '' for row in selected)
+    assert 'Repeated' not in [row['empty_reason'] for row in sections]

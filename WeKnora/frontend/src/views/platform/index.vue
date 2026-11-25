@@ -23,7 +23,12 @@
         <!-- 全局命令面板 (⌘K)，随 platform 路由存活 -->
         <GlobalCommandPalette />
         <!-- 知识库文件上传进度浮层：上传队列放在 store 里，切换页面不中断 -->
-        <div class="platform-task-dock"><ResearchAnalysisTasks /><UploadTasksPanel /></div>
+        <FeedbackLauncher>
+            <div class="platform-task-dock">
+                <ResearchAnalysisTasks />
+                <UploadTasksPanel />
+            </div>
+        </FeedbackLauncher>
         <!-- 带遮罩层的新手引导：首次进入自动开启，可从用户菜单顶部昵称旁帮助按钮重新打开 -->
         <NewUserGuide />
     </div>
@@ -41,6 +46,7 @@ import AssistantLauncher from '@/components/assistant/AssistantLauncher.vue'
 import AssistantPageBridge from '@/components/assistant/AssistantPageBridge.vue'
 import UploadTasksPanel from '@/components/upload-tasks/UploadTasksPanel.vue'
 import ResearchAnalysisTasks from '@/components/ResearchAnalysisTasks.vue'
+import FeedbackLauncher from '@/components/FeedbackLauncher.vue'
 import NewUserGuide from '@/components/NewUserGuide.vue'
 import { useCommandPaletteStore } from '@/stores/commandPalette'
 import { useChatResourcesStore } from '@/stores/chatResources'
@@ -267,9 +273,49 @@ onUnmounted(() => {
 });
 </script>
 <style lang="less">
-.platform-task-dock{position:fixed;right:var(--app-space-6);bottom:var(--feedback-launcher-clearance,var(--app-space-6));z-index:var(--z-dropdown);display:flex;flex-direction:column;align-items:flex-end;gap:12px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);pointer-events:none}
-.main .platform-task-dock>.upload-tasks-panel{position:static;min-height:0;flex:0 1 auto;pointer-events:auto}
-@media(max-width:640px){.platform-task-dock{right:var(--app-space-4);bottom:var(--feedback-launcher-clearance,var(--app-space-4))}}
+.platform-task-dock {
+    --task-dock-padding: 5px;
+    position: absolute;
+    right: 0;
+    bottom: calc(100% - var(--feedback-anchor-top) + var(--feedback-task-gap) - var(--task-dock-padding));
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    box-sizing: border-box;
+    gap: var(--feedback-task-gap);
+    padding: var(--task-dock-padding);
+    margin-right: calc(-1 * var(--task-dock-padding));
+    max-width: calc(100vw - 32px);
+    max-height: max(0px, calc(var(--feedback-anchor-top) - var(--feedback-task-gap) + var(--task-dock-padding)));
+    overflow: auto;
+    overscroll-behavior: contain;
+}
+
+.platform-task-dock > * {
+    max-width: 100%;
+}
+
+.feedback-dock[data-task-placement="down"] .platform-task-dock {
+    top: calc(var(--feedback-anchor-top) + var(--feedback-size) + var(--feedback-task-gap) - var(--task-dock-padding));
+    bottom: auto;
+    flex-direction: column-reverse;
+    max-height: max(0px, calc(100% - var(--feedback-anchor-top) - var(--feedback-size) - var(--feedback-task-gap) + var(--task-dock-padding)));
+}
+
+.feedback-dock[data-task-placement="down"] .analysis-tasks {
+    flex-direction: column-reverse;
+}
+
+.main .platform-task-dock > .upload-tasks-panel {
+    position: static;
+    min-height: 0;
+    overflow: auto;
+    pointer-events: auto;
+}
+
+@media (640px < width <= 768px) {
+    .platform-task-dock { right: 8px; }
+}
 .main {
     display: flex;
     align-items: stretch;

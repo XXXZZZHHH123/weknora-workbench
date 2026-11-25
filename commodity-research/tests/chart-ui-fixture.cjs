@@ -29,7 +29,7 @@ import json,sys
 from types import SimpleNamespace
 from jinja2 import Environment,FileSystemLoader,DictLoader,ChoiceLoader,select_autoescape
 data=json.loads(sys.argv[3])
-host='''<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/static/app.css"><link rel="stylesheet" href="/static/favorites.css"><style>[hidden]{display:none!important}body{margin:0}main{max-width:1280px;margin:16px auto;padding:0 16px}</style><script>window.RESEARCH_CONTEXT={tenant:17,user:'fixture-user',workbench:'fixture',scope_version:2};window.RESEARCH_PREFIX='/research/workbenches/fixture';window.researchFetch=(url,options)=>fetch(url,options);window.showToast=(text)=>{window.fixtureToast=text};window.copyText=()=>{};window.ChartPaletteColors={{ palette|tojson }};</script><script src="/static/chart-palette.js"></script><script defer src="/static/favorites-client.js"></script>{% block head %}{% endblock %}</head><body><main>{% block main %}{% endblock %}</main></body></html>'''
+host='''<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/static/app.css"><link rel="stylesheet" href="/static/favorites.css"><style>[hidden]{display:none!important}body{margin:0}main{max-width:1280px;margin:16px auto;padding:0 16px}</style><script>window.RESEARCH_CONTEXT={tenant:17,user:'fixture-user',workbench:'fixture',scope_version:2};window.RESEARCH_PREFIX='/research/workbenches/fixture';window.researchFetch=(url,options)=>fetch(url,options);window.showToast=(text)=>{window.fixtureToast=text};window.copyText=()=>{};window.ChartPaletteColors={{ palette|tojson }};</script><script src="/static/chart-palette.js"></script><script src="/static/analysis-jobs.js"></script><script defer src="/static/favorites-client.js"></script>{% block head %}{% endblock %}</head><body><main>{% block main %}{% endblock %}</main></body></html>'''
 env=Environment(loader=ChoiceLoader([DictLoader({'base.html':host}),FileSystemLoader(sys.argv[1])]),autoescape=select_autoescape(['html']))
 scope=SimpleNamespace(metadata=SimpleNamespace(name='合成研究台'),scope_version=2,restricted=data['config'].get('restricted',False),can_edit=data['config']['can_write'])
 env.globals.update(research_identity=lambda:None,research_workbench=lambda:scope,research_prefix=lambda:'/research/workbenches/fixture',research_url=lambda s:'/research/workbenches/fixture'+s,research_static_prefix=lambda:'',static_version=lambda:'chart-ui-fixture')
@@ -81,6 +81,7 @@ async function open(browser, pathname, html, handler, options = {}) {
         return reply(favorites);
       }
       if (await handler({...entry, route, reply}) !== false) return;
+      if (entry.path === '/analysis-jobs/latest') return reply({job: null});
     }
     errors.push('Unhandled ' + request.method() + ' ' + url.pathname); return route.abort();
   });

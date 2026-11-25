@@ -40,6 +40,17 @@ def cutoff(value=None):
 
 def catalog_fields(scope, identifiers):
     """Only requested real IDs; never infer an ID from a descriptor or label."""
+    return _catalog_fields(scope, identifiers)[0]
+
+
+def catalog_fields_with_version(scope, identifiers):
+    fields, version = _catalog_fields(scope, identifiers)
+    if version is None:
+        version = catalog_page(scope, series_ids=[], limit=1, apply_dedup=False)['version']
+    return fields, version
+
+
+def _catalog_fields(scope, identifiers):
     identifiers = list(dict.fromkeys(identifiers))
     if any(not isinstance(sid, str) or not SERIES.fullmatch(sid) for sid in identifiers):
         raise HTTPException(422, '图表需要当前来源目录的真实指标ID')
@@ -57,7 +68,7 @@ def catalog_fields(scope, identifiers):
                 or any(field['series_id'] not in batch or field['series_id'] in fields for field in page['series'])):
             raise HTTPException(503, '图表目录核验不完整')
         fields.update((field['series_id'], field) for field in page['series'])
-    return fields
+    return fields, version
 
 
 def curve_series_ids(curve):

@@ -1,6 +1,7 @@
 from datetime import datetime
 from hashlib import sha256
 import json
+import json
 
 from openpyxl import Workbook
 import pytest
@@ -42,6 +43,127 @@ def test_formula_reference_tokens_do_not_follow_external_or_text():
     refs=formula_references('=SUM($B$2:C9)+\'另一张表\'!D3+"E4"+\'[other.xlsx]Sheet\'!F1','本表')
     assert [(r['sheet'],r['columns']) for r in refs]==[('本表',['B','C']),('另一张表',['D'])]
     assert formula_references('=INDIRECT("B3")','本表')==[]
+
+
+@pytest.mark.parametrize(('formula', 'kind', 'reference', 'columns', 'rows'), [
+    ("=VLOOKUP(A12,'期货 行情'!$A:$H,2,0)", 'vlookup', '$A:$H', ['B'], [1, 1048576]),
+    ("=vlookup($A12, '期货 行情'!$Z$5:$AE$99, 2, FALSE)", 'vlookup', '$Z$5:$AE$99', ['AA'], [5, 99]),
+    ("=HLOOKUP(A12,'期货 行情'!B4:D20,3,FALSE)", 'hlookup', 'B4:D20', ['B', 'C', 'D'], [6, 6]),
+    ("=HLOOKUP(A12,'期货 行情'!B4:B20,3,0)", 'hlookup', 'B4:B20', ['B'], [6, 6]),
+    ("=INDEX('期货 行情'!B5:H20,MATCH(A12,'期货 行情'!A5:A20,0),1)",
+     'index_match', 'B5:H20', ['B'], [5, 20]),
+    ("=INDEX('期货 行情'!$B:$B, MATCH(A12, '期货 行情'!$A:$A, 0))",
+     'index_match', '$B:$B', ['B'], [1, 1048576]),
+    ("='期货 行情'!$B$12", 'direct', '$B$12', ['B'], [12, 12]),
+])
+def test_formula_reference_resolves_exact_return_area(formula, kind, reference, columns, rows):
+    result, = [ref for ref in formula_references(formula, '派生数据') if 'kind' in ref]
+    assert result['sheet'] == '期货 行情'
+    assert (result['kind'], result['reference'], result['columns'], result['row_range']) == (
+        kind, reference, columns, rows)
+
+
+@pytest.fixture
+def lookup_source(tmp_path):
+    def publish(formula):
+        book = Workbook()
+        source = book.active
+        source.title = '期货 行情'
+        source.append(['日期', '收盘价'])
+        source.merge_cells('B1:C1')
+        source['B4'], source['C4'] = 'MAIN.TEST', 'MONTH.TEST'
+        for row, day in [(6, 1), (12, 2)]:
+            source[f'A{row}'], source[f'B{row}'], source[f'C{row}'] = datetime(2023, 1, day), 125, 130
+        derived = book.create_sheet('派生数据')
+        derived.append(['日期', '某某活跃收盘价'])
+        derived['A12'], derived['B12'] = datetime(2023, 1, 2), formula
+        path = tmp_path / 'lookup.xlsx'
+        book.save(path)
+        series = [
+            dict(series_id='main', sheet=source.title, metric='收盘价', header_cells=['B1', 'B4']),
+            dict(series_id='month', sheet=source.title, metric='收盘价', header_cells=['B1', 'C4']),
+            dict(series_id='derived', sheet=derived.title, metric='某某活跃收盘价', header_cells=['B1']),
+        ]
+        observations = [
+            dict(series_id=sid, date=f'2023-01-0{day}', value=value, source_cell=f'{column}{row}',
+                 date_cell=f'A{row}', value_status='valid')
+            for row, day in [(6, 1), (12, 2)]
+            for sid, column, value in [('main', 'B', 125), ('month', 'C', 130)]
+        ]
+        # openpyxl does not write a cached formula value. Keep the test
+        # representative of a published observation with the source formula.
+        observations.append(dict(series_id='derived', date='2023-01-02', value=None,
+                                 source_cell='B12', date_cell='A12', value_status='missing', formula=formula))
+        store = DataStore(tmp_path / 'data')
+        published = store.publish(dict(source_file=str(path), sha256=sha256(path.read_bytes()).hexdigest(),
+                                       rule_version='lookup-fixture', series=series, observations=observations,
+                                       sheets=[], excluded_regions=[], issues=[]))
+        return store, published['dataset_id']
+    return publish
+
+
+def test_cross_sheet_exact_lookup_reaches_binding_and_refreshes_old_cache(lookup_source):
+    formula = "=VLOOKUP(A12,'期货 行情'!A:H,2,0)"
+    store, dataset = lookup_source(formula)
+    rows = store.catalog(dataset, sheet='期货 行情')
+    assert {row['series_id']: row['source_context']['source_column'] for row in rows} == {'main': 'B', 'month': 'C'}
+    evidence, = rows[0]['source_context']['referenced_by']
+    assert evidence['sheet'] == '派生数据'
+    assert evidence['column'] == 'B'
+    assert evidence['headers'] == [{'cell': 'B1', 'value': '某某活跃收盘价'}]
+    assert (evidence['cell'], evidence['formula'], evidence['target_reference']) == ('B12', formula, 'A:H')
+    assert evidence['target_column'] == 'B'
+    assert '按日期精确查找' in evidence['description']
+    manifest = store.manifest(dataset)
+    assert evidence['file_version'] == {'file': 'lookup.xlsx', 'dataset_id': dataset, 'sha256': manifest['sha256']}
+
+    cache_path, = (store.root / 'source-context').glob('*.json')
+    current = json.loads(cache_path.read_text())
+    old_stamp = ['source-context-v1', *current['stamp'][1:5]]
+    cache_path.write_text(json.dumps({'stamp': old_stamp, 'contexts': {}}))
+    calls = []
+
+    def model(payload):
+        calls.append(payload)
+        group, = payload['source_groups']
+        candidates = {candidate['series_id']: candidate for candidate in group}
+        assert set(candidates) == {'main', 'month'}
+        assert candidates['main']['source_context']['referenced_by'] == [evidence]
+        assert 'referenced_by' not in candidates['month']['source_context']
+        return {'decision': 'resolved', 'bindings': [
+            {'considered_ids': list(candidates), 'selected_ids': ['main'],
+             'reason': '派生表的活跃收盘价表头和精确查找公式指向该列'}]}
+
+    assert verify_selection(store, dataset, ['main'], '某某的主力合约收盘价', model) is None
+    assert len(calls) == 1
+    assert json.loads(cache_path.read_text()) == current
+    assert store.manifest(dataset) == manifest
+
+
+@pytest.mark.parametrize('formula', [
+    "=VLOOKUP(A12,'期货 行情'!A:H,2,TRUE)",
+    "=VLOOKUP(A12,'期货 行情'!A:H,2)",
+    "=VLOOKUP(A12,不存在的表!A:H,2,0)",
+    "=VLOOKUP(A12,'期货 行情'!A:C,4,0)",
+    "=VLOOKUP(A12,'[other.xlsx]期货 行情'!A:H,2,0)",
+    "=VLOOKUP(A12,'期货 行情'!A:H,2,0)*2",
+    "=HLOOKUP(A12,'期货 行情'!B4:C12,3,0)",
+    "=INDEX('期货 行情'!B6:B12,MATCH(A12,'期货 行情'!A6:A12,1))",
+    "='期货 行情'!B9",
+])
+def test_unverified_or_ambiguous_lookup_adds_no_reverse_evidence(lookup_source, formula):
+    store, dataset = lookup_source(formula)
+    catalog = store.catalog(dataset)
+    assert all('referenced_by' not in row.get('source_context', {}) for row in catalog)
+
+
+@pytest.mark.parametrize('formula', ["='期货 行情'!B6", "=HLOOKUP(A12,'期货 行情'!B4:B12,3,0)",
+                                    "=INDEX('期货 行情'!B6:B12,MATCH(A12,'期货 行情'!A6:A12,0))"])
+def test_other_statically_resolved_formulas_attach_to_one_series(lookup_source, formula):
+    store, dataset = lookup_source(formula)
+    rows = store.catalog(dataset)
+    matched = [row['series_id'] for row in rows if row.get('source_context', {}).get('referenced_by')]
+    assert matched == ['main']
 
 
 @pytest.mark.parametrize('question',['20天原料','不选第一套，用另一套','这个字段的滚动值','20天原料，原表C列'])

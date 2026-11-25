@@ -4,6 +4,7 @@ No report conclusion or cached value is copied into a chart definition. Literal
 checks below ground model references; they never decide business intent or type.
 """
 import hashlib
+from math import isfinite
 import re
 
 from fastapi import HTTPException
@@ -21,9 +22,11 @@ MAX_BATCH_CHARTS = 48
 MAX_SERIES = 16
 CHART_TYPES = ('trend', 'seasonal', 'comparison')
 LEGEND_SEMANTICS = ('indicators', 'periods')
+PERIOD_KINDS = ('calendar', 'crop_year', 'contract', 'unknown')
 # These are parser protocol markers, used only to attribute source pages.
 _SLIDE = re.compile(r'<!-- Slide number: (\d+) -->')
 _HEADING = re.compile(r'(?m)^# 第(\d+)页\s*$')
+_TICK_NUMBER = re.compile(r'[+\-−]?(?:(?:\d{1,3}(?:[,，]\d{3})+|\d+)(?:\.\d*)?|\.\d+)(?:[eE][+\-−]?\d+)?')
 _encode = recall._encode
 
 
@@ -147,15 +150,24 @@ def extraction_prompt(batch):
         'comparison多个指标对比。另须按完整标题、图例和上下文语义判断legend_semantics：'
         'indicators表示图例是不同业务指标；periods表示图例是同一指标的不同年份或年度等周期。'
         '不得只因图例含数字就判断周期。periods时chart_type应为seasonal，series按真实业务指标分组：'
-        '通常只有一项，name填共同指标的原文短语，legends保存这一指标的全部原文周期图例，'
+        '通常只有一项，name填共同指标的原文短语，legends保存这一指标的原文周期图例，'
         '不要把不同年份再拆成多条series；确有多个不同指标的同期图才为每个指标各建一项。'
         'indicators时每个不同指标各一项，legends保存对应原文图例。不可凭名称相近合并不同指标。'
+        'shape可选，只有原图文字明确支持时才填写相应字段。由你理解横轴月份顺序和图例的年度格式，'
+        '不能根据标题猜测。season_start_month填写横轴第一个月份的整数（1–12）；'
+        'period_labels逐字照抄图例中全部年份、年度或合约标签，保留原顺序；'
+        'period_kind为calendar（如2019）、crop_year（如19/20）、contract（如1905）或unknown；'
+        'y_ticks的min和max逐字照抄左轴最小、最大刻度的数字文字，这是轴上标签，不是观测值。'
         '每张图须给出所在证据fragment的chunk_id和逐字quote，涵盖标题、图例及单位。'
+        '填写shape时，quote还须包含对应的“N月”文字、全部周期标签及所填的左轴最小和最大刻度。'
         'page只能用输入的真实page；缺少页码时为null，使用片段顺序标识，不能猜页码。'
-        f'每批最多{MAX_BATCH_CHARTS}张图，每图最多{MAX_SERIES}条图例；不能确定就留空。'
+        f'每批最多{MAX_BATCH_CHARTS}张图，每图最多{MAX_SERIES}条业务系列，'
+        f'每条series的legends最多{MAX_SERIES}项；完整周期标签照抄到shape.period_labels。不能确定就留空。'
         '\n只返回严格JSON {"charts":[{"title":"原文图标题","page":1,'
         '"title_candidates":["原文短语"],"chart_type":"trend|seasonal|comparison",'
         '"legend_semantics":"indicators|periods",'
+        '"shape":{"season_start_month":9,"period_labels":["19/20"],'
+        '"period_kind":"calendar|crop_year|contract|unknown","y_ticks":{"min":"20","max":"100"}},'
         '"series":[{"name":"原文指标短语","unit":"","legends":["原文图例"]}],'
         '"evidence":[{"chunk_id":"输入id","quote":"逐字依据"}]}]}。'
         '\n解析片段：' + _encode(batch))
@@ -164,6 +176,64 @@ def extraction_prompt(batch):
 def _original_phrase(value, texts, limit=120):
     return (isinstance(value, str) and bool(value.strip()) and len(value) <= limit
             and any(value in text for text in texts))
+
+
+def tick_number(value):
+    """Interpret a copied numeric label without changing its stored text."""
+    if not isinstance(value, str) or not _TICK_NUMBER.fullmatch(value):
+        return None
+    number = float(value.replace(',', '').replace('，', '').replace('−', '-'))
+    return number if isfinite(number) else None
+
+
+def _quoted_tick(value, texts):
+    if not isinstance(value, str) or not 1 <= len(value) <= 120:
+        return None
+    number = tick_number(value)
+    # A model's numeric text must be present as a complete number, not as
+    # part of a longer value such as 20 in 120 or in 20.5.
+    if number is not None and any(
+        re.search(rf'(?:(?<![\d.+−-])|(?<=\d-))(?<!\d[,，]){re.escape(value)}(?!\d|[.,，]\d)', text)
+        for text in texts
+    ):
+        return number
+    return None
+
+
+def _checked_shape(value, texts, warnings):
+    shape = {}
+    if not isinstance(value, dict):
+        warnings.append('原图形态格式无效，已忽略')
+        return shape
+    if 'season_start_month' in value:
+        month = value['season_start_month']
+        if type(month) is int and 1 <= month <= 12 and any(
+            re.search(rf'(?<!\d){month}月', text) for text in texts
+        ):
+            shape['season_start_month'] = month
+        else:
+            warnings.append('起始月份缺少原图文字依据或格式无效，已忽略')
+    if 'period_labels' in value:
+        labels = value['period_labels']
+        if isinstance(labels, list) and labels and all(_original_phrase(label, texts) for label in labels):
+            shape['period_labels'] = labels
+        else:
+            warnings.append('周期标签缺少原图文字依据或格式无效，已忽略')
+    if 'period_kind' in value:
+        kind = value['period_kind']
+        if kind in PERIOD_KINDS:
+            shape['period_kind'] = kind
+        else:
+            warnings.append('原图周期类型无效，已忽略')
+    if 'y_ticks' in value:
+        ticks = value['y_ticks']
+        minimum, maximum = (_quoted_tick(ticks.get(key), texts) if isinstance(ticks, dict) else None
+                            for key in ('min', 'max'))
+        if minimum is not None and maximum is not None and minimum < maximum:
+            shape['y_ticks'] = {key: ticks[key] for key in ('min', 'max')}
+        else:
+            warnings.append('左轴刻度缺少原图文字依据或范围无效，已忽略')
+    return shape
 
 
 def checked_extraction(document, batch):
@@ -245,9 +315,11 @@ def checked_extraction(document, batch):
                 if title is None:
                     raise ValueError('缺少有效的原文图标题或原文标题候选')
                 warnings.append('缺少有效原文图标题，已使用依据中的原文短语作为标题，请核对')
+            shape = _checked_shape(row['shape'], texts, warnings) if 'shape' in row else {}
             charts.append({'id': f'c{position + 1}', **location,
                            'title': title, 'chart_type': row['chart_type'], 'legend_semantics': semantics,
-                           'series': clean, 'evidence': grounded, 'warnings': warnings})
+                           'series': clean, 'evidence': grounded, 'warnings': warnings,
+                           **({'shape': shape} if shape else {})})
         except ValueError as exc:
             failed.append({'title': label, **location, 'reason': str(exc)})
     return charts, failed
@@ -342,12 +414,22 @@ async def recognize_batch(scope, model_id, batch, catalog=None):
     charts, failed = checked_extraction(document, batch)
     if not charts:
         return {'charts': charts, 'failed': failed}
+    charts, mapping_failed = await match_charts(scope, model_id, charts, batch, catalog)
+    return {'charts': charts, 'failed': [*failed, *mapping_failed]}
+
+
+class MappingCapacity(HTTPException):
+    def __init__(self, detail):
+        super().__init__(413, detail)
+
+
+async def match_charts(scope, model_id, charts, batch, catalog):
     inventory = series_inventory(charts)
     prompt = (recall.query_prompt('从原文图标题、图例和原文单位理解每条系列的指标口径。'
               '逐条写1–3个检索说法；年份图例应根据标题理解共同指标，不把年份当指标。'
               '\n解析片段：' + _encode(batch), inventory))
     if len(prompt.encode()) > PROMPT_BYTES:
-        raise HTTPException(413, '本批识别图表过多，请减少每批页面')
+        raise MappingCapacity('本批识别图表过多，请减少每批页面')
     queries = _checked_queries(await strategy_text.completion(scope, model_id, prompt,
         purpose='report_chart_queries'), inventory)
     if catalog is None:
@@ -362,7 +444,23 @@ async def recognize_batch(scope, model_id, batch, catalog=None):
         if len(prompt.encode()) <= PROMPT_BYTES:
             break
     else:
-        raise HTTPException(413, '本批图例与召回候选超过模型容量，请减少每批页面')
+        raise MappingCapacity('本批图例与召回候选超过模型容量，请减少每批页面')
     document = await strategy_text.completion(scope, model_id, prompt, purpose='report_chart_fields')
-    charts, mapping_failed = checked_mapping(charts, document, groups, catalog)
-    return {'charts': charts, 'failed': [*failed, *mapping_failed]}
+    return checked_mapping(charts, document, groups, catalog)
+
+
+async def rematch_batch(scope, model_id, charts, catalog):
+    evidence = dict.fromkeys((item['chunk_id'], item['quote']) for chart in charts for item in chart['evidence'])
+    batch = [{'id': chunk, 'content': quote} for chunk, quote in evidence]
+    try:
+        matched, failed = await match_charts(scope, model_id, charts, batch, catalog)
+    except MappingCapacity:
+        if len(charts) == 1:
+            raise
+        middle = len(charts) // 2
+        first = await rematch_batch(scope, model_id, charts[:middle], catalog)
+        second = await rematch_batch(scope, model_id, charts[middle:], catalog)
+        return first + second
+    if failed:
+        raise HTTPException(422, '重新匹配结果无法校验，原识别结果已保留')
+    return matched

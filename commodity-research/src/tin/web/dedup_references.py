@@ -157,6 +157,19 @@ def _replace_items(items, replacements):
     return result
 
 
+def _replace_curves(curves, replacements, fields):
+    curves = deepcopy(curves)
+    for curve in curves:
+        if curve.get('series_id') in replacements:
+            curve['series_id'] = replacements[curve['series_id']]
+            field = fields[curve['series_id']]
+            curve['descriptor'] = {key: str(field.get(key) or '') for key in ('source_file', 'sheet', 'metric', 'column')}
+        if curve.get('derived'):
+            for key in ('a', 'b'):
+                curve['derived'][key] = replacements.get(curve['derived'][key], curve['derived'][key])
+    return curves
+
+
 def _core_history(session, scope, value, revision):
     """Reuse the existing immutable artifact history for shared core revisions."""
     identifier = str(uuid5(NAMESPACE_URL, 'core-focus.v1:' + scope.workbench_id))
@@ -211,15 +224,7 @@ def rewrite_references(body: RewriteInput):
         result = favorites.put_favorites(favorites.FavoritesInput.model_validate({
             'revision': revision, 'items': _replace_items(value['items'], replacements)}))
     elif body.kind == 'chart':
-        curves = deepcopy(value['curves'])
-        for curve in curves:
-            if curve.get('series_id') in replacements:
-                curve['series_id'] = replacements[curve['series_id']]
-                field = fields[curve['series_id']]
-                curve['descriptor'] = {key: str(field.get(key) or '') for key in ('source_file', 'sheet', 'metric', 'column')}
-            if curve.get('derived'):
-                for key in ('a', 'b'):
-                    curve['derived'][key] = replacements.get(curve['derived'][key], curve['derived'][key])
+        curves = _replace_curves(value['curves'], replacements, fields)
         from tin.schemas.chart import ChartUpdate
         result = charts.update_chart(body.id, ChartUpdate.model_validate({'revision': revision, 'curves': curves}))
     else:

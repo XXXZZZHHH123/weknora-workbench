@@ -5,7 +5,7 @@ from math import ceil
 from fastapi import HTTPException
 
 from tin.compute.condition_backtest import backtest_conditions, validate_rules
-from tin.integration.observation_windows import paged_observations
+from tin.integration.observation_windows import UNDATED_RULE_NOTE, UNDATED_RULE_STATE, paged_observations
 from tin.integration.page_facts import StructuredFactsError
 from tin.web.chart_data import catalog_fields, chart_read_scope, cutoff
 from tin.web.dimension_data import FREQUENCY_DAYS, LOW_FREQUENCIES
@@ -73,10 +73,11 @@ def backtest_monitor(scope, rules, logic, start=None, end=None):
             # A source may reject a complete window while its ordinary valid
             # observations remain readable. Isolate by real series ID, discarding
             # every page of a rejected source rather than evaluating partial data.
+            undated = set()
             try:
                 rows = paged_observations(scope, [identifier], end_day, limit, direct_only=True,
                     versions=versions, version_notice='监测来源在分页期间变化，请刷新',
-                    upstream_error_detail=True)[identifier]
+                    upstream_error_detail=True, undated_series_ids=undated)[identifier]
             except StructuredFactsError as error:
                 if error.status_code in {401, 403}:
                     raise
@@ -85,6 +86,8 @@ def backtest_monitor(scope, rules, logic, start=None, end=None):
             else:
                 points = [{'date': row['date'], 'value': row['value']} for row in rows]
                 data[identifier] = {'points': points, 'limited': len(points) == limit, 'point_limit': limit}
+                if identifier in undated:
+                    data[identifier].update(read_error=UNDATED_RULE_NOTE, undated=True)
         for identifier in identifiers:
             source = data[identifier]
             points = source['points']
@@ -103,10 +106,13 @@ def backtest_monitor(scope, rules, logic, start=None, end=None):
     except ValueError as error:
         raise HTTPException(422, str(error)) from None
     for series in result['series']:
-        coverage = data[series['series_id']]['coverage']
+        source = data[series['series_id']]
+        coverage = source['coverage']
         series['coverage'] = coverage
         series['data_coverage'] = coverages[series['series_id']]
-        if 'read_error' in data[series['series_id']]:
+        if source.get('undated'):
+            series['state'] = UNDATED_RULE_STATE
+        if 'read_error' in source:
             continue
         if coverage['start'] is None:
             notice = '截至所选日期没有可读观测，实际覆盖区间为空'

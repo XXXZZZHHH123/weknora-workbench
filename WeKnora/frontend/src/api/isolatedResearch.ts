@@ -3,7 +3,7 @@ import { fetchWithAuthRetry } from '../utils/authFetch'
 export interface IsolatedResearchIdentity { token: string; tenantId: string; userId: string; workbenchId: string; knowledgeBaseId: string; sourcesRevision?: number }
 export interface WorkbenchSource {
   id: string; file_name: string; file_type?: string; parse_status?: string; folder_path?: string
-  knowledge_base_id?: string; file_size?: number; source_kind?: string; [key: string]: unknown
+  knowledge_base_id?: string; file_size?: number; source_kind?: string; file_version_at?: string; [key: string]: unknown
 }
 export interface WorkbenchDataset { dataset_id?: string; id?: string; filename?: string; file_name?: string; name?: string; [key: string]: unknown }
 export interface WorkbenchIndicator { series_id: string; name: string; unit?: string; frequency?: string; caliber?: Record<string, unknown>; [key: string]: unknown }

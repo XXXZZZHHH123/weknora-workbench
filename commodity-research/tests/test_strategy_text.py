@@ -5,6 +5,7 @@ from fastapi import HTTPException
 import pytest
 
 from tests.test_research_strategy_cards import URL, cards  # noqa: F401
+from tests.analysis_job_fixtures import finished_job
 from tests.test_strategy_citations import FIELD_VERSION, SID, case, run  # noqa: F401
 from tin.web import research_strategy, strategy_citations as citations, strategy_markdown, strategy_text
 
@@ -117,13 +118,21 @@ def test_malformed_model_output_keeps_the_text_and_reports_a_retry(case, model):
 
 
 def test_endpoint_requires_writing_access_and_returns_drafts_without_saving(cards, monkeypatch):
+    from tin.web import analysis_jobs
     client, _ = cards
-    async def fake(scope, text, model_id):
+    client.app.include_router(analysis_jobs.router)
+    async def fresh(scope, purpose):
+        return scope
+    monkeypatch.setattr(analysis_jobs, 'fresh_scope', fresh)
+    async def fake(scope, text, model_id, *, progress):
+        await progress('generating')
         return {'cards': [{'body': {'card': {'title': text}}, 'notes': []}]}
     monkeypatch.setattr(strategy_text, 'draft_from_text', fake)
     body = {'text': '一句话方案', 'model_id': 'synthetic-model'}
     assert client.post(URL + '/draft-from-text', json=body, headers={'x-role': 'viewer', 'x-can-edit': 'false'}).status_code == 403
-    response = client.post(URL + '/draft-from-text', json=body)
+    response = client.post(URL + '/draft-from-text', json=body, headers={'Idempotency-Key': 'strategy-text-fixture'})
+    assert response.status_code == 202 and response.json()['purpose'] == 'strategy_text'
+    _, response = finished_job(client, '/api/sn/analysis-jobs/' + response.json()['id'])
     assert response.status_code == 200 and response.json()['cards'][0]['body']['card']['title'] == '一句话方案'
     assert client.post(URL + '/draft-from-text', json={'text': 'x' * 6001, 'model_id': 'm'}).status_code == 422
     assert client.get(URL).json()['total'] == 0

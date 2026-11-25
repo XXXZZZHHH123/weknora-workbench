@@ -48,18 +48,23 @@ async def completed_job():
     return scope, meta, result
 
 
+def parent_model_calls(calls):
+    return [call for call in calls if not call['prompt'].startswith('research-catalog-recall.v1')
+            and 'research-catalog-pick.v1' not in call['prompt']]
+
+
 def test_detached_result_survives_memory_restart_and_keeps_the_same_canonical_token(background, monkeypatch):
     _, _, _, _, calls = background
     async def run():
         scope, meta, result = await completed_job()
         assert result['draft_id'] != meta['id'] and meta['id'] in result['draft_id']
-        assert rows() == [] and len(calls) == 3
+        assert rows() == [] and len(parent_model_calls(calls)) == 3
         generation.previews.items.clear()
         monkeypatch.setattr(jobs, 'runtime', jobs.Runtime())
         monkeypatch.setattr(jobs, 'registry', Registry(settings.data_dir / 'job-index.sqlite'))
         restored = await jobs.job_result(scope, meta['id'])
         assert restored['draft_id'] == result['draft_id']
-        assert restored['review'] == result['review'] and len(calls) == 3
+        assert restored['review'] == result['review'] and len(parent_model_calls(calls)) == 3
         return scope, meta, result
     asyncio.run(run())
 
@@ -75,7 +80,7 @@ def test_duplicate_start_runs_one_analysis_and_scope_context_is_reset(background
         assert first['id'] == second['id']
         await jobs.runtime.tasks[first['id']]
         assert current_identity.get() is None and current_workbench.get() is None
-        assert len(calls) == 3 and rows() == []
+        assert len(parent_model_calls(calls)) == 3 and rows() == []
     asyncio.run(run())
 
 

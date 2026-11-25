@@ -101,6 +101,25 @@ func TestReplaceKnowledgeRejectsChangedOrForeignSnapshot(t *testing.T) {
 	}
 }
 
+func TestUpdateKnowledgeFileSourceRejectsStaleWorkerSave(t *testing.T) {
+	db, repo, before, _ := replacementFixture(t)
+	require.NoError(t, db.AutoMigrate(&types.ResearchWorkbench{}, &types.ResearchWorkbenchSourceBinding{}, &types.CentralDataset{}))
+	ctx := context.Background()
+	require.NoError(t, repo.UpdateKnowledgeFileSource(ctx, before, map[string]interface{}{
+		"file_path": "latest.md", "file_hash": "latest-hash", "parse_status": types.ParseStatusPending,
+	}))
+	before.ParseStatus = types.ParseStatusFailed
+	require.Error(t, repo.UpdateKnowledge(ctx, before))
+	require.Error(t, repo.UpdateKnowledgeFileSource(ctx, before, map[string]interface{}{"file_path": "stale.md"}))
+	current, err := repo.GetKnowledgeByID(ctx, 7, before.ID)
+	require.NoError(t, err)
+	require.Equal(t, "latest.md", current.FilePath)
+	require.Equal(t, "latest-hash", current.FileHash)
+	require.Equal(t, types.ParseStatusPending, current.ParseStatus)
+	current.ParseStatus = types.ParseStatusProcessing
+	require.NoError(t, repo.UpdateKnowledge(ctx, current))
+}
+
 func TestCheckKnowledgeExistsExcludesOnlyReplacementSource(t *testing.T) {
 	for _, kind := range []string{"file", "url"} {
 		t.Run(kind, func(t *testing.T) {

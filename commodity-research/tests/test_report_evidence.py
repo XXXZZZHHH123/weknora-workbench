@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from types import SimpleNamespace
+from uuid import uuid4
 
 from fastapi import HTTPException
 import httpx
@@ -13,8 +14,9 @@ from lxml.html import fromstring
 import pytest
 
 from tin.integration.workbench_scope import WorkbenchScope, current_workbench
-from tin.web import brief_export, report_dimension_drafts, report_evidence, report_ppt, strategy_text
+from tin.web import analysis_jobs, brief_export, judgment_jobs, report_dimension_drafts, report_evidence, report_ppt, strategy_text
 from tin.web.workbench_artifacts import ArtifactModule, serialize_revision
+from tests.analysis_job_fixtures import detached_loop, finished_job
 from tests.chart_fixtures import OTHER
 from tests.test_chart_api import SECOND_WB, chart_client  # noqa: F401
 from tests.test_chart_references import reference_client  # noqa: F401
@@ -88,6 +90,11 @@ def fake_model(monkeypatch, *, on_review=None, claim_overrides=None, binding=Non
             return {'text': '已有事实仍待进一步观察。', 'impact': 'neutral', 'metric_names': []}
         if purpose == 'report_dimension_review':
             return {'grounded': True, 'metric_names': [], 'dates': []}
+        if purpose in {'report_summary_draft', 'report_summary_review'}:
+            assert CLAIM not in prompt
+            if purpose == 'report_summary_draft':
+                return {'text': '总体方向仍需观察。', 'metric_names': []}
+            return {'grounded': True, 'metric_names': [], 'dates': []}
         assert audit_content is False
         context = json.loads(prompt.split('\n', 1)[1])
         contexts[purpose] = context
@@ -110,12 +117,39 @@ def fake_model(monkeypatch, *, on_review=None, claim_overrides=None, binding=Non
     return contexts
 
 
+def test_empty_citations_preserve_existing_background_result_fingerprint():
+    report = {'manual_report': {'draft': {'title': '已有周报'}}}
+    fingerprint = report_dimension_drafts.report_fingerprint(report)
+    report['manual_report']['draft']['evidence_citations'] = []
+    assert report_dimension_drafts.report_fingerprint(report) == fingerprint
+    report['manual_report']['draft']['evidence_citations'] = [{'dimension_id': 'fixture'}]
+    assert report_dimension_drafts.report_fingerprint(report) != fingerprint
+
+
 def test_workflow_renders_clickable_citations_and_markdown_then_hides_revoked_sources(report_flow, native, monkeypatch):
     from tin.web import dimension_board
 
     client, state = report_flow
-    for router in (dimension_board.router, report_dimension_drafts.router, report_evidence.router, report_ppt.router):
+    for router in (dimension_board.router, report_dimension_drafts.router, report_evidence.router,
+                   report_ppt.router, analysis_jobs.router):
         state.app.include_router(router)
+
+    async def refresh(*_):
+        return current_workbench.get()
+
+    monkeypatch.setattr(judgment_jobs, 'resolve_workbench', refresh)
+
+    def draft_in_background(body):
+        with detached_loop(client):
+            accepted = client.post(REPORT + '/draft-dimensions', json=body,
+                                   headers={'Idempotency-Key': uuid4().hex})
+            assert accepted.status_code == 202, accepted.text
+            path = '/api/sn/analysis-jobs/' + accepted.json()['id']
+            job, response = finished_job(client, path)
+            assert job['state'] == 'succeeded', job
+            assert response.status_code == 200, response.text
+            return path + '/result', response.json()
+
     state.observations[OTHER] = [('2023-01-02', 20), (DAY, 40)]
     configured = client.put('/api/sn/dimensions', json={'revision': 0, 'dimensions': [
         {'label': '维度样例', 'category': '需求', 'sections': [
@@ -125,13 +159,13 @@ def test_workflow_renders_clickable_citations_and_markdown_then_hides_revoked_so
     calls = fake_model(monkeypatch)
     body = {'model_id': 'fake', 'dimension_notes': {
         identifier: {'text': '请核查意见是否一致', 'impact': 'undecided'}}}
-    regular = client.post(REPORT + '/draft-dimensions', json=body)
-    assert regular.status_code == 200 and not native['paths'] and not calls
+    _, regular = draft_in_background(body)
+    assert 'evidence' not in regular and not native['paths'] and not calls
+    assert regular['summary']['text'] == '总体方向仍需观察。'
     assert client.post(REPORT.replace('/weekly', '/daily') + '/draft-dimensions',
                        json={**body, 'include_kb_evidence': True}).status_code == 422
-    generated = client.post(REPORT + '/draft-dimensions', json={**body, 'include_kb_evidence': True})
-    assert generated.status_code == 200, generated.text
-    result = generated.json()
+    result_url, result = draft_in_background({**body, 'include_kb_evidence': True})
+    assert result['summary']['text'] == '总体方向仍需观察。'
     plan = calls['report_evidence_plan']['dimensions'][0]
     assert plan['researcher_text'] == '请核查意见是否一致' and plan['facts']['F1']['latest'] == 40
     passages = calls['report_evidence_draft']['passages']
@@ -145,6 +179,15 @@ def test_workflow_renders_clickable_citations_and_markdown_then_hides_revoked_so
     assert proof['sources'][0]['location'] == '第 4 张幻灯片'
     assert proof['sources'][0]['excerpt'] == POSITIVE
     assert proof['sources'][1]['location'] == '' and proof['sources'][1]['excerpt'] == NEGATIVE
+    assert client.get(result_url).json()['evidence'] == result['evidence']
+    assert client.get(result_url, headers={'x-actor': 'second'}).status_code == 404
+    native['revoked'] = True
+    revoked = client.get(result_url)
+    assert revoked.status_code == 200 and revoked.json()['evidence'] == {}
+    assert revoked.json()['dimensions'][0]['status'] == 'sources_unverified'
+    assert all(text not in revoked.text for text in (CLAIM, POSITIVE, NEGATIVE))
+    assert revoked.json()['summary']['text'] == '总体方向仍需观察。'
+    native['revoked'] = False
     # Reconstruct the pre-redesign fingerprint from the original wire fields.
     revision = '2023-01-08T11:00:00+08:00'
     legacy = [BINDING['id'], BINDING['knowledge_base_id'], BINDING['tenant_id'], 'positive', 'positive', {
@@ -155,6 +198,8 @@ def test_workflow_renders_clickable_citations_and_markdown_then_hides_revoked_so
     expected = hashlib.sha256(json.dumps(legacy, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode())
     assert proof['receipt']['passages'][0]['fingerprint'] == expected.hexdigest()
     draft = {'period': 'weekly', 'date': DAY, 'title': '带引用周报',
+             'layout': {'dimension_order': [identifier]},
+             'sections': {'summary': {'text': result['summary']['text']}},
              'dimension_notes': {identifier: {'text': CLAIM, 'impact': 'neutral'}},
              'evidence_citations': [proof['receipt']]}
     assert client.post(DRAFT, headers={'x-workbench': SECOND_WB}, json={'draft': draft}).status_code == 422
@@ -169,6 +214,11 @@ def test_workflow_renders_clickable_citations_and_markdown_then_hides_revoked_so
     page = client.get(f'/sn/reports?date={DAY}&period=weekly')
     assert page.status_code == 200, page.text
     page_html = fromstring(page.text)
+    assert '总体方向仍需观察。' in page_html.get_element_by_id('report-period-conclusion').text_content()
+    assert 'checked' not in page_html.get_element_by_id('report-include-kb-evidence').attrib
+    editor = json.loads(page_html.get_element_by_id('report-editor-data').text)
+    assert editor['draft']['layout']['dimension_order'] == [identifier]
+    assert editor['draft']['evidence_citations'] == [proof['receipt']]
     assert page_html.xpath(f'//*[@data-report-dimension="{identifier}"]//sup/a/text()') == ['[1]', '[2]', '[3]']
     citation_block = page_html.get_element_by_id('report-citations')
     positive, negative = (citation_block.get_element_by_id(f'report-evidence-{i}') for i in (2, 3))

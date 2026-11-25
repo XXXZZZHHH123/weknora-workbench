@@ -12,14 +12,14 @@ from starlette.concurrency import run_in_threadpool
 
 from tin.integration.workbench_scope import resolve_workbench, require_shared_write
 from tin.judgments.markdown import dump_markdown, version_diff
-from tin.judgments.service import _refs, latest, latest_workbench_payload, save_version, to_payload, JudgmentError
+from tin.judgments.service import JudgmentError, JudgmentVersionConflict, _refs, latest, latest_workbench_payload, save_version, stale_payload_dimensions, to_payload
 from tin.judgments.validate import activation_blockers
 from tin.models import AuditLog
 from tin.schemas.judgment import JudgmentIn, EXPRESSION
 from tin.web.judgment_generation import (ApplyRequest, PreviewStore, result_session,
                                          scope_for_analysis, scope_key, read_body)
 from tin.config import SHANGHAI
-from tin.web.research_dimensions import checked_dimension, default_dimensions, read_dimensions, summaries
+from tin.web.research_dimensions import default_dimensions, read_dimensions, summaries
 
 router = APIRouter(prefix='/api/sn/judgment/structured')
 previews = PreviewStore()
@@ -34,9 +34,8 @@ class StructuredInput(BaseModel):
 def _validate_payload(payload, catalog, *, dimensions=None):
     dimensions = default_dimensions() if dimensions is None else dimensions
     evidence = [*payload.contradiction.bull.evidence, *payload.contradiction.bear.evidence]
-    for item in [*evidence, *payload.thresholds, *payload.falsifiers]:
-        if item.dimension is not None and checked_dimension(item.dimension, dimensions) is None:
-            raise HTTPException(422, '请选择当前研究台存在的维度，或选择未标注')
+    if issues := stale_payload_dimensions(payload, dimensions):
+        raise HTTPException(422, '；'.join(issues))
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,15}', payload.variety):
         raise HTTPException(422, '研究品种需要1至16位明确代码，只允许字母、数字、点、横线和下划线')
     from tin.integration.page_facts import _judgment_windows
@@ -60,6 +59,8 @@ def _validate_payload(payload, catalog, *, dimensions=None):
     finite(payload.model_dump(mode='json'))
     unknown = {'', '—', '未注明'}
     for rule in [*payload.thresholds, *payload.falsifiers]:
+        if rule.scale is not None:
+            raise HTTPException(422, '数值换算须在从原文导入研判的逐项确认中选择')
         if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,63}', rule.id):
             raise HTTPException(422, '研究规则局部编号需要1至64位，以字母开头，仅含字母、数字、横线和下划线')
         unit = catalog[rule.series_id].get('unit')
@@ -166,9 +167,12 @@ async def apply(request: Request):
                 session.commit()
                 return {'id': row.id, 'panel': panel, 'version': row.version, 'status': row.status, 'variety': row.variety,
                         'notice': '已保存为新的研判面板草稿；原有研判保留，请核对后再生效。'}
-            except (JudgmentError, IntegrityError, OperationalError):
+            except (JudgmentVersionConflict, IntegrityError, OperationalError):
                 session.rollback()
                 raise HTTPException(409, '研究逻辑已有新版本或正在保存，请重新预览') from None
+            except JudgmentError as error:
+                session.rollback()
+                raise HTTPException(422, str(error)) from None
     result = await run_in_threadpool(persist)
     previews.consume(body.draft_id)
     return result

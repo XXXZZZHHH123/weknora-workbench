@@ -9,6 +9,7 @@ const timeline=Array.from({length:65},(_,index)=>({date:new Date(Date.UTC(2032,0
 const metric={name:'合成价格',unit:'元/吨',series_id:'synthetic-series',latest:timeline.at(-1).value,previous:timeline.at(-2).value,date:timeline.at(-1).date,previous_date:timeline.at(-2).date,change:70,change_pct:.3,
  timeline,history_complete:true,segments:['12,40 220,8'],boundaries:[{kind:'fixed',name:'合成区间边界',value:22000,operator:'>'},{kind:'sma',name:'合成均线条件',window:20,operator:'crosses_below'}],streak:null};
 const metrics=Array.from({length:4},(_,index)=>({...metric,series_id:`synthetic-series-${index}`,name:index===1?'合成指标长名称'.repeat(12):`合成指标 ${index+1}`}));
+metrics[0].streak={direction:'up',start:timeline.at(-2).date,end:timeline.at(-1).date,count:1,period:'期',change:70,change_pct:.3,at_least:false};
 const sides={};
 for(const [side,offset]of[['bull',0],['bear',2]])sides[side]={claim:`合成${side==='bull'?'多':'空'}方主逻辑`,
  evidence:[0,1].map(index=>({desc:`本条合成支持依据 ${index+1}`,series_id:metrics[offset+index].series_id,metric:metrics[offset+index]})),
@@ -51,13 +52,31 @@ const html=render.stdout.replace('</head>','<script>window.ChartPaletteColors='+
     return route.fulfill({contentType:file.endsWith('.css')?'text/css':'font/woff2',body:fs.readFileSync(file)});
    }
    if(url.pathname==='/static/judgment-research.css'&&process.env.JUDGMENT_CHART_TEST_CSS)return route.fulfill({contentType:'text/css',body:fs.readFileSync(process.env.JUDGMENT_CHART_TEST_CSS)});
-   if(['/static/chart-palette.js','/static/judgment-chart.js','/static/charts.css','/static/judgment-research.css','/static/judgment-manager.css','/static/research-display.js'].includes(url.pathname))return route.fulfill({contentType:url.pathname.endsWith('.js')?'application/javascript':'text/css',body:fs.readFileSync(path.join(web,url.pathname.slice(1)),'utf8')});
+   if(['/static/chart-palette.js','/static/chart-kit.js','/static/chart-hover.js','/static/judgment-chart.js','/static/charts.css','/static/judgment-research.css','/static/judgment-manager.css','/static/research-display.js'].includes(url.pathname))return route.fulfill({contentType:url.pathname.endsWith('.js')?'application/javascript':'text/css',body:fs.readFileSync(path.join(web,url.pathname.slice(1)),'utf8')});
    throw new Error('Unexpected fixture request '+url.pathname);
   });
   await page.goto('http://judgment-chart.fixture/');
   await page.evaluate(()=>document.fonts.ready);
   const chart=page.locator('[data-judgment-chart]').first(),svg=chart.locator('svg');
   await chart.locator('.judgment-chart-observation').first().waitFor();
+  assert.equal(await page.locator('[data-chart-series="synthetic-series-0"] [data-metric-trend]').count(),1);
+  const compact=page.locator('[data-judgment-compact="synthetic-series-0"]');
+  assert.equal(await compact.count(),1);
+  assert.match(await compact.innerText(),/合成指标 1.*元\/吨.*连升1期.*未触发/s);
+  await compact.hover();
+  const preview=page.getByRole('dialog',{name:'合成指标 1'});
+  await preview.locator('svg').waitFor();
+  await page.keyboard.press('Escape');
+  await preview.waitFor({state:'detached'});
+  await svg.focus();
+  await compact.focus();
+  await preview.locator('svg').waitFor();
+  await page.keyboard.press('Escape');
+  await preview.waitFor({state:'detached'});
+  await chart.locator('[data-chart-semantics]').selectOption('inventory');
+  assert.match(await compact.innerText(),/累库1期/);
+  await chart.locator('[data-chart-semantics]').selectOption('change');
+  report.checks.push('Repeated series has one full chart and a compact row with the local trend preview on hover and focus, including in restricted view');
   // Both sides draw observations in the one shared first palette color (chart-palette.json).
   const first=JSON.parse(fs.readFileSync(path.join(web,'static/chart-palette.json'),'utf8'))[0];
   const expected=await page.evaluate(value=>{const probe=document.createElement('i');probe.style.color=value;document.body.append(probe);const color=getComputedStyle(probe).color;probe.remove();return color;},first);
