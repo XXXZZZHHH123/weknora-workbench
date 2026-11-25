@@ -84,6 +84,15 @@ def dump(path: Path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=json_default), encoding="utf-8")
 
 
+def published_series_dates(series):
+    """Project the saved full-field dates without reading observations or the workbook."""
+    return [
+        {key: field[key] for key in ('series_id', 'metric', 'sheet', 'last_valid_date', 'last_date')}
+        for field in series
+        if field.get('last_date') and 'last_valid_date' in field and not field.get('chart_id')
+    ]
+
+
 def _unimported_sheet_states(coverage, imported_sheets):
     """Coverage sheets present in the original but absent from this version.
 
@@ -847,6 +856,10 @@ class DataStore:
         warnings.append("missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。")
         filters = {"series_id": series_id, "start_date": start_date, "end_date": end_date, "operation": operation, "period":period, 'value_filters':value_filters or [], 'last_n':last_n,'top_n':top_n,'order':order}
         result = {"dataset_id": dataset_id, "status": "ok" if valid or (operation=='count' and scope_count) else "no_data", "series": series, "filters": filters, "scope_record_count":scope_count,"record_count": count, "valid_count": valid, "formula_count":formula_count, "valid_formula_count":valid_formula_count, "valid_non_formula_count":valid-valid_formula_count, "missing_count": count-valid, "actual_first_date": str(first) if first else None, "actual_last_date": str(last) if last else None, "valid_first_date":str(valid_first) if valid_first else None,"valid_last_date":str(valid_last) if valid_last else None, "aggregate": aggregate, "rows": records, "extremum_rows":records if operation in {'min','max'} else None, "extremum_count":extremum_count, "rows_are": "extremum_observations" if operation in {'min','max'} else "latest_valid_observation" if operation == "latest" else "observations" if operation in {'rows','top'} else "source_examples_not_all_inputs", "truncated": (extremum_count>len(records)) if extremum_count is not None else operation not in ('latest','top') and count > len(records), "source_semantics":{"date_representation":series.get('date_mode','date'),"statistical_calendar":series.get('statistical_calendar'),"aggregation_rule":series.get('aggregation_rule'),"notice":"未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"}, "source": {"file": manifest["source_file"], "sha256": manifest["sha256"], "sheet": series["sheet"], "header_cells": series.get("header_cells", [])}, "warnings": warnings}
+        if start and start == end and not valid:
+            dates = published_series_dates([series])
+            if dates:
+                result['source_semantics']['published_series_dates'] = dates
         if observation_coverage is not None:
             result['observation_coverage'] = observation_coverage
         if valid and records and not series.get('unit'):
