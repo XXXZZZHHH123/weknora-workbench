@@ -20,6 +20,20 @@ type RetryPolicy struct {
 	MaxDelay time.Duration
 }
 
+type retryLimitKey struct{}
+
+type retryLimit struct {
+	maxRetries     int
+	minAttemptTime time.Duration
+}
+
+// WithRetryLimit narrows the transport retry policy for a bounded operation.
+// The original attempt may use the whole deadline. A retry needs room for
+// both the backoff and minAttemptTime before that same deadline.
+func WithRetryLimit(ctx context.Context, maxRetries int, minAttemptTime time.Duration) context.Context {
+	return context.WithValue(ctx, retryLimitKey{}, retryLimit{maxRetries, minAttemptTime})
+}
+
 // DefaultRetryPolicy is three retries with 1s, 2s, 4s backoff, which is what
 // every embedding client used before this helper existed.
 func DefaultRetryPolicy() RetryPolicy {
@@ -66,16 +80,32 @@ func (e Endpoint) PostJSONWithRetry(
 // TransportError, or the budget runs out. The last error lives in the
 // enclosing scope and the loop cannot fall through without it.
 func withRetry(ctx context.Context, policy RetryPolicy, label string, send func() error) error {
+	limit, limited := ctx.Value(retryLimitKey{}).(retryLimit)
+	if limited {
+		policy.MaxRetries = min(policy.MaxRetries, max(0, limit.maxRetries))
+	}
 	var lastErr error
 	for attempt := 0; attempt <= policy.MaxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if attempt > 0 {
 			wait := policy.delay(attempt)
+			if deadline, ok := ctx.Deadline(); limited && ok && time.Until(deadline)-wait < limit.minAttemptTime {
+				break
+			}
 			logger.Infof(ctx, "[%s] retrying (%d/%d) after %v: %v",
 				label, attempt, policy.MaxRetries, wait, lastErr)
 			select {
 			case <-time.After(wait):
 			case <-ctx.Done():
 				return ctx.Err()
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if deadline, ok := ctx.Deadline(); limited && ok && time.Until(deadline) < limit.minAttemptTime {
+				break
 			}
 		}
 		err := send()
