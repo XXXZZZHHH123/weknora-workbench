@@ -499,6 +499,7 @@ const initViewMode = (): DocViewMode => {
   } catch { return 'list'; }
 };
 const viewMode = ref<DocViewMode>(initViewMode());
+const hasDocumentTable = computed(() => viewMode.value === 'list' && cardList.value.length > 0);
 watch(viewMode, (v) => {
   try { localStorage.setItem(VIEW_MODE_KEY, v); } catch { /* ignore */ }
 });
@@ -2737,14 +2738,13 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
             </div>
           </div>
           <p v-if="kbInfo?.description" class="document-subtitle">{{ kbInfo.description }}</p>
-          <p v-if="canEdit && unsupportedFileTypes.length" class="parser-hint" @click="goToParserSettings">
-            <t-icon name="info-circle" class="parser-hint-icon" />
-            <span>{{$t('knowledgeBase.unsupportedTypesHint', {
-              types: unsupportedFileTypes.map(t => '.' + t).join('、')
-            })
-              }}</span>
-            <span class="parser-hint-link">{{ $t('knowledgeBase.goToParserSettings') }} →</span>
-          </p>
+          <button v-if="canEdit && unsupportedFileTypes.length" type="button" class="parser-hint" @click="goToParserSettings">
+            <t-icon name="info-circle" class="parser-hint-icon" aria-hidden="true" />
+            <span class="parser-hint-text">
+              {{ $t('knowledgeBase.unsupportedTypesHint', { types: unsupportedFileTypes.map(t => '.' + t).join('、') }) }}
+              <span class="parser-hint-link">{{ $t('knowledgeBase.goToParserSettings') }} →</span>
+            </span>
+          </button>
           <p v-if="missingStorageEngine" class="storage-engine-warning" @click="handleOpenKBSettings">
             <t-icon name="info-circle" class="warning-icon" />
             <span>{{ $t('knowledgeBase.missingStorageEngine') }}</span>
@@ -2943,7 +2943,11 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
                 :class="{
                   'is-empty': !cardList.length && !visibleSubFolders.length && !docListLoading,
                   'is-marquee-active': docMarqueeVisible,
+                  'is-document-table': hasDocumentTable,
                 }"
+                :tabindex="hasDocumentTable ? 0 : undefined"
+                :role="hasDocumentTable ? 'region' : undefined"
+                :aria-label="hasDocumentTable ? $t('knowledgeEditor.document.title') : undefined"
                 ref="knowledgeScroll" @scroll="handleScroll" @mousedown="onDocMarqueeMouseDown">
                 <div v-if="docMarqueeVisible" class="doc-marquee-box"
                   :class="{ 'is-add': docMarqueeMode === 'add', 'is-subtract': docMarqueeMode === 'subtract' }"
@@ -3145,6 +3149,13 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
   box-sizing: border-box;
 }
 
+@media (max-width: 600px) {
+  .knowledge-layout {
+    margin-inline-end: 0;
+    padding-inline: 16px;
+  }
+}
+
 // View switch (文档 / Wiki / 图谱 / 画廊): a segmented control after the
 // breadcrumb, drawn like the documents tab's view toggle so the four views
 // read as siblings rather than as another breadcrumb level.
@@ -3316,10 +3327,9 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
   .doc-filter-actions {
     display: inline-flex;
     align-items: center;
-    flex-wrap: nowrap;
-    flex: none;
+    flex-wrap: wrap;
+    max-width: 100%;
     gap: 8px;
-    white-space: nowrap;
   }
 }
 .doc-folder-path {
@@ -3539,7 +3549,7 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
   align-items: center;
   justify-content: center;
   gap: 6px;
-  max-width: 220px;
+  max-width: min(220px, 100%);
   height: 32px;
   padding: 0 10px;
   border: 1px solid var(--td-component-stroke);
@@ -3572,8 +3582,9 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
 }
 
 @container doc-card-area (max-width: 540px) {
-  .doc-filter-bar__trailing { flex-wrap: wrap; }
+  .doc-filter-bar__trailing { justify-content: flex-start; }
   .doc-filter-bar .doc-search-input { flex: 1 0 100%; }
+  .doc-filter-bar__trailing > .doc-sort-trigger { flex: 1 1 120px; min-width: 0; }
 }
 
 .doc-scroll-container {
@@ -3589,6 +3600,15 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
     align-items: center;
     justify-content: center;
     overflow-y: hidden;
+  }
+
+  &.is-document-table {
+    overflow-x: auto;
+
+    &:focus-visible {
+      outline: 2px solid var(--app-focus-border);
+      outline-offset: -2px;
+    }
   }
 
   &.is-marquee-active {
@@ -3643,6 +3663,8 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
     display: flex;
     flex-direction: column;
     gap: 4px;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .document-title-row {
@@ -3744,32 +3766,41 @@ const handleKBActionChanged = (change: { id: string; deleted: boolean; name?: st
 
   .parser-hint {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 4px;
+    align-self: flex-start;
+    max-width: 100%;
     margin: 2px 0 0;
-    color: var(--td-warning-color);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--td-warning-color-8);
+    font: inherit;
     font-size: var(--app-text-sm);
     line-height: 1.4;
+    text-align: start;
     cursor: pointer;
-    transition: color var(--app-motion-fast) ease;
-
-    &:hover {
-      color: var(--td-warning-color-active);
-
-      .parser-hint-link {
-        text-decoration: underline;
-      }
-    }
 
     .parser-hint-icon {
       font-size: var(--app-text-sm);
       flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .parser-hint-text {
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
 
     .parser-hint-link {
+      display: inline-block;
+      max-width: 100%;
       color: var(--td-brand-color);
-      margin-left: 2px;
-      white-space: nowrap;
+      margin-inline-start: 2px;
+    }
+
+    &:is(:hover, :focus-visible) .parser-hint-link {
+      text-decoration: underline;
     }
   }
 

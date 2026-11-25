@@ -58,6 +58,20 @@ async function setup(t: TestContext, translate = (key: string, _params?: unknown
   }
 }
 
+test('the document table scroll region is enabled for nonempty list view only', async t => {
+  const f = await setup(t)
+  f.hook.cardList.value = [{ id: 'doc', parse_status: 'completed' }]
+  f.vm.viewMode = 'list'
+  assert.equal(f.vm.hasDocumentTable, true)
+
+  f.vm.viewMode = 'grid'
+  assert.equal(f.vm.hasDocumentTable, false)
+
+  f.vm.viewMode = 'list'
+  f.hook.cardList.value = []
+  assert.equal(f.vm.hasDocumentTable, false)
+})
+
 test('batch assistant actions include only explicitly selected IDs and disable single-document comparison', async t => {
   const f = await setup(t, (key, params) => JSON.stringify({ key, params }))
   f.hook.cardList.value = ['selected-a', 'selected-b', 'unselected'].map(id => ({ id, parse_status: 'completed' }))

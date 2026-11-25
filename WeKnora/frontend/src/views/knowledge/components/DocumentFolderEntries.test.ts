@@ -255,6 +255,54 @@ test('the list renders folder tiles above the document table', () => {
   }
 })
 
+test('the scrollable document table keeps matching headers, full processing text, and the result action', () => {
+  const stage = '已检查 46/136 个工作表，正在核对其余工作表'
+  const fileName = '跨区域供应与库存联合观测明细及历史核对说明.xlsx'
+  const running = {
+    id: 'running', file_name: fileName, file_type: 'xlsx', parse_status: 'processing',
+    metadata: { _knowledge_ingestion: { stage } },
+  }
+  const completed = {
+    id: 'completed', file_name: '资料.pdf', file_type: 'pdf', parse_status: 'completed',
+    metadata: { _content_processing_v1: { text_chunk_count: 99, image_count: 23 } },
+  }
+  const actions: [string, string][] = []
+  const view = mountList({
+    items: [running, completed], canEdit: true, canMutateKnowledge: true,
+    onAction: (action: string, item: { id: string }) => actions.push([action, item.id]),
+  })
+  try {
+    const table = allElements(view.root).find(node => classesOf(node).includes('doc-section--table'))
+    assert.equal(table?.props.role, 'table')
+    assert.ok(table)
+    const rows = allElements(table).filter(node => node.props.role === 'row')
+    assert.equal(rows.length, 3)
+    const headerColumns = rows[0].children.filter(node => node.props.role === 'columnheader').map(classesOf)
+    assert.equal(headerColumns.length, 5)
+    for (const row of rows.slice(1)) {
+      assert.deepEqual(row.children.filter(node => node.props.role === 'cell').map(classesOf), headerColumns)
+    }
+
+    const cell = (row: HostNode, name: string) => {
+      const result = row.children.find(node => classesOf(node).includes(name))
+      assert.ok(result, name)
+      return result
+    }
+    assert.ok(textOf(cell(rows[1], 'cell-name')).includes(fileName))
+    assert.ok(textOf(cell(rows[1], 'cell-status')).includes(stage))
+    const completedStatus = textOf(cell(rows[2], 'cell-status'))
+    assert.ok(completedStatus.includes(enUS.knowledgeBase.statusCompleted))
+    assert.ok(completedStatus.includes(knowledgeIngestion.knowledgeCoverageSummary(completed.metadata, 'completed').join(' · ')))
+
+    const resultAction = allElements(cell(rows[1], 'cell-actions')).find(node => node.props.title === enUS.knowledgeBase.structuredParse)
+    assert.ok(resultAction)
+    resultAction.props.onClick({ stopPropagation() {} })
+    assert.deepEqual(actions, [['structured-parse', 'running']])
+  } finally {
+    view.unmount()
+  }
+})
+
 test('the card grid renders one folder tile above the document cards', () => {
   const opened: string[] = []
   const view = mountCards({ onOpenFolder: (path: string) => opened.push(path) })

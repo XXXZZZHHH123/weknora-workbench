@@ -312,7 +312,7 @@ const handleAction = (action: 'download' | 'upload-version' | 'edit' | 'reparse'
       </nav>
     </section>
 
-    <section v-if="items.length" class="doc-section" role="table" :aria-label="t('knowledgeEditor.document.title')">
+    <section v-if="items.length" class="doc-section doc-section--table" role="table" :aria-label="t('knowledgeEditor.document.title')">
       <h3 v-if="subFolderRows.length" class="doc-section-header">
         <span>{{ t('knowledgeBase.folderTree.documentSection') }}</span>
         <span class="doc-section-count">{{ items.length }}</span>
@@ -396,8 +396,7 @@ const handleAction = (action: 'download' | 'upload-version' | 'edit' | 'reparse'
             </t-tag>
             <span v-else class="row-muted">--</span>
           </template>
-          <span v-if="knowledgeCoverageSummary(item.metadata, item.parse_status).length"
-            class="row-coverage-summary" aria-label="内容处理结果">
+          <span v-if="knowledgeCoverageSummary(item.metadata, item.parse_status).length" class="row-coverage-summary">
             {{ knowledgeCoverageSummary(item.metadata, item.parse_status).join(' · ') }}
           </span>
         </div>
@@ -544,7 +543,7 @@ const handleAction = (action: 'download' | 'upload-version' | 'edit' | 'reparse'
 .doc-list-header,
 .doc-list-row {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) minmax(160px, 22%) 168px 136px;
+  grid-template-columns: 24px minmax(180px, 1fr) minmax(112px, 18%) minmax(210px, 26%) minmax(144px, 16%);
   align-items: center;
   column-gap: 12px;
   padding: 0 8px;
@@ -586,6 +585,10 @@ const handleAction = (action: 'download' | 'upload-version' | 'edit' | 'reparse'
 
 .doc-section + .doc-section {
   margin-top: 16px;
+}
+
+.doc-section--table {
+  min-inline-size: 760px;
 }
 
 .doc-section-header {
@@ -717,8 +720,15 @@ const handleAction = (action: 'download' | 'upload-version' | 'edit' | 'reparse'
   font-family: var(--app-font-family);
 }
 
+.doc-list-row .cell-status {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .cell-actions {
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 4px;
 
   :deep(.t-button) {
@@ -848,18 +858,13 @@ const handleAction = (action: 'download' | 'upload-version' | 'edit' | 'reparse'
   padding: 0;
   color: var(--td-text-color-secondary);
   white-space: normal;
-  /* 长状态文案（如解析阶段说明）最多两行，超出省略，完整内容见 title */
+
   .row-status-text {
     min-width: 0;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    overflow: hidden;
-    white-space: normal;
     overflow-wrap: anywhere;
-    line-height: 18px;
+    line-height: 1.5;
   }
-  &.status-success::before { content: ''; width: 5px; height: 5px; margin-right: 6px; border-radius: 50%; background: var(--td-success-color); }
+  &.status-success::before { content: ''; flex: none; width: 5px; height: 5px; margin-right: 6px; border-radius: 50%; background: var(--td-success-color); }
   &.status-danger { color: var(--td-error-color); }
   &.status-warning { color: var(--td-warning-color); }
   &.status-primary { color: var(--td-brand-color); }
@@ -956,9 +961,6 @@ const handleAction = (action: 'download' | 'upload-version' | 'edit' | 'reparse'
 }
 .meta-sep { opacity: 0.6; }
 .row-coverage-summary {
-  display: block;
-  max-width: 180px;
-  margin-top: 4px;
   color: var(--td-text-color-secondary);
   font-size: var(--app-text-xs);
   line-height: 1.4;
@@ -974,17 +976,8 @@ const handleAction = (action: 'download' | 'upload-version' | 'edit' | 'reparse'
   outline-offset: 3px;
   border-radius: var(--app-radius-xs);
 }
-@container doc-card-area (max-width: 720px) {
-  .doc-list-header, .doc-list-row {
-    grid-template-columns: 24px minmax(0, 1fr) 140px 136px;
-    column-gap: 8px;
-  }
-  .doc-list-header .cell-tags { display: none; }
-  .doc-list-row .cell-tags { grid-column: 2; grid-row: 2; padding-left: 44px; }
-  .row-tags { padding-top: 6px; }
-  .row-tag-add { margin-top: 6px; }
-  .cell-status { grid-column: 3; grid-row: 1; }
-  .cell-actions { grid-column: 4; grid-row: 1; }
+@container doc-card-area (max-width: 760px) {
+  .row-file-name { white-space: normal; overflow-wrap: anywhere; }
   .row-file-meta { flex-wrap: wrap; gap: 2px 6px; }
 }
 @media (hover: none) {
