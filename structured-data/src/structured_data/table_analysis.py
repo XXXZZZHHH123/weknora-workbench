@@ -104,6 +104,11 @@ def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=
             from .sql_result_operations import describe_sql_operations
             operations=describe_sql_operations(con,sql,len(columns))
             dependencies,dependency_verified=describe_excel_dependencies(con,sql,source_columns,len(columns))
+            # Keep the proof in extensible operation metadata so the existing
+            # result-contract schema still decodes on older Go consumers.
+            for operation, dependency in zip(operations, dependencies):
+                if direct_column := dependency.pop('direct_source_column', None):
+                    operation['direct_source_column'] = direct_column
         except duckdb.Error as exc:
             raise AnalysisSQLError(exc, 'execute') from None
         finally:timer.cancel()

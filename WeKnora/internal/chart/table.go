@@ -43,14 +43,16 @@ type Column struct {
 	Numeric        bool                   `json:"numeric"`
 	Role           string                 `json:"role,omitempty"`
 	DependencyKind string                 `json:"dependency_kind,omitempty"`
+	DirectSeriesID bool                   `json:"direct_series_id,omitempty"`
 }
 type Table struct {
-	ID         string     `json:"source_id"`
-	Columns    []Column   `json:"columns"`
-	Rows       [][]string `json:"-"`
-	Provenance string     `json:"provenance"`
-	Notice     string     `json:"notice"`
-	Truncated  bool       `json:"source_truncated"`
+	ID           string            `json:"source_id"`
+	Columns      []Column          `json:"columns"`
+	Rows         [][]string        `json:"-"`
+	Provenance   string            `json:"provenance"`
+	Notice       string            `json:"notice"`
+	Truncated    bool              `json:"source_truncated"`
+	SeriesLabels map[string]string `json:"-"`
 }
 
 // Seal binds a source handle to exact server-observed rows and provenance.
@@ -82,7 +84,11 @@ func (t *Table) Seal(identity string) error {
 	if err != nil || len(data) > MaxSourceBytes {
 		return fmt.Errorf("source rows exceed chart budget")
 	}
-	meta, _ := json.Marshal([]any{identity, t.Columns, t.Rows, t.Provenance, t.Notice, t.Truncated})
+	evidence := []any{identity, t.Columns, t.Rows, t.Provenance, t.Notice, t.Truncated}
+	if len(t.SeriesLabels) > 0 {
+		evidence = append(evidence, t.SeriesLabels)
+	}
+	meta, _ := json.Marshal(evidence)
 	sum := sha256.Sum256(meta)
 	t.ID = "chart-source-" + hex.EncodeToString(sum[:16])
 	return nil

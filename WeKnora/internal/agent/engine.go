@@ -993,11 +993,37 @@ loop:
 	// A suspended run has not finished either; it resumes once the user
 	// answers, so no answer is synthesized for it.
 	if !state.IsComplete && ctx.Err() == nil && state.Suspended == nil {
-		if e.collaboration != nil && e.collaboration.Child == nil && e.collaborationOwnsFailure(ctx) {
-			return state, fmt.Errorf("parent iteration budget exhausted; remaining delegated work was cancelled")
+		var charts *boundedChartAnswer
+		if b := e.collaboration; b != nil && b.Child == nil {
+			if err := e.executionLeaseError(ctx); err != nil {
+				return state, err
+			}
+			charts = e.boundedChartDelivery(query, messages, state)
+			if charts != nil {
+				if b.HasInput != nil {
+					ready, err := b.HasInput(ctx)
+					if err != nil {
+						return state, err
+					}
+					if ready {
+						return state, fmt.Errorf("已收到补充要求，本轮未能完成更新后的回答。")
+					}
+				}
+				events, err := b.StopDelegation(ctx)
+				if err != nil {
+					return state, err
+				}
+				e.deliverCollaborationEvents(&messages, events, len(state.RoundSteps), false)
+				e.holdCollaborationAnswer = false
+			} else if e.collaborationOwnsFailure(ctx) {
+				return state, fmt.Errorf("本轮处理已达到上限，未能完成可交付的回答。")
+			}
 		}
-		if err := e.handleMaxIterations(ctx, query, state, sessionID, restoreForFinalAnswer(messages, guards)); err != nil {
+		if err := e.handleMaxIterations(ctx, query, state, sessionID, restoreForFinalAnswer(messages, guards), charts); err != nil {
 			return state, err
+		}
+		if charts != nil && state.IsComplete {
+			_, _ = e.collaboration.Runtime.Finish(e.collaboration.Context(ctx), e.collaboration.Scope, e.collaboration.Seen)
 		}
 	}
 
