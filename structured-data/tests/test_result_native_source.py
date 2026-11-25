@@ -1,7 +1,11 @@
 """Only an actual saved native binding may turn Excel results into doc refs."""
 import hashlib
 import json
+from zipfile import ZipFile
 
+import pytest
+
+from structured_data.snapshot_metadata import workbook_last_saved_at
 from structured_data.store import DataStore
 from structured_data.workspaces import Identity,current_identity
 
@@ -38,3 +42,29 @@ def test_result_source_uses_exact_native_binding_and_original_bytes(tmp_path):
         (imported/'review.json').write_text(json.dumps(review))
         assert 'knowledge_id' not in store.result_source(dataset)
     finally:current_identity.reset(token)
+
+
+@pytest.mark.parametrize(('modified', 'prefix'), [
+    (None, ''), ('<d:created>2024-05-06T01:02:03Z</d:created>', ''),
+    ('<modified>2024-05-06T01:02:03Z</modified>', ''),
+    ('<d:modified>2024-02-31T01:02:03Z</d:modified>', ''),
+    ('<d:modified>not a date</d:modified>', ''), ('<d:modified>', ''),
+    pytest.param('<d:modified>' + ' ' * 65536 + '</d:modified>', '', id='oversized-core'),
+    ('<d:modified>2024-05-06T01:02:03Z</d:modified>', '<?xml version="1.0" encoding="unknown-encoding"?>'),
+    ('<d:modified>&stamp;</d:modified>', '<!DOCTYPE coreProperties [<!ENTITY stamp "2024-05-06T01:02:03Z">]>'),
+])
+def test_optional_workbook_saved_at_requires_a_valid_core_property(tmp_path, modified, prefix):
+    source = tmp_path / 'source.xlsx'
+    with ZipFile(source, 'w') as archive:
+        archive.writestr('xl/workbook.xml', '<workbook/>')
+        if modified is not None:
+            archive.writestr('docProps/core.xml',
+                             prefix + '<coreProperties xmlns="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"'
+                             ' xmlns:d="http://purl.org/dc/terms/">' + modified + '</coreProperties>')
+    assert workbook_last_saved_at(source, hashlib.sha256(source.read_bytes()).hexdigest()) is None
+
+
+def test_optional_workbook_saved_at_ignores_a_non_zip_original(tmp_path):
+    source = tmp_path / 'source.xlsx'
+    source.write_bytes(b'invalid workbook bytes')
+    assert workbook_last_saved_at(source, hashlib.sha256(source.read_bytes()).hexdigest()) is None

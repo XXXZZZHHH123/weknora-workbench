@@ -89,7 +89,12 @@ func TestRuntimeDirectoryEscapesAndBoundsUntrustedContent(t *testing.T) {
 		}
 		require.NoError(t, err, "untrusted values must not break the directory envelope")
 	}
-	context := buildRuntimeContextBlock("session", kbs, nil, nil, nil, "")
+	context := buildRuntimeContextBlock("session", kbs, []*SelectedDocumentInfo{{KnowledgeID: "third-document", Title: "Selected file"}}, nil, nil, "")
+	require.Contains(t, context, `<recent_documents note="Recent navigation examples only.`)
+	require.Contains(t, context, `knowledge_id="doc" chunk_id="chunk"`)
+	require.Contains(t, context, `knowledge_id="doc2"`)
+	require.Contains(t, context, `<pinned_documents scope="authoritative_for_this_turn">`)
+	require.Contains(t, context, `<document knowledge_id="third-document" title="Selected file" />`)
 	require.NotContains(t, context, "<communication_instruction>")
 	require.NotContains(t, context, "<answer_instruction>")
 }

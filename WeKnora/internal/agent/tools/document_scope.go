@@ -506,7 +506,11 @@ func (t *SearchKnowledgeTool) documentCandidates(ctx context.Context, results []
 		navigationBudget -= cost
 		document["navigation_matches"] = append(matches, match)
 	}
-	data := map[string]any{"display_type": "document_info", "documents": documents, "query": query, "requires_source_scope": true, "notice": "这些是实际授权文档候选元数据，不是已核内容证据。navigation_matches 仅为真实检索命中的有界导航摘录，不可直接引用、计算或认定图表数值；请据此选择来源并 read_document 核对正文或原图。文件名/发布日期不等于内容的数据覆盖期，未读正文不能据此断言历史数据不存在。根据完整问题和上下文选择真实来源，歧义时澄清。可直接用 read_document 读取明确选择的文档ID，首次读取在同一调用核对真实文件身份和权限；已有来源计划不可被读取目标覆盖。比较或显式日期、用户页码限制使用 source_scope 或 bind_document_scope 声明完整范围，不得用其他报告的同名图替代。"}
+	data := map[string]any{"display_type": "document_info", "documents": documents, "query": query, "requires_source_scope": true,
+		"notice": "候选来自授权目录，navigation_matches 仅供定位。引用、计算或判断图表数值前，用 read_document 核对正文或原图。文件名和发布日期不能说明正文覆盖期。" +
+			"根据完整问题和上下文选源，遵守用户指定文件及页码。明确选定的单文件可按 ID 直接读取，同一文件内比较无需另绑。首次读取核对身份和权限，已有来源计划仍有效。" +
+			"按问题决定比较期次还是文件。按期比较时归组同期文件，分别核对同一事项的不同版本，同期只计一次。跨文件比较按需用授权目录补齐来源，首批各 read_document 携同一完整 source_scope，或在这批读取前先 bind_document_scope。显式来源日期证明和用户限页随来源计划提交。" +
+			"跨文件比较时逐份查正文的所问主题，按相关报告类别核对重复与更新。导航摘录、摘要或一次查询未见，只能说明已查范围。不得用其他报告的同名图替代。"}
 	encoded, _ := json.Marshal(data)
 	return &types.ToolResult{Success: true, Data: data, Output: string(encoded)}
 }

@@ -55,7 +55,7 @@ func TestStructuredResultImageReviewChecksBoundOCRAgainstVision(t *testing.T) {
 	require.Equal(t, annotation["text"], ocr["text"])
 	require.Equal(t, visual["reference"], ocr["reference"])
 	require.Equal(t, caption["text"], reviewAsMap(reviewAsMap(images[2])["content"])["text"])
-	require.Contains(t, model.calls[0][0].Content, "without silently choosing a reading")
+	require.Contains(t, model.calls[0][0].Content, "report any same-cell disagreement that remains unresolved")
 
 	sources := sourceResultMessagesFromSteps(state.RoundSteps)
 	canonicalImages, _ := documentImageConsistencySummariesWithSources(state, sources)

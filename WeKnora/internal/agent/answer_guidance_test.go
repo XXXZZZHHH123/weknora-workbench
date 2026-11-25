@@ -42,14 +42,16 @@ func TestStandardAnswerGuidanceReachesPlannerAndExecutionWithoutChangingUserScop
 			for _, prompt := range []string{model.requests[0][0].Content, model.calls[0][0].Content} {
 				if mode == "standard" {
 					require.Equal(t, 1, strings.Count(prompt, standardAnswerGuidance), "planner and executor share exactly the same practical policy")
-					require.Contains(t, prompt, "文件名措辞、上传顺序或数值接近程度不能证明权威或替代关系")
-					require.Contains(t, prompt, "并列呈现有依据的差异并明确无法确定哪版优先")
+					require.Regexp(t, `对象、方向和区间或时长.*当期观察、随后变化和预测.*摘要和明细沿用同一口径`, prompt)
+					require.Contains(t, prompt, "各自显示精度，区分百分比增幅和基期指数")
+					require.Contains(t, prompt, "实质分歧分别归属各版，只限定受影响的判断")
+					require.Contains(t, prompt, "保存时间不能充当观测期、正式发布日期或替代证据")
+					require.Regexp(t, `按被引原序列取数.*需要统计或说明覆盖时.*取自同一序列和范围`, prompt)
+					require.Contains(t, prompt, "未知单位按原值报告并说明未核到")
 					require.Contains(t, prompt, "字段或图题中的并列词可能是一个合并口径")
 					require.Contains(t, prompt, "用户明确只用某表、某文件或已发布结构化数据时必须遵守")
 					require.Contains(t, prompt, "不自行选择默认候选，也不因多候选就一律要求用户再选")
 					require.Contains(t, prompt, "保留原始有效数值与样本")
-					require.Contains(t, prompt, "未知单位就按原值报告且说明未核到，不补单位")
-					require.Contains(t, prompt, "按原问题比较已发现候选的实际覆盖")
 				} else {
 					require.NotContains(t, prompt, "<standard_answer_policy>", "strict and legacy prompts preserve their prior policy")
 				}
@@ -60,6 +62,7 @@ func TestStandardAnswerGuidanceReachesPlannerAndExecutionWithoutChangingUserScop
 			require.Contains(t, input["runtime_scope"], "<current_time>", "the clock remains available for actual relative-time questions")
 			require.Contains(t, input["runtime_scope"], "Chosen reference")
 			require.Contains(t, model.calls[0][1].Content, question)
+			require.Contains(t, model.calls[0][1].Content, "Chosen reference")
 			require.Equal(t, memory, engine.memoryPrompt, "the policy does not replace recalled memory")
 			require.Contains(t, model.calls[0][0].Content, memory)
 			require.Equal(t, []*SelectedDocumentInfo{document}, engine.selectedDocs)

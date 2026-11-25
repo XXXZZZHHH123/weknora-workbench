@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Tencent/WeKnora/internal/modelcontext"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/stretchr/testify/require"
@@ -316,6 +317,54 @@ func TestUnboundSearchProvidesNavigationOnlyThenExplicitPlanReadsActualPage(t *t
 	res, err = search.Execute(context.Background(), json.RawMessage(`{"query":"any report chart","document_ids":["doc-1"]}`))
 	require.NoError(t, err)
 	require.False(t, res.Success, "the shared boundary survives later search calls")
+}
+
+func TestUnboundSearchProjectsSamePeriodFilesAndComparisonGuidance(t *testing.T) {
+	read, _ := reportScopeFixture(t, "dispatch-a.pptx", "dispatch-b.pptx")
+	service := read.knowledgeService.(*readDocKnowledgeService)
+	index := &documentRecallIndex{keywordOnly: true}
+	hits := map[string]struct{ date, excerpt string }{
+		"report-a": {"2025-02-01", "Quarterly equipment review"},
+		"doc-1":    {"2025-03-01", "Warehouse update"},
+		"report-b": {"2025-02-01", "Terminal inspection"},
+	}
+	for i, id := range []string{"report-b", "doc-1", "report-a"} {
+		hit := hits[id]
+		service.docs[id].Metadata = types.JSON(`{"report_date":"` + hit.date + `"}`)
+		index.results = append(index.results, &types.SearchResult{ID: id + "-chunk", KnowledgeID: id, KnowledgeBaseID: "kb-1",
+			Content: hit.excerpt, Score: float64(i+1) / 4})
+	}
+	search := NewSearchKnowledgeTool(index, service, read.chunkService, read.searchTargets, nil, nil).WithDocumentConstraint(NewDocumentScopeState())
+	res, err := search.Execute(t.Context(), json.RawMessage(`{"query":"equipment updates","mode":"keyword"}`))
+	require.NoError(t, err)
+	require.True(t, res.Success, res.Error)
+	docs := res.Data["documents"].([]map[string]any)
+	require.Len(t, docs, 3)
+	model := modelcontext.NewRegistry(true)
+	projected := model.ModelToolResultForTool(ToolSearchKnowledge, res)
+	for _, row := range docs {
+		id := row["knowledge_id"].(string)
+		hit, ok := hits[id]
+		require.True(t, ok, "each candidate must have a distinct known ID: %s", id)
+		delete(hits, id)
+		doc := service.docs[id]
+		require.Equal(t, doc.FileName, row["file_name"])
+		require.Equal(t, map[string]any{"report_date": hit.date}, row["metadata"])
+		require.Equal(t, []map[string]any{{"navigation_only": true, "excerpt": hit.excerpt}}, row["navigation_matches"])
+		_, body, found := strings.Cut(projected, `<document id="`+model.RegisterDocument(id)+`"`)
+		require.True(t, found)
+		body, _, _ = strings.Cut(body, "</document>")
+		require.Contains(t, body, `<source_file_name>`+doc.FileName+`</source_file_name>`)
+		require.Contains(t, body, `<source_metadata>`+string(doc.Metadata)+`</source_metadata>`)
+		require.Contains(t, body, `<excerpt>`+hit.excerpt+`</excerpt>`)
+	}
+	require.Equal(t, 3, strings.Count(projected, `navigation_only="true" requires_read="true"`))
+	notice := res.Data["notice"].(string)
+	for _, guidance := range []string{"归组同期文件，分别核对", "首批各 read_document 携同一完整 source_scope",
+		"同一文件内比较无需另绑", "只能说明已查范围"} {
+		require.Contains(t, notice, guidance)
+	}
+	require.Contains(t, projected, "<hint>"+notice+"</hint>")
 }
 
 func TestVerifiedScopeIsPerTurnAndSupportsExplicitComparativePlans(t *testing.T) {

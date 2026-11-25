@@ -233,7 +233,7 @@ func formatKnowledgeBaseList(kbInfos []*KnowledgeBaseInfo) string {
 		}
 		writeKnowledgeBaseProfile(&b, kb.Profile)
 		if len(kb.RecentDocs) > 0 {
-			b.WriteString("<recent_documents>\n")
+			b.WriteString("<recent_documents note=\"Recent navigation examples only. The authorized directory may contain other relevant sources.\">\n")
 			for j, doc := range kb.RecentDocs {
 				if j >= 2 {
 					break

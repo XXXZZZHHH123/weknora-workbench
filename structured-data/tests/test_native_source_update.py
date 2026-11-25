@@ -1,5 +1,7 @@
 import hashlib
 from datetime import date
+import re
+from zipfile import ZipFile
 
 from openpyxl import Workbook
 import pytest
@@ -7,7 +9,13 @@ import pytest
 from structured_data.imports import ImportManager
 from structured_data.research_catalog import current_index, page
 from structured_data.research_facts import research_series_id
+from structured_data.table_analysis import analyze_table
 from structured_data.workspaces import Identity, current_identity
+
+
+ORIGINAL_SAVED_AT = '2024-10-01T13:14:15Z'
+UPDATED_SAVED_AT = '2025-03-04T16:17:18'
+SAVED_AT_FIELD = 'workbook_declared_last_saved_at'
 
 
 def write_workbook(path, *, append=False, change=False):
@@ -22,6 +30,17 @@ def write_workbook(path, *, append=False, change=False):
         if append:
             sheet.append([date(2025, 3, 3), 30 + index])
     workbook.save(path)
+    # openpyxl sets dcterms:modified during save, so set the fixture's declaration in the written package.
+    stamped = path.with_suffix('.stamped.xlsx')
+    stamp = (UPDATED_SAVED_AT if append else ORIGINAL_SAVED_AT).encode()
+    with ZipFile(path) as archive, ZipFile(stamped, 'w') as replacement:
+        for part in archive.infolist():
+            payload = archive.read(part)
+            if part.filename == 'docProps/core.xml':
+                payload = re.sub(rb'(<dcterms:modified\b[^>]*>)[^<]*(</dcterms:modified>)',
+                                 lambda match: match[1] + stamp + match[2], payload)
+            replacement.writestr(part, payload)
+    stamped.replace(path)
     return {'source_knowledge_id': 'original', 'knowledge_base_id': 'kb-a', 'tenant_id': 9,
             'file_name': path.name, 'file_size': path.stat().st_size,
             'file_hash': hashlib.md5(path.read_bytes()).hexdigest()}
@@ -71,8 +90,16 @@ def test_source_update_autopublishes_confirmed_templates_and_preserves_ids(versi
         old, current = fields[name], changed[name]
         assert current['series_id'] == old['series_id'] == research_series_id('kb-a', 'original', old['source_series_id'])
         assert current['last_valid_date'] == '2025-03-03' and current['valid_count'] == 3
-    rows = manager.store.query_series(result['dataset_id'], changed['Daily']['source_series_id'], order='asc')['rows']
-    assert [row['value'] for row in rows] == [10, 20, 30]
+    dataset = result['dataset_id']
+    series_id = changed['Daily']['source_series_id']
+    query = manager.store.query_series(dataset, series_id, order='asc')
+    assert [row['value'] for row in query['rows']] == [10, 20, 30]
+    assert query['source'][SAVED_AT_FIELD] == UPDATED_SAVED_AT
+    assert query['actual_last_date'] == '2025-03-03'
+    sql = analyze_table(manager.store, dataset, [series_id], 'SELECT MAX(date), SUM(value) FROM data')
+    assert sql['rows'] == [['2025-03-03', 60]]
+    assert sql['source'][SAVED_AT_FIELD] == UPDATED_SAVED_AT
+    assert sql['source']['sha256'] == query['source']['sha256']
 
 
 def test_changed_deleted_and_new_sheets_are_pending_with_last_published_fields(versioned):
@@ -97,7 +124,37 @@ def test_changed_deleted_and_new_sheets_are_pending_with_last_published_fields(v
         query = manager.store.query_series(result['dataset_id'], changed[name]['source_series_id'], operation='latest')
         assert query['source']['source_dataset_id'] == first['dataset_id']
         assert query['source']['file_hash'] == original['file_hash']
+        assert query['source'][SAVED_AT_FIELD] == ORIGINAL_SAVED_AT
         assert query['rows'][0]['date'] == '2025-03-02'
+    dataset = result['dataset_id']
+    for names, expected in [(('Revised',), 32), (('Daily', 'Revised'), 92)]:
+        sql = analyze_table(manager.store, dataset, [changed[name]['source_series_id'] for name in names],
+                            'SELECT SUM(value) FROM data')
+        assert sql['rows'] == [[expected]]
+        assert SAVED_AT_FIELD not in sql['source']
+        assert sql['source']['file_hash'] == updated['file_hash']
+        assert sql['source']['sha256'] == sql['result_contract']['source_snapshot']['source_sha256']
+
+
+@pytest.mark.parametrize('remove', [True, False])
+def test_queries_keep_values_when_the_snapshot_original_cannot_be_verified(versioned, remove):
+    manager, path, original, first = versioned
+    dataset = first['dataset_id']
+    fields, _ = research_catalog(manager, original)
+    series_id = fields['Daily']['source_series_id']
+    source = manager.store.datasets / dataset / 'source.xlsx'
+    assert manager.store.query_series(dataset, series_id)['source'][SAVED_AT_FIELD] == ORIGINAL_SAVED_AT
+    if remove:
+        source.unlink()
+    else:
+        write_workbook(path, append=True)
+        source.write_bytes(path.read_bytes())
+    query = manager.store.query_series(dataset, series_id, operation='sum')
+    assert query['aggregate'] == 30
+    assert SAVED_AT_FIELD not in query['source']
+    sql = analyze_table(manager.store, dataset, [series_id], 'SELECT SUM(value) FROM data')
+    assert sql['rows'] == [[30]]
+    assert SAVED_AT_FIELD not in sql['source']
 
 
 def test_publication_failure_keeps_verified_previous_research_snapshot(versioned, monkeypatch):
