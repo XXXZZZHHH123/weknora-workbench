@@ -11,8 +11,12 @@ const DocumentImageTextEvidenceKey = "image_text_evidence"
 
 const DocumentImageTextEvidenceNotice = "Image OCR supplies a word-for-word transcription made at ingestion, and can contain recognition errors. " +
 	"Image captions describe appearance and context. VLM observations are visual readings and may be estimates. " +
-	"For exact values in table images, use the source-bound image_ocr transcription as primary evidence. Match the requested row and column using the actual headers, alignment and units. " +
-	"If the OCR transcription and vision reading of the same cell conflict, recheck that location in the original image or explicitly report the unresolved conflict without silently choosing a reading. " +
+	"For exact values in table images, use the source-bound image_ocr transcription as primary evidence. " +
+	"Locate the cell using the actual headers, complete target row and units. " +
+	"Confirm that both readings refer to the same image and cell. " +
+	"Check for a value copied from a neighboring row or column before treating the readings as conflicting. " +
+	"Use clear, aligned evidence already supplied and explicitly report any same-cell disagreement " +
+	"that remains unresolved. " +
 	"A missing or unclear vision reading alone does not invalidate a source-bound transcription."
 
 type DocumentImageSource struct {

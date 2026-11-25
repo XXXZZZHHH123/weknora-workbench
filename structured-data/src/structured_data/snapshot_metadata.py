@@ -1,9 +1,15 @@
 """Bounded immutable-snapshot metadata cache; never an authorization cache."""
 from collections import OrderedDict
+from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
 import threading
+from xml.etree import ElementTree
+from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile
+from zlib import error as DeflateError
+
+from .sheet_view import SheetViewLimits, _preflight
 
 _lock = threading.RLock()
 _hashes = OrderedDict()
@@ -40,6 +46,40 @@ def hashes(path):
         while len(_hashes) > 4096:
             _hashes.popitem(last=False)
     return value
+
+
+class _CorePropertiesTree(ElementTree.TreeBuilder):
+    def doctype(self, *_):
+        raise ValueError('OOXML core properties cannot declare a DTD')
+
+
+def workbook_last_saved_at(path, sha256):
+    """Read the matching workbook's own OOXML dcterms:modified declaration."""
+    try:
+        key = identity(path)
+        _preflight(path, SheetViewLimits())
+        if hashes(path)[1] != sha256:
+            return None
+        with ZipFile(path) as workbook:
+            workbook.getinfo('xl/workbook.xml')
+            part = workbook.getinfo('docProps/core.xml')
+            if (part.compress_type not in (ZIP_STORED, ZIP_DEFLATED)
+                    or max(part.file_size, part.compress_size) > 64 * 1024):
+                return None
+            with workbook.open(part) as stream:
+                root = ElementTree.fromstring(stream.read(64 * 1024 + 1),
+                                              ElementTree.XMLParser(target=_CorePropertiesTree()))
+        if root.tag != '{http://schemas.openxmlformats.org/package/2006/metadata/core-properties}coreProperties':
+            return None
+        modified = root.findall('{http://purl.org/dc/terms/}modified')
+        if len(modified) != 1 or len(modified[0]) or identity(path) != key:
+            return None
+        stamp = (modified[0].text or '').strip()
+        if 10 <= len(stamp) <= 40 and (len(stamp) == 10 or stamp[10] == 'T'):
+            if datetime.fromisoformat(stamp).date().isoformat() == stamp[:10]:
+                return stamp
+    except (BadZipFile, DeflateError, ElementTree.ParseError, EOFError, LookupError, OSError, RuntimeError, ValueError):
+        return None
 
 
 def document(path):

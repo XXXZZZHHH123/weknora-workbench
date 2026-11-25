@@ -132,7 +132,10 @@ def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=
     dates = published_series_dates(series.values())
     if dates:
         result['source_semantics'] = {'published_series_dates': dates}
-    result.update(inputs=provenance,source=store.result_source(dataset_id,manifest),
+    # Retained sheets can come from older workbooks in the same dataset.
+    all_inputs_from_snapshot = all(store.sheet_source_dataset(dataset_id, s['sheet'], manifest=manifest) == dataset_id
+                                   for s in series.values())
+    result.update(inputs=provenance,source=store.result_source(dataset_id,manifest,include_workbook_saved_at=all_inputs_from_snapshot),
                 notice='inputs是装载到隔离表的范围，series.first_date/last_date是原列可用范围，不等于SQL筛选后实际统计范围。时间限制请优先用start_date/end_date传入；聚合需在SQL中返回used_first_date、used_last_date、used_count，以供核对实际使用记录。原文件没有声明指标可加性和统计年度定义，不能假定这些业务规则。SQL在上述全部输入上执行；输出行截断不等于计算输入截断。inputs日期是输入覆盖范围，极值日期必须来自SQL返回记录。单位与业务口径按原字段，不自动换算。data.metric和data.unit来自真实系列元数据，可直接选择或分组以保留业务名称和单位；CASE改写series_id不能证明业务标签。混合单位需要重新选择同单位真实字段分别查询；SQL条件本身不证明单位归属。')
 
     # Durable bounded result facts allow retrieval after context compaction.

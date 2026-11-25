@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -17,8 +18,8 @@ func TestReadDocumentBindsImageOCRAndCaptionToStoredAndOriginalPixels(t *testing
 	const table = "resource://AbCdEfGhIjKlMnOpQrStUv"
 	const neighbor = "resource://ZyXwVuTsRqPoNmLkJiHgFe"
 	for _, ocr := range []string{
-		"Batch\tIncoming\tRemaining\nAmber\t23.6\t91.7\nBlue\t18.2\t66.4",
-		"Batch\tRemaining\tIncoming\nAmber\t91.7\t23.6\nBlue\t66.4\t18.2",
+		"Batch\tOpening\tAdded\tClosing\nAmber\t23.6\t68.1\t91.7\nBlue\t91.7\t18.2\t109.9",
+		"Batch\tClosing\tAdded\tOpening\nAmber\t91.7\t68.1\t23.6\nBlue\t109.9\t18.2\t91.7",
 	} {
 		t.Run(strings.SplitN(ocr, "\n", 2)[0], func(t *testing.T) {
 			marshal := func(value any) json.RawMessage {
@@ -122,11 +123,18 @@ func TestReadDocumentBindsImageOCRAndCaptionToStoredAndOriginalPixels(t *testing
 					require.Equal(t, table, item.StoredRef)
 					require.Equal(t, storedDigest, item.StoredSHA256)
 				}
-				model := modelcontext.NewRegistry(true).ModelToolResultForTool(ToolReadDocument, read)
-				require.Contains(t, model, ocr)
+				registry := modelcontext.NewRegistry(true)
+				model := registry.ModelToolResultForTool(ToolReadDocument, read)
+				boundOCR := fmt.Sprintf("<ingested_image_text reference=%q chunk_id=%q "+
+					"page=\"3\" kind=\"image_ocr\" truncated=\"false\">\n%s\n</ingested_image_text>",
+					registry.CompactKnownText(image.Reference), registry.CompactKnownText(image.ChunkID), ocr)
+				require.Contains(t, model, boundOCR)
 				require.Contains(t, model, "VLM observations are visual readings and may be estimates")
-				require.Contains(t, model, "recheck that location in the original image or explicitly report the unresolved conflict")
+				require.Contains(t, model, "same image and cell")
+				require.Contains(t, model, "neighboring row or column")
+				require.Contains(t, model, "evidence already supplied")
 				require.NotContains(t, model, "900.0")
+				require.NotContains(t, model, "Other parent OCR")
 				require.NotContains(t, SanitizeToolDataForClient(ToolReadDocument, read.Data), types.DocumentImageTextEvidenceKey)
 				if image.Reference == table {
 					repo.children = repo.children[:len(repo.children)-1]
@@ -199,7 +207,6 @@ func TestReadDocumentPageBudgetsOCRBeforeOriginalImageAliases(t *testing.T) {
 	require.Equal(t, 1, strings.Count(model, firstOCR))
 	require.Contains(t, model, secondOCR)
 	require.Contains(t, model, "use the source-bound image_ocr transcription as primary evidence")
-	require.Contains(t, model, "recheck that location in the original image or explicitly report the unresolved conflict")
 	require.Contains(t, model, `"image_catalog":`)
 	require.Less(t, strings.Index(model, secondOCR), strings.Index(model, `"image_catalog":`))
 }

@@ -18,9 +18,9 @@ const (
 
 var listDocumentsTool = BaseTool{
 	name: ToolListDocuments,
-	description: "List the documents inside one knowledge base, newest first, with pagination and an optional " +
-		"title filter.\nUse it to see what a knowledge base contains or to find a document by name; each entry " +
-		"carries the doc://N handle that read_document accepts.",
+	description: "List documents in one knowledge base, most recently added first, with pagination and an optional title filter. " +
+		"For current conditions, locate the latest relevant report period in the requested scope and verify the observation date in its content. " +
+		"Each entry carries the doc://N handle that read_document accepts.",
 	schema: json.RawMessage(`{
   "type": "object",
   "properties": {

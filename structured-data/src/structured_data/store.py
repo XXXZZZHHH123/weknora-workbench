@@ -254,7 +254,7 @@ class DataStore:
             return binding
         return None
 
-    def result_source(self, dataset_id, manifest=None, **metadata):
+    def result_source(self, dataset_id, manifest=None, *, include_workbook_saved_at=True, **metadata):
         manifest=manifest or self.manifest(dataset_id)
         source_knowledge_id = None
         retained = False
@@ -277,6 +277,11 @@ class DataStore:
             result.update(knowledge_id=binding['source_knowledge_id'],
                 knowledge_base_id=binding['knowledge_base_id'],
                 knowledge_base_tenant_id=binding['tenant_id'],file_hash=binding['file_hash'].lower())
+        if include_workbook_saved_at:
+            from .snapshot_metadata import workbook_last_saved_at
+            saved_at = workbook_last_saved_at(self.datasets / dataset_id / 'source.xlsx', result['sha256'])
+            if saved_at is not None:
+                result['workbook_declared_last_saved_at'] = saved_at
         return result
 
     def sheet_source_dataset(self, dataset_id, sheet, *, manifest=None):
