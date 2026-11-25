@@ -1,5 +1,6 @@
 from copy import deepcopy
 from datetime import datetime
+from hashlib import sha256
 from pathlib import Path
 import json
 import re
@@ -46,6 +47,48 @@ def test_unit_row_and_multi_header_require_review(tmp_path):
     assert candidate(p)['status']=='needs_review'
 
 
+def test_header_notes_preserve_original_text_and_stay_out_of_identity(tmp_path):
+    note = '  Preliminary until audited.\nSee reporting instructions.  '
+    path = book(tmp_path, [['Date', note, None], [None, 'Amount', 'Quantity'],
+                           [None, '元/吨', '件'], [datetime(2023, 1, 1), 10, 2],
+                           [datetime(2023, 1, 2), 20, 4]])
+    mapping = candidate(path)['mapping']
+    legacy = parse_mapped_workbook(path, [mapping])
+    old_field = legacy['series'][0]
+    old_metric = f'{note.strip()} / Amount'
+    assert old_field['metric'] == old_metric
+    assert old_field['series_id'] == 'generic.' + sha256(f'prices|0|B|{old_metric}'.encode()).hexdigest()[:20]
+    assert 'header_notes' not in old_field['field_metadata']
+
+    corrected = deepcopy(mapping)
+    block = corrected['blocks'][0]
+    for item in block['columns']:
+        item['metric'] = {'B': 'Amount', 'C': 'Quantity'}[item['column']]
+        item['header_cells'].remove('B1')
+    without_notes = parse_mapped_workbook(path, [corrected])
+    block['header_note_cells'] = ['B1']
+    with_notes = parse_mapped_workbook(path, [corrected])
+    assert with_notes['observations'] == without_notes['observations']
+    for field, expected in zip(with_notes['series'], without_notes['series'], strict=True):
+        assert field['field_metadata'].pop('header_notes') == [{'cell': 'B1', 'text': note}]
+        assert field == expected
+    assert with_notes['series'][0]['series_id'] == 'generic.' + sha256(b'prices|0|B|Amount').hexdigest()[:20]
+    assert with_notes['series'][0]['field_metadata']['unit_evidence'] == [
+        {'sheet': 'prices', 'cell': 'B3', 'text': '元/吨'}]
+
+
+@pytest.mark.parametrize(('ref', 'message'), [('A2', '表头行'), ('Z1', '超出'), ('B1', '重叠'), ('C1', '非空')])
+def test_invalid_header_note_coordinates_are_rejected(tmp_path, ref, message):
+    path = book(tmp_path, [['Date', 'Amount', None], [datetime(2023, 1, 1), 10, 1],
+                           [datetime(2023, 1, 2), 20, 2]])
+    mapping = candidate(path)['mapping']
+    mapping['blocks'][0]['columns'].pop()
+    mapping['blocks'][0]['header_note_cells'] = [ref]
+    with pytest.raises(ValueError, match=message) as error:
+        parse_mapped_workbook(path, [mapping])
+    assert error.value.review_target['field'] == 'header_note_cells'
+
+
 @pytest.mark.parametrize('headers', [
     [['日期','金额(主力)']],
     [['日期','金额(亿元)'],[None,'万元']],
@@ -78,7 +121,7 @@ def test_late_nondate_blocks_entire_import(tmp_path):
     rows += [[datetime(2023,2,d),d] for d in range(1,20)]
     rows += [['合计',999]]
     p=book(tmp_path,rows);s=candidate(p);assert s['status']=='auto_ready'
-    with pytest.raises(ValueError,match='阻断整页'):parse_mapped_workbook(p,[s['mapping']])
+    with pytest.raises(ValueError,match='日期无效'):parse_mapped_workbook(p,[s['mapping']])
     m=deepcopy(s['mapping']);m['blocks'][0]['data_end_row']=len(rows)-1
     assert len(parse_mapped_workbook(p,[m])['observations'])==47
 

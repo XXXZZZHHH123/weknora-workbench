@@ -1,19 +1,55 @@
 {% extends "base.html" %}
-{% block title %}原表图表导入 · 商品研究{% endblock %}
+{% block title %}导入图表 · 商品研究{% endblock %}
 {% block main %}
 {% include "_chart_assets.html" %}
+{% set library_url = research_url('/sn/indicators?tab=charts') ~ ('&date=' ~ (chart_page.date | urlencode) if chart_page.date else '') %}
 <div class="charts-page" data-charts-page="import">
-  <header class="charts-header"><div><a class="charts-muted" href="{{ research_url('/sn/indicators?tab=charts') }}{% if chart_page.date %}&amp;date={{ chart_page.date | urlencode }}{% endif %}">返回图表库</a><h1>从原表导入图表</h1><p class="charts-muted">按工作表核对周期、曲线和缺失原因，确认后保存为共享图表。</p></div></header>
+  <header class="charts-header"><div>
+    <a class="charts-muted" href="{{ library_url }}">返回图表库</a>
+    <h1>导入图表</h1>
+    <p id="chart-import-native-intro" class="charts-muted">请核对每张工作表中的图表和数据。导入后，研究台成员可以在图表库查看。</p>
+    <p id="chart-import-report-intro" class="charts-muted" hidden>沿用旧报告的图表样式，用所选指标的最新数据重新绘制。请核对每条图例对应的指标和预览效果，再确认导入。</p>
+  </div></header>
   {% if not chart_page.enabled %}<p class="charts-notice error" role="alert">{{ chart_page.reason }}</p>{% else %}
+  <div class="indicator-tabs" role="tablist" aria-label="图表导入来源">
+    <button type="button" role="tab" id="chart-import-tab-native" data-chart-import-source="native" aria-selected="true" aria-controls="native-chart-import">原表（Excel）</button>
+    <button type="button" role="tab" id="chart-import-tab-report" data-chart-import-source="report" aria-selected="false" aria-controls="report-chart-import" tabindex="-1">往期周报（PPT / PDF）</button>
+  </div>
   {% if not chart_page.can_write %}<p class="charts-notice" id="chart-write-reason">{{ chart_page.write_reason }}</p>{% endif %}
-  <div id="chart-import-status" role="status" hidden></div><p id="chart-import-progress" class="charts-muted"></p>
-  <div id="chart-import-sheets"></div>
-  <div class="charts-toolbar"><button type="button" id="chart-import-more" class="charts-button" hidden>加载更多预览</button><button type="button" id="chart-import-apply" class="charts-button primary" disabled>确认导入所选工作表</button></div>
-  <p id="chart-import-hint" class="charts-muted">请先加载全部预览，核对后按工作表勾选。</p>
-  <div id="chart-import-result" role="status" hidden></div>
-  <details id="report-chart-import" class="charts-panel">
-    <summary>从往期周报导入常用图</summary>
-    <p class="charts-muted">沿用旧报告的图表样式，用所选指标重新绘制。请核对每条图例对应的指标和预览效果，再确认导入。</p>
+  <section id="native-chart-import" role="tabpanel" aria-labelledby="chart-import-tab-native">
+    <div id="chart-import-status" role="status" hidden></div>
+    <p id="chart-import-progress" class="charts-muted"></p>
+    <div class="charts-toolbar">
+      <button type="button" id="chart-import-more" class="charts-button" hidden>加载更多预览</button>
+      <button type="button" id="chart-import-apply" class="charts-button" disabled>确认导入所选工作表</button>
+      <button type="button" id="chart-import-all" class="charts-button primary" disabled>全部导入</button>
+    </div>
+    <p id="chart-import-hint" class="charts-muted">按工作表导入前，请加载全部预览并勾选要导入的工作表。</p>
+    <div id="chart-import-result" role="status" hidden></div>
+    <div id="chart-import-all-panel" class="charts-panel" hidden>
+      <p id="chart-import-all-progress" role="status"></p>
+      <button type="button" id="chart-import-all-cancel" class="charts-button" hidden>取消全部导入</button>
+      <p id="chart-import-all-result" role="status" hidden></p>
+      <details id="chart-import-all-details" class="charts-import-unavailable" hidden>
+        <summary id="chart-import-all-details-summary"></summary>
+        <ul id="chart-import-all-reasons"></ul>
+      </details>
+      <a id="chart-import-all-library" class="charts-button" href="{{ library_url }}" hidden>去图表库查看</a>
+    </div>
+    <div id="chart-import-sheets"></div>
+    <dialog id="chart-import-all-dialog" class="charts-page chart-builder charts-import-dialog" aria-labelledby="chart-import-all-title" aria-describedby="chart-import-all-description">
+      <form id="chart-import-all-form">
+        <h2 id="chart-import-all-title">确认导入全部原表图表</h2>
+        <p id="chart-import-all-description">将导入所有能绘制的原表图，跳过已导入的图，并列出无法导入的原因。曲线缺少单位等提示可在图表库继续核对。</p>
+        <div class="charts-toolbar">
+          <button type="button" id="chart-import-all-dismiss" class="charts-button" autofocus>取消</button>
+          <button type="submit" class="charts-button primary">确认全部导入</button>
+        </div>
+      </form>
+    </dialog>
+  </section>
+  <section id="report-chart-import" class="charts-panel" role="tabpanel" aria-labelledby="chart-import-tab-report" hidden>
+    <h2>从往期周报导入常用图</h2>
     <div class="charts-fields">
       <label class="charts-field">查找周报<input type="search" id="report-chart-search" maxlength="200" placeholder="按文件名查找" {% if not chart_page.can_write %}disabled{% endif %}></label>
       <label class="charts-field">已授权周报（PPTX / PDF）<select id="report-chart-file" {% if not chart_page.can_write %}disabled{% endif %}><option value="">请选择周报</option></select></label>
@@ -22,14 +58,23 @@
     </div>
     <button type="button" id="report-chart-more" class="charts-button" hidden>加载更多周报</button>
     <button type="button" id="report-chart-recognize" class="charts-button" disabled>识别周报中的图表</button>
+    <button type="button" id="report-chart-restore" class="charts-button" hidden>查看后台识别结果</button>
     <div id="report-chart-status" role="status" aria-live="polite" hidden></div>
     {% if can_view_diagnostics is defined and can_view_diagnostics() %}<details id="report-chart-diagnostics" hidden><summary>管理员诊断信息</summary><pre></pre></details>{% endif %}
-    <p id="report-chart-progress" class="charts-muted" aria-live="polite"></p>
     <div id="report-chart-failures" class="charts-notice warning" hidden></div>
+    <div id="report-chart-toolbar">
+      <p id="report-chart-progress" class="charts-muted" aria-live="polite"></p>
+      <div class="charts-toolbar">
+        <span id="report-chart-selection" class="charts-muted" aria-live="polite"></span>
+        <div class="report-chart-actions">
+          <button type="button" id="report-chart-rematch" class="charts-button" hidden>重新匹配未对上的图</button>
+          <button type="button" id="report-chart-apply" class="charts-button primary" disabled>导入所选</button>
+        </div>
+      </div>
+      <div id="report-chart-result" role="status" hidden></div>
+    </div>
     <div id="report-chart-cards"></div>
-    <div class="charts-toolbar"><span id="report-chart-selection" class="charts-muted"></span><button type="button" id="report-chart-apply" class="charts-button primary" disabled>导入所选</button></div>
-    <div id="report-chart-result" role="status" hidden></div>
-  </details>
+  </section>
   {% endif %}
 </div>
 <script type="application/json" id="chart-page-config">{{ chart_page | tojson }}</script>

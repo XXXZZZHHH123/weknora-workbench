@@ -82,8 +82,11 @@ def test_warning_acknowledgement_cannot_be_forged_or_reused_for_another_revision
 
 
 def test_rebinding_reports_known_unit_difference_and_warning_does_not_fix_invalid_numbers(generator, monkeypatch):
-    client, headers, _, response, _ = generator
+    client, headers, upstream, response, _ = generator
     other = 'synthetic-other-unit'
+    # Keep the test focused on source-number validation after the binding warning.
+    upstream.update(bounded_spec_metadata={'series_id': other, 'unit': 'kg', 'metric': 'Other quantity'},
+        value=20000)
     original = generation.snapshot
     def snapshot(*args, **kwargs):
         state = original(*args, **kwargs)
@@ -91,7 +94,9 @@ def test_rebinding_reports_known_unit_difference_and_warning_does_not_fix_invali
         return state
     monkeypatch.setattr(generation, 'snapshot', snapshot)
     response['judgment']['thresholds'][0]['value'] = 99999
-    preview = generate(client, headers).json()
+    generated = generate(client, headers)
+    assert generated.status_code == 200, generated.text
+    preview = generated.json()
     item = pick(preview, 'thresholds')
     warning_response = update(client, headers, preview, item, series_id=other)
     assert warning_response.status_code == 422
@@ -100,7 +105,8 @@ def test_rebinding_reports_known_unit_difference_and_warning_does_not_fix_invali
     assert '吨' in warning['message'] and 'kg' in warning['message']
     attempted = update(client, headers, preview, item, series_id=other,
         binding_warning_token=warning['confirmation_token'])
-    assert attempted.status_code == 422 and attempted.json()['detail'].get('code') != 'binding_warning'
+    assert attempted.status_code == 422, attempted.text
+    assert attempted.json()['detail']['code'] == 'number_review'
     assert rows() == []
 
 

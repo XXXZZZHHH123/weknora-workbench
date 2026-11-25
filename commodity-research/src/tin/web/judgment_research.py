@@ -1,17 +1,18 @@
 """A read-only research comparison over the selected saved judgment."""
-from copy import deepcopy
 import math
+from collections import defaultdict
+from copy import deepcopy
 
 from fastapi import HTTPException
 
 from tin.compute.rule_values import decimal_difference, decimal_value
 from tin.compute.signals import recent_points, _falsifier_signal, _transient_signals
 from tin.config import SHANGHAI
+from tin.integration.observation_windows import UNDATED_RULE_NOTE, UNDATED_RULE_STATE
 from tin.judgments.service import _refs, to_payload
 from tin.models import Indicator
 from tin.schemas.judgment import EXPRESSION, binding_ids
-from tin.web.judgment_dimension_view import dimension_name
-from tin.web.report_watch import watch_items
+from tin.web.judgment_dimension_view import dimension_name, pending_note_entries
 from tin.web.research_display import condition_text, human_text
 
 
@@ -90,8 +91,9 @@ def _metric(session, identifier, day, count=24):
     indicator = session.get(Indicator, identifier)
     if type(count) is not int or not 1 <= count <= 121:
         raise HTTPException(400, '图表观测范围无效')
-    rows = recent_points(session, identifier, day, count) if indicator is not None and day is not None else []
-    result = metric_from_rows(indicator, rows, identifier=identifier, limit=count)
+    undated = identifier in session.info.get('knowledge_facts_undated_series_ids', ())
+    rows = recent_points(session, identifier, day, count) if indicator is not None and day is not None and not undated else []
+    result = metric_from_rows(indicator, rows, identifier=identifier, limit=count, undated=undated)
     from tin.web.number_format import observation_decimals
     digits = observation_decimals(session, identifier, result.get('date'), result)
     if digits is not None:
@@ -102,7 +104,7 @@ def _metric(session, identifier, day, count=24):
     return result
 
 
-def metric_from_rows(indicator, rows, *, identifier=None, limit=24):
+def metric_from_rows(indicator, rows, *, identifier=None, limit=24, undated=False):
     if type(limit) is not int or not 1 <= limit <= 121 or len(rows) > limit:
         raise HTTPException(400, '图表观测范围无效')
     identifier = identifier or (indicator.series_id if indicator is not None else '')
@@ -116,6 +118,7 @@ def metric_from_rows(indicator, rows, *, identifier=None, limit=24):
     name = human_text(indicator.name) if indicator is not None else ''
     return {'series_id': identifier, 'name': name or '指标名称待核对',
         'unit': indicator.unit if indicator is not None else '',
+        **({'undated': True} if undated else {}),
         **({'display_decimals': digits} if digits is not None else {}),
         'latest': latest.value if latest is not None else None,
         'previous': previous.value if previous is not None else None,
@@ -183,9 +186,12 @@ def _falsifier(session, judgment, rule, day, metric):
     except ValueError:
         unit = None
         caliber_conflict = True
-    rows = recent_points(session, rule['series_id'], day, need) if indicator is not None and day is not None else []
+    undated = metric.get('undated', False)
+    rows = recent_points(session, rule['series_id'], day, need) if indicator is not None and day is not None and not undated else []
     missing = None
-    if day is None:
+    if undated:
+        missing = UNDATED_RULE_NOTE
+    elif day is None:
         missing = '暂无可用观测日期。'
     elif indicator is None:
         missing = '尚无可读指标数据。'
@@ -204,11 +210,15 @@ def _falsifier(session, judgment, rule, day, metric):
         except (ValueError, TypeError, ArithmeticError):
             missing = '已保存条件需核对，暂不能判定。'
     condition = condition_text(rule['expression']).replace('较上一期变化', '较上一数据点变化')
+    from tin.judgments.quantity_alignment import conversion_text
+    if converted := conversion_text(rule):
+        condition = condition.removesuffix(match[3]) + converted
     if rule.get('unit_confirmed'):
         condition += ' ' + rule['unit_confirmed']
     if periods > 1:
         condition += f'，连续 {periods} 期'
-    return {'rule': deepcopy(rule), 'state': signal.state if signal is not None else '数据缺失',
+    state = UNDATED_RULE_STATE if undated else signal.state if signal is not None else '数据缺失'
+    return {'rule': deepcopy(rule), 'state': state,
         'current_value': signal.current_value if signal is not None else None,
         'condition': condition, 'gap_note': missing, 'metric': metric}
 
@@ -226,6 +236,21 @@ def _item_view(item, metrics, names, dimensions):
         'metrics': [metrics[identifier] for identifier in identifiers if identifier in metrics]}
 
 
+def _merge_equal_evidence(item):
+    primary = item['metric']
+    if not primary or not primary['point_count']:
+        return
+    displayed, same_value = [primary], []
+    for related in item['metrics'][1:]:
+        if related['timeline'] == primary['timeline']:
+            same_value.append(related['name'])
+        else:
+            displayed.append(related)
+    if same_value:
+        item['metrics'] = displayed
+        item['same_value_sources'] = same_value
+
+
 def judgment_research_view(session, judgment, day):
     sides = {side: {'claim': '', 'evidence': [], 'falsifiers': []} for side in ('bull', 'bear')}
     counts = {'bound': 0, 'available': 0, 'thresholds': 0, 'falsifiers': 0, 'triggered': 0, 'pending': 0}
@@ -233,14 +258,28 @@ def judgment_research_view(session, judgment, day):
     if judgment is None:
         return result
     from tin.web.research_dimensions import default_dimensions, read_dimensions, summaries
+    from tin.integration.workbench_scope import current_workbench
     dimensions = read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()
     result['dimensions'] = summaries(dimensions)
+    scope = current_workbench.get()
+    if scope is not None and scope.scope_version == 2 and 'indicators' in scope.view_modules:
+        result['dimension_series'] = [item['id'] for dimension in dimensions
+            for section in dimension.get('sections', []) for item in section.get('items', [])
+            if item['kind'] == 'indicator']
     payload = to_payload(judgment)
+    notes_by_rule = defaultdict(list)
+    pending_notes = []
+    for index, note, condition, target in pending_note_entries(payload):
+        if target:
+            notes_by_rule[target].append(note.text)
+        else:
+            pending_notes.append((index, note, condition))
     wanted = _windows(payload)
     with session.no_autoflush:
         metrics = {identifier: _metric(session, identifier, day, wanted[identifier]) for identifier in wanted}
         for identifier, metric in metrics.items():
-            metric['boundaries'] = metric_boundaries(payload, identifier)
+            if not metric.get('undated'):
+                metric['boundaries'] = metric_boundaries(payload, identifier)
         names = {identifier: metric['name'] for identifier, metric in metrics.items()}
         references = {side: set() for side in sides}
         marker = _transient_signals.set(True)
@@ -250,6 +289,7 @@ def judgment_research_view(session, judgment, day):
                 view['claim'] = human_text(original.claim, names)
                 for evidence in original.evidence:
                     item = _item_view(evidence, metrics, names, dimensions)
+                    _merge_equal_evidence(item)
                     item['note'] = human_text(evidence.note, names)
                     view['evidence'].append(item)
                     references[side].update(item['series_ids'])
@@ -260,6 +300,7 @@ def judgment_research_view(session, judgment, day):
                     value['rule']['desc'] = human_text(value['rule']['desc'], names)
                     value.update(_dimension_tag(rule, dimensions))
                     value['metrics'] = [metrics[identifier] for identifier in binding_ids(rule)]
+                    value['review_notes'] = notes_by_rule.get(('falsifier', rule.id), [])
                     view['falsifiers'].append(value)
                     references[side].add(rule.series_id)
         finally:
@@ -275,19 +316,17 @@ def judgment_research_view(session, judgment, day):
                for side in sides},
             **{side + '_falsifiers': [item for item in sides[side]['falsifiers'] if item['rule']['series_id'] == identifier]
                for side in sides}})
-    pending = []
-    for note in payload.unstructured:
-        for item in watch_items({'unstructured': [note.model_dump(mode='json')]}):
-            if item['kind'] == 'observation':
-                pending.append({**item, 'text': human_text(item['text'], names),
-                    'metrics': [metrics[identifier] for identifier in binding_ids(note)]})
-    from tin.web.report_watch import without_aggregates
-    pending = without_aggregates(pending)
+    pending = [{'kind': 'observation', 'text': human_text(condition, names), 'note_text': human_text(note.text, names),
+                'anchor': f'judgment-note-{index}', 'requires_manual_observation': True,
+                'metrics': [metrics[identifier] for identifier in binding_ids(note)]}
+               for index, note, condition in pending_notes]
     counts.update(bound=len(metrics), available=sum(metric['latest'] is not None for metric in metrics.values()),
         thresholds=len(payload.thresholds), falsifiers=len(payload.falsifiers),
         triggered=sum(item['state'] == '触发' for side in sides.values() for item in side['falsifiers']),
         pending=len(pending))
     result.update(metrics=metrics, shared=shared, pending_conditions=pending,
+        threshold_notes={identifier: notes for (kind, identifier), notes in notes_by_rule.items()
+            if kind == 'threshold'},
         threshold_dimensions={rule.id: dimension_name(rule.dimension, dimensions)
             for rule in payload.thresholds if rule.dimension},
         marginal_focus=[_item_view(item, metrics, names, dimensions) for item in payload.marginal_focus],

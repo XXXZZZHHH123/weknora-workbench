@@ -9,6 +9,8 @@ import tempfile
 import re
 import duckdb
 
+from .store import published_series_dates
+
 MAX_INPUT_ROWS = 50000
 
 
@@ -104,6 +106,11 @@ def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=
             from .sql_result_operations import describe_sql_operations
             operations=describe_sql_operations(con,sql,len(columns))
             dependencies,dependency_verified=describe_excel_dependencies(con,sql,source_columns,len(columns))
+            # Keep the proof in extensible operation metadata so the existing
+            # result-contract schema still decodes on older Go consumers.
+            for operation, dependency in zip(operations, dependencies):
+                if direct_column := dependency.pop('direct_source_column', None):
+                    operation['direct_source_column'] = direct_column
         except duckdb.Error as exc:
             raise AnalysisSQLError(exc, 'execute') from None
         finally:timer.cancel()
@@ -119,8 +126,13 @@ def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=
     values=encode(rows[:limit])
     if len(json.dumps(values,ensure_ascii=False))>100000:raise ValueError('结果超过展示预算，请聚合或减少输出列；未展示截断数值')
     result=dict(kind='structured_analysis',status='ok',dataset_id=dataset_id,sql=sql,columns=columns,rows=values,
-                output_truncated=len(rows)>limit,returned_row_count=len(values),input_complete=True,input_count=n,requested_range={'start_date':start_date,'end_date':end_date},
-                inputs=provenance,source=store.result_source(dataset_id,manifest),
+                output_truncated=len(rows)>limit,returned_row_count=len(values),input_complete=True,input_count=n,requested_range={'start_date':start_date,'end_date':end_date})
+    # SQL can specify the target date itself or project away the value column.
+    # Keep these full-field facts independent of input filters and SQL output.
+    dates = published_series_dates(series.values())
+    if dates:
+        result['source_semantics'] = {'published_series_dates': dates}
+    result.update(inputs=provenance,source=store.result_source(dataset_id,manifest),
                 notice='inputs是装载到隔离表的范围，series.first_date/last_date是原列可用范围，不等于SQL筛选后实际统计范围。时间限制请优先用start_date/end_date传入；聚合需在SQL中返回used_first_date、used_last_date、used_count，以供核对实际使用记录。原文件没有声明指标可加性和统计年度定义，不能假定这些业务规则。SQL在上述全部输入上执行；输出行截断不等于计算输入截断。inputs日期是输入覆盖范围，极值日期必须来自SQL返回记录。单位与业务口径按原字段，不自动换算。data.metric和data.unit来自真实系列元数据，可直接选择或分组以保留业务名称和单位；CASE改写series_id不能证明业务标签。混合单位需要重新选择同单位真实字段分别查询；SQL条件本身不证明单位归属。')
 
     # Durable bounded result facts allow retrieval after context compaction.

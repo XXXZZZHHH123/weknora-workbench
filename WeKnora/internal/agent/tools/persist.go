@@ -9,7 +9,7 @@ import (
 
 // persistStripFields lists bulky Data keys to drop before SSE replay / DB storage.
 var persistStripFields = map[string][]string{
-	"knowledge_chunks_list": {"chunks"},
+	"knowledge_chunks_list": {"chunks", types.DocumentImageTextEvidenceKey},
 	"grep_results":          {"chunk_results"},
 }
 

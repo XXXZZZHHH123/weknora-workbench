@@ -346,6 +346,25 @@ func TestDurableDocumentTitleSurvivesCompactedToolMessages(t *testing.T) {
 	require.Contains(t, ungroundedStructuredNumbers("来源棉花周报20240310(2).pptx。", messages, []types.AgentStep{step}), "20240310")
 }
 
+func TestDocumentFilenameStemDoesNotMatchAnInventedVersion(t *testing.T) {
+	messages := []chat.Message{{Role: "tool", Content: `{"rows":[[775]]}`}}
+	steps := []types.AgentStep{{ToolCalls: []types.ToolCall{{
+		Name: "provider_alias", Target: &types.ToolCallTarget{Name: "read_document"},
+		Result: &types.ToolResult{Success: true, Data: map[string]any{
+			"knowledge_id": "weekly", "document": map[string]any{"file_name": "棉花周报20240331.pptx"},
+		}},
+	}}}}
+	require.Empty(t, ungroundedStructuredNumbers("棉花周报20240331，数值775。", messages, steps))
+	for _, answer := range []string{"棉花周报20240331-另一版.pptx", "棉花周报20240331.pdf", "合计20240331。"} {
+		require.Contains(t, ungroundedStructuredNumbers(answer, messages, steps), "20240331")
+	}
+	const invented = "棉花周报20240331-另一版.pptx"
+	marked, count, ok := annotateUnverifiedNumbers(invented, ungroundedStructuredNumberOccurrences(invented, messages, steps))
+	require.True(t, ok)
+	require.Equal(t, 1, count)
+	require.Equal(t, invented+unverifiedNumberMarker, marked)
+}
+
 func TestCalendarDateMaskPreservesInvalidAndVersionLiteralsExactly(t *testing.T) {
 	for _, value := range []string{"2024.2.30", "2023年2月29日", "2024-2/29", "v2024.3.31", "2024.3.31.2", "2024-3-31-2", "2024-13", "13月40日", "54.96", "\x010\x02"} {
 		require.Equal(t, value, maskValidatedCalendarDates(value))

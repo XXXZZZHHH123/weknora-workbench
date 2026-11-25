@@ -377,19 +377,55 @@ func TestStructuredResultReviewCorrectionIsTheOnlyFinalStreamAndStoredAnswer(t *
 }
 
 func TestStructuredResultReviewExecuteLoopWithLargeRuntimePrompt(t *testing.T) {
-	for _, outcome := range []string{"keep", "correct", "unavailable"} {
+	for _, outcome := range []string{"keep", "correct", "delete_last_paragraph", "unchanged_correction", "empty_correction", "citation_only", "truncated", "unavailable"} {
 		t.Run(outcome, func(t *testing.T) {
-			const original = "The observation is 12.500."
+			const core = "The observation is 12.500."
+			const extra = "This holds for every observation."
 			const correction = "The observation is 12.500 kg."
+			original, expected := core, core
 			review := lightReviewReply("keep", "")
-			expected := original
-			if outcome == "correct" {
+			status := "kept"
+			switch outcome {
+			case "correct":
 				review, expected = lightReviewEdits(structuredResultEdit{"12.500.", "12.500 kg."}), correction
-			}
-			if outcome == "unavailable" {
+				status = "corrected"
+			case "delete_last_paragraph":
+				original += "\n\n" + extra
+				review = lightReviewEdits(structuredResultEdit{extra, ""})
+				status = "corrected"
+			case "unchanged_correction":
+				review = lightReviewEdits(structuredResultEdit{core, core + "\n"})
+				status = "not_checked_invalid_correction"
+			case "empty_correction":
+				review = lightReviewEdits(structuredResultEdit{core, " \n"})
+				status = "not_checked_invalid_correction"
+			case "citation_only":
+				status = "not_checked_invalid_correction"
+			case "truncated":
+				review = lightReviewEdits(structuredResultEdit{"12.500.", "12.500 kg."})
+				review.chunks[0].FinishReason = "length"
+				status = "not_checked_response"
+			case "unavailable":
 				review = chatAnswer(`{"action":`)
+				status = "not_checked_response"
 			}
 			e, state, model := lightStructuredFixture(t, chatAnswer(original), review)
+			wantCalls := 2
+			if outcome == "empty_correction" {
+				// The bounded protocol repair supplies no usable correction either.
+				model.responses = append(model.responses, chatAnswer(""))
+				wantCalls++
+			}
+			if outcome == "citation_only" {
+				e.currentStructuredCitationView(state.RoundSteps[0].ToolCalls[0])
+				id, _ := selectRawCitation(t, e, 1, 1)
+				handle := e.modelContext.CitableEvidenceHandle(id)
+				require.NotEmpty(t, handle)
+				tag := `<evidence evidence_id="` + handle + `" />`
+				expected = e.modelContext.DecodeOutputText(core + tag)
+				model.responses[0] = chatAnswer(core + tag)
+				model.responses[1] = lightReviewEdits(structuredResultEdit{core, ""})
+			}
 			// Native tools attach this typed transport witness after the service
 			// response was parsed. Validation must not turn it into a generic map:
 			// changed JSON field ordering would invalidate the source identity.
@@ -411,9 +447,9 @@ func TestStructuredResultReviewExecuteLoopWithLargeRuntimePrompt(t *testing.T) {
 			_, err := e.executeLoop(t.Context(), state, "Report the observation.", messages, emptyTools(), "s", "m")
 			require.NoError(t, err)
 			require.Equal(t, originalEvidence, reviewDigest(e.sourceConsistencyMessages(state, nil)), "checking must preserve the exact native execution witness")
-			t.Logf("candidate_identity=%v task_identity=%v evidence_identity=%v policy_identity=%v status=%s", e.turnReview.Last.CandidateHash == candidateTextDigest(expected), e.turnReview.Last.TaskHash == e.candidateTaskDigest(e.turnReview.Query, e.turnReview.TaskConversation), e.turnReview.Last.EvidenceHash == reviewDigest(e.sourceConsistencyMessages(state, e.turnReview.Conversation)), e.turnReview.Last.StructuredResultReview == e.structuredResultReviewEnabled(), e.turnReview.Last.StructuredResultReviewStatus)
+			require.Equal(t, status, e.turnReview.Last.StructuredResultReviewStatus)
 			require.Equal(t, expected, state.FinalAnswer)
-			require.Equal(t, 2, len(model.calls))
+			require.Len(t, model.calls, wantCalls)
 			require.NotContains(t, model.calls[1][1].Content, "Runtime protocol.")
 			require.LessOrEqual(t, len(model.calls[1][1].Content), structuredResultReviewInputBytes)
 			require.True(t, e.candidateApprovalCurrent(expected, state))

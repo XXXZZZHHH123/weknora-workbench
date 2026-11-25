@@ -5,17 +5,18 @@ import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import { computed, effectScope, nextTick, reactive, ref, watch } from 'vue'
 import { createIsolatedResearchClient } from '../../api/isolatedResearch'
+import { buildSourceFileUploads, findSourceFileVersionChoices, sourceFileVersionConflict } from '../knowledge/sourceFileVersion'
 
 const source = readFileSync(new URL('./IsolatedResearchWorkbench.vue', import.meta.url), 'utf8')
 const script = source.split('<script setup lang="ts">')[1]!.split('</script>')[0]!.replace(/^import .*$/gm, '')
-const code = ts.transpileModule(`${script}\n;({ overview, loading, busy, guideSaving, guideError, sources, sourceTotal, sourcePage, drawerOpen, drawer, drawerError, error, pendingFiles, guide, selectFiles, enqueueFiles, sourceStatus, isWorkbook, openSources, openReview, openKnowledgeBase, openStructured, showSource, selectedSource, sourceContent, sourceContentLoading, saveVisualOriginals, moreSources, filesChanged, load })`, {
+const code = ts.transpileModule(`${script}\n;({ overview, loading, busy, guideSaving, guideError, sources, sourceTotal, sourcePage, drawerOpen, drawer, drawerError, error, pendingFiles, uploadVersionChoices, guide, selectFiles, enqueueFiles, sourceStatus, sourceVersionTime, isWorkbook, openSources, openReview, openKnowledgeBase, openStructured, showSource, selectedSource, sourceContent, sourceContentLoading, saveVisualOriginals, moreSources, filesChanged, load })`, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText
 const tick = () => new Promise(setImmediate)
 const ready = async () => { await nextTick(); await tick() }
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value))
 type Extra = (path: string, options?: RequestInit) => Response | Promise<Response> | undefined
-function fixture(extra?: Extra, mode: 'legacy' | 'isolated' = 'isolated', save?: (id: string, input: any) => Promise<any>, overrides: Record<string, unknown> = {}) {
+function fixture(extra?: Extra, mode: 'legacy' | 'isolated' = 'isolated', save?: (id: string, input: any) => Promise<any>, overrides: Record<string, unknown> = {}, matchingFiles: Array<{ id: string; file_name: string }> = []) {
   const props = reactive({ workbench: { id: 'fresh-workbench', knowledge_base_id: 'fresh-kb', workspace_mode: mode, template_id: 'industrial', name: 'Test-only workspace', onboarding: { status: 'active', tasks: { sources: false, review: false, research: false } }, ...overrides } })
   const auth = reactive({ token: 'test-token', selectedTenantId: 'test-tenant', user: { id: 'test-user' } })
   const calls: Array<{ url: string; method: string; headers: Headers }> = [], guides: any[] = [], batches: any[] = [], emits: any[] = [], routes: any[] = []
@@ -36,7 +37,13 @@ function fixture(extra?: Extra, mode: 'legacy' | 'isolated' = 'isolated', save?:
     useAuthStore: () => auth, useUploadTasksStore: () => ({ enqueue: (input: any) => batches.push(input) }),
     createIsolatedResearchClient: (captured: any, current: any) => createIsolatedResearchClient(captured, current, network),
     updateResearchWorkbenchOnboarding: async (id: string, input: any) => { guides.push({ id, input }); if (save) return save(id,input); return { data: { ...props.workbench, onboarding: { ...props.workbench.onboarding, ...input, tasks: { ...props.workbench.onboarding.tasks, ...input.tasks } } } } },
-    MessagePlugin: { info() {} }, workspaceErrorMessage: (error: any) => error?.message || 'failed', buildUploadFileName: (file: any) => file.webkitRelativePath || undefined,
+    MessagePlugin: { info() {} }, workspaceErrorMessage: (error: any) => error?.message || 'failed',
+    buildSourceFileUploads, findSourceFileVersionChoices, sourceFileVersionConflict,
+    listKnowledgeFiles: async (kbId: string, params: { file_names: string[] }) => {
+      assert.equal(kbId, props.workbench.knowledge_base_id)
+      const matches = matchingFiles.filter(file => params.file_names.includes(file.file_name))
+      return { success: true, data: matches, total: matches.length }
+    },
     window: { addEventListener() {}, removeEventListener() {} }, setTimeout, clearTimeout,
     onMounted() {}, onBeforeUnmount: (fn: () => void) => cleanups.push(fn),
   }))
@@ -58,7 +65,7 @@ test('v2 opening is lazy; source files load only after the drawer opens and carr
     assert.equal(f.calls[0]!.headers.get('X-Research-Sources-Revision'), '3')
     assert.equal(f.view.sources.value[0].id, workbook.id)
     assert.equal(f.calls.some(call => call.url.endsWith('/overview')), false)
-    f.view.selectFiles([{ name: 'disallowed.txt' }]); f.view.enqueueFiles()
+    f.view.selectFiles([{ name: 'disallowed.txt' }]); await f.view.enqueueFiles()
     assert.equal(f.batches.length, 0, 'Read access to a central/source KB never grants writes')
   } finally { f.close() }
 })
@@ -111,7 +118,7 @@ test('legacy guide and upload never call unsupported onboarding APIs', async () 
     await ready(); f.view.openSources()
     assert.equal(f.view.drawer.value, 'sources'); assert.equal(f.view.drawerOpen.value, true)
     await f.view.guide('active', 'review')
-    f.view.selectFiles([{ name: 'Original.xlsx', size: 10 }]); f.view.enqueueFiles()
+    f.view.selectFiles([{ name: 'Original.xlsx', size: 10 }]); await f.view.enqueueFiles()
     assert.equal(f.batches.length, 1); assert.deepEqual(f.guides, []); assert.deepEqual(f.emits, [])
   } finally { f.close() }
 })
@@ -121,7 +128,7 @@ test('native upload preserves folder paths, KB binding and non-Excel parsing', a
   try {
     await ready()
     f.view.selectFiles([{ name: 'fixture.txt' }, { name: 'fixture.xlsx', webkitRelativePath: 'folder/fixture.xlsx' }, { name: 'fixture.png' }, { name: 'fixture.zip' }])
-    assert.equal(f.batches.length, 0); f.view.enqueueFiles()
+    assert.equal(f.batches.length, 0); await f.view.enqueueFiles()
     assert.equal(f.batches.length, 2)
     const ordinary = f.batches.find(batch => !batch.processConfig), originals = f.batches.find(batch => batch.processConfig?.source_only)
     assert.deepEqual(Array.from(ordinary.uploads, (item: any) => item.file.name), ['fixture.txt', 'fixture.xlsx'])
@@ -131,9 +138,62 @@ test('native upload preserves folder paths, KB binding and non-Excel parsing', a
     assert.equal(f.view.pendingFiles.value.length, 0)
     await tick()
     f.view.saveVisualOriginals.value = false
-    f.view.selectFiles([{ name: 'native.png' }, { name: 'native.docx' }]); f.view.enqueueFiles()
+    f.view.selectFiles([{ name: 'native.png' }, { name: 'native.docx' }]); await f.view.enqueueFiles()
     assert.equal(f.batches.at(-1).processConfig, undefined)
     assert.ok(f.calls.every(call => call.method === 'GET'))
+  } finally { f.close() }
+})
+
+test('the research source upload prompts for a new version and keeps the selected knowledge ID by default', async () => {
+  const f = fixture(ownSources, 'isolated', undefined, {}, [workbook])
+  try {
+    await ready()
+    const file = new File(['recent data'], workbook.file_name)
+    f.view.selectFiles([file]); await f.view.enqueueFiles()
+    assert.equal(f.batches.length, 0)
+    assert.equal(f.view.uploadVersionChoices.value[0].knowledgeId, workbook.id)
+    await f.view.enqueueFiles()
+    assert.equal(f.batches[0].uploads[0].replaceKnowledgeId, workbook.id)
+
+    f.view.selectFiles([file]); await f.view.enqueueFiles()
+    f.view.uploadVersionChoices.value[0].knowledgeId = ''
+    await f.view.enqueueFiles()
+    assert.equal(f.batches[1].uploads[0].saveAsNew, true)
+    assert.equal(f.batches[1].uploads[0].replaceKnowledgeId, undefined)
+  } finally { f.close() }
+})
+
+test('the refreshed source inventory accepts a higher verified revision and restarts paging when the revision changes', async () => {
+  let revision = 4
+  let foreignBinding = false
+  const fileVersionAt = '2026-11-18T11:23:00Z'
+  const f = fixture(path => {
+    if (!path.includes('/sources?')) return undefined
+    const pageTwo = path.includes('page=2')
+    return Response.json({ scope_version: 2, sources_revision: revision, source_binding_id: foreignBinding ? 'foreign' : 'binding-a',
+      knowledge_base_id: 'fresh-kb', sources: pageTwo ? [textFile] : [{ ...workbook, file_version_at: fileVersionAt }], total: 2 })
+  }, 'isolated', undefined, { scope_version: 2, sources_revision: 3, sources: [
+    { id: 'binding-a', source_type: 'knowledge_base', source_id: 'fresh-kb', knowledge_base_id: 'fresh-kb', status: 'active', can_read: true, can_edit: true, delegated: false },
+  ] })
+  try {
+    await ready(); f.view.openSources(); await ready()
+    assert.equal(f.view.sources.value[0].id, workbook.id)
+    assert.equal(f.view.sourceVersionTime(f.view.sources.value[0]), new Date(fileVersionAt).toLocaleString())
+    assert.equal(f.view.sourceVersionTime(workbook), '')
+    assert.match(source, /最新版本 <time :datetime="source.file_version_at">/)
+
+    revision++
+    await f.view.moreSources()
+    assert.equal(f.view.sourcePage.value, 1)
+    assert.deepEqual(Array.from(f.view.sources.value, (item: any) => item.id), [workbook.id])
+    assert.match(f.calls.at(-1)!.url, /\/sources\?page=1/)
+    await f.view.moreSources()
+    assert.equal(f.view.sourcePage.value, 2)
+
+    foreignBinding = true
+    await f.view.load()
+    assert.equal(f.view.sources.value.length, 0)
+    assert.match(f.view.error.value, /来源范围或版本已变化/)
   } finally { f.close() }
 })
 

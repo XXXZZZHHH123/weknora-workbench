@@ -5,6 +5,7 @@
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/affairs.css?v={{ static_version() }}">
 <script defer src="{{ research_static_prefix() }}/static/affairs.js?v={{ static_version() }}"></script>
 {% if not restricted_view and (not research_workbench() or not research_workbench().restricted) %}
+<link rel="stylesheet" href="{{ research_static_prefix() }}/static/market-overview.css?v={{ static_version() }}">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/charts.css?v={{ static_version() }}">
 <script defer src="{{ research_static_prefix() }}/static/chart-kit.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/monitors.js?v={{ static_version() }}"></script>

@@ -145,6 +145,8 @@ def _json(value):
 
 
 def _markdown(scope, kind, identifier, folder, payload):
+    if ((payload.get('manual_report') or {}).get('draft') or {}).get('evidence_citations'):
+        raise HTTPException(409, '暂无法核对目标知识库读者范围，带逐条证据的周报请下载 Markdown')
     report_day = payload.get('trade_date') or payload.get('as_of')
     try:
         if date.fromisoformat(report_day).isoformat() != report_day:

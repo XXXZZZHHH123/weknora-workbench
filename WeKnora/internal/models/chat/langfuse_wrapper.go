@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/tracing/langfuse"
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -23,7 +24,7 @@ func (l *langfuseChat) GetModelID() string   { return l.inner.GetModelID() }
 
 func (l *langfuseChat) Chat(ctx context.Context, messages []Message, opts *ChatOptions) (*types.ChatResponse, error) {
 	mgr := langfuse.GetManager()
-	if !mgr.Enabled() {
+	if !mgr.Enabled() || api.IsStructuredReview(ctx) {
 		return l.inner.Chat(ctx, messages, opts)
 	}
 

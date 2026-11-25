@@ -74,7 +74,12 @@ def precision_rows(store, info, mapping, records):
         if raw_low == raw_high and cell_low == cell_high and isinstance(cell_low, str) and sheets.get(source):
             wanted[sheets[source]].add(cell_low)
     try:
-        formats = _selected_formats(store._path(info['dataset_id']) / 'source.xlsx', wanted) if wanted else {}
+        by_dataset = defaultdict(dict)
+        retained = info.get('retained_sheet_datasets', {})
+        for sheet, cells in wanted.items():
+            by_dataset[retained.get(sheet, info['dataset_id'])][sheet] = cells
+        formats = {key: value for dataset, selected in by_dataset.items()
+                   for key, value in _selected_formats(store._path(dataset) / 'source.xlsx', selected).items()}
     except (ValueError, OSError, KeyError, BadZipFile):
         raise HTTPException(409, '原表显示精度无法在读取上限内核验，请核对来源后重试') from None
     rows = []

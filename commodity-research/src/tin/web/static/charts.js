@@ -123,7 +123,13 @@
         for (const item of data.items) { knownGroups.add(item.definition.group || ''); addCard(item); }
         updateGroups(); nextOffset = data.next_offset; more.hidden = nextOffset === null;
         $('chart-count').textContent = `已展示 ${cards.children.length} / ${data.total} 张`;
-        U.notice(status, data.total ? '' : '没有匹配图表。可从原表导入，或在单指标页另存为图表。');
+        if (data.total === 0 && !query.get('q') && !query.has('group')) {
+          status.replaceChildren($('charts-empty-content').content.cloneNode(true));
+          status.className = 'charts-notice';
+          status.hidden = false;
+        } else {
+          U.notice(status, data.total ? '' : '没有匹配图表。可从原表导入，或在单指标页另存为图表。');
+        }
       } catch (error) {
         if (error.name !== 'AbortError' && ownGeneration === generation) { U.notice(status, error.message, 'error'); more.hidden = true; }
       } finally {

@@ -28,6 +28,7 @@ const { formatRole, roleIcon } = useRoleLabel()
 const router = useRouter()
 const authStore = useAuthStore()
 const settingsStore = useSettingsStore()
+const hasPlatformDock = computed(() => router.currentRoute.value.matched.some(record => record.name === 'Platform'))
 
 const tdLocaleMap: Record<string, object> = {
   'en-US': enUSConfig,
@@ -282,7 +283,7 @@ onUnmounted(() => {
       <ManualKnowledgeEditor />
       <ProtectedResourcePreview />
       <UploadConfirmHost />
-      <FeedbackLauncher />
+      <FeedbackLauncher v-if="!hasPlatformDock" />
     </div>
   </t-config-provider>
 </template>

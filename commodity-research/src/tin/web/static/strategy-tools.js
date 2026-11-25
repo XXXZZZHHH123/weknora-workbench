@@ -33,7 +33,7 @@
     if (!markdown) return null;
     const text = byId('strategy-markdown-text'), preview = byId('strategy-markdown-preview'), note = byId('strategy-markdown-status');
     const check = byId('strategy-markdown-check'), apply = byId('strategy-markdown-apply');
-    let checked = null, plan = null, busy = false, exported = false;
+    let checked = null, plan = null, busy = false, exported = false, edited = false, revision = 0, historicalNotice = '';
     closeOn(markdown);
     function lock(value) {
       busy = value;
@@ -41,12 +41,12 @@
       text.readOnly = value;
     }
     function invalidate() { checked = null; plan = null; if (apply) apply.disabled = true; }
-    text.addEventListener('input', () => { invalidate(); preview.hidden = true; });
+    text.addEventListener('input', () => { invalidate(); preview.hidden = true; edited = true; revision++; });
     async function exportAll() {
       lock(true); say(note, '正在导出…');
       try {
         const data = await request('/research-strategies/markdown');
-        text.value = data.markdown; exported = true; invalidate(); preview.hidden = true;
+        text.value = data.markdown; historicalNotice = ''; exported = true; edited = false; invalidate(); preview.hidden = true;
         const extra = [data.truncated ? '只导出了最近 100 份' : '', data.skipped ? `${data.skipped} 份历史记录尚未整理，未导出` : ''].filter(Boolean);
         say(note, `已导出 ${data.count} 份方案` + (extra.length ? '（' + extra.join('；') + '）' : '') + '。');
       } catch (error) { say(note, error.message, true); } finally { lock(false); }
@@ -55,6 +55,7 @@
     function render(value) {
       preview.replaceChildren(); preview.hidden = false;
       const counts = value.counts;
+      if (historicalNotice) preview.append(element('p', historicalNotice, 'strategy-markdown-warning'));
       preview.append(element('p', `新建 ${counts.create} 份，修改 ${counts.update} 份，无变化 ${counts.unchanged} 份` +
         (counts.error ? `，${counts.error} 份需要修改后才能导入` : '') + (value.untouched ? `；文档里没有的 ${value.untouched} 份方案保持不变` : '') + '。', 'strategy-markdown-summary'));
       const list = element('ol', undefined, 'strategy-markdown-rows');
@@ -84,6 +85,7 @@
     async function runApply() {
       if (!plan || checked !== text.value) { if (!(await runCheck())?.can_apply) return; }
       const counts = plan.counts;
+      if (historicalNotice && !window.confirm('请确认已按当前判断修改这批往期周报策略，再导入。')) return;
       if (!window.confirm(`将新建 ${counts.create} 份、修改 ${counts.update} 份方案` + (plan.untouched ? `；文档里没有的 ${plan.untouched} 份保持不变` : '') + '。确认导入？')) return;
       lock(true); say(note, '正在导入…');
       try {
@@ -118,11 +120,13 @@
       if (!exported && !busy) exportAll();
     });
     return {
+      stamp: () => revision,
       // Organized drafts arrive as new cards without identifiers; they are checked, never imported unseen.
-      load(value, message) {
+      load(value, message, notice = '') {
+        if (edited || busy) throw new Error('Markdown 编辑内容已保留，请处理后再取回策略草稿。');
         if (!markdown.open) markdown.showModal();
-        text.value = value; exported = true; invalidate(); preview.hidden = true;
-        return runCheck().then(() => { if (message) say(note, message); });
+        text.value = value; historicalNotice = notice; exported = true; invalidate(); preview.hidden = true;
+        return runCheck().then(result => { if (result && message) say(note, message); });
       },
     };
   })();
@@ -132,12 +136,12 @@
   if (dialog) {
     const input = byId('strategy-text-input'), model = byId('strategy-text-model'), run = byId('strategy-text-run');
     const note = byId('strategy-text-status'), count = byId('strategy-text-count');
-    let models = null, running = false;
+    let models = null;
     closeOn(dialog);
     const remembered = () => { try { return localStorage.getItem('research-strategy-text-model') || ''; } catch (_) { return ''; } };
     function sync() {
       count.textContent = `${input.value.length} / 6000`;
-      run.disabled = running || !input.value.trim() || !model.value;
+      run.disabled = !!job?.busy || !input.value.trim() || !model.value;
     }
     input.addEventListener('input', sync); model.addEventListener('change', () => {
       try { localStorage.setItem('research-strategy-text-model', model.value); } catch (_) { /* Remembering the model is optional. */ }
@@ -154,26 +158,59 @@
       } catch (error) { models = null; say(note, '模型列表未读取：' + error.message, true); }
       sync();
     }
-    byId('strategy-text-open')?.addEventListener('click', () => {
-      if (!dialog.open) dialog.showModal();
-      loadModels(); sync(); input.focus();
+    async function presentDraft(result, {current = () => true, historicalNotice = ''} = {}) {
+      const cards = result.cards || [];
+      if (cards.length === 1) {
+        if (editor()?.hasUnsavedChanges?.()) throw new Error('策略编辑内容已保留，请处理后再取回整理结果。');
+        const label = historicalNotice ? '往期周报 · 待核对' : '由文字整理 · 待核对';
+        if (!editor()?.openDraft(cards[0].body, label, cards[0].notes || [], historicalNotice)) throw new Error('正在保存其他方案，请稍后再试。');
+      } else if (cards.length > 1 && markdownTool) {
+        await markdownTool.load(result.markdown, `模型整理出 ${cards.length} 份方案，作为新方案列在下方；检查无误后再导入。`, historicalNotice);
+        if (!current()) return;
+      } else throw new Error('模型没有整理出方案，请补充描述后重试。');
+      if (dialog.open) dialog.close();
+      if (input.value.trim() === result.request?.text) input.value = '';
+      say(note, '整理结果已放入待核对草稿。');
+    }
+    const snapshot = () => [input.value, model.value, editor()?.editStamp?.(), markdownTool?.stamp()];
+    const job = window.ResearchAnalysisJobs?.create({
+      purpose: 'strategy_text',
+      button: run,
+      status: note,
+      restoreButton: byId('strategy-text-restore'),
+      disabled: () => !input.value.trim() || !model.value,
+      isOpen: () => dialog.open,
+      snapshot,
+      present: presentDraft,
     });
-    run.addEventListener('click', async () => {
-      if (running || !input.value.trim() || !model.value) return;
-      running = true; sync(); input.readOnly = true; say(note, '正在整理，通常需要十几秒到一分钟…');
+    async function openText(requested) {
+      const originalText = input.value;
+      if (!dialog.open) dialog.showModal();
+      await loadModels();
+      if (!dialog.open) return;
+      sync(); input.focus();
+      if (!requested) await job?.discover();
+      else if (originalText === input.value) await job.restore(requested, {explicit: true});
+    }
+    byId('strategy-text-open')?.addEventListener('click', () => void openText());
+    dialog.addEventListener('close', () => { job?.pause(); sync(); });
+    run.addEventListener('click', () => {
+      if (run.disabled) return;
+      void job?.submit('/api/sn/research-strategies/draft-from-text', {text: input.value, model_id: model.value});
+    });
+    if (job) void window.ResearchAnalysisJobs.requested('strategy_text').then(async meta => {
+      if (dialog.open || markdown?.open || editor()?.hasUnsavedChanges?.() || input.value.trim()) return;
+      if (meta) return openText(meta.id);
+      const setup = window.WorkbenchSetupReview;
+      if (!await setup?.appliesTo('strategy')) return;
+      const before = JSON.stringify(snapshot());
       try {
-        const result = await post('/research-strategies/draft-from-text', {text: input.value, model_id: model.value});
-        const cards = result.cards || [];
-        if (cards.length === 1) {
-          if (!editor()?.openDraft(cards[0].body, '由文字整理 · 待核对', cards[0].notes || [])) throw new Error('正在保存其他方案，请稍后再试。');
-          dialog.close(); input.value = ''; say(note, '');
-        } else if (cards.length > 1 && markdownTool) {
-          dialog.close();
-          await markdownTool.load(result.markdown, `模型整理出 ${cards.length} 份方案，作为新方案列在下方；检查无误后再导入。`);
-          input.value = ''; say(note, '');
-        } else throw new Error('模型没有整理出方案，请补充描述后重试。');
-      } catch (error) { say(note, error.message + ' 原文仍保留。', true); }
-      finally { running = false; input.readOnly = false; sync(); }
+        const result = await setup.load();
+        if (before !== JSON.stringify(snapshot()) || dialog.open || markdown?.open || !byId('research-card-dialog')?.hidden) {
+          throw new Error('请先结束当前编辑，再重新打开任务结果。');
+        }
+        await presentDraft(result, {historicalNotice: setup.historicalNotice});
+      } catch (error) { say(byId('strategy-workspace-status'), error.message, true); }
     });
   }
 })();

@@ -275,9 +275,9 @@ func (e *AgentEngine) citationUnverifiedPresentation(ctx context.Context, state 
 			return "", 0, 0, nil, nil, false
 		}
 	}
-	notice := "本次读取的资料未能确认带标记的引用，因此没有可打开的来源链接。请找到对应原文后再引用。"
+	notice := "本次读取的资料还不能确认标出的引用，因此已移除对应链接。请找到原文后再引用。"
 	if markedNumbers > 0 {
-		notice += "带标记的数字也待核对，写入报告前请对照原表或原文。"
+		notice += unverifiedNumberNotice
 	}
 	delivery := marked + "\n\n> 提示：" + notice
 	refs, legacy := e.unverifiedNavigationReferences(delivery, state)

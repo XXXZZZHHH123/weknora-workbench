@@ -14,6 +14,7 @@
     checkSignature:null, mode:null, drag:null, selection:null, anchor:null, history:[],
     sample:null, sampleController:null, resultController:null, resultRequest:0, focusCell:null, restore:false, editable:false, previewMode:'table', activeAIJob:null };
   const volatileDrafts = new Map();
+  const headerCleanupJobs = new Map();
   function clearSample(){ui.sampleController?.abort();ui.sample=null;if($('samplePreview')){$('samplePreview').hidden=true;$('samplePreview').textContent='';}if($('previewBlockSample'))$('previewBlockSample').setAttribute('aria-expanded','false');}
   function clearReviewError(){ui.errorRequest=(ui.errorRequest||0)+1;ui.errorCells=[];document.querySelectorAll('.review-invalid').forEach(el=>{el.classList.remove('review-invalid');el.removeAttribute('aria-invalid');});document.querySelectorAll('.review-error-cell').forEach(el=>el.classList.remove('review-error-cell'));}
   function targetedError(message,target){const error=Error(message);error.reviewTarget=target;return error;}
@@ -57,6 +58,7 @@
   const publishedBlocks = s => isPublished(s) && Array.isArray(s?.published_mapping?.blocks) ? s.published_mapping.blocks : [];
   const waitingImport = s => !isPublished(s) && ['trusted_existing','auto_ready','template_ready','confirmed'].includes(s?.status);
   const isConfirmedSheet = s => !isChartOnly(s) && (s?.review_state ? s.review_state.status==='confirmed' : ['trusted_existing','auto_ready','template_ready','confirmed'].includes(s?.status));
+  const needsReview = s => s.partially_imported || (s.status==='needs_review' && (s.source_update_state || (!isPublished(s) && !s.automatic_skip)));
   function canonical(value) {
     if(Array.isArray(value))return value.map(canonical);
     if(!value||typeof value!=='object')return value;
@@ -107,12 +109,12 @@
     if (needle && !s.name.toLowerCase().includes(needle)) return false;
     if (ui.filter === 'all') return true;
     if (ui.filter === 'charts') return isChartOnly(s);
-    return !isPublished(s) && !s.automatic_skip && (s.status === 'needs_review' || waitingImport(s)) && !isChartOnly(s);
+    return (needsReview(s) || waitingImport(s)) && !isChartOnly(s);
   }
   function sheetMeta(s) {
     const blocks = s.block_count ?? s.mapping?.blocks?.length ?? 0;
     const charts = s.chart_count || s.charts?.chart_count || 0;
-    if (isChartOnly(s)) return `图表页 · ${charts} 个图 · ${s.rows || 0} 行 × ${s.columns || 0} 列`;
+    if (isChartOnly(s)) return `${s.automatic_skip ? sheetStatusLabel(s) : '图表页'} · ${charts} 个图 · ${s.rows || 0} 行 × ${s.columns || 0} 列`;
     return `${sheetStatusLabel(s)} · ${s.rows || 0} 行 × ${s.columns || 0} 列 · ${blocks} 个区块${charts ? ' · ' + charts + ' 个图' : ''}`;
   }
   function ensureBlocks(m) {
@@ -124,7 +126,8 @@
       else if(prior.signature!==sig){prior.checked=false;prior.signature=sig;prior.diagnostics=[];prior.serverReviewed=false;}
       const state=ui.states[b._review_id];
       if(currentSheet?.review_state?.automatic_structure_check===true&&state.businessConfirmed!==true)state.structureOnly=true;
-      const original=currentSheet?.mapping?.blocks?.[index],review=currentSheet?.review_state?.blocks?.find(item=>item.block_index===index);
+      const priorReview=currentSheet?.partial_review;
+      const original=(priorReview?.mapping||currentSheet?.mapping)?.blocks?.[index],review=(priorReview?.review_state||currentSheet?.review_state)?.blocks?.find(item=>item.block_index===index);
       if(!state.serverReviewed&&original&&sig===blockSignature(original)&&review&&!state.rangePending){
         state.checked=review.status==='confirmed';state.diagnostics=copy(review.diagnostics||[]);state.serverReviewed=true;
         state.structureOnly=currentSheet.review_state?.automatic_structure_check===true;state.businessConfirmed=false;
@@ -196,7 +199,9 @@
     saveDraft();stopViewRequests();const id=$('importSelect').value;if(!id)return;
     const version=++reviewVersion,controller=new AbortController();ui.sheetController=controller;
     const r=await timedApi('/api/imports/'+encodeURIComponent(id)+'?summary_only=true',{},controller,30000,requestApi);
-    if(version!==reviewVersion||!isCurrent())return;currentImport=r;currentSheet=null;ui.mapping=null;ui.states={};
+    if(version!==reviewVersion||!isCurrent())return;
+    if(currentImport?.import_id!==id&&$('headerCleanupDialog').open)$('headerCleanupDialog').close();
+    currentImport=r;currentSheet=null;ui.mapping=null;ui.states={};
     const sheets=r.sheets||[];updateImportSummary();
     if(!sheets.some(s=>sheetVisible(s,'')))ui.filter='all';renderSheetList();
     $('sheetDetail').innerHTML='<p class="grid-loading">选择工作表，查看原表与对应区块。</p>';
@@ -204,7 +209,8 @@
   };
   function updateImportSummary() {
     const sheets=currentImport?.sheets||[],ready=sheets.filter(isPublished).length;
-    $('importSummary').textContent=`${currentImport?.source_file||''} · ${sheets.length} 张工作表 · ${ready} 张已可查询 · ${sheets.filter(waitingImport).length} 张待导入 · ${sheets.filter(s=>!isPublished(s)&&!s.automatic_skip&&s.status==='needs_review').length} 张待核对${sheets.some(s=>s.automatic_skip&&!isPublished(s))?' · '+sheets.filter(s=>s.automatic_skip&&!isPublished(s)).length+' 张已跳过':''}`;
+    const update = currentImport?.source_update;
+    $('importSummary').textContent=`${currentImport?.source_file||''} · ${sheets.length} 张工作表 · ${ready} 张已可查询 · ${sheets.filter(waitingImport).length} 张待导入 · ${sheets.filter(needsReview).length} 张待核对${sheets.some(s=>s.automatic_skip&&!isPublished(s))?' · '+sheets.filter(s=>s.automatic_skip&&!isPublished(s)).length+' 张已跳过':''}${update?' · '+sourceUpdateText(update):''}`;
     // Said here, at import, rather than on research pages: pending sheets in which no field was recognised.
     const fieldless=sheets.filter(s=>!isPublished(s)&&!s.automatic_skip&&s.status==='needs_review'&&!isChartOnly(s)&&!mappedFieldCount(s));
     const hint=$('importFieldless');
@@ -221,6 +227,8 @@
     if(auto){auto.disabled=mappingBusy||ui.batchBusy||!ready.length;auto.textContent='确认全部已检查通过的工作表'+(ready.length?` (${ready.length})`:'');auto.title='仅确认状态为 auto_ready 的工作表，包括已自动导入的表；其他状态仍需逐表核对。';}
     const ai=$('aiImportAllSheets'),pending=(currentImport?.sheets||[]).filter(s=>!isPublished(s)&&s.status!=='empty');
     if(ai){ai.disabled=mappingBusy||ui.batchBusy||!pending.length;ai.title='逐表辅助核对并导入；无数据页跳过，无法确认的内容保留待核对。';}
+    const cleanup=$('headerCleanup'),count=currentImport?.header_cleanup_count||0;
+    if(cleanup){cleanup.hidden=!count;cleanup.disabled=mappingBusy||ui.batchBusy;cleanup.textContent=`整理已导入表的表头说明（${count} 张）`;}
   }
   const autoReadySheets = () => (currentImport?.sheets||[]).filter(sheet=>sheet.status==='auto_ready');
   function confirmedBatch() {
@@ -237,7 +245,7 @@
     }
     return {sheets,mappings};
   }
-  function tabState(s){return isPublished(s)?'ready':s.status==='needs_review'||waitingImport(s)?'pending':'quiet';}
+  function tabState(s){return needsReview(s)||waitingImport(s)?'pending':isPublished(s)?'ready':'quiet';}
   function renderSheetList() {
     $('sheetList').innerHTML=(currentImport?.sheets||[]).map((s,i)=>({s,i})).filter(({s})=>sheetVisible(s,'')||(ui.filter==='pending'&&s.name===currentSheet?.name&&isPublished(s))).map(({s,i})=>`<button class="sheet-tab" data-sheet-index="${i}" aria-pressed="${s.name===currentSheet?.name}" title="${esc(s.name+' · '+sheetMeta(s))}"><i class="sheet-state ${tabState(s)}" aria-hidden="true"></i><strong>${esc(s.name)}</strong><small class="sr-only">${esc(sheetMeta(s))}</small></button>`).join('')||'<p class="muted" style="font-size:12px">没有匹配的工作表。</p>';
     document.querySelectorAll('[data-sheet-filter]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.sheetFilter===ui.filter)));
@@ -256,21 +264,21 @@
     currentSheet=null;mappingConfirmed=false;mappingBusy=false;ui.checkSignature=null;
     $('sheetDetail').innerHTML='<p class="grid-loading">正在读取当前工作表…</p>';
     const sheet=await timedApi(`/api/imports/${encodeURIComponent(importId)}/sheet?name=${encodeURIComponent(s.name)}`,{},controller,30000,requestApi);
-    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,import_state:sheet.import_state,review_state:sheet.review_state,automatic_skip:sheet.automatic_skip,mapping:sheet.mapping,field_count:sheet.field_count??s.field_count,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons,published_in_dataset:sheet.published_in_dataset===true,published_dataset_id:sheet.published_dataset_id??null,published_mapping:sheet.published_mapping??null,published_fingerprint:sheet.published_fingerprint??null});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);setMappingBusy(false);
+    if(version!==reviewVersion)return;Object.assign(s,{status:sheet.status,import_state:sheet.import_state,review_state:sheet.review_state,automatic_skip:sheet.automatic_skip,partially_imported:sheet.partially_imported,mapping:sheet.mapping,field_count:sheet.field_count??s.field_count,layout:sheet.layout,block_count:sheet.mapping?.blocks?.length||0,reasons:sheet.reasons,source_update_state:sheet.source_update_state,published_in_dataset:sheet.published_in_dataset===true,published_dataset_id:sheet.published_dataset_id??null,published_mapping:sheet.published_mapping??null,published_fingerprint:sheet.published_fingerprint??null});updateImportSummary();currentSheet=sheet;ui.mapping=null;ui.states={};ui.selected=null;renderSheetList();renderSheet(sheet);setMappingBusy(false);
     if(isChartOnly(sheet)){showPreview('charts');return;}
     showPreview('table');await loadWindow(1,1,requestApi);
   };
   renderSheet = function(s) {
     const chartOnly = isChartOnly(s);
-    ui.editable = s.status!=='empty' && !chartOnly;
+    ui.editable = s.status!=='empty' && !chartOnly && s.source_update_state!=='retained_deleted';
     // A saved mapping may have canonical defaults or different confirmed ranges.
     // Use that actual baseline unless a local draft explicitly supersedes it.
-    const publishedSeed=isPublished(s)&&Array.isArray(s.published_mapping?.blocks)?s.published_mapping:null;
-    let seed = copy({...publishedSeed||s.mapping||{blocks:[]},sheet:s.name,fingerprint:s.fingerprint});
+    const publishedSeed=isPublished(s)&&(!s.source_update_state||s.source_update_state==='retained_deleted')&&Array.isArray(s.published_mapping?.blocks)?s.published_mapping:null;
+    let seed = copy({...(s.partial_review?.mapping||publishedSeed||s.mapping||{blocks:[]}),sheet:s.name,fingerprint:s.fingerprint});
     ui.restore = false;
     if (ui.editable) try {
       const d = readDraftFor(s);
-      if (d?.version === 2 && d.base_signature === mappingSignature(s.mapping) && d.mapping?.sheet === s.name && d.mapping?.fingerprint === s.fingerprint && Array.isArray(d.mapping.blocks) && d.mapping.blocks.length <= 100) {
+      if (d?.version === 2 && d.base_signature === mappingSignature(s.mapping) && d.mapping?.sheet === s.name && d.mapping?.fingerprint === s.fingerprint && Array.isArray(d.mapping.blocks) && d.mapping.blocks.length <= 128) {
         seed = d.mapping; ui.states = d.states || {}; ui.selected = d.selected; ui.restore = true;
       }
     } catch {}
@@ -282,8 +290,10 @@
     const hasInspector=!chartOnly&&(ui.editable||ui.mapping.blocks.length>0||!!currentImport?.dataset_id);
     const strip=hasInspector?`<div class="block-strip"><div id="blockLegend" class="block-chips"></div>${ui.editable?'<button id="addMappingBlock" class="text-button" type="button">+ 添加区块</button><button id="undoMapping" class="text-button" type="button">↶ 撤销</button>':''}</div>`:'<div id="blockLegend" hidden></div>';
     const inspector=hasInspector?`<aside id="blockEditor" class="block-editor sheet-cards"><div class="editor-heading"><strong>字段与范围核对 <small class="editor-mode">${ui.editable?'可调整':'只读'}</small></strong><button id="previewBlockSample" class="secondary" type="button" aria-expanded="false" aria-controls="samplePreview">${isPublished(s)?'查看记录':'预览几条记录'}</button></div><div id="samplePreview" class="block-sample-content" role="status" hidden></div><div id="mappingForm"></div><section id="resultPanel" class="stored-data-panel" hidden aria-label="已保存记录"><div class="result-heading"><h3 id="resultTitle"></h3><button id="closeResults" class="secondary" type="button">返回字段</button></div><div id="resultContent"></div></section>${ui.editable?'<div class="editor-footer"><label><input id="ackBlock" type="checkbox"><span id="ackBlockLabel">我已核对这个区块</span></label><button id="excludeCurrentBlock" class="exclude-block" type="button">这块不导入</button></div>':''}</aside>`:'<div id="mappingForm" hidden></div>';
-    const source=`<div class="sheet-source"><div class="source-head"><h3>${esc(s.name)}</h3>${sheetStatusBadge(s)}${switcher}${isPublished(s)&&s.published_dataset_id&&!chartOnly?'<button id="storedResults" class="secondary" type="button">查看记录</button>':''}<button id="reviewFocus" class="text-button" type="button">展开核对</button></div><div id="tablePane" class="table-pane"><div class="view-tools"><button id="previousRows" class="secondary" type="button">↑ 上一段</button><button id="nextRows" class="secondary" type="button">↓ 下一段</button><button id="previousCols" class="secondary" type="button">← 左边</button><button id="nextCols" class="secondary" type="button">右边 →</button><input id="jumpCell" aria-label="定位原表单元格" placeholder="例如 AG90"><button id="jumpToCell" class="secondary" type="button">定位</button><span id="viewSummary" class="window-summary"></span></div><div id="sheetGrid" class="sheet-grid-wrap" tabindex="0" aria-label="当前工作表原表视图"><p class="grid-loading">正在加载原表…</p></div><div class="grid-caption"><strong id="selectedCaption"></strong></div><div id="rangeSelection" class="range-selection-actions" hidden><span>临时选区 <b id="selectionRange"></b></span><button id="applySelection" type="button">用于当前区块</button><button id="newBlockSelection" class="secondary" type="button">建立新区块</button><button id="cancelSelection" class="text-button" type="button">取消</button></div><div id="viewWarning" class="source-warning" role="status"></div><div id="selectionHint" class="source-note"></div></div><div id="chartPane" class="chart-pane" hidden></div></div>`;
-    const footer=ui.editable?`<div class="review-footer"><div class="footer-progress" id="confirmHint" role="status"></div><div class="footer-actions"><button id="suggestMapping" class="secondary" type="button">AI 一键辅助确认</button><button id="confirmMapping" type="button">检查并导入这张表</button></div></div><p id="draftNotice" class="source-note">${ui.restore?'草稿已恢复':''}</p><div id="mappingFeedback" class="review-feedback" role="status"></div><details class="full-check-results"><summary>完整检查结果</summary><div id="mappingPreview" class="review-results"></div></details>`:`<p class="readonly-sheet muted">${chartOnly?'图表页':s.status==='trusted_existing'?(isPublished(s)?'已可查询':'待导入'):'暂无数据区块'}</p><div id="mappingFeedback" class="review-feedback" role="status"></div>`;
+    const updateNotice = s.source_update_state || s.status==='needs_review' && currentImport?.source_update ? `<p class="source-warning">${esc(s.reasons?.join('；')||'待核对')}</p>` : '';
+    const source=`<div class="sheet-source"><div class="source-head"><h3>${esc(s.name)}</h3>${sheetStatusBadge(s)}${switcher}${isPublished(s)&&s.published_dataset_id&&!chartOnly?'<button id="storedResults" class="secondary" type="button">查看记录</button>':''}<button id="reviewFocus" class="text-button" type="button">展开核对</button></div>${updateNotice}<div id="tablePane" class="table-pane"><div class="view-tools"><button id="previousRows" class="secondary" type="button">↑ 上一段</button><button id="nextRows" class="secondary" type="button">↓ 下一段</button><button id="previousCols" class="secondary" type="button">← 左边</button><button id="nextCols" class="secondary" type="button">右边 →</button><input id="jumpCell" aria-label="定位原表单元格" placeholder="例如 AG90"><button id="jumpToCell" class="secondary" type="button">定位</button><span id="viewSummary" class="window-summary"></span></div><div id="sheetGrid" class="sheet-grid-wrap" tabindex="0" aria-label="当前工作表原表视图"><p class="grid-loading">正在加载原表…</p></div><div class="grid-caption"><strong id="selectedCaption"></strong></div><div id="rangeSelection" class="range-selection-actions" hidden><span>临时选区 <b id="selectionRange"></b></span><button id="applySelection" type="button">用于当前区块</button><button id="newBlockSelection" class="secondary" type="button">建立新区块</button><button id="cancelSelection" class="text-button" type="button">取消</button></div><div id="viewWarning" class="source-warning" role="status"></div><div id="selectionHint" class="source-note"></div></div><div id="chartPane" class="chart-pane" hidden></div></div>`;
+    const pendingNotice=s.partial_review?.notice||s.automatic_skip?.message||'';
+    const footer=ui.editable?`<div class="review-footer"><div class="footer-progress" id="confirmHint" role="status"></div><div class="footer-actions"><button id="suggestMapping" class="secondary" type="button">AI 一键辅助确认</button><button id="confirmMapping" type="button">检查并导入这张表</button></div></div><p id="draftNotice" class="source-note">${ui.restore?'草稿已恢复':''}</p><div id="mappingFeedback" class="review-feedback" role="status">${esc(pendingNotice)}</div><details class="full-check-results"><summary>完整检查结果</summary><div id="mappingPreview" class="review-results"></div></details>`:`<p class="readonly-sheet muted">${chartOnly?'图表页':s.status==='trusted_existing'?(isPublished(s)?'已可查询':'待导入'):'暂无数据区块'}</p>${chartOnly&&chartCount&&!s.automatic_skip?'<button id="suggestMapping" class="secondary" type="button">核对曲线来源</button>':''}<div id="mappingFeedback" class="review-feedback" role="status">${esc(pendingNotice)}</div>`;
     $('sheetDetail').innerHTML=`<div class="review-workspace">${strip}<div class="review-panes${hasInspector?'':' readonly'}">${source}${inspector}</div>${footer}<textarea id="mappingEditor" class="hidden">${esc(JSON.stringify(ui.mapping))}</textarea></div>`;
     $('mappingEditor').value = JSON.stringify(ui.mapping, null, 2);
     renderMappingForm(ui.mapping); renderLegend(); bindReviewEvents(); updateConfirmState();
@@ -408,6 +418,7 @@
   }
   async function showStoredResults() {
     const dataset=isPublished(currentSheet)?currentSheet.published_dataset_id:null,sheet=currentSheet?.name,version=reviewVersion;
+    const priorRowsOnChangedSheet = currentSheet?.source_update_state==='retained';
     if(!dataset||!sheet)return;
     const panel=$('resultPanel'),content=$('resultContent');if(!panel)return;
     clearSample();$('blockEditor').classList.add('showing-records');panel.hidden=false;
@@ -429,7 +440,7 @@
       const result=await request('/api/query?'+new URLSearchParams({dataset_id:dataset,series_id:selected,operation:'rows',limit:25,offset:rowOffset}));
       if(!result)return;
       const s=result.series;
-      host.innerHTML=`<h4>${esc(s.metric)} · ${esc(dimensionsText(s.dimensions,['block','data_region'])||'无额外维度')}</h4><p>单位：${esc(s.unit||'原表未注明')} · 共 ${result.record_count} 条记录，其中 ${result.valid_count} 条有有效数值。当前 ${result.rows.length?rowOffset+1:0}–${rowOffset+result.rows.length} 条</p><div class="scroll"><table class="stored-record-table"><thead><tr><th>时间／期间</th><th>保存数值</th><th>原值／公式</th><th>来源</th></tr></thead><tbody>${result.rows.map(r=>`<tr><td>${esc(r.date||r.period||'无时间字段')}</td><td>${r.value==null?'缺失':esc(r.value)}<small>${esc(valueStatusLabel(r.value_status))}</small></td><td>${esc(r.raw_value??'空白')}${r.formula?'<details><summary>查看公式</summary><div>'+esc(r.formula)+'</div></details>':''}</td><td>${[[r.source_cell,'数值'],[r.date_cell||r.period_cell,'时间'],[r.category_cell,'类别'],[r.metric_cell,'指标']].filter(([cell])=>cell).map(([cell,label])=>`<span class="stored-source"><small>${label}</small><button class="field-source" type="button" data-result-cell="${esc(cell)}" title="在左侧原表高亮 ${esc(cell)}">${esc(cell)} ↗</button></span>`).join('')}</td></tr>`).join('')}</tbody></table></div><div class="result-pagination"><button id="storedRowsPrevious" class="secondary" ${rowOffset===0?'disabled':''}>上一页记录</button><button id="storedRowsNext" class="secondary" ${rowOffset+result.rows.length>=result.record_count?'disabled':''}>下一页记录</button></div><p class="muted">公式显示文件上次保存的计算结果。空白、报错和没有已保存结果的单元格记为缺失。点击单元格位置可在原表中查看。</p>`;
+      host.innerHTML=`<h4>${esc(s.metric)} · ${esc(dimensionsText(s.dimensions,['block','data_region'])||'无额外维度')}</h4><p>单位：${esc(s.unit||'原表未注明')} · 共 ${result.record_count} 条记录，其中 ${result.valid_count} 条有有效数值。当前 ${result.rows.length?rowOffset+1:0}–${rowOffset+result.rows.length} 条</p><div class="scroll"><table class="stored-record-table"><thead><tr><th>时间／期间</th><th>保存数值</th><th>原值／公式</th><th>来源</th></tr></thead><tbody>${result.rows.map(r=>`<tr><td>${esc(r.date||r.period||'无时间字段')}</td><td>${r.value==null?'缺失':esc(r.value)}<small>${esc(valueStatusLabel(r.value_status))}</small></td><td>${esc(r.raw_value??'空白')}${r.formula?'<details><summary>查看公式</summary><div>'+esc(r.formula)+'</div></details>':''}</td><td>${[[r.source_cell,'数值'],[r.date_cell||r.period_cell,'时间'],[r.category_cell,'类别'],[r.metric_cell,'指标']].filter(([cell])=>cell).map(([cell,label])=>`<span class="stored-source"><small>${label}</small>${priorRowsOnChangedSheet?esc(cell):`<button class="field-source" type="button" data-result-cell="${esc(cell)}" title="在左侧原表高亮 ${esc(cell)}">${esc(cell)} ↗</button>`}</span>`).join('')}</td></tr>`).join('')}</tbody></table></div><div class="result-pagination"><button id="storedRowsPrevious" class="secondary" ${rowOffset===0?'disabled':''}>上一页记录</button><button id="storedRowsNext" class="secondary" ${rowOffset+result.rows.length>=result.record_count?'disabled':''}>下一页记录</button></div><p class="muted">公式显示文件上次保存的计算结果。空白、报错和没有保存计算结果的单元格记为缺失。${priorRowsOnChangedSheet?'单元格位置来自上一版原件。':'点击单元格位置可在左侧原表查看。'}</p>`;
       $('storedRowsPrevious').onclick=()=>{rowOffset=Math.max(0,rowOffset-25);rows().catch(showError);};
       $('storedRowsNext').onclick=()=>{rowOffset+=25;rows().catch(showError);};
       bindRecordSources(host);
@@ -631,7 +642,8 @@
       if(e.target.tagName==='INPUT')try{syncFormMapping();}catch(err){mappingError(err);}
     };
     $('mappingForm').onchange=e=>{if(e.target.hasAttribute('data-range-input'))return;try{syncFormMapping();if(e.target.dataset.field==='layout')renderMappingForm(currentMapping());else updateDateSourceControls();}catch(err){mappingError(err);}};
-    if(ui.editable){$('mappingEditor').oninput=()=>{invalidateCheck();try{ui.mapping=ensureBlocks(JSON.parse($('mappingEditor').value));renderMappingForm(ui.mapping);saveDraft();renderLegend();renderGrid();}catch{$('mappingFeedback').textContent='高级设置尚不是完整有效的 JSON。';}updateConfirmState();};if($('addMappingBlock'))$('addMappingBlock').onclick=()=>startDraw('add');if($('confirmMapping'))$('confirmMapping').onclick=()=>confirmMapping().catch(mappingError);if($('suggestMapping'))$('suggestMapping').onclick=()=>suggestMapping(false).catch(mappingError);}
+    if(ui.editable){$('mappingEditor').oninput=()=>{invalidateCheck();try{ui.mapping=ensureBlocks(JSON.parse($('mappingEditor').value));renderMappingForm(ui.mapping);saveDraft();renderLegend();renderGrid();}catch{$('mappingFeedback').textContent='高级设置尚不是完整有效的 JSON。';}updateConfirmState();};if($('addMappingBlock'))$('addMappingBlock').onclick=()=>startDraw('add');if($('confirmMapping'))$('confirmMapping').onclick=()=>confirmMapping().catch(mappingError);}
+    if($('suggestMapping'))$('suggestMapping').onclick=()=>suggestMapping(false).catch(mappingError);
     if($('ackBlock'))$('ackBlock').onchange=()=>{
       const b=currentMapping().blocks.find(b=>b._review_id===ui.selected);if(!b)return;
       if($('ackBlock').checked&&ui.states[b._review_id]?.diagnostics?.length){$('ackBlock').checked=false;const issue=ui.states[b._review_id].diagnostics[0];mappingError(targetedError(issue.message,{...issue,sheet:currentSheet.name}));return;}
@@ -703,7 +715,7 @@
   function renderAIJob(text,state='running') {
     const panel=$('aiJobPanel'),button=$('cancelAiJob');if(!panel)return;
     panel.hidden=false;panel.classList.toggle('cancelling',state==='cancelling');panel.classList.toggle('done',state==='done');
-    $('aiJobText').textContent=text;button.hidden=state==='done';button.disabled=state==='cancelling';
+    $('aiJobText').textContent=text;button.hidden=state==='done'||state==='watching';button.disabled=state==='cancelling';
   }
   function beginAIJob(id,context) {
     const record={id,...context,cancelRequested:false,finished:false,cancelPromise:null};ui.activeAIJob=record;
@@ -746,13 +758,53 @@
     if(!accepted){$('mappingFeedback').textContent='AI 已进入保存阶段，请等待本次导入完成后再切换。';return false;}
     return true;
   }
-  async function scopedJob(id,version,onProgress) {
+  async function scopedJob(id,version,onProgress,{watch=false,interval=1000}={}) {
     const controller=new AbortController();ui.jobController=controller;
-    for(;;){if(version!==reviewVersion||controller.signal.aborted)throw Error('工作表已切换，旧任务结果不会应用。');const r=await timedApi('/api/jobs/'+encodeURIComponent(id),{},controller);if(version!==reviewVersion||controller.signal.aborted)throw Error('工作表已切换，旧任务结果不会应用。');if(['processing','queued','pending','running'].includes(r.status)){const stage=sheetJobStage(r.stage,'正在检查所选表格数据…');if(version===reviewVersion&&mappingBusy)taskProgress($('mappingFeedback'),stage,r.progress);onProgress?.(progressLabel(stage,r.progress),r.progress);await new Promise(resolve=>setTimeout(resolve,1000));continue;}if(['failed','cancelled'].includes(r.status)){showRequestDiagnostics(r.error||r.status);const action=r.status==='cancelled'?'本次处理已取消，未提交的修改会保留。':reviewFailureMessage(r.review_target,`《${currentSheet?.name||'当前工作表'}》未能完成处理，请返回核对后重试。`);const error=targetedError(action,r.review_target);error.reviewState=r.review_state;error.partialResult=r.result;throw error;}return r.result||r;}
+    const current=()=>version===reviewVersion&&!controller.signal.aborted;
+    for(;;){
+      if(!current())throw Error('工作表已切换，旧任务结果不会应用。');
+      const job=await timedApi('/api/jobs/'+encodeURIComponent(id),{},controller);
+      if(!current())throw Error('工作表已切换，旧任务结果不会应用。');
+      if(['processing','queued','pending','running'].includes(job.status)){
+        const stage=sheetJobStage(job.stage,'正在检查所选表格数据…');
+        if(!watch&&mappingBusy)taskProgress($('mappingFeedback'),stage,job.progress);
+        onProgress?.(progressLabel(stage,job.progress),job.progress,job);
+        await new Promise(resolve=>setTimeout(resolve,interval));
+        continue;
+      }
+      if(watch)return;
+      if(['failed','cancelled'].includes(job.status)){
+        showRequestDiagnostics(job.error||job.status);
+        const message=job.status==='cancelled'?'本次处理已取消，未提交的修改会保留。'
+          :reviewFailureMessage(job.review_target,`《${currentSheet?.name||'当前工作表'}》未能完成处理，请返回核对后重试。`);
+        const error=targetedError(message,job.review_target);
+        error.reviewState=job.review_state;error.partialResult=job.result;throw error;
+      }
+      return job.result||job;
+    }
+  }
+  async function watchBusyAIJob(error,record) {
+    const current=()=>record.version===reviewVersion&&record.scopeEpoch===authEpoch;
+    const show=(text,state)=>{if(current()){$('mappingFeedback').textContent=text;renderAIJob(text,state);}};
+    finishAIJob(record,'done',error.message);
+    show(error.message,'done');
+    if(!error.activeJobId||!current())return;
+    const interval=Number.isFinite(error.retryAfter)&&error.retryAfter>0 ? error.retryAfter*1000 : 2000;
+    try{
+      await scopedJob(error.activeJobId,record.version,(_stage,progress,job)=>{
+        const {completed_blocks:completed,total_blocks:total}=job.batch_ai||progress||{};
+        const block=Number.isInteger(completed)&&Number.isInteger(total)&&completed<total;
+        show(block? `本知识库正在核对第 ${completed+1}/${total} 个数据区域。可查看进度，完成后再继续。`
+          : '本知识库正在处理另一项表格任务。可查看进度，完成后再继续。','watching');
+      },{watch:true,interval});
+      show('上一项表格任务已结束，可以重新提交本次核对。','done');
+    }catch{
+      show('暂时无法查看本知识库的核对进度，请稍后再试。','done');
+    }
   }
   function selectedAssistModel(cfg) {
     if(cfg?.can_edit===false)return '';
-    if(cfg?.protocol==='platform')return cfg.models?.find(model=>model.id===cfg.native_model_id)?.name||'';
+    if(cfg?.protocol==='platform')return cfg.effective_model?.name||cfg.models?.find(model=>model.id===cfg.native_model_id)?.name||'';
     return cfg?.has_api_key&&cfg.model?cfg.model:'';
   }
   previewMapping = async function() {
@@ -765,14 +817,21 @@
       ui.checkSignature=signature;mappingConfirmed=true;$('mappingFeedback').textContent=`全部选定数据检查通过：${result.series_count} 个指标、${result.observation_count} 条记录。${result.notice||''}完整检查结果可展开查看。`;$('mappingPreview').innerHTML=mappingIdentityHTML(result.mapping)+blockPreviewHTML(result);$('mappingPreview').closest('details').open=true;saveDraft();
     }catch(e){e.reviewBlockIds=blockIds;throw e;}finally{if(version===reviewVersion)setMappingBusy(false);}
   };
+  function appendHeaderOnlyNotice(feedback,result,sheetName) {
+    if(result.scope!=='header_only'||!result.header_notice)return;
+    const notice=document.createElement('p');
+    notice.textContent=sheetName?`${sheetName}：${result.header_notice}`:result.header_notice;
+    feedback.append(notice);
+  }
   suggestMapping = async function(confirmed) {
     if(!confirmed){
       const scopeEpoch=authEpoch,version=reviewVersion,importId=currentImport?.import_id,sheetName=currentSheet?.name;
       let cfg=null;try{cfg=await api('/api/model-settings');}catch{cfg=null;}
       if(scopeEpoch!==authEpoch||version!==reviewVersion||currentImport?.import_id!==importId||currentSheet?.name!==sheetName)return;
-      const model=selectedAssistModel(cfg),ready=!!model;ui.aiMode='sheet';
-      $('aiDialog').querySelector('h3').textContent='AI 辅助确认并导入本表';$('aiContinue').textContent='辅助确认并导入';
-      $('aiDialogText').textContent=ready?`会把当前表头和少量原始样本发给「${model}」，逐个辅助补齐待确认区块。校验通过后自动导入；缺少可靠依据的字段仍需确认，不生成或改写原始数值。模型调用可能消耗额度。`:'还没有可用的模型。请点击“字段模型”选择已配置的通用模型。这次不会发送请求。';
+      const model=selectedAssistModel(cfg),chartOnly=isChartOnly(currentSheet),ready=!!model||chartOnly;ui.aiMode='sheet';
+      $('aiDialog').querySelector('h3').textContent=chartOnly?'核对曲线来源':'AI 辅助确认并导入本表';
+      $('aiContinue').textContent=chartOnly?'核对':'辅助确认并导入';
+      $('aiDialogText').textContent=chartOnly?'会检查图表使用的数据是否已经可以查询，以及此页是否有其他数据需要导入。':ready?`会把当前表头和少量原始样本发给「${model}」，逐个辅助补齐待确认区块。校验通过后自动导入；缺少可靠依据的字段仍需确认，不生成或改写原始数值。模型调用可能消耗额度。`:'还没有可用的模型。请点击“字段模型”选择已配置的通用模型。这次不会发送请求。';
       $('aiContinue').hidden=!ready;const dialog=$('aiDialog');if(!dialog.open)dialog.showModal();return;
     }
     if($('aiDialog')?.open)$('aiDialog').close();
@@ -782,23 +841,27 @@
     const activeJob=beginAIJob(requestId,{version,scopeEpoch,importId,sheetName,authHeaders:authHeaders()});
     try{
       const job=await timedApi(`/api/imports/${encodeURIComponent(importId)}/assist-confirm`,{method:'POST',headers:{'Content-Type':'application/json',...activeJob.authHeaders},body:JSON.stringify({sheet:sheetName,mapping,request_id:requestId})});
-      if(job.id&&job.id!==requestId)throw Error('AI 任务标识与当前请求不一致，请刷新后重试。');
+      if(job.id&&job.id!==requestId)throw Error('返回的结果与本次核对不一致，请刷新后重试。');
       if(version!==reviewVersion||scopeEpoch!==authEpoch)return;
       const result=job.id?await scopedJob(job.id,version,stage=>{if(version===reviewVersion){$('mappingFeedback').textContent=stage;renderAIJob(stage,activeJob?.cancelRequested?'cancelling':'running');}}):job;
       if(activeJob)finishAIJob(activeJob,'completed','AI 辅助核对已完成。');
       if(version!==reviewVersion||scopeEpoch!==authEpoch)return;
-      if(result.mapping){applyAssistResult(result);saveDraft(result.imported?result.mapping:currentSheet.mapping);setMappingBusy(true);}
+      if(result.partially_imported||result.skipped)removeDraftFor(currentSheet);
+      else if(result.mapping){applyAssistResult(result);saveDraft(result.imported?result.mapping:currentSheet.mapping);setMappingBusy(true);}
       else removeDraftFor(currentSheet);
       ui.editable=false;
       await refreshReviewResult(importId,sheetName,result,scopeEpoch);
       if(scopeEpoch!==authEpoch||currentSheet?.name!==sheetName)return;
-      $('mappingFeedback').textContent=result.notice||(isPublished(currentSheet)?'辅助确认完成，校验通过的工作表已自动导入。':'辅助核对完成；缺少可靠依据的区块仍标红，请补齐后导入。');
+      const feedback=$('mappingFeedback');
+      feedback.textContent=result.notice||(isPublished(currentSheet)?'辅助确认完成，校验通过的工作表已自动导入。':'辅助核对完成；缺少可靠依据的区块仍标红，请补齐后导入。');
+      appendHeaderOnlyNotice(feedback,result);
     }catch(error){
       if(activeJob?.cancelRequested||version!==reviewVersion||scopeEpoch!==authEpoch){
         if(activeJob)finishAIJob(activeJob,'cancelled','AI 任务已取消；当前草稿保留，未继续自动导入。');
         if(version===reviewVersion&&scopeEpoch===authEpoch)$('mappingFeedback').textContent='AI 任务已取消；当前草稿保留，未继续自动导入。';
         return;
       }
+      if(error.reason==='AI_REVIEW_BUSY'){await watchBusyAIJob(error,activeJob);return;}
       if(activeJob)finishAIJob(activeJob,'failed','AI 辅助核对未完成，请按错误提示处理。');
       throw error;
     }finally{if(activeJob&&!activeJob.finished)finishAIJob(activeJob,'failed','AI 辅助核对未完成，请按错误提示处理。');if(version===reviewVersion&&scopeEpoch===authEpoch&&currentImport?.import_id===importId&&currentSheet?.name===sheetName)setMappingBusy(false);}
@@ -838,12 +901,13 @@
     let result;
     try{
       const job=await timedApi(`/api/imports/${encodeURIComponent(importId)}/assist-confirm-all`,{method:'POST',headers:{'Content-Type':'application/json',...activeJob.authHeaders},body:JSON.stringify({acknowledged_risk:true,request_id:requestId,total_max_requests:256,per_sheet_max_requests:12,save_template:true,mappings:ui.aiBatchMappings||[]})});
-      if(job.id!==requestId)throw Error('AI 任务标识与当前请求不一致，请刷新后重试。');
+      if(job.id!==requestId)throw Error('返回的结果与本次核对不一致，请刷新后重试。');
       if(scopeEpoch!==authEpoch||version!==reviewVersion)return;
       result=await scopedJob(job.id,version,stage=>renderAIJob(stage,activeJob.cancelRequested?'cancelling':'running'));
     }catch(error){
       if(error.partialResult)result=error.partialResult;
       else if(activeJob.cancelRequested||scopeEpoch!==authEpoch||version!==reviewVersion){finishAIJob(activeJob,'cancelled','已取消批量任务；已完成的表保留，可刷新查看结果。');return;}
+      else if(error.reason==='AI_REVIEW_BUSY'){await watchBusyAIJob(error,activeJob);return;}
       else{finishAIJob(activeJob,'failed','批量辅助未完成，原件和已导入数据保留。');throw error;}
     }finally{
       // Refresh below also changes reviewVersion. Reset this batch's busy
@@ -857,9 +921,11 @@
     await refreshReviewResult(importId,sheetName,result,scopeEpoch);
     if(scopeEpoch!==authEpoch||currentImport?.import_id!==importId)return;
     const summary=`已导入 ${(result?.sheets_imported||[]).length} 张 · 待确认 ${(result?.sheets_pending||[]).length} 张 · 跳过 ${(result?.sheets_skipped||[]).length} 张 · 模型请求 ${result?.requests_used||0} 次`;
-    $('mappingFeedback').textContent=(result?.notice||'批量辅助已结束。')+' '+summary;
-    const rows=[...(result?.sheets_skipped||[]).map(item=>typeof item==='string'?{sheet:item,message:'没有可导入的指标数据。'}:item),...(result?.sheets_failed||[]),...(result?.details||[]).filter(item=>item.status==='needs_review'||item.status==='not_started')];
-    if(rows.length){const details=document.createElement('details'),caption=document.createElement('summary');caption.textContent='查看跳过与待确认原因';details.append(caption);for(const item of rows){const p=document.createElement('p');p.textContent=`${item.sheet}：${item.message||item.reason||'请打开工作表继续核对。'}`;details.append(p);}$('mappingFeedback').append(details);}
+    const feedback=$('mappingFeedback');
+    feedback.textContent=(result?.notice||'批量辅助已结束。')+' '+summary;
+    for(const detail of result?.details||[])appendHeaderOnlyNotice(feedback,detail,detail.sheet);
+    const rows=[...(result?.sheets_skipped||[]).map(item=>typeof item==='string'?{sheet:item,message:'没有可导入的指标数据。'}:item),...(result?.sheets_failed||[]),...(result?.details||[]).filter(item=>['needs_review','not_started','partially_imported'].includes(item.status))];
+    if(rows.length){const details=document.createElement('details'),caption=document.createElement('summary');caption.textContent='查看跳过与待确认原因';details.append(caption);for(const item of rows){const p=document.createElement('p');p.textContent=`${item.sheet}：${item.message||item.reason||'请打开工作表继续核对。'}`;details.append(p);}feedback.append(details);}
   }
   function applyAssistResult(result) {
     const proposed=copy(result.mapping),prior=ui.mapping,included=enabledBlocks();
@@ -914,7 +980,152 @@
     if(currentImport?.import_id===importId&&currentSheet?.name!==sheetName){const index=currentImport.sheets.findIndex(s=>s.name===sheetName);if(index>=0)await selectSheet(index);}
     if(!isCurrent())return;
     if(result?.dataset_id&&!reviewOnly){$('dataset').value=result.dataset_id;await selectDataset();}
-    notifyImportUpdated(importId,result?.dataset_id,result?.imported===false||result?.sheets_failed?.length?'needs_review':'confirmed',scopeEpoch);
+    const pending=result?.partially_imported||(result?.imported===false&&!result?.skipped)||result?.sheets_failed?.length;
+    notifyImportUpdated(importId,result?.dataset_id,pending?'needs_review':'confirmed',scopeEpoch);
+  }
+  const currentHeaderCleanup = () => headerCleanupJobs.get(currentImport?.import_id);
+  const cleanupRequestPath = record => `/api/imports/${encodeURIComponent(record.importId)}/header-cleanup`;
+  const cleanupIsCurrent = record => headerCleanupJobs.get(record.importId)===record;
+  function updateHeaderCleanupApply(record) {
+    const button=$('headerCleanupApply');
+    button.hidden=!record.sheets.some(sheet=>sheet.status==='rename'&&!record.applied.has(sheet.sheet_name));
+    button.disabled=record.applying||record.applyBlocked||!record.selected.size;
+  }
+  function headerCleanupValue(label,text) {
+    const characters=Array.from(text);
+    if(characters.length<=72&&!text.includes('\n'))return `${label}：${esc(text)}`;
+    const preview=characters.slice(0,72).join('').split('\n')[0];
+    return `<details class="header-cleanup-value"><summary>${label}：<span class="header-cleanup-preview">${esc(preview)}…</span></summary><div>${esc(text)}</div></details>`;
+  }
+  function headerCleanupMessages(sheet) {
+    return [['待核对',sheet.diagnostics],['提示',sheet.notices]].map(([label,items])=>{
+      if(!items?.length)return '';
+      const messages=items.map(item=>{
+        const location=[Number.isInteger(item.block_index)?`区块 ${item.block_index+1}`:'',
+          item.column?`${item.column} 列`:'',label==='提示'?item.cells?.join('、'):''].filter(Boolean).join(' · ');
+        return `<li>${location?`${esc(location)}：`:''}${esc(item.message)}</li>`;
+      }).join('');
+      return `<div class="header-cleanup-diagnostics"><span>${label}</span><ul>${messages}</ul></div>`;
+    }).join('');
+  }
+  function headerCleanupChange(change) {
+    const fields=[
+      ['代码',change.source_codes||[]],
+      ['单位',change.unit||[]],
+      ['频率',change.frequency||[]],
+      ['说明',change.header_notes||[]],
+    ];
+    const values=fields.flatMap(([label,items])=>items.map(item=>`<li>${headerCleanupValue(label,typeof item==='string'?item:item.text)}</li>`));
+    if(change.unit_conflict)values.push('<li class="header-cleanup-conflict">单位待核对</li>');
+    if(change.frequency_conflict)values.push('<li class="header-cleanup-conflict">频率待核对</li>');
+    return `<li><span>${esc(change.old_name)} → ${esc(change.new_name)}</span>
+      ${values.length?`<ul class="header-cleanup-fields">${values.join('')}</ul>`:''}</li>`;
+  }
+  function headerCleanupSuggestion(sheet,record) {
+    const rename=sheet.status==='rename';
+    const changes=rename?sheet.changes.map(headerCleanupChange):[];
+    const remaining=changes.slice(5);
+    return `<div class="header-cleanup-sheet">
+      <label>
+        <input type="checkbox" data-header-cleanup-sheet="${esc(sheet.sheet_name)}"${record.selected.has(sheet.sheet_name)?' checked':''}${!rename||record.applying||record.applyBlocked?' disabled':''}>
+        <span>${esc(sheet.sheet_name)} · ${rename?`${changes.length} 个指标会改名`:'需核对'}</span>
+      </label>
+      ${rename?`<details class="header-cleanup-changes">
+        <summary>查看改名和分离的表头信息</summary>
+        <ul>${changes.slice(0,5).join('')}</ul>
+        ${remaining.length?`<details><summary>其余 ${remaining.length} 个</summary><ul>${remaining.join('')}</ul></details>`:''}
+      </details>`:''}
+      ${headerCleanupMessages(sheet)}
+    </div>`;
+  }
+  function renderHeaderCleanup(record) {
+    if(currentHeaderCleanup()!==record)return;
+    const progress=$('headerCleanupProgress'),cancel=$('headerCleanupCancel');
+    progress.hidden=!(record.running||record.applying);
+    progress.classList.toggle('cancelling',record.running&&record.cancelRequested);
+    $('headerCleanupStage').textContent=record.applying?'正在检查并应用所选工作表…':record.stage;
+    cancel.hidden=!record.running;cancel.disabled=record.cancelRequested;
+    $('headerCleanupClose').disabled=record.applying;
+    $('headerCleanupRetry').hidden=record.running||record.applying;
+    $('headerCleanupNotice').textContent=[record.message,record.notice].filter(Boolean).join(' ');
+
+    const suggestions=record.sheets.filter(sheet=>['rename','needs_review'].includes(sheet.status)&&!record.applied.has(sheet.sheet_name));
+    const unchanged=record.sheets.filter(sheet=>sheet.status==='unchanged');
+    const failed=record.sheets.filter(sheet=>sheet.status==='failed');
+    const outcomes=[...record.applied.values()].map(sheet=>{
+      const success=sheet.status==='applied';
+      const outcome=success?`已应用（${esc(sheet.renamed_fields)} 个指标改名）`:esc(sheet.error||'应用未完成，请重新整理。');
+      const suggestion=record.sheets.find(item=>item.sheet_name===sheet.sheet_name);
+      return `<li data-sheet-confirm="${success?'success':'failed'}"><span>${esc(sheet.sheet_name)}：${outcome}</span>${suggestion?headerCleanupMessages(suggestion):''}</li>`;
+    }).join('');
+    const unchangedList=unchanged.map(sheet=>`<li>${esc(sheet.sheet_name)}${headerCleanupMessages(sheet)}</li>`).join('');
+    const failedList=failed.map(sheet=>`<li data-sheet-confirm="failed">${esc(sheet.sheet_name)}：${esc(sheet.error||'未能整理表头说明。')}</li>`).join('');
+    $('headerCleanupResults').innerHTML=`
+      ${outcomes?`<ul class="batch-confirm-results">${outcomes}</ul>`:''}
+      ${suggestions.map(sheet=>headerCleanupSuggestion(sheet,record)).join('')}
+      ${unchangedList?`<details><summary>无需改动（${unchanged.length} 张）</summary><ul>${unchangedList}</ul></details>`:''}
+      ${failedList?`<div>整理失败（${failed.length} 张）<ul class="batch-confirm-results">${failedList}</ul></div>`:''}`;
+    updateHeaderCleanupApply(record);
+  }
+  async function startHeaderCleanup() {
+    if(!currentImport?.header_cleanup_count||mappingBusy||ui.batchBusy)return;
+    const importId=currentImport.import_id;
+    const id=Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('');
+    const record={id,importId,running:true,stage:'正在准备逐张查看表头…',sheets:[],applied:new Map(),selected:new Set()};
+    headerCleanupJobs.set(importId,record);
+    renderHeaderCleanup(record);
+    const dialog=$('headerCleanupDialog');
+    if(!dialog.open)dialog.showModal();
+    try{
+      const job=await timedApi(cleanupRequestPath(record),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:id})});
+      if(job.id!==id)throw Error('任务编号与当前请求不一致，请重新整理。');
+      const result=await waitJob(id,(stage,progress)=>{
+        if(!record.cancelRequested){record.stage=progressLabel(stage,progress);renderHeaderCleanup(record);}
+      },()=>cleanupIsCurrent(record),path=>timedApi(path));
+      record.sheets=result.sheets||[];
+      record.message=result.notice||'整理已完成，请核对建议。';
+    }catch(error){
+      record.sheets=error.partialResult?.sheets||[];
+      record.applyBlocked=error.partialResult?.stopped==='permission_denied';
+      record.message=error.message;
+    }finally{
+      record.running=false;
+      record.selected=new Set(record.sheets.filter(sheet=>sheet.status==='rename').map(sheet=>sheet.sheet_name));
+      renderHeaderCleanup(record);
+    }
+  }
+  async function cancelHeaderCleanup() {
+    const record=currentHeaderCleanup();
+    if(!record?.running||record.cancelRequested)return;
+    record.cancelRequested=true;record.stage='正在取消任务…';
+    renderHeaderCleanup(record);
+    try{await timedApi('/api/jobs/'+encodeURIComponent(record.id)+'/cancel',{method:'POST'});}
+    catch(error){
+      if(!record.running)return;
+      record.cancelRequested=false;record.message=error.message;renderHeaderCleanup(record);
+    }
+  }
+  async function applyHeaderCleanup() {
+    const record=currentHeaderCleanup();
+    if(!record?.selected.size||record.running||record.applying||record.applyBlocked||mappingBusy||ui.batchBusy)return;
+    const scopeEpoch=authEpoch,sheetName=currentSheet?.name;
+    record.applying=true;record.message='';record.notice='';
+    renderHeaderCleanup(record);
+    try{
+      const result=await api(cleanupRequestPath(record)+'/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:record.id,sheet_names:[...record.selected]})});
+      if(!cleanupIsCurrent(record))return;
+      for(const sheet of result.sheets||[]){
+        record.applied.set(sheet.sheet_name,sheet);
+        record.selected.delete(sheet.sheet_name);
+      }
+      record.notice=result.notice;
+      if(result.sheets?.some(sheet=>sheet.status==='applied')){
+        if(currentImport?.import_id===record.importId){
+          await refreshReviewResult(record.importId,sheetName,result,scopeEpoch);
+        }else notifyImportUpdated(record.importId,result.dataset_id,'confirmed',scopeEpoch);
+      }
+    }catch(error){record.message=error.message;}
+    finally{record.applying=false;renderHeaderCleanup(record);}
   }
   function confirmAllSheets() {
     if(mappingBusy||ui.batchBusy)return;
@@ -981,12 +1192,28 @@
   }
   $('aiCancel').onclick=()=>$('aiDialog').close();
   $('aiContinue').onclick=()=>(ui.aiMode==='all'?assistAllSheets(true):suggestMapping(true)).catch(mappingError);
-  $('cancelAiJob').onclick=()=>cancelActiveAIJob('用户取消').then(accepted=>{if(accepted)$('mappingFeedback').textContent='已请求取消 AI 任务，正在等待当前模型请求返回。';});
+  $('cancelAiJob').onclick=()=>cancelActiveAIJob('用户取消').then(accepted=>{if(accepted)$('mappingFeedback').textContent='正在停止本次核对，已完成的部分可以查看。';});
   $('confirmBack').onclick=()=>$('confirmDialog').close();
   $('confirmGo').onclick=()=>runConfirm();
   if($('confirmAllSheets'))$('confirmAllSheets').onclick=confirmAllSheets;
   if($('confirmAutoReadySheets'))$('confirmAutoReadySheets').onclick=confirmAutoReadySheets;
   if($('aiImportAllSheets'))$('aiImportAllSheets').onclick=()=>assistAllSheets().catch(mappingError);
+  $('headerCleanup').onclick=()=>{
+    const record=currentHeaderCleanup();
+    if(!record){startHeaderCleanup();return;}
+    renderHeaderCleanup(record);$('headerCleanupDialog').showModal();
+  };
+  $('headerCleanupRetry').onclick=startHeaderCleanup;
+  $('headerCleanupClose').onclick=()=>$('headerCleanupDialog').close();
+  $('headerCleanupDialog').oncancel=e=>{if(currentHeaderCleanup()?.applying)e.preventDefault();};
+  $('headerCleanupCancel').onclick=cancelHeaderCleanup;
+  $('headerCleanupApply').onclick=applyHeaderCleanup;
+  $('headerCleanupResults').onchange=e=>{
+    const sheet=e.target.dataset.headerCleanupSheet,record=currentHeaderCleanup();
+    if(sheet===undefined||!record)return;
+    if(e.target.checked)record.selected.add(sheet);else record.selected.delete(sheet);
+    updateHeaderCleanupApply(record);
+  };
   function openSheetMenu(){renderSheetMenu();$('sheetMenu').hidden=false;$('allSheets').setAttribute('aria-expanded','true');}
   $('sheetSearch').oninput=openSheetMenu;
   $('sheetSearch').onfocus=openSheetMenu;
@@ -1016,10 +1243,11 @@
     else finishAIJob(record,'detached','AI 已进入保存阶段；账号或空间已切换，请刷新原位置查看最终结果。');
   };
   window.sheetReviewAuthChanged=()=>{
-    volatileDrafts.clear();purgeUnsafeDraftKeys();
+    volatileDrafts.clear();headerCleanupJobs.clear();purgeUnsafeDraftKeys();
     ui.batchBusy=false;ui.batchOwner=null;ui.aiMode=null;ui.aiBatchScope=null;ui.aiBatchMappings=[];ui.autoReadySelection=null;
     ui.activeAIJob=null;ui.jobController?.abort();
-    for(const id of ['aiDialog','confirmDialog'])if($(id)?.open)$(id).close();
+    for(const id of ['aiDialog','confirmDialog','headerCleanupDialog'])if($(id)?.open)$(id).close();
+    for(const id of ['headerCleanupResults','headerCleanupNotice','headerCleanupStage'])$(id).textContent='';
     if($('aiJobPanel'))$('aiJobPanel').hidden=true;
   };
   window.addEventListener('pagehide',()=>{if(ui.activeAIJob)cancelActiveAIJob('关闭页面',{keepalive:true});});

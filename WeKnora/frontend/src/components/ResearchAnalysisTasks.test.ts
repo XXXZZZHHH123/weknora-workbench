@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm'
 import { computed, effectScope, h, nextTick, reactive, ref, watch } from 'vue'
 import ts from 'typescript'
 import { parse, compileTemplate } from '@vue/compiler-sfc'
+import { analysisJobPresentation, type AnalysisJobPurpose } from '../api/researchAnalysisTasks'
 const source = readFileSync(process.env.ANALYSIS_WIDGET_TEST_SOURCE || new URL('./ResearchAnalysisTasks.vue', import.meta.url), 'utf8')
 const script = source.split('<script setup lang="ts">')[1]!.split('</script>')[0]!.replace(/^import .*$/gm, '')
 const code = ts.transpileModule(script + '\n;({ expanded, label, openTask, notifyCompleted, wake, rows, notificationCount: () => notifications.size, ignoreTask: typeof ignoreTask === "function" ? ignoreTask : undefined, ignoreAll: typeof ignoreAll === "function" ? ignoreAll : undefined, canIgnoreAll: typeof canIgnoreAll !== "undefined" ? canIgnoreAll : undefined })', { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
@@ -24,7 +25,7 @@ function fixture() {
   const document = { visibilityState: 'visible', addEventListener: (name: string, callback: unknown) => listeners.set(name, callback), removeEventListener: (name: string) => listeners.delete(name) }
   const scope = effectScope(), view = scope.run(() => runInNewContext(code, { computed, h, ref, watch, useAnalysisTasksStore: () => store, useRouter: () => ({ push: async (target: unknown) => { calls.opens.push(target) } }),
     onMounted: (fn: () => void) => mounted.push(fn), onBeforeUnmount: (fn: () => void) => cleanup.push(fn), NotifyPlugin: { success: (notice: unknown) => { calls.notices.push(notice); const handle = Promise.resolve({ close() {} }); calls.handles.push(handle); return handle }, close: (handle: unknown) => { calls.closed++; calls.closedHandles.push(handle) } },
-    analysisPhaseLabel: () => '', document, window: { addEventListener: document.addEventListener, removeEventListener: document.removeEventListener } })) as any
+    analysisJobPresentation, analysisPhaseLabel: () => '', document, window: { addEventListener: document.addEventListener, removeEventListener: document.removeEventListener } })) as any
   mounted.forEach(fn => fn())
   return { store, calls, view, document, listeners, bulkReplies, close() { cleanup.forEach(fn => fn()); scope.stop() } }
 }
@@ -33,7 +34,7 @@ test('global analysis widget compiles as a real Vue template and lives outside t
   const parsed = parse(source).descriptor, compiled = compileTemplate({ id: 'analysis-tasks', source: parsed.template!.content, filename: 'ResearchAnalysisTasks.vue' })
   assert.deepEqual(compiled.errors, [])
   const host = readFileSync(new URL('../views/platform/index.vue', import.meta.url), 'utf8')
-  assert.match(host, /<div class="platform-task-dock"><ResearchAnalysisTasks\s*\/><UploadTasksPanel\s*\/><\/div>/)
+  assert.match(host, /<FeedbackLauncher>\s*<div class="platform-task-dock">\s*<ResearchAnalysisTasks\s*\/>\s*<UploadTasksPanel\s*\/>\s*<\/div>\s*<\/FeedbackLauncher>/)
   assert.doesNotMatch(parsed.template!.content, /percentage|aria-valuenow|ProgressRing/)
 })
 test('completion notifies once with an explicit result link and never invokes analysis creation or saving', async () => {
@@ -74,6 +75,59 @@ test('a diagram completion opens the diagram view rather than the judgment manag
     f.calls.notices[0].content().children[1].props.onClick()
     assert.equal(f.calls.opens[0].query.view, 'diagram')
     assert.equal(f.calls.opens[0].query.analysis_job, 'diagram-job')
+  } finally { f.close() }
+})
+
+test('a setup task opens the workbench home for progress and draft review', async () => {
+  const f = fixture()
+  try {
+    const job = { id: 'setup-job', workbench_id: 'wb-a', purpose: 'workbench_setup', state: 'running' }
+    f.store.jobs.push(job)
+    f.view.openTask(job)
+    const completed = { ...job, state: 'succeeded', result_available: true }
+    f.store.jobs = [completed]
+    f.store.pendingNotifications.push(completed)
+    await nextTick()
+    assert.equal(f.calls.notices[0].title, '工作台草稿已生成')
+    f.calls.notices[0].content().children[1].props.onClick()
+    assert.equal(f.calls.opens.length, 2)
+    for (const target of f.calls.opens) {
+      assert.equal(target.params.workbenchId, 'wb-a')
+      assert.equal(target.query.view, 'home')
+      assert.equal(target.query.analysis_job, 'setup-job')
+    }
+  } finally { f.close() }
+})
+
+test('new task notifications and panel rows open the corresponding native views', async () => {
+  const f = fixture()
+  try {
+    const targets: Array<[AnalysisJobPurpose, string, string]> = [
+      ['monitor_draft', 'monitors', '监测草稿生成'],
+      ['report_dimension_draft', 'reports', '日报周报结论起草'],
+      ['report_chart_import', 'chart-import', '往期周报图表识别'],
+      ['dimension_inference', 'dimensions', '周报研究维度归纳'],
+      ['dimension_fields', 'dimensions', '研究维度指标建议'],
+      ['focus_suggestions', 'market', '核心关注建议生成'],
+      ['judgment_dimensions', 'judgment', '为研究判断补充分类'],
+      ['judgment_indicator_recommendations', 'judgment', '研判指标推荐'],
+      ['diagram_indicator_recommendations', 'diagram', '产业图指标推荐'],
+      ['strategy_text', 'strategies', '策略原文整理'],
+      ['strategy_generation', 'strategies', '策略方案生成'],
+    ]
+    const jobs = targets.map(([purpose], index) => ({ id: `job-${index}`, workbench_id: 'wb-a', purpose,
+      state: 'succeeded', result_available: true }))
+    f.store.jobs.push(...jobs); f.store.pendingNotifications.push(...jobs); await nextTick()
+    assert.equal(f.calls.notices.length, jobs.length)
+    for (const [index, [, view, title]] of targets.entries()) {
+      assert.equal(f.calls.notices[index].title, `${title}已完成`)
+      f.calls.notices[index].content().children[1].props.onClick()
+      assert.equal(f.calls.opens[index].name, 'researchWorkbenchDetail')
+      assert.equal(f.calls.opens[index].params.workbenchId, 'wb-a')
+      assert.equal(f.calls.opens[index].query.view, view)
+      assert.equal(f.calls.opens[index].query.analysis_job, jobs[index]!.id)
+    }
+    f.view.openTask(jobs[0]); assert.equal(f.calls.opens.at(-1).query.view, 'monitors')
   } finally { f.close() }
 })
 

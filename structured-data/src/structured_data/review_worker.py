@@ -258,7 +258,7 @@ def _review_child(request, result_path, memory_bytes, timeout_seconds, control=N
         elif action == "confirm":
             result = manager.confirm(request["import_id"], request["mapping"],
                                      request["save_template"], before_publish=before_publish,
-                                     progress=progress)
+                                     progress=progress, assistant_review=request.get('assistant_review'))
         elif action == "review":
             report_progress(progress, 'preview')
             result = manager.review_mapping(request["import_id"], request["mapping"])
@@ -268,6 +268,12 @@ def _review_child(request, result_path, memory_bytes, timeout_seconds, control=N
         elif action == 'mark_skip':
             from .batch_ai_import import mark_no_data
             result = mark_no_data(manager, request['import_id'], request['mapping'], before_write=before_publish)
+        elif action == 'prepare_assist':
+            from .assist_structure import prepare_assist
+            result = prepare_assist(manager, request['import_id'], request['mapping'])
+        elif action == 'mark_reference':
+            from .assist_structure import mark_reference
+            result = mark_reference(manager, request['import_id'], request['mapping'], before_write=before_publish)
         else:
             result = manager.ingest(request["path"],
                 use_reviewed_mappings=request.get("use_reviewed_mappings", True),
@@ -383,7 +389,7 @@ def _cleanup_temporary_snapshots(root, previous):
                 pass
 
 
-def run_review_task(root, action, *, import_id=None, mapping=None,
+def run_review_task(root, action, *, import_id=None, mapping=None, assistant_review=None,
                     save_template=True, path=None, timeout=None,
                     memory_limit_mb=None, use_reviewed_mappings=True,
                     publish_guard=None, native_source=None, progress_callback=None, cancel_check=None):
@@ -396,9 +402,9 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
     budget is a termination threshold, not a zero-overshoot allocation promise.
     The caller must hold its cross-action import/confirmation lock throughout.
     """
-    if action not in {"import", "preview", "confirm", "review", "evidence", "mark_skip"}:
+    if action not in {"import", "preview", "confirm", "review", "evidence", "mark_skip", "prepare_assist", "mark_reference"}:
         raise ValueError("不支持的工作表任务。")
-    if publish_guard is not None and (action not in {"import", "confirm", "mark_skip"}
+    if publish_guard is not None and (action not in {"import", "confirm", "mark_skip", "mark_reference"}
                                       or not callable(publish_guard)):
         raise ValueError("发布权限核验配置无效。")
     if progress_callback is not None and not callable(progress_callback):
@@ -428,7 +434,7 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
         raise ReviewTaskError("TASK_RESOURCE_INVALID", "工作表任务资源限制配置无效。") from None
     root = Path(root).resolve()
     request = {"root": str(root), "action": action, "import_id": import_id,
-               "mapping": mapping, "save_template": bool(save_template),
+               "mapping": mapping, "save_template": bool(save_template), "assistant_review": assistant_review,
                "use_reviewed_mappings":use_reviewed_mappings,
                'report_progress': progress_callback is not None,
                'authorize_publish': publish_guard is not None,
@@ -436,7 +442,7 @@ def run_review_task(root, action, *, import_id=None, mapping=None,
                "path": str(Path(path).resolve()) if path is not None else None}
     if action == "import" and not request["path"]:
         raise ValueError("导入任务缺少源文件。")
-    if action in {"preview", "confirm", "review", "evidence", "mark_skip"} and (not import_id or not isinstance(mapping, dict)):
+    if action != "import" and (not import_id or not isinstance(mapping, dict)):
         raise ValueError("工作表任务缺少导入记录或映射。")
     try:
         encoded = json.dumps(request, ensure_ascii=False, allow_nan=False).encode("utf-8")

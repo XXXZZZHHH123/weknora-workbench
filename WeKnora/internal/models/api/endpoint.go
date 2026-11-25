@@ -90,9 +90,12 @@ func (e Endpoint) Resolve(defaultPath string) string {
 	return b.String()
 }
 
-func (e Endpoint) httpClient() *http.Client {
+func (e Endpoint) httpClient(ctx context.Context) *http.Client {
 	if e.Client != nil {
 		return e.Client
+	}
+	if IsStructuredReview(ctx) {
+		return structuredReviewHTTPClient
 	}
 	return HTTPClient
 }
@@ -143,12 +146,15 @@ func (e Endpoint) newPost(ctx context.Context, url string, data []byte, contentT
 // Do sends the request and returns the response. Non-2xx responses are
 // turned into an error carrying the body so callers surface vendor messages.
 func (e Endpoint) Do(req *http.Request) (*http.Response, error) {
-	resp, err := e.httpClient().Do(req)
+	resp, err := e.httpClient(req.Context()).Do(req)
 	if err != nil {
 		return nil, &TransportError{Op: "send request", Err: err}
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		var body []byte
+		if !IsStructuredReview(req.Context()) {
+			body, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		}
 		_ = resp.Body.Close()
 		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: string(body), Header: resp.Header}
 	}
@@ -224,6 +230,9 @@ type HTTPError struct {
 	Header http.Header
 }
 
+// ErrEmptyCompletion means the provider replied without any completion.
+var ErrEmptyCompletion = errors.New("no response from API")
+
 func (e *HTTPError) Error() string {
 	return fmt.Sprintf("API request failed with status %d: %s", e.StatusCode, e.Body)
 }
@@ -261,6 +270,9 @@ func parseRetryAfter(value string, now time.Time) time.Duration {
 // LogRequest emits the standard request log line with image payloads
 // compacted so data URIs do not flood the log.
 func LogRequest(ctx context.Context, url, model string, body []byte, stream bool) {
+	if IsStructuredReview(ctx) {
+		return
+	}
 	pretty := body
 	var buf bytes.Buffer
 	if err := json.Indent(&buf, body, "", "  "); err == nil {

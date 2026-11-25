@@ -130,7 +130,8 @@ def _attach_card_monitor(result, scope, end):
             row['monitor'] = states[row['id']]
 
 
-def build_period(session, variety, end: date, kind='daily', *, source=None, preview_rules=None, include_analysis=True, figure_metadata=True):
+def build_period(session, variety, end: date, kind='daily', *, source=None, preview_rules=None, include_analysis=True,
+                 figure_metadata=True, project_evidence=True):
     from tin.export.board import snapshot
     from tin.web.number_format import source_decimals, observation_decimals
     from tin.integration.workbench_scope import current_workbench
@@ -235,7 +236,7 @@ def build_period(session, variety, end: date, kind='daily', *, source=None, prev
     if live_rules:
         from tin.web.report_drafts import attach_saved_report, bound_series
         scope = current_workbench.get()
-        result = attach_saved_report(session, scope, result)
+        result = attach_saved_report(session, scope, result, project_evidence=include_analysis and project_evidence)
         if scope is not None and not scope.restricted:
             result['report_figure_selection'] = bound_series(session, scope)[:6]
     from tin.web.report_charts import attach_figures
@@ -245,4 +246,8 @@ def build_period(session, variety, end: date, kind='daily', *, source=None, prev
         result = attach_dimension_data(session, result, current_workbench.get())
     from tin.web.report_one_page import dimension_overview
     result['dimension_overview'] = dimension_overview(result)
+    manual = result.get('manual_report') or {}
+    if manual.get('evidence_checks'):
+        from tin.web.report_evidence import check_facts
+        check_facts(manual['evidence_checks'], manual['draft']['evidence_citations'], result['dimension_overview'])
     return result

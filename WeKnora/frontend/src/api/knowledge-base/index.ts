@@ -494,6 +494,7 @@ export function uploadKnowledgeFile(
     file: File
     tag_ids?: string[]
     fileName?: string
+    save_as_new?: 'true'
     process_config?: KnowledgeProcessOverrides | string
     [key: string]: any
   } = { file: new File([], '') },
@@ -513,6 +514,18 @@ export function uploadKnowledgeFile(
     }
   });
   return postUpload(`/api/v1/knowledge-bases/${kbId}/knowledge/file`, formData, onProgress, config);
+}
+
+export function uploadKnowledgeFileVersion(
+  kbId: string,
+  knowledgeId: string,
+  file: File,
+  onProgress?: (progressEvent: any) => void,
+  config?: { signal?: AbortSignal },
+) {
+  const formData = new FormData();
+  formData.append('file', file);
+  return postUpload(`/api/v1/knowledge-bases/${encodeURIComponent(kbId)}/knowledge/${encodeURIComponent(knowledgeId)}/file-version`, formData, onProgress, config);
 }
 
 // 从URL创建知识
@@ -547,6 +560,7 @@ export interface ListKnowledgeFilesParams {
   page_size: number;
   tag_ids?: string;
   keyword?: string;
+  file_names?: string[];
   file_type?: string;
   parse_status?: string;
   source?: string;

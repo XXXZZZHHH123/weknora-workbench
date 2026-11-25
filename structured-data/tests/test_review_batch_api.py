@@ -1,9 +1,16 @@
 """Batch review jobs preserve source isolation and never publish unchecked AI output."""
 from copy import deepcopy
+from datetime import datetime
+from io import BytesIO
+import json
 import time
 
-from structured_data import review_worker
+from openpyxl import Workbook
+import pytest
+
+from structured_data import ai_review, review_worker
 from structured_data.imports import ImportManager
+from test_ai_review import mock_model
 from test_review_api import FakeAuthClient, Reply, client, make_workbook, poll
 
 
@@ -51,7 +58,9 @@ def test_ai_assist_checks_model_mapping_then_automatically_imports(client, monke
     seen = []
 
     def assist(manager, import_id, sheet, *, mapping=None, budget=None, cancelled=None,
-               progress=None, review=None):
+               progress=None, review=None, prepare=None, deadline=None):
+        assert time.monotonic() < deadline <= time.monotonic() + 600
+        assert prepare(mapping)['mapping'] == mapping
         budget.consume()
         seen.append((sheet, mapping))
         state = review(mapping)
@@ -81,6 +90,102 @@ def test_ai_unresolved_mapping_remains_pending_without_publishing(client, monkey
     assert result['imported'] is False and result['dataset_id'] == uploaded['dataset_id']
     assert result['review_state'] == pending and result['mapping'] == mapping
     assert client.get(url + '/sheet', params={'name': 'parallel'}).json()['status'] == 'needs_review'
+
+
+@pytest.mark.parametrize('batch', [False, True], ids=['single', 'batch'])
+@pytest.mark.parametrize('unsupported_header', [False, True], ids=['verified', 'borrowed-header'])
+def test_wide_assist_job_checks_each_header_before_publishing(client, monkeypatch, batch, unsupported_header):
+    width = 150
+    note = '初步统计以公斤记录。修订前请先核对原表的统计覆盖范围以及填报规则。' * 4
+    book = Workbook()
+    existing = book.active
+    existing.title = 'existing'
+    existing.append(['日期', '价格'])
+    existing.append([datetime(2024, 1, 1), 10])
+    existing.append([datetime(2024, 2, 1), 11])
+    wide = book.create_sheet('wide')
+    wide.append([note])
+    wide.append(['统计日期', *(f'产量 {column:03}' for column in range(2, width + 1))])
+    wide.append([datetime(2024, 1, 1), *([10] * (width - 1))])
+    wide.append([datetime(2024, 2, 1), *([11] * (width - 1))])
+    raw = BytesIO()
+    book.save(raw)
+    uploaded = poll(client, client.post('/api/import', files={'file': ('wide.xlsx', raw.getvalue())}))
+    url = '/api/imports/' + uploaded['import_id']
+    sheet_url = url + '/sheet'
+    sheet = client.get(sheet_url, params={'name': 'wide'}).json()
+    assert sheet['status'] == 'needs_review' and not sheet['published_in_dataset']
+    original_mapping = sheet['mapping']
+    mapping = deepcopy(original_mapping)
+    block, = mapping['blocks']
+    for column in block['columns']:
+        column['metric'] = f'{note} / {column["metric"]}'
+        column['header_cells'].insert(0, 'A1')
+    # Initially review tries to infer the declared unit from A1. The note is
+    # outside B and does not constitute true unit evidence for that column.
+    block['columns'][0]['unit'] = '公斤'
+    last_column = block['columns'][-1]
+    if unsupported_header:
+        last_column['header_cells'] = ['A1', 'C2']
+    assert len(json.dumps(mapping, ensure_ascii=False).encode('utf-8')) > ai_review.MAX_INPUT_BYTES
+    preview = client.post(url + '/preview', json={'mapping': mapping})
+    assert preview.status_code == 400 and '元数据来源未覆盖' in preview.json()['detail']
+
+    suggestion = {
+        'block_updates': [{'block_index': 0, 'header_note_cells': ['A1'],
+                           'metric_header_rows': [] if batch else [2]}],
+        'evidence': [{'block_index': 0, 'field': 'header_note_cells', 'cells': ['A1']}],
+    }
+    if not batch:
+        suggestion['evidence'].append({'block_index': 0, 'field': 'metric', 'cells': ['B2']})
+    calls = []
+    monkeypatch.setattr(ai_review, 'read_model', lambda _: {
+        'model': 'fixture', 'base_url': 'https://example.invalid/v1', 'api_key': 'fixture-only',
+    })
+    mock_model(monkeypatch, [suggestion], calls)
+    if batch:
+        result = poll(client, client.post(url + '/assist-confirm-all', json={
+            'acknowledged_risk': True, 'mappings': [mapping], 'save_template': False,
+            'total_max_requests': 1, 'per_sheet_max_requests': 1,
+        }), timeout=30)
+        detail = next(row for row in result['details'] if row['sheet'] == 'wide')
+        assert result['sheets_existing'] == ['existing'] and not result['sheets_failed']
+        assert result['sheets_pending'] == (['wide'] if unsupported_header else [])
+        assert result['sheets_imported'] == ([] if unsupported_header else ['wide'])
+        assert detail['requests_used'] == result['requests_used'] == 1
+    else:
+        result = poll(client, client.post(url + '/assist-confirm', json={
+            'sheet': 'wide', 'mapping': mapping, 'save_template': False, 'max_requests': 1,
+        }), timeout=30)
+        detail = result
+        assert result['imported'] is not unsupported_header
+        assert result['model_requests'] == 1
+    body, = calls
+    payload = json.loads(body['messages'][1]['content'])
+    assert payload['mode'] == detail['scope'] == 'header_only'
+    assert 'source_cells' not in payload
+
+    saved = client.get(sheet_url, params={'name': 'wide'}).json()
+    if unsupported_header:
+        assert result['dataset_id'] == uploaded['dataset_id']
+        assert saved['status'] == 'needs_review' and not saved['published_in_dataset']
+        assert saved['mapping'] == original_mapping
+        if not batch:
+            assert result['mapping'] == mapping
+        state = detail['review_state']
+        assert state['status'] == 'needs_review'
+        assert any(item.get('field') == 'header_cells' and item.get('column') == last_column['column']
+                   and 'C2' in item.get('cells', []) for item in state['diagnostics'])
+    else:
+        assert result['dataset_id'] != uploaded['dataset_id']
+        assert saved['status'] == 'confirmed' and saved['published_in_dataset']
+        published_block, = saved['published_mapping']['blocks']
+        assert published_block['header_note_cells'] == ['A1']
+        assert [column['metric'] for column in published_block['columns']] == [
+            f'产量 {column:03}' for column in range(2, width + 1)]
+        assert detail['renamed_fields'] == width - 1
+        assert all(word in detail['header_notice'] for word in (
+            '仅表头建议', str(width - 1), '字段 ID', '指标对应确认'))
 
 
 def test_worker_review_reports_each_block_and_does_not_write(tmp_path):
@@ -127,10 +232,15 @@ def test_ai_job_can_be_cancelled_before_import_and_cannot_be_cancelled_by_others
         response = client.post(url + '/assist-confirm', json={'sheet': 'parallel'})
         assert response.status_code == 200, response.text
         assert entered.wait(2)
-        target = '/api/jobs/' + response.json()['id'] + '/cancel'
-        assert client.post(target, headers={'Authorization': 'Bearer other-user'}).status_code == 404
-        assert client.post(target, headers={'Authorization': 'Bearer other-space'}).status_code == 404
-        cancel = client.post(target)
+        target = '/api/jobs/' + response.json()['id']
+        for token in ('other-user', 'other-space'):
+            headers = {'Authorization': 'Bearer ' + token}
+            assert client.get(target, headers=headers).status_code == 404
+            # An early cancellation intent is scoped to the requester even
+            # when a job with this ID already exists in a different scope.
+            assert client.post(target + '/cancel', headers=headers).status_code == 200
+        assert not client.get(target).json().get('cancel_requested')
+        cancel = client.post(target + '/cancel')
         assert cancel.status_code == 200, cancel.text
     finally:
         release.set()
@@ -165,7 +275,7 @@ def test_ai_cancellation_can_arrive_before_create_response_without_starting_work
     assert poll(client, client.post(url + '/confirm-all', json={}))['dataset_id'] == uploaded['dataset_id']
 
 
-def test_early_ai_cancel_is_scoped_to_user_and_ids_are_not_reusable(client, monkeypatch):
+def test_early_ai_cancel_is_scoped_to_user_and_matching_request_can_reuse_job(client, monkeypatch):
     uploaded = upload(client)
     url = '/api/imports/' + uploaded['import_id']
     identifier = 'f' * 32
@@ -191,9 +301,15 @@ def test_early_ai_cancel_is_scoped_to_user_and_ids_are_not_reusable(client, monk
                   json={'sheet': 'parallel', 'request_id': identifier}))
     assert result['imported'] is False and seen == ['called']
     duplicate = client.post(url + '/assist-confirm', json={'sheet': 'parallel', 'request_id': identifier})
-    assert duplicate.status_code == 409
-    assert client.post('/api/jobs/' + identifier + '/cancel',
-                       headers={'Authorization': 'Bearer other-user'}).status_code == 404
+    assert duplicate.json() == {'id': identifier, 'status': 'completed'}
+    different = client.post(url + '/assist-confirm',
+                            json={'sheet': 'parallel', 'request_id': identifier, 'max_requests': 2})
+    assert different.status_code == 409 and different.json()['detail']['code'] == 'AI_REQUEST_CONFLICT'
+    other = {'Authorization': 'Bearer other-user'}
+    assert client.get('/api/jobs/' + identifier, headers=other).status_code == 404
+    their_job = client.post(url + '/assist-confirm', headers=other, json={'sheet': 'parallel', 'request_id': identifier})
+    assert their_job.json() == {'id': identifier, 'status': 'cancelled'}
+    assert client.get('/api/jobs/' + identifier).json()['status'] == 'completed' and seen == ['called']
 
 
 def test_pending_ai_cancel_intents_are_bounded_and_reject_invalid_ids(client):

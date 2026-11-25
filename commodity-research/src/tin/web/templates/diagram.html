@@ -104,6 +104,11 @@
       class="px-2 py-1 rounded hover:bg-[var(--surface-soft)] disabled:opacity-40">↷ 前进</button>
     <span class="w-px h-4 bg-[var(--line)]"></span>
     <button type="button" id="dg-tidy" onclick="dgTidyGroups()" title="可撤销，保存后生效" class="px-2 py-1 rounded hover:bg-[var(--surface-soft)]">按研究结构重排</button>
+    {% if research_workbench() and can_edit_diagram %}
+    <button type="button" id="dg-recommend" class="px-2 py-1 rounded hover:bg-[var(--surface-soft)] disabled:opacity-40" disabled>为空节点推荐指标</button>
+    <button type="button" id="dg-recommend-restore" class="px-2 py-1 text-[var(--primary)] underline" hidden>查看上次推荐</button>
+    <span id="dg-recommend-status" role="status" class="px-2 text-[var(--text-muted)]"></span>
+    {% endif %}
   </div>
 
   <!-- 空白布局的落地页：白板本身不说明该做什么 -->
@@ -152,7 +157,7 @@
   <div class="mt-2 flex items-center gap-1.5 text-[11px]">
     <label class="flex items-center gap-1"><input type="checkbox" id="dg-proxy" onchange="dgMarkProxy()"> 标为代理指标</label>
     <button type="button" onclick="dgRenameActive()" class="ml-auto px-2 py-1 rounded hover:bg-[var(--surface-soft)]">改名</button>
-    <button type="button" onclick="dgUnbind()" class="px-2 py-1 rounded hover:bg-[var(--surface-soft)]">解除绑定</button>
+    <button type="button" id="dg-unbind" onclick="dgUnbind()" class="px-2 py-1 rounded hover:bg-[var(--surface-soft)]">解除绑定</button>
     <button type="button" onclick="dgDeleteActive()" class="px-2 py-1 rounded text-[var(--alert)] hover:bg-[var(--alert-soft)]">删除节点</button>
   </div>
   <div id="dg-suggest" class="mt-2 text-xs shrink-0"></div>
@@ -311,9 +316,9 @@
            class="flex-1 px-2 py-1.5 rounded-md">
     <button type="button" onclick="dgCopyMarkdown()"
       class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">复制</button>
-    <button type="button" onclick="dgImportMarkdown(false)" {% if not can_edit_diagram %}disabled{% endif %}
+    <button type="button" id="dg-import-new" onclick="dgImportMarkdown(false)" {% if not can_edit_diagram %}disabled{% endif %}
       class="px-3 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">导入为新布局</button>
-    <button type="button" onclick="dgImportMarkdown(true)" {% if not can_edit_diagram %}disabled{% endif %}
+    <button type="button" id="dg-import-current" onclick="dgImportMarkdown(true)" {% if not can_edit_diagram %}disabled{% endif %}
       class="px-3 py-1.5 rounded-md bg-[var(--primary)] text-white font-semibold hover:bg-[var(--primary-hover)]">应用到当前布局</button>
   </div>
   <div id="dg-md-msg" class="mt-1.5 text-[11px] text-[var(--amber)] min-h-[16px]"></div>
@@ -328,5 +333,8 @@
 </script>
 <script src="{{ research_static_prefix() }}/static/diagram-geometry.js?v={{ static_version() }}"></script>
 <script src="{{ research_static_prefix() }}/static/diagram.js?v={{ static_version() }}"></script>
-{% if research_workbench() and not restricted_view %}<script src="{{ research_static_prefix() }}/static/diagram-generation.js?v={{ static_version() }}"></script>{% endif %}
+{% if research_workbench() and can_edit_diagram %}
+<script src="{{ research_static_prefix() }}/static/diagram-indicator-recommendations.js?v={{ static_version() }}"></script>
+<script src="{{ research_static_prefix() }}/static/diagram-generation.js?v={{ static_version() }}"></script>
+{% endif %}
 {% endblock %}

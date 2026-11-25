@@ -10,6 +10,7 @@ import re
 from tin.web.number_format import format_number, source_decimals
 from tin.web.research_dimensions import default_dimensions, read_dimensions, summaries
 from tin.web.research_display import indicator_name
+from tin.web.report_layout import ordered_dimensions, report_layout
 
 IMPACTS = {'bullish': '偏多', 'bearish': '偏空', 'neutral': '中性', 'undecided': '未判断'}
 UNLABELED, DELETED, OTHER = '__unlabeled__', '__deleted__', '__other__'
@@ -148,10 +149,12 @@ def _dimension_id(identifier, valid):
 
 def dimension_overview(payload, dimensions=None):
     dimensions = dimensions if dimensions is not None else payload.get('research_dimensions') or default_dimensions()
+    dimensions = ordered_dimensions(payload, dimensions)
     data = {row['id']: row for row in dimensions}
     data.update((row['id'], row) for row in (payload.get('dimension_data') or {}).get('dimensions') or [])
     saved = ((payload.get('manual_report') or {}).get('draft') or {})
     notes = saved.get('dimension_notes') or {}
+    citation_checks = (payload.get('manual_report') or {}).get('evidence_checks') or {}
     day = (payload.get('period') or {}).get('end') or payload.get('as_of')
     rows = {dimension['id']: {'id': dimension['id'], 'label': dimension['label'],
         'facts': select_facts(data.get(dimension['id']) or dimension, day=day),
@@ -214,13 +217,15 @@ def dimension_overview(payload, dimensions=None):
         row['review_needed'] = row['id'] in valid and (
             (row['impact'] == 'bearish' and row['support_count'] > row['oppose_count'])
             or (row['impact'] == 'bullish' and row['oppose_count'] > row['support_count']))
-        if row['has_binding'] or row['evidence'] or row['sentence'].strip() or row['impact'] != 'undecided':
+        if (row['has_binding'] or row['evidence'] or row['sentence'].strip()
+                or row['impact'] != 'undecided' or row['id'] in citation_checks):
             output.append(row)
     return output
 
 
 def evidence_groups(payload, figures, dimensions):
-    """Group each deduplicated figure once, using bindings before explicit citation tags."""
+    """Group each deduplicated figure once with the saved report layout and bindings."""
+    dimensions = ordered_dimensions(payload, dimensions)
     valid = {row['id'] for row in dimensions}
     configured = (payload.get('dimension_data') or {}).get('dimensions') or dimensions
     chart_bindings, series_bindings = {}, {}
@@ -235,12 +240,19 @@ def evidence_groups(payload, figures, dimensions):
     groups = {row['id']: {'id': row['id'], 'label': row['label'], 'figures': []} for row in dimensions}
     labels = {UNLABELED: '未标注', DELETED: '已删除维度', OTHER: '其他'}
     conclusions = (((payload.get('manual_report') or {}).get('draft') or {}).get('figure_conclusions') or {})
+    layout_groups = report_layout(payload).get('figure_groups') or {}
     for original in figures:
         figure = deepcopy(original)
         reference = figure.get('reference') or {}
         identifier = chart_bindings.get(reference.get('id'))
         sids = [figure.get('series_id'), figure.get('single_series_id')]
-        sids.extend(curve.get('series_id') for curve in (reference.get('definition') or {}).get('curves') or [])
+        curves = (reference.get('definition') or {}).get('curves') or []
+        sids.extend(curve.get('series_id') for curve in curves)
+        operands = [curve.get('derived') or {} for curve in curves]
+        layout_ids = [*sids, *(operand.get(side) for operand in operands for side in ('a', 'b'))]
+        overrides = {layout_groups[sid] for sid in layout_ids if sid in layout_groups}
+        if overrides:
+            identifier = next((row['id'] for row in dimensions if row['id'] in overrides), identifier)
         if identifier is None:
             matches = {series_bindings[sid] for sid in sids if sid in series_bindings}
             identifier = next((row['id'] for row in dimensions if row['id'] in matches), None)

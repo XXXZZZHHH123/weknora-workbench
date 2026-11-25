@@ -14,6 +14,7 @@ const dg = {
   zoom: 1,
   pan: { x: 0, y: 0 },
   active: null,       // 正在绑定的节点 id
+  recommendations: {}, // 当前画布中待核对的模型结果
 };
 
 const DG_STATE = {
@@ -73,6 +74,7 @@ async function dgLoad() {
   // 但这一条请求失败不能把整张图清空。之前失败即 return，dg.values 停在空对象，
   // 于是**每个方框都渲染成「未绑定」**——看上去像是绑定全丢了，实际只是取值没回来。
   if (!dg.layout) return;
+  const generation = dg.loadGeneration = (dg.loadGeneration || 0) + 1;
   if (window.DG_RESTRICTED) {
     const data = window.DG_RESTRICTED_DATA;
     dg.values = Object.fromEntries((data.nodes || []).map((n) => [n.node_id, n]));
@@ -91,6 +93,7 @@ async function dgLoad() {
     if (res.ok) data = await res.json();
     else why = `HTTP ${res.status}`;
   } catch (e) { why = e.message; }
+  if (generation !== dg.loadGeneration) return;
 
   if (!data) {
     // 退回按已保存的布局取值：拿不到未保存的改动，但至少不是一张全灰的图
@@ -99,14 +102,15 @@ async function dgLoad() {
         window.DG_DATE ? `&date=${window.DG_DATE}` : ""}`);
       if (res.ok) {
         data = await res.json();
-        showToast("当前显示上次保存布局的数据。新加或改过指标的环节暂时没有数值。");
+        showToast("当前显示上次保存布局的数据。新加或换过指标的环节请稍后刷新查看。");
       } else {
         why += `；读取已保存布局：HTTP ${res.status}`;
       }
     } catch (error) { why += `；读取已保存布局：${error.message}`; }
     window.researchDiagnostics?.(why);
   }
-  if (!data) { showToast("本次未取得产业链数据，请稍后刷新。图中各环节当前状态暂不能用于判断。"); return; }
+  if (generation !== dg.loadGeneration) return;
+  if (!data) { showToast("暂时读不到产业链数据。请稍后刷新，再查看各环节状态。"); return; }
 
   dg.values = Object.fromEntries(data.nodes.map((n) => [n.node_id, n]));
   dg.judgment = data.judgment || {};
@@ -338,7 +342,9 @@ function dgSubtree(id) {
  * 画布编辑没有撤销，一次误拖就得靠手动摆回去——而归属变化是看不见的，
  * 等发现时已经不知道该怎么还原了。整份布局做快照最简单也最可靠：
  * 这份 JSON 只有几十 KB，存 30 步完全不是负担。 */
-const dgSnapshot = () => JSON.stringify({ nodes: dg.layout.nodes, edges: dg.layout.edges });
+const dgSnapshot = () => JSON.stringify({
+  nodes: dg.layout.nodes, edges: dg.layout.edges, recommendations: dg.recommendations,
+});
 
 function dgSyncHistory() {
   const u = document.getElementById("dg-undo"), r = document.getElementById("dg-redo");
@@ -360,6 +366,7 @@ function dgStep(from, to, word) {
   const s = JSON.parse(from.pop());
   dg.layout.nodes = s.nodes;
   dg.layout.edges = s.edges;
+  dg.recommendations = s.recommendations || {};
   dg.dirty = true;
   dgSyncSave();
   dgRender();
@@ -504,6 +511,9 @@ function dgDir(v) {
 function dgNode(n) {
   const v = dg.values[n.id] || { state: "unbound", label: n.label };
   const st = DG_STATE[v.state] || DG_STATE.unbound;
+  const recommendation = window.DiagramRecommendations?.get(n);
+  const pending = Boolean(recommendation?.recommended);
+  const badge = pending ? '待核对' : recommendation?.ambiguous ? '口径待明确' : '';
   const proxy = v.proxy;
   const roles = v.roles || [];
   const dim = dg.judgmentView && !roles.length;
@@ -559,15 +569,17 @@ function dgNode(n) {
     : "";
 
   return `
-  <g class="dg-node" data-node="${dgEsc(n.id)}" transform="translate(${n.x},${n.y})"
+  <g class="dg-node${pending ? ' dg-recommendation-pending' : ''}" data-node="${dgEsc(n.id)}" transform="translate(${n.x},${n.y})"
      opacity="${dim ? 0.22 : 1}" style="cursor:${dg.edit ? "grab" : "pointer"}">
-    <rect width="${n.w}" height="${n.h}" rx="6" fill="${st.fill}" stroke="${st.stroke}"
-          stroke-width="${proxy ? 1.4 : 1.6}" ${st.dash ? `stroke-dasharray="${st.dash}"` : ""}/>
+    ${recommendation ? `<title>${dgEsc(window.DiagramRecommendations.title(recommendation))}</title>` : ''}
+    <rect width="${n.w}" height="${n.h}" rx="6" fill="${st.fill}" stroke="${pending ? 'var(--blue)' : st.stroke}"
+          stroke-width="${pending ? 2 : proxy ? 1.4 : 1.6}" ${pending ? 'stroke-dasharray="5 3"' : st.dash ? `stroke-dasharray="${st.dash}"` : ""}/>
     ${proxy ? `<rect width="${n.w}" height="${n.h}" rx="6" fill="url(#dg-hatch)" opacity="0.5"/>` : ""}
     ${dirColor ? `<path d="M 0 6 A 6 6 0 0 1 6 0 L 4 0 L 4 ${n.h} L 6 ${n.h} A 6 6 0 0 1 0 ${n.h - 6} Z"
         fill="${dirColor}" opacity="0.9"/>` : ""}
     ${roleMark}
-    ${staticMark}
+    ${badge ? `<text x="${n.w - 6}" y="${n.h - 4}" text-anchor="end" font-size="9"
+        font-weight="700" fill="${pending ? 'var(--blue)' : 'var(--amber)'}">${badge}</text>` : staticMark}
     ${dg.edit ? dgHandles(n) : ""}
     <foreignObject x="${dirColor ? 11 : 8}" y="6" width="${n.w - (dirColor ? 20 : 16)}" height="${n.h - 10}">
       <div xmlns="http://www.w3.org/1999/xhtml" class="${st.tone}" style="font-family:inherit">
@@ -632,21 +644,32 @@ function dgToggleEdit() {
   dg.edit = true;
   dgSyncEditUI();
   dgRender();
+  window.DiagramRecommendations?.open();
 }
 
 function dgExitEdit() {
+  if (dg.saving) return;
   // 未保存就退出等于白改一场，而改动是看不见的（位置、归属、绑定都不在页面上标着）
   if (dg.dirty && !confirm(
       "有改动还没保存，退出编辑就会丢失。\n\n" +
       "点「取消」回去保存，点「确定」放弃这些改动。")) return;
   if (dg.dirty) {
     // 放弃改动就真的放回原样，而不是留在内存里等下一次误存
-    dg.layout.nodes = JSON.parse(dg.__clean).nodes;
-    dg.layout.edges = JSON.parse(dg.__clean).edges;
+    const clean = JSON.parse(dg.__clean);
+    dg.layout.nodes = clean.nodes;
+    dg.layout.edges = clean.edges;
+    if (dg.generationDraft) {
+      dg.layout.__name = dg.generationDraft.previousName;
+      dg.undo = dg.generationDraft.undo;
+      dg.redo = dg.generationDraft.redo;
+    }
     dg.dirty = false;
     dgLoad();
   }
+  dg.recommendations = {};
+  dg.generationDraft = null;
   dg.edit = false;
+  window.DiagramRecommendations?.close();
   dg.place = null;
   dgSyncEditUI();
   toggleDrawer("dg-drawer", false);
@@ -666,6 +689,7 @@ function dgSyncEditUI() {
   if (on && !dg.__clean) dg.__clean = dgSnapshot();   // 进编辑时记下干净版本，供放弃改动时还原
   if (!on) dg.__clean = null;
   dgSyncSave();
+  dgSyncHistory();
 }
 
 function dgBindCanvas() {
@@ -896,6 +920,8 @@ async function dgOpenPool(nodeId) {
   const node = dg.layout.nodes.find((n) => n.id === nodeId);
   document.getElementById("dg-node-label").textContent = node.label;
   document.getElementById("dg-suggest").innerHTML = "";
+  const unbind = document.getElementById('dg-unbind');
+  if (unbind) unbind.textContent = '解除绑定';
   // 分组框是背景分区，没有指标可绑，只能改名或删除
   const isGroup = dgIsGroup(node);
   document.getElementById("dg-pool").classList.toggle("hidden", isGroup);
@@ -913,7 +939,7 @@ async function dgOpenPool(nodeId) {
   if (dg.active !== nodeId) return;
   if (window.RESEARCH_CONTEXT?.scope_version !== 2) dgRenderPool();
   toggleDrawer("dg-drawer", true);
-  dgSuggest(node);
+  if (!window.DiagramRecommendations?.show(node)) dgSuggest(node);
 }
 
 let dgSuggestController, dgSuggestGeneration = 0;
@@ -1074,6 +1100,7 @@ function dgBind(field, kind) {
   node.binding = kind === "derived"
     ? { kind: "derived", formula_id: field }
     : { kind: "series", series_id: field, proxy: document.getElementById("dg-proxy").checked };
+  delete dg.recommendations[node.id];
   dg.dirty = true;
   dgSyncSave();
   dgLoad();
@@ -1085,6 +1112,7 @@ function dgUnbind() {
   const node = dg.layout.nodes.find((n) => n.id === dg.active);
   if (!node) return;
   node.binding = { kind: "none" };
+  delete dg.recommendations[node.id];
   dg.dirty = true;
   dgSyncSave();
   dgLoad();
@@ -1095,6 +1123,7 @@ function dgMarkProxy() {
   const node = dg.layout.nodes.find((n) => n.id === dg.active);
   if (!node || !node.binding || node.binding.kind !== "series") return;
   node.binding.proxy = document.getElementById("dg-proxy").checked;
+  delete dg.recommendations[node.id];
   dg.dirty = true;
   dgSyncSave();
   dgLoad();
@@ -1104,21 +1133,67 @@ function dgMarkProxy() {
 
 function dgSyncSave() {
   const btn = document.getElementById("dg-save");
-  if (btn) btn.disabled = !dg.dirty;
+  if (btn) btn.disabled = !dg.dirty || dg.saving;
+  window.DiagramRecommendations?.sync();
 }
 
 async function dgSave() {
-  const res = await researchFetch((window.RESEARCH_PREFIX || "") + "/api/sn/diagram/templates", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: dg.layout.__id, name: dg.layout.__name,
-                           layout: { nodes: dg.layout.nodes, edges: dg.layout.edges } }),
-  });
-  const data = await res.json();
-  if (!res.ok) { showToast(data.detail || "保存失败"); return; }
-  dg.dirty = false;
-  dg.__clean = dgSnapshot();       // 保存成功后，这就是新的"干净版本"
+  if (dg.saving) return;
+  const draft = dg.generationDraft;
+  const path = draft?.jobId ? '/api/sn/diagram/jobs/' + encodeURIComponent(draft.jobId) + '/apply' : '/api/sn/diagram/templates';
+  const snapshot = dgSnapshot();
+  const pendingVersions = [...new Set(Object.values(dg.recommendations)
+    .filter(item => item.recommended).map(item => item.version))];
+  if (pendingVersions.length > 1) {
+    showToast('待核对绑定来自不同版本的指标目录，请撤回旧推荐后保存。');
+    return;
+  }
+  const payload = {id: draft ? draft.target : dg.layout.__id, name: dg.layout.__name,
+    layout: {nodes: dg.layout.nodes, edges: dg.layout.edges},
+    ...(draft?.version ? {fact_version: draft.version} : {}),
+    ...(pendingVersions.length ? {recommendation_version: pendingVersions[0]} : {})};
+  dg.saving = true;
   dgSyncSave();
-  showToast("布局已保存");
+  try {
+    const res = await researchFetch((window.RESEARCH_PREFIX || '') + path, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) { showToast(data.detail || '保存失败'); return; }
+    dg.dirty = dgSnapshot() !== snapshot;
+    const submitted = JSON.parse(snapshot);
+    for (const [identifier, item] of Object.entries(dg.recommendations)) {
+      if (JSON.stringify(item) === JSON.stringify(submitted.recommendations[identifier])) delete dg.recommendations[identifier];
+    }
+    dg.__clean = JSON.stringify({nodes: submitted.nodes, edges: submitted.edges});
+    if (draft) {
+      dg.generationDraft = null;
+      dg.layout.__id = data.saved.id;
+      dg.layout.__name = data.saved.name;
+      const chooser = document.getElementById('dg-template');
+      if (chooser) {
+        const newLayout = [...chooser.options].find(option => option.value === '__new');
+        chooser.replaceChildren(...data.templates.map(template => new Option(
+          template.name + (template.is_default ? '（默认）' : ''), template.id)));
+        if (newLayout) chooser.append(newLayout);
+        chooser.value = String(data.saved.id);
+      }
+      const url = new URL(location.href);
+      url.searchParams.set('template', String(data.saved.id));
+      url.searchParams.delete('analysis_job');
+      url.searchParams.delete('setup_job');
+      url.searchParams.delete('setup_part');
+      history.replaceState(null, '', url);
+      window.dgGenerationApplied?.(data.saved.id);
+    }
+    dgRender();
+    showToast('布局已保存');
+  } catch {
+    showToast('布局暂时无法保存，请重试。');
+  } finally {
+    dg.saving = false;
+    dgSyncSave();
+  }
 }
 
 function dgSwitch(templateId) {
@@ -1253,6 +1328,7 @@ function dgDeleteActive() {
   if (!node) return;
   if (!confirm(`确认删除「${node.label}」吗？与它相连的连线会一并移除。`)) return;
   dg.layout.nodes = dg.layout.nodes.filter((n) => n.id !== node.id);
+  delete dg.recommendations[node.id];
   dg.layout.edges = (dg.layout.edges || []).filter((e) => e.from !== node.id && e.to !== node.id);
   dg.dirty = true;
   dgSyncSave();
@@ -1285,6 +1361,7 @@ async function dgOpenMarkdown() {
     return true;
   }
   dg.generatedVersion = null;
+  window.dgSyncImportActions?.();
   // 导的是**画布此刻的样子**，不是库里存的那一份。
   // 按 template_id 从库里导，画布上刚改的结构不在里面——在图上加了个节点，
   // 打开 Markdown 却看不到它，两条编辑通道就接不上了。
@@ -1310,7 +1387,57 @@ function dgCloseMarkdown() {
   toggleDrawer('dg-md-drawer',false);
 }
 
+async function dgPreviewGeneration(into, data) {
+  if (dg.dirty && !confirm('打开生成草稿会放弃当前未保存的画布改动。是否继续？')) return;
+  const msg = document.getElementById('dg-md-msg');
+  const markdown = document.getElementById('dg-md-text').value;
+  const snapshot = dgSnapshot();
+  const operation = window.dgCancelGeneration();
+  msg.textContent = '正在打开画布草稿…';
+  try {
+    const layout = await dgGeneratorRequest('/preview', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({markdown})});
+    if (!window.dgGenerationIsCurrent(operation)) return;
+    if (snapshot !== dgSnapshot() || markdown !== document.getElementById('dg-md-text').value) {
+      msg.textContent = '编辑内容已改动，请重新打开画布核对。';
+      return;
+    }
+    const previous = dg.generationDraft;
+    const previousName = previous?.previousName || dg.layout.__name;
+    const name = into ? previousName : document.getElementById('dg-md-name').value.trim() || layout.name;
+    dg.generationDraft = {key: operation, jobId: window.dgGeneratedJobId?.(), version: data.version,
+      target: into ? dg.layout.__id : null, previousName,
+      undo: previous?.undo || dg.undo, redo: previous?.redo || dg.redo};
+    if (!dg.edit) dgToggleEdit();
+    window.DiagramRecommendations.detach();
+    dg.undo = [];
+    dg.redo = [];
+    dg.recommendations = {};
+    dg.layout.nodes = layout.nodes;
+    dg.layout.edges = layout.edges;
+    dg.layout.__name = name;
+    dg.values = {};
+    dg.dirty = true;
+    const changed = markdown !== data.markdown;
+    if (!changed) window.DiagramRecommendations.fill(data.indicator_recommendations, data.recommendation_version);
+    dgSyncEditUI();
+    dgRender();
+    dgFit();
+    dgCloseMarkdown();
+    toggleDrawer('dg-drawer', false);
+    void dgLoad();
+    const status = document.getElementById('dg-recommend-status');
+    window.ResearchAnalysisJobs.message(status, changed
+      ? 'Markdown 已修改，可为空节点重新推荐指标。'
+      : '可逐个撤回模型推荐。保存时确认当前绑定。');
+  } catch (error) {
+    msg.textContent = error.message || '暂时无法打开产业图草稿。';
+  }
+}
+
 async function dgImportMarkdown(into) {
+  const generated = window.dgGetGenerationPreview?.();
+  if (generated?.indicator_recommendations && window.DiagramRecommendations) return dgPreviewGeneration(into, generated);
   const msg = document.getElementById("dg-md-msg");
   if (into && !confirm(
       `确认用这份 Markdown 改写「${dg.layout.__name}」吗？\n\n` +
@@ -1341,6 +1468,7 @@ async function dgImportMarkdown(into) {
   dgPushUndo();
   dg.layout.nodes = data.saved.layout.nodes;
   dg.layout.edges = data.saved.layout.edges || [];
+  dg.recommendations = {};
   dg.dirty = false;                 // 服务端已是最新
   dg.__clean = dgSnapshot();
   dgSyncSave();
@@ -1614,6 +1742,8 @@ async function dgOpenDetail(nodeId) {
         : '<div class="text-[var(--text-muted)]">未标注口径维度</div>'}
       ${d.expression ? row("计算式", dgEsc(d.expression)) : ""}
       ${d.tolerance ? row("容差", dgEsc(d.tolerance)) : ""}
+      ${(d.source_codes || []).map(code => `<div class="header-note-text">代码：${dgEsc(code.text)}</div>`).join("")}
+      ${d.header_notes?.length ? '<div data-diagram-header-notes></div>' : ''}
     </div>
 
     <div class="py-3 border-b border-[var(--line)] text-[11px]">
@@ -1650,6 +1780,7 @@ async function dgOpenDetail(nodeId) {
       <button type="button" onclick="dgCopy('${dgEsc(d.series_id)}')"
          class="px-2.5 py-1.5 rounded-md border border-[var(--line)] hover:bg-[var(--surface-soft)]">复制代码</button>
     </div>`;
+  if (d.header_notes?.length) box.querySelector('[data-diagram-header-notes]').append(renderHeaderNotes(d.header_notes));
   dgBindChartHover();
 }
 

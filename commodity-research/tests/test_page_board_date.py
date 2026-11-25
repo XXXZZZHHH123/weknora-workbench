@@ -17,13 +17,14 @@ def test_a_malformed_day_is_still_rejected(canonical):
 
 
 
-def _empty_notice(*, core_items, has_core_charts=False):
+def _empty_notice(*, core_items, has_core_charts=False, has_selectable_items=False):
     from types import SimpleNamespace
     from tin.web import app as web
     workbench = SimpleNamespace(view_modules=('market', 'indicators'))
     return web.templates.env.get_template('_market_empty.html').render(
         research_workbench=lambda: workbench, research_url=lambda path: path, restricted_view=False,
-        has_core_charts=has_core_charts, market_catalog={'core_items': core_items})
+        has_core_charts=has_core_charts,
+        market_catalog={'core_items': core_items, 'has_selectable_items': has_selectable_items})
 
 
 def test_overview_without_core_focus_asks_for_a_selection_instead_of_reporting_no_observations():
@@ -33,6 +34,9 @@ def test_overview_without_core_focus_asks_for_a_selection_instead_of_reporting_n
     assert '尚未选择核心关注' in html and '选择与排序' in html
     # An empty workbench still gets the source-preparation guidance.
     assert '请在「资料与来源」准备并确认本知识库资料' in html
+    available = _empty_notice(core_items=[], has_selectable_items=True)
+    assert '尚未选择核心关注' in available
+    assert '还没有可用指标时' not in available
     assert '还没有可展示的指标数据' not in html
     selected = _empty_notice(core_items=[{'kind': 'indicator', 'id': 'kb-x'}])
     assert '当前还没有可展示的指标数据' in selected

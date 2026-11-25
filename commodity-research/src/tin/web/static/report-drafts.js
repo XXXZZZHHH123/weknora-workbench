@@ -14,7 +14,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
   const node = (tag, text, cls) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; };
-  const labels = { summary: "导语", research: "研判", dashboard: "图表", watch: "策略" };
+  const labels = { summary: initial.period === "weekly" ? "本周结论" : "本日结论", research: "研判", dashboard: "图表", watch: "策略" };
   function referenceTitle(record) {
     const title = record.title || (record.kind === "judgment" ? "研究判断" : "未命名策略");
     if (record.kind !== "judgment") return title;
@@ -22,6 +22,7 @@ document.addEventListener("DOMContentLoaded", () => {
     return title === generated || title.startsWith(generated + " · ") ?
       "研究判断" + title.slice(generated.length) : title;
   }
+  const summaryInput = get("edit-summary"), summaryMessage = get("summary-draft-status");
   let draft, selected = "summary", saving = false, records = [], generation = 0;
   const titles = new Map(), options = new Map((initial.all_figure_options || initial.figure_options || []).map((x) => [x.series_id, x]));
   const initialAutomatic = initial.all_automatic_figures || initial.automatic_figures || [], extraCharts = new Map();
@@ -29,7 +30,53 @@ document.addEventListener("DOMContentLoaded", () => {
   const impactLabels = {bullish: "偏多", bearish: "偏空", neutral: "中性", undecided: "未判断"};
   const dimensions = Array.isArray(initial.dimensions) ? initial.dimensions : [];
   const dimensionInputs = new Map(), conclusionInputs = new Map();
-  let drafting = false, draftController = null, modelRequest = 0, modelsLoaded = false;
+  const evidencePreviews = new Map();
+  let modelsLoaded = false, keepEditor = false, openedEditor, submittedNotes, loadedSetup = false;
+  const setup = window.WorkbenchSetupReview;
+  function renderEvidence(identifier, host) {
+    host.replaceChildren();
+    const citation = draft.evidence_citations.find(item => item.dimension_id === identifier);
+    if (!citation) return;
+    const preview = evidencePreviews.get(identifier);
+    if (preview?.notice) host.append(node("p", preview.notice, "report-dimension-draft-status"));
+    for (const source of preview?.sources || []) {
+      const label = [source.title, source.location].filter(Boolean).join(" · ");
+      host.append(node("p", label, "report-muted"));
+      if (source.excerpt) host.append(node("p", "“" + source.excerpt + "”"));
+      const dates = node("p", source.date_label || "", "report-muted");
+      if (source.background_hint) {
+        const tag = node("small", "背景资料", "report-citation-tag");
+        tag.title = source.background_hint;
+        dates.append(" ", tag);
+      }
+      if (dates.textContent.trim()) host.append(dates);
+      if (typeof source.text !== "string" && !source.ingested_at) continue;
+      const details = node("details");
+      details.append(node("summary", typeof source.text === "string" ? "查看原文" : "详情"));
+      if (source.ingested_at) details.append(node("p", "资料保存时间 " + source.ingested_at, "report-muted"));
+      if (typeof source.text === "string") details.append(node("p", source.text, "research-prose whitespace-pre-wrap"));
+      host.append(details);
+    }
+    const remove = node("button", "清除引用及对应原句", "report-button");
+    remove.type = "button";
+    remove.addEventListener("click", () => {
+      const editor = dimensionInputs.get(identifier);
+      editor.input.value = "";
+      editor.influence.value = "undecided";
+      draft.dimension_notes[identifier] = {text: "", impact: "undecided"};
+      draft.evidence_citations = draft.evidence_citations.filter(item => item.dimension_id !== identifier);
+      evidencePreviews.delete(identifier);
+      editor.message.textContent = "";
+      renderEvidence(identifier, host);
+    });
+    host.append(remove);
+  }
+  function showGaps(gaps) {
+    const host = get("evidence-gaps");
+    if (!host) return;
+    host.replaceChildren(...gaps.map(gap => node("li", gap)));
+    host.hidden = gaps.length === 0;
+  }
   function renderDimensions() {
     const host = get("dimension-editors"); if (!host) return; host.replaceChildren(); dimensionInputs.clear();
     for (const dimension of dimensions) {
@@ -43,11 +90,33 @@ document.addEventListener("DOMContentLoaded", () => {
       label.append(influence); heading.append(title, label); row.append(heading);
       if (dimension.facts?.length) row.append(node("p", dimension.facts.map(fact => fact.text).join("；"), "report-muted"));
       const input = node("textarea"); input.rows = 2; input.maxLength = 200; input.value = saved.text || "";
-      input.placeholder = "本期怎么变，以及意味着什么（≤200字）"; input.setAttribute("aria-label", `${dimension.label}的一句话`);
+      input.placeholder = "该维度本期的结论：变化意味着什么、对价格偏多还是偏空、原因（≤200字）";
+      input.setAttribute("aria-label", `${dimension.label}的本期结论`);
       const update = () => { draft.dimension_notes[dimension.id] = {text: input.value, impact: influence.value}; };
-      input.addEventListener("input", update); influence.addEventListener("change", update);
       const message = node("p", "", "report-dimension-draft-status"); message.dataset.draftStatus = dimension.id;
-      row.append(input, message); host.append(row); dimensionInputs.set(dimension.id, {input, influence, message});
+      const evidence = node("div");
+      input.addEventListener("input", () => {
+        update();
+        if (draft.evidence_citations.some(item => item.dimension_id === dimension.id)) {
+          evidencePreviews.set(dimension.id, {notice: "原句已编辑，证据对应关系需重新核对。"});
+          renderEvidence(dimension.id, evidence);
+        }
+      });
+      influence.addEventListener("change", update);
+      row.append(input, message, evidence); host.append(row);
+      dimensionInputs.set(dimension.id, {input, influence, message, evidence});
+      renderEvidence(dimension.id, evidence);
+    }
+    for (const citation of draft.evidence_citations) {
+      if (dimensionInputs.has(citation.dimension_id)) continue;
+      const row = node("div", undefined, "report-dimension-editor"), input = node("textarea");
+      input.hidden = true;
+      const influence = node("select");
+      const message = node("p", "该维度已删除，证据对应关系需重新核对。", "report-dimension-draft-status");
+      const evidence = node("div");
+      row.append(message, evidence); host.append(row);
+      dimensionInputs.set(citation.dimension_id, {input, influence, message, evidence});
+      renderEvidence(citation.dimension_id, evidence);
     }
     if (!dimensions.length) host.append(node("p", "暂无可编辑维度，请先配置本研究台研究维度。", "report-muted"));
   }
@@ -85,31 +154,51 @@ document.addEventListener("DOMContentLoaded", () => {
       modelsLoaded = true;
     } catch (error) { select.replaceChildren(new Option("暂时无法读取起草模型", "")); status(unavailable, error.detail ?? error.message); }
   }
-  get("draft-generate")?.addEventListener("click", async () => {
-    if (!draft || saving || drafting) return;
-    const model = get("draft-model").value;
-    if (!model) { status("请先选择起草模型。"); if (!modelsLoaded) loadModels(); return; }
-    drafting = true; const own = ++modelRequest; draftController = new AbortController();
-    get("draft-generate").disabled = true; get("edit-save").disabled = true; dialog.setAttribute("aria-busy", "true");
-    const before = structuredClone(draft.dimension_notes), beforeFigures = structuredClone(draft.figure_conclusions);
-    for (const item of dimensionInputs.values()) item.message.textContent = "";
-    for (const item of conclusionInputs.values()) item.message.textContent = "";
-    status("正在为这期报告起草文字，完成后请核对内容…");
-    const draftUnavailable = "这次没有生成可用草稿。可重新起草，也可以直接填写。已有文字保留。";
-    const sectionUnavailable = "这一栏没有生成可用草稿。可重新起草，也可以直接填写。已有文字保留。";
-    try {
-      const result = await responseJSON(await fetch(`${prefix}/api/sn/reports/${encodeURIComponent(initial.date || draft.date)}/${encodeURIComponent(initial.period || draft.period)}/draft-dimensions`, {
-        method: "POST", credentials: "same-origin", signal: draftController.signal, headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({model_id: model, dimension_notes: before, figure_conclusions: beforeFigures})
-      }), draftUnavailable);
-      if (own !== modelRequest || !dialog.open) return;
-      if (!Array.isArray(result.dimensions)) throw Object.assign(new Error(draftUnavailable), {detail: "起草结果缺少分栏内容"});
+  const reportJob = ResearchAnalysisJobs.create({
+    purpose: "report_dimension_draft",
+    button: get("draft-generate"),
+    status: get("edit-status"),
+    restoreButton: get("draft-restore"),
+    disabled: () => saving || !draft,
+    isOpen: () => dialog.open,
+    snapshot: () => [initial.date, initial.period],
+    accept: job => job.context?.day === initial.date && job.context?.period === initial.period,
+    present(result, {restored}) {
+      const prior = restored ? openedEditor : result.request;
+      const before = restored ? prior.dimension_notes : submittedNotes;
+      const beforeFigures = prior.figure_conclusions;
+      const beforeSummary = prior.summary_text ?? "";
+      summaryMessage.textContent = "";
+      for (const item of dimensionInputs.values()) item.message.textContent = "";
+      for (const item of conclusionInputs.values()) item.message.textContent = "";
+      if (!Array.isArray(result.dimensions)) {
+        throw new Error("这次没有生成可用草稿。可以重新起草，也可以直接填写。");
+      }
+      const sectionUnavailable = "这一栏没有生成可用草稿。可以重新起草，也可以直接填写。";
+      showGaps(result.evidence_gaps || []);
       let filled = 0, rejected = 0, changed = 0;
       for (const item of result.dimensions) {
         const editor = dimensionInputs.get(item.id); if (!editor) continue;
         if (item.status !== "ok") { editor.message.textContent = item.reason || (item.status === "numbers_unverified" ? "数字待核对" : "来源待核对"); rejected++; continue; }
-        if (JSON.stringify(draft.dimension_notes[item.id]) !== JSON.stringify(before[item.id])) { editor.message.textContent = "起草期间此维度已修改，保留研究员内容。"; changed++; continue; }
+        if (draft.dimension_notes[item.id]?.text !== before[item.id]?.text || draft.dimension_notes[item.id]?.impact !== before[item.id]?.impact) { editor.message.textContent = "起草期间此维度已修改，保留研究员内容。"; changed++; continue; }
         if (typeof item.text !== "string" || item.text.length > 200 || !Object.hasOwn(impactLabels, item.impact)) { editor.message.textContent = sectionUnavailable; rejected++; continue; }
+        const proof = result.evidence?.[item.id];
+        const previous = draft.evidence_citations.find(ref => ref.dimension_id === item.id);
+        if (previous && !proof) {
+          editor.message.textContent = "这一栏已有引用，原句已保留。可以重新查找依据，或移除引用及对应原句。";
+          changed++; continue;
+        }
+        if (proof) {
+          const citations = [...draft.evidence_citations.filter(ref => ref.dimension_id !== item.id), proof.receipt];
+          const fingerprints = new Set(citations.flatMap(ref => ref.passages.map(passage => passage.fingerprint)));
+          if (fingerprints.size > 8) {
+            editor.message.textContent = "报告的引用段落已达到 8 段上限，请先清除不再需要的引用及对应原句。";
+            rejected++; continue;
+          }
+          draft.evidence_citations = citations;
+          evidencePreviews.set(item.id, {sources: proof.sources});
+          renderEvidence(item.id, editor.evidence);
+        }
         editor.input.value = item.text; editor.influence.value = item.impact;
         draft.dimension_notes[item.id] = {text: item.text, impact: item.impact}; filled++;
       }
@@ -120,17 +209,50 @@ document.addEventListener("DOMContentLoaded", () => {
         if (typeof item.text !== "string" || item.text.length > 200) { editor.message.textContent = sectionUnavailable; rejected++; continue; }
         editor.input.value = item.text; draft.figure_conclusions[item.key] = item.text; filled++;
       }
+      const summary = result.summary;
+      if (summary) {
+        if (summary.status !== "ok") {
+          summaryMessage.textContent = summary.reason || "总体结论待核对，未填入。";
+          rejected++;
+        } else if (draft.sections.summary.text !== beforeSummary) {
+          summaryMessage.textContent = "已保留起草期间修改的总体结论。";
+          changed++;
+        } else if (typeof summary.text !== "string" || !summary.text.trim() || summary.text.length > summaryInput.maxLength) {
+          summaryMessage.textContent = sectionUnavailable;
+          rejected++;
+        } else {
+          summaryInput.value = summary.text;
+          draft.sections.summary.text = summary.text;
+          filled++;
+        }
+      }
       status(`已填入 ${filled} 条草稿，请修改并确认影响后保存。` + (rejected ? `${rejected} 条待核对，未填入。` : "") + (changed ? `${changed} 条保留起草期间的修改。` : ""));
-    } catch (error) { if (own === modelRequest && error.name !== "AbortError") status(draftUnavailable, error.detail ?? error.message); }
-    finally { if (own === modelRequest) { drafting = false; draftController = null; get("draft-generate").disabled = false; get("edit-save").disabled = false; dialog.removeAttribute("aria-busy"); } }
+    },
+  });
+  get("draft-generate")?.addEventListener("click", () => {
+    if (!draft || saving || reportJob.busy) return;
+    const model = get("draft-model").value;
+    if (!model) { status("请先选择起草模型。"); if (!modelsLoaded) loadModels(); return; }
+    submittedNotes = structuredClone(draft.dimension_notes);
+    const notes = {...submittedNotes};
+    // Keep cited notes in the editor without copying them into the background request.
+    for (const citation of draft.evidence_citations) delete notes[citation.dimension_id];
+    showGaps([]);
+    void reportJob.submit(`/api/sn/reports/${encodeURIComponent(initial.date || draft.date)}/${encodeURIComponent(initial.period || draft.period)}/draft-dimensions`, {
+      model_id: model, dimension_notes: notes,
+      figure_conclusions: structuredClone(draft.figure_conclusions), summary_text: draft.sections.summary.text,
+      include_kb_evidence: Boolean(get("include-kb-evidence")?.checked),
+    });
   });
   function writeSection() {
     if (!draft) return;
-    draft.sections[selected].text = get("edit-text").value;
+    if (selected !== "summary") draft.sections[selected].text = get("edit-text").value;
     draft.sections[selected].visible = get("edit-visible").checked;
   }
   function readSection() {
-    get("edit-text").value = draft.sections[selected].text;
+    const text = get("edit-text");
+    text.hidden = selected === "summary";
+    text.value = text.hidden ? "" : draft.sections[selected].text;
     get("edit-visible").checked = draft.sections[selected].visible;
     document.querySelectorAll("[data-report-section]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.reportSection === selected)));
     renderReferences(); renderFigures();
@@ -251,25 +373,46 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (error) { status(changed, error.detail ?? error.message); } finally { button.disabled = false; }
   });
   document.querySelectorAll("[data-report-section]").forEach((button) => button.addEventListener("click", () => { writeSection(); selected = button.dataset.reportSection; readSection(); }));
-  open.addEventListener("click", () => {
+  summaryInput.addEventListener("input", () => { draft.sections.summary.text = summaryInput.value; });
+  function openEditor({layout, discover = true} = {}) {
+    if (dialog.open) return;
+    if (keepEditor && draft) {
+      dialog.showModal(); loadReferences(); loadModels();
+      if (discover) void reportJob.discover();
+      return;
+    }
     extraCharts.clear(); draft = structuredClone(initial.draft); selected = "summary";
+    draft.sections.summary ||= {visible: true, text: ""};
+    draft.sections.summary.text ??= "";
     draft.dimension_notes = draft.dimension_notes || {}; draft.figure_conclusions = draft.figure_conclusions || {};
+    draft.evidence_citations = draft.evidence_citations || [];
+    evidencePreviews.clear();
+    for (const [id, check] of Object.entries(initial.evidence_checks || {})) evidencePreviews.set(id, check);
+    if (get("include-kb-evidence")) get("include-kb-evidence").checked = false;
+    showGaps([]);
     for (const dimension of dimensions) if (!draft.dimension_notes[dimension.id]) draft.dimension_notes[dimension.id] = {text: "", impact: "undecided"};
+    openedEditor = structuredClone({dimension_notes: draft.dimension_notes, figure_conclusions: draft.figure_conclusions,
+      summary_text: draft.sections.summary.text});
     if (!initial.id && typeof initial.default_title === "string" && initial.default_title.trim()) draft.title = initial.default_title.trim().slice(0, 120);
     get("edit-title").value = draft.title;
-    status(""); renderDimensions(); readSection(); renderFigures(); dialog.showModal(); loadReferences(); loadModels();
-  });
-  const cancelDraft = () => {
-    modelRequest++; draftController?.abort(); draftController = null; drafting = false;
-    get("draft-generate").disabled = false; get("edit-save").disabled = false; dialog.removeAttribute("aria-busy");
+    summaryInput.value = draft.sections.summary.text;
+    summaryMessage.textContent = "";
+    window.ReportLayoutEditor?.render(get("layout-editor"), draft, dimensions, options, layout);
+    if (!reportJob.busy) status("");
+    renderDimensions(); readSection(); renderFigures(); dialog.showModal(); loadReferences(); loadModels();
+    if (discover) void reportJob.discover();
+  }
+  open.addEventListener("click", () => openEditor());
+  const close = () => {
+    if (saving) return;
+    generation++; keepEditor = reportJob.busy; dialog.close();
   };
-  const close = () => { if (!saving) { generation++; cancelDraft(); dialog.close(); } };
   get("edit-close").addEventListener("click", close); get("edit-cancel").addEventListener("click", close);
-  dialog.addEventListener("cancel", (event) => { if (saving) event.preventDefault(); else { generation++; cancelDraft(); } });
+  dialog.addEventListener("cancel", (event) => { if (saving) event.preventDefault(); else { generation++; keepEditor = reportJob.busy; } });
   get("edit-visible").addEventListener("change", () => { writeSection(); renderFigures(); });
   get("ref-kind").addEventListener("change", loadReferences);
   get("editor-form").addEventListener("submit", async (event) => {
-    event.preventDefault(); if (saving || drafting) return; writeSection(); draft.title = get("edit-title").value.trim();
+    event.preventDefault(); if (saving) return; writeSection(); draft.title = get("edit-title").value.trim();
     if (!draft.title) { status("请填写报告标题。"); return; }
     saving = true; get("edit-save").disabled = true; status("正在保存个人草稿…");
     const uncertain = "暂时无法确认草稿是否保存。请先复制保留当前文字，再查看草稿列表中的最新版本。";
@@ -301,7 +444,44 @@ document.addEventListener("DOMContentLoaded", () => {
         status(uncertain, "未收到完整的保存确认");
         return;
       }
-      status("已保存"); location.reload();
-    } catch (error) { status(uncertain, error.message); } finally { saving = false; get("edit-save").disabled = false; }
+      status("已保存");
+      if (loadedSetup) {
+        const url = new URL(location.href);
+        url.searchParams.delete("setup_job"); url.searchParams.delete("setup_part");
+        if (url.searchParams.get("analysis_job") === setup.id) url.searchParams.delete("analysis_job");
+        history.replaceState(history.state, "", url);
+      }
+      location.reload();
+    } catch (error) { status(uncertain, error.detail ?? error.message); } finally { saving = false; get("edit-save").disabled = false; }
+  });
+  const dateControl = document.querySelector('.report-date-form input[name="date"]');
+  const initialDate = dateControl?.value;
+  let choosingReport = false;
+  dateControl?.addEventListener("change", () => { choosingReport = true; });
+  get("period-switch")?.addEventListener("click", () => { choosingReport = true; });
+  const canRestore = () => !draft && !saving && !choosingReport && dateControl?.value === initialDate;
+  void ResearchAnalysisJobs.requested("report_dimension_draft").then(async job => {
+    if (!canRestore()) return;
+    if (!job) {
+      if (initial.period !== "weekly" || !await setup?.appliesTo("layout")) return;
+      try {
+        const layout = await setup.load();
+        if (!canRestore()) return;
+        openEditor({layout, discover: false});
+        loadedSetup = true;
+        status("版式已载入，请核对后保存本期周报草稿。");
+        get("layout-editor")?.scrollIntoView({block: "nearest"});
+      } catch (error) { window.showToast(error.message); }
+      return;
+    }
+    const {day, period} = job.context || {};
+    if (day && period && (day !== initial.date || period !== initial.period)) {
+      const url = new URL(location.href);
+      if (url.searchParams.get("date") === day && url.searchParams.get("period") === period) return;
+      url.searchParams.set("date", day); url.searchParams.set("period", period); location.replace(url);
+      return;
+    }
+    openEditor({discover: false});
+    return reportJob.restore(job.id, {explicit: true});
   });
 });

@@ -111,13 +111,22 @@ def test_templates_and_page_projection(pages, path, marker):
     assert html.xpath('//a[@href="/workbenches/fixture-workbench/sn/indicators?tab=charts&date=2030-01-02" and text()="返回图表库"]')
     if path.endswith('/import'):
         assert config(response)['id'] is None, '静态导入路由优先于动态ID'
-        panel = html.get_element_by_id('report-chart-import')
-        assert panel.tag == 'details' and 'open' not in panel.attrib
-        assert panel.find('summary').text == '从往期周报导入常用图'
-        native_result = html.get_element_by_id('chart-import-result')
-        assert native_result.getnext() is panel, '新入口追加在原表导入结果后，原有内容不重新包裹'
-        assert html.get_element_by_id('chart-import-sheets').getparent() is panel.getparent()
-        assert html.get_element_by_id('chart-import-apply').text == '确认导入所选工作表'
+        assert html.xpath('//h1/text()') == ['导入图表']
+        native_tab, report_tab = html.xpath('//*[@role="tablist" and @aria-label="图表导入来源"]/*[@role="tab"]')
+        assert native_tab.text == '原表（Excel）' and native_tab.get('aria-selected') == 'true'
+        assert report_tab.text == '往期周报（PPT / PDF）' and report_tab.get('aria-selected') == 'false'
+        native_panel = html.get_element_by_id(native_tab.get('aria-controls'))
+        report_panel = html.get_element_by_id(report_tab.get('aria-controls'))
+        assert native_panel.get('role') == report_panel.get('role') == 'tabpanel'
+        assert 'hidden' not in native_panel.attrib and 'hidden' in report_panel.attrib
+        assert report_panel.get('id') == 'report-chart-import'
+        assert report_panel.tag == 'section' and report_panel.find('h2').text == '从往期周报导入常用图'
+        assert native_tab.getparent().getnext() is native_panel
+        toolbar = native_panel.find('div[@class="charts-toolbar"]')
+        assert [button.text for button in toolbar.findall('button')] == ['加载更多预览', '确认导入所选工作表', '全部导入']
+        assert toolbar in html.get_element_by_id('chart-import-sheets').itersiblings(preceding=True)
+        assert html.get_element_by_id('chart-import-all-library').get('href') == (
+            '/workbenches/fixture-workbench/sn/indicators?tab=charts&date=2030-01-02')
     if path.endswith('chart-1'):
         assert config(response)['id'] == 'chart-1'
         assert 'disabled' in html.get_element_by_id('chart-editor-fields').attrib
@@ -217,6 +226,12 @@ def test_indicator_three_tabs_share_chart_library_content_and_accessible_stars(p
     assert len(html.xpath('//script[contains(@src,"/static/charts.js")]')) == 1
     assert len(html.xpath('//script[contains(@src,"/static/chart-hover.js?v=") and @defer]')) == 1
     assert html.xpath('//a[contains(@href,"/sn/charts/import")]')
+    report_import = html.xpath('//header/div[@class="charts-toolbar"]/a[text()="从往期周报导入"]')
+    assert len(report_import) == 1
+    assert report_import[0].get('href') == '/workbenches/fixture-workbench/sn/charts/import#report-chart-import'
+    assert report_import[0].getparent().get('class') == 'charts-toolbar'
+    unavailable = fromstring(client.get('/sn/indicators?tab=charts', headers={'x-version': '1'}).text)
+    assert not unavailable.xpath('//a[text()="从往期周报导入"]')
     assert config(response)['date'] == '2030-01-02'
     for path in ('/fixture-indicator', '/sn/charts/chart-1'):
         page = fromstring(client.get(path).text)

@@ -47,8 +47,36 @@ def artifact_query(scope, module):
     return query
 
 
+def _cited_report(text):
+    try:
+        body = json.loads(text)
+    except (ValueError, TypeError, RecursionError):
+        return None
+    if isinstance(body, dict) and body.get('format') == 'research-report-draft.v1' and body.get('evidence_citations'):
+        return body
+    return None
+
+
+def _hide_cited_report(result):
+    body = _cited_report(result['body'])
+    if body is not None:
+        # Generic lists and version history do not have a freshly checked
+        # report view. Keep metadata and direct readers to the dedicated page.
+        notes, citations = body.get('dimension_notes'), body.pop('evidence_citations')
+        if (isinstance(notes, dict) and isinstance(citations, list)
+                and all(isinstance(item, dict) and isinstance(item.get('dimension_id'), str) for item in citations)):
+            for item in citations:
+                notes.pop(item['dimension_id'], None)
+        else:
+            body.pop('dimension_notes', None)
+        result['body'] = json.dumps(body, ensure_ascii=False)
+        result['notice'] = '请在周报页查看经当前授权核对的引用原句'
+    return result
+
+
 def serialize_artifact(row):
-    return {key: getattr(row, key) for key in ("id", "module", "title", "body", "status", "source_ids", "source_snapshots", "revision", "created_at", "updated_at")}
+    result = {key: getattr(row, key) for key in ("id", "module", "title", "body", "status", "source_ids", "source_snapshots", "revision", "created_at", "updated_at")}
+    return _hide_cited_report(result) if row.module == ArtifactModule.briefs else result
 
 
 def record_revision(session, row, editor):
@@ -57,9 +85,10 @@ def record_revision(session, row, editor):
         source_snapshots=deepcopy(row.source_snapshots), edited_by=editor, recorded_at=row.updated_at))
 
 
-def serialize_revision(row):
-    return {key: getattr(row, key) for key in ("artifact_id", "revision", "title", "body", "status", "source_ids",
-                                              "source_snapshots", "edited_by", "recorded_at")}
+def serialize_revision(row, *, module=None):
+    result = {key: getattr(row, key) for key in ("artifact_id", "revision", "title", "body", "status", "source_ids",
+                                               "source_snapshots", "edited_by", "recorded_at")}
+    return _hide_cited_report(result) if module == ArtifactModule.briefs else result
 
 
 def list_owned_artifacts(session, scope, module, limit=100, offset=0):
@@ -125,6 +154,8 @@ def list_artifacts(module: ArtifactModule, scope: WorkbenchScope = Depends(verif
 
 @router.post("/{workbench_id}/{module}", status_code=201)
 async def create_artifact(module: ArtifactModule, body: ArtifactInput, scope: WorkbenchScope = Depends(verified_workbench)):
+    if module == ArtifactModule.briefs and _cited_report(body.body):
+        raise HTTPException(422, '带逐条证据的周报请通过周报编辑器保存')
     values, sources = await validated_input(scope, body, shared=module == ArtifactModule.structure)
     captures = await capture_sources(scope, sources)
     now = datetime.now(timezone.utc)
@@ -148,6 +179,8 @@ async def update_artifact(module: ArtifactModule, artifact_id: str, body: Artifa
                           scope: WorkbenchScope = Depends(verified_workbench)):
     if module == ArtifactModule.structure:
         require_shared_write(scope)
+    if module == ArtifactModule.briefs and _cited_report(body.body):
+        raise HTTPException(422, '带逐条证据的周报请通过周报编辑器保存')
     if body.revision is None:
         raise HTTPException(400, "请携带当前版本，避免覆盖其他修改")
     # Reject missing / private / already-stale records before downloading files.
@@ -157,6 +190,8 @@ async def update_artifact(module: ArtifactModule, artifact_id: str, body: Artifa
             raise HTTPException(404, "研究记录不存在或无权访问")
         if row.revision != body.revision:
             raise HTTPException(409, "研究记录已更新，请刷新后继续修改")
+        if module == ArtifactModule.briefs and _cited_report(row.body):
+            raise HTTPException(422, '带逐条证据的周报请通过周报编辑器保存')
     values, sources = await validated_input(scope, body, shared=module == ArtifactModule.structure)
     captures = await capture_sources(scope, sources)
     with workbench_session(scope) as session:
@@ -187,6 +222,6 @@ def artifact_revisions(module: ArtifactModule, artifact_id: str, scope: Workbenc
         query = select(WorkbenchArtifactRevision).where(WorkbenchArtifactRevision.artifact_id == artifact_id)
         total = session.scalar(select(func.count()).select_from(query.subquery()))
         rows = session.scalars(query.order_by(WorkbenchArtifactRevision.revision.desc()).offset(offset).limit(limit)).all()
-        return {"items": [serialize_revision(item) for item in rows], "total": total,
+        return {"items": [serialize_revision(item, module=module) for item in rows], "total": total,
                 "offset": offset, "truncated": offset + len(rows) < total,
                 "notice": "仅列出实际保留的版本；旧版未冻结的引用不会补造历史原件"}

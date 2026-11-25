@@ -75,7 +75,8 @@ async function main() {
     await call('Emulation.setDeviceMetricsOverride', {width:1440, height:1000, deviceScaleFactor:1, mobile:false});
     await call('Page.navigate', {url:origin});
     await wait('document.getElementById("indicator-result-count")?.innerText === "1 / 1 项"');
-    await verify('Original indicator catalog and latest values are visible', 'document.getElementById("indicator-workspace").dataset.readonly === "true" && document.querySelectorAll("[data-indicator-row]").length === 1 && document.querySelector(".indicator-table").innerText.includes("17.50")');
+    await verify('Original indicator catalog and latest values are visible', 'document.getElementById("indicator-workspace").dataset.readonly === "true" && document.querySelectorAll("[data-indicator-row]").length === 1 && document.querySelector("[data-indicator-row] td:nth-child(3)").innerText === "17.5"');
+    await verify('Full indicator name is available on hover', 'document.querySelector("[data-indicator-row] .indicator-name").title === "Measured quantity"');
     await verify('No favorite, comparison, detail or historical action is offered', '!document.querySelector("#indicator-workspace [data-favorite], #indicator-workspace [data-compare], #indicator-workspace [data-series-chart], #indicator-favorites, #indicator-compare-dialog")');
     await js('(()=>{const input=document.getElementById("indicator-search");input.value="not-in-bound-set";input.dispatchEvent(new Event("input",{bubbles:true}))})()');
     await verify('Search filters only the loaded DOM and displays its empty state', 'document.querySelector("[data-indicator-row]").hidden && !document.getElementById("indicator-no-results").hidden && document.getElementById("indicator-result-count").innerText === "0 / 1 项"');

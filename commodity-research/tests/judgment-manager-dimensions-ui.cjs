@@ -10,7 +10,7 @@ env = Environment(loader=FileSystemLoader(sys.argv[1]), autoescape=select_autoes
 print(env.get_template('_judgment_manager.html').render(logic_input='', selected_judgment_id=42, j=None))
 `, path.join(web, 'templates')], {encoding: 'utf8'});
 assert.equal(rendered.status, 0, rendered.stderr);
-const html = '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>:root{--surface:#fff;--text:#222;--line:#ddd;--primary:#a63f25;--text-muted:#777;--alert:#b60019}body{font-family:Arial,sans-serif}</style><link rel="stylesheet" href="/static/judgment-manager.css"></head><body><button data-open-logic>管理研究逻辑</button>' + rendered.stdout + '<script>window.RESEARCH_PREFIX="/research/workbenches/synthetic";window.RESEARCH_CONTEXT={workbench:"synthetic"};window.researchFetch=(url,options)=>fetch(url,options)</script><script src="/static/judgment-manager.js"></script></body></html>';
+const html = '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>:root{--surface:#fff;--text:#222;--line:#ddd;--primary:#a63f25;--text-muted:#777;--alert:#b60019}body{font-family:Arial,sans-serif}</style><link rel="stylesheet" href="/static/judgment-manager.css"></head><body><button data-open-logic>管理研究逻辑</button>' + rendered.stdout + '<script>window.RESEARCH_PREFIX="/research/workbenches/synthetic";window.RESEARCH_CONTEXT={workbench:"synthetic"};window.researchFetch=(url,options)=>fetch(url,options)</script><script src="/static/analysis-jobs.js"></script><script src="/static/judgment-manager.js"></script></body></html>';
 const dimensions = [{id: 'custom_cost', label: '成本约束', category: '其他', description: '合成研究台的自定义维度'}, {id: 'demand', label: '终端消费', category: '需求', description: ''}];
 const dimensionItems = [
   {section: 'supporting', index: 0, title: '支持依据：合成文字', dimension: 'removed_id'},
@@ -19,6 +19,7 @@ const dimensionItems = [
   {section: 'falsifiers', index: 0, title: '证伪：合成条件'}];
 const clone = value => JSON.parse(JSON.stringify(value));
 let viewer = false, modelsAvailable = true, failModel = false, failReview = false, revision = 1, holdModel = true, releaseModel;
+const dimensionJob = {id: 'synthetic-dimension-job-002', purpose: 'judgment_dimensions', workbench_id: 'synthetic', context: {judgment_id: 42}};
 let review = {draft_id: 'synthetic-dimension-preview', revision: 1, total: 2, research_dimensions: dimensions, sections: [
   {id: 'contradiction', title: '主矛盾', items: [{id: 'evidence', kind: 'binding', title: '合成支持依据', description: '保持原始论证文字', status: 'ready', can_bind: false, can_dimension: true, dimension: 'demand', dimension_suggestion: {dimension: 'custom_cost', reason: ''}, warnings: []}]},
   {id: 'thresholds', title: '阈值条件', items: [{id: 'threshold', kind: 'thresholds', title: '合成阈值', description: '保持原始规则文字', status: 'ready', can_bind: false, can_dimension: true, rule: {operator: '>', value_literal: '12', type: '观察位', horizon: '短期'}, warnings: []}]}]};
@@ -38,11 +39,14 @@ const preview = () => ({draft_id: review.draft_id, base_version: 3, source_text:
       if (p.endsWith('/manage')) data = {variety: 'ZZ', current: {id: 42, version: 2, status: '草稿', markdown: '# 原始研判', source_text: '原始分析', dimension_items: clone(dimensionItems)}, latest: {version: 3}, versions: [], can_write: !viewer, research_dimensions: dimensions};
       else if (p.endsWith('/models')) data = {models: modelsAvailable ? [{id: 'synthetic-model', name: '合成模型'}, {id: 'synthetic-model-2', name: '合成补标模型二'}] : []};
       else if (p.endsWith('/panels')) data = {items: [], total: 0, has_more: false};
-      else if (p.endsWith('/jobs/latest')) data = {job: null};
+      else if (p.endsWith('/jobs/latest') || p.endsWith('/analysis-jobs/latest')) data = {job: null};
       else if (p.endsWith('/dimension-suggestions')) {
-        if (failModel) return route.fulfill({status: 502, json: {detail: '合成模型调用失败'}});
+        return route.fulfill({status: 202, json: {...dimensionJob, state: 'queued'}});
+      } else if (p.endsWith('/analysis-jobs/' + dimensionJob.id)) {
         if (holdModel) await new Promise(resolve => { releaseModel = resolve; });
-        data = {research_dimensions: dimensions, suggestions: dimensionItems.map(item => ({section: item.section, index: item.index, dimension: 'custom_cost', reason: '合成模型依据原文提出的建议'}))};
+        data = {...dimensionJob, state: failModel ? 'failed' : 'succeeded', message: failModel ? '合成模型调用失败' : null};
+      } else if (p.endsWith('/analysis-jobs/' + dimensionJob.id + '/result')) {
+        data = {job: {...dimensionJob, state: 'succeeded'}, judgment_id: 42, version: 2, research_dimensions: dimensions, suggestions: dimensionItems.map(item => ({section: item.section, index: item.index, dimension: 'custom_cost', reason: '合成模型依据原文提出的建议'}))};
       } else if (p.endsWith('/dimensions')) data = {id: 44, version: 4};
       else if (p.endsWith('/jobs') && request.method() === 'POST') data = {id: 'synthetic-dimension-job-001', state: 'queued', purpose: 'judgments', workbench_id: 'synthetic'};
       else if (p.endsWith('/jobs/synthetic-dimension-job-001')) data = {id: 'synthetic-dimension-job-001', state: 'succeeded', purpose: 'judgments', workbench_id: 'synthetic', result_available: true};
@@ -69,8 +73,12 @@ const preview = () => ({draft_id: review.draft_id, base_version: 3, source_text:
     assert.equal(await page.locator('#logic-model').inputValue(), 'synthetic-model-2', 'The visible tagging model and analysis model share the same selection');
     assert.equal(requests.filter(row => row.path.endsWith('/models')).length, 1, 'Both model selectors reuse one model request');
     await page.locator('#logic-dimension-suggest').click();
+    await page.locator('#logic-dimension-status').filter({hasText: '可关闭窗口'}).waitFor();
     assert.equal(await first.isDisabled(), false, 'The researcher can edit while the model is working');
-    await first.selectOption('demand'); holdModel = false; releaseModel();
+    await first.selectOption('demand'); holdModel = false; releaseModel?.();
+    await page.locator('#logic-dimension-status').filter({hasText: '编辑内容已改动'}).waitFor();
+    assert.equal(await editor.locator('[data-dimension-adopt]').count(), 0);
+    await page.locator('#logic-dimension-result').click();
     await editor.locator('[data-dimension-adopt]').first().waitFor({state: 'visible'});
     assert.equal(requests.filter(row => row.path.endsWith('/dimension-suggestions')).at(-1).body.model_id, 'synthetic-model-2');
     assert.equal(await first.inputValue(), 'demand', 'Completed suggestions preserve edits made during the model request');
@@ -83,7 +91,7 @@ const preview = () => ({draft_id: review.draft_id, base_version: 3, source_text:
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     assert.equal(await editor.evaluate(node => node.getBoundingClientRect().right <= innerWidth), true);
     failModel = true; await page.locator('#logic-dimension-suggest').click();
-    await page.locator('#logic-status').filter({hasText: '合成模型调用失败'}).waitFor({state: 'visible'});
+    await page.locator('#logic-dimension-status').filter({hasText: '合成模型调用失败'}).waitFor({state: 'visible'});
     assert.equal(await first.inputValue(), 'custom_cost', 'A model error retains the researcher edits');
     failModel = false; await page.locator('#logic-dimension-save').click();
     await page.waitForFunction(() => location.search.includes('judgment_id=44'));

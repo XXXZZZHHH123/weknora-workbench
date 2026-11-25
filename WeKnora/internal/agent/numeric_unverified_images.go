@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/Tencent/WeKnora/internal/chart"
+	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
@@ -20,6 +21,39 @@ func (e *AgentEngine) numericUnverifiedImagesCurrent(candidate string, state *ty
 	if e == nil || state == nil {
 		return false
 	}
+	images, valid := markdownImageResources(candidate)
+	if !valid || len(images) == 0 {
+		return valid
+	}
+	verified := e.numericUnverifiedRenderedImages(state)
+	// Reuse the native read verifier: returned pixels, their digest, fetched
+	// chunk, document identity and exact catalog/read locator must all agree.
+	// Geometry-only reads and catalog entries never prove image delivery.
+	for _, step := range state.RoundSteps {
+		for _, call := range step.ToolCalls {
+			if call.ExecutionName() != "read_document" || call.Result == nil || !call.Result.Success {
+				continue
+			}
+			call.Name, call.Args, call.Target = call.ExecutionName(), call.ExecutionArgs(), nil
+			views, _ := documentImageConsistencySummaries(&types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}})
+			for _, view := range views {
+				content := reviewAsMap(view.Content)
+				reference, _ := content["reference"].(string)
+				if content["original_pixels_verified"] == true {
+					verified[reference] = true
+				}
+			}
+		}
+	}
+	for reference := range images {
+		if !verified[reference] {
+			return false
+		}
+	}
+	return true
+}
+
+func markdownImageResources(candidate string) (map[string]bool, bool) {
 	images := map[string]bool{}
 	source := []byte(candidate)
 	document := goldmark.New(goldmark.WithExtensions(extension.Table, extension.Linkify)).Parser().Parse(text.NewReader(source))
@@ -55,35 +89,7 @@ func (e *AgentEngine) numericUnverifiedImagesCurrent(candidate string, state *ty
 		}
 		return ast.WalkContinue, nil
 	})
-	if !valid || len(images) == 0 {
-		return valid
-	}
-	verified := e.numericUnverifiedRenderedImages(state)
-	// Reuse the native read verifier: returned pixels, their digest, fetched
-	// chunk, document identity and exact catalog/read locator must all agree.
-	// Geometry-only reads and catalog entries never prove image delivery.
-	for _, step := range state.RoundSteps {
-		for _, call := range step.ToolCalls {
-			if call.ExecutionName() != "read_document" || call.Result == nil || !call.Result.Success {
-				continue
-			}
-			call.Name, call.Args, call.Target = call.ExecutionName(), call.ExecutionArgs(), nil
-			views, _ := documentImageConsistencySummaries(&types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}})
-			for _, view := range views {
-				content := reviewAsMap(view.Content)
-				reference, _ := content["reference"].(string)
-				if content["original_pixels_verified"] == true {
-					verified[reference] = true
-				}
-			}
-		}
-	}
-	for reference := range images {
-		if !verified[reference] {
-			return false
-		}
-	}
-	return true
+	return images, valid
 }
 
 func numericUnverifiedHTMLHasImage(raw []byte) bool {
@@ -106,21 +112,34 @@ func numericUnverifiedHTMLHasImage(raw []byte) bool {
 
 func (e *AgentEngine) numericUnverifiedRenderedImages(state *types.AgentState) map[string]bool {
 	verified := map[string]bool{}
-	if e.toolRegistry == nil {
-		return verified
-	}
-	registered, err := e.toolRegistry.GetTool(renderChartToolName)
-	tool, ok := registered.(*renderChartTool)
-	if err != nil || !ok {
-		return verified
-	}
-	tool.mu.Lock()
-	defer tool.mu.Unlock()
 	taskConversation := e.turnReview.Conversation
 	if e.turnReview.TaskConversationCaptured {
 		taskConversation = e.turnReview.TaskConversation
 	}
-	taskHash := e.chartTaskHash(e.turnReview.Query, taskConversation)
+	for _, result := range e.currentRenderedCharts(e.turnReview.Query, taskConversation, state) {
+		verified[result.handle] = true
+	}
+	return verified
+}
+
+type currentRenderedChart struct {
+	handle string
+	data   map[string]any
+}
+
+func (e *AgentEngine) currentRenderedCharts(query string, conversation []chat.Message, state *types.AgentState) []currentRenderedChart {
+	if e.toolRegistry == nil {
+		return nil
+	}
+	registered, err := e.toolRegistry.GetTool(renderChartToolName)
+	tool, ok := registered.(*renderChartTool)
+	if err != nil || !ok {
+		return nil
+	}
+	tool.mu.Lock()
+	defer tool.mu.Unlock()
+	taskHash := e.chartTaskHash(query, conversation)
+	var verified []currentRenderedChart
 	for _, step := range state.RoundSteps {
 		for _, call := range step.ToolCalls {
 			if call.ExecutionName() != renderChartToolName || call.Result == nil || !call.Result.Success ||
@@ -138,7 +157,7 @@ func (e *AgentEngine) numericUnverifiedRenderedImages(state *types.AgentState) m
 				!chartReceiptSourceCurrent(call, tool, state) {
 				continue
 			}
-			verified[delivery.Handle] = true
+			verified = append(verified, currentRenderedChart{handle: delivery.Handle, data: call.Result.Data})
 		}
 	}
 	return verified

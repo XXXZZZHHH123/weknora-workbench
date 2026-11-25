@@ -40,17 +40,18 @@ var documentFigureSource = regexp.MustCompile(`(?m)^来源：第([1-9][0-9]*)页
 var documentFigurePart = regexp.MustCompile(`(?i)^ppt/media/[A-Za-z0-9_.-]+\.(emf|wmf)$`)
 
 type documentImage struct {
-	Reference      string            `json:"reference"`
-	KnowledgeID    string            `json:"knowledge_id"`
-	ChunkID        string            `json:"chunk_id"`
-	Page           int               `json:"page,omitempty"`
-	PageHint       int               `json:"page_hint,omitempty"`
-	PageVerified   bool              `json:"page_verified"`
-	Label          string            `json:"label"`
-	LabelTruncated bool              `json:"label_truncated,omitempty"`
-	Context        string            `json:"source_context"`
-	SourcePart     string            `json:"source_part,omitempty"`
-	ReadArgs       ReadDocumentInput `json:"read_args"`
+	Reference        string             `json:"reference"`
+	KnowledgeID      string             `json:"knowledge_id"`
+	ChunkID          string             `json:"chunk_id"`
+	Page             int                `json:"page,omitempty"`
+	PageHint         int                `json:"page_hint,omitempty"`
+	PageVerified     bool               `json:"page_verified"`
+	Label            string             `json:"label"`
+	LabelTruncated   bool               `json:"label_truncated,omitempty"`
+	Context          string             `json:"source_context"`
+	SourcePart       string             `json:"source_part,omitempty"`
+	ReadArgs         ReadDocumentInput  `json:"read_args"`
+	GeometryReadArgs *ReadDocumentInput `json:"geometry_read_args,omitempty"`
 }
 
 func documentImageCatalog(result *types.ToolResult, knowledgeID, sourceHash string) []documentImage {
@@ -154,14 +155,18 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 	}
 	catalog := documentImageCatalog(result, knowledge.ID, knowledge.FileHash)
 	catalog = t.appendOriginalImageCatalog(ctx, knowledge, input, result, catalog)
+	if len(input.Images) == 0 {
+		t.appendDocumentImageText(ctx, knowledge, result, catalog, catalog, true)
+		t.addGeometryCatalogOptions(ctx, knowledge, catalog)
+	}
 	result.Data["image_catalog"] = catalog
 	if len(catalog) > 0 {
 		encoded, _ := json.Marshal(catalog)
 		result.Output += "\n<document_image_catalog untrusted_source_metadata=\"true\">" + string(encoded) + "</document_image_catalog>\n" +
 			"These are stored originals or verified original-media selectors, not yet viewed. original-media:// is a read-only source selector, not a saved resource. Select the relevant reference using the full question and actual source context; " +
-			"use that entry's read_args with its exact owning chunk, then add focus for the full question. Do not replace its page or move the reference to another range. " +
-			"page_hint is only an unverified label; page_verified=false means no physical page was established. The default image_mode=pixels reads pixels. For supported vector-chart traces, " +
-			"explicitly select image_mode=geometry and exact image_series legend identifiers to read original geometry without PNG conversion or visual inspection. " +
+			"use read_args for pixels or geometry_read_args for a supported vector trace. In geometry_read_args, keep the exact selector and explicitly choose the relevant image_series from the listed original legends using the full question. " +
+			"For a requested trend, endpoint or comparison covered by supported geometry, use geometry before asking for another pixel estimate. Add focus for the full question and keep the verified page and range. " +
+			"page_hint is only an unverified label; page_verified=false means no physical page was established. Legend options alone supply no measurements or pixel observations. " +
 			"Each image retains its document, page and cited chunk."
 	}
 	if len(input.Images) == 0 {
@@ -192,8 +197,13 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 		}
 	}
 	if input.ImageMode == "geometry" {
-		return t.finishGeometryRead(ctx, knowledge, input, result, catalog, selected), nil
+		result = t.finishGeometryRead(ctx, knowledge, input, result, catalog, selected)
+		if result.Success {
+			t.appendDocumentImageText(ctx, knowledge, result, catalog, selected, false)
+		}
+		return result, nil
 	}
+	defer t.appendDocumentImageText(ctx, knowledge, result, catalog, selected, false)
 	if t.imageReader == nil && t.sourceImageReader == nil {
 		result.Data["image_read_error"] = "原图读取服务不可用"
 		result.Output += "\nOriginal image reader is unavailable; image labels alone cannot establish visual facts."
@@ -252,8 +262,9 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 					entry["geometry_status"] = "not_requested"
 				}
 				entry["geometry_selection_options"] = map[string]any{
-					"available_series": geometry["available_series"],
-					"notice":           "Original pixels were returned. This pixel call did not return optional geometry values and selected no series automatically. This call's geometry status does not invalidate earlier successful geometry reads of the same authorized source version. Reuse that evidence if it already covers the task. Only if additional geometry is needed, explicitly choose exact image_series legend identifiers from the full question and use image_mode=geometry. These legend options are navigation, not observations.",
+					"available_series":   geometry["available_series"],
+					"geometry_read_args": documentGeometryReadArgs(item.ReadArgs, geometry),
+					"notice":             "Original pixels were returned. This pixel call selected no geometry series automatically. Reuse earlier successful geometry for this exact source version when it covers the task. For additional geometry, use geometry_read_args and choose exact image_series legend identifiers relevant to the full question. These legend options supply no measurements.",
 				}
 			} else if geometry != nil {
 				geometryEvidence = append(geometryEvidence, map[string]any{"reference": item.Reference,

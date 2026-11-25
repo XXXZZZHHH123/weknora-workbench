@@ -14,7 +14,7 @@
       <h1 class="text-2xl font-black tracking-tight break-all">{{ d.name }}</h1>
       {% if research_workbench() and research_workbench().scope_version == 2 and not research_workbench().restricted %}<button type="button" class="favorites-bookmark" data-favorite="{{ d.series_id }}" data-favorite-kind="indicator" data-favorite-label="{{ d.name }}" aria-pressed="false" aria-label="加入自选 {{ d.name }}" title="自选" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3.2L6 20V5.5a1 1 0 0 1 1-1z"/></svg></button>{% endif %}
       <span class="ind-info" data-ind-info>
-        <button type="button" class="ind-info-button" aria-expanded="false" aria-controls="ind-info-pop" aria-label="口径与来源" title="口径与来源">i</button>
+        <button type="button" class="ind-info-button" aria-expanded="false" aria-haspopup="dialog" aria-controls="ind-info-pop" aria-label="口径与来源" title="口径与来源">i</button>
         <div id="ind-info-pop" class="ind-info-pop" role="dialog" aria-label="口径与来源" hidden>
           {% include "_indicator_caliber.html" %}
         </div>
@@ -179,10 +179,10 @@
     box.addEventListener('mouseenter', () => show(true));
     box.addEventListener('mouseleave', () => { if (!pinned) show(false); });
     button.addEventListener('focus', () => show(true));
-    button.addEventListener('blur', () => { if (!pinned) show(false); });
+    box.addEventListener('focusout', event => { if (!pinned && !box.contains(event.relatedTarget)) show(false); });
     button.addEventListener('click', () => { pinned = !pinned || pop.hidden; show(pinned); });
     document.addEventListener('click', event => { if (!box.contains(event.target)) { pinned = false; show(false); } });
-    document.addEventListener('keydown', event => { if (event.key === 'Escape' && !pop.hidden) { pinned = false; show(false); button.focus(); } });
+    document.addEventListener('keydown', event => { if (event.key === 'Escape' && !pop.hidden) { pinned = false; button.focus(); show(false); } });
   })();
   window.IND = {{ d | tojson }};
 </script>

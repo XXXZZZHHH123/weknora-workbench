@@ -4,7 +4,7 @@ from copy import deepcopy
 from fastapi import HTTPException
 import pytest
 
-from tin.schemas.chart import ChartDefinition
+from tin.schemas.chart import MAX_VISIBLE_CYCLES, ChartDefinition, RepeatTemplate
 from tin.web import chart_data, report_chart_definitions as report
 from tests.chart_fixtures import FIELDS, SID, OTHER, THIRD, definition
 from tests.test_chart_api import chart_client, create
@@ -61,6 +61,7 @@ def test_model_grouped_period_legends_form_one_metric_cycle(fields):
     assert len(result.curves) == 1
     assert result.curves[0].series_id == SID and result.curves[0].label == '原文指标价格'
     assert result.time.mode == 'cycle' and result.time.template.period == 'year'
+    assert result.time.cycles == 8 and result.time.visible_cycles is None
     assert chart['series'][0]['legends'] == ['2019年度', '2020年度', '2021年度']
 
 
@@ -72,6 +73,70 @@ def test_multiple_model_grouped_metrics_keep_independent_cycle_bindings(fields):
     result = build(chart, [SID, OTHER], 'seasonal')
     assert [curve.series_id for curve in result.curves] == [SID, OTHER]
     assert [curve.label for curve in result.curves] == ['原文指标甲', '原文指标乙']
+
+
+def test_grounded_season_start_and_labels_define_repeat_window_without_axis_override(fields):
+    chart = recognized(SID)
+    chart['shape'] = {'season_start_month': 9, 'period_kind': 'crop_year',
+        'period_labels': ['19/20', '20/21', '21/22'], 'y_ticks': {'min': '20', 'max': '100'}}
+    result = build(chart, [SID], 'seasonal')
+    assert isinstance(result.time.template, RepeatTemplate)
+    assert result.time.template.start == '09-01' and result.time.template.name == '9月起始年度'
+    assert (result.time.template.period, result.time.template.align, result.time.template.transform) == (
+        'year', 'days', 'raw')
+    assert result.time.cycles == result.time.visible_cycles == 3
+    assert result.axes.left.min is None and result.axes.left.max is None
+    assert build(chart, [SID], 'trend').time.mode == 'recent'
+
+
+def test_period_count_respects_chart_limit_and_contracts_keep_natural_year(fields):
+    chart = {**recognized(SID), 'chart_type': 'seasonal', 'shape': {'season_start_month': 9,
+        'period_kind': 'contract', 'period_labels': [f'{i:02d}05' for i in range(MAX_VISIBLE_CYCLES + 2)]}}
+    result = build(chart, [SID], 'seasonal')
+    assert result.time.template.start == '01-01' and result.time.template.name == '自然年'
+    assert result.time.cycles == result.time.visible_cycles == MAX_VISIBLE_CYCLES
+    assert report.shape_warnings(chart) == ['原图按合约分年（如 1905），重画按年度对齐，曲线分段可能不同']
+
+
+@pytest.mark.parametrize('values,mismatch', [([101, 121], True), ([100, 120], False),
+    ([-200, 301], True), ([-200, 300], False), ([0, 19.9], True), ([0, 20], False), ([], False)])
+def test_axis_range_checks_overlap_and_strict_span_boundaries(fields, values, mismatch):
+    chart = recognized(SID, THIRD)
+    chart['shape'] = {'y_ticks': {'min': '0', 'max': '100'}}
+    value = build(chart, [SID, THIRD], 'comparison')
+    payload = {'curves': [{'axis': 'left', 'points': [{'value': n} for n in values]},
+                         {'axis': 'right', 'points': [{'value': 10_000}]}]}
+    warning = report.range_warning(None, chart, value, payload=payload)
+    assert bool(warning) is mismatch
+    if warning:
+        assert '数值范围与原图刻度不符（原图 0–100，当前数据 ' in warning
+
+
+def test_range_check_reads_only_authorized_observations_in_seasonal_window(chart_client):
+    from tin.web.charts import require_scope
+    from tin.web.report_chart_import import annotate
+
+    client, state = chart_client
+    state.observations[SID] = [('2019-12-01', 10_000), ('2020-09-01', 20), ('2021-08-31', 80),
+                              ('2021-09-01', 30), ('2022-01-01', 50)]
+    chart = recognized(SID)
+    chart.update(id='chart', chart_type='seasonal')
+    chart['series'][0]['selected_id'] = SID
+    chart['shape'] = {'season_start_month': 9, 'period_labels': ['20/21', '21/22'],
+        'y_ticks': {'min': '0', 'max': '100'}}
+
+    @state.app.get('/test/report-range')
+    def check():
+        return annotate(require_scope(), [deepcopy(chart)], '', 'test')[0]
+
+    response = client.get('/test/report-range')
+    assert response.status_code == 200 and response.json()['range_mismatch'] is False
+    assert not response.json()['shape_warnings']
+    assert any(not request.get('catalog_only') for _, request in state.requests)
+    state.observations[SID][-1] = ('2022-01-01', 900)
+    mismatch = client.get('/test/report-range').json()
+    assert mismatch['range_mismatch'] is True and not mismatch['definition_failed']
+    assert '当前数据 20–900' in mismatch['shape_warnings'][0]
 
 
 def test_missing_indicator_is_explained_without_dropping_other_bindings(fields):

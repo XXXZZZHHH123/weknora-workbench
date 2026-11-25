@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/common"
+	apperrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"gorm.io/gorm"
@@ -150,6 +151,9 @@ func applyKnowledgeListFilter(query *gorm.DB, filter types.KnowledgeListFilter) 
 			"(LOWER(file_name) LIKE ? ESCAPE ? OR LOWER(title) LIKE ? ESCAPE ?)",
 			"%"+escaped+"%", likeEscapeChar, "%"+escaped+"%", likeEscapeChar,
 		)
+	}
+	if len(filter.FileNames) > 0 {
+		query = query.Where("type = ? AND file_name IN ?", "file", filter.FileNames)
 	}
 	// FileType and Source share the same special-case routing onto `type` for
 	// the "manual" / "url" values, so callers can pick either control.
@@ -349,6 +353,21 @@ func (r *knowledgeRepository) UpdateKnowledge(ctx context.Context, knowledge *ty
 	// to support unrelated updates when the caller did not provide the field.
 	if knowledge.CustomMetadata == nil {
 		omit = append(append([]string{}, omitFieldsOnUpdate...), "custom_metadata")
+	}
+	if knowledge.Type == "file" && knowledge.FilePath != "" {
+		// A document worker may still own a snapshot of the previous version.
+		// A full Save must never put its retired path and hash back on the row.
+		result := r.db.WithContext(ctx).Model(&types.Knowledge{}).
+			Where("id = ? AND tenant_id = ? AND knowledge_base_id = ? AND file_path = ? AND COALESCE(parse_status, '') <> ?",
+				knowledge.ID, knowledge.TenantID, knowledge.KnowledgeBaseID, knowledge.FilePath, types.ParseStatusDeleting).
+			Select("*").Omit(omit...).Updates(knowledge)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return apperrors.NewConflictError("知识文件已变更，请刷新后重试")
+		}
+		return nil
 	}
 	err := r.db.WithContext(ctx).Omit(omit...).Save(knowledge).Error
 	return err

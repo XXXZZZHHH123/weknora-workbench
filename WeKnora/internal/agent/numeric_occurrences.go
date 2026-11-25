@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -20,11 +21,13 @@ type numericOccurrence struct {
 
 const unverifiedNumberMarker = "〔数字待核对〕"
 
+var hyphenatedFilenameSuffix = regexp.MustCompile(`^-[\p{L}\p{N}_-]+\.[A-Za-z][A-Za-z0-9]*\b`)
+
 func numericMask(value string) string {
 	return strings.Repeat(" ", len(value))
 }
 
-// annotateUnverifiedNumbers inserts only at the matcher's exact byte ends.
+// annotateUnverifiedNumbers inserts at the end of each visible numeric token.
 // Goldmark's source segments restrict edits to visible prose and table cells;
 // links (including labels), images, citation/HTML tags, and code stay intact.
 // An unsupported token in any protected or unrecognized structure fails closed
@@ -79,21 +82,52 @@ func annotateUnverifiedNumbers(answer string, occurrences []numericOccurrence) (
 		}
 		return ast.WalkContinue, nil
 	})
+	positions := make([]int, 0, len(merged))
 	for _, span := range merged {
-		for i := span.Start; i < span.End; i++ {
+		end := numericMarkerEnd(answer, span.End)
+		for i := span.Start; i < end; i++ {
 			if !editable[i] {
 				return "", 0, false
 			}
 		}
+		if len(positions) == 0 || end > positions[len(positions)-1] {
+			positions = append(positions, end)
+		}
 	}
 	var annotated strings.Builder
-	annotated.Grow(len(answer) + len(merged)*len(unverifiedNumberMarker))
+	annotated.Grow(len(answer) + len(positions)*len(unverifiedNumberMarker))
 	previous := 0
-	for _, span := range merged {
-		annotated.WriteString(answer[previous:span.End])
+	for _, end := range positions {
+		annotated.WriteString(answer[previous:end])
 		annotated.WriteString(unverifiedNumberMarker)
-		previous = span.End
+		previous = end
 	}
 	annotated.WriteString(answer[previous:])
-	return annotated.String(), len(merged), true
+	return annotated.String(), len(positions), true
+}
+
+// Keep a suffix such as an ASCII unit, a filename extension or a percent sign
+// attached to the digits. This affects placement only, never numeric evidence.
+func numericMarkerEnd(answer string, end int) int {
+	if end+2 < len(answer) && (answer[end] == 'e' || answer[end] == 'E') &&
+		(answer[end+1] == '+' || answer[end+1] == '-') && answer[end+2] >= '0' && answer[end+2] <= '9' {
+		end += 2
+	}
+	for end < len(answer) {
+		if numericASCIIWord(answer[end]) || answer[end] == '.' && end+1 < len(answer) && numericASCIIWord(answer[end+1]) {
+			end++
+			continue
+		}
+		break
+	}
+	if end < len(answer) && answer[end] == '-' {
+		end += len(hyphenatedFilenameSuffix.FindString(answer[end:]))
+	}
+	if strings.HasPrefix(answer[end:], "%") {
+		return end + len("%")
+	}
+	if strings.HasPrefix(answer[end:], "％") {
+		return end + len("％")
+	}
+	return end
 }

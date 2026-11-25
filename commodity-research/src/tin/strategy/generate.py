@@ -250,7 +250,7 @@ def validate_evidence(plan: StrategyPlan, context: dict) -> list[str]:
 
 def generate_candidates(session: Session, variety: str, d: date, *, researcher_id: int,
                         provider: LlmProvider | None = None, research_question: str = "",
-                        knowledge_cutoff: datetime | None = None) -> GenerationResult:
+                        knowledge_cutoff: datetime | None = None, persist_strategies=True) -> GenerationResult:
     context, blockers = build_context(session, variety, d, researcher_id=researcher_id,
                                      research_question=research_question,
                                      knowledge_cutoff=knowledge_cutoff)
@@ -260,7 +260,7 @@ def generate_candidates(session: Session, variety: str, d: date, *, researcher_i
         context['source_facts_version'] = provider.source_version
     request = build_request(context, CandidateBatch.model_json_schema())
     try:
-        response = invoke(session, provider or build_provider(), request)
+        response = invoke(session, provider or build_provider(), request, private_preview=not persist_strategies)
     except LlmError as exc:
         return GenerationResult("error", gaps=[f"策略生成失败：{exc}"])
     if not response.ok:
@@ -288,6 +288,7 @@ def generate_candidates(session: Session, variety: str, d: date, *, researcher_i
             "source_context": context, "llm_call_id": response.call_id,
         })
         rows.append(create_strategy(session, candidate, actor=f"researcher:{researcher_id}",
-                                    reason="AI 生成待审查模拟策略；未发布、未成交"))
+                                    reason="AI 生成待审查模拟策略；未发布、未成交")
+                    if persist_strategies else candidate)
     return GenerationResult("generated" if rows else "no_candidate", strategies=rows,
                             gaps=batch.gaps, call_id=response.call_id)

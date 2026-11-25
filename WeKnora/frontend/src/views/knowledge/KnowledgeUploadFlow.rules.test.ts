@@ -67,6 +67,7 @@ async function confirm(patch: Record<string, unknown> = {}, finalNames = ['sourc
         processConfig: {}, tagIds: [], targetFolder: 'chosen/subfolder' }
     } },
     ensureDocumentKbReady: () => { initialized++; return modelsReady },
+    chooseUploadVersions: async () => new Map<number, string>(),
     enqueueUploads: (...arguments_: unknown[]) => queued.push(arguments_),
     executeUrlImport: () => { throw new Error('file confirmation must not import URLs') },
     MessagePlugin: { warning: (message: string) => notices.push(message) }, t: (key: string) => key,

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -61,3 +62,25 @@ var HTTPClient = secutils.NewSSRFSafeHTTPClientWithTransport(
 	secutils.SSRFSafeHTTPClientConfig{Timeout: 0, MaxRedirects: 10},
 	httpTransport,
 )
+
+type structuredReviewKey struct{}
+
+// WithStructuredReview scopes connection limits and diagnostics to Excel review.
+func WithStructuredReview(ctx context.Context) context.Context {
+	return context.WithValue(ctx, structuredReviewKey{}, true)
+}
+
+// IsStructuredReview reports whether the request comes from Excel review.
+func IsStructuredReview(ctx context.Context) bool {
+	return ctx.Value(structuredReviewKey{}) != nil
+}
+
+var structuredReviewHTTPClient = func() *http.Client {
+	transport := httpTransport.Clone()
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		return secutils.SSRFSafeDialContext(ctx, network, address)
+	}
+	return secutils.NewSSRFSafeHTTPClientWithTransport(secutils.SSRFSafeHTTPClientConfig{MaxRedirects: 10}, transport)
+}()

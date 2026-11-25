@@ -143,7 +143,16 @@ def _quantities(kind: str, points: list[Observation]) -> list[tuple[Observation,
     return list(zip(compared, condition_quantities(kind, [point.value for point in points]), strict=True))
 
 
-def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal:
+def _display_quantity(session, point, value, indicator, *, signed=False):
+    from tin.web.number_format import format_number, observation_decimals
+    decimals = observation_decimals(session, point.series_id, _iso(point.as_of),
+        point.caliber_snapshot, getattr(indicator, 'caliber', None))
+    if decimals is None:
+        return format(float(value), '+g' if signed else 'g')
+    return format_number(value, decimals=decimals, signed=signed)
+
+
+def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date, *, display_precision=False) -> Signal:
     """证伪判定：expression 解析 + consecutive_periods 连续期。
 
     连续期必须**全部**成立才算触发——「社库连续两周累库」写的就是这个意思，
@@ -194,10 +203,15 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
     hits = evaluated['hits']
     evidence = []
     if kind == "change":
-        evidence.append(_evidence(points[0], f"基期 {_iso(points[0].as_of)[:10]}：{points[0].value}",
-                                  points[0].value, note="仅用于计算变化量，不参与判定"))
+        base = points[0]
+        shown = _display_quantity(session, base, base.value, indicator) if display_precision else base.value
+        evidence.append(_evidence(base, f"基期 {_iso(base.as_of)[:10]}：{shown}",
+                                  base.value, note="仅用于计算变化量，不参与判定"))
     for (p, q), hit in zip(quantities, hits, strict=True):
-        moved = f"较上一数据点变化 {q:+g}" if kind == "change" else f"实际值 {q:g}"
+        signed = kind == 'change'
+        shown = (_display_quantity(session, p, q, indicator, signed=signed) if display_precision
+                 else format(q, '+g' if signed else 'g'))
+        moved = f"较上一数据点变化 {shown}" if signed else f"实际值 {shown}"
         evidence.append(_evidence(p, f"{_iso(p.as_of)[:10]} {moved}", p.value,
                                   note=f"{f['expression']} {'成立' if hit else '不成立'}"))
     state = "触发" if evaluated["triggered"] else "未触发"
@@ -206,7 +220,7 @@ def _falsifier_signal(session: Session, j: Judgment, f: dict, d: date) -> Signal
 
 # ---------- 对外入口 ----------
 
-def evaluate_preview(session: Session, variety: str, d: date) -> list[Signal]:
+def evaluate_preview(session: Session, variety: str, d: date, *, display_precision=False) -> list[Signal]:
     """Run current saved rules without touching signals, tasks or executions."""
     with session.no_autoflush:
         user_id = session.info.get('weknora_user_id')
@@ -239,7 +253,8 @@ def evaluate_preview(session: Session, variety: str, d: date) -> list[Signal]:
         marker = _transient_signals.set(True)
         try:
             rows = _threshold_signals(session, judgment, variety, d)
-            rows += [_falsifier_signal(session, judgment, rule, d) for rule in judgment.falsifiers]
+            rows += [_falsifier_signal(session, judgment, rule, d, display_precision=display_precision)
+                     for rule in judgment.falsifiers]
             return rows
         finally:
             _transient_signals.reset(marker)

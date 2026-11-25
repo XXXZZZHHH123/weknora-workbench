@@ -142,6 +142,30 @@ function togglePopover(id) {
   if (hidden) el.classList.remove("hidden");
 }
 
+function renderHeaderNotes(notes) {
+  const fragment = document.createDocumentFragment();
+  for (const {cell, text} of notes) {
+    const chars = Array.from(text);
+    const long = chars.length > 120;
+    const entry = document.createElement(long ? 'details' : 'div');
+    const label = document.createElement(long ? 'summary' : 'span');
+    entry.className = 'header-note';
+    label.textContent = '表头说明 ' + cell;
+    if (long) {
+      const preview = document.createElement('span');
+      preview.className = 'header-note-preview';
+      preview.textContent = chars.slice(0, 120).join('') + '…';
+      label.append(preview);
+    }
+    const full = document.createElement('p');
+    full.className = 'header-note-text';
+    full.textContent = text;
+    entry.append(label, full);
+    fragment.append(entry);
+  }
+  return fragment;
+}
+
 document.addEventListener("click", (e) => {
   if (e.target.closest("[data-popover], [data-popover-trigger]")) return;
   document.querySelectorAll("[data-popover]").forEach((p) => p.classList.add("hidden"));

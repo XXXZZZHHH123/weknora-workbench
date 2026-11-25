@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -20,6 +21,9 @@ func (d *debugChat) GetModelName() string { return d.inner.GetModelName() }
 func (d *debugChat) GetModelID() string   { return d.inner.GetModelID() }
 
 func (d *debugChat) Chat(ctx context.Context, messages []Message, opts *ChatOptions) (*types.ChatResponse, error) {
+	if api.IsStructuredReview(ctx) {
+		return d.inner.Chat(ctx, messages, opts)
+	}
 	callStart := time.Now()
 	resp, err := d.inner.Chat(ctx, messages, opts)
 	logLLMDebugCall(ctx, d.inner.GetModelName(), messages, opts, resp, err, time.Since(callStart))

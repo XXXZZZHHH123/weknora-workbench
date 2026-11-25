@@ -129,3 +129,13 @@ func TestNumericAnnotationMarksEnclosingOpaqueTokenOnlyOnce(t *testing.T) {
 	require.Equal(t, 2, count)
 	require.Equal(t, "未知身份"+unknownID+"〔数字待核对〕，统计999〔数字待核对〕。", marked)
 }
+
+func TestNumericAnnotationKeepsUncheckedValueSuffixesIntact(t *testing.T) {
+	answer := "合约CF05M，另报05元、-999.5kg、USD999M、2.5e-8和17.4％。"
+	messages := []chat.Message{{Role: "tool", Content: `{"rows":[[138.67]],"series":[{"dimensions":{"contract":"CF05M.CZC"}}]}`}}
+	occurrences := ungroundedStructuredNumberOccurrences(answer, messages)
+	marked, count, ok := annotateUnverifiedNumbers(answer, occurrences)
+	require.True(t, ok)
+	require.Equal(t, 5, count)
+	require.Equal(t, "合约CF05M，另报05〔未核验〕元、-999.5kg〔未核验〕、USD999M〔未核验〕、2.5e-8〔未核验〕和17.4％〔未核验〕。", marked)
+}

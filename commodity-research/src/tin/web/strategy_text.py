@@ -22,7 +22,7 @@ from starlette.concurrency import run_in_threadpool
 
 from tin.config import SHANGHAI, settings
 from tin.integration.workbench_scope import require_shared_write
-from tin.web import strategy_citations as citations
+from tin.web import analysis_jobs, strategy_citations as citations
 from tin.web.research_display import human_text
 
 router = APIRouter()
@@ -158,7 +158,7 @@ def _record_completion(scope, model_id, prompt, purpose, envelope, error, elapse
                  LlmRequest(purpose=purpose, messages=(Message('user', prompt),)), response, elapsed_ms)
 
 
-async def completion(scope, model_id, prompt, *, purpose=None):
+async def completion(scope, model_id, prompt, *, purpose=None, audit_content=True):
     """One JSON object from the workbench's fixed strategy drafting route."""
     body = {'model_id': model_id, 'prompt': prompt, 'knowledge_base_id': scope.knowledge_base_id}
     if type(getattr(scope, 'sources_revision', None)) is int and scope.sources_revision > 0:
@@ -212,8 +212,10 @@ async def completion(scope, model_id, prompt, *, purpose=None):
     finally:
         if purpose:
             try:
-                await run_in_threadpool(_record_completion, scope, model_id, prompt, purpose,
-                                        envelope, failure, int((perf_counter() - started) * 1000))
+                await run_in_threadpool(_record_completion, scope, model_id,
+                    prompt if audit_content else '', purpose, envelope if audit_content else None,
+                    failure if audit_content or failure is None else '模型调用失败',
+                    int((perf_counter() - started) * 1000))
             except Exception:
                 logging.getLogger(__name__).exception('Platform model call audit could not be saved')
                 raise HTTPException(503, '模型调用审计未能保存，请稍后重试；建议未采用') from None
@@ -564,7 +566,7 @@ def excerpt_prompt(text, name, request, content):
 >>>"""
 
 
-async def add_excerpts(scope, model_id, text, cards, excerpts):
+async def add_excerpts(scope, model_id, text, cards, excerpts, *, purpose=None):
     """Quote the requested passages; a passage is used only when it is verbatim in the file's verified text."""
     for request in excerpts[:MAX_EXCERPTS]:
         card, name = cards[request['card']], request['row']['name']
@@ -579,7 +581,8 @@ async def add_excerpts(scope, model_id, text, cards, excerpts):
             card['notes'].append(f'《{name}》不是能读取正文的文件（如表格或图片），未摘录原文，已保留文件引用。')
             continue
         try:
-            reply = await completion(scope, model_id, excerpt_prompt(text, name, request['request'], source))
+            prompt = excerpt_prompt(text, name, request['request'], source)
+            reply = await completion(scope, model_id, prompt, **({'purpose': purpose} if purpose else {}))
         except HTTPException as error:
             card['notes'].append(f'《{name}》的原文摘录未完成：' + (error.detail if isinstance(error.detail, str) else '模型暂不可用') + '；已保留文件引用。')
             continue
@@ -604,12 +607,15 @@ async def add_excerpts(scope, model_id, text, cards, excerpts):
         cards[0]['notes'].append(f'一次最多摘录 {MAX_EXCERPTS} 段原文，其余文件只保留引用。')
 
 
-async def draft_from_text(scope, text, model_id):
+async def draft_from_text(scope, text, model_id, *, progress=None, purpose=None):
     today = _today()
     judgments, conditions = await run_in_threadpool(_context, scope)
     strategies = await run_in_threadpool(_strategies, scope)
     files = await _files(scope)
-    first = await completion(scope, model_id, structure_prompt(text, today, judgments, conditions, strategies, files))
+    if progress:
+        await progress('generating')
+    audit = {'purpose': purpose} if purpose else {}
+    first = await completion(scope, model_id, structure_prompt(text, today, judgments, conditions, strategies, files), **audit)
     drafts = _parse(_Drafts, first, '模型返回的方案格式无效，原文保持不变，请重试或更换模型').cards
     dropped = []
     for draft in drafts:
@@ -626,13 +632,15 @@ async def draft_from_text(scope, text, model_id):
     if files is None and any(item.query for draft in drafts for item in draft.files):
         file_candidates = await _file_candidates(scope, drafts)
     if candidates or file_candidates:
-        second = _parse(_Picks, await completion(scope, model_id, selection_prompt(text, drafts, candidates, file_candidates)),
+        second = _parse(_Picks, await completion(scope, model_id, selection_prompt(text, drafts, candidates, file_candidates), **audit),
                         '模型返回的指标或文件选择格式无效，请重试或更换模型')
         picks = [pick for pick in drafts[0].items(_Pick, second.indicators, 40)[0] if pick.card < len(drafts)]
         file_picks = [pick for pick in drafts[0].items(_FilePick, second.files, 40)[0] if pick.card < len(drafts)]
+    if progress:
+        await progress('validating')
     cards, excerpts = assemble(scope, text, today, drafts, judgments, conditions, candidates, picks, dropped,
                                strategies, files, file_candidates, file_picks)
-    await add_excerpts(scope, model_id, text, cards, excerpts)
+    await add_excerpts(scope, model_id, text, cards, excerpts, **audit)
     result = {'cards': cards}
     if len(cards) > 1:
         from tin.web.strategy_markdown import dump
@@ -643,7 +651,38 @@ async def draft_from_text(scope, text, model_id):
     return result
 
 
-@router.post('/draft-from-text')
+async def verify_text_draft(scope, body, result):
+    from tin.integration.workbench_scope import artifact_session
+    from tin.web.research_references import resolve_reference
+
+    def check_references(cards):
+        with artifact_session(scope) as session:
+            for card in cards:
+                for key in ('judgment_reference', 'reference'):
+                    if reference := card.get(key):
+                        resolve_reference(session, scope, reference['kind'], reference['id'], revision=reference['revision'])
+
+    cards = [row['body']['card'] for row in result['cards']]
+    if any(card.get('reference') or card.get('judgment_reference') for card in cards):
+        await run_in_threadpool(check_references, cards)
+    for card in cards:
+        if card.get('citations'):
+            await citations.resolve_citations(scope, card['citations'])
+
+
+analysis_jobs.result_checks['strategy_text'] = verify_text_draft
+
+
+async def run_text_draft(scope, body, progress, job_id):
+    await progress('reading_source')
+    try:
+        return await asyncio.wait_for(draft_from_text(scope, body['text'], body['model_id'], progress=progress),
+                                      timeout=SECONDS)
+    except TimeoutError:
+        raise HTTPException(503, f'整理超过 {SECONDS} 秒，原文保持不变，请缩短文字或稍后重试') from None
+
+
+@router.post('/draft-from-text', status_code=202)
 async def draft(request: Request):
     from tin.web.research_strategy import require_card_scope
     scope = require_card_scope()
@@ -662,7 +701,5 @@ async def draft(request: Request):
         raise HTTPException(422, f'请填写 {TEXT_LIMIT} 字以内的方案文字并选择模型') from None
     if not body.text.strip():
         raise HTTPException(422, '请填写方案文字')
-    try:
-        return await asyncio.wait_for(draft_from_text(scope, body.text.strip(), body.model_id), timeout=SECONDS)
-    except TimeoutError:
-        raise HTTPException(503, f'整理超过 {SECONDS} 秒，原文保持不变，请缩短文字或稍后重试') from None
+    return await analysis_jobs.start_job(scope, 'strategy_text', {'text': body.text.strip(), 'model_id': body.model_id},
+                                         request.headers.get('idempotency-key'), run_text_draft)

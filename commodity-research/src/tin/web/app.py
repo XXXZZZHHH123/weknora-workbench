@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from fastapi import Body, FastAPI, Form, HTTPException, Query, Request, UploadFile
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -46,6 +47,7 @@ from tin.schemas.brief import STANCES
 from tin.schemas.judgment import TONES
 from tin.integration.identity import current_identity, research_prefix, research_url, research_form_url, verified_actor
 from tin.integration.auth import ResearchAuthMiddleware
+from tin.integration.page_facts import StructuredFactsError
 from tin.ownership import scope_query
 from tin.web import home
 from tin.web.strategy import build_router as build_strategy_router
@@ -201,6 +203,25 @@ templates.env.filters["local"] = lambda dt: dt.astimezone(SHANGHAI).strftime("%Y
 from tin.web.research_display import register_display
 register_display(templates.env)
 
+
+def source_error_page(request: Request, error: StructuredFactsError):
+    path = request.state.research_page_path
+    nav = path.split('/')[2] if path.startswith('/sn/') else 'variety' if path == '/sn' else 'home'
+    query = str(request.query_params)
+    retry_url = research_url(quote(path, safe='/')) + ('?' + query if query else '')
+    return templates.TemplateResponse(request, 'source_read_error.html', {
+        'nav': nav, 'restricted_view': current_workbench.get().restricted,
+        'source_error': error.detail, 'retry_url': retry_url,
+    }, status_code=error.status_code)
+
+
+@app.exception_handler(StructuredFactsError)
+async def _structured_facts_error(request: Request, error: StructuredFactsError):
+    if getattr(request.state, 'research_page_path', None) is not None:
+        return source_error_page(request, error)
+    return await http_exception_handler(request, error)
+
+
 # Resolve SessionLocal at request time, preserving the app's test/deployment overrides.
 from tin.integration.read_api import router as research_read_router
 from tin.web.materials import router as materials_router
@@ -236,7 +257,7 @@ from tin.web.workbench_sources import router as workbench_sources_router
 app.include_router(workbench_sources_router)
 from tin.web.brief_export import router as brief_export_router
 app.include_router(brief_export_router)
-from tin.web.diagram_generation import router as diagram_generation_router
+from tin.web.diagram_generation import router as diagram_generation_router, register_recommendation_jobs
 app.include_router(diagram_generation_router)
 from tin.web.judgment_generation import router as judgment_generation_router
 app.include_router(judgment_generation_router)
@@ -245,8 +266,15 @@ app.include_router(judgment_jobs_router)
 app.include_router(judgment_jobs_global_router)
 from tin.web.diagram_jobs import router as diagram_jobs_router
 app.include_router(diagram_jobs_router)
+from tin.web.analysis_jobs import router as analysis_jobs_router
+app.include_router(analysis_jobs_router)
+register_recommendation_jobs()
+from tin.web.workbench_setup_jobs import router as workbench_setup_jobs_router
+app.include_router(workbench_setup_jobs_router)
 from tin.web.judgment_review import router as judgment_review_router
 app.include_router(judgment_review_router)
+from tin.web.judgment_recommendations import router as judgment_recommendations_router
+app.include_router(judgment_recommendations_router)
 from tin.web.judgment_radar import router as judgment_radar_router
 app.include_router(judgment_radar_router)
 from tin.web.judgment_charts import router as judgment_charts_router
@@ -271,6 +299,8 @@ from tin.web.report_ppt import router as report_ppt_router
 app.include_router(report_ppt_router)
 from tin.web.report_dimension_drafts import router as report_dimension_drafts_router
 app.include_router(report_dimension_drafts_router)
+from tin.web.report_evidence import router as report_evidence_router
+app.include_router(report_evidence_router)
 from tin.web.affairs import router as affairs_router
 app.include_router(affairs_router)
 from tin.web.monitors import router as monitors_router
@@ -299,6 +329,8 @@ async def _stop_judgment_jobs():
     await runtime.shutdown()
     from tin.web.diagram_jobs import runtime as diagram_runtime
     await diagram_runtime.shutdown()
+    from tin.web.analysis_jobs import runtime as draft_runtime
+    await draft_runtime.shutdown()
 
 
 @app.on_event('startup')
@@ -308,6 +340,8 @@ async def _start_judgment_jobs():
         await runtime.startup()
         from tin.web.diagram_jobs import runtime as diagram_runtime
         await diagram_runtime.startup()
+        from tin.web.analysis_jobs import runtime as draft_runtime
+        await draft_runtime.startup()
 
 
 @app.on_event('shutdown')
@@ -436,10 +470,13 @@ def home_page(request: Request, date: str | None = None, err: str | None = None)
     if scope is not None and not scope.restricted:
         from tin.integration.workbench_scope import artifact_session
         from tin.web.affairs import build_affairs
+        from tin.web.workbench_setup_entry import home_setup_context
         with artifact_session(scope) as session:
+            affairs = build_affairs(session, scope, today=datetime.now(SHANGHAI).date())
+            affairs.update(home_setup_context(session, scope))
             return templates.TemplateResponse(request, 'home.html', {
                 'nav': 'home', 'd': None, 'ticker': [],
-                'affairs': build_affairs(session, scope, today=datetime.now(SHANGHAI).date()), 'err': err})
+                'affairs': affairs, 'err': err})
     with _page_session('home', day=date) as s:
         d = _page_date(s, date)
         researcher = seed_researcher(s)
@@ -570,15 +607,17 @@ def variety_page(request: Request, date: str | None = None, err: str | None = No
         today = datetime.now(SHANGHAI).date()
         cards = saved_core_cards(s, d, core_cards(s, research_variety(s), d) if d is not None else [])
         from tin.web.market_history import market_history
-        from tin.web.market_contracts import configured_contract_curve
+        from tin.web.market_contracts import CONTRACT_SOURCE_LINK_PRESETS, configured_contract_curve
         from tin.integration.source_status import source_status_hint
         curve = (configured_contract_curve(s, d if date else None) if s.info.get('workbench_id')
                  else contract_curve(s, research_variety(s), d) if d is not None else None)
+        market_catalog = market_catalog_data(s, cards, d) if s.info.get('workbench_id') else None
         return templates.TemplateResponse(request, "variety.html", _shell(
             s, "variety", d, cards=cards,
             has_core_charts=any(isinstance(card, dict) and card.get('kind') == 'chart' for card in cards),
-            market_catalog=market_catalog_data(s, cards, d) if s.info.get('workbench_id') else None,
-            source_status_hint=source_status_hint(),
+            market_catalog=market_catalog,
+            market_contract_presets=CONTRACT_SOURCE_LINK_PRESETS,
+            source_status_hint=source_status_hint() if market_catalog and market_catalog['has_selectable_items'] is False else None,
             judgment=judgment_block(s, research_variety(s), today),
             radar=threshold_radar(s, research_variety(s), d) if d is not None else [],
             gaps=gaps(s, research_variety(s), d) if d is not None else [],
@@ -689,7 +728,7 @@ def indicators_page(request: Request, date: str | None = None):
             s, "indicators", day, rows=rows, groups=groups, dimensions=DIMENSIONS, checks=checks,
             chart_page=page_config(request),
             source_status_hint=source_status_hint(scope),
-            dedup_enabled=bool(remote and not scope.restricted and any(item.get('source_type') == 'central_dataset' for item in scope.sources)),
+            dedup_enabled=bool(remote and not scope.restricted and scope.sources),
             catalog_remote=remote, catalog_offset=directory['offset'] if directory else 0,
             catalog_total=directory['total'] if directory else len(rows),
             catalog_next=directory['next_offset'] if directory else None,
@@ -700,7 +739,7 @@ def indicators_page(request: Request, date: str | None = None):
 def indicator_dedup_page(request: Request):
     scope = current_workbench.get()
     if scope is None or scope.scope_version != 2:
-        raise HTTPException(409, '请从已关联中心来源的研究台打开指标对应确认')
+        raise HTTPException(409, '请从新版多来源研究台打开指标对应确认')
     if scope.restricted:
         raise HTTPException(403, '受限视角不开放指标对应确认')
     return templates.TemplateResponse(request, 'indicator_dedup.html',
@@ -765,7 +804,12 @@ def indicator_catalog(scope: str = "all", search: str = Query('', max_length=200
 
 
 @app.get("/sn/diagram")
-def diagram_page(request: Request, template: int | None = None, date: str | None = None):
+def diagram_page(request: Request, template: int | None = None, date: str | None = None,
+                 analysis_job: str | None = None):
+    if template is None and analysis_job:
+        from tin.web.analysis_jobs import navigation_context
+        context = navigation_context(current_workbench.get(), analysis_job, 'diagram_indicator_recommendations')
+        template = context.get('template_id')
     with _page_session('diagram', day=date, template_id=template) as s:
         # 这里原来无条件返回默认布局，`?template=` 被整个忽略——下拉框选哪张都回到同一张，
         # 新建的布局也永远打不开。切换布局是这个页面最基本的操作之一。
@@ -827,7 +871,21 @@ def diagram_values_live(body: dict = Body(...)):
 
 @app.post("/api/sn/diagram/templates")
 def diagram_save(body: dict = Body(...)):
-    with _page_session('diagram', series_ids=_layout_series_ids(body.get('layout') or {})) as s:
+    layout = body.get('layout') or {}
+    scope = current_workbench.get()
+    if scope is None and ('fact_version' in body or 'recommendation_version' in body):
+        raise HTTPException(409, '请从已授权的研究工作台保存产业图草稿')
+    with _page_session('diagram', series_ids=_layout_series_ids(layout)) as s:
+        if 'fact_version' in body:
+            from tin.web.diagram_generation import validate_generated_layout
+            validate_generated_layout(layout, body['fact_version'], canvas=True)
+            if body.get('id') and not any(row['id'] == body['id'] for row in diagram_api.list_templates(s, V)):
+                raise HTTPException(404, '当前工作台没有该产业图')
+        if 'recommendation_version' in body:
+            from tin.web.diagram_generation import recommendation_catalog
+            version, _ = recommendation_catalog(scope)
+            if version != body['recommendation_version']:
+                raise HTTPException(409, '推荐时的指标目录已改变，请重新推荐或撤回这些绑定')
         try:
             saved = diagram_api.save_template(s, V, body)
         except diagram_api.DiagramError as e:
@@ -956,6 +1014,13 @@ def reports_page(request: Request, date: str | None = None, period: str = 'daily
     from tin.integration.research_profile import research_variety
     from tin.web.report_period import build_period, period_start
     from tin.web.report_view import present_snapshot
+    from tin.web.analysis_jobs import navigation_context
+    analysis_job = request.query_params.get('analysis_job')
+    job_context = navigation_context(current_workbench.get(), analysis_job, 'report_dimension_draft')
+    if {'day', 'period'} <= job_context.keys() and (date != job_context['day'] or period != job_context['period']):
+        return RedirectResponse(research_url('/sn/reports?' + urlencode({
+            'date': job_context['day'], 'period': job_context['period'], 'analysis_job': analysis_job})),
+            status_code=307)
     if period not in {'daily', 'weekly'}:
         raise HTTPException(400, '报告周期应为 daily 或 weekly')
     if date is not None:
@@ -1030,7 +1095,7 @@ def _report_dimensions(session):
     return read_dimensions(session) if session.info.get('workbench_id') else default_dimensions()
 
 
-def _period_download(day, period, markdown=False):
+def _period_download(day, period, markdown=False, *, citation_origin=''):
     from tin.integration.research_profile import research_variety
     from tin.web.report_period import build_period
     from tin.web.report_view import readable_markdown
@@ -1052,7 +1117,8 @@ def _period_download(day, period, markdown=False):
             scope = current_workbench.get()
             title = (scope.metadata.get('name') if scope else None) or '研究工作台'
             body = readable_markdown(payload, title=title + (' 周报' if period == 'weekly' else ' 日报'),
-                                     dimensions=None if frozen else _report_dimensions(s))
+                                     dimensions=None if frozen else _report_dimensions(s),
+                                     citation_origin=citation_origin)
             return StreamingResponse(iter([body.encode('utf-8')]), media_type='text/markdown', headers={
                 'Content-Disposition': f'attachment; filename="research_{period}_{day}.md"'})
         return JSONResponse(payload, headers={
@@ -1065,8 +1131,9 @@ def weekly_report_json(day: str):
 
 
 @app.get('/sn/reports/{day}/weekly.md')
-def weekly_report_markdown(day: str):
-    return _period_download(day, 'weekly', markdown=True)
+def weekly_report_markdown(request: Request, day: str):
+    origin = str(request.base_url.replace(path=''))
+    return _period_download(day, 'weekly', markdown=True, citation_origin=origin)
 
 
 @app.get('/sn/reports/{day}/daily.md')

@@ -74,16 +74,21 @@ def test_no_update_without_comparison_observation():
 
 
 def test_indicator_card_uses_readable_catalog_name_without_mutating_metadata():
+    note = {'cell': 'B1', 'text': '  原表范围说明\n如实保留标注。  '}
+    code = {'cell': 'B3', 'text': 'S5329490'}
     field = {**FIELDS[SID], 'name': '可读指标 / ID123456 [SOURCE.EXAMPLE.value]',
-             'metric': '原始字段表头', 'sheet': '真实工作表', 'field_metadata': {'role': 'annotation'}}
+             'metric': '原始字段表头', 'sheet': '真实工作表',
+             'field_metadata': {'role': 'annotation', 'header_notes': [note], 'source_codes': [code]}}
     item = data.indicator_data(SID, field, {'unit': '件', 'points': [
         {'date': '2024-03-28', 'value': 10}, {'date': '2024-03-29', 'value': 15}]},
         date(2024, 3, 29), 'weekly')
     assert item['name'] == '可读指标'
     assert item['raw_name'] == field['name']
-    assert item['field_metadata'] == {'role': 'annotation'}
+    assert item['field_metadata'] == {'role': 'annotation', 'header_notes': [note], 'source_codes': [code]}
     item['field_metadata']['role'] = 'numeric'
+    item['field_metadata']['header_notes'][0]['text'] = 'changed'
     assert field['field_metadata']['role'] == 'annotation'
+    assert note['text'] == '  原表范围说明\n如实保留标注。  '
     assert item['sheet'] == '真实工作表'
     assert field['name'] == '可读指标 / ID123456 [SOURCE.EXAMPLE.value]'
     assert field['metric'] == '原始字段表头'
@@ -126,6 +131,42 @@ def bind(state, value):
     @state.app.get('/dimension-data-test')
     def endpoint(day: str | None = None, period: str = 'weekly'):
         return data.dimension_data(current_workbench.get(), value, day, period)
+
+
+def test_source_version_refreshes_saved_dimension_and_chart_without_rebinding(chart_client):
+    from tin.web import dimension_board
+
+    client, state = chart_client
+    state.app.include_router(dimension_board.router)
+    chart = create(client)
+    dimension_path = '/api/sn/dimensions'
+    chart_path = '/api/sn/charts/' + chart['id']
+    config = {'revision': 0, 'dimensions': dimensions(
+        {'kind': 'indicator', 'id': SID},
+        {'kind': 'chart', 'id': chart['id'], 'revision': chart['revision']})}
+    saved = client.put(dimension_path, json=config)
+    assert saved.status_code == 200, saved.text
+
+    def read_latest(expected_date, expected_value):
+        response = client.get(dimension_path + '/data?date=2023-01-05&period=daily')
+        assert response.status_code == 200, response.text
+        indicator, pinned_chart = response.json()['dimensions'][0]['sections'][0]['items']
+        assert (indicator['series_id'], indicator['date'], indicator['latest']) == (SID, expected_date, expected_value)
+        assert pinned_chart['id'] == chart['id'] and pinned_chart['revision'] == chart['revision']
+        response = client.get(chart_path + '/data?date=2023-01-05')
+        assert response.status_code == 200, response.text
+        curve = response.json()['curves'][0]
+        assert curve['series_id'] == SID
+        assert (curve['points'][-1]['date'], curve['points'][-1]['value']) == (expected_date, expected_value)
+        return curve['source_version']
+
+    before = read_latest('2023-01-04', 13)
+    state.sources_revision += 1
+    state.facts_version = 'd' * 64
+    state.observations[SID].append(('2023-01-05', 19))
+    assert read_latest('2023-01-05', 19) != before
+    assert client.get(dimension_path).json()['revision'] == saved.json()['revision']
+    assert client.get(chart_path).json()['revision'] == chart['revision']
 
 
 def test_default_latest_and_summary(chart_client):
@@ -175,6 +216,48 @@ def test_each_batch_budget_does_not_shrink_history_with_page_size(chart_client):
     assert output['point_budget'] == 300 * 2000
     assert output['batch_point_budget'] == 20000 and output['batch_series_limit'] == 256
     assert len(reads) == 30
+
+
+def test_saved_judgment_labels_leave_dimension_route_observation_budget_unchanged(chart_client):
+    from tin.integration.workbench_scope import isolated_session_factory
+    from tin.judgments.service import save_version
+    from tin.schemas.judgment import JudgmentIn
+    from tin.web import dimension_board
+    from tests.test_workbench_sources_v2 import WB
+
+    client, state = chart_client
+    state.app.include_router(dimension_board.router)
+    config = {'revision': 0, 'dimensions': dimensions(
+        {'kind': 'indicator', 'id': SID}, {'kind': 'indicator', 'id': OTHER})}
+    assert client.put('/api/sn/dimensions', json=config).status_code == 200
+    state.requests.clear()
+    path = '/api/sn/dimensions/data?date=2023-01-04'
+    baseline = client.get(path)
+    assert baseline.status_code == 200, baseline.text
+    requests = state.requests[:]
+    assert any(body.get('points_per_series') for _, body in requests)
+
+    with isolated_session_factory(17, WB)() as session:
+        session.info.update(weknora_user_id='first', workbench_id=WB,
+                            knowledge_facts=True, knowledge_facts_catalog=state.fields)
+        judgment = save_version(session, JudgmentIn.model_validate({
+            'variety': 'TEST', 'author': 'fixture', 'written_at': '2023-01-04',
+            'contradiction': {'bull': {'evidence': [{'desc': '合成证据', 'series_id': SID}]}},
+            'thresholds': [{'id': 'other-rule', 'name': '未绑定至维度的阈值', 'series_id': THIRD,
+                            'operator': '<', 'value': 20, 'type': '观察位', 'horizon': '短期'}],
+        }), actor='fixture')
+        identifier = str(judgment.id)
+        session.commit()
+    state.requests.clear()
+    response = client.get(path)
+    assert response.status_code == 200, response.text
+    output = response.json()
+    assert output['judgment_id'] == identifier
+    referenced, unused = output['dimensions'][0]['sections'][0]['items']
+    assert referenced['judgment_references'] == [{'anchor': 'judgment-evidence-bull0', 'label': '多方依据'}]
+    assert 'judgment_references' not in unused
+    assert state.requests == requests
+    assert output['point_budget'] == baseline.json()['point_budget']
 
 
 @pytest.mark.parametrize('frequency,interval', [('日度', 1), ('weekly', 7), ('月', 30),
@@ -293,8 +376,9 @@ def test_partial_failures_keep_cards(chart_client, monkeypatch):
         return original(ids, *args, **kwargs)
     monkeypatch.setattr(data, 'read_series', failing)
     missing = 'kb-' + 'd' * 48
-    state.observations[THIRD] = []
-    bind(state, dimensions(*({'kind': 'indicator', 'id': sid} for sid in (SID, OTHER, THIRD, missing))))
+    state.observations[THIRD] = [('2023-01-05', 30)]
+    bind(state, dimensions(*({'kind': 'indicator', 'id': sid} for sid in (SID, OTHER, THIRD)),
+                           {'kind': 'indicator', 'id': missing, 'name': '已配置指标'}))
     result = client.get('/dimension-data-test?day=2023-01-04')
     assert result.status_code == 200, result.text
     output = result.json()
@@ -303,6 +387,11 @@ def test_partial_failures_keep_cards(chart_client, monkeypatch):
     assert [item['id'] for item in cards] == [SID, OTHER, THIRD, missing]
     assert cards[0]['status'] == 'ok' and all(item['status'] == 'unavailable' for item in cards[1:])
     assert cards[1]['reason'] == '隔离测试读取失败'
+    assert cards[2]['reason'] == '截至所选日期没有有效观测'
+    for item, failure, expected in zip(cards[1:], output['failed'], (
+            ('字段乙', '测试表', '件'), ('字段丙', '测试表', '元'), ('已配置指标', '', ''))):
+        assert tuple(item[key] for key in ('name', 'sheet', 'unit')) == expected
+        assert tuple(failure[key] for key in ('name', 'sheet', 'unit')) == expected
 
 
 @pytest.mark.parametrize('status', [401, 403, 409])

@@ -40,6 +40,32 @@ func TestNumericUnverifiedFinalSynthesisKeepsLastDraftAfterTwoRepairs(t *testing
 	}
 }
 
+func TestNumericUnverifiedKeepsSourceNamesCodesAndDatesIntact(t *testing.T) {
+	const fileName = "棉花周报20240310-冲突测试版.pptx"
+	const titleWithoutExtension = "棉花周报20240310-冲突测试版"
+	const candidate = "《" + fileName + "》（" + titleWithoutExtension + "）的日期是2024 年 3 月 10 日。" +
+		"合约CF05M，系列futures.close.CF05M.CZC。最高138.67万元，另有汇总20240310元，增幅18.25%。"
+	const expected = "《" + fileName + "》（" + titleWithoutExtension + "）的日期是2024 年 3 月 10 日。" +
+		"合约CF05M，系列futures.close.CF05M.CZC。最高138.67万元，另有汇总20240310〔数字待核对〕元，增幅18.25%〔数字待核对〕。"
+	e := numericRecoveryTestEngine(t, &mockChat{})
+	e.config.AnswerReviewMode = "standard"
+	state, messages, query := numericRecoveryFixture()
+	state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{
+		{Name: "search_knowledge", Result: &types.ToolResult{Success: true, Data: map[string]any{
+			"display_type": "document_info", "documents": []map[string]any{{
+				"knowledge_id": "report", "title": fileName, "file_name": fileName,
+				"metadata": map[string]any{"report_date": "2024-03-10"},
+			}},
+		}}},
+		{Name: "structured_list_series", Result: &types.ToolResult{Success: true,
+			Output: `{"status":"ok","series":[{"series_id":"futures.close.CF05M.CZC","dimensions":{"contract":"CF05M.CZC"}}]}`}},
+	}})
+	e.finishStalledTurn(t.Context(), state, "numeric", &types.ChatResponse{Content: candidate}, false, query, messages)
+	require.Equal(t, expected+"\n\n> 提示：本次查到的数据还不能确认标出的数字。写入报告前，请对照原表或原文核对。", state.FinalAnswer)
+	require.Equal(t, []string{"20240310", "18.25"}, e.turnReview.Last.Unsupported)
+	require.Equal(t, 2, e.turnReview.NumericUnverifiedDelivery.Marked)
+}
+
 func TestNumericUnverifiedOrdinaryStopRepairsBeforeDelivery(t *testing.T) {
 	const candidate = "The measured value is 138.67; optional total 999."
 	model := &mockChat{responses: []mockResponse{chatAnswer(candidate), chatAnswer(candidate), chatAnswer(candidate)}}

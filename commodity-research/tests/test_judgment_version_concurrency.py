@@ -7,7 +7,7 @@ from sqlalchemy import event, select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
 from tin.db import Base, make_engine
-from tin.judgments.service import JudgmentError, latest, save_version
+from tin.judgments.service import JudgmentError, JudgmentVersionConflict, latest, save_version
 from tin.models import Judgment
 from tin.schemas.judgment import JudgmentIn
 
@@ -28,7 +28,7 @@ def test_stale_basis_is_rejected_without_replacing_prior_version(tmp_path):
     with session_factory() as session:
         row=save_version(session,payload(),actor='r',expected_base_version=0);session.commit()
         assert latest(session,'SYNTHETIC').id==row.id
-        with pytest.raises(JudgmentError,match='已有新版本'):
+        with pytest.raises(JudgmentVersionConflict,match='已有新版本'):
             save_version(session,payload(),actor='r',expected_base_version=0)
         assert len(session.scalars(select(Judgment)).all())==1
     engine.dispose()

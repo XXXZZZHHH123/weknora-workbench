@@ -12,6 +12,8 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
 <link rel="stylesheet" href="/fonts/workspace-typography.css?v=3">
 <link rel="stylesheet" href="{{ research_static_prefix() }}/static/app.css?v={{ static_version() }}">
 <script src="{{ research_static_prefix() }}/static/app.js?v={{ static_version() }}"></script>
+<script src="{{ research_static_prefix() }}/static/analysis-jobs.js?v={{ static_version() }}"></script>
+{% if request is defined and request.query_params is defined and request.query_params.get('setup_part') %}<script src="{{ research_static_prefix() }}/static/workbench-setup-review.js?v={{ static_version() }}"></script>{% endif %}
 <script defer src="{{ research_static_prefix() }}/static/catalog-client.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/navigation.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/ticker.js?v={{ static_version() }}"></script>
@@ -20,6 +22,18 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
 <script defer src="{{ research_static_prefix() }}/static/favorites-client.js?v={{ static_version() }}"></script>
 <script defer src="{{ research_static_prefix() }}/static/dedup-references.js?v={{ static_version() }}"></script>
 {% endif %}
+<style>
+  .research-body { --research-dock-clearance: 92px; }
+  .research-body .research-main::after {
+    content: '';
+    display: block;
+    height: var(--research-dock-clearance);
+  }
+  .research-body [data-drawer] {
+    padding-bottom: calc(1.5rem + var(--research-dock-clearance));
+    overflow-y: auto;
+  }
+</style>
 {% block head %}{% endblock %}
 </head>
 <body class="research-body min-h-screen transition-colors duration-200">
@@ -98,7 +112,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
         ('dimensions', '研究维度', '/sn/dimensions'), ('judgment', '研究判断', '/sn/judgment'), ('strategies', '策略', '/sn/strategies'),
         ('diagram', '产业图', '/sn/diagram'), ('reports', '日报周报', '/sn/reports')] %}
       {% set view_module = {'variety': 'market', 'dimensions': 'indicators', 'judgment': 'judgments'}.get(key, key) %}
-      {% if (key not in ('charts',) or (not restricted_view and (not research_workbench() or not research_workbench().restricted))) and (not restricted_view or key == 'home' or view_module in research_workbench().view_modules) %}<a href="{{ research_url(href) }}{% if key in ('home', 'variety', 'indicators') and d and not restricted_view %}?date={{ d }}{% endif %}"
+      {% if (key not in ('charts',) or (not restricted_view and (not research_workbench() or not research_workbench().restricted))) and (not restricted_view or key == 'home' or view_module in research_workbench().view_modules) %}<a href="{{ research_url(href) }}{% if not restricted_view %}{% if key == 'dimensions' and nav == 'judgment' and selected_judgment_id %}?judgment_id={{ selected_judgment_id }}{% elif key in ('home', 'variety', 'indicators') and d %}?date={{ d }}{% endif %}{% endif %}"
          class="nav-btn {{ 'active' if nav == key }}" {% if nav == key %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endif %}
       {% endfor %}

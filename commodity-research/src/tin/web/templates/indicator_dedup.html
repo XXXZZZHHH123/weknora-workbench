@@ -11,10 +11,12 @@
   <header class="indicator-page-heading"><div><h1>指标对应确认</h1>
     <p class="indicator-muted">决定在本空间所有研究台共用。确认前保留两条指标；个人库字段始终作为副本保留。</p></div></header>
   <p class="indicator-muted">候选来自明确数据商编码，或规范化后的完整名称、单位及频率。候选仅供核对，不代表同一指标。数值最多核实两边最近 500 期的重叠日期，按个人库原值显示的小数位四舍五入比较。</p>
+  <p class="indicator-muted">原表重映射对应要求同一原件、工作表和列的全部日期与数值逐点完全相同。确认会更新你有权编辑的工作台绑定及个人引用，并保留撤销记录。</p>
   <p id="dedup-permission" class="indicator-warning" hidden></p>
   <div class="indicator-toolbar"><button type="button" id="dedup-reload" class="indicator-button">刷新候选</button>
     <button type="button" id="dedup-batch-confirm" class="indicator-button indicator-primary" disabled>所选以 default 库为准</button>
-    <span class="indicator-muted">仅编码相同、重叠期全部一致且单位与频率一致的候选可批量确认，每批最多 20 组。</span></div>
+    <button type="button" id="dedup-select-remaps" class="indicator-button" hidden>选择全部重映射候选</button>
+    <span class="indicator-muted">普通候选每批最多 20 组。原表重映射候选单独确认。</span></div>
   <p id="dedup-status" role="status" aria-live="polite">正在读取候选…</p>
   <div id="dedup-groups"></div>
 </div>

@@ -6,7 +6,8 @@ from fastapi import HTTPException
 
 from tin.config import SHANGHAI
 from tin.integration import workbench_scope
-from tin.integration.page_facts import _judgment_windows, page_read_scope
+from tin.integration.observation_windows import UNDATED_RULE_NOTE, UNDATED_RULE_STATE
+from tin.integration.page_facts import _judgment_windows, page_read_scope, source_error_details
 from tin.integration.research_profile import research_variety
 from tin.judgments.service import current, to_payload
 from tin.web.judgment_panels import selected_judgment
@@ -34,13 +35,13 @@ def check_current(scope, *, day=None):
         result['partial'] = result['partial'] or strategy['partial']
         if strategy['notice']:
             result['notice'] = (result['notice'] + ' ' if result['notice'] else '') + strategy['notice']
-    from tin.web.monitors import check_monitors
+    from tin.web.monitors import check_monitors, list_monitors
     monitors = check_monitors(scope, cutoff, checked)
     result['alerts'].extend(monitors['alerts'])
     result['checked_monitors'] = monitors['checked']
-    from tin.web.monitors import recorded_monitor_alerts
-    with workbench_scope.artifact_session(scope) as session:
-        result['monitor_alerts'] = recorded_monitor_alerts(session, scope)
+    listed = list_monitors(scope)
+    result['monitor_alerts'] = listed['alerts']
+    result['monitors'] = [item for item in listed['items'] if item['enabled']]
     result['partial'] = result['partial'] or monitors['partial']
     if monitors['notice']:
         result['notice'] += ' ' + monitors['notice']
@@ -68,14 +69,15 @@ def _strategy_alerts(scope, cutoff, checked):
                                                                if row.get('kind') == 'judgment_condition']}}
                 for card in cards]
     try:
-        states = monitor_cards(scope, stripped, day=cutoff, include_indicators=False)
+        with source_error_details():
+            states = monitor_cards(scope, stripped, day=cutoff, include_indicators=False)
     except HTTPException as exc:
         result.update(partial=True, notice='策略引用条件未完成检查：' + (exc.detail if isinstance(exc.detail, str) else '请稍后重试'))
         return result
     for card in stripped:
         href = '/sn/strategies?selected=research:' + card['id']
         for row in states[card['id']]['conditions']:
-            if row['state'] not in {'触发', '数据缺失', '无法核对'}:
+            if row['state'] not in {'触发', '数据缺失', '无法核对', UNDATED_RULE_STATE}:
                 continue
             triggered = row['state'] == '触发'
             meaning = ('「' + row['field_label'] + '」所引条件已触发，请按方案核对' if triggered and row['field_label']
@@ -83,7 +85,8 @@ def _strategy_alerts(scope, cutoff, checked):
             value = row.get('value')
             facts = [meaning, ('当前 ' + format(value, 'g') + (' ' + row['unit'] if row.get('unit') else ''))
                      if type(value) in {int, float} else '', row.get('note') or '']
-            result['alerts'].append({'kind': 'strategy' if triggered else 'strategy_missing',
+            kind = {'触发': 'strategy', UNDATED_RULE_STATE: 'undated'}.get(row['state'], 'strategy_missing')
+            result['alerts'].append({'kind': kind,
                 'title': card['title'] + ' · ' + row['title'], 'detail': '；'.join(filter(None, facts))[:1000],
                 'href': href, 'recorded_at': checked, 'trade_date': cutoff.isoformat(),
                 'evidence_dates': [row['as_of']] if row.get('as_of') else []})
@@ -114,7 +117,7 @@ def _judgment_alerts(scope, cutoff, checked):
         identifier, variety = judgment.id, judgment.variety
         labels = {('threshold', rule['id']): rule.get('name') or rule['id'] for rule in judgment.thresholds}
         labels.update({('falsifier', rule['id']): rule.get('desc') or rule['id'] for rule in judgment.falsifiers})
-    with page_read_scope('judgments', judgment_id=identifier, day=cutoff):
+    with source_error_details(), page_read_scope('judgments', judgment_id=identifier, day=cutoff):
         with workbench_scope.workbench_session(scope) as session:
             selected = selected_judgment(session, identifier, scope=scope)
             formal = current(session, variety, scope=scope)
@@ -122,19 +125,29 @@ def _judgment_alerts(scope, cutoff, checked):
                 raise HTTPException(409, '当前生效研判已变化，请刷新后重新检查')
             from tin.compute.signals import evaluate_preview
             try:
-                signals = evaluate_preview(session, variety, cutoff)
+                signals = evaluate_preview(session, variety, cutoff, display_precision=True)
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from None
             if len(signals) != expected or any(row.judgment_id != identifier for row in signals):
                 raise HTTPException(409, '当前规则在检查期间已变化，请刷新后重试')
             href = '/sn/judgment?' + urlencode({'judgment_id': identifier, 'date': cutoff.isoformat()})
+            undated = set(session.info.get('knowledge_facts_undated_series_ids', ()))
+            undated_rules = {(kind, rule['id']) for kind, rules in (
+                ('threshold', selected.thresholds), ('falsifier', selected.falsifiers))
+                for rule in rules if rule['series_id'] in undated}
             for signal in signals:
-                if signal.state not in {'触发', '数据缺失'}:
+                key = (signal.rule_type, signal.rule_id)
+                state = UNDATED_RULE_STATE if key in undated_rules else signal.state
+                kind = {'触发': 'triggered', '数据缺失': 'missing', UNDATED_RULE_STATE: 'undated'}.get(state)
+                if kind is None:
                     continue
-                evidence = signal.evidence or []
-                detail = signal.gap_note or '；'.join(str(item.get('desc') or '') for item in evidence)
-                result['alerts'].append({'kind': 'triggered' if signal.state == '触发' else 'missing',
-                    'title': labels.get((signal.rule_type, signal.rule_id), signal.rule_id) + ' · ' + signal.state,
+                if state == UNDATED_RULE_STATE:
+                    evidence, detail = [], UNDATED_RULE_NOTE
+                else:
+                    evidence = signal.evidence or []
+                    detail = signal.gap_note or '；'.join(str(item.get('desc') or '') for item in evidence)
+                result['alerts'].append({'kind': kind,
+                    'title': labels.get(key, signal.rule_id) + ' · ' + state,
                     'detail': detail[:1000], 'href': href, 'recorded_at': checked,
                     'trade_date': cutoff.isoformat(),
                     'evidence_dates': list(dict.fromkeys(str(item.get('as_of') or '') for item in evidence

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	apperrors "github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/types"
 	"gorm.io/gorm"
 )
@@ -36,6 +37,29 @@ func (r *knowledgeRepository) ReplaceKnowledge(
 		}
 		if len(tagIDs) > 0 {
 			return repo.SetKnowledgeTags(ctx, after.ID, tagIDs)
+		}
+		return nil
+	})
+}
+
+func (r *knowledgeRepository) UpdateKnowledgeFileSource(ctx context.Context, before *types.Knowledge, values map[string]interface{}) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		query := tx.Model(&types.Knowledge{}).Where(
+			"id = ? AND tenant_id = ? AND knowledge_base_id = ? AND file_path = ? AND COALESCE(parse_status, '') <> ?",
+			before.ID, before.TenantID, before.KnowledgeBaseID, before.FilePath, types.ParseStatusDeleting,
+		)
+		if !before.UpdatedAt.IsZero() {
+			query = query.Where("updated_at = ?", before.UpdatedAt)
+		}
+		result := query.Updates(values)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return apperrors.NewConflictError("知识文件已变更，请刷新后重试")
+		}
+		if hash, ok := values["file_hash"].(string); ok && hash != before.FileHash {
+			return bumpWorkbenchSourcesForKnowledgeFile(tx, before)
 		}
 		return nil
 	})

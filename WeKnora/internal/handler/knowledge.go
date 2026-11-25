@@ -351,33 +351,9 @@ func (h *KnowledgeHandler) CreateKnowledgeFromFile(c *gin.Context) {
 		return
 	}
 
-	// Validate file size — read MAX_FILE_SIZE_MB env (50MB default).
-	// Deliberately not a runtime system_setting; see filesize.go for the
-	// rationale (nginx / docreader / browser bundle all cache this at
-	// container startup, so a UI knob would silently mismatch).
-	maxSizeMB := utils.GetMaxFileSizeMB()
-	maxSize := maxSizeMB * 1024 * 1024
-	// Capped before the multipart parse, not after: FormFile buffers the whole
-	// body first, so the size check below only ever sees an upload we already
-	// accepted. nginx location /api/ still enforces MAX_FILE_SIZE; this is the
-	// same cap for requests that reach the app without that proxy.
-	limitUploadBody(c, maxSize)
-
-	// Get the uploaded file
-	file, err := c.FormFile("file")
+	file, err := knowledgeUploadFile(c)
 	if err != nil {
-		if isRequestBodyTooLarge(err) {
-			logger.Error(ctx, "File size too large")
-			c.Error(errors.NewBadRequestError(fmt.Sprintf("文件大小不能超过%dMB", maxSizeMB)))
-			return
-		}
-		logger.Error(ctx, "File upload failed", err)
-		c.Error(errors.NewBadRequestError("File upload failed").WithDetails(err.Error()))
-		return
-	}
-	if file.Size > maxSize {
-		logger.Error(ctx, "File size too large")
-		c.Error(errors.NewBadRequestError(fmt.Sprintf("文件大小不能超过%dMB", maxSizeMB)))
+		c.Error(err)
 		return
 	}
 
@@ -439,6 +415,9 @@ func (h *KnowledgeHandler) CreateKnowledgeFromFile(c *gin.Context) {
 	tagIDs := parseCommaSeparatedTagIDs(c.PostForm("tag_ids"))
 
 	channel := c.PostForm("channel")
+	if c.PostForm("save_as_new") == "true" {
+		ctx = types.WithKnowledgeUploadSaveAsNew(ctx)
+	}
 
 	// Reject malformed .json at the HTTP boundary so users get 400 immediately.
 	// Kept out of CreateKnowledgeFromFile so datasource sync / IM keep creating
@@ -1115,7 +1094,13 @@ func (h *KnowledgeHandler) ListKnowledge(c *gin.Context) {
 		return
 	}
 
+	fileNames := c.QueryArray("file_names")
+	if len(fileNames) > 40 {
+		c.Error(errors.NewBadRequestError("at most 40 file_names may be requested"))
+		return
+	}
 	filter := types.KnowledgeListFilter{
+		FileNames:   fileNames,
 		TagIDs:      parseCommaSeparatedTagIDs(c.Query("tag_ids")),
 		Keyword:     c.Query("keyword"),
 		FileType:    c.Query("file_type"),

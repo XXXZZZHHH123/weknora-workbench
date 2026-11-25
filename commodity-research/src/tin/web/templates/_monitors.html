@@ -1,16 +1,29 @@
-<section id="monitors" class="affairs-group" aria-labelledby="monitors-title">
-  <div class="affairs-section-head"><h2 id="monitors-title">监测</h2></div>
-  <div class="monitor-content">
-    <label for="monitor-sentence" class="affairs-row-title">一句话建监测</label>
-    <p class="affairs-description">把需要关注的变化写下来，核对模型草稿和历史回测后保存。数据需研究员更新，仅提供站内提醒。</p>
-    <textarea id="monitor-sentence" rows="3" maxlength="4000" placeholder="描述指标、变化方向、阈值和连续期数" aria-label="监测需求原话"></textarea>
-    <div class="monitor-fields"><label>模型 <select id="monitor-model" disabled><option value="">正在读取模型…</option></select></label><button id="monitor-generate" type="button" class="affairs-check" disabled>生成草稿</button></div>
+<dialog id="monitors" class="market-core-dialog" aria-labelledby="monitor-mode-title">
+<header class="affairs-section-head">
+  <h2 id="monitor-mode-title" tabindex="-1">我的监测</h2>
+  <div class="affairs-section-actions">
+    <button id="monitor-dialog-create" type="button" class="affairs-check">新建监测</button>
+    <button id="monitor-refresh" type="button" class="affairs-check">刷新列表</button>
+    <button id="monitor-dialog-list" type="button" class="affairs-check" hidden>监测列表</button>
+    <button id="monitor-close" type="button" class="affairs-check">关闭</button>
   </div>
-  <p id="monitor-status" class="affairs-status" role="status" aria-live="polite"></p>
+</header>
+<p id="monitor-status" class="affairs-status" role="status" aria-live="polite"></p>
+<div id="monitor-create-panel" hidden>
+  <div id="monitor-setup-candidates" class="monitor-content" hidden>
+    <label>周报监测候选 <select id="monitor-setup-choice"></select></label>
+    <ul id="monitor-setup-failures" class="affairs-row-detail" hidden></ul>
+  </div>
+  <div class="monitor-content">
+    <label for="monitor-sentence" class="affairs-row-title">监测需求原话</label>
+    <p class="affairs-description">把需要关注的变化写下来，核对模型草稿和历史回测后保存。数据需研究员更新，仅提供站内提醒。</p>
+    <textarea id="monitor-sentence" rows="3" maxlength="4000" placeholder="用一句话描述要盯的指标、方向、阈值和连续期数"></textarea>
+    <div class="monitor-fields"><label>模型 <select id="monitor-model" disabled><option value="">正在读取模型…</option></select></label><button id="monitor-generate" type="button" class="affairs-check" disabled>生成草稿</button><button id="monitor-restore" type="button" class="affairs-check" hidden>查看后台草稿</button></div>
+  </div>
   <div id="monitor-draft" hidden>
     <div class="affairs-section-head"><h2>监测草稿</h2><button id="monitor-cancel" type="button" class="affairs-check">收起草稿</button></div>
     <div class="monitor-content">
-      <div class="monitor-fields"><label>标题 <input id="monitor-title" type="text" maxlength="120"></label><label>组合方式 <select id="monitor-logic"><option value="all">全部满足（且）</option><option value="any">任一满足（或）</option></select></label></div>
+      <div class="monitor-fields"><label>标题 <input id="monitor-title" type="text" maxlength="120"></label><label>简介 <input id="monitor-summary" type="text" maxlength="40"></label><label>组合方式 <select id="monitor-logic"><option value="all">全部满足（且）</option><option value="any">任一满足（或）</option></select></label></div>
       <div id="monitor-rules"></div>
       <div id="monitor-confirmations"><div class="affairs-row-title">需要你确认的口径</div><ul id="monitor-confirmation-list" class="affairs-row-detail"></ul></div>
       <div class="monitor-fields"><label>回测起始日期 <input id="monitor-start" type="date" aria-label="草稿回测起始日期"></label><label>回测结束日期 <input id="monitor-end" type="date" aria-label="草稿回测结束日期"></label></div>
@@ -19,11 +32,14 @@
       <div id="monitor-backtest-result" hidden></div>
     </div>
   </div>
-  <div class="affairs-section-head"><h2>我的监测</h2><button id="monitor-refresh" type="button" class="affairs-check">刷新列表</button></div>
+</div>
+<div id="monitor-list-panel">
   <div id="monitor-list"><div class="affairs-empty">正在读取监测…</div></div>
   <div id="monitor-view" hidden>
     <div class="affairs-section-head"><h2 id="monitor-view-title">历史回测</h2><button id="monitor-view-close" type="button" class="affairs-check">收起</button></div>
+    <details id="monitor-view-source" class="monitor-content"><summary>原文</summary><div id="monitor-view-sentence"></div></details>
     <div class="monitor-content monitor-fields"><label>回测起始日期 <input id="monitor-view-start" type="date" aria-label="已保存监测回测起始日期"></label><label>回测结束日期 <input id="monitor-view-end" type="date" aria-label="已保存监测回测结束日期"></label><button id="monitor-view-backtest" type="button" class="affairs-check">调整窗口后回测</button></div>
     <div id="monitor-view-result" class="monitor-content"></div>
   </div>
-</section>
+</div>
+</dialog>

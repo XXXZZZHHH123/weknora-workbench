@@ -37,9 +37,17 @@ def _readonly(path):
 
 
 # Bump when the indexed search text changes, so an index built by older code is rebuilt once.
-INDEX_FORMAT = 3
+INDEX_FORMAT = 5
 SEARCH_KEYS = ('metric','name','series_id','source_series_id','source_file','sheet','unit','frequency','dimensions')
 MAX_SEARCH_TERMS = 16
+
+
+def _search_text(field):
+    main = json.dumps({key: field.get(key) for key in SEARCH_KEYS}, ensure_ascii=False)
+    metadata = field.get('field_metadata') or {}
+    source_text = [entry['text'] for key in ('source_codes', 'header_notes')
+                   for entry in metadata.get(key) or []]
+    return '\n'.join([main, *source_text]).casefold()
 
 
 def _metadata(connection, fingerprint):
@@ -74,7 +82,9 @@ def current_index(store, manager, sources):
                 if connection is not None and metadata is None:
                     connection.close();connection=None
             if connection is None:
-                prepared = read_facts(store,manager,{'sources':sources,'catalog_only':True},_prepare_only=True)
+                prepared = read_facts(store, manager,
+                    {'sources': [{key: source[key] for key in ('knowledge_id', 'file_hash')} for source in sources],
+                     'catalog_only': True}, _prepare_only=True, _authorized_originals=sources)
                 if len(prepared['indicators']) > 25000:
                     raise HTTPException(413,'单个来源目录超过25000项，请拆分来源范围')
                 metadata = {'fingerprint':fingerprint,'version':prepared['version'],'datasets':prepared['datasets'],
@@ -91,8 +101,7 @@ def current_index(store, manager, sources):
                             size += len(raw.encode())
                             if size > 32*1024*1024:
                                 raise HTTPException(413,'单个来源目录超过32MiB，请拆分来源范围')
-                            text = json.dumps({key:field.get(key) for key in SEARCH_KEYS},ensure_ascii=False).casefold()
-                            writer.execute('INSERT INTO fields VALUES (?,?,?)',(field['series_id'],text,raw))
+                            writer.execute('INSERT INTO fields VALUES (?,?,?)',(field['series_id'],_search_text(field),raw))
                         writer.execute('INSERT INTO metadata VALUES (?,?)',('manifest',json.dumps(metadata,ensure_ascii=False)))
                     if _fingerprint(store,manager,sources) != fingerprint:
                         raise HTTPException(409,'来源目录在索引期间变化，请重试')

@@ -23,7 +23,7 @@
   for (const item of state.plans || []) metadata.set(item.key, item);
   if (research.selected) cache.set('research:' + research.selected.id, research.selected);
   if (state.initial_plan) cache.set('plan:' + state.initial_plan.id, state.initial_plan);
-  let selected = state.selected || null, activeEditor = null, selectSequence = 0, editSequence = 0;
+  let selected = state.selected || null, activeEditor = null, selectSequence = 0, editSequence = 0, editRevision = 0;
   let selectedSources = new Set(), fileSequence = 0;
   let sourceNames = new Map();
   let cardSource = null, cardReference = null, judgmentReference = null, planSource = null, saving = false;
@@ -121,6 +121,7 @@
   }
   function dirty() {
     if (!activeEditor) return;
+    editRevision++;
     const draft = drafts.get(activeEditor); if (draft) { draft.dirty = true; stash(); markDraft(activeEditor, true); }
     syncDiscardDraft();
   }
@@ -789,7 +790,7 @@
     field('save').disabled = false;
     field('save-copy').hidden = true; field('judgment-preview').hidden = true; field('judgment-preview').replaceChildren();
     field('dialog-title').textContent = cardSource ? '编辑策略方案' : '新建策略方案';
-    status('', false, field('form-status'));
+    status(draft?.historicalNotice || '', false, field('form-status'));
     if (!draft) drafts.set(key, {type: 'card', source: item, body, dirty: false});
     if (draft?.dirty) markDraft(key, true);
     syncDiscardDraft();
@@ -858,6 +859,7 @@
     if (!body.card.response_action.trim() && !body.acknowledge_observation) {
       status('请填写应对措施，或勾选保存为观察方案。', true, field('form-status')); field('response-action').focus(); return;
     }
+    if (drafts.get(key)?.historicalNotice && !window.confirm('请确认已按当前判断修改往期周报中的策略，再保存。')) return;
     if (copy) {
       delete body.revision;
       if (cardSource) body.card.reference = {kind: 'strategy', id: 'research:' + cardSource.id, revision: cardSource.revision};
@@ -964,16 +966,23 @@
   // Entry points for the text and Markdown tools: an organized draft opens as an unsaved new card, and
   // imported cards refresh the list without discarding drafts open in the editor.
   window.ResearchStrategyEditor = {
-    openDraft(body, label, notes = []) {
+    editStamp() { return [activeEditor, editSequence, editRevision, saving]; },
+    hasUnsavedChanges() { return saving || Boolean(activeEditor && drafts.get(activeEditor)?.dirty); },
+    openDraft(body, label, notes = [], historicalNotice = '') {
       if (saving || !form) return false;
-      const key = draftKey(), draft = {type: 'card', source: null, body, dirty: true, importLabel: label || ''};
+      const key = draftKey(), draft = {type: 'card', source: null, body, dirty: true, importLabel: label || '', historicalNotice};
       drafts.set(key, draft); openCard(key, null, draft);
-      if (notes.length) status('请核对：' + notes.map(note => String(note).replace(/[。；;\s]+$/, '')).join('；') + '。', false, field('form-status'));
+      if (notes.length) status([historicalNotice, '请核对：' + notes.map(note => String(note).replace(/[。；;\s]+$/, '')).join('；') + '。'].filter(Boolean).join(' '), false, field('form-status'));
       return true;
     },
     imported(items) {
       for (const item of items) { cache.delete('research:' + item.id); updateEntry('research:' + item.id, item, 'card'); }
       if (items.length && !activeEditor) select('research:' + items[0].id, false);
+    },
+    savedPlan(item) {
+      const key = 'plan:' + item.id;
+      updateEntry(key, item, 'plan');
+      if (!activeEditor) select(key, false);
     },
   };
   select(selected);

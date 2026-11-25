@@ -57,6 +57,7 @@ def configured_flow(report_flow):
     assert saved_card.status_code == 201, saved_card.text
     draft = {'format': 'research-report-draft.v1', 'period': 'weekly', 'date': DAY, 'title': '维度集成周报',
              'figures': [{'series_id': OTHER, 'caption': '人工指标图'}], 'references': [],
+             'sections': {'summary': {'text': '本周价格暂看区间，重点关注需求是否延续。'}},
              'dimension_notes': {second: {'text': '研究员确认的维度句子', 'impact': 'bearish'}},
              'figure_conclusions': {'chart:' + bound_chart['id']: '研究员确认的图结论'}}
     created = client.post('/api/sn/report-drafts', json={'draft': draft})
@@ -99,12 +100,20 @@ def test_real_dimension_endpoint_matches_report_json_markdown_html_and_chart_ope
     markdown = client.get(f'/sn/reports/{DAY}/weekly.md')
     assert markdown.status_code == 200, markdown.text
     brief = markdown.text.split('## 本期综述', 1)[1].split('## 逻辑与策略', 1)[0]
+    summary = '本周价格暂看区间，重点关注需求是否延续。'
+    assert brief.index('### 本周结论') < brief.index(summary) < brief.index('| 维度 | 本期变化 | 本期结论 |')
+    assert markdown.text.count(summary) == 1
     assert brief.index('先看下游') < brief.index('再看价差') and '暂不展示' not in brief
     assert all(fact['text'] in brief for row in rows for fact in row['facts'])
     assert '### 其他' in markdown.text and '研究员确认的图结论' in markdown.text
     page = client.get(f'/sn/reports?date={DAY}&period=weekly')
     assert page.status_code == 200, page.text
     html = fromstring(page.text)
+    overview = html.get_element_by_id('report-overview')
+    assert '本周结论' in html.get_element_by_id('report-period-conclusion').text_content()
+    assert overview.text_content().index(summary) < overview.text_content().index('本期变化')
+    assert overview.xpath('.//thead//th/text()')[2] == '本期结论'
+    assert summary not in html.get_element_by_id('report-full-record').text_content()
     row_nodes = html.xpath('//*[@id="report-overview"]//tr[@data-report-dimension]')
     assert [node.get('data-report-dimension') for node in row_nodes] == [row['id'] for row in dimensions[:2]]
     assert all(fact['text'] in html.get_element_by_id('report-overview').text_content()
@@ -197,6 +206,8 @@ def test_frozen_archive_keeps_custom_dimensions_and_never_reads_dimension_data(l
     assert page.status_code == 200, page.text
     html = fromstring(page.text)
     assert '查看当时保存的报告' in page.text
+    conclusion = html.get_element_by_id('report-period-conclusion').text_content()
+    assert '本日结论' in conclusion and '待研究员填写' in conclusion
     assert html.xpath('//*[@id="report-overview"]//tr[@data-report-dimension]/@data-report-dimension') == ['d-frozen01']
     assert '归档指标 21 件（较 09-11 +1）' in html.get_element_by_id('report-overview').text_content()
     markdown = client.get('/sn/reports/2026-09-18/daily.md')
