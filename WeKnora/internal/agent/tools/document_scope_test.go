@@ -369,6 +369,7 @@ func TestUnboundSearchProjectsSamePeriodFilesAndComparisonGuidance(t *testing.T)
 
 func TestVerifiedScopeIsPerTurnAndSupportsExplicitComparativePlans(t *testing.T) {
 	read, _ := reportScopeFixture(t, "first20240310.pptx", "second20250310.pptx")
+	require.Contains(t, read.Description(), "pass the same complete source_scope on every read")
 	registry := NewToolRegistry()
 	registry.RegisterTool(read)
 	PrepareDocumentScope(registry)

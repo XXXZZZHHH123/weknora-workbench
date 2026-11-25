@@ -374,7 +374,9 @@ func withDocumentScopeParameter(tool BaseTool) BaseTool {
 	properties["source_scope"] = parameter
 	tool.schema, _ = json.Marshal(schema)
 	if tool.name == ToolReadDocument {
-		tool.description += "\nChoose the actual read id from authorized metadata and the complete question/context. When this turn has no source binding, this explicit read target is verified against real authorized document metadata in the same call; a separate bind_document_scope call is unnecessary. An existing source plan or user document/page restriction remains binding. To change sources, compare multiple documents, or declare explicit source-date/user-page constraints, provide source_scope or bind_document_scope with the actual metadata and constraints. Never guess an ID or substitute a same-name source."
+		tool.description += "\nChoose the read ID from authorized metadata for the complete request. When no plan is bound, a read by ID alone binds only that document. " +
+			"For initial reads of different documents in one batch, pass the same complete source_scope on every read, or bind_document_scope once before the batch. " +
+			"To change sources or declare source-date or user-page constraints, supply the full plan with actual metadata. Existing bindings and user document/page limits apply. Never guess an ID or substitute a same-name source."
 	} else {
 		tool.description += "\nWhen this workbench requires a document source plan, inspect authorized document metadata first, then pass source_scope or bind_document_scope using the complete question/context: selected actual sources, exact metadata, requested pages/date proof and selection reason. Candidates are not content evidence until verified. Comparisons explicitly select multiple documents; do not decide scope from keywords."
 	}

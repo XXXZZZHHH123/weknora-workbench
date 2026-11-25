@@ -28,19 +28,11 @@ var errStandardAnswerModelBudget = errors.New("standard answer model-stage budge
 type standardAnswerDecisionKey struct{}
 type standardAnswerFinalDeadlineKey struct{}
 
-func standardPreliminaryAnswerNotice(ctx context.Context) string {
+func standardAnswerBudgetProgress(ctx context.Context) string {
 	if strings.HasPrefix(types.LanguageFromContextOrDefault(ctx), "zh") {
-		return "以下是基于本轮已读资料的初步结果，尚不代表完整覆盖全部相关内容。"
+		return "本轮取证已达到阶段预算，正在整理已有结果。"
 	}
-	return "These are preliminary findings from the sources read so far; they may not cover all relevant material."
-}
-
-func withStandardPreliminaryNotice(ctx context.Context, answer string) string {
-	notice := standardPreliminaryAnswerNotice(ctx) + "\n\n"
-	if strings.HasPrefix(answer, notice) {
-		return answer
-	}
-	return notice + answer
+	return "This stage has reached its evidence budget. Preparing an answer from the available results."
 }
 
 func (e *AgentEngine) standardPreliminaryProse() bool {
@@ -56,7 +48,7 @@ func (e *AgentEngine) standardPreliminaryProse() bool {
 }
 
 const standardAnswerBudgetNotice = `<preliminary_answer>
-本轮只读文字取证已达到实用模式的阶段预算，工具调用已完整结束。只根据已取得的真实证据给出有用的初步结果，准确说明本轮已读内容尚未覆盖的要求；不能宣称全部记录、分组或任务已完整覆盖，不猜缺失值，不把未读取说成不存在。保留真实引用，只概括可直接核对的核心结论，不附加逐项分析。不得再请求工具、伪造执行或以未经核验的数字补齐答案。
+本轮只读取证已达到阶段预算。按用户要求的格式，先给已读证据支持的具体结论或数值及出处。有要求尚未覆盖时，给出最接近的可得结果及其日期和出处，再点明具体缺口。只就实际核对的范围说明覆盖情况，保留真实引用。不得再请求工具、伪造执行或以未经核验的数字补齐答案。
 </preliminary_answer>`
 
 // This is an execution-protocol allowlist, not an intent classifier. Unknown
@@ -250,7 +242,7 @@ func (e *AgentEngine) finishStandardAnswerBudget(
 	})
 	if e.eventBus != nil {
 		_ = e.eventBus.Emit(ctx, event.Event{ID: generateEventID("preliminary"), Type: event.EventAgentProgress, SessionID: sessionID,
-			Data: event.AgentProgressData{Content: standardPreliminaryAnswerNotice(ctx), Iteration: state.CurrentRound}})
+			Data: event.AgentProgressData{Content: standardAnswerBudgetProgress(ctx), Iteration: state.CurrentRound}})
 	}
 	err := e.streamFinalAnswerToEventBus(ctx, query, state, sessionID, restoreForFinalAnswer(*messages, guards), finalAnswerOptions{preliminary: true, assistantMessageID: messageID})
 	return true, err
