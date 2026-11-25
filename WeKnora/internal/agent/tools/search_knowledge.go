@@ -6,14 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/config"
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/models/rerank"
 	"github.com/Tencent/WeKnora/internal/reranking"
 	"github.com/Tencent/WeKnora/internal/searchutil"
@@ -31,6 +35,8 @@ const (
 const (
 	searchKnowledgeDefaultLimit = 10
 	searchKnowledgeMaxLimit     = 30
+	searchEmbeddingTimeout      = 22 * time.Second
+	searchEmbeddingRetryTime    = 5 * time.Second
 )
 
 // errSearchPanicked reports a retrieval adapter that panicked. The barrier
@@ -222,6 +228,9 @@ func (t *SearchKnowledgeTool) Execute(ctx context.Context, args json.RawMessage)
 // observe receives the authorized, scoped retrieval rows before rendering. It is
 // execution-only so callers can reuse their original hydrated chunk identities.
 func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage, observe func([]*searchResultWithMeta)) (*types.ToolResult, error) {
+	if err := ctx.Err(); err != nil {
+		return &types.ToolResult{Error: "知识库检索已中断。"}, err
+	}
 	var input SearchKnowledgeInput
 	if err := json.Unmarshal(args, &input); err != nil {
 		return &types.ToolResult{Success: false, PreflightRejected: true, Error: fmt.Sprintf("Failed to parse args: %v", err)}, err
@@ -348,6 +357,9 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 
 	allResults, searchFailures, searchCalls, embedFallbacks := t.concurrentSearchByTargets(ctx, query, mode,
 		kbModes, searchTargets, kbList, topK, vectorThreshold, keywordThreshold, kbTypeMap)
+	if err := ctx.Err(); err != nil {
+		return &types.ToolResult{Error: "知识库检索已中断。"}, err
+	}
 	// A hybrid search that ran keyword-only is reported like any other mode
 	// fallback, so an empty result is not read as "no semantic match".
 	for kbID, reason := range embedFallbacks {
@@ -427,6 +439,12 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 		candidates := t.documentCandidates(ctx, final, query)
 		if withheldWikiChunks > 0 {
 			candidates.Data["withheld_retracted_or_unverified_wiki_chunks"] = withheldWikiChunks
+		}
+		if fallbackNotice := searchEmbeddingFallbackNotice(embedFallbacks); fallbackNotice != "" {
+			notice, _ := candidates.Data["notice"].(string)
+			candidates.Data["notice"] = fallbackNotice + " " + notice
+			encoded, _ := json.Marshal(candidates.Data)
+			candidates.Output = string(encoded)
 		}
 		return candidates, nil
 	}
@@ -723,6 +741,51 @@ func (t *SearchKnowledgeTool) retrievalParams(limit int) (topK int, vectorThresh
 	return topK, vectorThreshold, keywordThreshold
 }
 
+// queryEmbedding gives the embedding stage at most half the time left on
+// the tool request. Keyword retrieval continues on the original context.
+func (t *SearchKnowledgeTool) queryEmbedding(ctx context.Context, kbID, query string) ([]float32, error) {
+	timeout, err := time.ParseDuration(strings.TrimSpace(os.Getenv("SEARCH_KNOWLEDGE_EMBEDDING_TIMEOUT")))
+	if err != nil || timeout <= 0 {
+		timeout = searchEmbeddingTimeout
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout = min(timeout, time.Until(deadline)/2)
+	}
+	bounded, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	vector, err := t.knowledgeBaseService.GetQueryEmbedding(api.WithRetryLimit(bounded, 1, searchEmbeddingRetryTime), kbID, query)
+	if ctxErr := bounded.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(vector) == 0 {
+		return nil, errors.New("empty query embedding")
+	}
+	return vector, nil
+}
+
+func searchEmbeddingIssue(err error) string {
+	var networkErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &networkErr) && networkErr.Timeout()) {
+		return "向量检索暂时超时"
+	}
+	return "向量检索暂时不可用"
+}
+
+func searchEmbeddingFallbackNotice(fallbacks map[string]string) string {
+	var notice string
+	for _, reason := range fallbacks {
+		if notice != "" && notice != reason {
+			return "部分资料的向量检索暂时不可用，已改用关键词检索。"
+		}
+		notice = reason
+	}
+	return notice
+}
+
 // concurrentSearchByTargets executes retrieval using pre-computed search targets.
 // Targets sharing the same model name, endpoint and configured vector dimension
 // are grouped so each group computes one query embedding and combines all
@@ -743,10 +806,10 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 	// empty" errors because such KBs have no EmbeddingModelID configured.
 	// KBs that we couldn't fetch (not in kbList) are kept so the downstream
 	// HybridSearch path can still surface the real error.
-	knownKBs := make(map[string]bool, len(kbList))
+	knownKBs := make(map[string]*types.KnowledgeBase, len(kbList))
 	for _, kb := range kbList {
 		if kb != nil {
-			knownKBs[kb.ID] = true
+			knownKBs[kb.ID] = kb
 		}
 	}
 	modeFor := func(kbID string) (string, bool) {
@@ -754,7 +817,7 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 			return m.mode, true
 		}
 		// Unknown to the lookup: keep it so HybridSearch surfaces the real error.
-		return mode, !knownKBs[kbID]
+		return mode, knownKBs[kbID] == nil
 	}
 	filteredTargets := make(types.SearchTargets, 0, len(searchTargets))
 	for _, st := range searchTargets {
@@ -791,22 +854,33 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 	fail := func(kbIDs []string, err error) {
 		mu.Lock()
 		defer mu.Unlock()
-		failures = append(failures, fmt.Sprintf("%v: %v", kbIDs, err))
+		if len(kbIDs) == 0 {
+			failures = append(failures, err.Error())
+		} else {
+			failures = append(failures, fmt.Sprintf("%v: %v", kbIDs, err))
+		}
 	}
 	attempt := func() {
 		mu.Lock()
 		defer mu.Unlock()
 		calls++
 	}
-	// fallBack records a hybrid knowledge base searched by keyword only
+	// recordFallbacks describes hybrid knowledge bases searched by keyword only
 	// because the query embedding failed.
-	fallBack := func(kbID string, err error) {
+	recordFallbacks := func(kbIDs []string, usedMode, reason string) {
+		if usedMode != SearchModeKeyword || reason == "" {
+			return
+		}
 		mu.Lock()
 		defer mu.Unlock()
-		if embedFallbacks == nil {
-			embedFallbacks = make(map[string]string)
+		for _, kbID := range kbIDs {
+			if original, _ := modeFor(kbID); original == SearchModeHybrid {
+				if embedFallbacks == nil {
+					embedFallbacks = make(map[string]string)
+				}
+				embedFallbacks[kbID] = reason
+			}
 		}
-		embedFallbacks[kbID] = fmt.Sprintf("query embedding failed, semantic search skipped: %v", err)
 	}
 	collect := func(rows []*types.SearchResult, usedMode string) {
 		mu.Lock()
@@ -837,64 +911,59 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 				fail(ids, errSearchPanicked)
 			})
 
-			needsEmbedding := false
+			var embeddingKBID string
 			for _, st := range targets {
-				if m, _ := modeFor(st.KnowledgeBaseID); m != SearchModeKeyword {
-					needsEmbedding = true
+				if m, _ := modeFor(st.KnowledgeBaseID); m != SearchModeKeyword && knownKBs[st.KnowledgeBaseID].IsVectorEnabled() {
+					embeddingKBID = st.KnowledgeBaseID
 					break
 				}
 			}
 			// Compute embedding once for this (model, query) pair
 			var queryEmbedding []float32
 			var embedErr error
-			if modelKey != "" && needsEmbedding {
-				emb, err := t.knowledgeBaseService.GetQueryEmbedding(ctx, targets[0].KnowledgeBaseID, query)
-				if err != nil {
+			if modelKey != "" && embeddingKBID != "" {
+				queryEmbedding, embedErr = t.queryEmbedding(ctx, embeddingKBID, query)
+				if embedErr != nil {
 					logger.Warnf(ctx, "[Tool][SearchKnowledge] Failed to pre-compute embedding for model %s: %v",
-						modelKey, err)
-					embedErr = err
-				} else {
-					queryEmbedding = emb
+						modelKey, embedErr)
 				}
+			}
+			if ctx.Err() != nil {
+				return
 			}
 			// Without a query embedding every vector search would re-embed
 			// (with retries) and fail again. Hybrid targets fall back to
 			// keyword search, as the chat pipeline does; vector-only targets
 			// cannot run and are reported as failed.
-			groupModeFor := func(kbID string) (string, bool) {
-				m, ok := modeFor(kbID)
-				if embedErr != nil && m == SearchModeHybrid {
-					return SearchModeKeyword, ok
-				}
-				return m, ok
+			usedModes := make(map[string]string, len(targets))
+			embeddingIssue := ""
+			fallbackReason := ""
+			if embedErr != nil {
+				embeddingIssue = searchEmbeddingIssue(embedErr)
+				fallbackReason = embeddingIssue + "，已改用关键词检索。"
 			}
-			runnable := targets[:0:0]
-			for _, st := range targets {
-				if m, _ := groupModeFor(st.KnowledgeBaseID); embedErr != nil && m == SearchModeSemantic {
-					attempt()
-					fail([]string{st.KnowledgeBaseID}, fmt.Errorf("query embedding failed: %w", embedErr))
-					continue
-				}
-				if m, _ := modeFor(st.KnowledgeBaseID); embedErr != nil && m == SearchModeHybrid {
-					fallBack(st.KnowledgeBaseID, embedErr)
-				}
-				runnable = append(runnable, st)
-			}
-			targets = runnable
-
-			// Separate full-KB targets (combinable per retrieval mode) from
-			// specific-knowledge targets.
+			// Combine full-KB targets only when their effective modes match.
 			fullKBIDsByMode := make(map[string][]string)
 			var knowledgeTargets []*types.SearchTarget
 			for _, st := range targets {
+				kbID := st.KnowledgeBaseID
+				kb := knownKBs[kbID]
+				m, _ := modeFor(kbID)
+				if embedErr != nil && m != SearchModeKeyword && kb.IsVectorEnabled() {
+					if m != SearchModeHybrid || !kb.IsKeywordEnabled() || kb.Type == types.KnowledgeBaseTypeFAQ {
+						attempt()
+						fail(nil, errors.New(embeddingIssue+"，本次检索未完成。"))
+						continue
+					}
+					m = SearchModeKeyword
+				}
+				usedModes[kbID] = m
 				if st.Type == types.SearchTargetTypeKnowledgeBase && len(st.TagIDs) == 0 {
-					m, _ := groupModeFor(st.KnowledgeBaseID)
-					fullKBIDsByMode[m] = append(fullKBIDsByMode[m], st.KnowledgeBaseID)
+					fullKBIDsByMode[m] = append(fullKBIDsByMode[m], kbID)
 				} else {
 					knowledgeTargets = append(knowledgeTargets, st)
 				}
 			}
-
 			var innerWg sync.WaitGroup
 			for usedMode, fullKBIDs := range fullKBIDsByMode {
 				innerWg.Add(1)
@@ -903,6 +972,9 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 					defer RecoverGoroutine(ctx, "search knowledge combined retrieval", func() {
 						fail(fullKBIDs, errSearchPanicked)
 					})
+					if ctx.Err() != nil {
+						return
+					}
 					attempt()
 					kbResults, err := t.knowledgeBaseService.HybridSearch(ctx, fullKBIDs[0], types.SearchParams{
 						QueryText:            query,
@@ -925,6 +997,7 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 						fail(fullKBIDs, err)
 						return
 					}
+					recordFallbacks(fullKBIDs, usedMode, fallbackReason)
 					collect(kbResults, usedMode)
 				}(usedMode, fullKBIDs)
 			}
@@ -937,8 +1010,11 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 					defer RecoverGoroutine(ctx, "search knowledge retrieval", func() {
 						fail([]string{st.KnowledgeBaseID}, errSearchPanicked)
 					})
+					if ctx.Err() != nil {
+						return
+					}
 					attempt()
-					usedMode, _ := groupModeFor(st.KnowledgeBaseID)
+					usedMode := usedModes[st.KnowledgeBaseID]
 					stVectorThreshold, stKeywordThreshold := st.RecallThresholds(vectorThreshold, keywordThreshold)
 					kbResults, err := t.knowledgeBaseService.HybridSearch(ctx, st.KnowledgeBaseID, types.SearchParams{
 						QueryText:            query,
@@ -962,6 +1038,7 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 						fail([]string{st.KnowledgeBaseID}, err)
 						return
 					}
+					recordFallbacks([]string{st.KnowledgeBaseID}, usedMode, fallbackReason)
 					collect(kbResults, usedMode)
 				}()
 			}
