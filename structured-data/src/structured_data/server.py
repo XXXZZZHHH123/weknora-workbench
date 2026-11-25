@@ -1043,6 +1043,8 @@ def create_app(data_dir: str | Path | None = None):
                 item = {k: v for k, v in sheet.items() if k in fields}
                 item["block_count"] = len((sheet.get("mapping") or {}).get("blocks") or [])
                 item["field_count"] = sheet_field_count(sheet)
+                if sheet.get('partial_review'):
+                    item['partially_imported'] = True
                 charts = sheet.get("charts") or {}
                 item["chart_count"] = charts.get("chart_count") or 0
                 item["image_count"] = charts.get("image_count") or 0
@@ -1056,6 +1058,7 @@ def create_app(data_dir: str | Path | None = None):
         doc = manager.presentation_view(manager.get(import_id), verified_legacy_sheet=sheet)
         publication = next(s for s in doc['sheets'] if s['name'] == name)
         return {**sheet, 'field_count': sheet_field_count(sheet),
+                'partially_imported': bool(sheet.get('partial_review')),
                 **{k: v for k, v in publication.items() if k.startswith('published_')}}
 
     @app.get("/api/imports/{import_id}/sheet-view")
@@ -1307,34 +1310,48 @@ def create_app(data_dir: str | Path | None = None):
                 mapping=mapping, timeout=min(300, max(.001, deadline - time.monotonic())), cancel_check=cancelled)
 
         try:
-            from .ai_review import AIRequestBudget, assist_mapping
+            from .ai_review import AIRequestBudget, assist_mapping, partial_review
             guard()
+            def prepare(mapping):
+                ensure_active()
+                return run_review_task(registry.directory(), 'prepare_assist', import_id=import_id,
+                    mapping=mapping, timeout=min(300, max(.001, deadline - time.monotonic())), cancel_check=cancelled)
+
             result = assist_mapping(manager, import_id, body.sheet, mapping=body.mapping,
                 budget=AIRequestBudget(max_requests=body.max_requests), cancelled=cancelled, progress=progress,
-                review=review, deadline=deadline)
+                review=review, prepare=prepare, deadline=deadline)
             guard()
             result = {**result, 'import_id': import_id, 'sheet': body.sheet,
                       'dataset_id': manager.get(import_id).get('dataset_id'), 'imported': False}
-            if result.get('review_state', {}).get('status') == 'confirmed':
+            partial = partial_review(result)
+            publish_mapping = result.pop('publish_mapping', None) or result.get('mapping')
+            if result.get('reference'):
+                skipped = run_review_task(registry.directory(), 'mark_reference', import_id=import_id,
+                    mapping=result['mapping'], publish_guard=guard,
+                    timeout=min(300, max(.001, deadline - time.monotonic())))
+                result.update(skipped=skipped, notice=skipped['message'])
+            elif partial or result.get('review_state', {}).get('status') == 'confirmed':
                 try:
                     actual = run_review_task(registry.directory(), 'preview', import_id=import_id,
-                        mapping=result['mapping'], timeout=min(300, max(.001, deadline - time.monotonic())),
+                        mapping=publish_mapping, timeout=min(300, max(.001, deadline - time.monotonic())),
                         cancel_check=cancelled)
                 except ValueError as exc:
                     if not cancelled():
-                        exc.review_state = review(result['mapping'])
+                        exc.review_state = review(publish_mapping)
                     raise
                 if not actual.get('valid_observation_count'):
+                    if partial:
+                        raise ValueError('当前区块没有可发布的原表数值，保留待确认。')
                     from .batch_ai_import import NO_DATA_NOTICE
                     run_review_task(registry.directory(), 'mark_skip', import_id=import_id,
-                        mapping=result['mapping'], publish_guard=guard,
+                        mapping=publish_mapping, publish_guard=guard,
                         timeout=min(300, max(.001, deadline - time.monotonic())))
                     result.update(skipped={'code': 'no_indicator_data', 'message': NO_DATA_NOTICE},
                                   notice=NO_DATA_NOTICE)
                     with job_lock:
                         jobs[job_id].update(status='completed', result=result, cancellable=False)
                     return
-                strict_state = review(result['mapping'])
+                strict_state = review(publish_mapping)
                 if strict_state.get('status') != 'confirmed':
                     result.update(review_state=strict_state,
                         notice='AI 建议未通过逐区块真实数据检查，请补齐或排除无数据区块。')
@@ -1344,12 +1361,14 @@ def create_app(data_dir: str | Path | None = None):
                 with job_lock:
                     if jobs[job_id].get('cancel_requested') or time.monotonic() >= deadline:
                         raise ValueError('AI 辅助已取消或超时，尚未确认的工作表未导入。')
-                    jobs[job_id].update(cancellable=False, stage='全部区块检查通过，校验并导入当前表')
+                    jobs[job_id].update(cancellable=False, stage='正在导入已通过检查的区块')
                 published = run_review_task(registry.directory(), 'confirm', import_id=import_id,
-                    mapping=result['mapping'], save_template=body.save_template,
+                    mapping=publish_mapping, save_template=body.save_template, assistant_review=partial,
                     publish_guard=guard,
                     progress_callback=lambda value: update_job_progress(job_id, value))
                 result.update(published, imported=True)
+                if partial:
+                    result.update(partially_imported=True, notice='已发布通过检查的区块。' + partial['notice'])
             with job_lock:
                 jobs[job_id].update(status='completed', result=result, cancellable=False)
         except Exception as exc:
@@ -1387,10 +1406,13 @@ def create_app(data_dir: str | Path | None = None):
             with job_lock:
                 result = jobs[job_id]['result']
                 result['details'].append(row)
-                field = {'imported': 'sheets_imported', 'existing': 'sheets_existing',
-                         'needs_review': 'sheets_pending', 'not_started': 'sheets_pending',
-                         'failed': 'sheets_failed', 'skipped_no_data': 'sheets_skipped'}[row['status']]
-                result[field].append(row if field in {'sheets_failed', 'sheets_skipped'} else row['sheet'])
+                fields = {'imported': ('sheets_imported',), 'existing': ('sheets_existing',),
+                          'partially_imported': ('sheets_imported', 'sheets_pending'),
+                          'needs_review': ('sheets_pending',), 'not_started': ('sheets_pending',),
+                          'failed': ('sheets_failed',), 'skipped_no_data': ('sheets_skipped',),
+                          'skipped_reference': ('sheets_skipped',)}[row['status']]
+                for field in fields:
+                    result[field].append(row if field in {'sheets_failed', 'sheets_skipped'} else row['sheet'])
                 result['requests_used'] += row['requests_used']
 
         try:

@@ -16,6 +16,7 @@ import json
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.utils.datetime import from_excel
+from pydantic import ValidationError
 from .review_errors import ReviewValidationError
 
 from .scanner import complete_date, scan_workbook
@@ -66,6 +67,15 @@ def has_period_number(value):
     return isinstance(value,(int,float)) and not isinstance(value,bool) and isfinite(value) and value==int(value)
 
 
+def row_period_label(value):
+    """Keep the source label and refuse to reinterpret a complete calendar date."""
+    if has_period_number(value):
+        return str(int(value))
+    if isinstance(value, str) and value.strip() and complete_date(value) is None:
+        return value.strip()
+    return None
+
+
 def _column(value, width, *, field="column"):
     if not isinstance(value,str) or not re.fullmatch('[A-Z]{1,3}',value):
         raise ReviewValidationError('列号必须使用大写Excel列名，例如 A、AB', field=field, column=value)
@@ -105,8 +115,8 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
             undated=b.get('date_mode')=='none'
             dc=None if shared or undated else _column(b.get('date_column'),sheet_scan['columns'],field='date_column')
             if shared:
-                cell=b.get('date_cell','')
-                match=re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]*)',cell)
+                cell=b.get('date_cell')
+                match=re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]*)',cell) if isinstance(cell,str) else None
                 if not match or int(match.group(2))>sheet_scan['rows']:raise ReviewValidationError('共用日期必须填写原表内的日期单元格，例如 AG15', field='date_cell')
                 _column(match.group(1),sheet_scan['columns'])
                 if b.get('data_end_row') is None:raise ReviewValidationError('共用日期区块必须明确结束行，不能延伸到整页末尾', field='data_end_row')
@@ -151,7 +161,9 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                     raise ReviewValidationError(f'{c.get("column")} 列的单位填写无效。请按原表填写单位；原表没有注明时留空，不要只填写空格。', field='unit', column=c.get('column'))
                 from .field_metadata import FieldMetadata
                 FieldMetadata(role=c.get('field_role'), unit=c.get('unit'), frequency=c.get('frequency'))
-                if c.get('unit_cells') is not None:
+                if c.get('unit_cells') is None:
+                    c.pop('unit_cells', None)
+                else:
                     locations = c['unit_cells']
                     if not c.get('unit') or not isinstance(locations, list) or not 1 <= len(locations) <= 16:
                         raise ReviewValidationError('单位须保留真实来源单元格。', field='unit_cells', column=c.get('column'))
@@ -178,9 +190,11 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                         _column(match.group(1), sheet_scan['columns'], field='frequency_cells')
                     c['frequency'] = frequency.strip()
                     c['frequency_cells'] = list(dict.fromkeys(locations))
+                else:
+                    c.pop('frequency_cells', None)
                 dims=c.get('dimensions',{})
                 if not isinstance(dims,dict) or any(not isinstance(k,str) or not isinstance(v,(str,int,float,bool)) for k,v in dims.items()):
-                    raise ValueError('dimensions 必须是简单键值对象')
+                    raise ValueError('指标的分类信息必须填写为名称和对应的文字或数值。')
                 c['dimensions']=dims
                 expected=[f"{c['column']}{r}" for r in headers]
                 cells=c.get('header_cells',expected)
@@ -195,10 +209,12 @@ def validate_mapping(mapping: dict, sheet_scan: dict) -> dict:
                 if c.get('exchange_rate') is not None:
                     from .catalog_search import currency_pair
                     if currency_pair(c) is None:
-                        raise ValueError('汇率元数据须含不同的三字母 base_currency/quote_currency 和真实表头 evidence_cells')
+                        raise ValueError('汇率元数据须注明两种不同货币的三字母代码，并引用原表表头。')
         except ValueError as exc:
             label = b.get('name') if isinstance(b, dict) else None
-            raise ReviewValidationError(f"工作表「{sheet_scan['name']}」· 区块 {bi+1}{'（'+str(label)+'）' if label else ''}：{exc}", target=getattr(exc, "review_target", {}), sheet=sheet_scan["name"], block_index=bi) from exc
+            problem = ('字段用途、单位或频率填写不正确，请核对原表。'
+                       if isinstance(exc, ValidationError) else str(exc))
+            raise ReviewValidationError(f"工作表「{sheet_scan['name']}」· 区块 {bi+1}{'（'+str(label)+'）' if label else ''}：{problem}", target=getattr(exc, "review_target", {}), sheet=sheet_scan["name"], block_index=bi) from exc
     from .mapping_identity import distinguish_source_columns
     distinguish_source_columns(m)
     return m
@@ -404,8 +420,8 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                     dc=column_index_from_string(b['date_column']) if not shared and not undated else None
                     datecell=b['date_cell'] if shared else (None if undated or period_mode else f"{b['date_column']}{rn}")
                     dateval=anchor_dates[bi] if shared else (None if undated or period_mode else _date(row[dc-1].value,b['date_mode'],vw.epoch,b.get('date_format')))
-                    period=str(row[dc-1].value).strip() if period_mode and row[dc-1].value is not None else None
-                    if period_mode and has_period_number(row[dc-1].value):period=str(int(row[dc-1].value))
+                    period_cell=f"{b['date_column']}{rn}" if period_mode else None
+                    period=(row_period_label(row[dc-1].value) if period_mode and row[dc-1].data_type != 'e' else None)
                     cc=column_index_from_string(b['category_column']) if b.get('category_column') else None
                     category=row[cc-1].value if cc else None
                     category_cell=f"{b['category_column']}{rn}" if cc else None
@@ -423,13 +439,18 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                         if not undated and dateval is None and not (period_mode and period):
                             if raw is not None or formula is not None:
                                 previous=last_dates.get(bi)
-                                note=f'上一条有效日期位于{previous}。' if previous else ''
-                                raise ReviewValidationError(f'{name}!{datecell} 日期无效，但同一行{coord}仍有内容{str(raw)[:100]}，该行不是整行空白。{note}已阻断整页导入，请核对区块范围。', sheet=name, block_index=bi, field='date_column', cells=[datecell or f'{b["date_column"]}{rn}', coord])
+                                axis_cell=period_cell or datecell
+                                axis_label='期间标签' if period_mode else '日期'
+                                note=f'上一条有效{axis_label}位于 {previous}。' if previous else ''
+                                raise ReviewValidationError(f'{name}!{axis_cell} {axis_label}无效，但同一行 {coord} 仍有内容。{note}请核对区块范围和时间来源。', sheet=name, block_index=bi, field='date_column', cells=[axis_cell, coord])
                             continue
-                        last_dates[bi]=datecell
+                        last_dates[bi]=period_cell or datecell
                         item=add_series(bi,b,c,category,category_cell);sid=item['series_id']
                         record_key=period if period_mode else (coord if undated else dateval)
-                        if record_key in seen[sid]:raise ReviewValidationError(f'{name}!{datecell} 指标 {c["metric"]} / {category or ""} 出现重复日期 {dateval}，已阻断整页导入', sheet=name, block_index=bi, field='date_column', cells=[datecell])
+                        if record_key in seen[sid]:
+                            axis_cell=period_cell or datecell
+                            axis_label='期间标签' if period_mode else '日期'
+                            raise ReviewValidationError(f'{name}!{axis_cell} 指标 {c["metric"]} 出现重复{axis_label} {record_key}，请核对原表。', sheet=name, block_index=bi, field='date_column', cells=[axis_cell])
                         seen[sid].add(record_key)
                         if cc:item['category_provenance'][coord]=category_cell
                         value=None
@@ -445,7 +466,7 @@ def parse_mapped_workbook(path, mappings, scan=None, *, observations=None, issue
                         if c.get('field_role') in ('text_dimension', 'annotation') and raw is not None:
                             status = c['field_role']; value = None
                         if status!='valid':counts[status]+=1;firsts.setdefault(status,coord)
-                        result['observations'].append({'series_id':sid,'date':dateval,'period':period,'period_cell':f"{b['date_column']}{rn}" if period_mode else None,'value':value,'source_cell':coord,
+                        result['observations'].append({'series_id':sid,'date':dateval,'period':period,'period_cell':period_cell,'value':value,'source_cell':coord,
                             'date_cell':datecell,'category_cell':category_cell,'category':category,'block_index':bi,
                             'formula':formula,'value_status':status,'raw_value':raw if raw is None or isinstance(raw,(str,int,float,bool)) else str(raw)})
                         block_counts[bi]+=1

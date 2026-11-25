@@ -103,7 +103,7 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
     An explicit draft is never applied to an already-published sheet in a bulk
     operation: replacement remains a separate single-sheet decision.
     """
-    from .ai_review import AIRequestBudget, assist_mapping
+    from .ai_review import AIRequestBudget, assist_mapping, partial_review
     from .review_errors import error_location
 
     if (type(total_max_requests) is not int or not 1 <= total_max_requests <= 512
@@ -148,7 +148,7 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
                     # Read-only children can stop immediately. A publication
                     # uses its final guard instead: killing between the atomic
                     # snapshot and review pointer writes could hide a success.
-                    cancel_check=(None if action in {'confirm', 'mark_skip'} else
+                    cancel_check=(None if action in {'confirm', 'mark_skip', 'mark_reference'} else
                                   lambda: cancelled() or time.monotonic() >= deadline), **kwargs)
 
     def record(name, status, message='', requests_used=0, **extra):
@@ -178,11 +178,16 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
             notify(index, name, '检查当前工作表')
             if source.get('published_in_dataset'):
                 existing.append(name)
-                record(name, 'existing', '已存在于当前已校验快照，批量操作不重复导入或覆盖。')
+                if source.get('partial_review'):
+                    pending.append(name)
+                    record(name, 'needs_review', source['partial_review']['notice'])
+                else:
+                    record(name, 'existing', '已存在于当前已校验快照，批量操作不重复导入或覆盖。')
                 notify(index + 1, name, '保留已导入工作表')
                 continue
             saved_skip = source.get('automatic_skip') or {}
             if (name not in drafts and saved_skip.get('code') == 'no_indicator_data'
+                    and not (source.get('charts') or {}).get('chart_count')
                     and saved_skip.get('verified_source_sha256') == doc.get('sha256')
                     and saved_skip.get('verified_fingerprint') == source.get('fingerprint')
                     and isinstance(doc.get('sha256'), str)):
@@ -203,11 +208,24 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
                 mapping = {'sheet': name, 'fingerprint': source.get('fingerprint'), 'blocks': []}
             sheet_used = 0
             try:
+                prepared = None
                 if not mapping.get('blocks'):
-                    evidence = call('evidence', {'sheet': name})
-                    if evidence.get('status') == 'no_indicator_data':
-                        skip(name, mapping)
-                        continue
+                    if (source.get('charts') or {}).get('chart_count'):
+                        prepared = call('prepare_assist', mapping)
+                        if prepared.get('reference'):
+                            checked = call('mark_reference', mapping, publish_guard=guard)
+                            skipped.append({'sheet': name, **checked})
+                            record(name, 'skipped_reference', checked['message'])
+                            continue
+                        if prepared.get('chart_pending'):
+                            pending.append(name)
+                            record(name, 'needs_review', prepared['chart_pending'])
+                            continue
+                    else:
+                        evidence = call('evidence', {'sheet': name})
+                        if evidence.get('status') == 'no_indicator_data':
+                            skip(name, mapping)
+                            continue
 
                 # A successful syntax/structure review can still contain no
                 # observations. Preview counts are the decisive data evidence.
@@ -230,6 +248,7 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
                 else:
                     confirmed = False
 
+                partial = None
                 if not confirmed:
                     if used >= total_max_requests:
                         pending.append(name)
@@ -247,14 +266,16 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
                     try:
                         proposal = assist(manager, import_id, name, mapping=mapping, budget=budget,
                             cancelled=cancelled, progress=ai_progress, deadline=deadline,
+                            prepare=lambda candidate: prepared or call('prepare_assist', candidate),
                             review=lambda candidate: call('review', candidate))
                     finally:
                         sheet_used = budget.used
                         used += budget.used
                     guard()
-                    mapping = proposal.get('mapping')
+                    partial = partial_review(proposal)
+                    mapping = proposal.get('publish_mapping') or proposal.get('mapping')
                     state = proposal.get('review_state') or {}
-                    if state.get('status') != 'confirmed' or not isinstance(mapping, dict):
+                    if (not partial and state.get('status') != 'confirmed') or not isinstance(mapping, dict):
                         pending.append(name)
                         record(name, 'needs_review', proposal.get('notice') or '缺少可验证的映射依据，保留待确认。',
                                sheet_used, review_state=state)
@@ -263,7 +284,11 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
                     # resource-limited real parser rechecks values and bounds.
                     preview = call('preview', mapping)
                     if not preview.get('series_count') or not preview.get('valid_observation_count'):
-                        skip(name, mapping, sheet_used)
+                        if partial:
+                            pending.append(name)
+                            record(name, 'needs_review', '当前区块没有可发布的原表数值。', sheet_used)
+                        else:
+                            skip(name, mapping, sheet_used)
                         continue
                     state = call('review', mapping)
                     if state.get('status') != 'confirmed':
@@ -273,9 +298,15 @@ def import_all_with_ai(manager, import_id, *, mappings=(), save_template=True,
                         continue
 
                 guard()
-                call('confirm', mapping, save_template=save_template, publish_guard=guard)
+                call('confirm', mapping, save_template=save_template, publish_guard=guard,
+                     **({'assistant_review': partial} if partial else {}))
                 imported.append(name)
-                record(name, 'imported', '已通过全量校验并导入。', sheet_used)
+                if partial:
+                    pending.append(name)
+                    record(name, 'partially_imported', '已发布通过检查的区块。' + partial['notice'],
+                           sheet_used, review_state=partial['review_state'])
+                else:
+                    record(name, 'imported', '已通过全量校验并导入。', sheet_used)
             except _Stopped:
                 raise
             except Exception as exc:

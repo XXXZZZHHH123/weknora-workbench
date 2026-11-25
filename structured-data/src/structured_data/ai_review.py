@@ -15,7 +15,8 @@ from urllib.parse import urlsplit
 
 from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 
-from .generic_parser import _date as parse_date_value, validate_mapping
+from .assist_structure import MAX_ASSIST_BLOCKS
+from .generic_parser import _date as parse_date_value, row_period_label, validate_mapping
 from .mapping_suggestions import apply_suggestion, BLOCK_FIELDS, COLUMN_FIELDS
 from .model_settings import read_model, thinking_fields, thinking_format
 from .review_errors import ReviewValidationError, clean_target
@@ -49,7 +50,10 @@ source_cells 是当前原件的有界证据；$sheet_title 是已核验的工作
 PROMPT += '''\nrepair_scope 是服务器指定的本次操作范围。mode=repair_existing_blocks 时只修复 candidate_mapping 里的区块，优先返回 column_updates/block_updates；只允许 allowed_block_indices 中的索引。source_cells 中邻近其他表的数据只是背景，不能据此重新识别整张表、创建额外区块或使用工作表全局区块索引。特别地，只有一个候选区块时，所有更新与证据的 block_index 必须为 0；只修该候选的原列，其余原表列不属于本次任务。只有 mode=identify_unmapped_region 时才允许根据所给证据提出新的完整 mapping。
 自动确认会逐字段核对证据位置和原值。每个改动字段都必须有同名 field 的 evidence：metric/period/header_cells 必须引用该指标声明的真实表头位置；row_rules 必须引用对应 row_label_column 与规则行交叉的单元格；date_column/category_column/row_label_column 必须引用所声明列的数据单元格；date_cell 必须引用该坐标；header_rows 必须逐行引用实际非空表头；data_start_row/data_end_row 必须引用新边界行的时间与数值单元格。只引用任意无关单元格、引用了 2024 却填写 2025、扩大范围却未引用新边界，均会保留待确认。'''
 
-PROMPT += '''\n输出结构要求：column_updates、block_updates、evidence、unresolved 都必须是 JSON 数组，不得把 block_updates 写成单个对象。每个更新和证据项必须显式包含整数 block_index，即使当前只有一个区块也须写 0。紧凑修改的结构为 {"column_updates":[{"block_index":0,"column":"原列号","metric":"原表指标文字"}],"block_updates":[],"evidence":[{"block_index":0,"field":"metric","column":"原列号","cells":["对应表头坐标"]}],"unresolved":[]}；示意文字均须替换为当前原件实际内容，不能照抄。只修改导致报错且有证据的字段；不要为了补全形式改动原本有效的范围、日期模式、单位或来源。原字段未变就不重复返回。'''
+PROMPT += '''\n输出结构要求：column_updates、block_updates、evidence、unresolved 都必须是 JSON 数组，不得把 block_updates 写成单个对象。每个更新和证据项必须显式包含整数 block_index，即使当前只有一个区块也须写 0。完整映射的区块由数组位置编号，区块对象内不写 block_index。以下仅示意结构：
+完整映射：{"mapping":{"sheet":"原表名","fingerprint":"原指纹","blocks":[{"date_mode":"date","date_column":"A","header_rows":[1],"data_start_row":2,"data_end_row":3,"columns":[{"column":"B","metric":"原表指标文字","header_cells":["B1"]}]}]},"evidence":[{"block_index":0,"field":"metric","column":"B","cells":["B1"]}],"unresolved":[]}。实际答复须为每个改动字段给出对应原格证据。
+增量更新：{"column_updates":[{"block_index":0,"column":"B","metric":"原表指标文字"}],"block_updates":[],"evidence":[{"block_index":0,"field":"metric","column":"B","cells":["B1"]}],"unresolved":[]}。
+示意值均须替换为当前原件实际内容。只填写有证据的字段；未知单位可填 null，其余不适用的可选字段请省略，缺少必要依据时在待确认项说明。提示文字用通俗中文，不写内部字段名或代码。'''
 
 
 @dataclass
@@ -196,6 +200,9 @@ def _unique_object(pairs):
 def _validate_shape(suggestion):
     if not isinstance(suggestion, dict) or set(suggestion) - _TOP_FIELDS:
         raise ValueError('AI 建议包含不支持的字段，不能修改原数据。')
+    for key in ('block_updates', 'column_updates'):
+        if key in suggestion and not isinstance(suggestion[key], list):
+            raise ValueError('模型没有返回可核对的修改项目，请检查原表。')
     mapping = suggestion.get('mapping')
     if mapping is not None:
         if not isinstance(mapping, dict) or set(mapping) - _MAPPING_FIELDS:
@@ -203,9 +210,13 @@ def _validate_shape(suggestion):
         blocks = mapping.get('blocks')
         if not isinstance(blocks, list) or len(blocks) > MAX_BLOCKS:
             raise ValueError('AI 区块数量或格式无效。')
-        for block in blocks:
-            if not isinstance(block, dict) or set(block) - _FULL_BLOCK_FIELDS:
-                raise ValueError('AI 区块包含不支持的字段，不能写入原数值。')
+        for index, block in enumerate(blocks):
+            if not isinstance(block, dict) or set(block) - _FULL_BLOCK_FIELDS - {'block_index'}:
+                raise ValueError(f'AI 建议的第 {index + 1} 个区块包含不支持的内容，请核对原表。')
+            if 'block_index' in block:
+                if type(block['block_index']) is not int or block['block_index'] != index:
+                    raise ValueError(f'AI 建议的第 {index + 1} 个区块编号与实际位置不符，请核对原表。')
+                del block['block_index']
             rules = block.get('row_rules', [])
             if not isinstance(rules, list) or len(rules) > 2048 or any(
                 not isinstance(rule, dict) or set(rule) - {'row', 'metric', 'unit', 'unit_cells', 'frequency', 'frequency_cells', 'field_role'} for rule in rules
@@ -213,7 +224,7 @@ def _validate_shape(suggestion):
                 raise ValueError('AI 矩阵行规则包含不支持的字段。')
             columns = block.get('columns', [])
             if not isinstance(columns, list) or len(columns) > 512:
-                raise ValueError('AI 指标列数量或格式无效。')
+                raise ValueError('模型的指标列数量或格式不正确，请对照原表核对。')
             for column in columns:
                 if not isinstance(column, dict) or set(column) - _FULL_COLUMN_FIELDS:
                     raise ValueError('AI 指标列包含不支持的字段。')
@@ -423,7 +434,7 @@ def _date_source_supported(cell, mode, date_format=None):
     if mode == 'period':
         # A complete Excel date is not a period label. Reinterpreting it would
         # silently discard calendar semantics even though the source is real.
-        return bool(_source_text(value)) and not cell.get('date_value')
+        return not cell.get('date_value') and cell.get('data_type') != 'e' and row_period_label(value) is not None
     if mode == 'custom':
         try:
             return parse_date_value(value, 'custom', None, date_format) is not None
@@ -445,7 +456,7 @@ def _evidence_refs(evidence, block_index, field, *, column=None):
             continue
         if column is not None and item.get('column') != column:
             continue
-        result.extend(item.get('cells', []))
+        result.extend(clean_target(item).get('cells', []))
     return list(dict.fromkeys(result))
 
 
@@ -518,7 +529,7 @@ def _evidence_checks(candidate, proposed, suggestion, cells, sheet, *, strict):
         target = clean_target(item)
         bi = target.pop('block_index', 0)
         target.pop('sheet', None)
-        unresolved.append(_diagnostic(item.get('message') or '来源含义尚不明确，需要人工确认。', sheet['name'], bi, **target))
+        unresolved.append(_diagnostic('来源含义尚不明确，请核对标出的原表位置。', sheet['name'], bi, **target))
     if not strict:
         return unresolved
 
@@ -670,7 +681,7 @@ def _evidence_checks(candidate, proposed, suggestion, cells, sheet, *, strict):
                             or not set(rule.get(field + '_cells', local)) <= {expected, '$sheet_title'}
                             or not _verbatim_supported(rule[field], rule.get(field + '_cells', local), available))
                             for field in ('unit', 'frequency'))):
-                    require('矩阵行规则必须引用 row_label_column 与该规则行交叉的原格，且名称和单位均来自该原格。', bi,
+                    require('矩阵指标必须引用该行的指标名称原格，名称和单位均须有原文依据。', bi,
                             field='row_rules', cells=local or refs)
 
         if _changed(original, block, 'dimensions'):
@@ -713,7 +724,11 @@ def _evidence_checks(candidate, proposed, suggestion, cells, sheet, *, strict):
             if borrowed_headers:
                 require('指标表头来源必须位于本数据列，或是原表中明确覆盖本列的合并表头；不能借用其他列。', bi,
                         field='header_cells', column=column_name, cells=borrowed_headers)
-            borrowed_frequency = [ref for ref in column.get('frequency_cells', [])
+            frequency_cells = column.get('frequency_cells', [])
+            if frequency_cells is None:
+                raise ReviewValidationError('模型没有提供频率的原表位置，请对照表头核对。',
+                    block_index=bi, field='frequency_cells', column=column_name, cells=declared_header_cells)
+            borrowed_frequency = [ref for ref in frequency_cells
                                   if not _header_ref_covers_column(ref, column_name, sheet)]
             if borrowed_frequency:
                 require('指标频率来源必须位于本数据列，或是原表中明确覆盖本列的合并表头。', bi,
@@ -843,12 +858,19 @@ def suggest_mapping(manager, import_id, sheet_name, *, mapping=None, review_erro
                                  for e in (review_errors or [])[:16] if isinstance(e, dict)],
                'date_candidates': sheet.get('date_candidates', [])[:16]}
     suggestion = _request(read_model(manager.root), payload, budget or AIRequestBudget(1), cancelled, deadline=deadline)
-    proposed, restored = apply_suggestion(candidate, suggestion)
-    notice = str(suggestion.get('notice', ''))[:1500]
+    try:
+        proposed, restored = apply_suggestion(candidate, suggestion)
+        diagnostics = (_evidence_checks(candidate, proposed, suggestion, cells, sheet, strict=strict)
+                       if proposed is not None else [])
+    except (TypeError, KeyError, AttributeError) as exc:
+        # Model JSON is untrusted, including nested fields used by source
+        # evidence checks before full mapping validation.
+        logger.info('invalid_excel_review_proposal error_type=%s', type(exc).__name__)
+        raise ReviewValidationError('模型建议缺少必要的映射或原表证据，请人工核对。') from None
+    notice = ''
     if proposed is None:
         return {'mapping': None, 'notice': notice or '未获得可靠映射，该工作表保留待确认。',
                 'diagnostics': [_diagnostic('模型未能提出可靠映射。', sheet_name, 0)]}
-    diagnostics = _evidence_checks(candidate, proposed, suggestion, cells, sheet, strict=strict)
     for bi, block in enumerate(proposed.get('blocks', [])):
         for column in block.get('columns', []):
             if column.get('unit') and not column.get('unit_cells'):
@@ -857,6 +879,8 @@ def suggest_mapping(manager, import_id, sheet_name, *, mapping=None, review_erro
                     column['unit_cells'] = refs
     try:
         proposed = validate_mapping(proposed, sheet)
+    except (TypeError, KeyError, AttributeError):
+        raise ReviewValidationError('模型建议缺少必要的映射或原表证据，请人工核对。') from None
     except ValueError as exc:
         if not strict:
             raise
@@ -891,13 +915,20 @@ def _candidate(sheet, mapping):
     result = deepcopy(mapping)
     if result.get('sheet') != sheet['name'] or result.get('fingerprint') != sheet['fingerprint']:
         raise ValueError('当前草稿与原工作表身份不一致，未调用模型。')
-    if not isinstance(result.get('blocks'), list) or len(result['blocks']) > MAX_BLOCKS:
+    if not isinstance(result.get('blocks'), list) or len(result['blocks']) > MAX_ASSIST_BLOCKS:
         raise ValueError('当前草稿区块格式或数量无效，未调用模型。')
     return result
 
 
+def partial_review(result):
+    """Keep the review draft separate from the mapping written to the snapshot."""
+    if 'publish_mapping' not in result:
+        return None
+    return {key: result[key] for key in ('mapping', 'review_state', 'source_diagnostics', 'notice')}
+
+
 def assist_mapping(manager, import_id, sheet_name, *, mapping=None, budget=None,
-                   cancelled=None, progress=None, review=None, deadline=None):
+                   cancelled=None, progress=None, review=None, prepare=None, deadline=None):
     """Sequentially assist failed blocks, retaining all already valid source blocks.
 
     Web callers provide a resource-limited ``review`` worker; this function never
@@ -905,13 +936,30 @@ def assist_mapping(manager, import_id, sheet_name, *, mapping=None, budget=None,
     """
     _check_cancelled(cancelled)
     sheet = manager.sheet(import_id, sheet_name)
-    current = _candidate(sheet, mapping if mapping is not None else sheet.get('mapping'))
+    previous = sheet.get('partial_review') or {}
+    baseline = previous.get('mapping') or sheet.get('mapping')
+    current = _candidate(sheet, mapping if mapping is not None else baseline)
     budget = budget if budget is not None else AIRequestBudget()
     used_before = budget.used
     review = review if review is not None else lambda m: manager.review_mapping(import_id, m)
+    if prepare is None:
+        from .assist_structure import prepare_assist
+        prepare = lambda m: prepare_assist(manager, import_id, m)
+    source = prepare(current)
+    if source.get('reference'):
+        return {'mapping': current, 'reference': source['reference'],
+                'notice': source['reference']['message'], 'model_requests': 0}
+    current = source['mapping']
+    if source.get('chart_pending'):
+        notice = source['chart_pending']
+        state = {'status': 'needs_review', 'blocks': [], 'diagnostics': [_diagnostic(notice, sheet_name, 0)]}
+        return {'mapping': current, 'review_state': state, 'notice': notice, 'model_requests': 0}
     state = review(current)
-    pending = [b for b in state.get('blocks', []) if b['status'] != 'confirmed']
-    if not pending and state.get('status') != 'confirmed':
+    blocked = source.get('blocked', [])
+    blocked_indices = {item['block_index'] for item in blocked}
+    pending = [b for b in state.get('blocks', []) if b['status'] != 'confirmed'
+               and b['block_index'] not in blocked_indices]
+    if not pending and not blocked and state.get('status') != 'confirmed':
         pending = [{'block_index': 0, 'diagnostics': state.get('diagnostics', [])}]
     unresolved = []; notices = []
     for completed, item in enumerate(pending):
@@ -937,6 +985,8 @@ def assist_mapping(manager, import_id, sheet_name, *, mapping=None, budget=None,
             errors = [{**d, 'block_index': bi, 'block_id': f'block-{bi}'} for d in result.get('diagnostics', [])]
             if result.get('mapping') is None or errors:
                 unresolved.extend(errors or [_diagnostic('未获得可靠的区块映射。', sheet_name, bi)])
+                if errors:
+                    notices.append(errors[0]['message'])
                 continue
             proposed = deepcopy(current)
             if has_block:
@@ -965,6 +1015,23 @@ def assist_mapping(manager, import_id, sheet_name, *, mapping=None, budget=None,
                           'completed_blocks': completed + 1,
                           'stage': f'已辅助核对区块 {completed + 1}/{len(pending)}'})
     _check_cancelled(cancelled)
-    state = _with_diagnostics(review(current), unresolved)
-    return {'mapping': current, 'review_state': state, 'model_requests': budget.used - used_before,
-            'notice': ' '.join(dict.fromkeys(notices))[:3000] or '已完成现有区块检查，无需模型补全。'}
+    state = _with_diagnostics(review(current), unresolved + blocked)
+    deferred = list(source['diagnostics'])
+    for item in previous.get('source_diagnostics', []):
+        if not any(d['message'] == item['message'] for d in deferred):
+            deferred.append(item)
+    result = {'mapping': current, 'review_state': state, 'model_requests': budget.used - used_before,
+              'notice': ' '.join(dict.fromkeys(notices))[:3000] or '已完成现有区块检查，无需模型补全。'}
+    if deferred or ((source.get('structured') or previous) and state['status'] != 'confirmed'):
+        good = [current['blocks'][b['block_index']] for b in state['blocks'] if b['status'] == 'confirmed']
+        merged_state = deepcopy(state)
+        merged_state['status'] = 'needs_review'
+        merged_state['diagnostics'].extend(deferred)
+        messages = [item['message'] for item in (*deferred, *blocked)]
+        unconfirmed = len(current['blocks']) - len(good)
+        if unconfirmed:
+            messages.append(f'另有 {unconfirmed} 个区块仍待确认。')
+        result.update(review_state=merged_state, notice=' '.join(dict.fromkeys(messages)))
+        if good:
+            result.update(publish_mapping={**current, 'blocks': good}, source_diagnostics=deferred)
+    return result

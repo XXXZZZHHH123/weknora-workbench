@@ -286,7 +286,7 @@ def test_unresolved_response_never_becomes_ready(tmp_path, monkeypatch):
     result = assist_mapping(manager, record['import_id'], sheet['name'], mapping=candidate)
     assert result['review_state']['status'] == 'needs_review'
     assert result['mapping'] == candidate
-    assert any('ambiguous' in d['message'] for d in result['review_state']['diagnostics'])
+    assert any('来源含义尚不明确' in d['message'] for d in result['review_state']['diagnostics'])
 
 
 def test_budget_and_cancel_do_not_make_network_requests(tmp_path, monkeypatch):
@@ -782,3 +782,47 @@ def test_text_only_sheet_without_mapping_has_clear_notice_and_no_model_call(tmp_
 def test_budget_has_a_fixed_upper_bound(maximum):
     with pytest.raises(ValueError):
         AIRequestBudget(maximum)
+
+
+@pytest.mark.parametrize('missing_field', [
+    'frequency_cells', 'unit_cells', 'header_cells', 'columns', 'header_rows', 'data_start_row', 'empty_header_with_index',
+])
+def test_incomplete_full_model_response_stays_pending(tmp_path, monkeypatch, missing_field):
+    # The production replay had a complete response for a period/category
+    # block and returned frequency_cells: null on the proposed value column.
+    source = tmp_path / 'balance.xlsx'
+    workbook = Workbook()
+    ws = workbook.active
+    ws.title = '平衡表调整'
+    ws.append(['地区', '月份', '期初库存'])
+    ws.append(['全球', '6月', 1875.944448])
+    workbook.save(source)
+    manager = ImportManager(tmp_path / 'state')
+    uploaded = manager.ingest(source, use_reviewed_mappings=False)
+    sheet = manager.sheet(uploaded['import_id'], ws.title)
+    monkeypatch.setattr('structured_data.ai_review.read_model', lambda _: DASHSCOPE)
+    column = {'column': 'C', 'metric': '期初库存', 'header_cells': ['C1'], 'unit': None}
+    block = {'date_mode': 'period', 'date_column': 'B', 'date_format': None,
+             'category_column': 'A', 'header_rows': [1], 'data_start_row': 2, 'data_end_row': 2,
+             'columns': [column]}
+    if missing_field == 'data_start_row':
+        del block[missing_field]
+    elif missing_field == 'empty_header_with_index':
+        block.update(block_index=0, header_rows=[])
+    else:
+        target = column if missing_field in ('frequency_cells', 'unit_cells', 'header_cells') else block
+        target[missing_field] = None
+    proposal = {'mapping': {'sheet': ws.title, 'fingerprint': sheet['fingerprint'], 'blocks': [block]},
+                'notice': None}
+    calls = []
+    mock_model(monkeypatch, [proposal], calls)
+    result = assist_mapping(manager, uploaded['import_id'], ws.title)
+    assert result['model_requests'] == len(calls) == 1
+    assert result['review_state']['status'] == 'needs_review'
+    assert not result['mapping']['blocks']
+    assert '待确认' in result['notice'] or '请' in result['notice']
+    assert 'NoneType' not in result['notice'] and missing_field not in result['notice']
+    if missing_field == 'frequency_cells':
+        assert '频率的原表位置' in result['notice']
+    if missing_field == 'empty_header_with_index':
+        assert any('表头行为空' in diagnostic['message'] for diagnostic in result['review_state']['diagnostics'])

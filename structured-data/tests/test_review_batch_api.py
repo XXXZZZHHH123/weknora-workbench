@@ -51,8 +51,9 @@ def test_ai_assist_checks_model_mapping_then_automatically_imports(client, monke
     seen = []
 
     def assist(manager, import_id, sheet, *, mapping=None, budget=None, cancelled=None,
-               progress=None, review=None, deadline=None):
+               progress=None, review=None, prepare=None, deadline=None):
         assert time.monotonic() < deadline <= time.monotonic() + 600
+        assert prepare(mapping)['mapping'] == mapping
         budget.consume()
         seen.append((sheet, mapping))
         state = review(mapping)
