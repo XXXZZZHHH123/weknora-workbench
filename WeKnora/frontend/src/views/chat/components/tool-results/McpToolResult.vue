@@ -2,7 +2,8 @@
   <div class="mcp-result">
     <div v-if="success === false" class="mcp-error" role="alert">
       <t-icon name="error-circle" />
-      <pre>{{ output || $t('agentStream.mcp.failed') }}</pre>
+      <p>{{ $t('chat.executionFailed', 'This operation did not finish. Check your input and try again.') }}</p>
+      <ErrorDiagnostics :detail="output" />
     </div>
     <template v-else-if="discovery && isDiscoveryResult">
       <template v-if="mode !== 'describe'">
@@ -57,19 +58,16 @@
           >{{ $t(descOpen ? 'agentStream.mcp.collapse' : 'agentStream.mcp.expand') }}</button>
           <div v-if="parameters.length" class="mcp-parameters">
             <div class="mcp-parameters__label">{{ $t('agentStream.mcp.parameters') }}</div>
-            <div v-for="parameter in parameters" :key="parameter.name" class="mcp-parameter">
+            <div v-for="(parameter, index) in parameters" :key="parameter.name" class="mcp-parameter">
               <div class="mcp-parameter-title">
-                <code>{{ parameter.name }}</code>
-                <span v-if="parameter.type">{{ parameter.type }}</span>
+                <span>{{ t('chat.approvalInput', { index: index + 1 }, 'Input {index}') }}</span>
+                <span v-if="parameterType(parameter.type)">{{ parameterType(parameter.type) }}</span>
                 <span v-if="parameter.required" class="mcp-required">{{ $t('agentStream.mcp.required') }}</span>
               </div>
               <p v-if="parameter.description">{{ parameter.description }}</p>
             </div>
           </div>
-          <details v-if="data.input_schema !== undefined" class="mcp-definition">
-            <summary>{{ $t('agentStream.mcp.fullSchema') }}</summary>
-            <pre>{{ JSON.stringify(data.input_schema, null, 2) }}</pre>
-          </details>
+          <ErrorDiagnostics :detail="data.input_schema" />
         </div>
       </template>
     </template>
@@ -83,10 +81,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
 import {
   mcpDescriptionLead,
   mcpDescriptionNeedsExpand,
   mcpDiscoveryRows,
+  mcpParameterTypeLabel,
   mcpSchemaParameters,
   parseMcpDiscovery,
 } from '@/utils/mcpToolDisplay'
@@ -99,6 +99,8 @@ const props = withDefaults(defineProps<{
   success?: boolean
 }>(), { success: undefined })
 const { t, te } = useI18n()
+const parameterType = (type?: string) => mcpParameterTypeLabel(type, t)
+
 const data = computed(() => parseMcpDiscovery(props.output, props.data))
 const mode = computed(() => data.value.mode || props.arguments?.mode || ('input_schema' in data.value ? 'describe' : ''))
 const isDiscoveryResult = computed(() => Array.isArray(data.value.servers) || Array.isArray(data.value.tools) ||

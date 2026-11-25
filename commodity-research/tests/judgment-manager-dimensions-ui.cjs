@@ -68,7 +68,7 @@ const preview = () => ({draft_id: review.draft_id, base_version: 3, source_text:
     assert.equal(await first.inputValue(), 'removed_id');
     assert.match(await first.locator('option:checked').innerText(), /已删除维度/);
     assert.deepEqual(await first.locator('option').allTextContents(), ['未标注', '成本约束', '终端消费', '已删除维度（请重新指派）']);
-    const modelSelect = page.getByRole('combobox', {name: '维度补标模型'}); await modelSelect.waitFor({state: 'visible'});
+    const modelSelect = page.getByRole('combobox', {name: '为内容推荐研究维度所用的模型'}); await modelSelect.waitFor({state: 'visible'});
     await modelSelect.selectOption('synthetic-model-2');
     assert.equal(await page.locator('#logic-model').inputValue(), 'synthetic-model-2', 'The visible tagging model and analysis model share the same selection');
     assert.equal(requests.filter(row => row.path.endsWith('/models')).length, 1, 'Both model selectors reuse one model request');
@@ -129,7 +129,7 @@ const preview = () => ({draft_id: review.draft_id, base_version: 3, source_text:
     await editor.waitFor({state: 'visible'}); await page.locator('#logic-dimension-model option').filter({hasText: '暂无可用对话模型'}).waitFor({state: 'attached'});
     const beforeNoModel = requests.filter(row => row.path.endsWith('/dimension-suggestions')).length;
     await page.locator('#logic-dimension-suggest').click();
-    await page.locator('#logic-status').filter({hasText: '请选择补标模型'}).waitFor({state: 'visible'});
+    await page.locator('#logic-status').filter({hasText: '请选择推荐研究维度所用的模型'}).waitFor({state: 'visible'});
     assert.equal(requests.filter(row => row.path.endsWith('/dimension-suggestions')).length, beforeNoModel, 'An empty model selection never sends an inference request');
     viewer = true; await page.goto('http://dimensions.fixture/'); await page.locator('[data-open-logic]').click();
     await editor.waitFor({state: 'visible'});

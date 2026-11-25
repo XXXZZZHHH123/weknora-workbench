@@ -24,7 +24,10 @@ test('a late response from an earlier workspace cannot enter the new workspace',
 test('server permission failures remain visible rather than becoming an empty successful listing', async () => {
   const scope = { token: 'token', userId: 'u', tenantId: '7' }
   const fake = (async () => new Response(JSON.stringify({ detail: '没有知识库权限' }), { status: 403 })) as typeof fetch
-  await assert.rejects(createMaterialClient(scope, () => scope, fake).get('/api/library'), /知识库权限/)
+  await assert.rejects(createMaterialClient(scope, () => scope, fake).get('/api/library'), {
+    message: '无法访问这份资料，请联系资料负责人核对权限。',
+    cause: '没有知识库权限',
+  })
 })
 
 test('workspace changes during deferred JSON decoding reject the old result', async () => {

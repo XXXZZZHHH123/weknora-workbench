@@ -98,6 +98,7 @@ test('delegated approval keeps task separate from description and shows actual a
   const result = evaluate('hotlist: Read article rankings.\n\n## Parameters\n- period: days\n\n## Examples\n{}', 'KM', 'hotlist')
   assert.equal(result.compactDescription.value, 'Read article rankings.')
   assert.equal(result.hasLongDescription.value, true)
-  assert.match(result.argumentSummary.value, /period=2.*limit=3/)
+  assert.match(result.argumentSummary.value, /approvalInput.* · 2.*approvalInput.* · 3/)
+  assert.doesNotMatch(result.argumentSummary.value, /period=|limit=/)
   assert.doesNotMatch(result.descriptionParts.value.head, /^hotlist:/)
 })

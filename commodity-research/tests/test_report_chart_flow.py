@@ -122,7 +122,7 @@ def test_saved_judgment_strategy_and_manual_selection_flow_through_report_and_re
     assert payload['judgment']['contradiction']['chart_references'][0]['revision'] == first_pin['revision']
     page = client.get('/sn/reports?date=2023-01-03&period=weekly')
     assert page.status_code == 200, page.text
-    main = page.text.split('原始 JSON', 1)[0]
+    main = page.text
     order = ['id="report-overview"', 'id="report-logic-strategy"', 'id="report-dashboard"', 'id="report-full-record"', 'id="report-research"', 'id="report-strategy"']
     assert [main.index(marker) for marker in order] == sorted(main.index(marker) for marker in order)
     assert '策略引用修订图' in main and '引用于：研判' in main and '保存的图表按语' in main
@@ -207,7 +207,7 @@ def test_frozen_html_and_markdown_list_titles_and_occurrences_without_chart_read
     response = TestClient(web.app).get('/sn/reports?date=2026-09-18')
     assert response.status_code == 200, response.text
     html = response.text
-    assert '历史冻结归档' in html and '冻结图表标题' in html and '引用于：研判' in html
+    assert '查看当时保存的报告' in html and '冻结图表标题' in html and '引用于：研判' in html
     assert 'data-live="false"' in html and 'data-figure-plot' not in html
     exported = TestClient(web.app).get('/sn/reports/2026-09-18/daily.md')
     assert exported.status_code == 200, exported.text

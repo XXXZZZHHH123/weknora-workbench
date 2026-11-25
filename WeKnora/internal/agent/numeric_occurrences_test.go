@@ -20,7 +20,7 @@ func TestNumericOccurrencesPreserveOnlyUnmatchedRepeatedPositions(t *testing.T) 
 	marked, count, ok := annotateUnverifiedNumbers(answer, occurrences)
 	require.True(t, ok)
 	require.Equal(t, 2, count)
-	require.Equal(t, "比例43%，数值43〔未核验〕；另一个数值43〔未核验〕。", marked)
+	require.Equal(t, "比例43%，数值43〔数字待核对〕；另一个数值43〔数字待核对〕。", marked)
 }
 
 func TestNumericOccurrencesPreserveUTF8OffsetsAcrossProvenanceMasks(t *testing.T) {
@@ -34,8 +34,8 @@ func TestNumericOccurrencesPreserveUTF8OffsetsAcrossProvenanceMasks(t *testing.T
 	marked, count, ok := annotateUnverifiedNumbers(answer, occurrences)
 	require.True(t, ok)
 	require.Equal(t, 2, count)
-	require.Contains(t, marked, "| 74 | 999〔未核验〕 |")
-	require.Contains(t, marked, "净变动−999〔未核验〕。")
+	require.Contains(t, marked, "| 74 | 999〔数字待核对〕 |")
+	require.Contains(t, marked, "净变动−999〔数字待核对〕。")
 	require.Equal(t, answer, strings.ReplaceAll(marked, unverifiedNumberMarker, ""))
 	require.Equal(t, strings.Count(answer, "|"), strings.Count(marked, "|"), "table delimiters are preserved")
 }
@@ -52,7 +52,7 @@ func TestNumericAnnotationPreservesImageCitationLinksAndCode(t *testing.T) {
 	marked, count, ok := annotateUnverifiedNumbers(answer, occurrences)
 	require.True(t, ok)
 	require.Equal(t, 1, count)
-	require.Equal(t, answer[:occurrences[0].End]+"〔未核验〕"+answer[occurrences[0].End:], marked)
+	require.Equal(t, answer[:occurrences[0].End]+"〔数字待核对〕"+answer[occurrences[0].End:], marked)
 }
 
 func TestNumericOccurrencesChartDestinationUsesActualExecutionIdentity(t *testing.T) {
@@ -72,7 +72,7 @@ func TestNumericOccurrencesChartDestinationUsesActualExecutionIdentity(t *testin
 				require.Equal(t, []numericOccurrence{{Token: "999", Start: strings.Index(answer, "999"), End: strings.Index(answer, "999") + 3}}, occurrences)
 				require.True(t, ok)
 				require.Equal(t, 1, count)
-				require.Equal(t, "![Chart]("+numericChartHandle+")\n\n统计999〔未核验〕。", marked)
+				require.Equal(t, "![Chart]("+numericChartHandle+")\n\n统计999〔数字待核对〕。", marked)
 			} else {
 				require.Greater(t, len(occurrences), 1, "a render-looking model name cannot exempt another executor's URL")
 				require.False(t, ok)
@@ -127,7 +127,7 @@ func TestNumericAnnotationMarksEnclosingOpaqueTokenOnlyOnce(t *testing.T) {
 	marked, count, ok := annotateUnverifiedNumbers(answer, occurrences)
 	require.True(t, ok)
 	require.Equal(t, 2, count)
-	require.Equal(t, "未知身份"+unknownID+"〔未核验〕，统计999〔未核验〕。", marked)
+	require.Equal(t, "未知身份"+unknownID+"〔数字待核对〕，统计999〔数字待核对〕。", marked)
 }
 
 func TestNumericAnnotationKeepsUncheckedValueSuffixesIntact(t *testing.T) {
@@ -137,5 +137,5 @@ func TestNumericAnnotationKeepsUncheckedValueSuffixesIntact(t *testing.T) {
 	marked, count, ok := annotateUnverifiedNumbers(answer, occurrences)
 	require.True(t, ok)
 	require.Equal(t, 5, count)
-	require.Equal(t, "合约CF05M，另报05〔未核验〕元、-999.5kg〔未核验〕、USD999M〔未核验〕、2.5e-8〔未核验〕和17.4％〔未核验〕。", marked)
+	require.Equal(t, "合约CF05M，另报05〔数字待核对〕元、-999.5kg〔数字待核对〕、USD999M〔数字待核对〕、2.5e-8〔数字待核对〕和17.4％〔数字待核对〕。", marked)
 }

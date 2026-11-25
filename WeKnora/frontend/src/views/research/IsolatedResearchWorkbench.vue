@@ -2,6 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { MessagePlugin } from 'tdesign-vue-next'
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
+import { localDateTime } from '@/utils/localDateTime'
 import { useAuthStore } from '@/stores/auth'
 import { useUploadTasksStore } from '@/stores/uploadTasks'
 import { updateResearchWorkbenchOnboarding, type ResearchWorkbench } from '@/api/workspaces'
@@ -170,7 +172,7 @@ async function enqueueFiles() {
     if (batch.length) uploads.enqueue({kbId,kbName:selectedBinding.value?.name||props.workbench.knowledge_base_name||'',targetFolder:'',...(sourceOnly?{processConfig:{source_only:true}}:{}),uploads:batch})
   }
   clearUpload(); drawer.value = 'sources'; void guide('active', 'sources')
-  MessagePlugin.info('原件上传到绑定知识库；Excel 等待结构化解析，其他文档按知识库配置解析。')
+  MessagePlugin.info('文件已加入上传队列。Excel 原件保存后，可点“整理并核对表格”，整理后的数据可按指标查询。')
 }
 function filesChanged(event: Event) {
   if ((event as CustomEvent).detail?.kbId !== targetKnowledgeBaseId.value) return
@@ -195,9 +197,9 @@ async function moreSources() {
   } catch (e) { if (own === generation) drawerError.value = workspaceErrorMessage(e) }
   finally { if (ownerEpoch === scopeEpoch) busy.value = false }
 }
-function sourceLabel(source: WorkbenchSource) { const name = source.file_name || source.title || source.id; return source.folder_path ? `${source.folder_path}/${name}` : name }
+function sourceLabel(source: WorkbenchSource) { const name = source.file_name || (typeof source.title === 'string' && source.title) || '未命名资料'; return source.folder_path ? `${source.folder_path}/${name}` : name }
 function isWorkbook(source: WorkbenchSource) { return ['xlsx','xls'].includes((source.file_name || '').split('.').at(-1)?.toLowerCase() || '') }
-function sourceStatus(source: WorkbenchSource) { const value = source.parse_status || 'pending'; return ({ completed: isWorkbook(source) ? '原件已保存' : '文档已解析', stored: '原件已保存', pending: '等待处理', processing: '处理中', failed: '处理失败' } as Record<string, string>)[value] || value }
+function sourceStatus(source: WorkbenchSource) { const value = source.parse_status || 'pending'; return ({ completed: isWorkbook(source) ? '原件已保存' : '正文可搜索', stored: '原件已保存', pending: '等待处理', processing: '正在解析', finalizing: '正文已可搜索，其他内容仍在整理', failed: '解析未完成', cancelled: '处理已停止' } as Record<string, string>)[value] || '暂时无法确认状态，请刷新查看' }
 function sourceVersionTime(source: WorkbenchSource) {
   if (!source.file_version_at) return ''
   const date = new Date(source.file_version_at)
@@ -244,7 +246,7 @@ defineExpose({ openSources, drawerOpen })
           <div v-else-if="!sources.length && !error" class="isolated-note">尚无原件，可以先添加文件或文件夹。</div>
           <div v-for="source in sources" :key="source.id" class="isolated-review-row">
             <div><strong>{{ sourceLabel(source) }}</strong><small>{{ sourceStatus(source) }}</small><small v-if="sourceVersionTime(source)">最新版本 <time :datetime="source.file_version_at">{{ sourceVersionTime(source) }}</time></small></div>
-            <t-button v-if="isWorkbook(source) && canEditSource" size="small" variant="text" data-guide="research-structured" @click="openStructured(source)">结构化解析</t-button>
+            <t-button v-if="isWorkbook(source) && canEditSource" size="small" variant="text" data-guide="research-structured" @click="openStructured(source)">整理并核对表格</t-button>
             <t-button size="small" variant="text" data-guide="research-source-preview" @click="showSource(source)">预览</t-button>
           </div>
           <div v-if="sourceTotal" class="isolated-actions isolated-pagination">
@@ -259,28 +261,29 @@ defineExpose({ openSources, drawerOpen })
             <dt>文件类型</dt><dd>{{ selectedSource.file_type || '原件' }}</dd>
             <dt>处理状态</dt><dd>{{ sourceStatus(selectedSource) }}</dd>
             <template v-if="sourceVersionTime(selectedSource)"><dt>最新版本</dt><dd><time :datetime="selectedSource.file_version_at">{{ sourceVersionTime(selectedSource) }}</time></dd></template>
-            <dt>来源标识</dt><dd>{{ selectedSource.id }}</dd>
+            <dt>文件名</dt><dd>{{ selectedSource.file_name || sourceLabel(selectedSource) }}</dd>
           </dl>
           <div class="isolated-content-preview">
             <t-button size="small" variant="outline" :loading="sourceContentLoading" :disabled="!sourceContent?.supported" @click="sourceContentOpen = !sourceContentOpen">{{ sourceContentOpen ? '收起原文' : '查看原文' }}</t-button>
-            <small v-if="sourceContent?.sha256">版本 {{ sourceContent.sha256.slice(0,12) }}</small>
+            <small v-if="typeof selectedSource.created_at === 'string' && localDateTime(selectedSource.created_at)">保存于 {{ localDateTime(selectedSource.created_at) }}</small>
+            <ErrorDiagnostics :detail="{ 来源记录: selectedSource.id, 文件校验值: sourceContent?.sha256 }" />
             <p v-if="sourceContent?.notice" class="isolated-hint">{{ sourceContent.notice }}</p>
             <img v-if="sourceContentOpen && sourceContent?.image_data_url" :src="sourceContent.image_data_url" alt="来源原图" class="isolated-source-image" />
             <pre v-else-if="sourceContentOpen && sourceContent?.supported">{{ sourceContent.text }}</pre>
           </div>
           <div class="isolated-actions">
-            <t-button v-if="isWorkbook(selectedSource) && canEditSource" size="small" @click="openStructured(selectedSource)">结构化解析</t-button>
+            <t-button v-if="isWorkbook(selectedSource) && canEditSource" size="small" @click="openStructured(selectedSource)">整理并核对表格</t-button>
             <t-button size="small" variant="outline" @click="openSources">返回来源</t-button>
           </div>
         </template>
         <template v-else-if="drawer === 'upload'">
-          <p class="isolated-hint">添加到 {{ workbench.knowledge_base_name || '绑定知识库' }}，保留文件夹层级。Excel 先存原件，其他文档按知识库配置解析。</p>
+          <p class="isolated-hint">添加到 {{ workbench.knowledge_base_name || '绑定知识库' }}，保留文件夹层级。Excel 原件保存后，可整理表格并按指标查询。其他文档按知识库设置处理。</p>
           <div v-for="(file,index) in pendingFiles" :key="index" class="isolated-upload-row"><t-icon name="file" /><span>{{ file.webkitRelativePath || file.name }}</span><small>{{ Math.ceil(file.size / 1024) }} KB</small></div>
           <div v-if="uploadVersionChoices?.length" class="isolated-note">
             <SourceFileVersionOptions v-for="choice in uploadVersionChoices" :key="choice.index" :choice="choice" v-model:knowledge-id="choice.knowledgeId" />
             <t-alert v-if="uploadVersionConflict" theme="warning" :message="$t('knowledgeBase.fileVersionChoiceConflict')" />
           </div>
-          <label class="isolated-confirm-line"><input v-model="saveVisualOriginals" type="checkbox" />图片和压缩包仅保存原件，不触发图像模型；ZIP 需选中此项才能保存</label>
+          <label class="isolated-confirm-line"><input v-model="saveVisualOriginals" type="checkbox" />图片和压缩包只保存原件。上传 ZIP 文件前，请勾选此项。</label>
           <div class="isolated-actions">
             <t-button size="small" variant="outline" @click="cancelUpload">取消</t-button>
             <t-button size="small" :loading="checkingUploadVersions" :disabled="uploadVersionConflict" @click="enqueueFiles">确认添加 {{ pendingFiles.length }} 个文件</t-button>

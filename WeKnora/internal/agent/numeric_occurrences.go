@@ -19,7 +19,7 @@ type numericOccurrence struct {
 	Start, End int
 }
 
-const unverifiedNumberMarker = "〔未核验〕"
+const unverifiedNumberMarker = "〔数字待核对〕"
 
 var hyphenatedFilenameSuffix = regexp.MustCompile(`^-[\p{L}\p{N}_-]+\.[A-Za-z][A-Za-z0-9]*\b`)
 

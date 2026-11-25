@@ -8,6 +8,7 @@ import * as vue from 'vue'
 import * as answerSources from '../../utils/structuredAnswerSources'
 import * as sheetView from '../../utils/structuredSheetView'
 import * as sourceRead from '../../utils/structuredSourceRead'
+import * as evidenceSources from '../../utils/evidenceSources'
 
 type HostNode = { type: string; text: string; props: Record<string, any>; children: HostNode[]; parent: HostNode | null }
 const node = (type: string, text = ''): HostNode => ({ type, text, props: {}, children: [], parent: null })
@@ -40,11 +41,15 @@ function mountEvidence(event: any = liveEvent, options: { status?: number; manif
   const auth = vue.reactive({ token: 'synthetic-token', user: { id: 'synthetic-reader' }, selectedTenantId: 7 })
   const modules: Record<string, unknown> = {
     vue,
+    'vue-i18n': { useI18n: () => ({ t: (_: string, copy: string | Record<string, string>, fallback?: string) =>
+      typeof copy === 'string' ? copy : (fallback || '').replace(/\{(\w+)\}/g, (_match, key) => copy[key] || ''),
+    }) },
     '@/stores/auth': { useAuthStore: () => auth },
     '@/components/document-preview.vue': { __esModule: true, default: { render: () => null } },
     '@/utils/structuredAnswerSources': answerSources,
     '@/utils/structuredSheetView': sheetView,
     '@/utils/structuredSourceRead': sourceRead,
+    '@/utils/evidenceSources': evidenceSources,
     '@/utils/authFetch': { fetchWithAuthRetry: async (url: string, init: RequestInit) => {
       const headers = new Headers(init.headers)
       requests.push({ url, kb: headers.get('X-Knowledge-Base-ID'), tenant: headers.get('X-Tenant-ID') })
@@ -100,7 +105,7 @@ for (const [mode, event] of [['live', liveEvent], ['restored', restoredEvent]] a
     test(`final numeric source opens ${address} in one click with original sheet highlight (${mode})`, async t => {
       const view = mountEvidence(event); t.after(() => view.app.unmount())
       assert.equal(view.requests.length, 0, 'rendering a source never fetches another document')
-      assert.ok(allText(view.root).includes(hash), 'the actual source version is visible')
+      assert.ok(!allText(view.root).includes(hash), 'the file checksum stays out of the research view')
       await view.click(`Records!${address}`)
       assert.equal(view.requests.length, 2, 'one click loads the version manifest and original sheet')
       assert.ok(view.requests[0]!.url.endsWith(`/datasets/${datasetId}/report`))
@@ -112,8 +117,8 @@ for (const [mode, event] of [['live', liveEvent], ['restored', restoredEvent]] a
       assert.equal(allText(highlighted[0]!), address === 'B2' ? '120' : '-20')
       const text = allText(view.root)
       assert.ok(text.includes('有效 2 条，缺失 1 条'))
-      assert.ok(text.includes(result.sql))
-      assert.ok(text.includes('仅为输入示例，不代表完整 SQL 行级血缘'))
+      assert.ok(!text.includes(result.sql))
+      assert.ok(text.includes('以下单元格仅供抽查'))
     })
   }
 }
@@ -122,7 +127,7 @@ test('numeric source permission denial is explicit and does not display original
   const view = mountEvidence(liveEvent, { status: 403 }); t.after(() => view.app.unmount())
   await view.click('Records!B3')
   assert.equal(view.requests.length, 1)
-  assert.ok(allText(view.root).includes('当前账号或知识库无权读取原始来源'))
+  assert.ok(allText(view.root).includes('当前账号无权读取原件，请联系资料负责人'))
   assert.ok(!flatten(view.root).some(el => el.props['data-source-cell']))
 })
 

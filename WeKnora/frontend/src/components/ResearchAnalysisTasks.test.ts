@@ -109,7 +109,7 @@ test('new task notifications and panel rows open the corresponding native views'
       ['dimension_inference', 'dimensions', '周报研究维度归纳'],
       ['dimension_fields', 'dimensions', '研究维度指标建议'],
       ['focus_suggestions', 'market', '核心关注建议生成'],
-      ['judgment_dimensions', 'judgment', '研究判断维度补标'],
+      ['judgment_dimensions', 'judgment', '为研究判断补充分类'],
       ['judgment_indicator_recommendations', 'judgment', '研判指标推荐'],
       ['diagram_indicator_recommendations', 'diagram', '产业图指标推荐'],
       ['strategy_text', 'strategies', '策略原文整理'],
@@ -179,7 +179,7 @@ test('a completion batch creates an independent notice for every task and ignore
     assert.equal(f.calls.notices.length, 2, 'Every consumed completion must have a corresponding notice')
     assert.equal(f.calls.closed, 0, 'The second completion must not replace the first notice')
     assert.equal(f.calls.notices[0].title, '研究分析已完成')
-    assert.equal(f.calls.notices[1].title, '产业图配置已生成')
+    assert.equal(f.calls.notices[1].title, '产业图草稿已生成')
     await f.calls.notices[0].content().children[2].props.onClick()
     assert.deepEqual(f.calls.ignored, ['job-a'])
     assert.equal(f.calls.closed, 1)

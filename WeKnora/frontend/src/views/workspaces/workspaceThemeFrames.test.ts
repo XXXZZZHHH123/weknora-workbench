@@ -23,7 +23,7 @@ async function fixture(surface: typeof surfaces[number], initialView = '') {
   const effectiveTheme = ref<'light' | 'dark'>('light'), requested: string[] = [], calls: string[] = [], messages: Array<{ payload: any; target: string }> = []
   const events: CustomEvent[] = [], emitted: Array<{ name: string; args: any[] }> = []
   const props = reactive({ knowledgeBaseId: 'test-kb', sourceKnowledgeId: 'test-original', sourceFileType: 'pdf', mode: 'import', view: initialView })
-  const auth = reactive({ token: '', user: { id: 'test-user' }, selectedTenantId: 1, effectiveTenantId: 1, tenant: { id: 1 }, currentTenantRole: 'admin' })
+  const auth = reactive({ token: '', user: { id: 'test-user' }, selectedTenantId: 1, effectiveTenantId: 1, tenant: { id: 1 }, currentTenantRole: 'admin', hasRole: (role: string) => role === 'admin' })
   const route = reactive({ params: { kbId: 'test-kb' }, query: { source_knowledge_id: 'test-original' }, path: '/platform/knowledge-bases/test-kb/structured-data', fullPath: '/platform/knowledge-bases/test-kb/structured-data' })
   const unmounts: Array<() => void> = [], scope = effectScope()
   const view: any = scope.run(() => runInNewContext(code, {
@@ -34,6 +34,7 @@ async function fixture(surface: typeof surfaces[number], initialView = '') {
     computed, defineAsyncComponent, h, nextTick, reactive, ref, shallowRef, watch, useAuthStore: () => auth, useRoute: () => route, useRouter: () => ({ push() {}, replace() {} }),
     useTheme: () => ({ effectiveTheme, setTheme(mode: 'light' | 'dark') { requested.push(mode); effectiveTheme.value = mode; return true } }),
     onMounted() {}, onBeforeUnmount: (fn: () => void) => unmounts.push(fn),
+    useI18n: () => ({ t: (key: string) => key }),
     useUploadConfirmStore: () => ({ rejectConfirm() {} }),
     getKnowledgeBaseById: async () => { calls.push('knowledge-base'); return { data: { id: 'test-kb', name: '测试库' } } },
     getDefaultKnowledgeBase: async () => { calls.push('default-base'); return { data: {} } },
@@ -110,6 +111,7 @@ test('shared structured host opens model settings in place and keeps PDF source 
   f.auth.token = 'rotated-token'; await nextTick()
   const auth = f.messages.find(message => message.payload.type === 'structured-auth')!.payload
   assert.equal(auth.userId, 'test-user')
+  assert.equal(auth.canViewDiagnostics, true)
   assert.equal(auth.sourceKnowledgeId, 'test-original')
   assert.equal(auth.sourceFileType, 'pdf')
   assert.equal(auth.openModelSettings, true)

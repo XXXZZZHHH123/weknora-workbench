@@ -39,6 +39,7 @@ window.RESEARCH_CONTEXT = {{ ({'tenant': research_identity().tenant_id, 'user': 
 <body class="research-body min-h-screen transition-colors duration-200">
 <div id="research-navigation-progress" class="research-navigation-progress" aria-hidden="true" hidden></div>
 <div id="research-navigation-status" class="research-navigation-status" role="status" aria-live="polite" hidden></div>
+{% if can_view_diagnostics is defined and can_view_diagnostics() %}<details id="research-diagnostics" class="research-panel" hidden><summary>管理员诊断信息</summary><pre class="text-xs overflow-auto"></pre></details>{% endif %}
 
 {% if ticker %}
 <div class="ticker-strip hidden md:flex items-center justify-between px-6 py-1 bg-[var(--surface-soft)] border-b border-[var(--line)] text-[11px] text-[var(--text-muted)]">

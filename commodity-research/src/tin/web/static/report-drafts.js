@@ -4,9 +4,24 @@ document.addEventListener("DOMContentLoaded", () => {
   if (!boot || !dialog || !open) return;
   const initial = JSON.parse(boot.textContent), prefix = window.RESEARCH_PREFIX || "";
   const get = (suffix) => document.getElementById(`report-${suffix}`);
-  const status = (value) => { get("edit-status").textContent = value; };
+  const status = (value, detail) => {
+    get("edit-status").textContent = value;
+    const diagnostics = get("edit-diagnostics");
+    if (diagnostics) {
+      diagnostics.hidden = detail == null;
+      diagnostics.querySelector("pre").textContent = detail == null ? "" :
+        typeof detail === "string" ? detail : JSON.stringify(detail, null, 2);
+    }
+  };
   const node = (tag, text, cls) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; };
   const labels = { summary: initial.period === "weekly" ? "本周结论" : "本日结论", research: "研判", dashboard: "图表", watch: "策略" };
+  function referenceTitle(record) {
+    const title = record.title || (record.kind === "judgment" ? "研究判断" : "未命名策略");
+    if (record.kind !== "judgment") return title;
+    const generated = "研判 v" + record.revision;
+    return title === generated || title.startsWith(generated + " · ") ?
+      "研究判断" + title.slice(generated.length) : title;
+  }
   const summaryInput = get("edit-summary"), summaryMessage = get("summary-draft-status");
   let draft, selected = "summary", saving = false, records = [], generation = 0;
   const titles = new Map(), options = new Map((initial.all_figure_options || initial.figure_options || []).map((x) => [x.series_id, x]));
@@ -38,7 +53,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (typeof source.text !== "string" && !source.ingested_at) continue;
       const details = node("details");
       details.append(node("summary", typeof source.text === "string" ? "查看原文" : "详情"));
-      if (source.ingested_at) details.append(node("p", "入库时间 " + source.ingested_at, "report-muted"));
+      if (source.ingested_at) details.append(node("p", "资料保存时间 " + source.ingested_at, "report-muted"));
       if (typeof source.text === "string") details.append(node("p", source.text, "research-prose whitespace-pre-wrap"));
       host.append(details);
     }
@@ -122,20 +137,22 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   async function responseJSON(response, fallback) {
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : fallback);
+    if (!response.ok || body == null) throw Object.assign(new Error(fallback), {detail: body?.detail});
     return body;
   }
   async function loadModels() {
     const select = get("draft-model"); if (!select || modelsLoaded) return;
     select.replaceChildren(new Option("正在读取模型…", ""));
+    const unavailable = "暂时读不到可用的起草模型，可以先手写本期判断。";
     try {
-      const result = await responseJSON(await fetch(`${prefix}/api/sn/judgment/models`, {credentials: "same-origin"}), "模型列表读取失败，请稍后重试。");
-      if (!Array.isArray(result.models)) throw new Error("模型列表响应无效。");
+      const result = await responseJSON(await fetch(`${prefix}/api/sn/judgment/models`, {credentials: "same-origin"}), unavailable);
+      if (!Array.isArray(result.models)) throw Object.assign(new Error(unavailable), {detail: "模型列表未返回有效选项"});
       select.replaceChildren(new Option(result.models.length ? "选择模型" : "暂无可用模型", ""));
-      for (const model of result.models) if (typeof model.id === "string") select.append(new Option(model.name || model.id, model.id));
+      for (const [index, model] of result.models.entries()) if (typeof model.id === "string")
+        select.append(new Option(model.name || `未命名模型 ${index + 1}`, model.id));
       if (select.options.length > 1) select.selectedIndex = 1;
       modelsLoaded = true;
-    } catch (error) { select.replaceChildren(new Option("模型列表读取失败", "")); status(error.message); }
+    } catch (error) { select.replaceChildren(new Option("暂时无法读取起草模型", "")); status(unavailable, error.detail ?? error.message); }
   }
   const reportJob = ResearchAnalysisJobs.create({
     purpose: "report_dimension_draft",
@@ -154,18 +171,21 @@ document.addEventListener("DOMContentLoaded", () => {
       summaryMessage.textContent = "";
       for (const item of dimensionInputs.values()) item.message.textContent = "";
       for (const item of conclusionInputs.values()) item.message.textContent = "";
-      if (!Array.isArray(result.dimensions)) throw new Error("模型起草响应无效，原有编辑内容保持不变。");
+      if (!Array.isArray(result.dimensions)) {
+        throw new Error("这次没有生成可用草稿。可以重新起草，也可以直接填写。");
+      }
+      const sectionUnavailable = "这一栏没有生成可用草稿。可以重新起草，也可以直接填写。";
       showGaps(result.evidence_gaps || []);
       let filled = 0, rejected = 0, changed = 0;
       for (const item of result.dimensions) {
         const editor = dimensionInputs.get(item.id); if (!editor) continue;
         if (item.status !== "ok") { editor.message.textContent = item.reason || (item.status === "numbers_unverified" ? "数字待核对" : "来源待核对"); rejected++; continue; }
         if (draft.dimension_notes[item.id]?.text !== before[item.id]?.text || draft.dimension_notes[item.id]?.impact !== before[item.id]?.impact) { editor.message.textContent = "起草期间此维度已修改，保留研究员内容。"; changed++; continue; }
-        if (typeof item.text !== "string" || item.text.length > 200 || !Object.hasOwn(impactLabels, item.impact)) { editor.message.textContent = "模型返回格式无效，未填入。"; rejected++; continue; }
+        if (typeof item.text !== "string" || item.text.length > 200 || !Object.hasOwn(impactLabels, item.impact)) { editor.message.textContent = sectionUnavailable; rejected++; continue; }
         const proof = result.evidence?.[item.id];
         const previous = draft.evidence_citations.find(ref => ref.dimension_id === item.id);
         if (previous && !proof) {
-          editor.message.textContent = "此维度已有引用，保留原句。可重新取证，或清除引用及对应原句。";
+          editor.message.textContent = "这一栏已有引用，原句已保留。可以重新查找依据，或移除引用及对应原句。";
           changed++; continue;
         }
         if (proof) {
@@ -186,7 +206,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const editor = conclusionInputs.get(item.key); if (!editor) continue;
         if (item.status !== "ok") { editor.message.textContent = item.reason || "结论待核对，未填入。"; rejected++; continue; }
         if (draft.figure_conclusions[item.key] !== beforeFigures[item.key]) { editor.message.textContent = "起草期间此结论已修改，保留研究员内容。"; changed++; continue; }
-        if (typeof item.text !== "string" || item.text.length > 200) { rejected++; continue; }
+        if (typeof item.text !== "string" || item.text.length > 200) { editor.message.textContent = sectionUnavailable; rejected++; continue; }
         editor.input.value = item.text; draft.figure_conclusions[item.key] = item.text; filled++;
       }
       const summary = result.summary;
@@ -198,7 +218,7 @@ document.addEventListener("DOMContentLoaded", () => {
           summaryMessage.textContent = "已保留起草期间修改的总体结论。";
           changed++;
         } else if (typeof summary.text !== "string" || !summary.text.trim() || summary.text.length > summaryInput.maxLength) {
-          summaryMessage.textContent = "模型返回格式无效，未填入。";
+          summaryMessage.textContent = sectionUnavailable;
           rejected++;
         } else {
           summaryInput.value = summary.text;
@@ -241,7 +261,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const host = get("ref-list"); host.replaceChildren();
     draft.references.forEach((reference, index) => {
       const row = node("div", undefined, "report-reference-row");
-      row.append(node("span", `${titles.get(refKey(reference)) || (reference.kind === "judgment" ? "已保存研判" : "已保存策略")} · v${reference.revision} · ${labels[reference.section]}`));
+      row.append(node("span", `${titles.get(refKey(reference)) || (reference.kind === "judgment" ? "已保存研判" : "已保存策略")} · 第 ${reference.revision} 版 · ${labels[reference.section]}`));
       const remove = node("button", "移除"); remove.type = "button"; remove.setAttribute("aria-label", "移除此引用");
       remove.addEventListener("click", () => { draft.references.splice(index, 1); renderReferences(); renderFigures(); }); row.append(remove); host.append(row);
     });
@@ -321,11 +341,17 @@ document.addEventListener("DOMContentLoaded", () => {
       const response = await fetch(url, { credentials: "same-origin" });
       if (!response.ok) throw new Error("已有记录暂时无法读取。");
       const body = await response.json(); if (own !== generation) return;
-      if (!Array.isArray(body.items)) throw new Error("已有记录响应无效。");
+      if (!Array.isArray(body.items)) throw new Error("已有记录暂时无法读取。");
       records = body.items; select.replaceChildren(new Option(records.length ? "选择记录与版本" : "暂无可引用记录", ""));
-      records.forEach((r, i) => { if (r.kind !== kind || typeof r.id !== "string" || !Number.isInteger(r.revision)) return; titles.set(refKey(r), r.title); select.append(new Option(`${r.title} · v${r.revision}`, String(i))); });
+      records.forEach((record, index) => {
+        if (record.kind !== kind || typeof record.id !== "string" || !Number.isInteger(record.revision)) return;
+        const title = referenceTitle(record);
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(record.written_at) ? " · " + record.written_at : "";
+        titles.set(refKey(record), title);
+        select.append(new Option(`《${title}》 · 第 ${record.revision} 版${date}`, String(index)));
+      });
       if (body.truncated) status("当前列出最近50条记录；引用保留所选记录的明确版本。");
-    } catch (error) { if (own === generation) { select.replaceChildren(new Option("读取未完成", "")); status(error.message); } }
+    } catch (error) { if (own === generation) { select.replaceChildren(new Option("读取未完成", "")); status("暂时无法读取可引用的记录，请重新打开引用列表。", error.message); } }
   }
   get("ref-add").addEventListener("click", async () => {
     const value = get("ref-record").value, record = value === "" ? null : records[Number(value)];
@@ -334,16 +360,17 @@ document.addEventListener("DOMContentLoaded", () => {
     const reference = { kind: record.kind, id: record.id, revision: record.revision, section: selected };
     if (draft.references.some((r) => refKey(r) === refKey(reference) && r.section === selected)) { status("本节已经引用此版本。"); return; }
     const button = get("ref-add"); button.disabled = true;
+    const changed = "所选引用的版本或访问权限已有变化。请重新打开引用列表，核对内容后再选择。";
     try {
       const response = await fetch(`${prefix}/api/sn/research-references/${encodeURIComponent(record.kind)}/${encodeURIComponent(record.id)}?revision=${record.revision}`, { credentials: "same-origin" });
-      if (!response.ok) throw new Error("所选版本或权限已变化，请重新选择。");
+      if (!response.ok) await responseJSON(response, changed);
       const actual = await response.json();
-      if (actual.id !== record.id || actual.revision !== record.revision || actual.kind !== record.kind) throw new Error("引用版本不一致，未替换为最新内容。");
-      draft.references.push(reference); titles.set(refKey(record), actual.title);
+      if (actual.id !== record.id || actual.revision !== record.revision || actual.kind !== record.kind) throw new Error(changed);
+      draft.references.push(reference); titles.set(refKey(record), referenceTitle(actual));
       extraCharts.set(refKey(record), actual.chart_references || []);
-      (actual.series_ids || []).forEach((id) => { if (!options.has(id)) options.set(id, { series_id: id, name: "引用指标 · " + id.slice(-10) }); });
+      (actual.series_ids || []).forEach((id) => { if (!options.has(id)) options.set(id, { series_id: id, name: "未命名引用指标" }); });
       renderReferences(); renderFigures(); status("已加入引用，保存时将保留这个版本。");
-    } catch (error) { status(error.message); } finally { button.disabled = false; }
+    } catch (error) { status(changed, error.detail ?? error.message); } finally { button.disabled = false; }
   });
   document.querySelectorAll("[data-report-section]").forEach((button) => button.addEventListener("click", () => { writeSection(); selected = button.dataset.reportSection; readSection(); }));
   summaryInput.addEventListener("input", () => { draft.sections.summary.text = summaryInput.value; });
@@ -388,17 +415,35 @@ document.addEventListener("DOMContentLoaded", () => {
     event.preventDefault(); if (saving) return; writeSection(); draft.title = get("edit-title").value.trim();
     if (!draft.title) { status("请填写报告标题。"); return; }
     saving = true; get("edit-save").disabled = true; status("正在保存个人草稿…");
+    const uncertain = "暂时无法确认草稿是否保存。请先复制保留当前文字，再查看草稿列表中的最新版本。";
+    const versionChanged = "报告已有新版本。请先复制保留刚写的文字，再打开最新版继续编辑。";
+    const sourceChanged = "草稿尚未保存。请重新打开引用列表，核对所选版本后再保存。";
     try {
       const payload = { draft }; if (initial.revision) payload.revision = initial.revision;
       const url = `${prefix}/api/sn/report-drafts${initial.id ? "/" + encodeURIComponent(initial.id) : ""}`;
       const response = await fetch(url, { method: initial.id ? "PATCH" : "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       if (!response.ok) {
-        let message = response.status === 409 ? "已有新版本或引用变化，请保留本地文字并重新打开报告。" : "保存未完成，请核对权限、引用与选图。";
-        try { const body = await response.json(); if (typeof body.detail === "string") message = body.detail; } catch {}
-        throw new Error(message);
+        const body = await response.json().catch(() => ({}));
+        const messages = {
+          "请携带当前版本，避免覆盖其他修改": versionChanged,
+          "报告来源版本无法核验，未保存": sourceChanged,
+          "引用版本已变化，未替换为最新版本": sourceChanged,
+          "引用内容与已保存版本不一致，请重新核对": sourceChanged,
+          "引用图表与已保存记录版本不一致，请重新核对": sourceChanged,
+          "报告格式无效；正文可留空，不能改写原始事实或来源版本": "草稿尚未保存。请重新选择引用和图表。需要修正数据时，请到原资料中修改。"
+        };
+        const byStatus = {403: "当前账号没有保存这份草稿的权限，请联系研究台负责人。", 409: versionChanged,
+          413: "草稿超过保存上限，请缩短正文或减少引用后再保存。",
+          422: "草稿尚未保存，请核对填写内容和所选引用。"};
+        const detail = body?.detail;
+        status(Object.hasOwn(messages, detail) ? messages[detail] : (byStatus[response.status] || uncertain), detail);
+        return;
       }
-      const saved = await response.json();
-      if (!saved.id || !Number.isInteger(saved.revision)) throw new Error("保存响应不完整，暂不覆盖本地文字。");
+      const saved = await response.json().catch(() => null);
+      if (!saved?.id || !Number.isInteger(saved.revision)) {
+        status(uncertain, "未收到完整的保存确认");
+        return;
+      }
       status("已保存");
       if (loadedSetup) {
         const url = new URL(location.href);
@@ -407,7 +452,7 @@ document.addEventListener("DOMContentLoaded", () => {
         history.replaceState(history.state, "", url);
       }
       location.reload();
-    } catch (error) { status(error.message); } finally { saving = false; get("edit-save").disabled = false; }
+    } catch (error) { status(uncertain, error.detail ?? error.message); } finally { saving = false; get("edit-save").disabled = false; }
   });
   const dateControl = document.querySelector('.report-date-form input[name="date"]');
   const initialDate = dateControl?.value;

@@ -53,7 +53,7 @@
     const response = await researchFetch(api + path, options);
     let body; try { body = await response.json(); } catch (_) { throw new Error('服务返回异常，请重试；编辑内容仍保留。'); }
     if (!response.ok) {
-      const error = new Error(typeof body.detail === 'string' ? body.detail : '操作未完成，请核对字段后重试。');
+      const error = new Error(typeof body.detail === 'string' ? (window.researchCopy?.(body.detail) ?? body.detail) : '操作未完成，请核对字段后重试。');
       error.status = response.status; throw error;
     }
     return body;

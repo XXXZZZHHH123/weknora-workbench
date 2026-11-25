@@ -39,7 +39,7 @@ function sendView() { frame.value?.contentWindow?.postMessage({ type: 'structure
 function sendTheme() { frame.value?.contentWindow?.postMessage({ type: 'workspace-theme', mode: effectiveTheme.value }, window.location.origin) }
 function sendAuth() {
   if (!library.value || !auth.token || !tenant.value) return
-  frame.value?.contentWindow?.postMessage(structuredFrameAuthPayload({ token: auth.token, tenant: tenant.value, userId: auth.user?.id || '', openModelSettings: modelSettingsRequested.value, knowledgeBaseId: props.knowledgeBaseId, sourceKnowledgeId: props.sourceKnowledgeId, sourceFileType: props.sourceFileType }), window.location.origin)
+  frame.value?.contentWindow?.postMessage(structuredFrameAuthPayload({ token: auth.token, tenant: tenant.value, userId: auth.user?.id || '', canViewDiagnostics: auth.isSystemAdmin || auth.hasRole('admin'), openModelSettings: modelSettingsRequested.value, knowledgeBaseId: props.knowledgeBaseId, sourceKnowledgeId: props.sourceKnowledgeId, sourceFileType: props.sourceFileType }), window.location.origin)
   sendView()
 }
 function openModelSettings() {
@@ -68,7 +68,7 @@ function receive(event: MessageEvent) {
   }
 }
 watch(scope, load, { immediate: true })
-watch(() => auth.token, sendAuth)
+watch(() => [auth.token, auth.isSystemAdmin, auth.hasRole('admin')], sendAuth)
 watch(() => [props.sourceKnowledgeId, props.sourceFileType], sendAuth)
 watch(() => props.mode, sendView)
 watch(() => props.view, value => { if (value === 'model-settings') openModelSettings() })

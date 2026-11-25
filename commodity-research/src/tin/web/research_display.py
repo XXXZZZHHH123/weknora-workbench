@@ -1,6 +1,11 @@
 """Display authorized research metadata; never select sources or change bindings."""
 import re
+from datetime import date, datetime
+from pathlib import Path
 
+from tin.caliber.dictionary import DIMENSIONS
+from tin.compute.formulas import REGISTRY
+from tin.config import SHANGHAI
 from tin.schemas.judgment import EXPRESSION
 from tin.web.report_watch import display_text, strip_list_mark
 
@@ -9,6 +14,8 @@ _DEFAULT_TITLE = re.compile(r'^(?:研判|研究判断)\s*(?:v\d+|#\d+)?$')
 _IDENTIFIER = re.compile(r'kb-[0-9a-f]{48}|[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+')
 _COMPARISON = {'>': '高于', '>=': '不低于', '<': '低于', '<=': '不高于'}
 _ACCOUNT_ID = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
+_CALIBER_LABELS = {dimension.key: dimension.label for dimension in DIMENSIONS}
+_CALIBER_LABELS.update(contract='合约代码', country='国家或地区', note='口径说明', unit='单位')
 
 
 def human_text(value, names=None):
@@ -67,7 +74,56 @@ def priority_labels(order, thresholds):
     return ' → '.join(names.get(identifier, '已保存观察条件') for identifier in order or [])
 
 
+def display_time(value, date_only=False):
+    """Format saved timestamps for the workbench's Beijing time display."""
+    if isinstance(value, str):
+        try:
+            value = date.fromisoformat(value) if len(value) == 10 else datetime.fromisoformat(value)
+        except ValueError:
+            return ''
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(SHANGHAI)
+        return value.strftime('%Y-%m-%d' if date_only else '%Y-%m-%d %H:%M')
+    return value.isoformat() if isinstance(value, date) else ''
+
+
+def can_view_diagnostics():
+    from tin.integration.identity import current_identity
+    from tin.integration.workbench_scope import current_workbench
+
+    identity, scope = current_identity.get(), current_workbench.get()
+    return bool(identity and identity.role in {'owner', 'admin'} and not (scope and scope.restricted))
+
+
+def display_file_type(filename):
+    extension = Path(filename or '').suffix.lower()
+    if extension in {'.xlsx', '.xlsm', '.xls'}:
+        return 'Excel 表格'
+    if extension in {'.csv', '.tsv'}:
+        return '文本表格'
+    if extension in {'.doc', '.docx'}:
+        return 'Word 文档'
+    if extension in {'.jpg', '.jpeg', '.png', '.webp'}:
+        return '图片'
+    return {'.pdf': 'PDF 文档', '.html': '网页', '.txt': '文本文档', '.md': '文本文档'}.get(extension, '文件')
+
+
+def display_file_size(size):
+    return f'{size / 1024 ** 2:.1f} MB' if size >= 1024 ** 2 else f'{size / 1024:.1f} KB'
+
+
+def display_caliber(value):
+    if not isinstance(value, dict):
+        return []
+    return [(label, value[key]) for key, label in _CALIBER_LABELS.items()
+            if isinstance(value.get(key), (str, int, float)) and value[key] != '']
+
+
 def register_display(environment):
     environment.globals.update(human_text=human_text, indicator_name=indicator_name,
         author_label=author_label, plain_item=plain_item,
-        reference_label=reference_label, condition_text=condition_text, priority_labels=priority_labels)
+        reference_label=reference_label, condition_text=condition_text, priority_labels=priority_labels,
+        display_time=display_time, can_view_diagnostics=can_view_diagnostics,
+        display_file_type=display_file_type, display_file_size=display_file_size,
+        display_caliber=display_caliber, report_formula=REGISTRY.get)

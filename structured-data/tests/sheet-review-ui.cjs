@@ -253,7 +253,8 @@ const server=http.createServer(async(req,res)=>{
     assert.match(await page.locator('#confirmList').innerText(),/不导入/);
     assert.match(await page.locator('#confirmDialog .warning').innerText(),/仅处理本次修改的工作表/);
     failFullCheck=true;await page.locator('#confirmGo').click();
-    await page.waitForFunction(()=>document.querySelector('#mappingFeedback').textContent.includes('模拟完整检查失败'));
+    await page.waitForFunction(()=>document.querySelector('#mappingFeedback').textContent.includes('日期列'));
+    assert(!(await page.locator('#mappingFeedback').innerText()).includes('模拟完整检查失败'));
     await page.locator('.mapping-block.selected [data-field="date_column"].review-invalid').waitFor();
     assert.equal(await page.locator('[data-cell-row="4"][data-cell-col="1"]').evaluate(el=>el.classList.contains('review-error-cell')),true,'Background errors carry cell coordinates');
     assert.equal(published,false,'A failed full check must preserve the existing published version');

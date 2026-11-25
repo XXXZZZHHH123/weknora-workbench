@@ -26,11 +26,15 @@ function render(templateName, config = {}, extra = {}) {
   const input = {template: templateName, config: {enabled: true, can_write: true, id: 'chart-1', date: '2029-09-15', write_reason: '', ...config}, extra};
   const rendered = spawnSync(process.env.RESEARCH_PYTHON || path.join(root, '.venv/bin/python'), ['-c', String.raw`
 import json,sys
+from pathlib import Path
 from types import SimpleNamespace
 from jinja2 import Environment,FileSystemLoader,DictLoader,ChoiceLoader,select_autoescape
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[2]))
+from tin.web.research_display import register_display
 data=json.loads(sys.argv[3])
 host='''<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/static/app.css"><link rel="stylesheet" href="/static/favorites.css"><style>[hidden]{display:none!important}body{margin:0}main{max-width:1280px;margin:16px auto;padding:0 16px}</style><script>window.RESEARCH_CONTEXT={tenant:17,user:'fixture-user',workbench:'fixture',scope_version:2};window.RESEARCH_PREFIX='/research/workbenches/fixture';window.researchFetch=(url,options)=>fetch(url,options);window.showToast=(text)=>{window.fixtureToast=text};window.copyText=()=>{};window.ChartPaletteColors={{ palette|tojson }};</script><script src="/static/chart-palette.js"></script><script src="/static/analysis-jobs.js"></script><script defer src="/static/favorites-client.js"></script>{% block head %}{% endblock %}</head><body><main>{% block main %}{% endblock %}</main></body></html>'''
 env=Environment(loader=ChoiceLoader([DictLoader({'base.html':host}),FileSystemLoader(sys.argv[1])]),autoescape=select_autoescape(['html']))
+register_display(env)
 scope=SimpleNamespace(metadata=SimpleNamespace(name='合成研究台'),scope_version=2,restricted=data['config'].get('restricted',False),can_edit=data['config']['can_write'])
 env.globals.update(research_identity=lambda:None,research_workbench=lambda:scope,research_prefix=lambda:'/research/workbenches/fixture',research_url=lambda s:'/research/workbenches/fixture'+s,research_static_prefix=lambda:'',static_version=lambda:'chart-ui-fixture')
 env.filters['num']=lambda value,*args: str(value) if value is not None else '—'

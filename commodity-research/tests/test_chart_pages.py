@@ -167,7 +167,7 @@ def test_indicator_keeps_existing_panels_and_escapes_text(pages):
     html = fromstring(response.text)
     for marker in ('ind-chart', 'indicator-chart-usage', 'indicator-cycle-panel', 'indicator-related-panel'):
         assert html.get_element_by_id(marker) is not None
-    assert '口径' in html.text_content() and 'WHO DEPENDS ON THIS' in html.text_content()
+    assert '口径' in html.text_content() and '哪些研究判断使用了此指标' in html.text_content()
     assert not html.xpath('//script[contains(text(),"bad()") and not(@type="application/json") and not(contains(text(),"window.IND"))]')
     assert '&lt;script&gt;bad()&lt;/script&gt;' in response.text
     data = config(response, 'indicator-cycle-config')

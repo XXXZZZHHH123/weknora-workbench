@@ -108,7 +108,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const response = await window.researchFetch(prefix + '/api/sn' + path, body === undefined ? {} : {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
     const result = await response.json();
     if (!response.ok) {
-      const detail = result.detail, error = new Error(typeof detail === 'string' ? detail : detail?.message || '研究维度暂时不可用，请重试。');
+      const detail = result.detail, error = new Error(typeof detail === 'string' ? (window.researchCopy?.(detail) ?? detail) : detail?.message || '研究维度暂时不可用，请重试。');
       error.status = response.status; error.detail = detail; throw error;
     }
     return result;
@@ -560,7 +560,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   function presentModelResult(result, mode) {
-    if (modelReviewDirty) throw new Error('候选选择已经编辑，已保留当前内容。');
+    if (modelReviewDirty) throw new Error('建议结果已经编辑。请先保存当前内容，再打开后台结果。');
     if (mode === 'suggest') {
       const sourceDimensions = result.request?.dimensions || dims();
       const targets = sourceDimensions.flatMap(d => (d.sections?.length ? d.sections : [{label:''}]).map(s => ({dimension:d.id,section:s.label,section_id:s.id})));
@@ -594,7 +594,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const unresolved = node('section','dimensions-suggestion-group'); unresolved.append(node('h3','','待指定维度'));
       for (const [index, row] of suggestions.entries()) {
         const choice = node('label','dimensions-choice'), check = node('input'); check.type = 'checkbox'; check.checked = true; check.dataset.index = index;
-        const body = node('span','dimensions-choice-body'); body.append(node('strong','',row.name || row.series_id),node('small','dimensions-suggestion-reason',row.reason));
+        const body = node('span','dimensions-choice-body'); body.append(node('strong','',row.name && row.name !== row.series_id ? row.name : '未命名指标'),node('small','dimensions-suggestion-reason',row.reason));
         if (row.sheet) body.append(node('small','dimensions-sheet',row.sheet));
         const target = node('select'); target.setAttribute('aria-label','建议指标的维度');
         target.append(new Option('请选择维度','')); available.forEach((d, i) => target.append(new Option(d.label,String(i))));
@@ -605,7 +605,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       if (unresolved.querySelector('.dimensions-choice')) get('suggestions').append(unresolved);
     }
-    get('model-status').textContent = result.notice || (modelMode === 'infer' ? '这是模型草稿。采用后可以增删改；只有点击页面“保存”才会覆盖配置。' : '勾选条目并核对环节；采用后还需要保存研究维度。');
+    get('model-status').textContent = (window.researchCopy?.(result.notice) ?? result.notice) || (modelMode === 'infer' ? '这是建议稿，可先采用并修改，核对后点“保存”更新研究维度。' : '请勾选需要的指标并核对所属环节，采用后再保存研究维度。');
   }
   async function reviewSetup() {
     const setup = window.WorkbenchSetupReview;
@@ -618,7 +618,7 @@ document.addEventListener('DOMContentLoaded', () => {
       setupDimensions = modelMode === 'suggest' && config.revision === 0 && result.dimensions?.length ? result.dimensions : undefined;
       const newOutline = setupDimensions?.some(dimension => !config.dimensions.some(row => row.id === dimension.id));
       modelSetupJob = modelMode === 'infer' || newOutline ? setup.id : undefined;
-      get('model-title').textContent = modelMode === 'infer' ? '核对周报研究维度' : '核对周报绑定指标';
+      get('model-title').textContent = modelMode === 'infer' ? '核对周报研究维度' : '核对周报使用的指标';
       get('source-controls').hidden = true; get('model').parentElement.hidden = true; get('model-run').hidden = true;
       get('inference-restore').hidden = true; get('suggestions-restore').hidden = true;
       get('inference-result').hidden = true; get('suggestions-result').hidden = true;

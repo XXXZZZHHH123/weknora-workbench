@@ -440,7 +440,7 @@
       const result=await request('/api/query?'+new URLSearchParams({dataset_id:dataset,series_id:selected,operation:'rows',limit:25,offset:rowOffset}));
       if(!result)return;
       const s=result.series;
-      host.innerHTML=`<h4>${esc(s.metric)} · ${esc(dimensionsText(s.dimensions,['block','data_region'])||'无额外维度')}</h4><p>单位：${esc(s.unit||'原表未注明')} · 共 ${result.record_count} 条记录，其中 ${result.valid_count} 条有有效数值。当前 ${result.rows.length?rowOffset+1:0}–${rowOffset+result.rows.length} 条</p><div class="scroll"><table class="stored-record-table"><thead><tr><th>时间／期间</th><th>保存数值</th><th>原值／公式</th><th>来源</th></tr></thead><tbody>${result.rows.map(r=>`<tr><td>${esc(r.date||r.period||'无时间字段')}</td><td>${r.value==null?'缺失':esc(r.value)}<small>${esc(valueLabels[r.value_status]||r.value_status)}</small></td><td>${esc(r.raw_value??'空白')}${r.formula?'<details><summary>查看公式</summary><div>'+esc(r.formula)+'</div></details>':''}</td><td>${[[r.source_cell,'数值'],[r.date_cell||r.period_cell,'时间'],[r.category_cell,'类别'],[r.metric_cell,'指标']].filter(([cell])=>cell).map(([cell,label])=>`<span class="stored-source"><small>${label}</small>${priorRowsOnChangedSheet?esc(cell):`<button class="field-source" type="button" data-result-cell="${esc(cell)}" title="在左侧原表高亮 ${esc(cell)}">${esc(cell)} ↗</button>`}</span>`).join('')}</td></tr>`).join('')}</tbody></table></div><div class="result-pagination"><button id="storedRowsPrevious" class="secondary" ${rowOffset===0?'disabled':''}>上一页记录</button><button id="storedRowsNext" class="secondary" ${rowOffset+result.rows.length>=result.record_count?'disabled':''}>下一页记录</button></div><p class="muted">公式使用原文件缓存值；空白、错误或无缓存值保持缺失。${priorRowsOnChangedSheet?'坐标来自上一版原件。':'点击来源坐标可在左侧原表高亮；记录保持展开。'}</p>`;
+      host.innerHTML=`<h4>${esc(s.metric)} · ${esc(dimensionsText(s.dimensions,['block','data_region'])||'无额外维度')}</h4><p>单位：${esc(s.unit||'原表未注明')} · 共 ${result.record_count} 条记录，其中 ${result.valid_count} 条有有效数值。当前 ${result.rows.length?rowOffset+1:0}–${rowOffset+result.rows.length} 条</p><div class="scroll"><table class="stored-record-table"><thead><tr><th>时间／期间</th><th>保存数值</th><th>原值／公式</th><th>来源</th></tr></thead><tbody>${result.rows.map(r=>`<tr><td>${esc(r.date||r.period||'无时间字段')}</td><td>${r.value==null?'缺失':esc(r.value)}<small>${esc(valueStatusLabel(r.value_status))}</small></td><td>${esc(r.raw_value??'空白')}${r.formula?'<details><summary>查看公式</summary><div>'+esc(r.formula)+'</div></details>':''}</td><td>${[[r.source_cell,'数值'],[r.date_cell||r.period_cell,'时间'],[r.category_cell,'类别'],[r.metric_cell,'指标']].filter(([cell])=>cell).map(([cell,label])=>`<span class="stored-source"><small>${label}</small>${priorRowsOnChangedSheet?esc(cell):`<button class="field-source" type="button" data-result-cell="${esc(cell)}" title="在左侧原表高亮 ${esc(cell)}">${esc(cell)} ↗</button>`}</span>`).join('')}</td></tr>`).join('')}</tbody></table></div><div class="result-pagination"><button id="storedRowsPrevious" class="secondary" ${rowOffset===0?'disabled':''}>上一页记录</button><button id="storedRowsNext" class="secondary" ${rowOffset+result.rows.length>=result.record_count?'disabled':''}>下一页记录</button></div><p class="muted">公式显示文件上次保存的计算结果。空白、报错和没有保存计算结果的单元格记为缺失。${priorRowsOnChangedSheet?'单元格位置来自上一版原件。':'点击单元格位置可在左侧原表查看。'}</p>`;
       $('storedRowsPrevious').onclick=()=>{rowOffset=Math.max(0,rowOffset-25);rows().catch(showError);};
       $('storedRowsNext').onclick=()=>{rowOffset+=25;rows().catch(showError);};
       bindRecordSources(host);
@@ -451,7 +451,7 @@
       const result=await request(`/api/datasets/${encodeURIComponent(dataset)}/series?`+new URLSearchParams({sheet,limit:200,offset:catalogOffset}));
       if(!result)return;
       const series=result.series.filter(s=>!s.chart_id);
-      content.innerHTML=`<label class="stored-series-picker">选择指标／原列<select id="storedSeriesSelect">${series.map(s=>`<option value="${esc(s.series_id)}">${esc(s.metric)} · ${esc(dimensionsText(s.dimensions)||'无额外维度')} · ${esc(s.unit||'原表未注明')}</option>`).join('')}</select></label><p>原文件：${esc(currentImport.source_file)} · 本次导入当前可用版本 <code>${esc(dataset.slice(0,8))}</code></p><p>选择指标查看已保存数值与原表来源。同名列按各自来源分别展示。</p>${series.length?`<details class="stored-field-directory"><summary>字段与来源（${series.length}）</summary><div class="scroll result-catalog"><table><thead><tr><th>指标</th><th>保存维度／区块</th><th>单位</th><th>表头来源</th><th>记录</th></tr></thead><tbody>${series.map(s=>`<tr data-result-series="${esc(s.series_id)}"><td>${esc(s.metric)}</td><td>${esc(dimensionsText(s.dimensions)||'无额外维度')}</td><td>${esc(s.unit||'原表未注明')}</td><td>${(s.header_cells||[]).map(cell=>`<button type="button" class="field-source" data-result-cell="${esc(cell)}">${esc(cell)}</button>`).join(' ')}</td><td><button type="button" class="secondary" data-stored-series="${esc(s.series_id)}">查看记录</button></td></tr>`).join('')}</tbody></table></div></details>`:'<p>这张表在该版本中没有已导入的单元格记录。请先检查并导入，图表曲线可在图表入口查看。</p>'}<div class="result-pagination"><span>指标 ${result.total?catalogOffset+1:0}–${catalogOffset+result.series.length} / ${result.total}</span><button id="storedCatalogPrevious" class="secondary" ${catalogOffset===0?'disabled':''}>上一页指标</button><button id="storedCatalogNext" class="secondary" ${result.next_offset==null?'disabled':''}>下一页指标</button></div><div id="storedRows" role="status"></div>`;
+      content.innerHTML=`<label class="stored-series-picker">选择指标／原列<select id="storedSeriesSelect">${series.map(s=>`<option value="${esc(s.series_id)}">${esc(s.metric)} · ${esc(dimensionsText(s.dimensions)||'无额外维度')} · ${esc(s.unit||'原表未注明')}</option>`).join('')}</select></label><p>原文件：${esc(currentImport.source_file)} · 导入时间 ${esc(versionTime(datasetCatalog.find(item=>item.dataset_id===dataset)?.imported_at))}</p><p>选择指标查看已保存数值与原表来源。同名列按各自来源分别展示。</p>${series.length?`<details class="stored-field-directory"><summary>字段与来源（${series.length}）</summary><div class="scroll result-catalog"><table><thead><tr><th>指标</th><th>保存维度／区块</th><th>单位</th><th>表头来源</th><th>记录</th></tr></thead><tbody>${series.map(s=>`<tr data-result-series="${esc(s.series_id)}"><td>${esc(s.metric)}</td><td>${esc(dimensionsText(s.dimensions)||'无额外维度')}</td><td>${esc(s.unit||'原表未注明')}</td><td>${(s.header_cells||[]).map(cell=>`<button type="button" class="field-source" data-result-cell="${esc(cell)}">${esc(cell)}</button>`).join(' ')}</td><td><button type="button" class="secondary" data-stored-series="${esc(s.series_id)}">查看记录</button></td></tr>`).join('')}</tbody></table></div></details>`:'<p>这张表在该版本中没有已导入的单元格记录。请先检查并导入，图表曲线可在图表入口查看。</p>'}<div class="result-pagination"><span>指标 ${result.total?catalogOffset+1:0}–${catalogOffset+result.series.length} / ${result.total}</span><button id="storedCatalogPrevious" class="secondary" ${catalogOffset===0?'disabled':''}>上一页指标</button><button id="storedCatalogNext" class="secondary" ${result.next_offset==null?'disabled':''}>下一页指标</button></div><div id="storedRows" role="status"></div>`;
       $('storedCatalogPrevious').onclick=()=>{catalogOffset=Math.max(0,catalogOffset-200);catalog().catch(showError);};
       $('storedCatalogNext').onclick=()=>{catalogOffset=result.next_offset;catalog().catch(showError);};
       function choose(id){selected=id;$('storedSeriesSelect').value=id;rowOffset=0;content.querySelectorAll('[data-result-series]').forEach(row=>row.classList.toggle('result-selected',row.dataset.resultSeries===id));rows().catch(showError);}
@@ -555,7 +555,7 @@
       const items=r.charts||[];
       if(currentSheet?.name!==s.name||ui.previewMode!=='charts')return;
       if(!items.length){pane.innerHTML=fallback;return;}
-      const label=status=>typeof chartStatus!=='undefined'&&chartStatus[status]||status||'';
+      const label=chartStatusLabel;
       pane.innerHTML=`<div class="chart-grid">${items.map(c=>`<article class="chart-card"><b>${esc(c.title||'未命名图表')}</b><span>${(c.curves||[]).length} 条曲线 · ${esc(label(c.status))}</span></article>`).join('')}</div><p class="source-note">${note}</p>`;
     } catch { if(currentSheet?.name===s.name)pane.innerHTML=fallback; }
   }
@@ -742,11 +742,11 @@
         let response;
         try{response=await fetch(base+'/api/jobs/'+encodeURIComponent(record.id)+'/cancel',{method:'POST',headers:record.authHeaders,signal:controller.signal});}
         finally{clearTimeout(timer);}
-        if(!response.ok){const body=await response.json();throw Error(typeof body.detail==='string'?body.detail:'取消请求未获确认，请重试。');}
+        if(!response.ok){const body=await response.json();if(ui.activeAIJob===record)showRequestDiagnostics(body?.detail);throw Error('暂时无法确认是否已取消，请查看处理进度。');}
         return true;
       }catch(error){
         record.cancelRequested=false;record.cancelPromise=null;
-        if(ui.activeAIJob===record)renderAIJob(`AI 已进入保存阶段，暂时不能取消：${error.message}`,'running');
+        if(ui.activeAIJob===record)renderAIJob('暂时无法取消，请等待本次处理结束。','running');
         return false;
       }
     })();
@@ -766,7 +766,7 @@
       const job=await timedApi('/api/jobs/'+encodeURIComponent(id),{},controller);
       if(!current())throw Error('工作表已切换，旧任务结果不会应用。');
       if(['processing','queued','pending','running'].includes(job.status)){
-        const stage=job.stage||'正在检查全部选定数据…';
+        const stage=sheetJobStage(job.stage,'正在检查所选表格数据…');
         if(!watch&&mappingBusy)taskProgress($('mappingFeedback'),stage,job.progress);
         onProgress?.(progressLabel(stage,job.progress),job.progress,job);
         await new Promise(resolve=>setTimeout(resolve,interval));
@@ -774,7 +774,10 @@
       }
       if(watch)return;
       if(['failed','cancelled'].includes(job.status)){
-        const error=targetedError(job.error||(job.status==='cancelled'?'任务已取消，当前草稿保留。':'处理失败'),job.review_target);
+        showRequestDiagnostics(job.error||job.status);
+        const message=job.status==='cancelled'?'本次处理已取消，未提交的修改会保留。'
+          :reviewFailureMessage(job.review_target,`《${currentSheet?.name||'当前工作表'}》未能完成处理，请返回核对后重试。`);
+        const error=targetedError(message,job.review_target);
         error.reviewState=job.review_state;error.partialResult=job.result;throw error;
       }
       return job.result||job;
@@ -791,7 +794,7 @@
       await scopedJob(error.activeJobId,record.version,(_stage,progress,job)=>{
         const {completed_blocks:completed,total_blocks:total}=job.batch_ai||progress||{};
         const block=Number.isInteger(completed)&&Number.isInteger(total)&&completed<total;
-        show(block? `本知识库正在核对第 ${completed+1}/${total} 个区块。可查看进度，完成后再继续。`
+        show(block? `本知识库正在核对第 ${completed+1}/${total} 个数据区域。可查看进度，完成后再继续。`
           : '本知识库正在处理另一项表格任务。可查看进度，完成后再继续。','watching');
       },{watch:true,interval});
       show('上一项表格任务已结束，可以重新提交本次核对。','done');
@@ -828,7 +831,7 @@
       const model=selectedAssistModel(cfg),chartOnly=isChartOnly(currentSheet),ready=!!model||chartOnly;ui.aiMode='sheet';
       $('aiDialog').querySelector('h3').textContent=chartOnly?'核对曲线来源':'AI 辅助确认并导入本表';
       $('aiContinue').textContent=chartOnly?'核对':'辅助确认并导入';
-      $('aiDialogText').textContent=chartOnly?'会检查曲线引用的源表是否已经发布，以及本页是否还有独立数值。':ready?`会把当前表头和少量原始样本发给「${model}」，逐个辅助补齐待确认区块。校验通过后自动导入；缺少可靠依据的字段仍需确认，不生成或改写原始数值。模型调用可能消耗额度。`:'还没有可用的模型。请点击“字段模型”选择已配置的通用模型。这次不会发送请求。';
+      $('aiDialogText').textContent=chartOnly?'会检查图表使用的数据是否已经可以查询，以及此页是否有其他数据需要导入。':ready?`会把当前表头和少量原始样本发给「${model}」，逐个辅助补齐待确认区块。校验通过后自动导入；缺少可靠依据的字段仍需确认，不生成或改写原始数值。模型调用可能消耗额度。`:'还没有可用的模型。请点击“字段模型”选择已配置的通用模型。这次不会发送请求。';
       $('aiContinue').hidden=!ready;const dialog=$('aiDialog');if(!dialog.open)dialog.showModal();return;
     }
     if($('aiDialog')?.open)$('aiDialog').close();
@@ -838,7 +841,7 @@
     const activeJob=beginAIJob(requestId,{version,scopeEpoch,importId,sheetName,authHeaders:authHeaders()});
     try{
       const job=await timedApi(`/api/imports/${encodeURIComponent(importId)}/assist-confirm`,{method:'POST',headers:{'Content-Type':'application/json',...activeJob.authHeaders},body:JSON.stringify({sheet:sheetName,mapping,request_id:requestId})});
-      if(job.id&&job.id!==requestId)throw Error('AI 任务标识与当前请求不一致，请刷新后重试。');
+      if(job.id&&job.id!==requestId)throw Error('返回的结果与本次核对不一致，请刷新后重试。');
       if(version!==reviewVersion||scopeEpoch!==authEpoch)return;
       const result=job.id?await scopedJob(job.id,version,stage=>{if(version===reviewVersion){$('mappingFeedback').textContent=stage;renderAIJob(stage,activeJob?.cancelRequested?'cancelling':'running');}}):job;
       if(activeJob)finishAIJob(activeJob,'completed','AI 辅助核对已完成。');
@@ -898,7 +901,7 @@
     let result;
     try{
       const job=await timedApi(`/api/imports/${encodeURIComponent(importId)}/assist-confirm-all`,{method:'POST',headers:{'Content-Type':'application/json',...activeJob.authHeaders},body:JSON.stringify({acknowledged_risk:true,request_id:requestId,total_max_requests:256,per_sheet_max_requests:12,save_template:true,mappings:ui.aiBatchMappings||[]})});
-      if(job.id!==requestId)throw Error('AI 任务标识与当前请求不一致，请刷新后重试。');
+      if(job.id!==requestId)throw Error('返回的结果与本次核对不一致，请刷新后重试。');
       if(scopeEpoch!==authEpoch||version!==reviewVersion)return;
       result=await scopedJob(job.id,version,stage=>renderAIJob(stage,activeJob.cancelRequested?'cancelling':'running'));
     }catch(error){
@@ -956,12 +959,12 @@
     // Keep the full editor plan: only enabled blocks are sent to the parser,
     // but excluded blocks must remain available for the next confirmation.
     saveDraft();
-    setMappingBusy(true);$('mappingFeedback').textContent='正在生成数据集新版本…';
+    setMappingBusy(true);$('mappingFeedback').textContent='正在保存列与指标的对应关系，并更新可查询的数据…';
     try {
       const job=await timedApi(`/api/imports/${encodeURIComponent(importId)}/confirm`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mapping,save_template:!!$('saveTemplate')?.checked})});if(version!==reviewVersion)return;
       const result=await scopedJob(job.id,version,s=>{if(version===reviewVersion&&$('mappingFeedback'))$('mappingFeedback').textContent=s;});if(version!==reviewVersion)return;
       saveDraft(mapping);
-      ui.editable=false;note(`「${sheetName}」的选定区块已导入新版本。`);
+      ui.editable=false;note(`「${sheetName}」选定区域已导入，可以查询更新后的数据。`);
       const isCurrent=()=>scopeEpoch===authEpoch;
       await refresh(isCurrent,importId,result?.dataset_id);if(!isCurrent())return;
       if(currentImport?.import_id===importId&&currentSheet?.name!==sheetName){const index=currentImport.sheets.findIndex(s=>s.name===sheetName);if(index>=0)await selectSheet(index);}
@@ -1129,9 +1132,9 @@
     saveDraft();const {sheets,mappings}=confirmedBatch();if(!sheets.length)return;
     ui.batchMappings=mappings;
     ui.confirmMode='all';if($('confirmDialogTitle'))$('confirmDialogTitle').textContent='导入所有已确认表';
-    if($('confirmWarning'))$('confirmWarning').textContent='逐表校验并导入；单表失败不影响其他表，仍归为待确认。成功快照、原文件和历史版本保留，不清空已可查询的数据。';
+    if($('confirmWarning'))$('confirmWarning').textContent='将逐张检查并导入工作表。未通过的表仍可核对，已导入的数据、原件和历史版本会保留。';
     $('saveTemplate')?.closest('label')?.setAttribute('hidden','');
-    $('confirmList').innerHTML=sheets.map(s=>`<p>导入 ${esc(s.name)}</p>`).join('')+'<p class="muted">仅处理已确认表；待确认区块和当前浏览器的未提交草稿保持不变。</p>';
+    $('confirmList').innerHTML=sheets.map(s=>`<p>导入 ${esc(s.name)}</p>`).join('')+'<p class="muted">本次只导入下列已确认的工作表，待核对的区域和未提交的修改会保留。</p>';
     if(!$('confirmDialog').open)$('confirmDialog').showModal();
   }
   function confirmAutoReadySheets() {
@@ -1139,7 +1142,7 @@
     saveDraft();const sheets=autoReadySheets();if(!sheets.length)return;
     ui.autoReadySelection={importId:currentImport.import_id,scopeEpoch:authEpoch,sheets:sheets.map(sheet=>sheet.name)};
     ui.confirmMode='auto-ready';$('confirmDialogTitle').textContent='确认全部已检查通过的工作表';
-    $('confirmWarning').textContent='逐表重新执行现有检查，通过后才确认已保存的映射。单表失败会显示原因，已成功的确认保留；其他状态的工作表不参与本次操作。本地修改请逐表检查并导入。';
+    $('confirmWarning').textContent='将逐张核对所选工作表，通过一张就确认一张。未通过的表会列出原因。尚未保存的修改请回到对应工作表核对并导入。';
     $('saveTemplate')?.closest('label')?.setAttribute('hidden','');
     $('confirmList').innerHTML=sheets.map(sheet=>`<p>${esc(sheet.name)} · ${esc(sheet.field_count??0)} 个字段</p>`).join('');
     if(!$('confirmDialog').open)$('confirmDialog').showModal();
@@ -1167,8 +1170,9 @@
     host.textContent=result.notice||(autoReady?`已确认 ${imported.length} 张工作表；${failed.length} 张未完成。`:'已完成确认表导入；失败表仍可逐块核对。');
     const list=document.createElement('ul');list.className='batch-confirm-results';
     for(const name of imported){const row=document.createElement('li');row.dataset.sheetConfirm='success';row.textContent=`${name}：${autoReady?'已确认':'已导入'}`;list.append(row);}
-    for(const item of failed){const row=document.createElement('li');row.dataset.sheetConfirm='failed';row.textContent=`${item.sheet}：${item.message||'检查未通过，请打开工作表继续核对。'}`;list.append(row);}
+    for(const item of failed){const row=document.createElement('li');row.dataset.sheetConfirm='failed';row.textContent=`${item.sheet}：${reviewFailureMessage(item.review_target)}`;list.append(row);}
     if(list.childElementCount)host.append(list);
+    if(failed.length)showRequestDiagnostics(failed.map(item=>({sheet:item.sheet,message:item.message,review_target:item.review_target})));
   }
   function applyBatchErrors(result) {
     for(const failed of result.sheets_failed||[]){

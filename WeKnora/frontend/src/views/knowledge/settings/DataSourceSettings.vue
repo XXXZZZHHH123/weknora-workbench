@@ -123,7 +123,7 @@ async function handleResume(ds: DataSource) {
     MessagePlugin.success(t('datasource.resumed'))
     loadList()
   } catch (e: any) {
-    MessagePlugin.error(e?.message || e?.error || t('datasource.resumeFailed'))
+    MessagePlugin.error(t('datasource.resumeFailed'))
   }
 }
 
@@ -311,7 +311,7 @@ onBeforeUnmount(stopPolling)
             </p>
             <div v-if="ds.error_message" class="ds-card__error">
               <t-icon name="error-circle-filled" size="14px" />
-              <span>{{ ds.error_message }}</span>
+              <span>{{ t('displayError.syncFailed') }}</span>
             </div>
           </div>
         </component>
@@ -341,6 +341,7 @@ onBeforeUnmount(stopPolling)
       v-model:visible="logsVisible"
       :data-source-id="logsDsId"
       :data-source-name="logsDsName"
+      :last-error="dataSources.find(source => source.id === logsDsId)?.error_message"
     />
   </div>
 </template>

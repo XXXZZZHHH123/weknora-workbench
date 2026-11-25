@@ -14,7 +14,7 @@ func TestCitationAnnotationPreservesExactProseAndTablePositions(t *testing.T) {
 	marked, count, ok := annotateUnverifiedCitations(answer, map[string]bool{"unresolved": true})
 	require.True(t, ok)
 	require.Equal(t, 2, count)
-	require.Equal(t, strings.ReplaceAll(answer, bad, "〔引用未核验〕"), marked)
+	require.Equal(t, strings.ReplaceAll(answer, bad, "〔引用待核对〕"), marked)
 	require.Contains(t, marked, good)
 	require.Equal(t, strings.Count(answer, "|"), strings.Count(marked, "|"))
 }
@@ -47,7 +47,7 @@ func TestCitationAnnotationBindsEveryRequestedIDAndPreservesGoodExamples(t *test
 	marked, count, ok := annotateUnverifiedCitations(answer, map[string]bool{"unresolved": true})
 	require.True(t, ok)
 	require.Equal(t, 1, count)
-	require.Equal(t, "正文。〔引用未核验〕 `示例 <kb chunk_id=\"current\" />`", marked)
+	require.Equal(t, "正文。〔引用待核对〕 `示例 <kb chunk_id=\"current\" />`", marked)
 	_, _, ok = annotateUnverifiedCitations(answer, map[string]bool{"not-present": true})
 	require.False(t, ok)
 }

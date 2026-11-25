@@ -225,7 +225,7 @@ def test_workflow_renders_clickable_citations_and_markdown_then_hides_revoked_so
     assert positive.xpath('.//div[@class="report-citation-links"]/span/text()') == ['发布于 2023-01-06']
     assert negative.xpath('.//div[@class="report-citation-links"]/span/text()') == ['数据日期 2023-01-05']
     assert not negative.xpath('.//div[@class="report-citation-heading"]/span')
-    assert positive.xpath('.//details/div/text()')[0] == '入库时间 2023-01-08 11:00:00'
+    assert positive.xpath('.//details/div/text()')[0] == '资料保存时间 2023-01-08 11:00:00'
     assert positive.xpath('.//small/@title') == ['发布日期早于本周或未知']
     assert positive.xpath('.//a[.="原网页"]/@href') == ['https://example.test/original']
     citations_text = citation_block.text_content()

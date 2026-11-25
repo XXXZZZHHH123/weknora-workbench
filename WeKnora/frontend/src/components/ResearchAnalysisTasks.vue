@@ -49,7 +49,7 @@ function notifyCompleted() {
     const forget = (): void => { if (notifications.get(job.id) === notification) notifications.delete(job.id) }
     const presentation = analysisJobPresentation[job.purpose ?? 'judgments']
     const notification = NotifyPlugin.success({ title: 'completed' in presentation ? presentation.completed : `${presentation.title}已完成`,
-      content: () => h('div', { class: 'analysis-completion' }, [h('span', '结果已暂存，尚未保存。'),
+      content: () => h('div', { class: 'analysis-completion' }, [h('span', '点“查看结果”核对。确认保存后，结果才会更新到研究台。'),
         h('button', { type: 'button', onClick: () => openTask(job) }, '查看结果'),
         h('button', { type: 'button', disabled: store.dismissingAll || store.dismissingIds.includes(job.id), onClick: () => ignoreTask(job) }, '忽略')]),
       duration: 6000, closeBtn: true, onClose: forget, onCloseBtnClick: forget, onDurationEnd: forget })

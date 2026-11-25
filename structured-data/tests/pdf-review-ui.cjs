@@ -143,7 +143,7 @@ async function main() {
     await call('Page.enable');
     await call('Page.navigate', {url: origin + '/'});
     await wait("document.querySelector('#pdfUpload')");
-    await wait("document.querySelector('#pdfDraftList')?.textContent.includes('pdfd_fixture')");
+    await wait("document.querySelector('#pdfDraftList')?.textContent.includes('suspicious.pdf') && !document.querySelector('#pdfDraftList')?.textContent.includes('pdfd_fixture')");
     await evaluate(`(()=>{const i=document.querySelector('#pdfUploadFile');const f=new File(['%PDF-1.4'],'table.pdf',{type:'application/pdf'});Object.defineProperty(i,'files',{value:[f],configurable:true});i.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#pdfUpload').click()})()`);
     await wait("document.querySelector('#pdfDraftDetail')?.textContent.includes('12.50 <img')");
     await wait("document.querySelector('#pdfTogglePreview')");
@@ -182,7 +182,8 @@ async function main() {
     assert.equal(await evaluate("window.__apiCalls.some(x=>x.path==='/api/knowledge-results/source-pdf-1'&&x.method==='GET')"), true, 'knowledge PDF must read its existing result with the real source ID');
     assert.equal(await evaluate('window.__sourceFetches'), 3, 'each selected draft must retrieve its protected original');
     await evaluate("window.__jobs=[{id:'failed-job',status:'failed',retry_available:true,file_name:'retry.pdf',error:'Provider unavailable'}];[...document.querySelectorAll('button')].find(b=>b.textContent==='刷新记录').click()");
-    await wait("document.querySelector('#pdfJobs')?.textContent.includes('Provider unavailable')");
+    await wait("document.querySelector('#pdfJobs')?.textContent.includes('PDF 处理未完成')");
+    assert(!String(await evaluate("document.querySelector('#pdfJobs')?.textContent")).includes('Provider unavailable'));
     assert.equal(await evaluate("window.__retried||0"), 0, 'loading failed jobs must not retry automatically');
     await evaluate("[...document.querySelectorAll('#pdfJobs button')].find(b=>b.textContent==='手动重试此文件').click()");
     await wait("window.__retried===1 && window.__sourceFetches===4");

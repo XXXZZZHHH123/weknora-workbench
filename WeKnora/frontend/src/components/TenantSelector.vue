@@ -37,7 +37,7 @@
                 </div>
                 <div class="tenant-item-info">
                   <span class="tenant-item-name">{{ tenant.name }}</span>
-                  <span class="tenant-item-id">ID: {{ tenant.id }}</span>
+                  <span v-if="tenant.description" class="tenant-item-id">{{ tenant.description }}</span>
                 </div>
               </div>
               <t-icon v-if="isSelected(tenant.id)" name="check" size="16px" class="check-icon" />

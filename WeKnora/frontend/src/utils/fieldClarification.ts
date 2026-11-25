@@ -119,7 +119,11 @@ export function dimensionLabel(dimensions?: Record<string, unknown>): string {
 }
 
 /** Surface structured failures even when the outer model produces an empty final reply. */
-export function structuredFieldIssue(events: any[], completed = true): string | null {
+export function structuredFieldIssue(
+  events: any[],
+  completed = true,
+  translate: (key: string, fallback: string) => string = (_, fallback) => fallback,
+): string | null {
   if (!completed) return null;
   let issue: string | null = null;
   for (const event of events || []) {
@@ -127,9 +131,7 @@ export function structuredFieldIssue(events: any[], completed = true): string | 
     if(event.success === false) {
       const error = String(event.error || event.tool_data?.error || '');
       if (error.includes('FIELD_CONFIRMATION_WAIT_FOR_USER') && fieldResolution(events)?.status === 'needs_clarification') continue;
-      issue = /指定范围|工作表|目录过大/.test(error)
-        ? '结构化查询未完成：工具传入的工作表范围无效，或字段目录超出处理范围。系统没有取得数值；这不表示原文件缺少数据。'
-        : '结构化查询未完成。工具调用失败，尚未取得可验证的数值。请展开调用详情查看原因。';
+      issue = translate('structuredReview.fieldReadFailed', '这次没有取得数值。请指定文件和工作表后再查，范围较大时可先查一张表。');
       continue;
     }
     const chunks = (event.tool_data?.content_items || []).filter((x:any)=>x.type==='text').map((x:any)=>x.text);
@@ -138,8 +140,12 @@ export function structuredFieldIssue(events: any[], completed = true): string | 
       if(typeof chunk!=='string' || chunk.length>100000)continue;
       try {
         const data=JSON.parse(chunk.slice(chunk.indexOf('{')));
-        if(data.kind==='structured_tool_notice' && typeof data.message==='string')issue=data.message.slice(0,1000);
-        if(data.kind==='structured_field_resolution')issue=data.execution_error || null;
+        if (data.kind === 'structured_tool_notice' && typeof data.message === 'string') {
+          issue = data.status === 'dataset_required' ? translate('structuredReview.chooseFile', '请先选择要查询的文件。')
+            : data.status === 'invalid_scope' ? translate('structuredReview.chooseSheet', '找不到要查询的工作表，请核对文件和工作表后重试。')
+            : translate('structuredReview.fieldQueryFailed', '本次查询未完成，请重试。');
+        }
+        if (data.kind === 'structured_field_resolution') issue = data.execution_error ? translate('structuredReview.checkFieldRange', '本次查询未完成，请核对指标和查询范围后重试。') : null;
       } catch { /* Not our structured payload. */ }
     }
   }

@@ -64,7 +64,7 @@
                         <div v-for="parameter in parametersOf(tool)" :key="parameter.name" class="tool-detail__param">
                           <div class="tool-detail__param-title">
                             <code>{{ parameter.name }}</code>
-                            <span v-if="parameter.type">{{ parameter.type }}</span>
+                            <span v-if="parameter.type" :title="parameter.type">{{ mcpParameterTypeLabel(parameter.type, t) }}</span>
                             <span v-if="parameter.required" class="is-required">{{ t('mcpMetadata.required') }}</span>
                           </div>
                           <p v-if="parameter.description">{{ parameter.description }}</p>
@@ -107,7 +107,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { getMCPToolApprovals, setMCPToolApproval, setMCPToolEnabled, type MCPTool, type MCPToolApprovalRow } from '@/api/mcp-service'
-import { mcpSchemaParameters } from '@/utils/mcpToolDisplay'
+import { mcpParameterTypeLabel, mcpSchemaParameters } from '@/utils/mcpToolDisplay'
 
 const props = defineProps<{ tools: MCPTool[]; serviceId?: string }>()
 const emit = defineEmits<{ (e: 'busy', value: boolean): void }>()

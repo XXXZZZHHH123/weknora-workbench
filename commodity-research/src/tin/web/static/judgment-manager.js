@@ -69,7 +69,7 @@
     });
     let value;
     try { value = await response.json(); } catch { throw new Error('研究逻辑服务暂时不可用，输入已保留。'); }
-    if (!response.ok) { const detail = value.detail; const message = typeof detail === 'string' ? detail :
+    if (!response.ok) { const detail = value.detail; const message = typeof detail === 'string' ? (window.researchCopy?.(detail) ?? detail) :
       detail?.message ? detail.message + (detail.issues?.length ? '：' + detail.issues.slice(0, 4).map(item => item.message).join('；') : '') : '请求未完成，输入已保留。';
       const error = new Error(message); error.status = response.status; error.fields = detail?.attention_fields;
       error.code = detail?.code;
@@ -268,11 +268,11 @@
     snapshot: () => JSON.stringify([displayed?.id, displayed?.version, [...dimensionEdits]]),
     async present(result, {current}) {
       if (result.judgment_id !== displayed?.id || result.version !== displayed?.version) {
-        if (dimensionDirty) throw new Error('当前研判维度已有编辑，已保留。请保存或切换后再取回。');
+        if (dimensionDirty) throw new Error('当前研究判断的分类已修改，请先保存，再查看后台建议。');
         const selected = await api('/manage?judgment_id=' + encodeURIComponent(result.judgment_id));
         if (!current() || dimensionDirty) return;
         if (!selected.current || selected.current.id !== result.judgment_id || selected.current.version !== result.version)
-          throw new Error('补标建议与当前研判版本不一致，请重新补标。');
+          throw new Error('这份建议对应旧版本，请为当前研究判断重新生成分类建议。');
         managed = selected; dialog.dataset.judgmentId = String(result.judgment_id); showVersion(selected.current);
       }
       if (result.research_dimensions) managed.research_dimensions = result.research_dimensions;
@@ -284,7 +284,7 @@
   byId('dimension-suggest')?.addEventListener('click', async () => {
     if (!dimensionJob || busy || dimensionJob.busy || !displayed || !managed?.can_write) return;
     const modelId = (byId('dimension-model') || byId('model')).value;
-    if (!modelId) return inform('请选择补标模型；暂无可用模型时请先配置对话模型。', true);
+    if (!modelId) return inform('请选择推荐研究维度所用的模型。没有可用模型时，请联系管理员在设置中添加。', true);
     await dimensionJob.submit('/api/sn/judgment/dimension-suggestions',
       {judgment_id: displayed.id, version: displayed.version, model_id: modelId});
   });
@@ -508,7 +508,7 @@
     if (busy || draft || input.value.trim() && input.value !== value) return inform('已有输入或待保存草稿，请先保留或清空，再复用研判。');
     input.value = value;
     if (row.variety) byId('variety').value = row.variety;
-    text('file-name', original ? '复用已保存研判原文' : '复用已保存研判 MD');
+    text('file-name', original ? '复用已保存研判原文' : '使用已保存的研究判断文档');
     invalidate(); tab('analyze'); input.focus();
   }
   async function removeVersion(row) {

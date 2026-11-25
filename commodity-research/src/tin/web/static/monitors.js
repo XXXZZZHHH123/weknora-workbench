@@ -8,6 +8,7 @@
   let viewedItem = null, customDraftWindow = false;
   let monitorItems = [];
   let opener = null, editingItem = null, highlightedId = null, deepLinkId = null;
+  const indicatorName = item => item.name && item.name !== item.series_id ? item.name : '未命名指标';
   const overlapWarning = '规则之间重叠数据不足，建议更换覆盖更长的指标';
   const displays = new Map();
   const setupDrafts = new Map();
@@ -50,7 +51,7 @@
       headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})});
     let result;
     try { result = await response.json(); } catch (_) { throw new Error('服务返回异常，编辑内容已保留，请重试。'); }
-    if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : '操作未完成，请核对后重试。');
+    if (!response.ok) throw new Error(typeof result.detail === 'string' ? (window.researchCopy?.(result.detail) ?? result.detail) : '操作未完成，请核对后重试。');
     return result;
   }
   function sync() {
@@ -198,7 +199,7 @@
         if (token !== own || !details.isConnected) return;
         rows = page.indicators; offset = page.offset; nextOffset = page.next_offset;
         result.replaceChildren(new Option('请选择指标', ''), ...rows.map(item => new Option(
-          [item.name, item.unit, item.sheet].filter(Boolean).join(' · '), item.series_id)));
+          [indicatorName(item), item.unit, item.sheet].filter(Boolean).join(' · '), item.series_id)));
         message.textContent = rows.length ? '' : '没有匹配指标。';
         updatePage();
       } catch (error) {
@@ -229,12 +230,12 @@
       const summary = node('div', undefined, 'affairs-row-title');
       function summarize() {
         const candidate = rule._candidates.find(item => item.series_id === rule.series_id);
-        summary.textContent = `${candidate?.name || rule.label} · ${rule.metric === 'change' ? '本期变化' : '本期值'} ${rule.operator} ${rule.value} · 连续 ${rule.consecutive_periods} 期`;
+        summary.textContent = `${candidate ? indicatorName(candidate) : rule.label} · ${rule.metric === 'change' ? '本期变化' : '本期值'} ${rule.operator} ${rule.value} · 连续 ${rule.consecutive_periods} 期`;
       }
       summarize(); row.append(summary);
       const controls = node('div', undefined, 'monitor-fields');
       const options = rule._candidates.map(item => [item.series_id,
-        [item.name, item.unit, item.coverage ? coverageText(item) : ''].filter(Boolean).join(' · ')]);
+        [indicatorName(item), item.unit, item.coverage ? coverageText(item) : ''].filter(Boolean).join(' · ')]);
       if (rule.needs_indicator) options.unshift(['', '需研究员指定指标']);
       const choices = select(options, rule.series_id || '', 'series_id');
       choices.setAttribute('aria-label', `第${index + 1}条规则指标`);
@@ -274,13 +275,15 @@
       const candidates = node('details', undefined, 'monitor-candidates'); candidates.append(node('summary', '候选指标与数据覆盖'));
       const list = node('ul', undefined, 'affairs-row-detail');
       for (const candidate of rule._candidates) list.append(node('li',
-        `${candidate.name || candidate.series_id} · ${candidate.coverage ? coverageText(candidate) : '回测时核对数据覆盖'}`));
+        [indicatorName(candidate),
+          candidate.source_file, candidate.sheet, candidate.unit,
+          candidate.coverage ? coverageText(candidate) : '用历史数据试算时会检查可用日期'].filter(Boolean).join(' · ')));
       candidates.append(list);
       if (rule._candidates.length) row.append(candidates);
       if (rule.needs_indicator) row.append(indicatorSearch(index, selected => {
         if (!rule._candidates.some(item => item.series_id === selected.series_id)) {
           rule._candidates.push(selected);
-          choices.append(new Option([selected.name, selected.unit, selected.sheet].filter(Boolean).join(' · '), selected.series_id));
+          choices.append(new Option([indicatorName(selected), selected.unit, selected.sheet].filter(Boolean).join(' · '), selected.series_id));
         }
         choices.value = selected.series_id;
         chooseIndicator();
@@ -407,7 +410,7 @@
       const description = item.summary || item.rules.map(rule => rule.label).join(item.logic === 'any' ? ' 或 ' : ' 且 ');
       const detail = node('div', description, 'affairs-row-detail monitor-description'); detail.title = description;
       copy.append(title, detail, node('div',
-        `最近触发 ${item.last_trigger || '无'} · v${item.revision}` + (item.checked_at ? ' · 检查于 ' + item.checked_at.slice(0, 16).replace('T', ' ') : ''), 'affairs-row-detail'));
+        `最近触发 ${item.last_trigger || '无'} · 第 ${item.revision} 版` + (item.checked_at ? ' · 检查于 ' + item.checked_at.slice(0, 16).replace('T', ' ') : ''), 'affairs-row-detail'));
       for (const rule of item.rule_states || []) copy.append(node('p',
         [`第${rule.rule_index + 1}条规则`, rule.label, rule.state, rule.notice].filter(Boolean).join(' · '), 'affairs-row-detail'));
       const actions = node('div', undefined, 'monitor-actions');

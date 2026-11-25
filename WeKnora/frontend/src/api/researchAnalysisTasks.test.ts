@@ -30,7 +30,7 @@ test('diagram task metadata keeps its fixed purpose and generation phases withou
     { id: 'unsupported-job', workbench_id: 'wb-a', purpose: 'arbitrary', state: 'queued' },
   ] })
   assert.equal(jobs.length, 2)
-  assert.equal(jobs[0]!.purpose, 'diagram'); assert.equal(jobs[0]!.title, '产业图配置生成'); assert.equal(jobs[0]!.phase, 'generating')
+  assert.equal(jobs[0]!.purpose, 'diagram'); assert.equal(jobs[0]!.title, '生成产业图草稿'); assert.equal(jobs[0]!.phase, 'generating')
   assert.equal(jobs[1]!.purpose, 'judgments')
 })
 

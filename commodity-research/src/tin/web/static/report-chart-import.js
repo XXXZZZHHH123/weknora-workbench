@@ -19,10 +19,46 @@
     finally { clearTimeout(timeout); controllers.delete(controller); }
   }
   const post = (url, body) => api(url, {method: 'POST', body: JSON.stringify(body)});
-  const reason = value => typeof value === 'string' ? value : value?.reason || value?.message || '处理失败';
-  const noticeText = values => [...new Set(values.map(U.message).filter(Boolean))].join('\n');
+  const cannotDraw = '这张图还不能生成。请为每条图例选择对应指标，检查图表类型，再点“预览”。';
+  const cannotIdentify = '这部分报告暂时无法识别出可导入的图表。可以重新识别，或在图表库手动新建。';
+  const reasonLabels = {
+    '本页识别超时':'这一页识别超时，请重新识别。',
+    '本批处理超时':'这部分识别超时，请重新识别。',
+    '缺少依据片段':'正文里缺少能核对这张图的内容，可查看原文或在图表库手动新建。',
+    '文件版本已变化，请重新识别':'周报已有新版本，请重新选择后识别。',
+    '任务超时或中断，请重新识别':'识别超时或中断，请重新识别。',
+    '指标已变化，请重新确认':'所选指标已变化，请重新确认各图例使用的指标。',
+    '图型只能选择走势、同期对比或多指标对比':'请选择走势、同期对比或多指标对比。',
+    '请为每条原文图例确认一个候选指标':'请为每条图例选择对应指标。',
+    '指标库中未找到，请手动选择或跳过':'指标库中未找到，请手动选择或跳过',
+    '只能选择该图例本次展示过的候选指标，请重新确认映射':'请重新为这条图例选择列表中可用的指标。',
+    '映射指标已不在当前研究台来源目录，请重新识别':'所选指标已不在当前研究台，请重新识别并选择。',
+    '候选图超过两种真实单位，请调整映射；不会换算单位':'一张图最多可以比较两种单位，请重新选择指标。',
+    '请选择已有解析正文的PPTX或PDF周报':'请选择正文已经可以搜索的 PPTX 或 PDF 周报。',
+    '所选周报尚未完成解析，请先在知识库完成解析':'所选周报还不能搜索正文，请在知识库查看文件处理进度。',
+    '所选周报没有可读解析片段':'暂时无法读取所选周报的正文，请先在知识库核对文件。',
+    '周报文件版本已变化，请重新选择':'周报文件版本已变化，请重新选择后识别。',
+    '请求超时，请重试或重新识别':'预览等待时间过长，请点“预览”重试。',
+    '周报解析正文超过200万字，请拆分资料后重试':'周报正文超过 200 万字，请拆分资料后重试。',
+    '整体识别超时，保留已完成并复核的图；其余页面未处理':'识别超时。这里已有完成的图表，其余页面请重新识别。',
+    '写入图表库失败，请重试':'这张图未能保存，请核对后重试。'
+  };
+  function reason(value, fallback = cannotIdentify) {
+    const raw = typeof value === 'string' ? value : value?.reason || value?.message;
+    if (Object.hasOwn(reasonLabels,raw)) return reasonLabels[raw];
+    if (/^本批处理超过\d+秒$/.test(raw)) return '这部分识别超时，请重新识别。';
+    return fallback;
+  }
+  function diagnostic(detail) {
+    const node = $('diagnostics');
+    if (!node) return;
+    node.hidden = detail == null;
+    node.querySelector('pre').textContent = detail == null ? '' :
+      typeof detail === 'string' ? detail : JSON.stringify(detail,null,2);
+  }
+  const noticeText = values => [...new Set((values || []).map(U.message).filter(Boolean))].join('\n');
   const missingMessage = '指标库中未找到，请手动选择或跳过';
-  const editedMessage = '映射或图型已修改，请重新预览。';
+  const editedMessage = '已更改指标或图表类型，请重新预览。';
   const duplicateOf = state => state.validation ? state.validation.duplicateOf : !state.edited && state.item.duplicate_of;
   const canSelect = state => !invalidated && !state.imported &&
     (state.validation?.valid ?? (!state.edited && state.item.ready === true));
@@ -69,7 +105,10 @@
       invalidated = true;
       controls();
     }
-    U.notice($('status'), error.message, 'error');
+    const fallback = error.status===409 ? '文件版本或访问权限可能已有变化，请重新识别。' :
+      error.status===403 ? '当前账号无法读取这份周报或导入图表，请联系研究台负责人。' : cannotIdentify;
+    U.notice($('status'),reason(error.detail??error.message,fallback), 'error');
+    diagnostic(error.detail??error.message);
   }
   function clearCards() {
     observer?.disconnect(); previewQueue.clear();
@@ -93,10 +132,10 @@
       (state.edited ? editedMessage : state.item.ready_reason));
     U.notice(state.element.querySelector('[data-report-flags]'), [
       state.imported ? '已导入' : '',
-      duplicate ? `与${duplicate.page != null ? `第 ${duplicate.page} 页` : duplicate.page_label || '原文'}《${duplicate.title}》指标和图型相同` : '',
+      duplicate ? `与${duplicate.page != null ? `第 ${duplicate.page} 页` : '原文'}《${duplicate.title}》指标和图型相同` : '',
       possibleDuplicate ? '可能重复：图表库已有同指标、同图型的图。' : '',
       missing ? '未找到指标：' + missingMessage : '',
-      definitionFailed && !missing ? '定义失败：请修改映射或图型后重新预览。' : '',
+      definitionFailed && !missing ? cannotDraw : '',
       !state.imported && !duplicate && !possibleDuplicate && !missing && !definitionFailed ? readyReason : '',
       canSelect(state) && !autoReady(state) ? '请核对后手动勾选。' : ''
     ].filter(Boolean).join('\n'), state.imported ? '' : 'warning');
@@ -140,18 +179,19 @@
     if (flags(state)) {
       plot.textContent = ''; U.notice(notice, noticeText(chartWarnings(state.item)), 'warning'); return;
     }
-    plot.textContent = '正在读取真实数据预览…';
+    plot.textContent = '正在读取所选指标的数据，准备预览…';
     try {
       const result = await post('/preview', {job_id: jobId, group: $('group').value, ...selection(state)});
       if (!isCurrent()) return;
-      const errors = (result.errors || []).map(reason);
+      const errors = (result.errors || []).map(error => reason(error, cannotDraw));
       const reportedDuplicate = result.duplicate_of === undefined ? duplicateOf(state) : result.duplicate_of;
       const duplicate = duplicateVersion === state.duplicateVersion ? reportedDuplicate : duplicateOf(state);
       if (duplicateVersion === state.duplicateVersion) state.duplicate = !!result.possible_duplicate;
       if (errors.length || !result.definition || !result.payload) {
         state.validation = {valid: false, definitionFailed: !result.definition, duplicateOf: duplicate,
-          reviewReason: result.ready_reason || errors.join('；') || '暂无有效图表预览'};
-        plot.textContent = ''; U.notice(notice, errors.join('；') || '暂无有效图表预览', 'error'); return;
+          reviewReason: errors.join('；') || reason(result.ready_reason, cannotDraw)};
+        diagnostic(result.errors);
+        plot.textContent = ''; U.notice(notice, errors.join('；') || cannotDraw, 'error'); return;
       }
       state.validation = {valid: true, duplicateOf: duplicate,
         reviewReason: result.range_mismatch || (result.ready === false && !reportedDuplicate && !result.possible_duplicate)
@@ -161,22 +201,24 @@
     } catch (error) {
       if (!isCurrent()) return;
       if (error.status === 422) state.validation = {valid: false, definitionFailed: true, duplicateOf: duplicateOf(state)};
-      plot.textContent = ''; U.notice(notice, error.message + (!error.status ? '；可点击“预览”重试。' : ''), 'error');
+      diagnostic(error.detail ?? error.message);
+      const fallback = error.status === 422 ? cannotDraw : '暂时读不到图表数据，请点“预览”重试。';
+      plot.textContent = ''; U.notice(notice, reason(error.detail ?? error.message, fallback), 'error');
       if ([403, 409].includes(error.status)) conflict(error);
     } finally { if (isCurrent()) { flags(state); controls(); } }
   }
   function addCard(item, imported = false) {
     const card = document.createElement('article'); card.className = 'charts-card'; card.dataset.reportChart = item.id;
-    const pageLabel = item.page != null ? `第 ${item.page} 页` : item.page_label || '片段顺序';
+    const pageLabel = item.page != null ? `第 ${item.page} 页` : '按原文顺序';
     const shape = item.shape || {}, originalShape = [
       shape.season_start_month ? `${shape.season_start_month}月起` : '',
       shape.period_labels?.join('、'),
       shape.y_ticks ? `刻度 ${shape.y_ticks.min}–${shape.y_ticks.max}` : '',
     ].filter(Boolean).join(' · ');
-    card.innerHTML = `<h2><label><input type="checkbox" data-report-select disabled> ${E(pageLabel)} · ${E(item.title)}</label></h2><p role="status" data-report-flags hidden></p>` +
+    card.innerHTML = `<h2><label><input type="checkbox" data-report-select disabled> ${E(pageLabel)} · ${E(item.title || '未命名图表')}</label></h2><p role="status" data-report-flags hidden></p>` +
       (originalShape ? `<p class="charts-muted" data-report-shape>原图：${E(originalShape)}</p>` : '') +
       '<div class="charts-fields"><label class="charts-field">图型<select data-report-type><option value="trend">走势</option><option value="seasonal">同期对比（按年份分列）</option><option value="comparison">多指标对比</option></select></label></div>' +
-      (item.series || []).map((series, index) => `<label class="charts-field">原文图例：${E(series.name)}${series.unit ? `（${E(series.unit)}）` : ''} → 指标<select data-report-mapping="${index}"><option value="">请选择指标</option>${(series.candidates || []).map(candidate => `<option value="${E(candidate.id)}">${E(candidate.name || candidate.metric || candidate.id)}${candidate.unit ? ` · ${E(candidate.unit)}` : ''}${candidate.sheet ? ` · ${E(candidate.sheet)}` : ''}${candidate.source_file ? ` · ${E(candidate.source_file)}` : ''}</option>`).join('')}</select></label>` +
+      (item.series || []).map((series, index) => `<label class="charts-field">原文图例：${E(series.name)}${series.unit ? `（${E(series.unit)}）` : ''} → 指标<select data-report-mapping="${index}"><option value="">请选择指标</option>${(series.candidates || []).map(candidate => `<option value="${E(candidate.id)}">${E([candidate.name, candidate.metric].find(value => value && value !== candidate.id) || '未命名指标')}${candidate.unit ? ` · ${E(candidate.unit)}` : ''}${candidate.sheet ? ` · ${E(candidate.sheet)}` : ''}${candidate.source_file ? ` · ${E(candidate.source_file)}` : ''}</option>`).join('')}</select></label>` +
         (series.legends?.length ? `<p class="charts-muted">${item.legend_semantics === 'periods' ? '原文周期图例' : '原文图例'}：${E(series.legends.join('、'))}</p>` : '') +
         `<p class="charts-notice warning" data-report-missing="${index}" hidden></p>`).join('') +
       '<button type="button" class="charts-button" data-report-preview>预览</button><div class="charts-thumbnail" data-report-plot></div><p role="status" data-report-notice hidden></p>' +
@@ -207,7 +249,7 @@
     });
     flags(state);
     U.notice(card.querySelector('[data-report-notice]'), noticeText([
-      ...(item.errors || []).map(reason), ...chartWarnings(item)
+      ...(item.errors || []).map(error => reason(error, cannotDraw)), ...chartWarnings(item)
     ]), 'warning');
     return state;
   }
@@ -218,8 +260,7 @@
     const groups = new Map();
     function addToGroup(item, failed = false) {
       const index = Number.isInteger(item.source_index) ? item.source_index : null;
-      // Real pages group cards; without page numbers, one grid in source order
-      // (each card title keeps its fragment label) instead of one group per fragment.
+      // Cards without a page number share a group ordered by their position in the source.
       const key = item.page != null ? `page:${item.page}` : 'source-order';
       if (!groups.has(key)) groups.set(key, {label: item.page != null ? `第 ${item.page} 页` : '按原文顺序（该文件未提供可靠页码）',
         order: item.page ?? Number.MAX_SAFE_INTEGER, entries: []});
@@ -244,14 +285,17 @@
         const card = document.createElement('article'); card.className = 'charts-card'; card.dataset.reportFailure = '';
         const title = document.createElement('h2'); title.textContent = item.title || '未完成的图表识别';
         const message = document.createElement('p'); message.className = 'charts-notice warning';
-        message.textContent = '定义失败：' + reason(item); card.append(title, message); cards.append(card);
+        message.textContent = reason(item); card.append(title, message); cards.append(card);
       }
     }
     U.notice($('failures'), (data.failures || []).map(item => {
-      const location = item.page != null ? `第 ${item.page} 页` : item.page_label || (item.batch != null ? `第 ${item.batch} 批` : '');
+      const location = item.page != null ? `第 ${item.page} 页` : '';
       return [location, item.title, reason(item)].filter(Boolean).join('：');
     }).join('\n'), 'warning');
-    U.notice($('status'), states.size ? `识别到 ${states.size} 张候选图，请核对指标映射，按需预览真实数据。` : '没有可导入的图表结构。', states.size ? '' : 'warning');
+    const chartErrors = (data.charts || []).filter(item => item.errors?.length).map(item => ({id: item.id, errors: item.errors}));
+    diagnostic(data.failures?.length || chartErrors.length ? {failures: data.failures, charts: chartErrors} : undefined);
+    U.notice($('status'), states.size ? `识别到 ${states.size} 张图，请核对每条图例对应的指标和预览效果。` :
+      '没有找到可导入的图。可重新识别，或在图表库手动新建。', states.size ? '' : 'warning');
     controls();
   }
   function preserveEdits(previous, updated) {
@@ -290,7 +334,7 @@
         state.duplicateVersion++;
         if (state.validation) state.validation.duplicateOf = item.duplicate_of;
         else U.notice(state.element.querySelector('[data-report-notice]'), noticeText([
-          ...(item.errors || []).map(reason), ...chartWarnings(item)
+          ...(item.errors || []).map(error => reason(error, cannotDraw)), ...chartWarnings(item)
         ]), 'warning');
       }
       flags(state);
@@ -317,7 +361,7 @@
     const draftId = rematchOf || data.job?.id || data.job_id || data.id;
     const sameDraft = states.size && jobId === draftId;
     if (restored && states.size && !sameDraft) {
-      ResearchAnalysisJobs.message($('progress'), '识别已完成，保留研究员当前的候选图和映射。');
+      ResearchAnalysisJobs.message($('progress'), '识别已完成。请先处理当前图表和所选指标，再查看新结果。');
       return;
     }
     const source = data.request.source;
@@ -378,7 +422,14 @@
         const link = document.createElement('a'); link.className = 'charts-button';
         link.href = U.pageURL('/sn/charts/' + encodeURIComponent(item.id)); link.textContent = item.title || item.definition?.title || '打开新建图表'; $('result').append(link);
       }
-      for (const item of failed) { const p = document.createElement('p'); p.textContent = `${item.title || item.chart_id || ''}：${reason(item)}`; $('result').append(p); }
+      for (const item of failed) {
+        const failedIndex=selected.findIndex(state=>state.item.id===item.chart_id), original=selected[failedIndex]?.item;
+        const title=item.title || original?.title || (original?.page != null ? `第 ${original.page} 页的图` : failedIndex>=0 ? `所选的第 ${failedIndex+1} 张图` : '未命名图表');
+        const notice=document.createElement('p');
+        notice.textContent=`${title}：${reason(item,cannotDraw)}`;
+        $('result').append(notice);
+      }
+      diagnostic(failed.length ? failed : undefined);
       const failedIds = new Set(failed.map(item => item.chart_id));
       reviewEdits++;
       for (const state of selected) if (!failedIds.has(state.item.id)) {
@@ -497,7 +548,7 @@
       const result = await setup.load();
       if (closed || busy || panel.hidden) return;
       if (chartJob.busy || before !== snapshot()) {
-        U.notice($('status'), '编辑内容已改动，保留当前候选图和映射。', 'warning');
+        U.notice($('status'), '当前图表或所选指标已修改。请先处理当前修改，再查看后台结果。', 'warning');
         return;
       }
       await presentChartResult({...result, request: {source: result.source}}, {restored: true});

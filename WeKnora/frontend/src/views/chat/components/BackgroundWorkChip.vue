@@ -19,7 +19,7 @@
       <div class="work-card" role="list">
         <div v-for="item in running" :key="item.work_id" class="work-row" role="listitem">
           <button type="button" class="work-main" @click="openOutput(item.work_id)">
-            <span class="work-title">{{ item.title || item.work_id }}</span>
+            <span class="work-title">{{ item.title || (item.kind === 'shell' ? $t('chat.backgroundWork.operation', 'Background operation') : $t('chat.backgroundWork.untitled', 'Background task')) }}</span>
             <span v-if="elapsed(item)" class="work-duration">{{ elapsed(item) }}</span>
           </button>
           <button

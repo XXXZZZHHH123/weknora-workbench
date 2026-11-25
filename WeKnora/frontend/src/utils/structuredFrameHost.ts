@@ -4,6 +4,7 @@ export interface StructuredFrameAuthContext {
   token: string
   tenant: string | number
   userId: string
+  canViewDiagnostics?: boolean
   openModelSettings: boolean
   knowledgeBaseId: string
   sourceKnowledgeId: string

@@ -81,13 +81,14 @@ test('an older read failure releases the queue and the next current read runs on
   assert.equal(calls, 1)
 })
 
-test('real JSON conflicts show their bounded plain detail or typed message', async () => {
+test('real JSON conflicts use recognized causes and retain bounded diagnostics', async () => {
   const conflict = (detail: unknown) => new Response(JSON.stringify({ detail }), { status: 409, headers: { 'Content-Type': 'application/json' } })
   assert.equal((await structuredSourceReadError(conflict('正在读取原表，请稍后再查看其他区域。'))).message, '正在读取原表，请稍后再查看其他区域。')
   assert.equal((await structuredSourceReadError(conflict({ code: 'source_changed', message: '原件版本已变化，请重新读取。' }))).message, '原件版本已变化，请重新读取。')
   for (const detail of ['<script>unsafe</script>', 'too long '.repeat(100), 'stack\ninternal', { message: 'untyped internal exception' }, { code: '<invalid>', message: 'unsafe code' }]) {
     const message = (await structuredSourceReadError(conflict(detail))).message
-    assert.match(message, /HTTP 409/)
+    assert.match(message, /重新选择来源/)
+    assert.doesNotMatch(message, /HTTP/)
     assert.doesNotMatch(message, /unsafe|internal|too long/)
   }
 })
@@ -99,7 +100,8 @@ test('HTML, oversized conflict bodies and unknown failures never expose raw serv
     new Response(JSON.stringify({ detail: 'private upstream exception' }), { status: 500, headers: { 'Content-Type': 'application/json' } }),
   ]) {
     const message = (await structuredSourceReadError(response)).message
-    assert.match(message, /HTTP/)
+    assert.match(message, /请/)
+    assert.doesNotMatch(message, /HTTP/)
     assert.doesNotMatch(message, /private|upstream|xxxxx/)
   }
   assert.match((await structuredSourceReadError(new Response(null, { status: 403 }))).message, /无权/)

@@ -22,31 +22,31 @@ test('coverage receipt reports only explicit parser and structured-ingestion evi
     _content_processing_v1: { text_chunk_count: 2, image_count: 0 },
     _knowledge_ingestion: { result: { table_count: 0, accepted_count: 0, attention_count: 0 } },
   }, 'completed')
-  assert.ok(noTable.includes('正文：已保存 2 个文本分块'))
+  assert.ok(noTable.includes('已保存 2 段正文'))
   assert.ok(noTable.includes('图片：已保存 0 张'))
-  assert.ok(noTable.includes('表格：识别 0 张'))
-  assert.ok(noTable.includes('可计算数据：未统计'), 'no table count cannot invent a numeric count')
+  assert.ok(noTable.includes('没有识别到表格'))
+  assert.ok(noTable.includes('可计算的数值尚未统计'), 'no table count cannot invent a numeric count')
   const published = knowledgeCoverageSummary({
     _content_processing_v1: { text_chunk_count: 12, image_count: 2 },
     _knowledge_ingestion: { attention_count: 2, result: { table_count: 1, accepted_count: 1, computable_value_count: 2 } },
   }, 'completed')
-  assert.ok(published.includes('表格：自动入库 1 张（识别片段 1）'))
-  assert.ok(published.includes('可计算数据：已入库 2 个有效数值'))
-  assert.ok(published.includes('内容覆盖尚未核验'))
-  assert.ok(published.includes('待处理 2'))
+  assert.ok(published.includes('已自动整理 1 张表，尚待人工核对（识别到 1 处表格内容）'))
+  assert.ok(published.includes('已有 2 个数值可用于计算'))
+  assert.ok(published.includes('当前结果可能只包含原件中的部分内容'))
+  assert.ok(published.includes('2 处需要核对，请打开文件查看处理结果'))
   assert.ok(knowledgeCoverageSummary({
     _knowledge_ingestion: { result: { sheets: [{ name: 'Sheet1', status: 'auto_ready' }] } },
-  }).includes('工作表结果 1 项'))
-  assert.ok(knowledgeCoverageSummary({ _knowledge_ingestion: { result: { table_count: '0' } } }).includes('表格：未统计'))
+  }).includes('可查看 1 张工作表的处理结果'))
+  assert.ok(knowledgeCoverageSummary({ _knowledge_ingestion: { result: { table_count: '0' } } }).includes('表格数量未统计'))
 })
 
 test('current native receipt keeps nested unresolved groups visible', () => {
   assert.ok(knowledgeCoverageSummary({ _knowledge_ingestion: {
     status: 'completed', result: { accepted_count: 6, attention_count: 21 },
-  } }, 'completed').includes('待处理 21'))
+  } }, 'completed').includes('21 处需要核对，请打开文件查看处理结果'))
   const unknown = knowledgeCoverageSummary({ pages: 15, chunk_count: 5 }, 'completed')
-  for (const type of ['正文', '图片', '表格', '可计算数据']) assert.ok(unknown.includes(`${type}：未统计`))
-  assert.ok(unknown.includes('内容覆盖尚未核验'))
+  for (const type of ['正文数量未统计', '图片：未统计', '表格数量未统计', '可计算的数值尚未统计']) assert.ok(unknown.includes(type))
+  assert.ok(unknown.includes('当前结果可能只包含原件中的部分内容'))
 })
 
 test('completed document keeps deferred preview and unavailable originals visible', () => {
@@ -66,7 +66,7 @@ test('workbook catalog chunks and malformed counts do not claim body coverage', 
     _content_processing_v1: { text_chunk_count: 1, text_is_catalog: true, image_count: -1 },
     _knowledge_ingestion: { result: { computable_value_count: Infinity } },
   }, 'completed')
-  assert.ok(summary.includes('正文：未统计（另存目录 1 分块）'))
+  assert.ok(summary.includes('已保存目录中的 1 段，正文收录范围尚未确认'))
   assert.ok(summary.includes('图片：未统计'))
-  assert.ok(summary.includes('可计算数据：未统计'))
+  assert.ok(summary.includes('可计算的数值尚未统计'))
 })

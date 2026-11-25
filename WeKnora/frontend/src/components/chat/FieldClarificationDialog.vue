@@ -5,7 +5,7 @@
     <form v-if="noteOnly" class="inline-clarification" @submit.prevent="submit">
       <label :for="`clarification-${plan.resolution_id}`">{{ plan.clarification?.type === 'time_range' ? '时间范围' : '补充说明' }}</label>
       <textarea :id="`clarification-${plan.resolution_id}`" v-model="note" maxlength="1200" rows="2" :disabled="!active || submitted" :placeholder="plan.clarification?.placeholder || '直接说明你的意思即可。'" />
-      <small v-if="plan.fields.length">已确定指标：{{ plan.fields.map(f => f.candidates[0]?.metric || f.label).join('、') }}</small>
+      <small v-if="plan.fields.length">已确定指标：{{ plan.fields.map(f => f.candidates[0]?.metric || fieldLabel(f)).join('、') }}</small>
       <t-button type="submit" :disabled="!canSubmit || !active || submitted">{{ submitted ? '已提交补充' : '继续查询' }}</t-button>
     </form>
     <t-button v-else theme="primary" variant="outline" :disabled="!active || submitted" @click="visible = true">{{ submitted ? '已提交选择' : '选择指标' }}</t-button>
@@ -13,7 +13,7 @@
       <div class="field-clarification-body" v-if="plan">
         <p>{{ plan.question }}</p>
         <fieldset v-for="field in visibleFields" :key="field.role">
-          <legend>{{ field.label }}</legend>
+          <legend>{{ fieldLabel(field) }}</legend>
           <label v-for="candidate in field.candidates" :key="candidate.series_id" class="field-candidate">
             <input type="radio" :name="`${plan.resolution_id}-${field.role}`" :value="candidate.series_id" v-model="selections[field.role]" />
             <span><strong>{{ candidate.metric }}<template v-if="dimensionLabel(candidate.dimensions)"> · {{ dimensionLabel(candidate.dimensions) }}</template></strong><small>工作表：{{ candidate.sheet }} · 单位：{{ candidate.unit || '原表未注明' }}<template v-if="candidate.header_cells?.length"> · 表头：{{ candidate.header_cells.join('、') }}</template></small><small v-if="candidate.chart_sheet">图表所在页：{{ candidate.chart_sheet }}</small><small v-if="candidate.reason">{{ candidate.reason }}</small></span>
@@ -22,7 +22,7 @@
         </fieldset>
         <label for="field-clarification-note">也可以直接输入你的意思{{ needsText ? '（需要补充）' : '（可选）' }}</label>
         <textarea id="field-clarification-note" v-model="note" maxlength="1200" rows="3" placeholder="请补充你要查询的对象、范围或计量单位。" />
-        <p class="field-help">候选依据来自模型判断。确认前不会执行这个待确认方案的取数或计算。</p>
+        <p class="field-help">{{ t('structuredReview.selectFieldHelp', '请选择你指的指标，确认后开始查询。') }}</p>
         <p class="field-help" role="status">{{ submitHint }}</p>
         <div class="field-actions"><t-button variant="outline" @click="visible = false">稍后</t-button><t-button :disabled="!canSubmit || !active || submitted" @click="submit">确认并继续</t-button></div>
       </div>
@@ -31,19 +31,28 @@
 </template>
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { fieldClarification, confirmationText, dimensionLabel, canConfirmFields, isNoteOnlyClarification } from '@/utils/fieldClarification';
 const props = defineProps<{ session: any; active: boolean }>();
 const emit = defineEmits<{ submit: [text: string] }>();
 const plan = computed(() => fieldClarification(props.session.agentEventStream || [], !!props.session.is_completed));
+const { t } = useI18n();
 const visible = ref(false), submitted = ref(false), note = ref('');
 const selections = ref<Record<string, string>>({});
 const visibleFields=computed(()=>plan.value?.fields.filter(f=>f.candidates.length!==1 && (!plan.value?.same_series_roles?.includes(f.role) || f.role===plan.value.same_series_roles[0])) || []);
+function fieldLabel(field: (typeof visibleFields.value)[number]) {
+  if (field.label.trim() && !/^v[1-8]$/i.test(field.label.trim())) return field.label
+  const metrics = [...new Set(field.candidates.map(candidate => candidate.metric).filter(Boolean))]
+  if (metrics.length === 1) return metrics[0]
+  const index = plan.value?.fields.findIndex(item => item.role === field.role) ?? -1
+  return index >= 0 && (plan.value?.fields.length || 0) > 1 ? t('structuredReview.fieldOrdinal', { index: index + 1 }, '第 {index} 项指标') : t('structuredReview.fieldNeedsChoice', '需要确认的指标')
+}
 const noteOnly = computed(() => isNoteOnlyClarification(plan.value));
 const needsText = computed(() => !!plan.value?.requires_note && !plan.value.fields.some(f => f.candidates.length > 1));
 const canSubmit = computed(() => canConfirmFields(plan.value, selections.value, note.value));
 const submitHint = computed(() => canSubmit.value
   ? '将按你选择的指标和补充说明继续查询。'
-  : needsText.value ? '请在输入框补充上方问题所需的信息后继续。' : '请为每项用途选择一个字段，或输入补充说明。');
+  : needsText.value ? '请在输入框补充上方问题所需的信息后继续。' : t('structuredReview.selectFieldHint', '请为每一项选择你指的指标，也可以在下方补充说明。'));
 watch(() => plan.value?.resolution_id, () => {
   selections.value = {}; note.value = ''; submitted.value = false;
   for (const f of plan.value?.fields || []) if (f.candidates.length === 1) selections.value[f.role] = f.candidates[0].series_id;

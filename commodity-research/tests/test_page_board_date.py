@@ -8,7 +8,7 @@ def test_pages_render_a_carried_day_before_their_own_observations(canonical):
         response = client.get(page(FIRST, path) + '?date=2000-01-03', headers=headers)
         assert response.status_code == 200, (path, response.text[:200])
         assert 'text/html' in response.headers['content-type']
-        assert '尚无已确认观测' not in response.text
+        assert '还没有可展示的指标数据' not in response.text
 
 
 def test_a_malformed_day_is_still_rejected(canonical):
@@ -37,7 +37,7 @@ def test_overview_without_core_focus_asks_for_a_selection_instead_of_reporting_n
     available = _empty_notice(core_items=[], has_selectable_items=True)
     assert '尚未选择核心关注' in available
     assert '还没有可用指标时' not in available
-    assert '尚无已确认观测' not in html
+    assert '还没有可展示的指标数据' not in html
     selected = _empty_notice(core_items=[{'kind': 'indicator', 'id': 'kb-x'}])
-    assert '当前工作台尚无已确认观测' in selected
-    assert '核心关注图表按需读取' in _empty_notice(core_items=[{'kind': 'chart', 'id': 'c'}], has_core_charts=True)
+    assert '当前还没有可展示的指标数据' in selected
+    assert '向下查看已关注的图表' in _empty_notice(core_items=[{'kind': 'chart', 'id': 'c'}], has_core_charts=True)

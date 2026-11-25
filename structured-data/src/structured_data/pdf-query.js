@@ -40,7 +40,7 @@ const PDFQuery = (() => {
   async function selectTable(id, requestApi = api) {
     const ticket = ++request, epoch = authEpoch, scope = $('dataset').value;
     clearQuerySelection(); $('queryPreview').classList.add('pdf-query-active');
-    $('pdfQueryDetail').hidden = false; $('pdfQueryDetail').innerHTML = '<p role="status">正在读取表格与原页出处…</p>';
+    $('pdfQueryDetail').hidden = false; $('pdfQueryDetail').innerHTML = '<p role="status">正在读取表格和原文页码…</p>';
     const table = await requestApi(`/api/pdf/tables/${encodeURIComponent(id)}?limit=100`);
     if (ticket !== request || epoch !== authEpoch || scope !== $('dataset').value) return;
     active = table; offset = 0; showList(scope);
@@ -48,7 +48,7 @@ const PDFQuery = (() => {
     const numeric = table.columns.filter(c => c.type === 'decimal');
     $('pdfQueryDetail').innerHTML = `<div class="query-heading"><span class="query-eyebrow">PDF 表格</span><h2>${esc(title(table))}</h2><p class="muted">${esc(table.source.file_name)} · 第 ${esc(pages(table))} 页 · 共 ${table.total_row_count} 行</p></div>
       <form id="pdfQueryForm" class="pdf-query-filters"><label>筛选列<select id="pdfFilterColumn"><option value="">全部数据</option>${columns}</select></label><label>条件<select id="pdfFilterOperator"><option value="contains">包含文字</option><option value="eq">等于</option><option value="gt">大于</option><option value="gte">大于等于</option><option value="lt">小于</option><option value="lte">小于等于</option><option value="empty">为空</option></select></label><label>筛选值<input id="pdfFilterValue" aria-label="PDF 筛选值"></label><label>显示方式<select id="pdfQueryOperation"><option value="rows">逐行查看</option><option value="count">符合条件的行数</option>${numeric.length ? '<option value="sum">数值合计</option><option value="avg">数值平均</option><option value="min">数值最小值</option><option value="max">数值最大值</option>' : ''}</select></label><label id="pdfValueLabel" hidden>计算列<select id="pdfValueColumn">${numeric.map(c => `<option value="${esc(c.name)}">${esc(c.name)}${c.unit ? '（' + esc(c.unit) + '）' : ''}</option>`).join('')}</select></label><button type="submit">查询</button></form>
-      <p class="muted pdf-query-notice">${table.status === 'reviewed' ? '此表已人工核对。' : '此表已自动入库，可对照原件核查。'}${table.coverage.table_input_complete ? '' : ' 此表的数据范围尚不完整，统计仅覆盖已入库部分。'}每次查询一张表，避免把历史版本或重叠表格重复计算。</p>
+      <p class="muted pdf-query-notice">${table.status === 'reviewed' ? '此表已人工核对。' : '这张表由系统识别，请对照原件核对。'}${table.coverage.table_input_complete ? '' : ' 这张表只识别了部分数据，计算只使用已保存的部分。'}每次只查询当前选中的表格。</p>
       <div id="pdfQueryStatus" role="status" aria-live="polite"></div><div id="pdfQueryOutput"></div><div class="pdf-query-pagination"><button id="pdfQueryPrevious" type="button" class="secondary">上一页</button><span id="pdfQueryPage"></span><button id="pdfQueryNext" type="button" class="secondary">下一页</button></div>`;
     $('pdfQueryOperation').onchange = () => { $('pdfValueLabel').hidden = !['sum','avg','min','max'].includes($('pdfQueryOperation').value); };
     $('pdfQueryForm').onsubmit = event => { event.preventDefault(); offset = 0; void run().catch(fail); };
@@ -97,7 +97,7 @@ const PDFQuery = (() => {
       try { const response = await fetch(`${base}/api/pdf/drafts/${encodeURIComponent(table.draft_id)}/source`,{headers:authHeaders()}); if (!response.ok) throw Error('暂时无法读取原件'); const blob = URL.createObjectURL(await response.blob()); if (popup) popup.location.href = blob + '#page=' + button.dataset.sourcePage; setTimeout(()=>URL.revokeObjectURL(blob),300000); }
       catch(error) { popup?.close(); fail(error); }
     };
-    $('pdfQueryStatus').textContent = operation === 'rows' ? `本页 ${result.rows.length} 行${result.output_truncated ? '，还有下一页' : ''}` : `计算覆盖筛选后的全部数据；此表共载入 ${result.input_count} 行。空值不参与数值计算。`;
+    $('pdfQueryStatus').textContent = operation === 'rows' ? `本页 ${result.rows.length} 行${result.output_truncated ? '，还有下一页' : ''}` : `计算使用了所有符合筛选条件的数据。当前表格共 ${result.input_count} 行，计算会跳过空白处。`;
     $('pdfQueryPrevious').disabled = offset === 0 || operation !== 'rows'; $('pdfQueryNext').disabled = !result.output_truncated || operation !== 'rows';
     $('pdfQueryPage').textContent = operation === 'rows' ? `第 ${Math.floor(offset/100)+1} 页` : '';
   }
@@ -106,6 +106,6 @@ const PDFQuery = (() => {
     async loadCatalog(requestApi,isCurrent) { const result=await requestApi('/api/pdf/tables');if(isCurrent()) tables=result.tables||[]; },
     ids:()=>tables.map(t=>t.table_id), count:()=>tables.length, fileCount:()=>groups().length, options:()=>groups().map(([id,name])=>`<option value="${esc(id)}">PDF · ${esc(name)} · ${tables.filter(t=>scopeOf(t)===id).length} 张表</option>`).join(''),
     deactivate,hasScope:id=>typeof id==='string'&&id.startsWith(prefix)&&tables.some(t=>scopeOf(t)===id), clear,showList,
-    async selectScope(id,isCurrent,requestApi) { showList(id);$('seriesRows').innerHTML='';$('seriesCount').textContent='PDF 表格';$('versionNotice').textContent='选择已入库表格查看数据、筛选和计算。';$('stats').innerHTML='';if(isCurrent()){const first=tables.find(t=>scopeOf(t)===id);if(first)await selectTable(first.table_id,requestApi);} }
+    async selectScope(id,isCurrent,requestApi) { showList(id);$('seriesRows').innerHTML='';$('seriesCount').textContent='PDF 表格';$('versionNotice').textContent='选择一张表格即可查看、筛选或计算数据。';$('stats').innerHTML='';if(isCurrent()){const first=tables.find(t=>scopeOf(t)===id);if(first)await selectTable(first.table_id,requestApi);} }
   };
 })();

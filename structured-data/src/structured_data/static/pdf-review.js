@@ -77,6 +77,17 @@
   const source = bundle => bundle?.source || {};
   const fragments = () => draft?.bundle?.fragments || [];
 
+  function diagnosticDetails(detail) {
+    const details=make('details',undefined,'pdf-problem-detail');
+    const diagnostic=make('pre');
+    details.dataset.adminDiagnostics='';
+    details.append(make('summary','管理员排查详情'),diagnostic);
+    details.addEventListener('toggle',()=>{
+      diagnostic.textContent=details.open&&host.canViewDiagnostics?.()?(typeof detail==='string'?detail:JSON.stringify(detail,null,2)).slice(0,4000):'';
+    });
+    return details;
+  }
+
   function setStatus(message, error = false) {
     const status = document.getElementById('pdfReviewStatus');
     host.onUploadStatus?.(message || '', error);
@@ -131,7 +142,7 @@
       if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error();
       return value;
     } catch {
-      throw new Error('计划必须是有效的 JSON 对象。');
+      throw new Error('暂时无法读取刚才的表格修改，请重新打开这张表后再试。');
     }
   }
 
@@ -477,8 +488,7 @@
 
   const fileIdentity = item => /^[a-f0-9]{64}$/i.test(item.source?.sha256 || '')
     ? 'sha:' + item.source.sha256.toLowerCase() : 'record:' + (item.draft_id || item.table_id);
-  const dateLabel = value => value && !Number.isNaN(Date.parse(value))
-    ? new Date(value).toLocaleString('zh-CN', {hour12: false}) : '';
+  const dateLabel = value => host.formatTime?.(value) || '时间未记录';
 
   function fileGroups() {
     const groups = new Map();
@@ -521,9 +531,9 @@
     target.replaceChildren();
     for (const job of jobs) {
       const row = make('div', undefined, 'row');
-      const statuses = {queued:'排队中',pending:'等待处理',processing:'处理中',running:'处理中',completed:'识别完成',failed:'处理失败',cancelled:'已取消'};
       row.classList.add('processed-file');
-      row.append(make('span', `${job.file_name || 'PDF'} · ${statuses[job.status] || job.status} · ${job.error || job.stage || ''}`));
+      row.append(make('span', `${job.file_name || 'PDF 文件'} · ${pdfJobMessage(job)}`));
+      if(job.error&&host.canViewDiagnostics?.())row.append(diagnosticDetails(job.error));
       if(job.kind==='automatic' && job.draft_id && ['failed','cancelled'].includes(job.status)) {
         row.append(action('继续整理表格',()=>autoProcess(job.draft_id).catch(error=>setStatus(error.message,true)),true));
       } else if (job.retry_available && ['failed', 'cancelled'].includes(job.status)) {
@@ -553,12 +563,6 @@
     if (!current(savedEpoch, savedOperation)) return;
     jobs = result.jobs || [];
     renderJobs();
-  }
-
-  function recordDetails(id) {
-    const details = make('details', undefined, 'record-details');
-    details.append(make('summary', '记录信息'), make('code', id || ''));
-    return details;
   }
 
   function displayedAutomation(record) {
@@ -625,12 +629,12 @@
       for (const item of group.versions) {
         const entry = make('div', undefined, 'pdf-history-entry');
         const publishedCount = group.published.filter(t => t.draft_id === item.draft_id).length;
-        entry.append(make('span', `${dateLabel(item.created_at) || '识别记录'} · ${item.fragment_count || 0} 处表格${publishedCount ? ` · 已发布 ${publishedCount} 张` : ''}`), action('打开此版本', () => selectDraft(item.draft_id), true), recordDetails(item.draft_id));
+        entry.append(make('span', `${dateLabel(item.created_at) || '识别记录'} · ${item.fragment_count || 0} 处表格${publishedCount ? ` · 已发布 ${publishedCount} 张` : ''}`), action('打开此版本', () => selectDraft(item.draft_id), true));
         history.append(entry);
       }
       for (const item of group.published) {
         const entry = make('div', undefined, 'pdf-history-entry');
-        entry.append(make('span', `${item.title || '已发布表格'} · ${item.columns?.length || 0} 列 · ${item.coverage?.logical_row_count || 0} 行`), make('small', item.extraction_verified ? '已独立验证提取' : '提取未独立验证'), recordDetails(item.table_id));
+        entry.append(make('span', `${item.title || '已发布表格'} · ${item.columns?.length || 0} 列 · ${item.coverage?.logical_row_count || 0} 行`), make('small', item.extraction_verified ? '已独立验证提取' : '提取未独立验证'));
         history.append(entry);
       }
       name.append(history);
@@ -646,10 +650,10 @@
 
   function createManualPlan() {
     const selected = fragments().filter(fragment => selectedFragments.has(fragment.id));
-    if (!selected.length) throw new Error('请先选择至少一个原始表片段。');
+    if (!selected.length) throw new Error('请先选择要拼接的表格区域。');
     const widths = selected.map(fragment => Math.max(0, ...(fragment.rows || []).map(row => row.length)));
     if (!widths.length || widths.some(width => width !== widths[0]) || widths[0] < 1) {
-      throw new Error('所选片段列数不一致，不能生成无损手动模板；请调整片段后再编写计划。');
+      throw new Error('所选区域的列数不同，请对照原 PDF 核对它们是否属于同一张表，再调整选择。');
     }
     return {
       bundle_sha256: draft.bundle_sha256,
@@ -922,7 +926,7 @@
 
   function openProcessingModel() {
     if(host.openModelSettings)host.openModelSettings();
-    else setStatus('请通过页面右上角的“字段模型”选择可用模型。',true);
+    else setStatus('请打开“表头识别模型”设置并选择可用模型。',true);
   }
 
   function problemFor(state) {
@@ -960,8 +964,11 @@
       for(;;){
         const job=await api(`/api/pdf/jobs/${encodeURIComponent(started.id)}`);
         if(!active())return;
-        fileProgress.set(id,job.stage||'正在整理表格…');updateFileProgress();
-        if(['failed','cancelled'].includes(job.status))throw new Error(job.error||'整理未完成，请重试。');
+        fileProgress.set(id,pdfJobMessage(job));updateFileProgress();
+        if(['failed','cancelled'].includes(job.status)){
+          host.showRequestDiagnostics?.(job.error||job.problem);
+          throw new Error(pdfJobMessage(job));
+        }
         if(job.status==='completed'){
           const [catalog,published]=await Promise.all([api('/api/pdf/drafts'),api('/api/pdf/tables')]);
           if(!active())return;
@@ -1010,8 +1017,7 @@
     if(problem?.action==='review')controls.append(make('span','请在下方选择表格，处理对应片段','muted'));
     panel.append(summary,controls);slot.append(panel);
     const inspection=make('div',undefined,'pdf-automation-inspection');slot.append(inspection);
-    if(problem){const detail=make('details',undefined,'pdf-problem-detail');detail.append(make('summary','错误详情'),make('p',`错误代码：${problem.code}`));
-      if(problem.input_chars)detail.append(make('p',`本次内容 ${problem.input_chars.toLocaleString()} 字符，单次上限 ${problem.limit_chars.toLocaleString()} 字符。`));inspection.append(detail);}
+    if(problem&&host.canViewDiagnostics?.())inspection.append(diagnosticDetails(problem));
     const exceptions=(state?.groups||[]).filter(group=>group.status!=='accepted');
     if(exceptions.length){
       const list=make('div',undefined,'pdf-exceptions');
@@ -1051,7 +1057,7 @@
     const loading=make('div','正在读取表格与原件…','pdf-detail-loading');loading.setAttribute('role','status');
     detail.append(heading,loading);openDetail();
     setStatus('正在读取原始片段与受保护的 PDF 原件…');
-    invalidatePreview('选择片段并预览映射后，结果会显示在这里。');
+    invalidatePreview('请先选择表格区域，再预览整理后的表格。');
     try {
       const [record, response] = await Promise.all([
         api(`/api/pdf/drafts/${encodeURIComponent(id)}`),
@@ -1241,30 +1247,47 @@
     renderDrafts();
   }
 
+  const unknownJobStatus = '暂时无法确认处理进度，请刷新记录。';
+  function pdfJobMessage(job) {
+    if(job.status==='queued'||job.status==='pending')return '等待处理';
+    if(job.status==='processing'||job.status==='running')return job.kind==='automatic'?'正在整理表格':'正在识别 PDF 中的表格';
+    if(job.status==='completed')return '已识别';
+    if(job.status==='cancelled')return '处理已取消，可以重新开始。';
+    if(job.status==='failed')return job.problem?.message || 'PDF 处理未完成，请在这份文件的处理记录中重试。';
+    return unknownJobStatus;
+  }
+
   async function pollJob(jobId, savedEpoch, savedOperation) {
     for (;;) {
       const job = await api(`/api/pdf/jobs/${encodeURIComponent(jobId)}`);
       if (!current(savedEpoch, savedOperation)) return;
-      setStatus(job.stage || `PDF 任务：${job.status}`);
+      setStatus(pdfJobMessage(job));
       if (['failed', 'cancelled'].includes(job.status)) {
         jobs = [job, ...jobs.filter(item => item.id !== job.id)];
         renderJobs();
-        throw new Error(job.error || 'PDF 解析失败，可通过任务旁的按钮手动重试。');
+        host.showRequestDiagnostics?.(job.error||job.problem);
+        throw new Error(pdfJobMessage(job));
       }
       if (job.status === 'completed') {
         const draftId = job.draft_id || job.result?.draft_id;
-        if (!draftId) throw new Error('解析完成但没有可读取的 PDF 草稿编号。');
+        if (!draftId) {
+          host.showRequestDiagnostics?.({status:job.status,draft_id:draftId});
+          throw new Error('PDF 已识别，但暂时打不开核对结果。请刷新处理记录，再打开这份文件。');
+        }
         await loadDrafts(savedEpoch, savedOperation);
         await loadTables(savedEpoch, savedOperation);
         if (!current(savedEpoch, savedOperation)) return;
         if(job.automatic_result?.status==='completed'){
-          showFileList();setStatus(job.stage||'表格已自动入库，可用于查询与问答。');return job;
+          showFileList();setStatus('整理好的表格已可用于查询与问答。');return job;
         }
         if (await selectDraft(draftId) === false) throw new Error('PDF 已识别，但无法打开核对结果，请检查原件读取权限后重试。');
-        if(job.automatic_result)setStatus(job.stage||'可用表格已入库，请处理剩余识别疑点。');
+        if(job.automatic_result)setStatus('部分表格已可查询，请打开这份文件核对其余表格。');
         return job;
       }
-      if (!['processing', 'queued', 'pending', 'running'].includes(job.status)) throw new Error(`未知的 PDF 任务状态：${job.status}`);
+      if (!['processing', 'queued', 'pending', 'running'].includes(job.status)) {
+        host.showRequestDiagnostics?.({status:job.status});
+        throw new Error(unknownJobStatus);
+      }
       await new Promise((resolve, reject) => {
         const signal = scopeController.signal;
         const cleanup = () => signal.removeEventListener('abort', aborted);
@@ -1277,7 +1300,7 @@
 
   async function openKnowledgeSource(sourceKnowledgeId) {
     const id = String(sourceKnowledgeId || '');
-    if (!id) throw new Error('PDF 原件编号为空。');
+    if (!id) throw new Error('暂时找不到 PDF 原件，请从知识库重新打开这份文件。');
     const savedEpoch = host.getAuthEpoch();
     if (requestedSourceKnowledge === id && requestedSourceEpoch === savedEpoch && sourceBusy) return;
     host.showWorkspace?.();
@@ -1290,7 +1313,7 @@
     const savedOperation = ++operation;
     const isCurrentSource = () => current(savedEpoch, savedOperation) && requestedSourceKnowledge === id && requestedSourceEpoch === savedEpoch;
     const isCurrentSourceScope = () => savedEpoch === host.getAuthEpoch() && savedEpoch === epoch && requestedSourceKnowledge === id && requestedSourceEpoch === savedEpoch && !scopeController.signal.aborted;
-    setStatus('正在读取知识库中的 PDF 原件并准备核对草稿…');
+    setStatus('正在打开知识库中的 PDF 和表格核对结果…');
     try {
       const response = await host.loadKnowledgeResult(id, {signal: scopeController.signal});
       if (!isCurrentSource()) return;
@@ -1324,7 +1347,7 @@
   }
 
   async function uploadFile(file) {
-    if (!config.configured) throw new Error('PDF 解析服务尚未配置，当前不能导入。');
+    if (!config.configured) throw new Error('暂时无法导入 PDF，请联系管理员开通文件识别。');
     if (!file || !file.name.toLowerCase().endsWith('.pdf')) throw new Error('请选择 PDF 文件。');
     if (file.size > config.max_bytes) throw new Error(`PDF 超过 ${Math.round(config.max_bytes / 1024 / 1024)} MB。`);
     const savedEpoch = epoch;
@@ -1363,7 +1386,7 @@
       renderJobs();
       renderDrafts();
       renderPublishedTables();
-      setStatus(config.configured ? '' : 'PDF 解析服务尚未配置，暂时无法处理新文件。');
+      setStatus(config.configured ? '' : '暂时无法处理新 PDF，请联系管理员开通文件识别。');
       const activeJob=jobs.find(job=>['processing','pending','queued','running'].includes(job.status));
       if(activeJob?.kind==='automatic' && activeJob.draft_id)void autoProcess(activeJob.draft_id,activeJob.id).catch(()=>{});
       else if(activeJob)void pollJob(activeJob.id,savedEpoch,savedOperation).catch(error=>{

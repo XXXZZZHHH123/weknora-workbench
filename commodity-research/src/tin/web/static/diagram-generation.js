@@ -102,13 +102,13 @@ async function dgDiscardResult() {
 async function dgGeneratorRequest(path, options) {
   const response = await researchFetch((window.RESEARCH_PREFIX || '') + '/api/sn/diagram/generation' + path, options);
   const data = await response.json();
-  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '生成未完成，请核对输入和模型配置');
+  if (!response.ok) throw new Error(typeof data.detail === 'string' ? (window.researchCopy?.(data.detail) ?? data.detail) : '生成未完成，请核对输入和模型配置');
   return data;
 }
 async function dgJobRequest(path, options = {}) {
   const response = await researchFetch((window.RESEARCH_PREFIX || '') + '/api/sn/diagram/jobs' + path, options);
   const data = await response.json();
-  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '后台生成暂不可用，请稍后重试');
+  if (!response.ok) throw new Error(typeof data.detail === 'string' ? (window.researchCopy?.(data.detail) ?? data.detail) : '后台生成暂不可用，请稍后重试');
   return data;
 }
 async function dgLoadGenerator() {

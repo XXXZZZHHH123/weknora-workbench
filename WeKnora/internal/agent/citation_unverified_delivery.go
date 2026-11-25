@@ -275,7 +275,7 @@ func (e *AgentEngine) citationUnverifiedPresentation(ctx context.Context, state 
 			return "", 0, 0, nil, nil, false
 		}
 	}
-	notice := "标了〔引用未核验〕的地方没能和本轮查到的原文对上，对应的链接已移除。"
+	notice := "本次读取的资料还不能确认标出的引用，因此已移除对应链接。请找到原文后再引用。"
 	if markedNumbers > 0 {
 		notice += unverifiedNumberNotice
 	}

@@ -19,10 +19,21 @@
     already_imported: '已导入，跳过重复图表', same_indicators: '与图表库已有图指标相同，已跳过',
     pending_source: '曲线来源尚未接入', unsupported: '暂不支持该图型', no_data: '曲线没有可用数据', unconfirmed_sheet: '工作表尚未确认'
   };
+  const drawFailure = '这条曲线暂时无法绘制，请核对指标、单位和日期';
+  const axisLabels = {left:'左侧纵轴',right:'右侧纵轴'};
   function message(value) {
-    if (typeof value === 'string') return messages[value] || value;
+    if (typeof value === 'string') {
+      if (Object.hasOwn(messages,value)) return messages[value];
+      if (!value || /[\u3400-\u9fff]/.test(value)) return value;
+      root.researchDiagnostics?.(value);
+      return drawFailure;
+    }
     if (!value) return '';
-    return value.message || [value.label || value.axis, messages[value.code] || value.code, value.units?.join(' / ')].filter(Boolean).join('：');
+    if (value.message) return message(value.message);
+    const known = Object.hasOwn(messages,value.code);
+    if (!known) root.researchDiagnostics?.(value);
+    return [value.label || axisLabels[value.axis], known ? messages[value.code] : drawFailure,
+      value.units?.join(' / ')].filter(Boolean).join('：');
   }
   async function api(path, options = {}) {
     const headers = new Headers(options.headers || {});
@@ -31,9 +42,14 @@
     const response = await fetcher((root.RESEARCH_PREFIX || '') + '/api/sn' + path, {...options, headers});
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const detail = body.detail;
-      const error = new Error(typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map(x => x.msg || '输入无效').join('；') : '请求失败，请稍后重试');
-      error.status = response.status; throw error;
+      const detail = body?.detail;
+      const mapped = root.researchCopy?.(detail) ?? detail;
+      const readable = typeof mapped === 'string' && /[\u3400-\u9fff]/.test(mapped);
+      const copy = readable ? mapped : Array.isArray(detail) ? '填写内容有误，请核对图表设置后重试。' :
+        options.method && options.method !== 'GET' ? '暂时无法确认图表是否已保存，请重新打开图表后核对。' :
+          '暂时无法读取图表，请稍后重试。';
+      if (!readable) root.researchDiagnostics?.(detail);
+      throw Object.assign(new Error(copy),{status:response.status,detail});
     }
     return body;
   }

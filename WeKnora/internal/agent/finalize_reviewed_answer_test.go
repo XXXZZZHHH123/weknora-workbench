@@ -70,8 +70,8 @@ func TestFinalReviewSynthesisJSONCannotBypassCurrentNumericGuard(t *testing.T) {
 	recorder.attach(engine.eventBus)
 	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{{Name: "structured_analyze_table", Result: &types.ToolResult{Success: true, Output: `{"kind":"structured_analysis","status":"ok","rows":[[30]]}`}}}}}}
 	require.NoError(t, engine.streamFinalAnswerToEventBus(context.Background(), "回答当前问题", state, "s", emptyMessages()))
-	require.Contains(t, state.FinalAnswer, "结果999〔未核验〕。")
-	require.Contains(t, state.FinalAnswer, "请以引用的原表、原文或数据为准")
+	require.Contains(t, state.FinalAnswer, "结果999〔数字待核对〕。")
+	require.Contains(t, state.FinalAnswer, "写入报告前，请对照原表或原文核对")
 	done, visible := recorder.snapshot()
 	require.Equal(t, 1, done)
 	require.Equal(t, state.FinalAnswer, visible)

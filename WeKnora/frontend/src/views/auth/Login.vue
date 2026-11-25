@@ -429,7 +429,7 @@ const handleOIDCLogin = async () => {
     const authorizationURL = response.authorization_url
 
     if (!response.success || !authorizationURL) {
-      MessagePlugin.error(response.message || t('auth.oidcLoginFailed'))
+      MessagePlugin.error(t('auth.oidcLoginFailed'))
       return
     }
 
@@ -440,7 +440,7 @@ const handleOIDCLogin = async () => {
     window.location.href = authorizationURL
   } catch (error: any) {
     console.error('OIDC 登录跳转失败:', error)
-    MessagePlugin.error(error.message || t('auth.oidcLoginFailed'))
+    MessagePlugin.error(t('auth.oidcLoginFailed'))
   } finally {
     oidcLoading.value = false
   }
@@ -492,7 +492,7 @@ const handleLogin = async () => {
     }
   } catch (error: any) {
     console.error('登录错误:', error)
-    MessagePlugin.error(error.message || t('auth.loginErrorRetry'))
+    MessagePlugin.error(t('auth.loginErrorRetry'))
   } finally {
     loading.value = false
   }
@@ -551,7 +551,7 @@ const handleRegister = async () => {
     }
   } catch (error: any) {
     console.error('注册错误:', error)
-    MessagePlugin.error(error.message || t('auth.registerError'))
+    MessagePlugin.error(t('auth.registerError'))
   } finally {
     loading.value = false
   }

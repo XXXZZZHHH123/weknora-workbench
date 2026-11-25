@@ -10,7 +10,7 @@
     let body; try { body = await response.json(); } catch (_) { throw new Error('服务返回异常，请重试；输入内容仍保留。'); }
     if (!response.ok) {
       const detail = body?.detail;
-      const error = new Error(typeof detail === 'string' ? detail : detail?.message || '操作未完成，请稍后重试。');
+      const error = new Error(typeof detail === 'string' ? (window.researchCopy?.(detail) ?? detail) : detail?.message || '操作未完成，请稍后重试。');
       error.status = response.status; error.preview = detail?.preview; throw error;
     }
     return body;

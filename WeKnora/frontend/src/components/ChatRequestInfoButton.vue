@@ -21,18 +21,18 @@
         <div class="chat-request-card-header">
           <span class="chat-request-card-title">{{ $t('chat.requestInfoTitle') }}</span>
           <t-button
-            v-if="rows.length > 0"
+            v-if="canDiagnose"
             size="small"
             variant="text"
             shape="square"
-            :title="$t('common.copy')"
+            :title="t('chat.requestInfoCopy', 'Copy diagnostic information')"
             @click="copyAll"
           >
             <t-icon name="copy" />
           </t-button>
         </div>
         <div v-if="rows.length === 0" class="chat-request-empty">
-          {{ $t('chat.requestInfoEmpty') }}
+          {{ t('chat.requestInfoEmpty') }}
         </div>
         <div v-else class="chat-request-card-body">
           <div v-for="row in rows" :key="row.key" class="chat-request-row">
@@ -54,6 +54,8 @@ import {
   type ChatRequestDebugInfo,
 } from '@/utils/chatRequestDebug';
 import { copyWithToast } from '@/utils/clipboard';
+import { useAuthStore } from '@/stores/auth';
+import { formatMessageTimestamp } from '@/utils/messageTimestamp';
 
 const props = defineProps<{
   session: Record<string, unknown>;
@@ -62,6 +64,8 @@ const props = defineProps<{
 
 const { t } = useI18n();
 const visible = ref(false);
+const auth = useAuthStore();
+const canDiagnose = computed(() => auth.isSystemAdmin || auth.hasRole('admin'));
 
 const debugInfo = computed((): ChatRequestDebugInfo => {
   const s = props.session;
@@ -84,19 +88,18 @@ const rows = computed(() => {
     if (!val) return;
     list.push({ key, label: t(labelKey), value: val });
   };
-  add('requestId', 'chat.requestInfoRequestId', info.requestId);
-  add('messageId', 'chat.requestInfoMessageId', info.messageId);
-  add('sessionId', 'chat.requestInfoSessionId', info.sessionId);
-  if (info.method && info.url) {
-    list.push({ key: 'url', label: t('chat.requestInfoUrl'), value: `${info.method} ${info.url}` });
+  if (typeof info.sentAt === 'number' && Number.isFinite(info.sentAt) && Math.abs(info.sentAt) < 8.64e15) {
+    add('sentAt', 'chat.requestInfoSentAt', formatMessageTimestamp(new Date(info.sentAt).toISOString()));
   }
-  if (info.sentAt) {
-    add('sentAt', 'chat.requestInfoSentAt', new Date(info.sentAt).toLocaleString());
-  }
+  const evidence = props.session.evidence_references;
+  const references = props.session.knowledge_references;
+  const sourceCount = (Array.isArray(evidence) ? evidence.length : 0) || (Array.isArray(references) ? references.length : 0);
+  if (sourceCount) list.push({ key: 'sources', label: t('chat.requestInfoSources', 'Available sources'), value: String(sourceCount) });
   return list;
 });
 
 const copyAll = async () => {
+  if (!canDiagnose.value) return;
   const ok = await copyWithToast(buildChatRequestDebugPayload(debugInfo.value), 'common.copied');
   if (ok) visible.value = false;
 };

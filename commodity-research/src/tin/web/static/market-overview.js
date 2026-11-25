@@ -11,14 +11,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const renderers = new Set(), chartControllers = new Set(), schedule = P.pool(4);
   const announce = message => { get('notice').textContent = message; get('notice').hidden = !message; };
   const normalize = value => String(value || '').normalize('NFKC').toLocaleLowerCase();
-  const title = item => item.kind === 'chart' ? (charts.get(item.id)?.title || charts.get(item.id)?.definition?.title || item.title || item.id) : (catalog.get(item.id)?.name || item.title || item.id);
+  const title = item => item.kind === 'chart' ? (charts.get(item.id)?.title || charts.get(item.id)?.definition?.title || item.title || '未命名图表') : (catalog.get(item.id)?.name || item.title || '未命名指标');
   function button(label, action, disabled = false) {
     const control = document.createElement('button'); control.type = 'button'; control.className = 'market-core-button';
     control.textContent = label; control.disabled = disabled; control.addEventListener('click', action); return control;
   }
   async function request(path, options = {}) {
     const response = await window.researchFetch((window.RESEARCH_PREFIX || '') + '/api/sn' + path, options), data = await response.json();
-    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '核心关注暂时不可用，请重试。');
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? (window.researchCopy?.(data.detail) ?? data.detail) : '核心关注暂时不可用，请重试。');
     return data;
   }
   function syncCount() {
@@ -244,12 +244,16 @@ document.addEventListener('DOMContentLoaded', () => {
       list.append(notice);
     }
     for (const row of suggested) {
-      catalog.set(row.series_id, {series_id: row.series_id, name: row.name || row.series_id, unit: row.unit, source: row.sheet});
+      catalog.set(row.series_id, {series_id: row.series_id, name: (row.name && row.name !== row.series_id ? row.name : '未命名指标'), unit: row.unit, source: row.sheet});
       const label = document.createElement('label'), checkbox = document.createElement('input'), content = document.createElement('span'), name = document.createElement('b'), reason = document.createElement('small');
       checkbox.type = 'checkbox'; checkbox.value = row.series_id; checkbox.checked = true; checkbox.addEventListener('change', syncSuggestions);
-      name.textContent = `${row.group} · ${row.name || row.series_id}`; reason.textContent = row.reason; content.append(name, reason); label.append(checkbox, content); list.append(label);
+      name.textContent = `${row.group} · ${(row.name && row.name !== row.series_id ? row.name : '未命名指标')}`; reason.textContent = row.reason; content.append(name, reason); label.append(checkbox, content); list.append(label);
     }
-    suggestionStatus(data.notice || (suggested.length ? '请核对分组和理由，勾选后采用。' : '模型未给出可采用建议。'));
+    const limited = data.truncated && Number.isInteger(data.selected_field_count)
+      ? `本次查看了 ${data.selected_field_count} 个指标，可手动补选其他指标。` : '';
+    const notice = (window.researchCopy?.(data.notice) ?? data.notice) || (suggested.length
+      ? '请核对分组和理由，勾选后采用。' : '本次没有找到可用建议，可以手动选择指标。');
+    suggestionStatus([notice, limited].filter(Boolean).join(' '));
     syncSuggestions();
   }
   async function reviewSetup() {

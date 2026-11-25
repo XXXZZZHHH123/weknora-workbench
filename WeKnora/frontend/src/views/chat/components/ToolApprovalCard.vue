@@ -7,7 +7,7 @@
       <summary>{{ $t('agentStream.toolApproval.toolDescription') }}</summary>
       <div class="prompt-desc">{{ descriptionParts.head }}</div>
     </details>
-    <div v-if="delegatedTask && argumentSummary" class="prompt-argument-summary">{{ argumentSummary }}</div>
+    <div v-if="!isOperation && argumentSummary" class="prompt-argument-summary">{{ argumentSummary }}</div>
     <dl v-if="descriptionParts.fields.length" class="prompt-fields">
       <div v-for="(field, i) in descriptionParts.fields" :key="i" class="prompt-field">
         <dt>{{ approvalFieldLabel(field.label) }}</dt>
@@ -238,7 +238,17 @@ const argumentSummary = computed(() => {
   try {
     const args = JSON.parse(argsText.value)
     if (!args || Array.isArray(args) || typeof args !== 'object') return ''
-    return Object.entries(args).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(' · ').slice(0, 240)
+    const labels = new Map([
+      ['title', 'Title'], ['name', 'Name'], ['url', 'Website'], ['from', 'From'], ['to', 'To'],
+      ['folder', 'Folder'], ['page', 'Page'], ['version', 'Version'], ['content', 'Content'],
+    ])
+    return Object.entries(args).map(([key, value], index) => {
+      const known = labels.get(key)
+      const label = known ? t(`agentStream.toolApproval.detail.${key}`, known) : t('chat.approvalInput', { index: index + 1 }, 'Input {index}')
+      const text = value == null ? '—' : typeof value === 'boolean' ? t(value ? 'common.yes' : 'common.no') :
+        typeof value === 'object' ? t('chat.approvalGroupedValue', 'See full details') : String(value)
+      return `${label} · ${text}`
+    }).join(' / ').slice(0, 240)
   } catch { return '' }
 })
 

@@ -66,7 +66,7 @@
                 <template v-else>
                   <ul v-if="grants.length" class="automation-detail__list">
                     <li v-for="grant in grants" :key="grant.id" class="automation-grant">
-                      <span class="automation-grant__label">{{ grant.label || grant.grant_key }}</span>
+                      <span class="automation-grant__label">{{ grant.label || t('displayError.automationStep') }}</span>
                       <t-tag size="small" variant="light" :theme="grant.risk === 'destructive' ? 'danger' : 'warning'">
                         {{ t(`automation.risk.${grant.risk}`, grant.risk) }}
                       </t-tag>
@@ -80,7 +80,7 @@
                     <div class="automation-detail__subhead">{{ t('automation.grants.candidates') }}</div>
                     <ul class="automation-detail__list">
                       <li v-for="candidate in candidates" :key="candidate.prompt_id" class="automation-grant">
-                        <span class="automation-grant__label">{{ candidate.label || candidate.tool }}</span>
+                        <span class="automation-grant__label">{{ candidate.label || candidate.service_name || t('displayError.automationStep') }}</span>
                         <t-tag size="small" variant="light" :theme="candidate.risk === 'destructive' ? 'danger' : 'warning'">
                           {{ t(`automation.risk.${candidate.risk}`, candidate.risk) }}
                         </t-tag>
@@ -155,11 +155,12 @@
                     :type="run.session_id ? 'button' : undefined"
                     :aria-label="run.session_id ? `${when(run.scheduled_at)} · ${t('automation.actions.openConversation')}` : undefined"
                     @click="run.session_id && openRun(run)">
-                    <p v-if="run.error" class="automation-run__text is-error">{{ run.error }}</p>
+                    <p v-if="run.error" class="automation-run__text is-error">{{ t('displayError.automationFailed') }}</p>
                     <p v-else-if="run.answer" class="automation-run__text">{{ run.answer }}</p>
                     <span v-else class="automation-detail__muted">{{ t(`automation.status.${run.status}`) }}</span>
                     <t-icon v-if="run.session_id" name="arrow-right-up" size="16px" class="automation-run__chevron" />
                   </component>
+                  <ErrorDiagnostics v-if="run.error" :detail="run.error" />
                   <AssistantActionsButton v-if="run.status === 'succeeded' && run.answer" :label="t('assistant.actions.analyzeRun')"
                     :actions="runAssistantActions(run)"
                     :selection="{ field: t('automation.detail.runs'), text: run.answer.slice(0, 3000) }" />
@@ -182,6 +183,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
 import { useI18n } from 'vue-i18n'
 import { DialogPlugin, MessagePlugin } from 'tdesign-vue-next'
 import {

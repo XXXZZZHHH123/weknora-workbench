@@ -105,7 +105,7 @@ def test_html_formats_evidence_and_warns_without_hiding_it(loaded, monkeypatch, 
         'weekday': '五', 'tone': None, 'main': None, 'gaps': 0, 'generated_at': payload['generated_at']}])
     response = TestClient(web.app).get('/sn/reports')
     assert response.status_code == 200
-    main = response.text.split('原始 JSON', 1)[0]
+    main = response.text
     assert main.count('最新数据距今 211 天，可能已停更') == 3
     assert '最新 116.58 吨' in main
     assert '在区间内' in main

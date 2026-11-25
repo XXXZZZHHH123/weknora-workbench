@@ -202,7 +202,7 @@ test('stored originals do not falsely claim parsed or confirmed facts', () => {
   try {
     assert.equal(f.view.sourceStatus(workbook), '原件已保存')
     assert.equal(f.view.sourceStatus({ file_name: 'fixture.png', parse_status: 'stored' }), '原件已保存')
-    assert.equal(f.view.sourceStatus(textFile), '文档已解析')
+    assert.equal(f.view.sourceStatus(textFile), '正文可搜索')
     assert.equal(f.view.isWorkbook({ file_name: 'fixture.png' }), false); assert.equal(f.view.isWorkbook(workbook), true)
   } finally { f.close() }
 })

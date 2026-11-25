@@ -4,7 +4,7 @@ import { workbenchSetupPhases, workbenchSetupTask } from './workbenchSetupTask'
 export type AnalysisJobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted' | 'expired' | 'applied' | 'superseded'
 export const analysisJobPresentation = {
   judgments: { title: '研究逻辑分析', view: 'judgment', completed: '研究分析已完成' },
-  diagram: { title: '产业图配置生成', view: 'diagram', completed: '产业图配置已生成' },
+  diagram: { title: '生成产业图草稿', view: 'diagram', completed: '产业图草稿已生成' },
   judgment_indicator_recommendations: { title: '研判指标推荐', view: 'judgment' },
   diagram_indicator_recommendations: { title: '产业图指标推荐', view: 'diagram' },
   monitor_draft: { title: '监测草稿生成', view: 'monitors' },
@@ -13,7 +13,7 @@ export const analysisJobPresentation = {
   dimension_inference: { title: '周报研究维度归纳', view: 'dimensions' },
   dimension_fields: { title: '研究维度指标建议', view: 'dimensions' },
   focus_suggestions: { title: '核心关注建议生成', view: 'market' },
-  judgment_dimensions: { title: '研究判断维度补标', view: 'judgment' },
+  judgment_dimensions: { title: '为研究判断补充分类', view: 'judgment' },
   strategy_text: { title: '策略原文整理', view: 'strategies' },
   strategy_generation: { title: '策略方案生成', view: 'strategies' },
   [workbenchSetupTask.purpose]: {
@@ -107,14 +107,14 @@ export async function dismissAnalysisJob(owner: AnalysisTaskOwner, id: string, i
   const result: unknown = await response.json()
   if (!isCurrent()) throw new Error('账号或空间已切换。')
   const job = readAnalysisJobs({ items: [result] })[0]
-  if (!job || job.id !== id || job.dismissed !== true) throw new Error('忽略状态未能核对，请刷新后重试。')
+  if (!job || job.id !== id || job.dismissed !== true) throw new Error('暂时无法确认这条提示是否已忽略，请刷新任务列表。')
   return job
 }
 
 export function readDismissedAnalysisJobIds(value: unknown): string[] {
   const ids = value && typeof value === 'object' ? (value as { dismissed_ids?: unknown }).dismissed_ids : undefined
   if (!Array.isArray(ids) || ids.length > 512 || ids.some(id => !analysisJobId(id)) || new Set(ids).size !== ids.length)
-    throw new Error('忽略状态未能核对，请刷新后重试。')
+    throw new Error('暂时无法确认这条提示是否已忽略，请刷新任务列表。')
   return [...ids] as string[]
 }
 

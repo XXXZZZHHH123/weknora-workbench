@@ -73,7 +73,6 @@ async function dgLoad() {
   //
   // 但这一条请求失败不能把整张图清空。之前失败即 return，dg.values 停在空对象，
   // 于是**每个方框都渲染成「未绑定」**——看上去像是绑定全丢了，实际只是取值没回来。
-  // 服务端没重启（POST 这个路由是新加的，旧进程上是 405）就会正好撞上。
   if (!dg.layout) return;
   const generation = dg.loadGeneration = (dg.loadGeneration || 0) + 1;
   if (window.DG_RESTRICTED) {
@@ -103,17 +102,15 @@ async function dgLoad() {
         window.DG_DATE ? `&date=${window.DG_DATE}` : ""}`);
       if (res.ok) {
         data = await res.json();
-        // 405 只有一个原因：这个路由是新加的，服务端进程还是旧代码。
-        // 静态文件每次请求都从磁盘读，Python 代码是进程启动时加载的——所以会出现
-        // 「前端是新的、后端是旧的」，前端功能看着都在，一调新接口就失败。
-        showToast(why === "HTTP 405"
-          ? "服务端还在跑旧代码（新接口返回 405）—— 请重启 uvicorn。现在显示的是已保存版本，新增/改绑的节点不会出数"
-          : `实时取值不可用（${why}），显示的是已保存版本`);
+        showToast("当前显示上次保存布局的数据。新加或换过指标的环节请稍后刷新查看。");
+      } else {
+        why += `；读取已保存布局：HTTP ${res.status}`;
       }
-    } catch (e) { /* 两条都不通，下面统一报 */ }
+    } catch (error) { why += `；读取已保存布局：${error.message}`; }
+    window.researchDiagnostics?.(why);
   }
   if (generation !== dg.loadGeneration) return;
-  if (!data) { showToast(`取值失败（${why}）—— 方框显示的不是真实状态`); return; }
+  if (!data) { showToast("暂时读不到产业链数据。请稍后刷新，再查看各环节状态。"); return; }
 
   dg.values = Object.fromEntries(data.nodes.map((n) => [n.node_id, n]));
   dg.judgment = data.judgment || {};

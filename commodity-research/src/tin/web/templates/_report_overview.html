@@ -31,9 +31,9 @@
 {% if citation.date_label %}<span>{{ citation.date_label }}</span>{% endif %}
 <a href="{{ citation.read_url }}" target="_blank" rel="noopener">查看原文</a>
 {% if citation.url %}<a href="{{ citation.url }}" target="_blank" rel="noopener noreferrer">原网页</a>{% endif %}
-<details class="report-citation-details"><summary>详情</summary>
-{% if citation.ingested_at %}<div>入库时间 {{ citation.ingested_at }}</div>{% endif %}
-<div>SHA-256 <code>{{ citation.content_sha256 }}</code></div>
+<details class="report-citation-details"><summary>原文记录详情</summary>
+{% if citation.ingested_at %}<div>资料保存时间 {{ citation.ingested_at }}</div>{% endif %}
+<div>文件校验值 <code>{{ citation.content_sha256 }}</code></div>
 </details>
 </div>
 {% else %}
@@ -44,5 +44,5 @@
 </ol>
 </section>
 {% endif %}
-{% else %}<p class="report-muted">暂无维度内容，可先绑定研究指标、标注研判依据或编辑维度综述。</p>{% endif %}
+{% else %}<p class="report-muted">这期还没有按研究维度整理内容。可以先添加指标、补充判断依据，或写下本期变化。</p>{% endif %}
 </section>

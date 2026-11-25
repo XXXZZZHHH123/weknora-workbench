@@ -8,7 +8,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
-const unverifiedNumberNotice = "标了〔未核验〕的数字没能和本轮查到的原文或数据逐项对上，请以引用的原表、原文或数据为准。"
+const unverifiedNumberNotice = "本次查到的数据还不能确认标出的数字。写入报告前，请对照原表或原文核对。"
 
 // A terminal warning is not approval. Keep a private binding for the exact
 // marked presentation and its navigation references, independently of the

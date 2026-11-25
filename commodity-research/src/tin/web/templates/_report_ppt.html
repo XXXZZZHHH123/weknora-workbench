@@ -15,6 +15,7 @@
       {% if not live_report %}<p class="report-muted">历史归档不重新绘图，图表页仅列标题与引用处。</p>{% endif %}
       <progress id="report-ppt-progress" max="1" value="0" hidden aria-label="PPT 生成进度"></progress>
       <p id="report-ppt-status" class="report-edit-status" role="status" aria-live="polite"></p>
+      {% if can_view_diagnostics is defined and can_view_diagnostics() %}<details id="report-ppt-diagnostics" hidden><summary>管理员诊断信息</summary><pre></pre></details>{% endif %}
     </div>
     <footer class="report-editor-footer"><button type="button" id="report-ppt-cancel" class="report-button">取消</button><button type="submit" id="report-ppt-generate" class="report-button report-button-primary">生成并下载</button></footer>
   </form>

@@ -22,16 +22,7 @@
 
     <!-- Content -->
     <div v-else class="settings-group">
-      <!-- 用户 ID -->
-      <div class="setting-row">
-        <div class="setting-info">
-          <label>{{ $t('tenant.api.userIdLabel') }}</label>
-          <p class="desc">{{ $t('tenant.api.userIdDescription') }}</p>
-        </div>
-        <div class="setting-control">
-          <span class="info-value">{{ userInfo?.id || '-' }}</span>
-        </div>
-      </div>
+      <ErrorDiagnostics :detail="userInfo?.id" />
 
       <!-- 用户名 -->
       <div class="setting-row">
@@ -182,6 +173,7 @@ import {
   type UserInfo,
 } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
 import { useI18n } from 'vue-i18n'
 import { newPasswordRules } from '@/utils/passwordPolicy'
 

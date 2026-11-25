@@ -9,6 +9,7 @@
       </div>
     </div>
 
+    <ErrorDiagnostics v-if="!visible" :detail="storageDiagnostic" />
     <t-loading :loading="loading" size="small" class="backend-list-loading">
       <t-empty
         v-if="!loading && backends.length === 0 && !authStore.hasRole('admin')"
@@ -239,6 +240,7 @@
           </template>
           {{ t('settings.storageBackend.testConnection') }}
         </t-button>
+        <ErrorDiagnostics :detail="storageDiagnostic" />
       </template>
     </SettingDrawer>
   </div>
@@ -250,6 +252,8 @@ import { DialogPlugin, MessagePlugin } from 'tdesign-vue-next'
 import { AddIcon } from 'tdesign-icons-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
+import { userFacingErrorKey } from '@/utils/userFacingError'
 import SettingDrawer from '@/components/settings/SettingDrawer.vue'
 import { providerLogo } from './providerLogos'
 import {
@@ -263,6 +267,7 @@ const authStore = useAuthStore()
 const loading = ref(false), saving = ref(false), testing = ref(false), visible = ref(false)
 const backends = ref<StorageBackend[]>([]), providers = ref<string[]>([]), defaultID = ref('')
 const editing = ref<StorageBackend | null>(null)
+const storageDiagnostic = ref<unknown>()
 const rawTestResult = ref<'ok' | 'error' | null>(null)
 const blankConfig = (): StorageBackendConfig => ({ mode: 'remote', endpoint: '', region: '', access_key_id: '', secret_access_key: '', bucket_name: '', path_prefix: '', use_ssl: true })
 const form = reactive<{ name: string; provider: string; config: StorageBackendConfig }>({ name: '', provider: 'local', config: blankConfig() })
@@ -332,19 +337,39 @@ async function load() {
     backends.value = list.data || []; defaultID.value = list.default_storage_backend_id || ''; providers.value = types.data || []
   } finally { loading.value = false }
 }
-function resetConfig() { form.config = blankConfig(); rawTestResult.value = null }
-function openCreate() { editing.value = null; form.name = ''; form.provider = providers.value[0] || 'local'; form.config = blankConfig(); rawTestResult.value = null; visible.value = true }
-function openEdit(backend: StorageBackend) { editing.value = backend; form.name = backend.name; form.provider = backend.provider; form.config = { ...blankConfig(), ...backend.config }; rawTestResult.value = null; visible.value = true }
+function resetConfig() { form.config = blankConfig(); rawTestResult.value = null; storageDiagnostic.value = undefined }
+function openCreate() { editing.value = null; form.name = ''; form.provider = providers.value[0] || 'local'; form.config = blankConfig(); rawTestResult.value = null; storageDiagnostic.value = undefined; visible.value = true }
+function openEdit(backend: StorageBackend) { editing.value = backend; form.name = backend.name; form.provider = backend.provider; form.config = { ...blankConfig(), ...backend.config }; rawTestResult.value = null; storageDiagnostic.value = undefined; visible.value = true }
+function showStorageFailure(detail: unknown) {
+  storageDiagnostic.value = detail
+  MessagePlugin.error(t(userFacingErrorKey(detail, 'displayError.storageConnectionFailed')))
+}
+
 async function testRaw() {
   testing.value = true
   rawTestResult.value = null
+  storageDiagnostic.value = undefined
   try {
-    const r: any = editing.value ? await testStorageBackendByID(editing.value.id) : await testStorageBackend(form)
-    if (r.success) { rawTestResult.value = 'ok'; MessagePlugin.success(t('settings.storageBackend.testSuccess')) }
-    else { rawTestResult.value = 'error'; MessagePlugin.error(r.error || t('settings.storageBackend.testFailed')) }
+    const result = editing.value ? await testStorageBackendByID(editing.value.id) : await testStorageBackend(form)
+    rawTestResult.value = result.success ? 'ok' : 'error'
+    if (result.success) MessagePlugin.success(t('settings.storageBackend.testSuccess'))
+    else showStorageFailure(result.error)
+  } catch (error: any) {
+    rawTestResult.value = 'error'
+    showStorageFailure(error?.diagnostic ?? error?.message)
   } finally { testing.value = false }
 }
-async function testSaved(backend: StorageBackend) { const r: any = await testStorageBackendByID(backend.id); r.success ? MessagePlugin.success(t('settings.storageBackend.testSuccess')) : MessagePlugin.error(r.error || t('settings.storageBackend.testFailed')) }
+
+async function testSaved(backend: StorageBackend) {
+  storageDiagnostic.value = undefined
+  try {
+    const result = await testStorageBackendByID(backend.id)
+    if (result.success) MessagePlugin.success(t('settings.storageBackend.testSuccess'))
+    else showStorageFailure(result.error)
+  } catch (error: any) {
+    showStorageFailure(error?.diagnostic ?? error?.message)
+  }
+}
 async function save() {
   if (!form.name.trim()) { MessagePlugin.warning(t('settings.storageBackend.nameRequired')); return }
   saving.value = true

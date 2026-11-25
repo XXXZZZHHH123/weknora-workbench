@@ -40,15 +40,15 @@
 <section class="mt-4">
   <div class="rounded-lg border {{ 'border-[var(--primary)]/40 bg-[var(--primary-soft)]' if usage.judgment
               else 'border-[var(--line)] bg-[var(--surface)]' }} p-4">
-    <div class="text-[10px] font-bold tracking-widest text-[var(--text-muted)] uppercase mb-2">WHO DEPENDS ON THIS</div>
+    <div class="text-[10px] font-bold tracking-widest text-[var(--text-muted)] mb-2">哪些研究判断使用了此指标</div>
     {% if usage.judgment %}
     <p class="text-sm font-bold text-[var(--primary)]">
-      当前判断（v{{ usage.judgment_version }}·{{ usage.judgment_status }}）直接引用了这条指标
+      当前判断（第 {{ usage.judgment_version }} 版 · {{ usage.judgment_status }}）直接引用了这条指标
     </p>
     <div class="mt-1.5 flex flex-wrap gap-1.5">
       {% for r in usage.judgment %}
       <span class="px-2 py-0.5 text-[11px] rounded font-semibold bg-[var(--surface)] border border-[var(--primary)]/40 text-[var(--primary)]">
-        {{ r.role }}{% if r.ref_id %} · {{ r.ref_id }}{% endif %}</span>
+        {{ {'阈值':'阈值条件','证伪条件':'证伪条件','证据':'研判依据','边际关注':'重点变化','白名单':'已选指标'}.get(r.role, '其他引用') }}</span>
       {% endfor %}
     </div>
     <p class="text-[11px] text-[var(--text-muted)] mt-2">

@@ -43,7 +43,7 @@ const sample = {...current,dataset_id:'c'.repeat(24),source_file:'中哲_范围�
   await page.goto('http://fixture.test/?samples=1');await page.locator('#stats b').first().waitFor();
   await page.locator('#samplesSummary').click();await page.locator('#sampleList button').click();await page.waitForFunction(id=>document.querySelector('#dataset').value===id,sample.dataset_id);
   assert.equal(await page.locator('#dataset').inputValue(),sample.dataset_id);
-  assert.match(await page.locator('#versionNotice').innerText(),/验收样例/);
+  assert.match(await page.locator('#versionNotice').innerText(),/示例数据/);
   await page.waitForFunction(id=>document.querySelector('#scope [data-download]')?.dataset.download===id,sample.dataset_id);
   assert.equal(await page.locator('#scope [data-download]').getAttribute('data-download'),sample.dataset_id);
   await page.reload();await page.locator('#stats b').first().waitFor();

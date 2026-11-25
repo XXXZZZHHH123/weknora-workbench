@@ -13,15 +13,84 @@
 <input id="url" type="url" placeholder="公告或研报网址" style="width:65%"><button id="addUrl">添加网页</button>
 </section>
 <div id="notice" role="status" class="{% if identity %}workbench-ingest-hidden{% endif %}"></div><section id="legacy-materials-status" class="{% if identity %}workbench-ingest-hidden{% endif %}"><h2>资料与解析状态</h2><button id="refresh">刷新状态</button><table><thead><tr><th>资料</th><th>解析状态</th></tr></thead><tbody id="documents"></tbody></table><button id="previous">上一页</button><span id="pageStatus"></span><button id="next">下一页</button></section>
+{% if diagnostics %}<details id="material-diagnostics" hidden><summary>管理员诊断信息</summary><pre></pre></details>{% endif %}
 <script>
 const prefix={{ prefix|tojson }},identity={{ identity|tojson }},$=id=>document.getElementById(id),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function api(path,options={}){const h=new Headers(options.headers||{});if(identity){h.set('X-Tenant-ID',String(identity.tenant));h.set('X-Research-User',identity.user)}const r=await fetch(prefix+path,{credentials:'same-origin',...options,headers:h});const d=await r.json();if(!r.ok)throw Error(d.detail||'操作失败');return d}
+async function api(path,options={}){
+  const headers=new Headers(options.headers||{});
+  if(identity){headers.set('X-Tenant-ID',String(identity.tenant));headers.set('X-Research-User',identity.user);}
+  const response=await fetch(prefix+path,{credentials:'same-origin',...options,headers});
+  const result=await response.json().catch(()=>null);
+  if(!response.ok || !result) throw Object.assign(new Error(),{status:response.status,detail:result?.detail});
+  return result;
+}
+const parseLabels={stored:'原件已保存，尚未开始解析',pending:'等待处理',processing:'正在解析',finalizing:'已可搜索，仍在整理',completed:'已可用',failed:'解析未完成',cancelled:'解析已停止',deleting:'正在删除'};
 let documentPage=1;
-async function refresh(){const d=await api('/api/materials?page='+documentPage);$('library').innerHTML='<option value="">请选择文档知识库</option>'+d.libraries.map(k=>`<option value="${esc(k.id)}">${esc(k.name)}</option>`).join('');$('library').value=d.kb_id||'';$('documents').innerHTML=d.documents.map(k=>`<tr><td>${esc(k.title||k.file_name||k.id)}</td><td>${esc(k.parse_status||'待处理')}</td></tr>`).join('');$('pageStatus').textContent=`第 ${d.page} 页 · 共 ${d.total} 条`;$('previous').disabled=d.page<=1;$('next').disabled=d.page*d.page_size>=d.total}
-function task(fn){return async()=>{try{$('notice').textContent='处理中…';await fn();await refresh()}catch(e){$('notice').textContent=e.message}}}
-$('bind').onclick=task(async()=>{await api('/api/materials/library',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kb_id:$('library').value})});$('notice').textContent='已保存'});
-$('upload').onclick=task(async()=>{const f=$('file').files[0];if(!f)throw Error('请选择文件');const body=new FormData();body.append('file',f);const d=await api('/api/materials/upload',{method:'POST',body});$('notice').textContent=d.notice+'\n文件校验值：'+d.sha256});
-$('addUrl').onclick=task(async()=>{const d=await api('/api/materials/url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:$('url').value})});$('notice').textContent=d.notice});
-$('previous').onclick=task(async()=>{documentPage-=1;$('notice').textContent=''});$('next').onclick=task(async()=>{documentPage+=1;$('notice').textContent=''});
-$('refresh').onclick=task(async()=>{$('notice').textContent='状态已刷新'});if(!identity)refresh().catch(e=>$('notice').textContent=e.message);
+async function refresh(){
+  const result=await api('/api/materials?page='+documentPage);
+  $('library').innerHTML='<option value="">请选择文档知识库</option>'+result.libraries.map(item=>`<option value="${esc(item.id)}">${esc(item.name)}</option>`).join('');
+  $('library').value=result.kb_id||'';
+  $('documents').innerHTML=result.documents.map(item=>{
+    const status=Object.hasOwn(parseLabels,item.parse_status)?parseLabels[item.parse_status]:'状态暂时无法确认，请刷新查看';
+    return `<tr><td>${esc(item.title||item.file_name||'未命名资料')}</td><td>${status}</td></tr>`;
+  }).join('');
+  $('pageStatus').textContent=`第 ${result.page} 页 · 共 ${result.total} 条`;
+  $('previous').disabled=result.page<=1;
+  $('next').disabled=result.page*result.page_size>=result.total;
+}
+function notice(message, detail){
+  $('notice').textContent=message;
+  const diagnostics=$('material-diagnostics');
+  if(diagnostics){
+    diagnostics.hidden=!detail;
+    diagnostics.querySelector('pre').textContent=detail?(typeof detail==='string'?detail:JSON.stringify(detail,null,2)):'';
+  }
+}
+function showFailure(error,fallback){
+  const messages={
+    '请先为锡研究选择当前空间的文档知识库':'请先选择并保存接收资料的知识库。',
+    '只能绑定当前空间有权限的文档知识库':'请从列表中重新选择有权限使用的知识库。',
+    '支持 PDF、Word、文本、网页文件和图片；表格请使用文件接入入口':'请上传 PDF、Word、文本、网页文件或图片。表格请到“原件与来源核验”导入。',
+    '文件超过100MB':'文件超过 100 MB，请拆小后再上传。',
+    '文件为空':'这份文件没有内容，请选择另一份文件上传。',
+    '原件已保留；知识库有重复文件，请在知识库核对该文件后重试':'原件已保存。知识库中有重复文件，请核对后再试。'
+  };
+  const message=Object.hasOwn(messages,error.detail)?messages[error.detail]:
+    error.status===401?'登录已失效，请重新打开研究工作台。':fallback;
+  notice(message,error.detail);
+}
+const refreshFailure='暂时无法读取资料状态，请刷新页面后重试。';
+function task(action,fallback){
+  return async()=>{
+    notice('正在处理…');
+    let result;
+    try{result=await action();}catch(error){showFailure(error,fallback);return;}
+    const message=typeof result==='string'?result:result?.message;
+    try{await refresh();notice(message||'资料状态已刷新。',result?.detail);}
+    catch(error){notice(message?message+' 资料列表暂时无法刷新，请稍后再查看。':refreshFailure,error.detail);}
+  };
+}
+$('bind').onclick=task(async()=>{
+  if(!$('library').value) return '请先选择接收资料的知识库。';
+  await api('/api/materials/library',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kb_id:$('library').value})});
+  return '已保存所选知识库。';
+},'暂时无法确认知识库是否保存，请刷新列表后核对。');
+$('upload').onclick=task(async()=>{
+  const file=$('file').files[0];
+  if(!file) return '请选择要上传的文件。';
+  const body=new FormData();
+  body.append('file',file);
+  const result=await api('/api/materials/upload',{method:'POST',body});
+  return {message:`《${file.name}》原件已保存。请在资料列表查看正文何时可搜索。`,
+    detail:result.sha256&&'SHA256: '+result.sha256};
+},'暂时无法确认文件是否上传成功，请先刷新资料列表再决定是否重新上传。');
+$('addUrl').onclick=task(async()=>{
+  if(!$('url').value) return '请填写要添加的网页地址。';
+  await api('/api/materials/url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:$('url').value})});
+  return '网页已加入知识库，请在资料列表查看处理状态。';
+},'暂时无法确认网页是否已添加，请先刷新资料列表核对。');
+$('previous').onclick=task(async()=>{documentPage-=1;},refreshFailure);
+$('next').onclick=task(async()=>{documentPage+=1;},refreshFailure);
+$('refresh').onclick=task(async()=>{},refreshFailure);
+if(!identity)refresh().catch(error=>showFailure(error,refreshFailure));
 </script></main></body></html>

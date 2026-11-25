@@ -145,6 +145,6 @@ def test_missing_owner_never_falls_back_to_visitor_records(canonical):
     for suffix in ('/sn/judgment', '/sn/strategies', '/sn/reports'):
         response = client.get(page(FIRST, suffix), headers=headers)
         assert response.status_code == 200, response.text
-        assert '主人归属信息尚未同步' in response.text
+        assert '暂时无法确认这份研究台的共享范围' in response.text
         assert 'original thesis' not in response.text and 'original brief' not in response.text
     assert not state.get('bounded_requests')

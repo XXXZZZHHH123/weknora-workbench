@@ -18,21 +18,32 @@ document.addEventListener("DOMContentLoaded", () => {
   function cancel() {
     job?.abort(); dialog.close();
   }
-  opener.addEventListener("click", () => { if (!job) status.textContent = ""; dialog.showModal(); });
+  function diagnostic(detail) {
+    const node = $("report-ppt-diagnostics");
+    if (!node) return;
+    node.hidden = detail == null;
+    node.querySelector("pre").textContent = detail == null ? "" :
+      (typeof detail === "string" ? detail : JSON.stringify(detail, null, 2));
+  }
+  opener.addEventListener("click", () => { if (!job) { status.textContent = ""; diagnostic(); } dialog.showModal(); });
   $("report-ppt-close").addEventListener("click", cancel);
   $("report-ppt-cancel").addEventListener("click", cancel);
   dialog.addEventListener("cancel", event => { event.preventDefault(); cancel(); });
   window.addEventListener("pagehide", () => job?.abort(), {once: true});
   async function readJSON(response, fallback) {
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw Object.assign(new Error(typeof data.detail === "string" ? data.detail : fallback), {status: response.status});
+    if (!response.ok) {
+      const message = response.status === 409 ? "报告内容已变化，请刷新后重试。" :
+        response.status === 403 ? "当前账号不能读取导出所需的资料，请联系研究台负责人。" : fallback;
+      throw Object.assign(new Error(message), {status: response.status, detail: data?.detail, userCopy: true});
+    }
     return data;
   }
   async function request(url, options) {
     try { return await fetch(url, options); }
     catch (error) {
       if (error.name === "AbortError") throw error;
-      throw new Error("网络连接失败，请检查连接后重试。");
+      throw Object.assign(new Error("网络连接失败，请检查连接后重试。"), {userCopy: true, cause: error});
     }
   }
   async function draw(figure, density, signal) {
@@ -42,9 +53,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const response = await request(url, {credentials: "same-origin", signal});
     const data = await readJSON(response, "图表暂时无法读取，请稍后重试。");
     aborted(signal);
-    if (data.figure?.key !== figure.key) throw Object.assign(new Error("报告内容已变化，请刷新后重试"), {status: 409});
+    if (data.figure?.key !== figure.key) throw Object.assign(new Error("报告内容已变化，请刷新后重试"), {status: 409, userCopy: true});
     if (data.status === "unavailable" || data.error || data.reason) throw new Error(data.notice || data.figure?.notice || "引用图表暂不可读。");
-    if (!window.ChartKit) throw new Error("图表绘制组件未加载，请刷新后重试。");
+    if (!window.ChartKit) throw new Error("暂时无法绘制图表，请刷新页面后重试。");
     // Keep these image regions aligned with tin.ppt.report_deck.chart_slots (inches).
     // One CSS pixel represents one PowerPoint point; 11px export labels stay 11pt.
     // ChartKit rasterizes the SVG at 2x, independently of this layout scale.
@@ -56,7 +67,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // The slide already shows the figure title; only a data notice goes inside the image.
       let payload, definition, overlays = [], renderTitle = "";
       if (figure.kind === "chart") {
-        if (!data.rendered?.payload) throw new Error("引用图表未返回可渲染数据。");
+        if (!data.rendered?.payload) throw new Error("这张引用图暂时无法绘制，请检查图表来源。");
         ({payload, definition, overlays = []} = data.rendered);
         definition = {...definition, title: ""};
       } else {
@@ -73,10 +84,16 @@ document.addEventListener("DOMContentLoaded", () => {
           unit: series.unit, kind: "line", axis: "left", points}]};
         definition = {title: ""};
       }
-      renderer = window.ChartKit.render(target, payload, {width, height, exactSize: true, export: true, definition, overlays, title: renderTitle});
-      const blob = await renderer.toPNGBlob(); aborted(signal);
-      if (blob.type !== "image/png" || !blob.size) throw new Error("未能生成有效 PNG 图片。");
-      if (blob.size > 4 * 1024 * 1024) throw new Error("此图生成的 PNG 超过 4 MB，将保留失败占位。");
+      let blob;
+      try {
+        renderer = window.ChartKit.render(target, payload, {width, height, exactSize: true, export: true, definition, overlays, title: renderTitle});
+        blob = await renderer.toPNGBlob();
+      } catch (error) {
+        throw new Error("这张图暂时无法绘制，请核对指标和日期后再试。", {cause:error});
+      }
+      aborted(signal);
+      if (blob.type !== "image/png" || !blob.size) throw new Error("暂时无法生成这张图，请核对图表后重试。");
+      if (blob.size > 4 * 1024 * 1024) throw new Error("这张图太大，请缩小图表显示范围后再导出。");
       return blob;
     } finally { renderer?.destroy(); target.remove(); }
   }
@@ -88,9 +105,10 @@ document.addEventListener("DOMContentLoaded", () => {
   form.addEventListener("submit", async event => {
     event.preventDefault(); if (job) return;
     const controller = new AbortController(); job = controller; controls(true);
+    diagnostic();
     const signal = controller.signal, density = Number($("report-ppt-density").value);
     const mode = form.elements.mode.value;
-    const figures = mode !== "one_page" && config.sections.dashboard ? manifest : [], body = new FormData(), warnings = [];
+    const figures = mode !== "one_page" && config.sections.dashboard ? manifest : [], body = new FormData(), warnings = [], failedDetails = [];
     body.append("options", JSON.stringify({mode, figures_per_slide: density}));
     body.append("revision", JSON.stringify(config.revision)); body.append("keys", JSON.stringify(figures.map(figure => figure.key)));
     progress.max = Math.max(1, figures.length); progress.value = 0; progress.hidden = false;
@@ -103,21 +121,24 @@ document.addEventListener("DOMContentLoaded", () => {
           if (error.name === "AbortError" || error.status === 409 || error.status === 403) throw error;
           const reason = error instanceof TypeError ? "网络连接失败或图表数据无法解析，请稍后重试。" : error.message || "图表绘制失败。";
           warnings.push(figure.title + "：" + reason); body.append("failures", JSON.stringify({key: figure.key, reason}));
+          if (error.detail || error.cause) failedDetails.push({图表:figure.title,原因:error.detail ?? error.cause.message});
         }
         progress.value = i + 1;
       }
       aborted(signal);
-      status.textContent = "正在生成 PPT…" + (warnings.length ? ` ${warnings.length} 张图读取失败，将保留占位：${warnings.join("；")}` : "");
+      status.textContent = "正在生成 PPT…";
       const response = await request(config.url, {method: "POST", credentials: "same-origin", body, signal});
-      if (!response.ok) await readJSON(response, "PPT 生成失败，请稍后重试。");
+      if (!response.ok) await readJSON(response, "未能按当前报告准备好全部图表。请重新打开导出窗口，核对选图后再导出。");
       const blob = await response.blob(); aborted(signal);
       const url = URL.createObjectURL(blob), link = document.createElement("a");
       link.href = url; link.download = filename(response); document.body.append(link); link.click(); link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      status.textContent = "PPT 已生成并开始下载。" + (warnings.length ? ` ${warnings.length} 张图已保留失败占位：${warnings.join("；")}` : "");
+      status.textContent = "PPT 已生成并开始下载。" + (warnings.length ? ` 有 ${warnings.length} 张图未能导出，文件中保留了对应位置：${warnings.join("；")}` : "");
+      if (failedDetails.length) diagnostic(failedDetails);
       progress.value = progress.max;
     } catch (error) {
-      status.textContent = error.name === "AbortError" ? "生成已取消。" : error instanceof TypeError ? "网络连接失败，请稍后重试。" : error.message || "PPT 生成失败，请稍后重试。";
+      status.textContent = error.name === "AbortError" ? "生成已取消。" : error.userCopy ? error.message : "PPT 生成失败，请重新打开导出窗口后再试。";
+      if (error.name !== "AbortError") diagnostic(error.detail ?? error.cause?.message ?? error.message);
     } finally { job = null; controls(false); progress.hidden = true; }
   });
 });

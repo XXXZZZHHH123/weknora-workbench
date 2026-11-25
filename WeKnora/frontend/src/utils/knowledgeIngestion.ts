@@ -35,8 +35,7 @@ export function knowledgeCoverageSummary(metadata: unknown, parseStatus?: string
   const receipt = knowledgeIngestion(metadata)
   const result = receipt.result
   const parts: string[] = []
-  if (parseStatus === 'completed') parts.push('处理流程已结束')
-  if (parseStatus === 'finalizing') parts.push('解析阶段已结束')
+  if (parseStatus === 'finalizing') parts.push('正文已可搜索，其他内容仍在整理')
 
   const tableCount = result ? count(result.table_count) : undefined
   const acceptedCount = result ? count(result.accepted_count) : undefined
@@ -47,29 +46,29 @@ export function knowledgeCoverageSummary(metadata: unknown, parseStatus?: string
   const saved = content && typeof content === 'object' && !Array.isArray(content)
     ? content as Record<string, unknown> : undefined
   const textCount = count(saved?.text_chunk_count)
-  parts.push(textCount === undefined ? '正文：未统计'
-    : saved?.text_is_catalog === true ? `正文：未统计（另存目录 ${textCount} 分块）`
-    : `正文：已保存 ${textCount} 个文本分块`)
+  parts.push(textCount === undefined ? '正文数量未统计'
+    : saved?.text_is_catalog === true ? `已保存目录中的 ${textCount} 段，正文收录范围尚未确认`
+    : `已保存 ${textCount} 段正文`)
   const imageCount = count(saved?.image_count)
   parts.push(imageCount === undefined ? '图片：未统计' : `图片：已保存 ${imageCount} 张`)
   const publishedCount = result ? count(result.published_table_count) : undefined
   if (publishedCount !== undefined) {
-    parts.push(`表格：已入库 ${publishedCount} 个数据区块`)
+    parts.push(publishedCount ? `已有 ${publishedCount} 个表格区域可查询` : '暂时没有可查询的表格区域')
   } else if (acceptedCount !== undefined && acceptedCount > 0) {
-    parts.push(`表格：自动入库 ${acceptedCount} 张${tableCount !== undefined ? `（识别片段 ${tableCount}）` : ''}`)
+    parts.push(`已自动整理 ${acceptedCount} 张表，尚待人工核对${tableCount !== undefined ? `（识别到 ${tableCount} 处表格内容）` : ''}`)
   } else if (tableCount === 0 && acceptedCount === 0) {
-    parts.push('表格：识别 0 张')
+    parts.push('没有识别到表格')
   } else if (tableCount !== undefined) {
-    parts.push(`表格：识别片段 ${tableCount}，入库待核对`)
+    parts.push(`识别到 ${tableCount} 处表格内容，请核对哪些可以使用`)
   } else {
-    parts.push('表格：未统计')
+    parts.push('表格数量未统计')
   }
   const numericCount = result ? count(result.computable_value_count) : undefined
-  parts.push(numericCount === undefined ? '可计算数据：未统计' : `可计算数据：已入库 ${numericCount} 个有效数值`)
-  parts.push('内容覆盖尚未核验')
+  parts.push(numericCount === undefined ? '可计算的数值尚未统计' : `已有 ${numericCount} 个数值可用于计算`)
+  parts.push('当前结果可能只包含原件中的部分内容')
 
   if (result && Array.isArray(result.sheets)) {
-    parts.push(`工作表结果 ${result.sheets.length} 项`)
+    parts.push(`可查看 ${result.sheets.length} 张工作表的处理结果`)
   }
   const media = metadataRecord?.pptx_media_processing_v1
   if (media && typeof media === 'object' && !Array.isArray(media)) {
@@ -79,6 +78,6 @@ export function knowledgeCoverageSummary(metadata: unknown, parseStatus?: string
     if (deferred !== undefined && deferred > 0 && deferred <= 4096) parts.push(`预览待生成 ${deferred}`)
     if (unavailable !== undefined && unavailable > 0 && unavailable <= 4096) parts.push(`原图不可用 ${unavailable}`)
   }
-  if (receipt.attentionCount > 0) parts.push(`待处理 ${receipt.attentionCount}`)
+  if (receipt.attentionCount > 0) parts.push(`${receipt.attentionCount} 处需要核对，请打开文件查看处理结果`)
   return parts
 }

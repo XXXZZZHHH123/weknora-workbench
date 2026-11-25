@@ -260,15 +260,15 @@
               </div>
               <template v-if="formData.mode === 'websocket'">
                 <div class="form-item">
-                  <label class="form-label">Bot ID</label>
+                  <label class="form-label">{{ $t('displayError.botId') }}</label>
                   <t-input v-model="formData.credentials.bot_id" placeholder="Bot ID" />
                 </div>
                 <div class="form-item">
-                  <label class="form-label">Bot Secret</label>
+                  <label class="form-label">{{ $t('displayError.botSecret') }}</label>
                   <t-input v-model="formData.credentials.bot_secret" type="password" placeholder="Bot Secret" />
                 </div>
                 <div class="form-item">
-                  <label class="form-label">WebSocket Endpoint</label>
+                  <label class="form-label">{{ $t('displayError.botEndpoint') }}</label>
                   <t-input v-model="formData.credentials.ws_endpoint" placeholder="wss://openws.work.weixin.qq.com" />
                   <p class="form-desc">{{ $t('agentEditor.im.wecomWSEndpointHint') }}</p>
                 </div>
@@ -327,11 +327,11 @@
               </div>
               <template v-if="formData.mode === 'webhook'">
                 <div class="form-item">
-                  <label class="form-label">Verification Token</label>
+                  <label class="form-label">{{ $t('displayError.botVerification') }}</label>
                   <t-input v-model="formData.credentials.verification_token" placeholder="Verification Token" />
                 </div>
                 <div class="form-item">
-                  <label class="form-label">Encrypt Key</label>
+                  <label class="form-label">{{ $t('displayError.botEncryption') }}</label>
                   <t-input v-model="formData.credentials.encrypt_key" type="password" placeholder="Encrypt Key" />
                 </div>
               </template>
@@ -464,7 +464,7 @@
                 <t-input v-model="formData.credentials.bot_token" type="password" placeholder="Bot Token" />
               </div>
               <div class="form-item">
-                <label class="form-label">Outgoing Webhook Token</label>
+                <label class="form-label">{{ $t('displayError.botOutbound') }}</label>
                 <t-input v-model="formData.credentials.outgoing_token" type="password"
                   placeholder="Token from Outgoing Webhook" />
               </div>

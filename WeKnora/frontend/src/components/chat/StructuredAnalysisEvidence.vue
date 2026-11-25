@@ -1,22 +1,22 @@
 <template>
   <section v-if="evidence || sources?.length" class="analysis-evidence">
     <details v-if="evidence">
-    <summary>查看分析取数与计算依据</summary>
+    <summary>{{ t('structuredReview.dataBasis', '查看数据范围和计算依据') }}</summary>
     <p>来源：{{ evidence.source?.file }}。本次计算读取 {{ evidence.input_count }} 条记录。</p>
     <p v-for="(input,id) in evidence.inputs" :key="String(id)">
       {{ input.series.sheet }} · {{ input.series.metric }}
       <span>（{{ input.series.unit || '单位待核对' }}）</span><br />
       实际记录：{{ input.actual_first_date || '无日期' }} 至 {{ input.actual_last_date || '无日期' }}，有效 {{ input.valid_count }} 条，缺失 {{ Math.max(0, Number(input.input_count || 0) - Number(input.valid_count || 0)) }} 条。
       表头：{{ input.series.header_cells?.join('、') }}。
-      <span v-if="input.example_cells?.length">示例来源单元格：{{ input.example_cells.join('、') }}（仅为输入示例，不代表完整 SQL 行级血缘）</span>
+      <span v-if="input.example_cells?.length">{{ t('structuredReview.sampleCells', { cells: input.example_cells.join('、') }, '以下单元格仅供抽查：{cells}。') }}</span>
     </p>
     <div class="analysis-table"><table>
       <thead><tr><th v-for="(column,i) in evidence.columns" :key="i">{{ column }}</th></tr></thead>
-      <tbody><tr v-for="(row,i) in evidence.rows" :key="i"><td v-for="(value,j) in row" :key="j">{{ value === null ? '无有效值' : value }}</td></tr></tbody>
+      <tbody><tr v-for="(row,i) in evidence.rows" :key="i"><td v-for="(value,j) in row" :key="j">{{ typeof value === 'string' ? evidenceTimestampText(value) : value === null ? '无有效值' : value }}</td></tr></tbody>
     </table></div>
     <p v-if="evidence.output_truncated">仅展示部分结果行，计算使用了上述全部输入。</p>
-    <p v-if="evidence.input_complete === false">输入覆盖不完整；不能将当前结果解释为全表统计。</p>
-    <details><summary>查看计算表达式</summary><pre>{{ evidence.sql }}</pre></details>
+    <p v-if="evidence.input_complete === false">{{ t('structuredReview.partialData', '本次只读到部分数据，结果不能用于全表统计。') }}</p>
+    <details v-if="admin && evidence.sql"><summary>{{ t('evidence.adminDetails', '查看诊断详情') }}</summary><pre>{{ evidence.sql }}</pre></details>
     </details>
     <section v-if="sources?.length" class="source-locator">
       <h3>原始来源</h3>
@@ -28,7 +28,7 @@
           <button v-if="group.kind === 'pdf' && canOpenPdf(group.primary)" class="source-open" type="button" :disabled="busyKey === sourceKey(group.primary)" @click="openPdf(group.primary)">{{ busyKey === sourceKey(group.primary) ? '正在打开…' : '查看原件' }}</button>
           <button v-else-if="group.kind === 'excel' && group.primary.context" class="source-open" type="button" :disabled="busyKey === sourceKey(group.primary)" @click="openExcel(group.primary)">{{ busyKey === sourceKey(group.primary) ? '正在打开…' : '查看原始表格单元格' }}</button>
         </div>
-        <p class="fine-print source-version">来源版本 SHA-256：{{ group.primary.data.source.sha256 }}</p>
+        <details v-if="admin" class="fine-print source-version"><summary>{{ t('structuredReview.versionDetails', '查看文件版本验证信息') }}</summary><pre>{{ group.primary.data.source.sha256 }}</pre></details>
         <template v-if="group.kind === 'excel'">
           <p v-if="!group.primary.context" class="blocked">来源信息不完整，暂时无法打开原件。</p>
           <div v-if="group.primary.context && sourceCellsFor(group.primary.data).length" class="source-cell-picker">
@@ -73,7 +73,7 @@
         </div>
       </details>
       <div v-for="view in sheetViews" :key="view.sheet_name" class="original-sheet" aria-label="原始工作表单元格">
-        <p>{{ view.sheet_name }} · 当前窗口 {{ view.range.start_row }}–{{ view.range.end_row }} 行、{{ view.range.start_col }}–{{ view.range.end_col }} 列 · 已核验来源 hash · 目标 {{ selectedCell?.sheet }}!{{ selectedCell?.address }}</p>
+        <p>{{ view.sheet_name }} · 第 {{ view.range.start_row }} 至 {{ view.range.end_row }} 行 · 已核对文件版本 · 所选单元格 {{ selectedCell?.sheet }}!{{ selectedCell?.address }}</p>
         <div class="analysis-table"><table>
           <thead><tr><th aria-label="行号"></th><th v-for="column in structuredSheetColumns(view)" :key="column.number" scope="col">{{ column.label }}</th></tr></thead>
           <tbody><tr v-for="row in viewRows(view)" :key="row.number">
@@ -91,22 +91,28 @@
     </div>
     </Teleport>
     <p v-if="loadError && !sources?.length" role="alert" class="blocked">{{ loadError }}</p>
+    <details v-if="admin && loadError && loadDiagnostic"><summary>{{ t('evidence.adminDetails', '查看诊断详情') }}</summary><pre>{{ loadDiagnostic }}</pre></details>
   </section>
 </template>
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { fetchWithAuthRetry } from '@/utils/authFetch'
+import { evidenceTimestampText } from '@/utils/evidenceSources'
 import DocumentPreview from '@/components/document-preview.vue'
 import type { SourceLocateRequest } from '@/utils/sourceLocator'
 import { groupStructuredAnswerSources, structuredPdfPages, isStructuredImportId, parseExcelCell, type StructuredAnswerSource, type StructuredSourceTable } from '@/utils/structuredAnswerSources'
 import { structuredSheetColumns, structuredSheetRows, type StructuredSheetView } from '@/utils/structuredSheetView'
-import { queueStructuredSourceRead, structuredSourceReadError } from '@/utils/structuredSourceRead'
+import { queueStructuredSourceRead, structuredSourceReadError, StructuredSourceReadError } from '@/utils/structuredSourceRead'
 
 type SheetView = StructuredSheetView
 type PdfPreview = { blob: Blob; fileName: string; knowledgeId: string; page: number; locate: SourceLocateRequest }
 const props = defineProps<{ evidence: any; sources?: StructuredAnswerSource[] }>()
 const auth = useAuthStore()
+const { t } = useI18n()
+const admin = computed(() => auth.hasRole?.('admin') === true)
+const loadDiagnostic = ref('')
 const busyKey = ref(''), activeSourceKey = ref(''), loadError = ref(''), sheetViews = ref<SheetView[]>([])
 const pdfPreview = ref<PdfPreview | null>(null), pdfPreviewError = ref('')
 const pdfReadResult = ref<any | null>(null), selectedCell = ref<{sheet:string;address:string} | null>(null)
@@ -193,20 +199,20 @@ async function openPdf(item: StructuredAnswerSource, requested?: PdfCellLocation
   if (!canOpenPdf(item)) return
   const key = sourceKey(item), knowledgeId = String(item.data.source.knowledge_id), sourceHash = String(item.data.source.sha256)
   const epoch = ++operationEpoch
-  activeSourceKey.value = key; activeSourceStamp.value = sourceStamp(item); loadError.value = ''; pdfPreviewError.value = ''; pdfPreview.value = null; pdfReadResult.value = null; sheetViews.value = []; busyKey.value = key
+  activeSourceKey.value = key; activeSourceStamp.value = sourceStamp(item); loadError.value = ''; loadDiagnostic.value = ''; pdfPreviewError.value = ''; pdfPreview.value = null; pdfReadResult.value = null; sheetViews.value = []; busyKey.value = key
   const user = auth.user?.id || '', tenant = String(auth.selectedTenantId ?? auth.tenant?.id ?? '')
-  if (!auth.token || !user) { busyKey.value = ''; loadError.value = '登录状态已失效，请重新登录后重试。'; return }
+  if (!auth.token || !user) { busyKey.value = ''; loadError.value = t('structuredReview.sourceExpired', '登录状态已失效，请重新登录后重试。'); return }
   try {
     const scopedTenant = item.context!.knowledge_base_tenant_id
     const table = await getJSON(`/structured/api/pdf/tables/${encodeURIComponent(item.data.table_id)}?offset=0&limit=100`, item.context!.knowledge_base_id,
       { token: auth.token, user, tenant }, scopedTenant)
     if (!isCurrentOperation(epoch, key, item.context!.knowledge_base_id, user, tenant, sourceHash)) return
     if (table?.table_id !== item.data.table_id || String(table?.source?.sha256 || '').toLowerCase() !== String(item.data.source.sha256).toLowerCase()) {
-      throw new Error('当前 PDF 表记录 hash 与回答中的证据不一致，已拒绝显示旧页。')
+      throw new StructuredSourceReadError(t('structuredReview.pdfVersionChanged', '当前 PDF 与回答时使用的版本不同，请重新选择原件。'), 'PDF table or version mismatch')
     }
     pdfReadResult.value = table
     const locators = pdfSourceLocators(table)
-    if (requested && !pdfPages(table).includes(requested.page)) throw new Error('所选位置不属于当前已核验的表格。')
+    if (requested && !pdfPages(table).includes(requested.page)) throw new StructuredSourceReadError(t('structuredReview.pdfLocationMissing', '找不到所选位置，请打开原件按表名核对。'), 'Page outside the saved table')
     const verifiedCell = requested && pdfTableCells({ key: table.table_id, primary: item, observations: [item], pages: pdfPages(table), inspected: true }).find(cell => cell.page === requested.page && cell.row === requested.row && cell.column === requested.column)
     const first: any = requested ? (verifiedCell && locators.find(locator => locator.page === verifiedCell.page && JSON.stringify(locator.bbox) === JSON.stringify(verifiedCell.bbox))) ||
       { type: 'pdf', mapping: 'exact', page: requested.page, granularity: 'page', ...(verifiedCell?.text ? { quote: verifiedCell.text } : {}) } : locators[0] || { type: 'pdf', mapping: 'exact', page: pdfPages(table)[0], granularity: 'page' }
@@ -215,25 +221,24 @@ async function openPdf(item: StructuredAnswerSource, requested?: PdfCellLocation
       isCurrent: () => (auth.user?.id || '') === user && String(auth.selectedTenantId ?? auth.tenant?.id ?? '') === tenant,
     })
     if (!isCurrentOperation(epoch, key, item.context!.knowledge_base_id, user, tenant, sourceHash)) return
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403) throw new Error('当前账号或知识库无权读取 PDF 原件。')
-      if (response.status === 404 || response.status === 409) throw new Error('原 PDF 已不存在或来源版本已改变。')
-      throw new Error(`PDF 原件读取失败（HTTP ${response.status}）。`)
-    }
+    if (!response.ok) throw await structuredSourceReadError(response, t)
     const blob = await response.blob()
     const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())
     if (!isCurrentOperation(epoch, key, item.context!.knowledge_base_id, user, tenant, sourceHash)) return
     const actual = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
-    if (actual.toLowerCase() !== String(item.data.source.sha256).toLowerCase()) throw new Error('当前 PDF 原件 hash 与分析证据不一致，已拒绝显示旧页。')
+    if (actual.toLowerCase() !== String(item.data.source.sha256).toLowerCase()) throw new StructuredSourceReadError(t('structuredReview.pdfVersionChanged', '当前 PDF 与分析时使用的版本不同，请重新选择原件。'), 'PDF original version mismatch')
     const page = first.page || pdfPages(table)[0]
-    if (!page) throw new Error('当前逻辑表没有可定位的真实 PDF 页码，已拒绝打开未定位的原件。')
+    if (!page) throw new StructuredSourceReadError(t('structuredReview.pdfPageUnknown', '没有记录这张表的页码，请从知识库打开 PDF 查找表名。'), 'PDF page not saved with the table')
     pdfPreview.value = { blob, fileName: table.source.file_name || table.source.file || item.data.source.file_name || 'PDF 原件', knowledgeId, page,
       locate: { locators: [first], quotes: first.quote ? [first.quote] : [], token: ++pdfLocateToken } }
-  } catch (error: any) {
+  } catch (error) {
     if (!isCurrentOperation(epoch, key, item.context!.knowledge_base_id, user, tenant, sourceHash)) return
-    const status = error?.response?.status
-    loadError.value = status === 401 || status === 403 ? '当前账号或知识库无权读取 PDF 原件。' : error?.message || 'PDF 原件读取失败，请稍后重试。'
+    showSourceReadError(error)
   } finally { if (operationEpoch === epoch && busyKey.value === key) busyKey.value = '' }
+}
+function showSourceReadError(error: unknown) {
+  loadError.value = error instanceof StructuredSourceReadError ? error.message : t('structuredReview.readFailed', '暂时无法读取原件，请稍后重试。')
+  loadDiagnostic.value = error instanceof StructuredSourceReadError ? error.diagnostic : String(error)
 }
 function closePdf() { pdfPreview.value = null; pdfPreviewError.value = '' }
 
@@ -273,7 +278,7 @@ async function getJSON(url: string, kbId: string, stamp: { token:string; user:st
     isCurrent: () => (auth.user?.id || '') === stamp.user && String(auth.selectedTenantId ?? auth.tenant?.id ?? '') === stamp.tenant,
   })
   if (!response.ok) {
-    throw await structuredSourceReadError(response)
+    throw await structuredSourceReadError(response, t)
   }
   return response.json()
 }
@@ -287,14 +292,14 @@ function isCurrentOperation(epoch: number, key: string, kbId: string, user?: str
 async function openExcel(item: StructuredAnswerSource, target?: {sheet:string;address:string}) {
   const key = sourceKey(item)
   const epoch = ++operationEpoch
-  activeSourceKey.value = key; activeSourceStamp.value = sourceStamp(item); loadError.value = ''; sheetViews.value = []; pdfReadResult.value = null; pdfPreview.value = null; pdfPreviewError.value = ''
+  activeSourceKey.value = key; activeSourceStamp.value = sourceStamp(item); loadError.value = ''; loadDiagnostic.value = ''; sheetViews.value = []; pdfReadResult.value = null; pdfPreview.value = null; pdfPreviewError.value = ''
   selectedCell.value = target || null
   if (!target) sourceCellPage.value = 0
-  if (!item.context) { loadError.value = '缺少知识库范围，无法安全定位。'; return }
+  if (!item.context) { loadError.value = '暂时无法打开原件，请从知识库重新选择文件。'; return }
   const kbId = item.context.knowledge_base_id
   const sourceHash = String(item.data.source?.sha256 || '')
   const stamp = { token: auth.token, user: auth.user?.id || '', tenant: String(auth.selectedTenantId ?? auth.tenant?.id ?? '') }
-  if (!stamp.token || !stamp.user) { loadError.value = '登录状态已失效，请重新登录后重试。'; return }
+  if (!stamp.token || !stamp.user) { loadError.value = t('structuredReview.sourceExpired', '登录状态已失效，请重新登录后重试。'); return }
   busyKey.value = key
   try {
     const datasetId = item.data.dataset_id
@@ -303,15 +308,15 @@ async function openExcel(item: StructuredAnswerSource, target?: {sheet:string;ad
     if (!isCurrentOperation(epoch, key, kbId, stamp.user, stamp.tenant, sourceHash)) return
     const manifest = report?.manifest
     if (manifest?.dataset_id !== datasetId || typeof manifest.sha256 !== 'string' || manifest.sha256.toLowerCase() !== String(item.data.source?.sha256).toLowerCase()) {
-      throw new Error('原件版本 hash 与回答中的证据不一致，已阻止打开旧证据。')
+      throw new StructuredSourceReadError(t('structuredReview.fileVersionChanged', '当前文件与回答时使用的版本不同，请重新选择原件。'), 'Excel original version mismatch')
     }
-    if (!isStructuredImportId(manifest.import_id)) throw new Error('数据集未返回有效的原件导入标识，无法定位。')
+    if (!isStructuredImportId(manifest.import_id)) throw new StructuredSourceReadError(t('structuredReview.openWorkbookFailed', '这次无法打开原表，请从资料列表重新选择文件。'), 'Missing original import reference')
     const locations = sourceCellsFor(item.data).filter(cell => cell.sheet)
-    if (!locations.length) throw new Error('成功工具结果未返回可验证的来源单元格坐标。')
+    if (!locations.length) throw new StructuredSourceReadError(t('structuredReview.noCellLocation', '没有记录确切的单元格位置，请打开原表核对。'), 'Original cell locations absent')
     const cell = target || locations[0]
     selectedCell.value = cell
     const parsed = parseExcelCell(cell.address)
-    if (!parsed) throw new Error('工具返回的来源坐标无效，无法定位。')
+    if (!parsed) throw new StructuredSourceReadError(t('structuredReview.cellLocationFailed', '无法定位这个单元格，请打开原表核对。'), 'Invalid original cell address')
     const startRow = Math.max(1, parsed.row - 2), startColumn = Math.max(1, parsed.column - 1)
     const query = new URLSearchParams({ name: cell.sheet, start_row: String(startRow), start_col: String(startColumn), row_count: '5', col_count: '3' })
     const view = await queueStructuredSourceRead(
@@ -330,7 +335,7 @@ async function openExcel(item: StructuredAnswerSource, target?: {sheet:string;ad
       parsed.row >= range.start_row && parsed.row <= range.end_row &&
       parsed.column >= range.start_col && parsed.column <= range.end_col
     if (view?.sheet_name !== cell.sheet || !Array.isArray(view.cells) || !boundedRange) {
-      throw new Error('原件窗口返回结构不完整，无法准确定位。')
+      throw new StructuredSourceReadError(t('structuredReview.sheetRangeFailed', '这次没有读到所选区域，请打开原表核对。'), 'Invalid original sheet window')
     }
     // Validate the API's real cell addresses before displaying a verified
     // source window. A malformed response must not look like an empty sheet.
@@ -338,17 +343,17 @@ async function openExcel(item: StructuredAnswerSource, target?: {sheet:string;ad
     sheetViews.value = [view]
   } catch (error) {
     if (!isCurrentOperation(epoch, key, kbId, stamp.user, stamp.tenant, sourceHash)) return
-    loadError.value = (error as Error)?.message || '原件读取失败，请稍后重试。'
+    showSourceReadError(error)
   } finally { if (operationEpoch === epoch && busyKey.value === key) busyKey.value = '' }
 }
 watch(() => [auth.user?.id, auth.selectedTenantId ?? auth.tenant?.id], () => {
   operationEpoch++
   pdfCellPages.value = {}
-  activeSourceKey.value = ''; activeSourceStamp.value = ''; busyKey.value = ''; loadError.value = ''; sheetViews.value = []; pdfReadResult.value = null; pdfPreview.value = null
+  activeSourceKey.value = ''; activeSourceStamp.value = ''; busyKey.value = ''; loadError.value = ''; loadDiagnostic.value = ''; sheetViews.value = []; pdfReadResult.value = null; pdfPreview.value = null
 })
 watch(() => (props.sources || []).map(sourceStamp).join('|'), () => {
   if (activeSourceKey.value && !(props.sources || []).some(item => sourceStamp(item) === activeSourceStamp.value)) {
-    operationEpoch++; activeSourceKey.value = ''; activeSourceStamp.value = ''; busyKey.value = ''; loadError.value = ''; sheetViews.value = []; pdfReadResult.value = null; pdfPreview.value = null
+    operationEpoch++; activeSourceKey.value = ''; activeSourceStamp.value = ''; busyKey.value = ''; loadError.value = ''; loadDiagnostic.value = ''; sheetViews.value = []; pdfReadResult.value = null; pdfPreview.value = null
   }
 })
 onBeforeUnmount(() => {

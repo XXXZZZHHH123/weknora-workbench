@@ -87,7 +87,7 @@ function mock(items = initial, options = {}) {
     const batch = view.calls.find(call => call.path === '/indicator-dedup/decisions');
     assert.deepEqual(batch.body.ids, ['strong', 'unchecked']);
     assert.equal(batch.body.batch, true);
-    const labels = {keep_both:'保留两者', rejected:'不是同一指标', confirmed_default:'以 default 库为准'};
+    const labels = {keep_both:'保留两者', rejected:'不是同一指标', confirmed_default:'以共享库为准'};
     for (const decision of ['keep_both', 'rejected', 'confirmed_default']) {
       await p.locator('[data-dedup-row="weak"] [data-dedup-decision="' + decision + '"]').click();
       await p.waitForFunction(expected => document.querySelector('[data-dedup-row="weak"] header strong').textContent === expected, labels[decision]);
@@ -129,7 +129,7 @@ function mock(items = initial, options = {}) {
     const detailHtml = html.replace(/<main>[\s\S]*<\/main>/, '<main><section data-dedup-sources="' + sid(11) + '" hidden></section></main>');
     const detail = await open(browser, prefix + '/sn/indicators/' + sid(11), detailHtml, mock([stale]).handler);
     await detail.page.locator('[data-dedup-sources] .indicator-warning').waitFor();
-    assert.match(await detail.page.locator('[data-dedup-sources]').innerText(), /已与个人库对应[\s\S]*default 库序列截至日期早于个人库副本/);
+    assert.match(await detail.page.locator('[data-dedup-sources]').innerText(), /已与个人库对应[\s\S]*共享库的数据日期早于个人库副本/);
     assert.equal(detail.calls.some(call => call.path.endsWith('/decisions') || call.path.endsWith('/undo')), false);
     await detail.close();
 

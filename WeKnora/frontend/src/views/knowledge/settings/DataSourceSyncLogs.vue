@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
+import ErrorDiagnostics from '@/components/ErrorDiagnostics.vue'
+import { localDateTime } from '@/utils/localDateTime'
+import { useAuthStore } from '@/stores/auth'
 import { useI18n } from 'vue-i18n'
 import { getSyncLogs, type SyncLog, type SyncItemError } from '@/api/datasource'
 import AssistantActionButton from '@/components/assistant/AssistantActionButton.vue'
@@ -7,6 +10,7 @@ import AssistantActionButton from '@/components/assistant/AssistantActionButton.
 const props = defineProps<{
   dataSourceId: string
   dataSourceName?: string
+  lastError?: string
 }>()
 const visible = defineModel<boolean>('visible', { default: false })
 const { t } = useI18n()
@@ -88,26 +92,15 @@ function statusColor(status: string) {
   }
 }
 
+const auth = useAuthStore()
+const canViewDiagnostics = computed(() => auth.isSystemAdmin || auth.hasRole('admin'))
+
 function formatTime(ts: string | null) {
-  if (!ts) return '--'
-  const d = new Date(ts)
-  if (isNaN(d.getTime())) return '--'
-  return d.toLocaleString(undefined, {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  })
+  return localDateTime(ts) || '—'
 }
 
 function formatDate(ts: string | null) {
-  if (!ts) return ''
-  const d = new Date(ts)
-  if (isNaN(d.getTime())) return ''
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  return localDateTime(ts, false)
 }
 
 function formatHourMin(ts: string | null) {
@@ -140,20 +133,11 @@ function failedItems(log: SyncLog): SyncItemError[] {
   return (log.result?.errors || []).slice(0, FAILED_ITEMS_CAP)
 }
 
-// Render one failure sample. The backend sends a stable i18n `code` (+ params)
-// so the reason is localised to the viewer's language; `message` is the fallback
-// for old logs / codes this client doesn't know. The document title is kept
-// separate and prefixed as "title — reason".
 function formatSyncError(e: SyncItemError): string {
-  let reason = ''
-  if (e.code) {
-    const key = `datasource.syncError.${e.code}`
-    const localised = t(key, (e.params || {}) as Record<string, unknown>)
-    reason = localised === key ? (e.message || e.code) : localised
-  } else {
-    reason = e.message || ''
-  }
-  return e.title ? (reason ? `${e.title} — ${reason}` : e.title) : reason
+  const key = `datasource.syncError.${e.code}`
+  const localized = e.code ? t(key, (e.params || {}) as Record<string, unknown>) : key
+  const reason = localized === key ? t('displayError.syncFailed') : localized
+  return e.title ? `${e.title} · ${reason}` : reason
 }
 
 // Group logs by date
@@ -197,6 +181,8 @@ const groupedLogs = computed(() => {
         </t-tooltip>
       </div>
     </template>
+
+    <ErrorDiagnostics :detail="props.lastError" />
 
     <div v-if="loading" style="text-align:center;padding:60px"><t-loading /></div>
 
@@ -284,10 +270,11 @@ const groupedLogs = computed(() => {
                   {{ t('datasource.logDetail.docsFailedSummary', { n: log.items_failed }) }}
                 </div>
                 <div v-else-if="log.error_message" class="tl-error">
-                  {{ log.error_message }}
+                  {{ t('displayError.syncFailed') }}
                 </div>
+                <ErrorDiagnostics :detail="log.error_message" />
                 <AssistantActionButton
-                  v-if="log.status === 'failed' || log.status === 'partial' || log.items_failed > 0"
+                  v-if="canViewDiagnostics && (log.status === 'failed' || log.status === 'partial' || log.items_failed > 0)"
                   :label="t('assistant.actions.diagnose')"
                   :query="t('assistant.prompts.syncFailure', { source: props.dataSourceName || props.dataSourceId, id: props.dataSourceId, log: log.id })"
                   :selection="{
@@ -299,7 +286,7 @@ const groupedLogs = computed(() => {
                       started_at: log.started_at,
                       items_total: log.items_total,
                       items_failed: log.items_failed,
-                      error_message: log.error_message.slice(0, 1000),
+                      error_message: (log.error_message || '').slice(0, 1000),
                       error_samples: failedItems(log).slice(0, 5).map(e => formatSyncError(e).slice(0, 300)),
                     }, null, 2),
                   }" />
@@ -313,6 +300,7 @@ const groupedLogs = computed(() => {
                   </div>
                   <div v-for="(e, i) in failedItems(log)" :key="i" class="tl-failed-item" :title="formatSyncError(e)">
                     {{ formatSyncError(e) }}
+                    <ErrorDiagnostics v-if="e.message" :detail="{ code: e.code, message: e.message }" />
                   </div>
                   <div v-if="log.items_failed > failedItems(log).length" class="tl-failed-more">
                     {{ t('datasource.logDetail.failedItemsMore', { n: (log.items_failed - failedItems(log).length) }) }}

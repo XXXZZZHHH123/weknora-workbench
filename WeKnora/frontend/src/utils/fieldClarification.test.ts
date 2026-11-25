@@ -117,8 +117,8 @@ test('numeric display uses source-bound tool answer instead of model prose', asy
 });
 
 test('tool failures remain visible even without a model final reply and recover on success', () => {
-  const notice=event(JSON.stringify({kind:'structured_tool_notice',message:'工作表不存在，请核对范围'}));
-  assert.match(structuredFieldIssue([notice]) || '', /工作表不存在/);
+  const notice=event(JSON.stringify({kind:'structured_tool_notice',status:'invalid_scope',message:'工作表不存在，请核对范围'}));
+  assert.match(structuredFieldIssue([notice]) || '', /找不到要查询的工作表/);
   assert.match(structuredFieldIssue([{...event(null),success:false,error:'指定范围没有可查询指标'}]) || '', /没有取得数值/);
   assert.equal(structuredFieldIssue([event(JSON.stringify({kind:'structured_tool_notice',message:'oops'}),'other_tool')]),null);
   const success=event(JSON.stringify({...plan,status:'resolved',answer:{sources:{},rounded_value:'10'}}));

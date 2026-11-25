@@ -509,7 +509,7 @@ const getActualContent = () => {
 const handleCopyAnswer = async () => {
     const content = getActualContent();
     if (!content) {
-        MessagePlugin.warning(t('chat.emptyContentWarning'));
+        MessagePlugin.warning(t('chat.copyEmptyAnswer', 'There is no answer text to copy yet.'));
         return;
     }
 
@@ -520,7 +520,7 @@ const handleCopyAnswer = async () => {
 const handleAddToKnowledge = () => {
     const content = getActualContent();
     if (!content) {
-        MessagePlugin.warning(t('chat.emptyContentWarning'));
+        MessagePlugin.warning(t('chat.saveEmptyAnswer', 'There is no answer text to save yet.'));
         return;
     }
 
@@ -536,7 +536,7 @@ const handleAddToKnowledge = () => {
         status: 'draft',
     });
 
-    MessagePlugin.info(t('chat.editorOpened'));
+    MessagePlugin.info(t('chat.editorOpened', 'The editor is open. Select a knowledge base before saving.'));
 };
 
 // 处理 markdown-content 中图片的点击事件

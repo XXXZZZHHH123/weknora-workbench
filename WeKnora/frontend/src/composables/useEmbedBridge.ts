@@ -180,7 +180,7 @@ export function useEmbedBridge(channelId: Ref<string>) {
       } else if (msg.includes('failed to create session')) {
         loadError.value = t('embedPublish.sessionFailed')
       } else {
-        loadError.value = msg || t('embedPublish.loadError')
+        loadError.value = t('embedPublish.missingChannel')
       }
     } finally {
       bootstrapping.value = false

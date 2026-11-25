@@ -7,7 +7,7 @@ function frame() {
   let receive: (event: any) => Promise<void>
   const parent = { postMessage() {} }, location = { origin: 'http://localhost' }
   const context: any = { parent, location, window: { addEventListener: (_: string, listener: any) => { receive = listener } },
-    authReceived: true, authEpoch: 5, authMessageSequence: 0, bearer: 'old', activeTenant: '7', activeKnowledgeBase: 'kb', activeUserId: '', requestedSourceKnowledge: '', requestedSourceType: 'xlsx',
+    authReceived: true, canViewDiagnostics: false, authEpoch: 5, authMessageSequence: 0, bearer: 'old', activeTenant: '7', activeKnowledgeBase: 'kb', activeUserId: '', requestedSourceKnowledge: '', requestedSourceType: 'xlsx',
     reviewOnly: false, viewParams: new URLSearchParams(), nativeSourceBusy: false,
     modelOpenRequested: false, closeModelSettings: () => { context.modelOpenRequested = false },
     $: () => ({ classList: { contains: () => true } }), authRefreshPending: null, clearTimeout, Error,

@@ -55,7 +55,7 @@ onBeforeUnmount(() => { generation++ })
   <t-dialog :visible="visible" header="数据来源" width="460px" :confirm-btn="{ content: '保存', loading: busy, disabled: loading || !revision }" :cancel-btn="{ content: '取消', disabled: busy }" :close-btn="!busy" :close-on-overlay-click="!busy" :close-on-esc-keydown="!busy" @confirm="save" @cancel="emit('update:visible', false)" @close="emit('update:visible', false)">
     <t-loading v-if="loading" text="正在读取来源" />
     <WorkbenchSourcePicker v-else v-model="selected" :options="options" :disabled="busy" />
-    <p class="source-note">最多关联 8 个来源，也可以暂不关联。移除来源会保留研究成果，相关指标绑定将不可用；只加载当前页面需要的数值。</p>
+    <p class="source-note">最多关联 8 个来源，也可以暂不关联。移除后，已有研究成果仍可查看，依赖这个来源的指标将无法更新。</p>
     <t-alert v-if="error" theme="error" :message="error" />
     <t-button v-if="error" size="small" variant="text" :disabled="busy" @click="load">重新读取</t-button>
   </t-dialog>

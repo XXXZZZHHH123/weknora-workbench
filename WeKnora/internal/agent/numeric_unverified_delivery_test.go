@@ -31,8 +31,8 @@ func TestNumericUnverifiedFinalSynthesisKeepsLastDraftAfterTwoRepairs(t *testing
 			require.Len(t, model.calls, 3)
 			require.Equal(t, 2, e.turnReview.Repairs)
 			require.Equal(t, 3, e.turnReview.Checks)
-			require.True(t, strings.HasPrefix(state.FinalAnswer, "末稿：138.67，附加997〔未核验〕。"))
-			require.Contains(t, state.FinalAnswer, "请以引用的原表、原文或数据为准")
+			require.True(t, strings.HasPrefix(state.FinalAnswer, "末稿：138.67，附加997〔数字待核对〕。"))
+			require.Contains(t, state.FinalAnswer, "写入报告前，请对照原表或原文核对")
 			require.NotContains(t, state.FinalAnswer, "999")
 			require.False(t, e.candidateApprovalCurrent(state.FinalAnswer, state))
 			require.Equal(t, 1, e.turnReview.NumericUnverifiedDelivery.Marked)
@@ -46,7 +46,7 @@ func TestNumericUnverifiedKeepsSourceNamesCodesAndDatesIntact(t *testing.T) {
 	const candidate = "《" + fileName + "》（" + titleWithoutExtension + "）的日期是2024 年 3 月 10 日。" +
 		"合约CF05M，系列futures.close.CF05M.CZC。最高138.67万元，另有汇总20240310元，增幅18.25%。"
 	const expected = "《" + fileName + "》（" + titleWithoutExtension + "）的日期是2024 年 3 月 10 日。" +
-		"合约CF05M，系列futures.close.CF05M.CZC。最高138.67万元，另有汇总20240310〔未核验〕元，增幅18.25%〔未核验〕。"
+		"合约CF05M，系列futures.close.CF05M.CZC。最高138.67万元，另有汇总20240310〔数字待核对〕元，增幅18.25%〔数字待核对〕。"
 	e := numericRecoveryTestEngine(t, &mockChat{})
 	e.config.AnswerReviewMode = "standard"
 	state, messages, query := numericRecoveryFixture()
@@ -61,7 +61,7 @@ func TestNumericUnverifiedKeepsSourceNamesCodesAndDatesIntact(t *testing.T) {
 			Output: `{"status":"ok","series":[{"series_id":"futures.close.CF05M.CZC","dimensions":{"contract":"CF05M.CZC"}}]}`}},
 	}})
 	e.finishStalledTurn(t.Context(), state, "numeric", &types.ChatResponse{Content: candidate}, false, query, messages)
-	require.Equal(t, expected+"\n\n> 提示：标了〔未核验〕的数字没能和本轮查到的原文或数据逐项对上，请以引用的原表、原文或数据为准。", state.FinalAnswer)
+	require.Equal(t, expected+"\n\n> 提示：本次查到的数据还不能确认标出的数字。写入报告前，请对照原表或原文核对。", state.FinalAnswer)
 	require.Equal(t, []string{"20240310", "18.25"}, e.turnReview.Last.Unsupported)
 	require.Equal(t, 2, e.turnReview.NumericUnverifiedDelivery.Marked)
 }
@@ -78,7 +78,7 @@ func TestNumericUnverifiedOrdinaryStopRepairsBeforeDelivery(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, model.calls, 3)
 	require.Equal(t, 2, e.turnReview.Repairs)
-	require.Contains(t, state.FinalAnswer, "999〔未核验〕")
+	require.Contains(t, state.FinalAnswer, "999〔数字待核对〕")
 	done, visible := recorder.snapshot()
 	require.Equal(t, 1, done)
 	require.Equal(t, state.FinalAnswer, visible)
@@ -89,7 +89,7 @@ func TestNumericUnverifiedStalledStopHasNoRepairRoundLeft(t *testing.T) {
 	e.config.AnswerReviewMode = "standard"
 	state, messages, query := numericRecoveryFixture()
 	e.finishStalledTurn(t.Context(), state, "numeric", &types.ChatResponse{Content: "Measured value 138.67; optional total 999."}, false, query, messages)
-	require.Contains(t, state.FinalAnswer, "999〔未核验〕")
+	require.Contains(t, state.FinalAnswer, "999〔数字待核对〕")
 	require.Equal(t, 1, e.turnReview.Checks)
 	require.Zero(t, e.turnReview.Repairs)
 }
@@ -116,8 +116,8 @@ func TestNumericUnverifiedPreservesOnlyUnmatchedOccurrencesAndReferences(t *test
 			d := e.checkCandidate(t.Context(), "Report the actual values.", candidate, "", state, nil, false)
 			require.Equal(t, candidateNumericFailure, d.Disposition)
 			e.commitTerminalResult(t.Context(), state, "numeric", numericFailureFallback, "", "failed", false)
-			require.True(t, strings.HasPrefix(state.FinalAnswer, "比例43%，数值43〔未核验〕；另一个数值43〔未核验〕。"+citation))
-			require.Contains(t, state.FinalAnswer, "| A | 43〔未核验〕 |")
+			require.True(t, strings.HasPrefix(state.FinalAnswer, "比例43%，数值43〔数字待核对〕；另一个数值43〔数字待核对〕。"+citation))
+			require.Contains(t, state.FinalAnswer, "| A | 43〔数字待核对〕 |")
 			require.Equal(t, 3, e.turnReview.NumericUnverifiedDelivery.Marked)
 			e.emitCompletionEvent(t.Context(), state, "numeric", "message", time.Now())
 			require.Len(t, state.KnowledgeRefs, 1)
@@ -207,7 +207,7 @@ func TestNumericUnverifiedCompletionKeepsOnlyCurrentEvidenceNavigation(t *testin
 			d := e.checkCandidate(t.Context(), "Report the observations.", base, "", state, nil, false)
 			require.Equal(t, candidateNumericFailure, d.Disposition)
 			e.commitTerminalResult(t.Context(), state, "numeric", finalNumericFailureFallback, "", "failed", false)
-			require.Contains(t, state.FinalAnswer, "999〔未核验〕")
+			require.Contains(t, state.FinalAnswer, "999〔数字待核对〕")
 			if changed {
 				state.RoundSteps[0].ToolCalls[0].Result.Data["changed"] = true
 			}

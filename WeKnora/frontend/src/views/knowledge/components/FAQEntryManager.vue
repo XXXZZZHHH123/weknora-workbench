@@ -2098,7 +2098,7 @@ const startPolling = (taskId: string) => {
     } catch (error: any) {
       console.error('Failed to poll task status:', error)
       // 如果任务不存在或已过期，清除存储
-      if (error?.response?.status === 404 || error?.message?.includes('not found')) {
+      if (error?.status === 404 || error?.response?.status === 404 || error?.message?.includes('not found')) {
         clearTaskIdFromStorage()
         stopPolling()
         importState.taskId = null
@@ -2207,7 +2207,7 @@ const restoreImportTask = async () => {
   } catch (error: any) {
     console.error('Failed to restore import task:', error)
     // 如果任务不存在或已过期，清除存储
-    if (error?.response?.status === 404 || error?.message?.includes('not found')) {
+    if (error?.status === 404 || error?.response?.status === 404 || error?.message?.includes('not found')) {
       clearTaskIdFromStorage()
     }
   }

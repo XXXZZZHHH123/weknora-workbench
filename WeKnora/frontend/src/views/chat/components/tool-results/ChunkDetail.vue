@@ -1,6 +1,7 @@
 <template>
   <div class="chunk-detail">
-    <div class="info-section">
+    <details v-if="admin" class="info-section">
+      <summary>{{ $t('displayError.diagnostics', 'Diagnostic details') }}</summary>
       <div class="info-field">
         <span class="field-label">{{ $t('chat.chunkIdLabel') }}</span>
         <span class="field-value"><code>{{ data.chunk_id }}</code></span>
@@ -17,7 +18,7 @@
         <span class="field-label">{{ $t('chat.contentLengthLabelSimple') }}</span>
         <span class="field-value">{{ $t('chat.lengthChars', { value: data.content_length }) }}</span>
       </div>
-    </div>
+    </details>
 
     <div class="info-section">
       <div class="info-section-title">{{ $t('chat.fullContentLabel') }}</div>
@@ -35,6 +36,8 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
+import { useAuthStore } from '@/stores/auth';
 import type { ChunkDetailData } from '@/types/tool-results';
 import { useI18n } from 'vue-i18n';
 import { copyToClipboard as copyTextToClipboard } from '@/utils/clipboard';
@@ -44,6 +47,8 @@ const props = defineProps<{
 }>();
 
 const { t } = useI18n();
+const auth = useAuthStore();
+const admin = computed(() => auth.hasRole('admin'));
 
 const copyToClipboard = () => {
   void copyTextToClipboard(props.data.content);

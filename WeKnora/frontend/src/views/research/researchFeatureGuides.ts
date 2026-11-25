@@ -63,11 +63,11 @@ export function researchFeatureSteps(page: ResearchGuidePage, open: (panel: 'mar
   ]
   if (page === 'market') return [
     step('core', '#market-core-open', '选择自己的核心指标', '点击“选择与排序”，从当前知识库指标中挑选最多 12 项；核心指标会在这里形成市场总览。'),
-    step('search', '#market-core-search', '从真实指标目录选择', '按名称、来源或单位搜索并勾选需要的指标。目录为空时先完成知识库结构化解析，不会生成示例行情。', () => open('market')),
+    step('search', '#market-core-search', '从已导入的指标选择', '按名称、来源或单位搜索并勾选需要的指标。目录为空时先完成知识库结构化解析，不会生成示例行情。', () => open('market')),
     step('order', '#market-core-selected, #market-core-selected-empty', '调整位置，自动加入自选', '使用上移、下移调整显示顺序，点击保存后选中指标自动加入指标页自选；从核心移出不会删除自选。取消会保留原有选择。本引导不会替你保存。'),
   ]
   if (page === 'indicators') return [
-    step('search', '#indicator-search', '全局搜索知识库指标', '搜索名称、代码、来源或口径，先核对单位、数据时点和来源。当前知识库指标集中在这里；已配置的 Default 宏观指标也会在这里显示。'),
+    step('search', '#indicator-search', '全局搜索知识库指标', '搜索名称、代码、来源或口径，先核对单位、数据时点和来源。当前知识库指标集中在这里；管理员配置的公共宏观指标也会在这里显示。'),
     step('bookmark', '.indicator-bookmark, #indicator-no-results, #indicator-favorites-empty', '把常用指标加入自选', '点击指标名旁的书签加入或移出自选。若当前没有可选指标，先在知识库完成数据确认，再返回这里搜索。'),
     step('favorites', '#indicator-favorites-title', '集中查看自选指标', '我的自选集中显示最新值与走势，市场总览选中的核心指标也会加入这里。核心排列和自选按当前用户、空间与工作台分别保存。'),
   ]

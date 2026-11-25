@@ -22,7 +22,7 @@ function mountPanel(detail: EvidenceDetail, locale: typeof zh | typeof en = zh) 
   const calls: unknown[][] = []
   const modules: Record<string, unknown> = {
     vue,
-    'vue-i18n': { useI18n: () => ({ t: (key: string) => key.split('.').reduce((value: any, part) => value?.[part], locale) || key }) },
+    'vue-i18n': { useI18n: () => ({ t: (key: string, fallback?: string) => key.split('.').reduce((value: any, part) => value?.[part], locale) || fallback || key }) },
     '@/stores/auth': { useAuthStore: () => vue.reactive({ token: 'synthetic', selectedTenantId: 7 }) },
     '@/components/document-preview.vue': { __esModule: true, default: { render: () => null } },
     '@/api/chat/evidence': {
@@ -87,7 +87,8 @@ for (const [name, locale] of [['zh', zh], ['en', en]] as const) {
       assert.ok(text.includes(locale.evidence.reviewedPlanUnit))
       assert.ok(text.includes(locale.evidence.calculation))
       assert.ok(text.includes(locale.evidence.calculated))
-      assert.ok(text.includes('actual_loaded_rows'), 'the actual processing scope remains visible')
+      assert.ok(text.includes(locale.evidence.inputCountLabel), 'the record count remains available')
+      assert.doesNotMatch(text, /actual_loaded_rows|value_indexes/)
     } finally { view.app.unmount() }
   })
 }
@@ -102,8 +103,8 @@ test('normal evidence keeps its normal entry and raw projection uses neutral pro
       await vue.nextTick()
       const text = allText(view.body)
       assert.ok(!text.includes(zh.evidence.unverifiedReview))
-      assert.ok(text.includes('本次查询或处理返回的数据'))
-      assert.ok(text.includes('查询与处理依据'))
+      assert.ok(text.includes(zh.evidence.calculated))
+      assert.ok(text.includes(zh.evidence.calculation))
       assert.ok(!text.includes('不是原值'))
       assert.ok(text.includes('12.500'))
     } finally { view.app.unmount() }

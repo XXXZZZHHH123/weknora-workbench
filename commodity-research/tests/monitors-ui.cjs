@@ -320,7 +320,7 @@ async function setupMonitorReview(browser) {
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Monitor cards and controls stay inside viewport ' + width);
     }
     await page.getByLabel('启用 ' + draft.title, {exact: true}).uncheck();
-    await page.waitForFunction(() => document.getElementById('monitor-list').textContent.includes('v2'));
+    await page.waitForFunction(() => document.getElementById('monitor-list').textContent.includes('第 2 版'));
     assert.equal(await resident.count(), 0);
     await dialog.getByRole('button', {name: '修订', exact: true}).click();
     await page.getByRole('dialog', {name: '修订监测'}).waitFor();
@@ -343,7 +343,7 @@ async function setupMonitorReview(browser) {
     assert.equal(await dialog.isHidden(), true, 'A successful save does not reopen a dialog closed during the request');
     await listToggle.click();
     await dialog.getByText('修订后的监测', {exact: true}).waitFor();
-    assert.match(await page.locator('#monitor-list').innerText(), /v3/);
+    assert.match(await page.locator('#monitor-list').innerText(), /第 3 版/);
     assert.equal(await page.locator('#monitor-list .monitor-description').innerText(), '已修订的简介');
     assert.equal(await dialog.getByLabel('启用 修订后的监测', {exact: true}).isChecked(), false);
     assert.equal(await dialog.locator('#monitor-view').isHidden(), true);

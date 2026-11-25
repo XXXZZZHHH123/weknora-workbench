@@ -134,7 +134,7 @@ async function main(){
    const p=url.searchParams,dataset=p.get('dataset_id'),selected=series(dataset,scope).find(row=>row.series_id===p.get('series_id'));
    await pause(500);
    if(!selected){status=404;body={detail:'夹具中不存在当前库指标'};}
-   else if(p.get('start_date')&&p.get('end_date')&&p.get('start_date')>p.get('end_date')){status=422;body={detail:'开始日期不能晚于结束日期（隔离夹具）'};}
+   else if(p.get('start_date')&&p.get('end_date')&&p.get('start_date')>p.get('end_date')){status=422;body={detail:'开始日期不能晚于结束日期。'};}
    else{
     let rows=dates.map((date,i)=>({date:selected.date_mode==='date'?date:null,period:selected.date_mode==='period'?'样本期甲':null,value:values[i],source_cell:`B${i+2}`,date_cell:selected.date_mode==='date'?`A${i+2}`:null,period_cell:selected.date_mode==='period'?`A${i+2}`:null,value_status:'valid'}));
     if(selected.date_mode==='date')rows=rows.filter(row=>(!p.get('start_date')||row.date>=p.get('start_date'))&&(!p.get('end_date')||row.date<=p.get('end_date')));
@@ -439,7 +439,7 @@ async function main(){
   await wait("d.getElementById('jobState').textContent.includes('正在整理表格')");await verify('Upload pending state prevents duplicate submission',"d.getElementById('upload').disabled");await wait("d.getElementById('jobState').textContent.includes('自动入库') && !d.getElementById('upload').disabled");checks.push('Successful upload refreshes existing sheet review and available datasets');
   await verify('Upload uses multipart file in the selected knowledge base',"d.querySelector('.sheet-grid td')!==null");assert(requests.some(r=>r.path==='/api/v1/knowledge-bases/kb-a/knowledge/file'&&r.method==='POST'&&r.scope==='kb-a'&&r.size>100));
   await screenshot('05_导入_完成_1600');
-  await exec("const dt=new w.DataTransfer();dt.items.add(new w.File(['fixture'],'隔离上传.xlsx'));d.getElementById('file').files=dt.files;d.getElementById('file').dispatchEvent(new w.Event('change',{bubbles:true}))");await wait("d.getElementById('jobState').textContent.includes('文件结构无法读取') && !d.getElementById('upload').disabled");checks.push('Failed upload explains error and releases the action button');await screenshot('06_导入_失败_1600');
+  await exec("const dt=new w.DataTransfer();dt.items.add(new w.File(['fixture'],'隔离上传.xlsx'));d.getElementById('file').files=dt.files;d.getElementById('file').dispatchEvent(new w.Event('change',{bubbles:true}))");await wait("d.getElementById('jobState').textContent.includes('原件已保存，表格处理未完成') && !d.getElementById('upload').disabled");checks.push('Failed upload explains error and releases the action button');await screenshot('06_导入_失败_1600');
   for(const width of [900,600]){await resize(width);await exec("w.scrollTo(0,0)");await verify(`Import layout at ${width} px has no document horizontal overflow`,"d.documentElement.scrollWidth<=d.documentElement.clientWidth+1");await screenshot(`07_导入_${width}`);}
   await resize(1600);await exec("const unit=d.querySelector('[data-column-field=unit]');unit.value='KB A 草稿';unit.dispatchEvent(new w.Event('input',{bubbles:true}))");
   await js("window.auth('kb-b')");await wait("d.querySelector('.sheet-grid td') && d.querySelector('[data-column-field=unit]').value==='' && d.getElementById('dataset').textContent.includes('kb-b')");checks.push('Changing KB clears first KB draft and loads other KB real IDs');

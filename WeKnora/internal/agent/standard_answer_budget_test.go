@@ -193,8 +193,8 @@ func TestStandardAnswerBudgetFinalSynthesisMarksUnmatchedNumbersAndRejectsInvali
 		e.taskPlan = explicitTextDeliveryPlan()
 		state, messages, query := numericRecoveryFixture()
 		require.NoError(t, e.streamFinalAnswerToEventBus(t.Context(), query, state, "s", messages, finalAnswerOptions{preliminary: true}))
-		require.Contains(t, state.FinalAnswer, "999〔未核验〕")
-		require.Contains(t, state.FinalAnswer, "请以引用的原表、原文或数据为准")
+		require.Contains(t, state.FinalAnswer, "999〔数字待核对〕")
+		require.Contains(t, state.FinalAnswer, "写入报告前，请对照原表或原文核对")
 	})
 	t.Run("references", func(t *testing.T) {
 		bad := `A source claim.<kb chunk_id="invented-source" />`

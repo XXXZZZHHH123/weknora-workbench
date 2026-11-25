@@ -5,9 +5,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const sources = document.querySelector('[data-dedup-sources]');
   if (!root && !banner && !sources) return;
   const prefix = window.RESEARCH_PREFIX || '', api = prefix + '/api/sn/indicator-dedup';
-  const states = {pending: '待确认', confirmed_default: '以 default 库为准', keep_both: '保留两者', rejected: '不是同一指标'};
+  const states = {pending: '待确认', confirmed_default: '以共享库为准', keep_both: '保留两者', rejected: '不是同一指标'};
   const isRemap = item => item.remap || item.candidate?.kind === 'remap';
-  const name = field => field ? field.metric || field.name || field.series_id : '来源已不可用';
+  const name = field => field ? [field.metric,field.name].find(value=>value && value!==field.series_id) || '未命名指标' : '来源已不可用';
+  const localTime = new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',dateStyle:'short',timeStyle:'short'});
+  const accountLabel = value => value===window.RESEARCH_CONTEXT?.user ? '本人' :
+    value && !/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(value) ? value : '研究员';
   function node(tag, text, className) {
     const result = document.createElement(tag);
     if (text !== undefined) result.textContent = text;
@@ -32,7 +35,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (remap) return `已逐条核对 ${evidence.matching_periods} 条原表记录，内容一致。`;
     return `一致 ${evidence.matching_periods} 期 · 不一致 ${evidence.mismatching_periods} 期 · 最近不一致日期：${evidence.latest_mismatch_date || '无'}。` +
       `单位${evidence.unit_match ? '一致' : '不一致或缺失'}，频率${evidence.frequency_match ? '一致' : '不一致或缺失'}。` +
-      `个人库截至 ${evidence.personal_as_of || '无数据'}；default 库截至 ${evidence.default_as_of || '无数据'}。` +
+      `个人库截至 ${evidence.personal_as_of || '无数据'}；共享库截至 ${evidence.default_as_of || '无数据'}。` +
       '仅核实各序列最近 500 期的重叠日期；不填补空缺。' +
       (evidence.precision_complete === false ? '部分原值显示精度无法核实，当前比较仅供参考，不能批量确认。' : '');
   }
@@ -51,7 +54,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const mixed = Boolean(remaps && remaps !== selected.length);
       const overflow = selected.length > (remaps ? 10000 : 20);
       batch.disabled = busy || !data?.can_confirm || !selected.length || mixed || overflow;
-      batch.textContent = remaps && !mixed ? '确认所选重映射并改写引用' : '所选以 default 库为准';
+      batch.textContent = remaps && !mixed ? '用所选新版指标更新引用' : '所选以共享库为准';
       if (mixed) status.textContent = '请选择同一类候选进行确认。';
       else if (overflow) status.textContent = '所选候选超过单批上限，请减少所选候选。';
       else if (selectionOverflow) status.textContent = `共 ${data.items.length} 组对应，${data.pending_count} 组待确认。`;
@@ -60,20 +63,20 @@ document.addEventListener('DOMContentLoaded', () => {
     function render() {
       groups.replaceChildren();
       permission.hidden = data.can_confirm;
-      permission.textContent = '当前账号仅可查看和核实。确认与撤销需要本空间中心来源维护权限，或原表重映射来源的编辑权限及工作台编辑权限。';
+      permission.textContent = '当前账号可查看和核对。要确认或撤销，请联系共享库维护者，或有权编辑原表和研究台的同事。';
       selectRemaps.hidden = !data.items.some(item => isRemap(item) && item.batch_eligible);
       selectRemaps.disabled = !data.can_confirm;
       const buckets = new Map();
       for (const item of data.items) {
         const personal = item.personal, standard = item.default;
         const remap = isRemap(item);
-        const labelFor = state => remap && state === 'confirmed_default' ? '采用新映射并改写引用' : states[state] || state;
+        const labelFor = state => remap && state === 'confirmed_default' ? '用新版指标更新引用' : states[state] || '暂时无法确认';
         const canConfirm = item.can_confirm ?? data.can_confirm;
         const key = JSON.stringify(personal ? [personal.knowledge_base_id, personal.source_file, personal.sheet] : ['unavailable']);
         let group = buckets.get(key);
         if (!group) {
           group = node('section', undefined, 'dedup-group'); group.dataset.dedupGroup = key;
-          group.append(node('h2', personal ? `${personal.knowledge_base_name || personal.knowledge_base_id || '个人库'} · ${personal.source_file || '来源文件'} · ${personal.sheet || '未注明工作表'}` : '个人库来源已不可用'));
+          group.append(node('h2', personal ? `${personal.knowledge_base_name || '个人库'} · ${personal.source_file || '来源文件未注明'} · ${personal.sheet || '未注明工作表'}` : '个人库来源已不可用'));
           buckets.set(key, group); groups.append(group);
         }
         const row = node('article', undefined, 'dedup-row'); row.dataset.dedupRow = item.id;
@@ -85,15 +88,15 @@ document.addEventListener('DOMContentLoaded', () => {
         select.addEventListener('change', sync);
         heading.append(select, node('strong', labelFor(item.state))); row.append(heading);
         const fields = node('div', undefined, 'dedup-fields');
-        for (const [label, field] of (remap ? [['重映射前', personal], ['重映射后', standard]]
-                                            : [['个人库副本', personal], ['default 库', standard]])) {
+        for (const [label, field] of (remap ? [['旧版指标', personal], ['新版指标', standard]]
+                                            : [['个人库副本', personal], ['共享库', standard]])) {
           if (!field) {
             const box = node('div'); box.append(node('b', label), node('p', '来源已不可用，未读取历史字段资料。', 'indicator-muted'));
             fields.append(box); continue;
           }
           const box = node('div'); box.append(node('b', label), node('p'));
-          box.lastChild.append(remap && label === '重映射前' ? document.createTextNode(name(field)) : indicatorLink(field));
-          box.append(node('p', `${field.unit || '单位未注明'} · ${field.frequency || '频率未注明'}`), node('p', field.series_id, 'dedup-code'));
+          box.lastChild.append(remap && label === '旧版指标' ? document.createTextNode(name(field)) : indicatorLink(field));
+          box.append(node('p', [field.knowledge_base_name, field.source_file, field.sheet, field.unit || '单位未注明', field.frequency || '频率未注明'].filter(Boolean).join(' · ')));
           fields.append(box);
         }
         row.append(fields);
@@ -105,13 +108,13 @@ document.addEventListener('DOMContentLoaded', () => {
             ? `同一原件 · 区块 ${item.candidate.block_index + 1} · ${item.candidate.column} 列` +
               (item.candidate.category === null ? '' : ` · 类别 ${item.candidate.category}`)
             : (item.candidate?.reason ? item.candidate.reason + '。' : '') +
-              (codes?.length ? '共同编码：' + codes.map(c => typeof c === 'string' ? c : `${c.vendor} · ${c.code}`).join('、') : '候选证据请结合完整名称与字段口径核对。');
+              (codes?.length ? '相同的供应商指标代码：' + codes.map(c => typeof c === 'string' ? c : `${c.vendor} · ${c.code}`).join('、') : '请核对指标的完整名称、来源和统计口径。');
           row.append(node('p', location, 'indicator-muted'));
           row.append(node('p', evidenceText(item.evidence, remap), 'dedup-evidence'));
         }
-        if (item.evidence?.stale_default) row.append(node('p', 'default 库序列截至日期早于个人库副本，请核对中心来源更新情况；仍使用已确认的 default 库序列。', 'indicator-warning'));
+        if (item.evidence?.stale_default) row.append(node('p', '共享库的数据日期早于个人库副本。请查看共享库是否需要更新，当前仍使用已确认的共享库数据。', 'indicator-warning'));
         const actions = node('div', undefined, 'dedup-actions');
-        const verify = button(remap ? '核实全部观测' : '核实最近 500 期', async () => { await request('/' + encodeURIComponent(item.id) + '/verify', {sources_revision: data.sources_revision}); await load(); });
+        const verify = button(remap ? '核对全部记录' : '核实最近 500 期', async () => { await request('/' + encodeURIComponent(item.id) + '/verify', {sources_revision: data.sources_revision}); await load(); });
         verify.dataset.dedupVerify = item.id; verify.disabled = Boolean(item.source_unavailable); actions.append(verify);
         for (const state of ['confirmed_default', 'keep_both', 'rejected']) {
           const choice = button(labelFor(state), async () => {
@@ -126,7 +129,15 @@ document.addEventListener('DOMContentLoaded', () => {
         row.append(actions);
         if (item.history?.length) {
           const history = node('details'); history.append(node('summary', '决定与撤销记录'));
-          for (const event of item.history) history.append(node('p', `${event.actor || event.confirmed_by || '系统'} · ${event.at || event.created_at || event.time || ''} · ${labelFor(event.state || event.to_state) || event.action || ''}`));
+          for (const event of item.history) {
+            const actor = event.actor || event.confirmed_by;
+            const recorded = event.at || event.created_at || event.time || '';
+            const stamp = new Date(recorded);
+            const time = /^\d{4}-\d{2}-\d{2}$/.test(recorded) ? recorded :
+              Number.isNaN(stamp.getTime()) ? '' : localTime.format(stamp);
+            const action = event.action==='undo' ? '撤销决定' : event.state || event.to_state ? labelFor(event.state || event.to_state) : '更新指标对应关系';
+            history.append(node('p',[actor ? accountLabel(actor) : '系统',time,action].filter(Boolean).join(' · ')));
+          }
           row.append(history);
         }
         group.append(row);
@@ -165,15 +176,15 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!related.length) return;
     sources.hidden = false; sources.append(node('h2', '指标对应来源'));
     for (const item of related) {
-      const paragraph = node('p', item.default.series_id === identifier ? '已与个人库对应，副本保留：' : '本指标已对应至 default 库：');
+      const paragraph = node('p', item.default.series_id === identifier ? '已与个人库对应，副本保留：' : '本指标已对应至 共享库：');
       const field = item.default.series_id === identifier ? item.personal : item.default;
-      paragraph.append(indicatorLink(field), document.createTextNode(` · ${field.source_file || field.knowledge_base_id || ''} · ${field.sheet || ''}`));
+      paragraph.append(indicatorLink(field), document.createTextNode(' · '+[field.source_file||field.knowledge_base_name||'来源未注明',field.sheet].filter(Boolean).join(' · ')));
       sources.append(paragraph);
       try {
         const verified = await request('/' + encodeURIComponent(item.id) + '/verify', {sources_revision: data.sources_revision});
         const evidence = verified.evidence || verified.item?.evidence;
         sources.append(node('p', evidenceText(evidence), 'text-xs'));
-        if (evidence?.stale_default) sources.append(node('p', 'default 库序列截至日期早于个人库副本，请核对中心来源更新情况；仍使用已确认的 default 库序列。', 'indicator-warning'));
+        if (evidence?.stale_default) sources.append(node('p', '共享库的数据日期早于个人库副本。请查看共享库是否需要更新，当前仍使用已确认的共享库数据。', 'indicator-warning'));
       } catch (error) { sources.append(node('p', error.message, 'indicator-warning')); }
     }
     const manage = node('a', '查看对应与撤销记录'); manage.href = prefix + '/sn/indicator-dedup'; sources.append(manage);

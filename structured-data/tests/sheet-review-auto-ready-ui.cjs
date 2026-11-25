@@ -38,7 +38,7 @@ const reason='合成日期无法解析 <img src=x onerror="throw 1">';
     else{
      const success=batches===1?[sheets[0].name]:job.names;
      for(const name of success){const target=sheets.find(item=>item.name===name);target.status='confirmed';target.import_state='imported';target.published_in_dataset=true;target.published_dataset_id='fixture-snapshot';target.published_mapping=target.mapping;}
-     data={id:job.id,status:'completed',result:{import_id:importId,sheets_imported:success,sheets_failed:batches===1?[{sheet:sheets[1].name,message:reason}]:[],sheets_pending:[sheets[2].name]}};
+     data={id:job.id,status:'completed',result:{import_id:importId,sheets_imported:success,sheets_failed:batches===1?[{sheet:sheets[1].name,message:reason,review_target:{sheet:sheets[1].name,field:'date_column',column:'A',cells:['A2']}}]:[],sheets_pending:[sheets[2].name]}};
     }
    }else if(url.pathname==='/api/imports/'+importId)data={import_id:importId,source_file:'synthetic.xlsx',sheets};
    await route.fulfill({contentType:type,body:typeof data==='string'?data:JSON.stringify(data)});
@@ -63,7 +63,8 @@ const reason='合成日期无法解析 <img src=x onerror="throw 1">';
   release=true;
   await page.locator('[data-sheet-confirm="failed"]').waitFor();
   assert.match(await page.locator('[data-sheet-confirm="success"]').innerText(),/合成自动表甲：已确认/);
-  assert.equal(await page.locator('[data-sheet-confirm="failed"]').innerText(),sheets[1].name+'：'+reason);
+  assert.match(await page.locator('[data-sheet-confirm="failed"]').innerText(),/请核对工作表「合成自动表乙」的日期列（A 列），查看原表 A2 后再试/);
+  assert.equal(await page.locator('#requestDiagnostics').isVisible(),false,'Only administrators can view the original failure');
   assert.equal(await page.locator('#mappingFeedback img').count(),0,'Failure text must be escaped');
   assert.match(await page.locator('#confirmAutoReadySheets').innerText(),/\(1\)/,'Successful sheets stay confirmed and leave the next selection');
   assert.equal(sheets[2].status,'needs_review');assert.equal(sheets[3].status,'template_ready');

@@ -33,18 +33,34 @@ async function boundedConflictJSON(response: Response): Promise<unknown> {
   } catch { return null } finally { reader.releaseLock() }
 }
 
-/** Display only bounded, plain validation details from a JSON conflict. */
-export async function structuredSourceReadError(response: Response): Promise<Error> {
-  if (response.status === 401 || response.status === 403) return new Error('当前账号或知识库无权读取原始来源。')
-  if (response.status === 404) return new Error('原始来源或对应数据集已不存在。')
+export class StructuredSourceReadError extends Error {
+  constructor(message: string, public readonly diagnostic = '') {
+    super(message)
+  }
+}
+
+/** Keep the response text for diagnostics. Only display recognized causes. */
+export async function structuredSourceReadError(
+  response: Response,
+  translate: (key: string, fallback: string) => string = (_, fallback) => fallback,
+): Promise<StructuredSourceReadError> {
+  const status = `HTTP ${response.status}`
+  if (response.status === 401) return new StructuredSourceReadError(translate('structuredReview.sourceExpired', '登录已失效，请重新登录后继续。'), status)
+  if (response.status === 403) return new StructuredSourceReadError(translate('structuredReview.sourceDenied', '当前账号无权读取原件，请联系资料负责人。'), status)
+  if (response.status === 404) return new StructuredSourceReadError(translate('structuredReview.sourceMissing', '这份原件已不存在或暂时无法找到，请重新选择来源。'), status)
   if (response.status === 409) {
     const body = await boundedConflictJSON(response) as { detail?: unknown } | null
     const detail = body?.detail
     const typed = detail && typeof detail === 'object' ? detail as { code?: unknown; message?: unknown } : null
-    const message = sourceConflictDetail(typeof detail === 'string' ? detail :
-      typed && typeof typed.code === 'string' && /^[a-z][a-z0-9_]{0,63}$/i.test(typed.code) ? typed.message : null)
-    if (message) return new Error(message)
-    return new Error('原件暂时无法读取或来源状态已改变（HTTP 409），请稍后重试。')
+    const diagnostic = sourceConflictDetail(typeof detail === 'string' ? detail : typed?.message)
+    if (detail === '正在读取原表，请稍后再查看其他区域。' || detail === '正在读取原表，请稍后再查看样本。') {
+      const key = detail === '正在读取原表，请稍后再查看样本。' ? 'sampleBusy' : 'sourceBusy'
+      return new StructuredSourceReadError(translate(`structuredReview.${key}`, detail), [status, detail].join(' · '))
+    }
+    if (typed?.code === 'source_changed') {
+      return new StructuredSourceReadError(translate('structuredReview.sourceChanged', '原件版本已变化，请重新读取。'), [status, diagnostic].filter(Boolean).join(' · '))
+    }
+    return new StructuredSourceReadError(translate('structuredReview.sourceConflict', '原件暂时无法读取或来源已变化，请重新选择来源后再试。'), [status, diagnostic].filter(Boolean).join(' · '))
   }
-  return new Error(`原件读取失败（HTTP ${response.status}）。`)
+  return new StructuredSourceReadError(translate('structuredReview.readFailed', '暂时无法读取原件，请稍后重试。'), status)
 }
