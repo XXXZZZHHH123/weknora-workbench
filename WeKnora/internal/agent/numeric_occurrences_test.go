@@ -137,5 +137,5 @@ func TestNumericAnnotationKeepsUncheckedValueSuffixesIntact(t *testing.T) {
 	marked, count, ok := annotateUnverifiedNumbers(answer, occurrences)
 	require.True(t, ok)
 	require.Equal(t, 5, count)
-	require.Equal(t, "合约CF05M，另报05〔未核验〕元、-999.5kg〔未核验〕、USD999M〔未核验〕、2.5e-8〔未核验〕和17.4％〔未核验〕。", marked)
+	require.Equal(t, "合约CF05M，另报05〔数字待核对〕元、-999.5kg〔数字待核对〕、USD999M〔数字待核对〕、2.5e-8〔数字待核对〕和17.4％〔数字待核对〕。", marked)
 }
