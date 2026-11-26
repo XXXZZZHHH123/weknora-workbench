@@ -361,7 +361,9 @@ func TestUnboundSearchProjectsSamePeriodFilesAndComparisonGuidance(t *testing.T)
 	require.Equal(t, 3, strings.Count(projected, `navigation_only="true" requires_read="true"`))
 	notice := res.Data["notice"].(string)
 	for _, guidance := range []string{"归组同期文件，分别核对", "首批各 read_document 携同一完整 source_scope",
-		"同一文件内比较无需另绑", "只能说明已查范围"} {
+		"同一文件内比较无需另绑", "选取相关的沿用期、修订期和后续期，按同一事项查各期正文，即使后期摘录只命中别的主题",
+		"按实读日期归并沿用、修订前后值及分项和后续复述，保留各期出处，复述不另计修订",
+		"只能说明已查范围"} {
 		require.Contains(t, notice, guidance)
 	}
 	require.Contains(t, projected, "<hint>"+notice+"</hint>")

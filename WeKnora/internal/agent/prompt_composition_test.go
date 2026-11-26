@@ -72,13 +72,14 @@ func TestRuntimeDirectoryEscapesAndBoundsUntrustedContent(t *testing.T) {
 				FAQAnswers:          []string{"SECRET FAQ ANSWER"},
 			},
 			{KnowledgeID: "doc2", Description: "DOCUMENT SUMMARY"},
-			{KnowledgeID: "third-document"},
+			{KnowledgeID: "third-document", FAQStandardQuestion: "Excluded FAQ question"},
 		},
 	}}
 	text := formatKnowledgeBaseList(kbs)
 	require.NotContains(t, text, "SECRET FAQ ANSWER")
 	require.NotContains(t, text, "DOCUMENT SUMMARY")
 	require.NotContains(t, text, "third-document")
+	require.NotContains(t, text, "Excluded FAQ question")
 	require.NotContains(t, text, "<answer_instruction>")
 	require.Less(t, len([]rune(text)), 1100)
 	decoder := xml.NewDecoder(strings.NewReader(text))
@@ -97,6 +98,36 @@ func TestRuntimeDirectoryEscapesAndBoundsUntrustedContent(t *testing.T) {
 	require.Contains(t, context, `<document knowledge_id="third-document" title="Selected file" />`)
 	require.NotContains(t, context, "<communication_instruction>")
 	require.NotContains(t, context, "<answer_instruction>")
+}
+
+func TestRuntimeDocumentDirectoryUsesRemainingTitleBudget(t *testing.T) {
+	first := strings.Repeat("甲", 160)
+	recent := []RecentDocInfo{
+		{KnowledgeID: "first-id", ChunkID: "first-chunk", Type: "pdf", Title: first + "甲"},
+		{KnowledgeID: "second-id", FileName: "B"},
+		{Title: strings.Repeat("乙", 157)},
+		{Title: strings.Repeat("&", 32)},
+		{KnowledgeID: "title-only-id", ChunkID: "title-only-chunk", Title: `Q<&>"`, Description: "not a navigation title"},
+		{Title: strings.Repeat("丙", 137)},
+		{FileName: "  Later\n\t file.pdf "},
+		{},
+		{},
+		{Title: "Tenth entry"},
+		{Title: "Eleventh entry"},
+	}
+	other := []RecentDocInfo{{Title: "A"}, {Title: "B"}, {Title: strings.Repeat("丁", 161)}, {Title: "Other library title"}}
+	context := buildRuntimeContextBlock("session", []*KnowledgeBaseInfo{
+		{ID: "library", RecentDocs: recent},
+		{ID: "other-library", Type: "document", RecentDocs: other},
+	}, nil, nil, nil, "")
+	require.Contains(t, context, `<document knowledge_id="first-id" chunk_id="first-chunk" type="pdf"><name>`+
+		first+`...</name></document>`)
+	require.Contains(t, context, `<document knowledge_id="second-id" chunk_id="" type=""><name>B</name></document>`)
+	require.Contains(t, context, "<title>Q&lt;&amp;&gt;&quot;</title>\n    <title>Later file.pdf</title>\n    <title>Tenth entry</title>")
+	require.Contains(t, context, "<title>Other library title</title>")
+	for _, omitted := range []string{"乙", strings.Repeat("&amp;", 32), "丙", "丁", "Eleventh entry", "title-only-id", "title-only-chunk", "not a navigation title"} {
+		require.NotContains(t, context, omitted)
+	}
 }
 
 func TestFinalSynthesisKeepsConversationRolesImagesAndSteering(t *testing.T) {

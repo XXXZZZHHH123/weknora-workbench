@@ -38,6 +38,31 @@ def test_exact_date_lookup_keeps_full_field_dates(dated_fields, day, field, vali
     assert result['record_count'] == record_count
     assert result['valid_count'] == 0
     assert published_dates(result) == {field: (valid_day, '2023-09-24')}
+    warnings = '\n'.join(result['warnings'])
+    assert '最后有值的日期（若有）' in warnings
+    assert '不能用其他日期或模型记忆补齐' in warnings
+    assert '用户未排除补充且有符合其范围的授权文档可查，按所问日期与指标检索并实读' in warnings
+    assert '确认有对应值时，另列日期、出处、原口径和原值' in warnings
+    assert '用户明确只用该来源时只交付限定范围的结果' in warnings
+
+
+def test_exact_date_warning_uses_query_filters_and_stays_out_of_other_results(dated_fields):
+    store, dataset = dated_fields
+    day = '2023-09-23'
+    filtered = store.query_series(dataset, 'price', day, day, value_filters=[{'op': 'gt', 'value': 1000}])
+    assert filtered['status'] == 'no_data'
+    assert (filtered['scope_record_count'], filtered['record_count']) == (1, 0)
+    assert '筛选后零行不能证明原字段当天无记录' in '\n'.join(filtered['warnings'])
+    assert published_dates(filtered) == {'price': (day, '2023-09-24')}
+
+    available = store.query_series(dataset, 'price', day, day)
+    missing_range = store.query_series(dataset, 'price', '2023-09-24', '2023-09-25')
+    count_only = store.query_series(dataset, 'price', '2023-09-24', '2023-09-24', operation='count')
+    assert available['status'] == 'ok' and missing_range['status'] == 'no_data'
+    assert count_only['status'] == 'ok' and count_only['aggregate'] == 0
+    assert published_dates(count_only) == {'price': (day, '2023-09-24')}
+    for result in (available, missing_range, count_only):
+        assert '按所问日期与指标检索并实读' not in '\n'.join(result['warnings'])
 
 
 def test_sql_lookup_keeps_each_selected_fields_dates(dated_fields):
