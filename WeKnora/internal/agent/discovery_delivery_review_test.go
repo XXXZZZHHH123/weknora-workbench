@@ -98,6 +98,91 @@ func TestDiscoveryDeliveryReviewKeepsSatisfiedDirectoryAndRestrictedTasks(t *tes
 	}
 }
 
+func TestDiscoveryDeliveryReviewMissingPrimaryValueUsesOriginalScope(t *testing.T) {
+	const question = "数据库里今天的读数是多少？"
+	lastDate := time.Now().UTC().AddDate(0, 0, -1).Format(time.DateOnly)
+	candidate := "数据库今天无记录。最后有值的日期为 " + lastDate + "，库内原始读数为 0。"
+	const fallback = "Return the last available database value when the requested reading is missing."
+	const lead = "同期报告记载每日读数。"
+	missing, _ := structuredQueryFixture(t, "structured_analyze_table", "requested", map[string]any{"sql": "SELECT value FROM data WHERE date = CURRENT_DATE AND metric = '读数'"}, map[string]any{
+		"_structured_execution": agenttools.StructuredOperationDescriptor{Operation: "analyze_table", EffectClass: "read"},
+		"status":                "ok", "rows": []any{}, "returned_row_count": 0, "input_complete": true, "output_truncated": false,
+	}, true)
+	latest, _ := structuredQueryFixture(t, "structured_query_series", "latest", nil, map[string]any{
+		"_structured_execution": agenttools.StructuredOperationDescriptor{Operation: "query_series", EffectClass: "read"},
+		"status":                "ok", "rows": []any{map[string]any{"date": lastDate, "value": 0}},
+	}, true)
+	for _, tc := range []struct{ name, prior, action, feedback string }{
+		{"named_primary", "", "recover", "Look up the requested period and measure in the authorized reports and read the matching passage."},
+		{"database_only", "只用数据库。", "keep", ""},
+		{"table_only", "请只查当前表。", "keep", ""},
+		{"workbook_only", "答复须限于这份工作簿。", "keep", ""},
+		{"database_coverage", "在数据库能查到的范围内回答。", "keep", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, state, model := discoveryReviewFixture(t, discoveryReply(tc.action, tc.feedback))
+			e.taskPlan = &taskEvidencePlan{
+				SourceDiscovery:    &taskSourceDiscovery{Mode: "discover", SourceDomains: []string{"structured"}},
+				CompletionCriteria: []string{fallback},
+			}
+			e.knowledgeBasesInfo = []*KnowledgeBaseInfo{{ID: "permitted", Description: lead}}
+			state.RoundSteps = []types.AgentStep{{ToolCalls: []types.ToolCall{missing}}, {ToolCalls: []types.ToolCall{latest}}}
+			var history []chat.Message
+			if tc.prior != "" {
+				history = []chat.Message{{Role: "user", Content: tc.prior}}
+			}
+			decision := e.checkCandidate(t.Context(), question, candidate, "", state, history, false)
+			require.Len(t, model.calls, 1)
+			input := model.calls[0][1].Content
+			for _, evidence := range []string{question, candidate, fallback, lead, `"source_domains":["structured"]`, `"returned_row_count":0`, `"input_complete":true`} {
+				require.Contains(t, input, evidence)
+			}
+			// The verdict is mocked. Check the policy actually sent with this empty SQL result and older observation.
+			prompt := model.calls[0][0].Content
+			require.Contains(t, prompt, "successful SQL query returning no matching rows")
+			require.Contains(t, prompt, "independently of the advisory plan's latest-value fallback")
+			if tc.action == "recover" {
+				require.Equal(t, candidateNeedSource, decision.Disposition)
+				require.Contains(t, e.answerReviewFeedback, tc.feedback)
+				require.Contains(t, prompt, "supplementation is permitted and the authorized directory or navigation points to a relevant document or series")
+				require.Contains(t, prompt, "search once for the requested period and measure and read the supporting passage or figure on a hit")
+				require.Contains(t, prompt, "Read an existing hit directly and reuse evidence already read")
+				require.Contains(t, prompt, "each source's date, measure, reported unit, original value and location separately")
+				require.Contains(t, prompt, "without repeating the search or asking for material")
+			} else {
+				require.Equal(t, candidateAccepted, decision.Disposition)
+				require.Contains(t, input, tc.prior)
+				require.Contains(t, prompt, "to what the database can establish, stay within that source")
+				require.Contains(t, prompt, "date, original value and provenance of the last valid observation")
+				require.Contains(t, prompt, "without seeking supplementary documents or asking the user for material")
+			}
+		})
+	}
+}
+
+func TestDiscoveryProgressReviewSeesNoDataWithinDatabaseScope(t *testing.T) {
+	e, state, model, messages, guards := sourceProgressFixture(t, "keep")
+	e.toolRegistry.RegisterTool(agenttools.NewStructuredDataTool())
+	e.knowledgeBasesInfo = []*KnowledgeBaseInfo{{ID: "permitted", Description: "同期报告记载每日读数。"}}
+	const question = "在数据库能查到的范围内给出今天的读数。"
+	messages[1].Content = question
+	e.reviewConversation = conversationThroughLastHuman(messages)
+	day := time.Now().UTC().Format(time.DateOnly)
+	args := map[string]any{"operation": "query_series", "arguments": map[string]any{"series_id": "reading", "start_date": day, "end_date": day}}
+	missing, _ := structuredQueryFixture(t, agenttools.ToolStructuredData, "requested", args, map[string]any{
+		"_structured_execution": agenttools.StructuredOperationDescriptor{Operation: "query_series", EffectClass: "read"},
+		"status":                "no_data", "rows": []any{},
+	}, true)
+	state.RoundSteps[len(state.RoundSteps)-1].ToolCalls = []types.ToolCall{missing}
+	e.reviewSourceProgress(t.Context(), question, state, &messages, guards, "session")
+	require.Len(t, model.calls, 1)
+	for _, fact := range []string{`"phase":"progress"`, `"status":"no_data"`, question, "同期报告记载每日读数。"} {
+		require.Contains(t, model.calls[0][1].Content, fact)
+	}
+	require.Contains(t, model.calls[0][0].Content, "to what the database can establish, stay within that source")
+	require.Zero(t, guards.evidenceRecoveryAttempts)
+}
+
 func TestDiscoveryDeliveryReviewClarificationAllowsModelLedParallelBindings(t *testing.T) {
 	for _, action := range []string{"recover", "keep"} {
 		t.Run(action, func(t *testing.T) {
