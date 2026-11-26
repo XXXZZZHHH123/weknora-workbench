@@ -264,35 +264,36 @@ func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 	const reportID = "contract-document"
 	const reportFile = "6月10日设备巡检周报"
 	const reportChunk = "inspection-report-page"
+	const reportQuery = "2021年6月10日 设备运行时长"
 	const dbConclusion = "设备台账6月10日未查到运行时长。最后有效日为2021年6月7日，设备表D4原值为8.75小时。"
 	const supplement = "该期据6月10日设备巡检周报第2页，受检设备当周累计运行时长为13小时。"
 
 	for _, onlyTable := range []bool{false, true} {
-		name := "authorized supplement"
+		name := "named primary source"
 		if onlyTable {
 			name = "only the specified table"
 		}
 		t.Run(name, func(t *testing.T) {
 			question := "设备台账里2021年6月10日的运行时长是多少？"
-			answer := dbConclusion
-			discovery := "discover"
 			responses := []mockResponse{
 				chatToolCall("table", queryTool, `{}`),
 				chatToolCall("last", lastTool, `{"series_id":"hours","start_date":"2021-06-07","end_date":"2021-06-07"}`),
 			}
 			if onlyTable {
 				question += "只查设备台账这张表。"
-				discovery = "recover"
+				responses = append(responses, chatAnswer(dbConclusion))
 			} else {
 				responses = append(responses,
+					chatToolCall("search", agenttools.ToolSearchKnowledge, `{"query":"`+reportQuery+`"}`),
 					chatToolCall("report", agenttools.ToolReadDocument, `{"id":"`+reportID+`","page":2}`),
 					chatAnswer(dbConclusion+supplement+"粗估为17小时。"),
+					chatAnswer(dbConclusion+supplement+`<ref id="c1" />`),
+					discoveryReply("keep", ""),
 				)
-				answer += supplement + `<ref id="c1" />`
 			}
 			model := &taskPlannerChat{
-				plan:     &types.ChatResponse{Content: sourceDomainPlan(t, discovery, []string{"structured"}), FinishReason: "stop"},
-				mockChat: mockChat{responses: append(responses, chatAnswer(answer))},
+				plan:     &types.ChatResponse{Content: sourceDomainPlan(t, "discover", []string{"structured"}), FinishReason: "stop"},
+				mockChat: mockChat{responses: responses},
 			}
 			engine := newTestEngine(t, model, withCitationsEnabled(true))
 			engine.config.WorkbenchDefault, engine.config.TaskPlanningEnabled = true, true
@@ -321,17 +322,18 @@ func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 			}}}
 			engine.toolRegistry.RegisterTool(table)
 			engine.toolRegistry.RegisterTool(last)
-			engine.toolRegistry.RegisterTool(agenttools.NewReadDocumentTool(&plannedDocumentKnowledge{document: report},
-				&citationContractChunkService{repo: chunks}, types.SearchTargets{{
-					Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: report.KnowledgeBaseID, TenantID: report.TenantID,
-				}}))
+			knowledge := &plannedDocumentKnowledge{document: report}
+			index := &plannedDocumentIndex{sourceDiscoveryKnowledgeService: &sourceDiscoveryKnowledgeService{}, document: report}
+			targets := types.SearchTargets{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: report.KnowledgeBaseID, TenantID: report.TenantID}}
+			engine.toolRegistry.RegisterTool(agenttools.NewSearchKnowledgeTool(index, knowledge, nil, targets, nil, nil))
+			engine.toolRegistry.RegisterTool(agenttools.NewReadDocumentTool(knowledge, &citationContractChunkService{repo: chunks}, targets))
 			ctx := types.WithCaller(t.Context(), types.Caller{TenantID: 7, UserID: "authorized-reader", Role: types.TenantRoleViewer})
 			state, err := engine.Execute(ctx, "session", "message", question, nil)
 			require.NoError(t, err)
 			require.True(t, state.IsComplete)
 			require.Equal(t, 1, table.calls)
 			require.Equal(t, 1, last.calls)
-			require.Len(t, model.calls, len(responses)+1)
+			require.Len(t, model.calls, len(responses))
 			require.Len(t, model.requests, 1)
 			planner := model.requests[0][0].Content
 			require.Contains(t, planner, "按用户原意区分点名首查与排他限源，未限定时写明未限定，明确限源时只在范围内交付")
@@ -343,38 +345,49 @@ func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 				"先交付所问期的已核库内值，明确缺数的日期或区间",
 				"给出同字段的最后有效日、该日原值和出处",
 				"只问日期且摘要足够时直接使用", "只有日期时用现有库内读取能力核实该日同字段原值",
-				"库内可查范围时，交付范围内已核事实，不扩读文档或索要材料",
-				"按缺口的指标和时段定向实读正文或原图，复用已有实读证据",
+				"点名询问某库、某表或某文件中的值，表示先查该来源",
+				"只有用户明确排除其他来源或要求只依据指定来源时，才在限定范围内交付已核事实，不扩读文档或索要材料",
+				"主来源已核实所问期缺数、用户未排除补充且有授权文档可查时，本轮交付前按缺口的指标和时段定向检索，命中后实读对应正文或原图",
+				"已有相关命中时直接实读相应位置，已有实读证据时直接复用",
 				"终稿仍保留库内最后有效日、原值和出处",
 				"用其披露值直接回答该期问题，点名补充来源", "仅披露期间值时按该粒度作答",
-				"按既有规则点名采用或暂用的一份，并列其他已核版本及出处",
+				"同一材料有多个已核版本时，按既有规则点名采用或暂用的一份，并列其他已核版本及出处",
 				"未核到同期记载时，交付已核事实并说明缺口",
 			} {
+				require.Contains(t, planner, rule)
 				require.Contains(t, model.calls[1][0].Content, rule)
 			}
 			require.Contains(t, input, `"last_valid_date":"2021-06-07","last_date":"2021-06-09"`)
 			require.Contains(t, rawMessageText(model.calls[2]), `"raw_value":"8.75"`)
-			docReads := 0
+			available := listToolNames(model.opts[2].Tools)
+			require.Contains(t, available, agenttools.ToolSearchKnowledge)
+			require.Contains(t, available, agenttools.ToolReadDocument)
+			var executed []string
 			for _, step := range state.RoundSteps {
 				for _, call := range step.ToolCalls {
-					if call.ExecutionName() == agenttools.ToolReadDocument {
-						require.True(t, call.Result.Success)
-						docReads++
+					name := call.ExecutionName()
+					require.True(t, call.Result.Success)
+					executed = append(executed, name)
+					if name == agenttools.ToolSearchKnowledge {
+						require.Equal(t, reportQuery, call.Result.Data["query"])
 					}
 				}
 			}
 			if onlyTable {
-				require.Zero(t, docReads)
-				require.NotContains(t, listToolNames(model.opts[1].Tools), agenttools.ToolReadDocument)
+				require.Equal(t, []string{queryTool, lastTool}, executed)
 				require.NotContains(t, input, reportFile)
 				require.Equal(t, dbConclusion, state.FinalAnswer)
 			} else {
-				require.Equal(t, 1, docReads)
-				require.Contains(t, listToolNames(model.opts[1].Tools), agenttools.ToolReadDocument)
-				readInput := rawMessageText(model.calls[3])
+				require.Equal(t, []string{queryTool, lastTool, agenttools.ToolSearchKnowledge, agenttools.ToolReadDocument}, executed)
+				hit := rawMessageText(model.calls[3])
+				require.Contains(t, hit, reportFile)
+				require.NotContains(t, hit, "受检设备当周累计运行时长为13小时")
+				readInput := rawMessageText(model.calls[4])
 				require.Contains(t, readInput, reportFile)
 				require.Contains(t, readInput, "受检设备当周累计运行时长为13小时")
-				revision := model.calls[len(model.calls)-1]
+				require.NotNil(t, engine.turnReview.DiscoveryReview)
+				require.Equal(t, "keep", engine.turnReview.DiscoveryReview.Action)
+				revision := model.calls[len(model.calls)-2]
 				require.Contains(t, rawMessageText(revision), `"raw_value":"8.75"`)
 				repair := revision[len(revision)-1]
 				require.Equal(t, "system", repair.Role)
