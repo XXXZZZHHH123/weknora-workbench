@@ -1,0 +1,267 @@
+{
+  "id": "r5-1-kb16",
+  "run": "qa4-r5-1",
+  "question_id": "KB-16",
+  "question": "棉花数据库里，2024年3月的郑棉期货收盘价是多少？",
+  "provenance": {
+    "event_file": "KB-16.t1.events.json",
+    "answer_file": "KB-16.json",
+    "final_event_index": 51,
+    "source_event_count": 55,
+    "projection": "Zero-based SSE event indices. Every tool result exposed in the stream is retained with selected original fields. Response arrays may be excerpts; recorded totals, pagination and truncation are unchanged. Opaque resource identities are fixture aliases. The complete saved final agrees across the answer record, SSE answer and SSE completion.",
+    "plan_source": "backend-qa4.log:86003 advisory_plan",
+    "terminal_source": "backend-qa4.log:89113 (partial)",
+    "boundary": "The early execution draft and published final are available. Both intermediate budget drafts and the result edit are unavailable as complete texts. The first step is bootstrap; the binding error at event 29 is a preflight rejection. Search #42 retains navigation metadata; the overlapping excerpt is retained only in read #46."
+  },
+  "grade": {"verdict":"partial","ambiguous":false,"source":"qa4/result.md:108"},
+  "steps": [
+    {
+      "iteration": -1,
+      "tool_calls": [
+        {
+          "id": "call_fixture_05",
+          "name": "structured_list_datasets",
+          "args": {"question":"棉花数据库中郑棉期货收盘价在2024年3月的每日或月度收盘数值"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"source_data_read":false,"_structured_execution":{"canonical_operation":"list_datasets","scope_mode":"directory","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"dataset_count":1,"datasets_truncated":false,"offset":0,"next_offset":null,"datasets":[{"dataset_id":"fixture-dataset-cotton","source_file":"棉花数据库.xlsx"}]}
+          },
+          "call_event_index": 3,
+          "event_index": 5
+        }
+      ]
+    },
+    {
+      "iteration": 0,
+      "tool_calls": [
+        {
+          "id": "call_fixture_09",
+          "name": "structured_list_series",
+          "args": {"dataset_id":"fixture-dataset-cotton","limit":100,"search":"收盘价","sheet":"郑棉期货"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"list_series","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"offset":0,"next_offset":null,"total":7,"truncated":false,"discovery_coverage":{"representation":"structured_field_catalog","document_body_searched_by_this_operation":false},"series":[{"series_id":"futures.close.CF.CZC","metric":"收盘价","first_date":"2004-06-01","first_valid_date":"2004-06-01","last_valid_date":"2023-09-22"},{"series_id":"futures.close.CF01M.CZC","metric":"收盘价","first_date":"2004-06-01","first_valid_date":"2004-06-01","last_valid_date":"2023-09-22"},{"series_id":"futures.close.CF03M.CZC","metric":"收盘价","first_date":"2004-06-01","first_valid_date":"2004-06-01","last_valid_date":"2023-09-22"},{"series_id":"futures.close.CF05M.CZC","metric":"收盘价","first_date":"2004-06-01","first_valid_date":"2004-06-03","last_valid_date":"2023-09-22"},{"series_id":"futures.close.CF07M.CZC","metric":"收盘价","first_date":"2004-06-01","first_valid_date":"2004-08-02","last_valid_date":"2023-09-22"},{"series_id":"futures.close.CF09M.CZC","metric":"收盘价","first_date":"2004-06-01","first_valid_date":"2004-10-19","last_valid_date":"2023-09-22"},{"series_id":"futures.close.CF11M.CZC","metric":"收盘价","first_date":"2004-06-01","first_valid_date":"2004-06-01","last_valid_date":"2023-09-22"}]}
+          },
+          "call_event_index": 8,
+          "event_index": 9
+        }
+      ]
+    },
+    {
+      "iteration": 1,
+      "tool_calls": [
+        {
+          "id": "call_fixture_13",
+          "name": "structured_inspect_source",
+          "args": {"dataset_id":"fixture-dataset-cotton","max_matches":30,"padding_cols":1,"padding_rows":1,"searches":["2024-03"],"sheet":"郑棉期货"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"status":"ok","kind":"structured_source_inspection","dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"inspect_source","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"source_file":"棉花数据库.xlsx","hash_verified":true,"truncated":false,"matches":[],"scan":{"complete":true},"ranges":[]}
+          },
+          "call_event_index": 12,
+          "event_index": 13
+        }
+      ]
+    },
+    {
+      "iteration": 2,
+      "tool_calls": [
+        {
+          "id": "call_fixture_18",
+          "name": "structured_inspect_source",
+          "args": {"dataset_id":"fixture-dataset-cotton","max_cells":200,"ranges":["A4680:C4705"],"sheet":"郑棉期货"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"status":"ok","kind":"structured_source_inspection","dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"inspect_source","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"source_file":"棉花数据库.xlsx","hash_verified":true,"truncated":true,"matches":[],"scan":{"complete":null},"ranges":[{"range":"A4680:C4705","requested_range":"A4680:C4705","sheet":"郑棉期货","cells":[{"cached_value":null,"cell":"A4705","formula":null,"raw_value":"2023-09-22T00:00:00","sheet":"郑棉期货","value":"2023-09-22T00:00:00","value_status":"original"},{"cached_value":null,"cell":"B4705","formula":null,"raw_value":17110,"sheet":"郑棉期货","value":17110,"value_status":"original"},{"cached_value":null,"cell":"C4705","formula":null,"raw_value":17110,"sheet":"郑棉期货","value":17110,"value_status":"original"}]}]}
+          },
+          "call_event_index": 16,
+          "event_index": 18
+        }
+      ]
+    },
+    {
+      "iteration": 3,
+      "tool_calls": [
+        {
+          "id": "call_fixture_22",
+          "name": "structured_list_series",
+          "args": {"dataset_id":"fixture-dataset-cotton","limit":100,"search":"郑棉 收盘价"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"list_series","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"offset":0,"next_offset":null,"total":42,"truncated":false,"discovery_coverage":{"representation":"structured_field_catalog","document_body_searched_by_this_operation":false},"series":[{"series_id":"futures.close.CF.CZC","metric":"收盘价","first_date":"2004-06-01","last_valid_date":"2023-09-22"},{"series_id":"futures.close.CF01M.CZC","metric":"收盘价","first_date":"2004-06-01","last_valid_date":"2023-09-22"},{"series_id":"futures.close.CF03M.CZC","metric":"收盘价","first_date":"2004-06-01","last_valid_date":"2023-09-22"},{"series_id":"futures.close.CF05M.CZC","metric":"收盘价","first_date":"2004-06-01","last_valid_date":"2023-09-22"},{"series_id":"futures.close.CF07M.CZC","metric":"收盘价","first_date":"2004-06-01","last_valid_date":"2023-09-22"},{"series_id":"futures.close.CF09M.CZC","metric":"收盘价","first_date":"2004-06-01","last_valid_date":"2023-09-22"},{"series_id":"futures.close.CF11M.CZC","metric":"收盘价","first_date":"2004-06-01","last_valid_date":"2023-09-22"},{"series_id":"generic.fixture","metric":"郑棉活跃收盘价","first_date":"2005-01-01","last_valid_date":"2023-09-21"},{"series_id":"generic.fixture","metric":"郑棉01收盘价","first_date":"2005-01-01","last_valid_date":"2023-09-21"}]}
+          },
+          "call_event_index": 21,
+          "event_index": 22
+        }
+      ]
+    },
+    {
+      "iteration": 5,
+      "tool_calls": [
+        {
+          "id": "call_fixture_29",
+          "name": "bind_document_scope",
+          "args": {"selection_reason":"用户点名棉花数据库，但该库郑棉期货收盘价记录仅到2023-09-22，无法覆盖2024年3月；授权知识库另有2024年3月的棉花周报，用于补充该时段郑棉期货收盘价。","sources":[{"expected_file_name":"棉花周报20240310.pptx","expected_title":"棉花周报20240310","knowledge_id":"00000000-0000-4000-8000-000000000002"},{"expected_file_name":"棉花周报20240317.pptx","expected_title":"棉花周报20240317","knowledge_id":"00000000-0000-4000-8000-000000000003"},{"expected_file_name":"棉花周报20240324.pptx","expected_title":"棉花周报20240324","knowledge_id":"00000000-0000-4000-8000-000000000004"},{"expected_file_name":"棉花周报20240331.pptx","expected_title":"棉花周报20240331","knowledge_id":"00000000-0000-4000-8000-000000000005"}]},
+          "result": {"success":false,"output":"","data":{},"error":"来源计划文件名或标题与实际文档不一致；请重新核对真实目录","preflight_rejected":true},
+          "call_event_index": 28,
+          "event_index": 29,
+          "projection": "SSE reports the source-plan preflight refusal; trusted tool validation stopped execution"
+        }
+      ]
+    },
+    {
+      "iteration": 6,
+      "tool_calls": [
+        {
+          "id": "call_fixture_33",
+          "name": "list_documents",
+          "args": {"knowledge_base_id":"00000000-0000-4000-8000-000000000001","page_size":30},
+          "result": {
+            "success": true,
+            "output": "Tool completed (document_info; payload omitted from history)",
+            "data": {"display_type":"document_info","knowledge_base_id":"00000000-0000-4000-8000-000000000001","page":1,"page_size":30,"total_docs":9,"documents":[{"knowledge_id":"00000000-0000-4000-8000-000000000006","title":"棉花周报20240310-冲突测试版.pptx","file_name":"棉花周报20240310-冲突测试版.pptx","file_type":"pptx","type":"file","parse_status":"completed"},{"knowledge_id":"00000000-0000-4000-8000-000000000002","title":"第一次贸易战对棉花影响复盘.pptx","file_name":"第一次贸易战对棉花影响复盘.pptx","file_type":"pptx","type":"file","parse_status":"completed"},{"knowledge_id":"00000000-0000-4000-8000-000000000003","title":"2025Q3棉花复盘.pptx","file_name":"2025Q3棉花复盘.pptx","file_type":"pptx","type":"file","parse_status":"completed"},{"knowledge_id":"00000000-0000-4000-8000-000000000004","title":"棉花周报20240331.pptx","file_name":"棉花周报20240331.pptx","file_type":"pptx","type":"file","parse_status":"completed"},{"knowledge_id":"00000000-0000-4000-8000-000000000005","title":"棉花周报20240324.pptx","file_name":"棉花周报20240324.pptx","file_type":"pptx","type":"file","parse_status":"completed"},{"knowledge_id":"00000000-0000-4000-8000-000000000008","title":"棉花周报20240317.pptx","file_name":"棉花周报20240317.pptx","file_type":"pptx","type":"file","parse_status":"completed"},{"knowledge_id":"00000000-0000-4000-8000-000000000007","title":"棉花周报20240310.pptx","file_name":"棉花周报20240310.pptx","file_type":"pptx","type":"file","parse_status":"completed"}]}
+          },
+          "call_event_index": 32,
+          "event_index": 33
+        }
+      ]
+    },
+    {
+      "iteration": 7,
+      "tool_calls": [
+        {
+          "id": "call_fixture_37",
+          "name": "bind_document_scope",
+          "args": {"selection_reason":"用户点名棉花数据库，但该库郑棉期货收盘价记录仅到2023-09-22，无法覆盖2024年3月；授权知识库另有2024年3月的棉花周报，用于补充该时段郑棉期货收盘价。","sources":[{"expected_file_name":"棉花周报20240310.pptx","expected_title":"棉花周报20240310.pptx","knowledge_id":"00000000-0000-4000-8000-000000000007"},{"expected_file_name":"棉花周报20240317.pptx","expected_title":"棉花周报20240317.pptx","knowledge_id":"00000000-0000-4000-8000-000000000008"},{"expected_file_name":"棉花周报20240324.pptx","expected_title":"棉花周报20240324.pptx","knowledge_id":"00000000-0000-4000-8000-000000000005"},{"expected_file_name":"棉花周报20240331.pptx","expected_title":"棉花周报20240331.pptx","knowledge_id":"00000000-0000-4000-8000-000000000004"}]},
+          "result": {
+            "success": true,
+            "output": "Tool completed (document_info; payload omitted from history)",
+            "data": {"display_type":"document_info","source_plan_validated":true,"documents":[{"knowledge_id":"00000000-0000-4000-8000-000000000007","knowledge_base_id":"00000000-0000-4000-8000-000000000001","title":"棉花周报20240310.pptx","file_name":"棉花周报20240310.pptx","file_type":"pptx","type":"file","parse_status":"completed"},{"knowledge_id":"00000000-0000-4000-8000-000000000008","knowledge_base_id":"00000000-0000-4000-8000-000000000001","title":"棉花周报20240317.pptx","file_name":"棉花周报20240317.pptx","file_type":"pptx","type":"file","parse_status":"completed"},{"knowledge_id":"00000000-0000-4000-8000-000000000005","knowledge_base_id":"00000000-0000-4000-8000-000000000001","title":"棉花周报20240324.pptx","file_name":"棉花周报20240324.pptx","file_type":"pptx","type":"file","parse_status":"completed"},{"knowledge_id":"00000000-0000-4000-8000-000000000004","knowledge_base_id":"00000000-0000-4000-8000-000000000001","title":"棉花周报20240331.pptx","file_name":"棉花周报20240331.pptx","file_type":"pptx","type":"file","parse_status":"completed"}]}
+          },
+          "call_event_index": 36,
+          "event_index": 37
+        }
+      ]
+    },
+    {
+      "iteration": 8,
+      "tool_calls": [
+        {
+          "id": "call_fixture_42",
+          "name": "search_knowledge",
+          "args": {"document_ids":["00000000-0000-4000-8000-000000000007","00000000-0000-4000-8000-000000000008","00000000-0000-4000-8000-000000000005","00000000-0000-4000-8000-000000000004"],"limit":20,"query":"2024年3月郑棉期货主力合约收盘价是多少"},
+          "result": {
+            "success": true,
+            "output": "Knowledge search returned 18 result(s) (details omitted from history)",
+            "data": {"display_type":"search_results","query":"2024年3月郑棉期货主力合约收盘价是多少","mode":"hybrid","requested_mode":"hybrid","document_ids":["00000000-0000-4000-8000-000000000007","00000000-0000-4000-8000-000000000008","00000000-0000-4000-8000-000000000005","00000000-0000-4000-8000-000000000004"],"knowledge_base_ids":["00000000-0000-4000-8000-000000000001"],"count":18,"results":[]}
+          },
+          "call_event_index": 41,
+          "event_index": 42,
+          "projection": "Only the returned body excerpts relevant to this replay are retained; image links and other hits are omitted"
+        }
+      ]
+    },
+    {
+      "iteration": 9,
+      "tool_calls": [
+        {
+          "id": "call_fixture_46",
+          "name": "read_document",
+          "args": {"context":1,"id":"00000000-0000-4000-8000-000000000009"},
+          "result": {
+            "success": true,
+            "output": "Listed 3/558 chunks from 棉花周报20240310.pptx (content omitted from history)",
+            "data": {"display_type":"knowledge_chunks_list","document_scope":{"knowledge_id":"00000000-0000-4000-8000-000000000007","matched":true,"plan_validated":true},"fetched_chunks":3,"focus_chunk_id":"00000000-0000-4000-8000-000000000009","knowledge_base_id":"00000000-0000-4000-8000-000000000001","knowledge_id":"00000000-0000-4000-8000-000000000007","knowledge_title":"棉花周报20240310.pptx","document":{"knowledge_id":"00000000-0000-4000-8000-000000000007","title":"棉花周报20240310.pptx","file_name":"棉花周报20240310.pptx","file_type":"pptx","type":"file","parse_status":"completed"},"chunks":[{"chunk_id":"00000000-0000-4000-8000-000000000010","knowledge_id":"00000000-0000-4000-8000-000000000007","knowledge_base_id":"00000000-0000-4000-8000-000000000001","content":"来源：第2页"},{"chunk_id":"00000000-0000-4000-8000-000000000009","knowledge_id":"00000000-0000-4000-8000-000000000007","knowledge_base_id":"00000000-0000-4000-8000-000000000001","content":"CF2405 | CF2409 | CF2501 | CY2405 | ICE2405 | ICE2407 | ICE2412 | 3128B | 现货 | C32S | 现货 | CF5-9 | 价差 | CF9-1 | 价差 | TTEB | 基差 | 花纱 | 05 | 价差 | 内外 | 5-5 | 价差 | 内外9-7价差 | ICE5-7 | 价差 | ICE7-12 | 价差 | 仓单+有效预报 | 2024-03-01 | 16150"}]}
+          },
+          "call_event_index": 45,
+          "event_index": 46,
+          "projection": "SSE #46 read; page context from indexed chunk; body excerpt from backend-qa4.log:89105; the read result supplies the parent library identity"
+        }
+      ]
+    }
+  ],
+  "replies": [
+    {"after":3,"stage":"progress","action":"keep","status":"keep","source":"backend-qa4.log:85892"},
+    {
+      "after": 5,
+      "stage": "candidate",
+      "iteration": 4,
+      "content": "2024年3月的郑棉期货收盘价，在当前这份棉花数据库里查不到。\n\n已核实的情况：\n\n- 「郑棉期货」工作表中按日期整理的收盘价列，即“收盘价/close/CF.CZC”（B列）及 CF01M.CZC～CF11M.CZC 等各合约列，其日期只覆盖 2004-06-01 至 2023-09-22；也就是说，这份数据库里最新的收盘价是 2023年9月22日的 CF.CZC，值为 17110，该值来自第 4705 行 B 列，与 C 列相同。该表中没有 2024 年 3 月的任何日期行。\n- 引用郑棉收盘价的其他工作表（如「郑棉相关价差」中的“郑棉活跃收盘价”），有效数据同样止于 2023-09-21。\n- 我已在「郑棉期货」整表扫描（A1:AI4705，扫描完整），未找到 2024-03 字样；因此，基于这份文件，没有 2024年3月的数值可以给出。\n\n补充说明：这份文件本身也没有明确标注单位，在「郑棉期货」表头中只写了“收盘价/close/CF.CZC”；而在引用它的「郑棉相关价差」「进口棉人民币价和进口利润」两表中，同一数列标注为“元/吨”，可见该价格大致是以元/吨为单位报价的。按你的问题口径，这仍是一项未核到原格的 2024年3月数值，无法用于替代。",
+      "completeness": "full",
+      "source": "round6.log:2804–2812, captured messages.agent_steps"
+    },
+    {
+      "after": 5,
+      "stage": "delivery",
+      "action": "recover",
+      "status": "recover",
+      "source": "backend-qa4.log:86008",
+      "disposition": "need_source",
+      "disposition_source": "backend-qa4.log:86009"
+    },
+    {
+      "after": 10,
+      "stage": "budget",
+      "event_index": 47,
+      "source": "SSE #47",
+      "event_content": "本轮取证已达到阶段预算，正在整理已有结果。",
+      "reason": "tool_rounds",
+      "tool_round_limit": 8,
+      "active_seconds": 60,
+      "budget_source": "backend-qa4.log:89056",
+      "completeness": "unavailable"
+    },
+    {"after":10,"stage":"candidate","iteration":9,"completeness":"unavailable","source":"backend-qa4.log:89074–89075 (first budget candidate; numeric_failure)"},
+    {
+      "after": 10,
+      "stage": "candidate",
+      "iteration": 9,
+      "completeness": "unavailable",
+      "source": "backend-qa4.log:89091,89105 (second budget candidate; review input truncated)"
+    },
+    {"after":10,"stage":"result","action":"correct","status":"corrected","source":"backend-qa4.log:89110","completeness":"unavailable"}
+  ],
+  "final": "在本次提供的证据范围内，未见棉花数据库中 2024 年 3 月的郑棉期货收盘价记录。\n\n授权知识库中 2024 年 3 月的棉花周报提供了该时段主力合约的收盘价，可作为数据库之外的补充（不是数据库记录）：\n\n| 日期 | CF2405 收盘价（元/吨） |\n|---|---|\n| 2024-03-01 | 16150 |\n| 2024-03-04 | 15985 |\n| 2024-03-05 | 16025 |\n| 2024-03-06 | 16055 |\n| 2024-03-07 | 16065 |\n| 2024-03-08 | 16200 |\n\n以上数值出自《棉花周报20240310》第2页行情表「价格」区块的 CF2405 列原值；该页未标注单位。<kb doc=\"棉花周报20240310.pptx\" chunk_id=\"00000000-0000-4000-8000-000000000009\" kb_id=\"00000000-0000-4000-8000-000000000001\" />\n\n3 月 11 日至 3 月 29 日的逐日收盘价本轮未取得，因此没有给出 2024 年 3 月整月的完整序列。",
+  "plan": {
+    "goals": ["给出棉花数据库中2024年3月郑棉期货收盘价的具体数值及时点口径。"],
+    "evidence": ["在棉花数据库（棉花数据库.xlsx）中定位2024年3月郑棉期货收盘价字段，确认其原表头、单位与日期覆盖，并读取2024年3月的实际观测值。"],
+    "source_discovery": {"mode":"discover","query":"棉花数据库中郑棉期货收盘价在2024年3月的每日或月度收盘数值","source_domains":["structured"]},
+    "tool_names": ["structured_capabilities","structured_list_datasets","structured_inspect_source","structured_list_series","structured_query_series"],
+    "completion_criteria": ["给出2024年3月郑棉期货收盘价的原值及对应日期，注明出处与指标口径；若当月为多日序列，按实际粒度如实呈现并说明取数依据。"],
+    "delivery_requirements": [{"kind":"text","criteria":"说明2024年3月郑棉期货收盘价的数值、对应日期或期间、单位及来源表，保持原表精度。","format":"prose"}],
+    "coverage_targets": [
+      {
+        "goal_index": 0,
+        "request_basis": "棉花数据库里，2024年3月的郑棉期货收盘价是多少？",
+        "criteria": "须取到2024年3月郑棉期货收盘价的真实观测值，覆盖该月实际存在的记录并保留原单位与日期。",
+        "source_scope": "限定用户点名的棉花数据库（棉花数据库.xlsx）"
+      }
+    ],
+    "reasoning_depth": "direct"
+  },
+  "replay": [
+    {"after":3,"stage":"progress","action":"keep","kind":"verdict_projection","source":"backend-qa4.log:85892 (logged verdict; replay envelope)"},
+    {
+      "after": 5,
+      "stage": "candidate",
+      "content": "2024年3月的郑棉期货收盘价，在当前这份棉花数据库里查不到。\n\n这份数据库里最新的收盘价是 2023年9月22日的 CF.CZC，值为 17110，该值来自第 4705 行 B 列，与 C 列相同。",
+      "disposition": "need_source",
+      "kind": "historical_excerpt",
+      "source": "replies[1]; two original spans"
+    },
+    {"after":5,"stage":"delivery","action":"recover","kind":"verdict_projection","source":"backend-qa4.log:86008 (logged verdict; replay envelope)"},
+    {
+      "after": 10,
+      "stage": "budget",
+      "content": "在本次提供的证据范围内，未见棉花数据库中 2024 年 3 月的郑棉期货收盘价记录。\n\n授权知识库中 2024 年 3 月的棉花周报提供了该时段主力合约的收盘价，可作为数据库之外的补充（不是数据库记录）：\n\n| 日期 | CF2405 收盘价（元/吨） |\n|---|---|\n| 2024-03-01 | 16150 |\n\n<kb doc=\"棉花周报20240310.pptx\" chunk_id=\"00000000-0000-4000-8000-000000000009\" kb_id=\"00000000-0000-4000-8000-000000000001\" />",
+      "reason": "tool_rounds",
+      "kind": "published_excerpt",
+      "source": "final; published text stands in for the unavailable budget candidates"
+    }
+  ]
+}

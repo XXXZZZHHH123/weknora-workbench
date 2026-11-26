@@ -1,0 +1,445 @@
+{
+  "warehouse_sheet_only": {
+    "case_id": "KB-31",
+    "turn": 1,
+    "variant": "warehouse_sheet_only",
+    "input_ref": "rewrite_questions.json#/warehouse_sheet_only/question",
+    "original_label_ref": "gold_labels.json#/KB-31/0",
+    "expected_goal": {
+      "source_mode": "only",
+      "metric": "指定工作表的所问期原指标与最后有效值和日期",
+      "period": {
+        "scope": "2024-03-10",
+        "grain": "day"
+      },
+      "source_time": "observed_period",
+      "version_task": "single",
+      "delivery": {
+        "kind": "text",
+        "aggregation": "as_reported"
+      },
+      "primary_ref": "棉花数据库／郑棉仓单"
+    },
+    "required_evidence_roles": [
+      {
+        "role": "verified_primary_gap",
+        "location": "棉花数据库／郑棉仓单 日期 A 列、仓单数量 B 列",
+        "requires": "精确目标日已绑定该字段的完备空集或完整覆盖边界；目录和错误不证明缺数。"
+      },
+      {
+        "role": "last_valid_same_field",
+        "location": "棉花数据库／郑棉仓单 A3340/B3340",
+        "requires": "同字段 2023-09-21 的原值；B 列单位未知。"
+      }
+    ],
+    "expected_next_action": [
+      {
+        "when": "主源缺数尚未核实",
+        "action": "query_bound_field",
+        "detail": "查该日并锁定 B 列最后有效值日期与原格。"
+      },
+      {
+        "when": "已有匹配且可定位的证据",
+        "action": "deliver",
+        "detail": "给指定工作表内的已核缺口、最后有效日和原格。"
+      }
+    ],
+    "expected_delivery": {
+      "database_record_on_requested_date": false,
+      "last_valid_date": "2023-09-21",
+      "last_valid_raw_value": 5160,
+      "cell": "B3340",
+      "raw_unit": null
+    },
+    "forbidden_actions": [
+      "调用周报发现、绑定或读页工具，或交付外部文档数值；本变体文档侧调用数须为 0。"
+    ]
+  },
+  "futures_sheet_only": {
+    "case_id": "KB-16",
+    "turn": 1,
+    "variant": "futures_sheet_only",
+    "input_ref": "rewrite_questions.json#/futures_sheet_only/question",
+    "original_label_ref": "gold_labels.json#/KB-16/0",
+    "expected_goal": {
+      "source_mode": "only",
+      "metric": "指定工作表的所问期原指标与最后有效值和日期",
+      "period": {
+        "scope": "2024-03",
+        "grain": "month"
+      },
+      "source_time": "observed_period",
+      "version_task": "single",
+      "delivery": {
+        "kind": "text",
+        "aggregation": "as_reported"
+      },
+      "primary_ref": "棉花数据库／郑棉期货"
+    },
+    "required_evidence_roles": [
+      {
+        "role": "verified_primary_gap",
+        "location": "棉花数据库／郑棉期货 A/B（CF.CZC 收盘价）",
+        "requires": "已绑定同列的完整日期覆盖或针对 3 月的完备空集。"
+      },
+      {
+        "role": "last_valid_same_field",
+        "location": "棉花数据库／郑棉期货 A4705/B4705",
+        "requires": "同列 2023-09-22 最后有效日和原格值。"
+      }
+    ],
+    "expected_next_action": [
+      {
+        "when": "主源状态未证实",
+        "action": "query_bound_field",
+        "detail": "绑定完整 CF.CZC 收盘原列，核对 3 月缺口和最近有效原格。"
+      },
+      {
+        "when": "已有匹配且可定位的证据",
+        "action": "deliver",
+        "detail": "给指定工作表内的已核缺口、最后有效日和原格。"
+      }
+    ],
+    "expected_delivery": {
+      "database_march_record": false,
+      "last_valid_date": "2023-09-22",
+      "last_valid_raw_value": 17110,
+      "cell": "B4705"
+    },
+    "forbidden_actions": [
+      "调用周报发现、绑定或读页工具，或交付外部文档数值；本变体文档侧调用数须为 0。"
+    ]
+  },
+  "warehouse_sheet_before_report": {
+    "case_id": "KB-31",
+    "turn": 1,
+    "variant": "warehouse_sheet_before_report",
+    "input_ref": "rewrite_questions.json#/warehouse_sheet_before_report/question",
+    "original_label_ref": "gold_labels.json#/KB-31/0",
+    "expected_goal": {
+      "source_mode": "named_first",
+      "metric": "数据库所问日郑棉仓单、数据库有效边界和可独立归属的同期周报",
+      "period": {
+        "scope": "2024-03-10；数据库按日，允许具名说明不同粒度的补充",
+        "grain": "day"
+      },
+      "source_time": "observed_period",
+      "version_task": "adopt_if_conflict",
+      "delivery": {
+        "kind": "text",
+        "aggregation": "as_reported"
+      },
+      "primary_ref": "棉花数据库的郑棉仓单表"
+    },
+    "required_evidence_roles": [
+      {
+        "role": "verified_primary_gap",
+        "location": "棉花数据库／郑棉仓单 日期 A 列、仓单数量 B 列",
+        "requires": "精确目标日已绑定该字段的完备空集或完整覆盖边界；目录和错误不证明缺数。"
+      },
+      {
+        "role": "last_valid_same_field",
+        "location": "棉花数据库／郑棉仓单 A3340/B3340",
+        "requires": "同字段 2023-09-21 的原值；B 列单位未知。"
+      },
+      {
+        "role": "attributed_weekly_supplement",
+        "location": "棉花周报20240310 原版 p18",
+        "requires": "绑定载值正文，给出独立周度来源和口径。",
+        "when": "确认数据库缺数后"
+      },
+      {
+        "role": "conflict_and_adoption",
+        "location": "棉花周报20240310、棉花周报20240310-冲突测试版 p18",
+        "requires": "同日异版实际载值及原版身份；若两版均已核，明确暂采原版。",
+        "when": "两版均已实读且有采用依据"
+      }
+    ],
+    "expected_next_action": [
+      {
+        "when": "主源缺数尚未核实",
+        "action": "query_bound_field",
+        "detail": "查该日并锁定 B 列最后有效值日期与原格。"
+      },
+      {
+        "when": "数据库缺口已证实且尚无匹配补充候选",
+        "action": "recover_targeted_source",
+        "detail": "仅一次有界同期周报发现。"
+      },
+      {
+        "when": "只发现同期周报的导航",
+        "action": "read_bound_source",
+        "detail": "已验证文档 ID 及对应 p18；可同批核两版。"
+      },
+      {
+        "when": "已经取得可定位载值正文",
+        "action": "deliver",
+        "detail": "保留库内与已核周报的两套事实。"
+      },
+      {
+        "when": "改稿漏掉已核周报数或库内覆盖",
+        "action": "restore_pinned_facts",
+        "detail": "重组已有库内日期原值及带来源的周报原值。"
+      }
+    ],
+    "expected_delivery": {
+      "database_record_on_requested_date": false,
+      "last_valid_date": "2023-09-21",
+      "last_valid_raw_value": 5160,
+      "cell": "B3340",
+      "raw_unit": null,
+      "supplement": {
+        "kind": "周报周度、单列归属",
+        "preferred_total": 60.6,
+        "unit": "万吨",
+        "page": 18,
+        "if_both_versions_verified": "原版 60.6、冲突版 62.3；依据原版身份本次暂取原版。"
+      }
+    },
+    "forbidden_actions": [
+      "把周报周值当作数据库当日值。",
+      "给 B 列添加未证实单位，或以 AF 合计替代仓单数量。",
+      "改稿丢掉已核 60.6 万吨，或继续无关目录消耗同一补证配额。"
+    ]
+  },
+  "compare_versions_without_adoption": {
+    "case_id": "KB-13",
+    "turn": 1,
+    "variant": "compare_versions_without_adoption",
+    "input_ref": "rewrite_questions.json#/compare_versions_without_adoption/question",
+    "original_label_ref": "gold_labels.json#/KB-13/0",
+    "expected_goal": {
+      "source_mode": "named_first",
+      "metric": "同日两版郑棉仓单数差异与本次采用版本",
+      "period": {
+        "scope": "2024-03-10",
+        "grain": "week"
+      },
+      "source_time": "observed_period",
+      "version_task": "compare_versions",
+      "delivery": {
+        "kind": "text",
+        "aggregation": "as_reported"
+      },
+      "primary_ref": "2024年3月10日的周报"
+    },
+    "required_evidence_roles": [
+      {
+        "role": "original_version",
+        "location": "棉花周报20240310 原版 p18",
+        "requires": "原版身份与该页合计、环比。"
+      },
+      {
+        "role": "conflicting_version",
+        "location": "棉花周报20240310-冲突测试版 p18",
+        "requires": "独立版本身份与同一指标、期次的合计、环比。"
+      }
+    ],
+    "expected_next_action": [
+      {
+        "when": "缺少正文或原格，仅发现候选",
+        "action": "read_bound_source",
+        "detail": "显式分别绑定同日两版并实读 p18。"
+      }
+    ],
+    "expected_delivery": {
+      "unit": "万吨",
+      "original": {
+        "total": 60.6,
+        "week_change": -0.4
+      },
+      "conflicting": {
+        "total": 62.3,
+        "week_change": 1.1
+      }
+    },
+    "forbidden_actions": [
+      "把两个数归到同一版本，或强行选出优先版本。"
+    ]
+  },
+  "warehouse_by_publication": {
+    "case_id": "VG-01",
+    "turn": 1,
+    "variant": "warehouse_by_publication",
+    "input_ref": "rewrite_questions.json#/warehouse_by_publication/question",
+    "original_label_ref": "gold_labels.json#/VG-01/0",
+    "expected_goal": {
+      "source_mode": "open",
+      "metric": "按报告发布日期选出的郑棉仓单合计和周环比，及日期依据",
+      "period": {
+        "scope": "报告发布日期最新的一期",
+        "grain": "report_period"
+      },
+      "source_time": "publication_date",
+      "version_task": "single",
+      "delivery": {
+        "kind": "text",
+        "aggregation": "as_reported"
+      }
+    },
+    "required_evidence_roles": [
+      {
+        "role": "document_dating_basis",
+        "location": "相关仓单周报的发布凭据；缺独立凭据时看封面 p1",
+        "requires": "以可证的刊发时点或明确标为封面日期的替代依据排序。"
+      },
+      {
+        "role": "published_report_week",
+        "location": "棉花周报20240331 p21",
+        "requires": "从选定的这一期实读合计与周环比。"
+      }
+    ],
+    "expected_next_action": [
+      {
+        "when": "没有可证日期或对应报告值",
+        "action": "discover_and_read",
+        "detail": "核相关报告的日期依据，再读该份载值页。"
+      }
+    ],
+    "expected_delivery": {
+      "cover_date": "2024-03-31",
+      "total": 61.2,
+      "week_change": 1.5,
+      "unit": "万吨",
+      "date_basis": "资料可证封面日期；无独立发布记录时明确这一点。"
+    },
+    "forbidden_actions": [
+      "按上传时间排序，或把封面署期假定为已核实的独立发布时间。"
+    ]
+  },
+  "warehouse_by_observation": {
+    "case_id": "VG-01",
+    "turn": 1,
+    "variant": "warehouse_by_observation",
+    "input_ref": "rewrite_questions.json#/warehouse_by_observation/question",
+    "original_label_ref": "gold_labels.json#/VG-01/0",
+    "expected_goal": {
+      "source_mode": "open",
+      "metric": "最新实际观察周的郑棉仓单合计和周环比",
+      "period": {
+        "scope": "材料中的最近相关观测周",
+        "grain": "week"
+      },
+      "source_time": "latest_observation",
+      "version_task": "single",
+      "delivery": {
+        "kind": "text",
+        "aggregation": "as_reported"
+      }
+    },
+    "required_evidence_roles": [
+      {
+        "role": "latest_relevant_observation",
+        "location": "棉花周报20240331 p21，报告周度正文",
+        "requires": "按仓单数据对应观测周取值；未明示交易日时只标报告周，不补造具体日。"
+      }
+    ],
+    "expected_next_action": [
+      {
+        "when": "观察周尚未验证",
+        "action": "discover_and_read",
+        "detail": "查同指标周度正文，依据实际观测期选最后一期。"
+      }
+    ],
+    "expected_delivery": {
+      "observed_week": "2024-03-31 报告所述最新一周",
+      "total": 61.2,
+      "week_change": 1.5,
+      "unit": "万吨"
+    },
+    "forbidden_actions": [
+      "按发布日期或上传顺序替代观察周，或臆造未经载明的当周交易日。"
+    ]
+  },
+  "explicit_month_end": {
+    "case_id": "MT-03",
+    "turn": 2,
+    "variant": "explicit_month_end",
+    "input_ref": "rewrite_questions.json#/explicit_month_end/question",
+    "original_label_ref": "gold_labels.json#/MT-03/1",
+    "expected_goal": {
+      "source_mode": "open",
+      "metric": "承接上一轮郑棉主连日收盘原列，按月画折线图",
+      "period": {
+        "scope": "沿用上轮 2023 年的有效覆盖，按月",
+        "grain": "month"
+      },
+      "source_time": "observed_period",
+      "version_task": "single",
+      "delivery": {
+        "kind": "line_chart",
+        "aggregation": "last_valid_trading_day"
+      }
+    },
+    "required_evidence_roles": [
+      {
+        "role": "inherited_daily_series",
+        "location": "棉花数据库／郑棉期货 日期 A 列、收盘 CF.CZC B 列",
+        "requires": "沿用当前有效的上轮同一原列。"
+      },
+      {
+        "role": "monthly_last_valid_close",
+        "location": "同一日收盘查询结果按月取最后有数据交易日",
+        "requires": "每个月的日期和收盘成对；9 月只取截至 22 日的最后有值日。"
+      },
+      {
+        "role": "rendered_line_artifact",
+        "location": "同一结果集 X=月份、Y=月内最后有值日的收盘价",
+        "requires": "真实的折线附件回执。"
+      }
+    ],
+    "expected_next_action": [
+      {
+        "when": "缺逐月最后有效日原值",
+        "action": "aggregate_observed_series",
+        "detail": "按月选择最后一个同列有效交易日。"
+      },
+      {
+        "when": "缺匹配附件",
+        "action": "render_bound_chart",
+        "detail": "用同一结果出月末折线图。"
+      }
+    ],
+    "expected_delivery": {
+      "chart": {
+        "month_order": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "values": [
+          15100,
+          14365,
+          14325,
+          15485,
+          15500,
+          16660,
+          17440,
+          17660,
+          17110
+        ],
+        "data_through": "2023-09-22"
+      },
+      "trading_dates": [
+        "2023-01-31",
+        "2023-02-28",
+        "2023-03-31",
+        "2023-04-28",
+        "2023-05-31",
+        "2023-06-30",
+        "2023-07-31",
+        "2023-08-31",
+        "2023-09-22"
+      ]
+    },
+    "forbidden_actions": [
+      "沿用原问的月均评分默认，或用自然月末无成交日填充。"
+    ]
+  }
+}

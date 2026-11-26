@@ -1,0 +1,105 @@
+{
+  "id": "r5-1-kb07",
+  "run": "qa4-r5-1",
+  "question_id": "KB-07",
+  "question": "棉花数据库里，中国棉花平衡表2023年10月的期初库存、产量、期末库存分别是多少万吨？",
+  "provenance": {
+    "event_file": "KB-07.t1.events.json",
+    "answer_file": "KB-07.json",
+    "final_event_index": 18,
+    "source_event_count": 21,
+    "projection": "Zero-based SSE event indices. Every tool result exposed in the stream is retained with selected original fields. Response arrays may be excerpts; recorded totals, pagination and truncation are unchanged. Opaque resource identities are fixture aliases. The complete saved final agrees across the answer record, SSE answer and SSE completion.",
+    "plan_source": "backend-qa4.log:89671 advisory_plan",
+    "terminal_source": "backend-qa4.log:89696 (partial)"
+  },
+  "grade": {"verdict":"fail","ambiguous":false,"source":"qa4/result.md:110","refusal":true},
+  "steps": [
+    {
+      "iteration": -1,
+      "tool_calls": [
+        {
+          "id": "call_fixture_05",
+          "name": "structured_list_datasets",
+          "args": {"question":"棉花数据库.xlsx 中国棉花平衡表 2023年10月 期初库存 产量 期末库存 万吨"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"source_data_read":false,"_structured_execution":{"canonical_operation":"list_datasets","scope_mode":"directory","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"dataset_count":1,"datasets_truncated":false,"offset":0,"next_offset":null,"datasets":[{"dataset_id":"fixture-dataset-cotton","source_file":"棉花数据库.xlsx"}]}
+          },
+          "call_event_index": 3,
+          "event_index": 5
+        }
+      ]
+    },
+    {
+      "iteration": 0,
+      "tool_calls": [
+        {
+          "id": "call_fixture_09",
+          "name": "structured_list_series",
+          "args": {"dataset_id":"fixture-dataset-cotton","limit":100,"search":"中国 平衡表 产量"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"list_series","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"offset":0,"next_offset":null,"total":20,"truncated":false,"discovery_coverage":{"representation":"structured_field_catalog","document_body_searched_by_this_operation":false,"output_truncated":true,"source_pagination":{"next_offset":null,"offset":0,"truncated":false},"directory_projection":{"details_omitted":true,"executed_returned_count":20,"mode":"brief","omitted_entry_count":0,"shown_entry_count":20,"source_pagination":{"next_offset":null,"offset":0,"truncated":false}}},"series":[{"series_id":"balance.primary.C","sheet":"中国棉花平衡表","metric":"产量","unit":null,"unit_status":"needs_review","last_valid_date":"2023-10-31","header_cells":["C1"]}]}
+          },
+          "call_event_index": 8,
+          "event_index": 9
+        }
+      ]
+    }
+  ],
+  "replies": [
+    {
+      "after": 2,
+      "stage": "budget",
+      "event_index": 14,
+      "source": "SSE #14",
+      "event_content": "本轮取证已达到阶段预算，正在整理已有结果。",
+      "reason": "model_call_time",
+      "tool_round_limit": 8,
+      "active_seconds": 60,
+      "budget_source": "backend-qa4.log:89640",
+      "call_remaining_ms": 24973,
+      "phase_remaining_ms": 41631,
+      "remaining_source": "backend-qa4.log:89627",
+      "completeness": "unavailable"
+    },
+    {"after":2,"stage":"delivery","action":"recover","status":"recover","source":"backend-qa4.log:89676","completeness":"unavailable"}
+  ],
+  "final": "本轮没有取得可以交付的数值，三项都缺。\n\n- **产量**：我已确认《中国棉花平衡表》中有“产量”这一列，数据覆盖到 2023-10-31，但本轮没有读取到 2023 年 10 月的具体数值，也没有核实该列的单位是否为万吨。\n- **期初库存、期末库存**：本轮读取的《中国棉花平衡表》字段列表只覆盖了部分分页，其中没有出现这两项，因此我既没有取得它们对应的字段，也没有取得 2023 年 10 月的数值。\n\n所以，2023 年 10 月中国棉花平衡表的期初库存、产量、期末库存这三项，本轮都没有可核实的数值，我不作推测。",
+  "plan": {
+    "goals": ["在棉花数据库中定位中国棉花平衡表，读取2023年10月的期初库存、产量、期末库存三项数值（万吨）。"],
+    "evidence": ["用户指定来源为“棉花数据库”，即知识库中的《棉花数据库.xlsx》工作表；需先确认其中是否含“中国棉花平衡表”及2023年10月行的期初库存、产量、期末库存字段，再读取对应原值与单位。"],
+    "source_discovery": {"mode":"discover","query":"棉花数据库.xlsx 中国棉花平衡表 2023年10月 期初库存 产量 期末库存 万吨","source_domains":["structured"]},
+    "tool_names": ["structured_list_datasets","structured_list_series","structured_query_series"],
+    "completion_criteria": ["给2023年10月中国棉花平衡表的期初库存、产量、期末库存三个数值，按原表口径与精度、单位万吨标注，并注明来源文件/工作表。","若某字段或该月在该表中无对应记录，说明具体缺口，不编造数值。"],
+    "delivery_requirements": [{"kind":"text","criteria":"以文字给出2023年10月中国棉花平衡表的期初库存、产量、期末库存，各标明单位万吨及来源，缺失情况如实说明。","format":"prose"}],
+    "coverage_targets": [
+      {
+        "goal_index": 0,
+        "request_basis": "中国棉花平衡表2023年10月的期初库存、产量、期末库存分别是多少万吨？",
+        "criteria": "覆盖2023年10月单月期初库存、产量、期末库存三项记录，保留原单位万吨与来源工作表。",
+        "source_scope": "用户限定为“棉花数据库”，即知识库中的《棉花数据库.xlsx》"
+      }
+    ],
+    "reasoning_depth": "direct"
+  },
+  "replay": [
+    {
+      "after": 2,
+      "stage": "timeout",
+      "reason": "model_call_time",
+      "kind": "constructed",
+      "source": "backend-qa4.log:89627,89638–89640; virtual model clock reproduces the recorded stop"
+    },
+    {
+      "after": 2,
+      "stage": "budget",
+      "content": "本轮没有取得可以交付的数值，三项都缺。",
+      "reason": "model_call_time",
+      "kind": "published_excerpt",
+      "source": "final; published first sentence stands in for the unavailable budget candidate"
+    }
+  ]
+}

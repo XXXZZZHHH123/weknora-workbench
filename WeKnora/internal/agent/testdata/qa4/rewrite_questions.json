@@ -1,0 +1,30 @@
+{
+  "warehouse_sheet_only": {
+    "original_input_ref": "questions.json#/KB-31/0",
+    "question": "2024年3月10日的郑棉仓单数量，只查棉花数据库的郑棉仓单表。没有当天记录，就给这同一列的最后有效日和值。"
+  },
+  "futures_sheet_only": {
+    "original_input_ref": "questions.json#/KB-16/0",
+    "question": "2024年3月的郑棉主力收盘价只依数据库里的郑棉期货表。该月查不到，就告诉我同列最后有效日期和原值。"
+  },
+  "warehouse_sheet_before_report": {
+    "original_input_ref": "questions.json#/KB-31/0",
+    "question": "找一下2024年3月10日的郑棉仓单。先查棉花数据库的郑棉仓单表，确实缺这天的数据才参考同期周报，分别说清出处。"
+  },
+  "compare_versions_without_adoption": {
+    "original_input_ref": "questions.json#/KB-13/0",
+    "question": "把3月10日棉花周报两版的郑棉仓单合计和环比并列，注明各是哪一版，不必选哪版为准。"
+  },
+  "warehouse_by_publication": {
+    "original_input_ref": "questions.json#/VG-01/0",
+    "question": "先按报告发布日期找最新一份有郑棉仓单数据的周报，把这份的合计与环比告诉我，顺便说明发布日期的依据。"
+  },
+  "warehouse_by_observation": {
+    "original_input_ref": "questions.json#/VG-01/0",
+    "question": "找实际仓单观测周最新的郑棉仓单合计和周环比，按数据观测的时间判断，别按报告发布日期或上传顺序排。"
+  },
+  "explicit_month_end": {
+    "original_input_ref": "questions.json#/MT-03/1",
+    "question": "还是上面这个郑棉主力序列，用每月最后一个有数据的交易日收盘价画一张折线图。9月不满月就标最后数据日。"
+  }
+}

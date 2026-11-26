@@ -1,0 +1,164 @@
+{
+  "r5-1-kb16": {
+    "source": "SSE #18, #46–47, #51; saved full early iteration 4 and final; backend-qa4.log:89056.",
+    "checks": [
+      {"path": "history.steps.3.tool_calls.0.[event_index,name,result.success]", "equal": [18, "structured_inspect_source", true]},
+      {"path": "history.steps.3.tool_calls.0.result.data.ranges.0.cells.0.[cell,raw_value]", "equal": ["A4705", "2023-09-22T00:00:00"]},
+      {"path": "history.steps.3.tool_calls.0.result.data.ranges.0.cells.1.[cell,raw_value]", "equal": ["B4705", 17110]},
+      {"path": "history.steps.9.tool_calls.0.[event_index,name,result.success]", "equal": [46, "read_document", true]},
+      {"path": "history.steps.9.tool_calls.0.result.data.knowledge_title", "equal": "棉花周报20240310.pptx"},
+      {"path": "history.steps.9.tool_calls.0.result.data.chunks.1.knowledge_id", "same_as": "history.steps.9.tool_calls.0.result.data.knowledge_id"},
+      {"path": "history.steps.9.tool_calls.0.result.data.chunks.0.content", "contains": ["第2页"]},
+      {"path": "history.steps.9.tool_calls.0.result.data.chunks.1.content", "contains": ["CF2405", "2024-03-01", "16150"]},
+      {"path": "reads.observations.#(tool_name==\"read_document\").knowledge_title", "equal": "棉花周报20240310.pptx"},
+      {"path": "history.replies.1.[stage,after]", "equal": ["candidate", 5]},
+      {"path": "history.replies.1.iteration", "equal": 4},
+      {"path": "history.replies.1.completeness", "equal": "full"},
+      {"path": "history.replies.1.content", "contains": ["2023-09-22", "17110"]},
+      {"path": "history.replies.3.stage", "equal": "budget"},
+      {"path": "history.replies.3.event_index", "equal": 47},
+      {"path": "history.replies.3.reason", "equal": "tool_rounds"},
+      {"path": "history.provenance.final_event_index", "equal": 51},
+      {"path": "history.final", "contains": ["CF2405", "第2页", "16150"]},
+      {"path": "history.final", "omits": ["2023-09-22", "2023年9月22日", "2023 年 9 月 22 日", "17110", "17,110"]}
+    ]
+  },
+  "r5-1-kb07": {
+    "source": "SSE #5, #9, #14; backend-qa4.log:89623–89640 model decision timeout.",
+    "checks": [
+      {"path": "history.steps.#", "equal": 2},
+      {"path": "history.steps.0.tool_calls.0.result.data.source_data_read", "equal": false},
+      {"path": "history.steps.1.tool_calls.0.[event_index,name,result.success]", "equal": [9, "structured_list_series", true]},
+      {"path": "history.steps.1.tool_calls.0.result.data.discovery_coverage.output_truncated", "equal": true},
+      {"path": "history.steps.1.tool_calls.0.result.data.discovery_coverage.directory_projection.shown_entry_count", "equal": 20},
+      {"path": "history.steps.1.tool_calls.0.result.data.discovery_coverage.directory_projection.omitted_entry_count", "equal": 0},
+      {"path": "history.steps.1.tool_calls.0.result.data.discovery_coverage.source_pagination.next_offset", "equal": null},
+      {"path": "history.steps.1.tool_calls.0.result.data.discovery_coverage.source_pagination.truncated", "equal": false},
+      {"path": "history.replies.0.stage", "equal": "budget"},
+      {"path": "history.replies.0.event_index", "equal": 14},
+      {"path": "history.replies.0.reason", "equal": "model_call_time"},
+      {"path": "progress.recent_source_operations.#.operation", "equal": ["list_datasets", "list_series"]},
+      {"path": "reads", "equal": null}
+    ]
+  },
+  "r6-1-kb16": {
+    "source": "SSE #24 and #28, workbook A4705/B4705, final saved answer.",
+    "checks": [
+      {"path": "history.steps.4.tool_calls.0.[event_index,name,result.success]", "equal": [24, "structured_inspect_source", true]},
+      {"path": "history.steps.4.tool_calls.0.result.data.ranges.0.cells.0.[cell,raw_value]", "equal": ["A4705", "2023-09-22T00:00:00"]},
+      {"path": "history.steps.4.tool_calls.0.result.data.ranges.0.cells.1.[cell,raw_value]", "equal": ["B4705", 17110]},
+      {"path": "history.steps.5.tool_calls.0.[event_index,name,result.success]", "equal": [28, "list_documents", true]},
+      {"path": "progress.recent_source_operations.@reverse.0.operation", "equal": "list_documents"},
+      {"path": "history.final", "contains": ["2023-09-22", "17110", "B4705"]}
+    ]
+  },
+  "r6-1-kb07": {
+    "source": "SSE #18–20 and #28; workbook October row A87/B87/C87/G87.",
+    "checks": [
+      {"path": "history.steps.2.tool_calls.0.[event_index,name,result.success]", "equal": [18, "structured_query_series", true]},
+      {"path": "history.steps.2.tool_calls.0.result.data.[status,source.sheet,rows.0.date,rows.0.date_cell]", "equal": ["ok", "中国棉花平衡表", "2023-10-31", "A87"]},
+      {"path": "history.steps.2.tool_calls.0.result.data.source_evidence.cells.0.[cell,value]", "equal": ["B87", 231.93291576470585]},
+      {"path": "history.steps.2.tool_calls.1.[event_index,name,result.success]", "equal": [19, "structured_query_series", true]},
+      {"path": "history.steps.2.tool_calls.1.result.data.[status,source.sheet,rows.0.date,rows.0.date_cell]", "equal": ["ok", "中国棉花平衡表", "2023-10-31", "A87"]},
+      {"path": "history.steps.2.tool_calls.1.result.data.source_evidence.cells.0.[cell,value]", "equal": ["C87", 110]},
+      {"path": "history.steps.2.tool_calls.2.[event_index,name,result.success]", "equal": [20, "structured_query_series", true]},
+      {"path": "history.steps.2.tool_calls.2.result.data.[status,source.sheet,rows.0.date,rows.0.date_cell]", "equal": ["ok", "中国棉花平衡表", "2023-10-31", "A87"]},
+      {"path": "history.steps.2.tool_calls.2.result.data.source_evidence.cells.0.[cell,value]", "equal": ["G87", 298.93291576470585]},
+      {"path": "history.steps.2.tool_calls.2.result.data.source_evidence.cells.0.formula", "equal": "=B87+C87+D87-K87+E87"},
+      {"path": "reads.observations.#(operation==\"query_series\")#|#", "equal": 3},
+      {"path": "history.final", "contains": ["231.93 万吨", "110 万吨", "298.93 万吨"]}
+    ]
+  },
+  "r6-2-kb31": {
+    "source": "SSE #14, #18, #26; backend-qa4.log:91375, 91399, 91427; saved answer.",
+    "compare_read_prefix": 4,
+    "checks": [
+      {"path": "history.steps.2.tool_calls.0.[event_index,name,result.success]", "equal": [14, "read_document", true]},
+      {"path": "history.steps.2.tool_calls.0.result.data.document.file_type", "equal": "xlsx"},
+      {"path": "history.steps.2.tool_calls.0.result.data.knowledge_title", "equal": "棉花数据库.xlsx"},
+      {"path": "history.steps.2.tool_calls.0.result.data.chunks.0.content", "contains": ["工作表：目录"]},
+      {"path": "reads.observations.#(tool_name==\"read_document\").knowledge_title", "equal": "棉花数据库.xlsx"},
+      {"path": "history.steps.3.tool_calls.0.[event_index,name,result.success]", "equal": [18, "structured_query_series", true]},
+      {"path": "history.steps.3.tool_calls.0.result.data.rows.0.[date,source_cell,value]", "equal": ["2023-09-21", "B3340", 5160]},
+      {"path": "history.replies.2.[stage,status,after]", "equal": ["delivery", "recover", 4]},
+      {"path": "history.replies.2.disposition", "equal": "need_source"},
+      {"path": "history.replies.3.[stage,after]", "equal": ["candidate", 4]},
+      {"path": "history.replies.3.iteration", "equal": 4},
+      {"path": "history.replies.3.tool_calls", "equal": 0},
+      {"path": "history.replies.5.[stage,after]", "equal": ["candidate", 4]},
+      {"path": "history.replies.5.iteration", "equal": 5},
+      {"path": "history.replies.5.tool_calls", "equal": 0},
+      {"path": "progress.source_calls", "equal": 4},
+      {"path": "reads", "same_as": "prefix_reads"},
+      {"path": "history.final", "contains": ["5160", "本次未读取该周报"]},
+      {"path": "history.final", "omits": ["60.6", "62.3"]}
+    ]
+  },
+  "r7-1-kb31": {
+    "source": "round8.log:4677; SSE #14, #21, #30–31, #35, #39; backend-qa4.log:94780, 94864.",
+    "compare_read_prefix": 4,
+    "checks": [
+      {"path": "history.plan.coverage_targets.0.source_scope", "contains": ["未排除补充"]},
+      {"path": "history.steps.2.tool_calls.0.[event_index,name,result.success]", "equal": [14, "structured_query_series", true]},
+      {"path": "history.steps.2.tool_calls.0.result.data.status", "equal": "no_data"},
+      {"path": "history.steps.3.tool_calls.0.[event_index,name,result.success]", "equal": [21, "structured_query_series", true]},
+      {"path": "history.steps.3.tool_calls.0.result.data.rows.0.[date,source_cell,value]", "equal": ["2023-09-21", "B3340", 5160]},
+      {"path": "history.replies.0.[stage,status,after]", "equal": ["progress", "recover", 3]},
+      {"path": "history.replies.2.[stage,status,after]", "equal": ["delivery", "recover", 4]},
+      {"path": "history.steps.4.tool_calls.0.[event_index,name,result.success]", "equal": [30, "structured_list_series", true]},
+      {"path": "history.steps.4.tool_calls.1.[event_index,name,result.success]", "equal": [31, "structured_list_charts", true]},
+      {"path": "history.steps.5.tool_calls.0.[event_index,name,result.success]", "equal": [35, "structured_list_series", true]},
+      {"path": "history.steps.6.tool_calls.0.[event_index,name,result.success]", "equal": [39, "structured_list_series", true]},
+      {"path": "progress.source_batches", "equal": 7},
+      {"path": "progress.recent_source_operations.#.operation", "equal": ["list_datasets", "list_series", "query_series", "query_series", "list_series", "list_charts", "list_series", "list_series"]},
+      {"path": "reads", "same_as": "prefix_reads"},
+      {"path": "history.final", "contains": ["5160", "建议改用"]},
+      {"path": "history.final", "omits": ["60.6", "62.3"]}
+    ]
+  },
+  "r7-2-kb31": {
+    "source": "round8.log:4680; SSE #13; backend-qa4.log:95290, 95318, 95337.",
+    "compare_read_prefix": 3,
+    "checks": [
+      {"path": "history.plan.coverage_targets.0.source_scope", "contains": ["先查该来源"]},
+      {"path": "history.steps.2.tool_calls.0.[event_index,name,result.success]", "equal": [13, "structured_analyze_table", true]},
+      {"path": "history.steps.2.tool_calls.0.result.data.rows.4", "equal": ["2023-09-21", 5160, "valid", "B3340"]},
+      {"path": "history.steps.2.tool_calls.0.result.data.rows.5", "equal": ["2023-09-22", null, "blank", "B3341"]},
+      {"path": "history.steps.2.tool_calls.0.result.data.rows.6", "equal": ["2023-09-25", null, "blank", "B3342"]},
+      {"path": "history.replies.0.[stage,status,after]", "equal": ["progress", "keep", 3]},
+      {"path": "history.replies.2.[stage,status,after]", "equal": ["delivery", "not_checked_no_new_source_evidence", 3]},
+      {"path": "history.replies.2.candidate_scope_checked", "equal": false},
+      {"path": "progress.source_batches", "equal": 3},
+      {"path": "reads", "same_as": "prefix_reads"},
+      {"path": "history.final", "omits": ["60.6", "62.3"]}
+    ]
+  },
+  "r7-3-kb31": {
+    "source": "round8.log:4682, 5757; SSE #18, #29, #33, #38; saved output.",
+    "checks": [
+      {"path": "history.plan.coverage_targets.0.source_scope", "contains": ["优先且限于"]},
+      {"path": "history.steps.3.tool_calls.0.[event_index,name,result.success]", "equal": [18, "structured_query_series", true]},
+      {"path": "history.steps.3.tool_calls.0.result.data.rows.0.[date,source_cell,value]", "equal": ["2023-09-21", "B3340", 5160]},
+      {"path": "history.replies.2.[stage,status,after]", "equal": ["delivery", "recover", 4]},
+      {"path": "history.steps.5.tool_calls.0.[event_index,name,result.success]", "equal": [29, "search_knowledge", false]},
+      {"path": "history.steps.5.tool_calls.0.result.error", "contains": ["读取文档内容前需要明确的来源计划"]},
+      {"path": "history.steps.6.tool_calls.0.[event_index,name,result.success]", "equal": [33, "bind_document_scope", true]},
+      {"path": "history.steps.6.tool_calls.0.result.data.source_plan_validated", "equal": true},
+      {"path": "history.steps.7.tool_calls.0.[event_index,name,result.success]", "equal": [38, "search_knowledge", true]},
+      {"path": "history.steps.7.tool_calls.0.result.data.results.0.knowledge_title", "equal": "棉花周报20240310.pptx"},
+      {"path": "history.steps.7.tool_calls.0.result.data.results.0.knowledge_id", "same_as": "history.steps.6.tool_calls.0.result.data.documents.0.knowledge_id"},
+      {"path": "history.steps.7.tool_calls.0.result.data.results.0.content", "contains": ["第18页", "合计60.6万吨"]},
+      {"path": "reads.observations.#(tool_name==\"search_knowledge\").body_navigation_samples.samples.0.knowledge_id", "same_as": "history.steps.7.tool_calls.0.result.data.results.0.knowledge_id"},
+      {"path": "reads.observations.#(tool_name==\"search_knowledge\").body_navigation_samples.samples.0.navigation_excerpt", "contains": ["合计60.6万吨"]},
+      {"path": "history.steps.7.tool_calls.0.result.data.results.1.knowledge_title", "equal": "棉花周报20240310-冲突测试版.pptx"},
+      {"path": "history.steps.7.tool_calls.0.result.data.results.1.knowledge_id", "same_as": "history.steps.6.tool_calls.0.result.data.documents.1.knowledge_id"},
+      {"path": "history.steps.7.tool_calls.0.result.data.results.1.content", "contains": ["第18页", "合计62.3万吨"]},
+      {"path": "reads.observations.#(tool_name==\"search_knowledge\").body_navigation_samples.samples.1.knowledge_id", "same_as": "history.steps.7.tool_calls.0.result.data.results.1.knowledge_id"},
+      {"path": "reads.observations.#(tool_name==\"search_knowledge\").body_navigation_samples.samples.1.navigation_excerpt", "contains": ["合计62.3万吨"]},
+      {"path": "history.steps.7.tool_calls.0.result.data.results.0.knowledge_id", "different_from": "history.steps.7.tool_calls.0.result.data.results.1.knowledge_id"},
+      {"path": "progress.recent_source_operations.#(success==false).operation", "equal": "search_knowledge"},
+      {"path": "history.final", "contains": ["60.6", "62.3", "未判定哪一版为准"]},
+      {"path": "history.final", "omits": ["5160"]}
+    ]
+  }
+}

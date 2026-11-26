@@ -1,0 +1,139 @@
+{
+  "id": "r6-1-kb07",
+  "run": "qa4-r6-1",
+  "question_id": "KB-07",
+  "question": "棉花数据库里，中国棉花平衡表2023年10月的期初库存、产量、期末库存分别是多少万吨？",
+  "provenance": {
+    "event_file": "KB-07.t1.events.json",
+    "answer_file": "KB-07.json",
+    "final_event_index": 28,
+    "source_event_count": 32,
+    "projection": "Zero-based SSE event indices. Every tool result exposed in the stream is retained with selected original fields. Response arrays may be excerpts; recorded totals, pagination and truncation are unchanged. Opaque resource identities are fixture aliases. The complete saved final agrees across the answer record, SSE answer and SSE completion.",
+    "plan_source": "backend-qa4.log:92684 advisory_plan",
+    "terminal_source": "backend-qa4.log:92713 (answer)"
+  },
+  "grade": {"verdict":"pass","ambiguous":false,"source":"qa4/result.md:130"},
+  "steps": [
+    {
+      "iteration": -1,
+      "tool_calls": [
+        {
+          "id": "call_fixture_05",
+          "name": "structured_list_datasets",
+          "args": {"question":"棉花数据库 中国棉花平衡表 2023年10月 期初库存 产量 期末库存 万吨"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"source_data_read":false,"_structured_execution":{"canonical_operation":"list_datasets","scope_mode":"directory","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"dataset_count":1,"datasets_truncated":false,"offset":0,"next_offset":null,"datasets":[{"dataset_id":"fixture-dataset-cotton","source_file":"棉花数据库.xlsx"}]}
+          },
+          "call_event_index": 3,
+          "event_index": 5
+        }
+      ]
+    },
+    {
+      "iteration": 0,
+      "tool_calls": [
+        {
+          "id": "call_fixture_09",
+          "name": "structured_list_series",
+          "args": {"dataset_id":"fixture-dataset-cotton","limit":100,"search":"中国棉花平衡表"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"list_series","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"offset":0,"next_offset":null,"total":100,"truncated":false,"discovery_coverage":{"representation":"structured_field_catalog","document_body_searched_by_this_operation":false},"series":[{"series_id":"balance.primary.B","sheet":"中国棉花平衡表","metric":"工商业期初库存","unit":null,"unit_status":"needs_review","last_valid_date":"2023-10-31","header_cells":["B1"]}]}
+          },
+          "call_event_index": 8,
+          "event_index": 9
+        }
+      ]
+    },
+    {
+      "iteration": 1,
+      "tool_calls": [
+        {
+          "id": "call_fixture_18",
+          "name": "structured_query_series",
+          "args": {"dataset_id":"fixture-dataset-cotton","end_date":"2023-10-31","operation":"rows","series_id":"balance.primary.B","start_date":"2023-10-31"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"status":"ok","dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"query_series","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"rows":[{"category_cell":null,"date":"2023-10-31","date_cell":"A87","formula":"=G86","metric_cell":null,"period":null,"period_cell":null,"raw_value":"231.93291576470585","source_cell":"B87","value":231.93291576470585,"value_status":"valid"}],"rows_are":"observations","actual_first_date":"2023-10-31","actual_last_date":"2023-10-31","record_count":1,"truncated":false,"series":{"series_id":"balance.primary.B","sheet":"中国棉花平衡表","metric":"工商业期初库存","unit":null,"unit_status":"needs_review","last_valid_date":"2023-10-31","header_cells":["B1"]},"source":{"file":"棉花数据库.xlsx","sheet":"中国棉花平衡表","header_cells":["B1"],"knowledge_id":"00000000-0000-4000-8000-000000000011","knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"source_evidence":{"kind":"structured_query_source_evidence","status":"ok","cells":[{"cached_value":231.93291576470585,"cell":"B87","formula":"=G86","raw_value":"=G86","sheet":"中国棉花平衡表","value":231.93291576470585,"value_status":"original"}]}}
+          },
+          "call_event_index": 15,
+          "event_index": 18
+        },
+        {
+          "id": "call_fixture_19",
+          "name": "structured_query_series",
+          "args": {"dataset_id":"fixture-dataset-cotton","end_date":"2023-10-31","operation":"rows","series_id":"balance.primary.C","start_date":"2023-10-31"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"status":"ok","dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"query_series","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"rows":[{"category_cell":null,"date":"2023-10-31","date_cell":"A87","formula":null,"metric_cell":null,"period":null,"period_cell":null,"raw_value":"110","source_cell":"C87","value":110.0,"value_status":"valid"}],"rows_are":"observations","actual_first_date":"2023-10-31","actual_last_date":"2023-10-31","record_count":1,"truncated":false,"series":{"series_id":"balance.primary.C","sheet":"中国棉花平衡表","metric":"产量","unit":null,"unit_status":"needs_review","last_valid_date":"2023-10-31","header_cells":["C1"]},"source":{"file":"棉花数据库.xlsx","sheet":"中国棉花平衡表","header_cells":["C1"],"knowledge_id":"00000000-0000-4000-8000-000000000011","knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"source_evidence":{"kind":"structured_query_source_evidence","status":"ok","cells":[{"cached_value":null,"cell":"C87","formula":null,"raw_value":110,"sheet":"中国棉花平衡表","value":110,"value_status":"original"}]}}
+          },
+          "call_event_index": 16,
+          "event_index": 19
+        },
+        {
+          "id": "call_fixture_20",
+          "name": "structured_query_series",
+          "args": {"dataset_id":"fixture-dataset-cotton","end_date":"2023-10-31","operation":"rows","series_id":"balance.primary.G","start_date":"2023-10-31"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"status":"ok","dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"query_series","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"rows":[{"category_cell":null,"date":"2023-10-31","date_cell":"A87","formula":"=B87+C87+D87-K87+E87","metric_cell":null,"period":null,"period_cell":null,"raw_value":"298.93291576470585","source_cell":"G87","value":298.93291576470585,"value_status":"valid"}],"rows_are":"observations","actual_first_date":"2023-10-31","actual_last_date":"2023-10-31","record_count":1,"truncated":false,"series":{"series_id":"balance.primary.G","sheet":"中国棉花平衡表","metric":"工商业期末库存","unit":null,"unit_status":"needs_review","last_valid_date":"2023-10-31","header_cells":["G1"]},"source":{"file":"棉花数据库.xlsx","sheet":"中国棉花平衡表","header_cells":["G1"],"knowledge_id":"00000000-0000-4000-8000-000000000011","knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"source_evidence":{"kind":"structured_query_source_evidence","status":"ok","cells":[{"cached_value":298.93291576470585,"cell":"G87","formula":"=B87+C87+D87-K87+E87","raw_value":"=B87+C87+D87-K87+E87","sheet":"中国棉花平衡表","value":298.93291576470585,"value_status":"original"}],"chart_references":[{"title":"中国棉花社会库存","curve_label":"23/24","axis_titles":["(万吨)"],"value_ref":"中国棉花平衡表!$G$86:$G$97"}]}}
+          },
+          "call_event_index": 14,
+          "event_index": 20
+        }
+      ]
+    },
+    {
+      "iteration": 2,
+      "tool_calls": [
+        {
+          "id": "call_fixture_25",
+          "name": "structured_inspect_source",
+          "args": {"dataset_id":"fixture-dataset-cotton","ranges":["中国棉花平衡表!A1:Q1","中国棉花平衡表!A80:Q90"],"sheet":"中国棉花平衡表"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"status":"ok","kind":"structured_source_inspection","dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"inspect_source","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"source_file":"棉花数据库.xlsx","hash_verified":true,"truncated":true,"matches":[],"scan":{"complete":null},"ranges":[{"range":"A1:Q1","requested_range":"A1:Q1","sheet":"中国棉花平衡表","cells":[{"cached_value":null,"cell":"B1","formula":null,"raw_value":"工商业期初库存","sheet":"中国棉花平衡表","value":"工商业期初库存","value_status":"original"},{"cached_value":null,"cell":"C1","formula":null,"raw_value":"产量","sheet":"中国棉花平衡表","value":"产量","value_status":"original"},{"cached_value":null,"cell":"G1","formula":null,"raw_value":"工商业期末库存","sheet":"中国棉花平衡表","value":"工商业期末库存","value_status":"original"}]},{"range":"A80:Q90","requested_range":"A80:Q90","sheet":"中国棉花平衡表","cells":[{"cached_value":null,"cell":"A87","formula":null,"raw_value":"2023-10-31T00:00:00","sheet":"中国棉花平衡表","value":"2023-10-31T00:00:00","value_status":"original"},{"cached_value":231.93291576470585,"cell":"B87","formula":"=G86","raw_value":"=G86","sheet":"中国棉花平衡表","value":231.93291576470585,"value_status":"original"},{"cached_value":null,"cell":"C87","formula":null,"raw_value":110,"sheet":"中国棉花平衡表","value":110,"value_status":"original"},{"cached_value":298.93291576470585,"cell":"G87","formula":"=B87+C87+D87-K87+E87","raw_value":"=B87+C87+D87-K87+E87","sheet":"中国棉花平衡表","value":298.93291576470585,"value_status":"original"},{"cached_value":485.5713364247059,"cell":"O87","formula":"=G87+H87+M87","raw_value":"=G87+H87+M87","sheet":"中国棉花平衡表","value":485.5713364247059,"value_status":"original"}]}]}
+          },
+          "call_event_index": 24,
+          "event_index": 25
+        }
+      ]
+    }
+  ],
+  "replies": [
+    {"after":3,"stage":"progress","action":"keep","status":"keep","source":"backend-qa4.log:92607"},
+    {"after":4,"stage":"delivery","action":"keep","status":"keep","source":"backend-qa4.log:92689"},
+    {"after":4,"stage":"result","action":"keep","status":"kept","source":"backend-qa4.log:92708"}
+  ],
+  "final": "棉花数据库的「中国棉花平衡表」中，2023 年 10 月（第 87 行，日期格 A87 为 2023-10-31）：\n\n| 指标 | 数值 | 原单元格 |\n|---|---|---|\n| 工商业期初库存 | 231.93 万吨 | B87（公式 =G86，即 9 月末工商业期末库存）<evidence evidence_id=\"ev_0000000000000000000000000000000000000000000000000000000000000002\" /> |\n| 产量 | 110 万吨 | C87<evidence evidence_id=\"ev_0000000000000000000000000000000000000000000000000000000000000003\" /> |\n| 工商业期末库存 | 298.93 万吨 | G87（公式 =B87+C87+D87-K87+E87）<evidence evidence_id=\"ev_0000000000000000000000000000000000000000000000000000000000000004\" /> |\n\n单位依据：同表所引用这一列数据的原生图表，其纵轴标题为「(万吨)」；该图表包含「中国棉花社会库存」的 23/24 序列，其值取自 G86:G97。\n\n原表没有单列标注「期初库存」「期末库存」，只有「工商业期初库存」「工商业期末库存」这两个库存项；上述两行即为该月对应的库存口径。同表另有「公开国储库存」「合计库存」等库存项，其中 10 月合计库存为 485.57 万吨（O87），与工商业库存不是同一口径。",
+  "plan": {
+    "goals": ["从棉花数据库中读取中国棉花平衡表2023年10月的期初库存、产量、期末库存，并按万吨给出三个数值。"],
+    "evidence": ["定位棉花数据库.xlsx中中国棉花平衡表2023年10月记录，绑定期初库存、产量、期末库存实际字段，读取原值和单位（万吨），不使用相似表名或他期数值替代。"],
+    "source_discovery": {"mode":"discover","query":"棉花数据库 中国棉花平衡表 2023年10月 期初库存 产量 期末库存 万吨","source_domains":["structured"]},
+    "tool_names": ["structured_capabilities","structured_list_datasets","structured_list_series","structured_query_series"],
+    "completion_criteria": ["明确给出2023年10月中国棉花平衡表的期初库存、产量、期末库存三项数值，单位万吨并注明数据来源字段与原表位置。"],
+    "delivery_requirements": [{"kind":"text","criteria":"以文字给出2023年10月中国棉花平衡表的期初库存、产量、期末库存，单位万吨，并注明出处。","format":"prose"}],
+    "coverage_targets": [
+      {"goal_index":0,"request_basis":"中国棉花平衡表2023年10月的期初库存、产量、期末库存分别是多少万吨？","criteria":"三项指标均为2023年10月同一记录，单位万吨，保留原值。","source_scope":"用户点名的棉花数据库中的中国棉花平衡表，未限定其他来源。"}
+    ],
+    "reasoning_depth": "direct"
+  },
+  "replay": [
+    {"after":3,"stage":"progress","action":"keep","kind":"verdict_projection","source":"backend-qa4.log:92607 (logged verdict; replay envelope)"},
+    {
+      "after": 4,
+      "stage": "candidate",
+      "content": "棉花数据库的「中国棉花平衡表」中，2023 年 10 月（第 87 行，日期格 A87 为 2023-10-31）：\n\n| 指标 | 数值 | 原单元格 |\n|---|---|---|\n| 工商业期初库存 | 231.93 万吨 | B87（公式 =G86） |\n| 产量 | 110 万吨 | C87 |\n| 工商业期末库存 | 298.93 万吨 | G87（公式 =B87+C87+D87-K87+E87） |",
+      "kind": "published_excerpt",
+      "source": "final; original table without turn-specific evidence identifiers"
+    },
+    {"after":4,"stage":"delivery","action":"keep","kind":"verdict_projection","source":"backend-qa4.log:92689 (logged verdict; replay envelope)"}
+  ]
+}

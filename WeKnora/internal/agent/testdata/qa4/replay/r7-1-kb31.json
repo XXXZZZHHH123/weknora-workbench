@@ -1,0 +1,216 @@
+{
+  "id": "r7-1-kb31",
+  "run": "qa4-r7-1",
+  "question_id": "KB-31",
+  "question": "棉花数据库里2024年3月10日的郑棉仓单是多少？",
+  "provenance": {
+    "event_file": "KB-31.t1.events.json",
+    "answer_file": "KB-31.json",
+    "final_event_index": 42,
+    "source_event_count": 45,
+    "projection": "Zero-based SSE event indices. Every tool result exposed in the stream is retained with selected original fields. Response arrays may be excerpts; recorded totals, pagination and truncation are unchanged. Opaque resource identities are fixture aliases. The complete saved final agrees across the answer record, SSE answer and SSE completion.",
+    "plan_source": "backend-qa4.log:94757 advisory_plan",
+    "terminal_source": "backend-qa4.log:95030 (answer); stored iteration 7 matches the published final"
+  },
+  "grade": {"verdict":"partial","ambiguous":true,"source":"qa4/result.md:149"},
+  "steps": [
+    {
+      "iteration": -1,
+      "tool_calls": [
+        {
+          "id": "call_fixture_06",
+          "name": "structured_list_datasets",
+          "args": {"question":"棉花数据库 2024年3月10日 郑棉仓单 数值"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"source_data_read":false,"_structured_execution":{"canonical_operation":"list_datasets","scope_mode":"directory","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"dataset_count":1,"datasets_truncated":false,"offset":0,"next_offset":null,"datasets":[{"dataset_id":"fixture-dataset-cotton","source_file":"棉花数据库.xlsx"}]}
+          },
+          "call_event_index": 4,
+          "event_index": 6
+        }
+      ]
+    },
+    {
+      "iteration": 0,
+      "tool_calls": [
+        {
+          "id": "call_fixture_10",
+          "name": "structured_list_series",
+          "args": {"dataset_id":"fixture-dataset-cotton","limit":100,"search":"仓单","sheet":"郑棉仓单"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"list_series","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"offset":0,"next_offset":null,"total":33,"truncated":false,"discovery_coverage":{"representation":"structured_field_catalog","document_body_searched_by_this_operation":false},"series":[{"series_id":"warehouse.B","sheet":"郑棉仓单","metric":"仓单数量:一号棉花","unit":null,"unit_status":"needs_review","last_valid_date":"2023-09-21","header_cells":["B3","B4"]}]}
+          },
+          "call_event_index": 9,
+          "event_index": 10
+        }
+      ]
+    },
+    {
+      "iteration": 1,
+      "tool_calls": [
+        {
+          "id": "call_fixture_14",
+          "name": "structured_query_series",
+          "args": {"dataset_id":"fixture-dataset-cotton","end_date":"2024-03-12","operation":"rows","series_id":"warehouse.B","source_question":"棉花数据库里2024年3月10日的郑棉仓单是多少？","start_date":"2024-03-08"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"status":"no_data","dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"query_series","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"rows":[],"rows_are":"observations","actual_first_date":null,"actual_last_date":null,"record_count":0,"truncated":false,"series":{"series_id":"warehouse.B","sheet":"郑棉仓单","metric":"仓单数量:一号棉花","unit":null,"unit_status":"needs_review","last_valid_date":"2023-09-21","header_cells":["B3","B4"]},"source":{"file":"棉花数据库.xlsx","sheet":"郑棉仓单","header_cells":["B3","B4"],"knowledge_id":"00000000-0000-4000-8000-000000000011","knowledge_base_id":"00000000-0000-4000-8000-000000000001"}}
+          },
+          "call_event_index": 13,
+          "event_index": 14
+        }
+      ]
+    },
+    {
+      "iteration": 2,
+      "tool_calls": [
+        {
+          "id": "call_fixture_21",
+          "name": "structured_query_series",
+          "args": {"dataset_id":"fixture-dataset-cotton","operation":"latest","series_id":"warehouse.B","source_question":"棉花数据库里2024年3月10日的郑棉仓单是多少？"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"status":"ok","dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"query_series","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"rows":[{"category_cell":null,"date":"2023-09-21","date_cell":"A3340","formula":null,"metric_cell":null,"period":null,"period_cell":null,"raw_value":"5160","source_cell":"B3340","value":5160.0,"value_status":"valid"}],"rows_are":"latest_valid_observation","actual_first_date":"2010-01-04","actual_last_date":"2023-09-25","record_count":3338,"truncated":false,"series":{"series_id":"warehouse.B","sheet":"郑棉仓单","metric":"仓单数量:一号棉花","unit":null,"unit_status":"needs_review","last_valid_date":"2023-09-21","header_cells":["B3","B4"]},"source":{"file":"棉花数据库.xlsx","sheet":"郑棉仓单","header_cells":["B3","B4"],"knowledge_id":"00000000-0000-4000-8000-000000000011","knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"source_evidence":{"kind":"structured_query_source_evidence","status":"ok","cells":[{"cached_value":null,"cell":"B3340","formula":null,"raw_value":5160,"sheet":"郑棉仓单","value":5160,"value_status":"original"}]}}
+          },
+          "call_event_index": 19,
+          "event_index": 21
+        }
+      ]
+    },
+    {
+      "iteration": 4,
+      "tool_calls": [
+        {
+          "id": "call_fixture_30",
+          "name": "structured_list_series",
+          "args": {"dataset_id":"fixture-dataset-cotton","limit":100,"search":"仓单"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"list_series","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"offset":0,"next_offset":100,"total":174,"truncated":true,"discovery_coverage":{"representation":"structured_field_catalog","document_body_searched_by_this_operation":false},"series":[{"series_id":"warehouse.B","sheet":"郑棉仓单","metric":"仓单数量:一号棉花","unit":null,"unit_status":"needs_review","last_valid_date":"2023-09-21","header_cells":["B3","B4"]}]}
+          },
+          "call_event_index": 29,
+          "event_index": 30
+        },
+        {
+          "id": "call_fixture_31",
+          "name": "structured_list_charts",
+          "args": {"dataset_id":"fixture-dataset-cotton","limit":50,"search":"仓单"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"list_charts","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"offset":0,"next_offset":null,"total":15,"truncated":false}
+          },
+          "call_event_index": 28,
+          "event_index": 31
+        }
+      ]
+    },
+    {
+      "iteration": 5,
+      "tool_calls": [
+        {
+          "id": "call_fixture_35",
+          "name": "structured_list_series",
+          "args": {"dataset_id":"fixture-dataset-cotton","limit":100,"offset":51,"search":"仓单"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"list_series","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"offset":51,"next_offset":151,"total":174,"truncated":true,"discovery_coverage":{"representation":"structured_field_catalog","document_body_searched_by_this_operation":false},"series":[{"series_id":"generic.fixture","sheet":"国内棉花监管和仓单库存","metric":"合计库存","unit":"万吨","unit_status":"explicit","last_valid_date":"2023-09-22","header_cells":["Q1","Q2"]}]}
+          },
+          "call_event_index": 34,
+          "event_index": 35
+        }
+      ]
+    },
+    {
+      "iteration": 6,
+      "tool_calls": [
+        {
+          "id": "call_fixture_39",
+          "name": "structured_list_series",
+          "args": {"dataset_id":"fixture-dataset-cotton","limit":100,"offset":151,"search":"仓单"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"list_series","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"offset":151,"next_offset":null,"total":174,"truncated":false,"discovery_coverage":{"representation":"structured_field_catalog","document_body_searched_by_this_operation":false},"series":[{"series_id":"chart_d983fada038282b334235937","sheet":"国内棉花监管和仓单库存","metric":"棉花流通库存(监管+仓单):内地库 / 20/21","unit":"万吨","unit_status":"explicit","last_valid_date":"2021-08-31","header_cells":["P1","P2"]}]}
+          },
+          "call_event_index": 38,
+          "event_index": 39
+        }
+      ]
+    }
+  ],
+  "replies": [
+    {"after":3,"stage":"progress","action":"recover","status":"recover","source":"backend-qa4.log:94780","protocol_repair_attempted":true},
+    {
+      "after": 4,
+      "stage": "candidate",
+      "iteration": 3,
+      "content": "棉花数据库的“郑棉仓单”工作表中，**没有 2024 年 3 月 10 日的记录**，因此无法取得该日的仓单数。\n\n- 按“仓单数量:一号棉花”字段的日期覆盖范围看，已导入记录从 2010-01-04 至 2023-09-25，最后一条有效数值出现在 **2023-09-21**，原值 **5160**（单元格 B3340）。\n- 该字段在本轮已读范围内未标注单位，原表表头未明确单位，因此只能给原值，不做换算。\n- 我查看了 2024-03-08 至 2024-03-12 的窗口，返回结果为空，说明该字段的覆盖期没有延伸到 2024 年 3 月；这不是 3 月 10 日单日缺值。\n\n如果你需要 2024 年 3 月的仓单量，可以告诉我，我再核对是否有其他工作表或文件涵盖该时段（例如已读取的周报材料）。",
+      "completeness": "full",
+      "source": "data-qa4/weknora.db messages.agent_steps (read-only, matched via the saved answer)"
+    },
+    {
+      "after": 4,
+      "stage": "delivery",
+      "action": "recover",
+      "status": "recover",
+      "source": "backend-qa4.log:94864",
+      "disposition": "need_source",
+      "disposition_source": "backend-qa4.log:94865"
+    },
+    {"after":7,"stage":"candidate","iteration":7,"completeness":"unavailable","source":"backend-qa4.log:95020 (pre-edit candidate truncated)"},
+    {"after":7,"stage":"result","action":"correct","status":"corrected","source":"backend-qa4.log:95025","completeness":"unavailable"}
+  ],
+  "final": "2024年3月10日的郑棉仓单数值，在“棉花数据库.xlsx”中查不到：库里唯一逐日的郑棉仓单口径数据截止在2023年。\n\n具体核实情况：\n\n- 所查口径是工作表“郑棉仓单”的字段“仓单数量:一号棉花”（B列，表头B3/B4），日期取自A列。按2024年3月8日至12日查询，返回0条记录；该字段本身只覆盖2010-01-04至2023-09-25；按最新有效观测，最后有数值的日期是2023-09-21。\n- 同一工作簿中其他与仓单相关的逐日数据，包括“有效预报:一号棉花:总计”、“仓单和有效预报:合计/新疆库/内地库”（单位万吨）、“国内棉花监管和仓单库存”表中的“新棉仓单 张 / 有效预报 张 / 新棉仓单+有效预报”，以及“郑棉纱仓单”，最晚日期都是2023-09-22；原生图表曲线的数据也止于2023年，图例分别到22/23年度或2022年。没有任何2024年3月10日的郑棉仓单记录。\n\n作为最近可参考的值：2023年9月21日“仓单数量:一号棉花”为5160，原表单元格B3340，该字段目录未标注单位，因此按原值给出。\n\n如果2024年3月10日这个时点是重点，建议改用本周棉花周报等文档报道的仓单数据；这些文档不在本次已核实的结构化数据范围内。",
+  "plan": {
+    "goals": ["给出棉花数据库中2024年3月10日的郑棉仓单数值。"],
+    "evidence": ["在棉花数据库中定位2024-03-10的郑棉仓单字段，读取其原值、单位及日期，优先使用结构化数据源。"],
+    "source_discovery": {"mode":"discover","query":"棉花数据库 2024年3月10日 郑棉仓单 数值","source_domains":["structured"]},
+    "tool_names": ["structured_capabilities","structured_list_datasets","structured_list_series","structured_query_series"],
+    "completion_criteria": ["回答中明确给出2024年3月10日郑棉仓单的数值、原单位与出处；若该日缺数，则说明缺口并给出同字段最后一个有效日的日期与原值。"],
+    "delivery_requirements": [{"kind":"text","criteria":"以文字明确给出2024年3月10日郑棉仓单数值、原单位与来源；缺数时说明缺数日期并给出最后有效日的数值与日期。","format":"prose"}],
+    "coverage_targets": [
+      {
+        "goal_index": 0,
+        "request_basis": "棉花数据库里2024年3月10日的郑棉仓单是多少？",
+        "criteria": "给出2024年3月10日郑棉仓单的数值与原单位；若该日无记录，则给出同字段最后有效日的日期与原值。",
+        "source_scope": "用户指定的“棉花数据库”内，优先结构化数据源，未排除补充。"
+      }
+    ],
+    "reasoning_depth": "direct"
+  },
+  "replay": [
+    {
+      "after": 3,
+      "stage": "progress",
+      "action": "keep",
+      "feedback": "保留进度。",
+      "kind": "constructed",
+      "source": "backend-qa4.log:94780 initial_schema_failure=keep_feedback_nonempty"
+    },
+    {"after":3,"stage":"progress","action":"recover","kind":"verdict_projection","source":"backend-qa4.log:94780 (logged verdict; replay envelope)"},
+    {
+      "after": 4,
+      "stage": "candidate",
+      "content": "棉花数据库的“郑棉仓单”工作表中，**没有 2024 年 3 月 10 日的记录**，因此无法取得该日的仓单数。\n\n- 按“仓单数量:一号棉花”字段的日期覆盖范围看，已导入记录从 2010-01-04 至 2023-09-25，最后一条有效数值出现在 **2023-09-21**，原值 **5160**（单元格 B3340）。\n- 该字段在本轮已读范围内未标注单位，原表表头未明确单位，因此只能给原值，不做换算。\n- 我查看了 2024-03-08 至 2024-03-12 的窗口，返回结果为空，说明该字段的覆盖期没有延伸到 2024 年 3 月；这不是 3 月 10 日单日缺值。\n\n如果你需要 2024 年 3 月的仓单量，可以告诉我，我再核对是否有其他工作表或文件涵盖该时段（例如已读取的周报材料）。",
+      "disposition": "need_source",
+      "kind": "historical",
+      "source": "replies[1]; stored iteration 3"
+    },
+    {"after":4,"stage":"delivery","action":"recover","kind":"verdict_projection","source":"backend-qa4.log:94864 (logged verdict; replay envelope)"},
+    {
+      "after": 7,
+      "stage": "candidate",
+      "content": "作为最近可参考的值：2023年9月21日“仓单数量:一号棉花”为5160，原表单元格B3340，该字段目录未标注单位，因此按原值给出。\n\n如果2024年3月10日这个时点是重点，建议改用本周棉花周报等文档报道的仓单数据；这些文档不在本次已核实的结构化数据范围内。",
+      "kind": "published_excerpt",
+      "source": "final; original two closing paragraphs"
+    }
+  ]
+}

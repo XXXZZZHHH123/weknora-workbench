@@ -1,0 +1,123 @@
+{
+  "id": "r7-2-kb31",
+  "run": "qa4-r7-2",
+  "question_id": "KB-31",
+  "question": "棉花数据库里2024年3月10日的郑棉仓单是多少？",
+  "provenance": {
+    "event_file": "KB-31.t1.events.json",
+    "answer_file": "KB-31.json",
+    "final_event_index": 17,
+    "source_event_count": 21,
+    "projection": "Zero-based SSE event indices. Every tool result exposed in the stream is retained with selected original fields. Response arrays may be excerpts; recorded totals, pagination and truncation are unchanged. Opaque resource identities are fixture aliases. The complete saved final agrees across the answer record, SSE answer and SSE completion.",
+    "plan_source": "backend-qa4.log:95267 advisory_plan",
+    "terminal_source": "backend-qa4.log:95342 (answer)"
+  },
+  "grade": {"verdict":"partial","ambiguous":false,"source":"qa4/result.md:150"},
+  "steps": [
+    {
+      "iteration": -1,
+      "tool_calls": [
+        {
+          "id": "call_fixture_05",
+          "name": "structured_list_datasets",
+          "args": {"question":"棉花数据库中2024年3月10日的郑棉仓单（郑州商品交易所棉花仓单数量）指标字段与当日数值"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"source_data_read":false,"_structured_execution":{"canonical_operation":"list_datasets","scope_mode":"directory","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"dataset_count":1,"datasets_truncated":false,"offset":0,"next_offset":null,"datasets":[{"dataset_id":"fixture-dataset-cotton","source_file":"棉花数据库.xlsx"}]}
+          },
+          "call_event_index": 3,
+          "event_index": 5
+        }
+      ]
+    },
+    {
+      "iteration": 0,
+      "tool_calls": [
+        {
+          "id": "call_fixture_09",
+          "name": "structured_list_series",
+          "args": {"dataset_id":"fixture-dataset-cotton","knowledge_base_id":"00000000-0000-4000-8000-000000000001","limit":100,"search":"仓单数量","sheet":"郑棉仓单"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"list_series","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"offset":0,"next_offset":null,"total":17,"truncated":false,"discovery_coverage":{"representation":"structured_field_catalog","document_body_searched_by_this_operation":false},"series":[{"series_id":"warehouse.B","sheet":"郑棉仓单","metric":"仓单数量:一号棉花","unit":null,"unit_status":"needs_review","last_valid_date":"2023-09-21","header_cells":["B3","B4"]}]}
+          },
+          "call_event_index": 8,
+          "event_index": 9
+        }
+      ]
+    },
+    {
+      "iteration": 1,
+      "tool_calls": [
+        {
+          "id": "call_fixture_13",
+          "name": "structured_analyze_table",
+          "args": {"dataset_id":"fixture-dataset-cotton","knowledge_base_id":"00000000-0000-4000-8000-000000000001","series_ids":["warehouse.B"],"source_question":"棉花数据库里2024年3月10日的郑棉仓单是多少？","sql":"SELECT date, value, value_status, source_cell FROM data WHERE series_id='warehouse.B' AND date BETWEEN DATE '2023-09-15' AND DATE '2023-09-30' ORDER BY date"},
+          "result": {
+            "success": true,
+            "output": "",
+            "data": {"status":"ok","kind":"structured_analysis","dataset_id":"fixture-dataset-cotton","_structured_execution":{"canonical_operation":"analyze_table","scope_mode":"knowledge_base","effect_class":"read"},"source_context":{"knowledge_base_id":"00000000-0000-4000-8000-000000000001"},"columns":["date","value","value_status","source_cell"],"input_complete":true,"output_truncated":false,"returned_row_count":7,"requested_range":{"end_date":null,"start_date":null},"sql":"SELECT date, value, value_status, source_cell FROM data WHERE series_id='warehouse.B' AND date BETWEEN DATE '2023-09-15' AND DATE '2023-09-30' ORDER BY date","source":{"file":"棉花数据库.xlsx","file_hash":"00000000000000000000000000000001","knowledge_base_id":"00000000-0000-4000-8000-000000000001","knowledge_id":"00000000-0000-4000-8000-000000000011","sha256":"0000000000000000000000000000000000000000000000000000000000000002","workbook_declared_last_saved_at":"2023-09-28T02:27:37Z"},"rows":[["2023-09-15",5759.0,"valid","B3336"],["2023-09-18",5596.0,"valid","B3337"],["2023-09-19",5467.0,"valid","B3338"],["2023-09-20",5361.0,"valid","B3339"],["2023-09-21",5160.0,"valid","B3340"],["2023-09-22",null,"blank","B3341"],["2023-09-25",null,"blank","B3342"]],"input_count":3338,"inputs":{"warehouse.B":{"actual_first_date":"2010-01-04","actual_last_date":"2023-09-25","example_cells":["B5","B6","B7","B8","B9"],"input_count":3338,"observation_coverage":{"interpretation":"区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。","max_segments":64,"scope_end_date":"2023-09-25","scope_record_count":3338,"scope_start_date":"2010-01-04","scope_valid_count":3336,"segments":[{"duplicate_date_boundary":false,"end_date":"2023-09-21","first_cell":"B5","has_value":true,"last_cell":"B3340","record_count":3336,"start_date":"2010-01-04","undated_boundary":false,"valid_count":3336,"value_status":"valid"},{"duplicate_date_boundary":false,"end_date":"2023-09-25","first_cell":"B3341","has_value":false,"last_cell":"B3342","record_count":2,"start_date":"2023-09-22","undated_boundary":false,"valid_count":0,"value_status":"blank"}],"total_segment_count":2,"truncated":false,"value_changes":{"adjacent_comparison_count":3335,"decrease_count":1649,"excluded_boundary_records":{"duplicate_date_record_count":0,"missing_value_count":2,"null_date_count":0},"first":{"date":"2010-01-04","value":0.0},"increase_count":1186,"interpretation":"比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。","last":{"date":"2023-09-21","value":5160.0},"maximum":{"date":"2020-02-13","value":37438.0},"minimum":{"date":"2010-01-04","value":0.0},"scope":{"complete_filtered_input":true,"eligible_end_date":"2023-09-21","eligible_record_count":3336,"eligible_start_date":"2010-01-04","record_count":3338,"valid_value_count":3336},"unchanged_count":500}},"observation_coverage_scope":"loaded_analysis_inputs_before_user_sql","series":{"description":"郑棉仓单 / 仓单数量:一号棉花；日期取A列；源表未明确单位，尚待确认","dimensions":{"block":"warehouse","source_series_code":"S0049502"},"first_date":"2010-01-04","first_valid_date":"2010-01-04","header_cells":["B3","B4"],"last_date":"2023-09-25","last_valid_date":"2023-09-21","metric":"仓单数量:一号棉花","record_count":3338,"series_id":"warehouse.B","sheet":"郑棉仓单","unit":null,"unit_status":"needs_review","valid_count":3336},"valid_count":3336,"valid_first_date":"2010-01-04","valid_last_date":"2023-09-21"}},"notice":"inputs是装载到隔离表的范围，series.first_date/last_date是原列可用范围，不等于SQL筛选后实际统计范围。时间限制请优先用start_date/end_date传入；聚合需在SQL中返回used_first_date、used_last_date、used_count，以供核对实际使用记录。原文件没有声明指标可加性和统计年度定义，不能假定这些业务规则。SQL在上述全部输入上执行；输出行截断不等于计算输入截断。inputs日期是输入覆盖范围，极值日期必须来自SQL返回记录。单位与业务口径按原字段，不自动换算。data.metric和data.unit来自真实系列元数据，可直接选择或分组以保留业务名称和单位；CASE改写series_id不能证明业务标签。混合单位需要重新选择同单位真实字段分别查询；SQL条件本身不证明单位归属。","source_semantics":{"published_series_dates":[{"last_date":"2023-09-25","last_valid_date":"2023-09-21","metric":"仓单数量:一号棉花","series_id":"warehouse.B","sheet":"郑棉仓单"}]},"result_id":"000000000000000000000003","result_contract":{"column_metadata":[{"dependency":{"kind":"source_value","source_columns":["date"],"source_row_dependency":false,"technical_metadata":false},"display_name":"date","index":0,"logical_type":"DATE","name":"date","operation":{"kind":"column_reference","names":["date"],"scope":"sql_relation_not_original_cell"},"unit":{"binding_scope":"result_column","evidence":[],"evidence_level":"none","reason":"No bound unit declaration for this expression","status":"unknown"}},{"dependency":{"kind":"source_value","source_columns":["value"],"source_row_dependency":false,"technical_metadata":false},"display_name":"value","index":1,"logical_type":"DOUBLE","name":"value","operation":{"kind":"column_reference","names":["value"],"scope":"sql_relation_not_original_cell"},"unit":{"binding_scope":"result_column","evidence":[],"evidence_level":"none","reason":"At least one loaded series has no unit declaration","status":"unknown"}},{"dependency":{"kind":"source_value","source_columns":["value_status"],"source_row_dependency":false,"technical_metadata":false},"display_name":"value_status","index":2,"logical_type":"VARCHAR","name":"value_status","operation":{"kind":"column_reference","names":["value_status"],"scope":"sql_relation_not_original_cell"},"unit":{"binding_scope":"result_column","evidence":[],"evidence_level":"none","reason":"No bound unit declaration for this expression","status":"unknown"}},{"dependency":{"kind":"source_value","source_columns":["source_cell"],"source_row_dependency":false,"technical_metadata":true},"display_name":"source_cell","index":3,"logical_type":"VARCHAR","name":"source_cell","operation":{"kind":"column_reference","names":["source_cell"],"scope":"sql_relation_not_original_cell"},"unit":{"binding_scope":"result_column","evidence":[],"evidence_level":"none","reason":"No bound unit declaration for this expression","status":"unknown"}}],"evidence_capabilities":{"aggregate_membership_verified":false,"cell_lineage_verified":false,"column_dependencies_verified":true,"level":"dependency_only","source_cells_available":false},"execution":{"cell_lineage_verified":false,"engine":"duckdb","engine_version":"1.5.5","input_scope":"loaded_inputs_before_user_sql","kind":"sql","numeric_semantics":"DuckDB DOUBLE source values; DECIMAL result values encoded as strings","sql_sha256":"e8a0cec180b5de69dad82205b16c0b7df21e0a59eb9712fb4c2d5babe713fa6c"},"hash_algorithm":"sha256-typed-json-v1","hash_input_keys":["columns","dataset_id","input_complete","input_count","inputs","notice","output_truncated","requested_range","returned_row_count","rows","source","source_semantics","sql"],"result_hash":"83f9985aa70bd0038ed2322ac3a1c2cb62f9ac06c7ae8c3cf8338678c98c4ba9","result_id":"000000000000000000000003","schema_version":2,"source_snapshot":{"dataset_id":"fixture-dataset-cotton","file":"棉花数据库.xlsx","input_digest_sha256":"0000000000000000000000000000000000000000000000000000000000000005","kind":"excel_observations","knowledge_base_id":"00000000-0000-4000-8000-000000000001","knowledge_id":"00000000-0000-4000-8000-000000000011","scope":"loaded_inputs_before_user_sql","source_sha256":"0000000000000000000000000000000000000000000000000000000000000002","versions":{"manifest_sha256":"0000000000000000000000000000000000000000000000000000000000000006"}}}}
+          },
+          "call_event_index": 12,
+          "event_index": 13,
+          "projection": "Contract fields retain their original shape and inputs. Snapshot/receipt identities are aliases; replay rebinds the projected payload."
+        }
+      ]
+    }
+  ],
+  "replies": [
+    {"after":3,"stage":"progress","action":"keep","status":"keep","source":"backend-qa4.log:95290","protocol_repair_attempted":true},
+    {
+      "after": 3,
+      "stage": "candidate",
+      "iteration": 2,
+      "content": "**棉花数据库里查不到 2024年3月10日的郑棉仓单数值。** 原文件“郑棉仓单”工作表的仓单数量：一号棉花（B列）只覆盖到 2023-09-25，且 2023-09-22 之后的两行（9月22日、9月25日）都没有数值，因此 2024年3月10日不在该字段的覆盖范围内，没有记录。\n\n该字段最后一个有效值是 **2023年9月21日的 5160**（“郑棉仓单”表 B3340 单元格）<evidence evidence_id=\"ev_0000000000000000000000000000000000000000000000000000000000000001\" />；随后的 2023-09-22（B3341）、2023-09-25（B3342）均为空值，没有数值可查。原表该列没有明确标注单位，目录中单位状态也为待确认，因此上面按原值报告，不附单位。\n\n口径说明：这里取的是“仓单数量:一号棉花”（表头 B3，数据源代码 S0049502）这一列，即郑州商品交易所棉花仓单总量；同表另有分仓库和“仓单和有效预报:合计”等列，但覆盖期同样止于 2023年9月。",
+      "completeness": "full",
+      "source": "data-qa4/weknora.db messages.agent_steps (read-only, matched via the saved answer)"
+    },
+    {"after":3,"stage":"delivery","action":"skip","status":"not_checked_no_new_source_evidence","source":"backend-qa4.log:95318","candidate_scope_checked":false},
+    {"after":3,"stage":"result","action":"keep","status":"kept","source":"backend-qa4.log:95337"}
+  ],
+  "final": "**棉花数据库里查不到 2024年3月10日的郑棉仓单数值。** 原文件“郑棉仓单”工作表的仓单数量：一号棉花（B列）只覆盖到 2023-09-25，且 2023-09-22 之后的两行（9月22日、9月25日）都没有数值，因此 2024年3月10日不在该字段的覆盖范围内，没有记录。\n\n该字段最后一个有效值是 **2023年9月21日的 5160**（“郑棉仓单”表 B3340 单元格）<evidence evidence_id=\"ev_0000000000000000000000000000000000000000000000000000000000000001\" />；随后的 2023-09-22（B3341）、2023-09-25（B3342）均为空值，没有数值可查。原表该列没有明确标注单位，目录中单位状态也为待确认，因此上面按原值报告，不附单位。\n\n口径说明：这里取的是“仓单数量:一号棉花”（表头 B3，数据源代码 S0049502）这一列，即郑州商品交易所棉花仓单总量；同表另有分仓库和“仓单和有效预报:合计”等列，但覆盖期同样止于 2023年9月。",
+  "plan": {
+    "goals": ["从棉花数据库中取得2024年3月10日的郑棉仓单数值，并在回答中注明该数值及来源。"],
+    "evidence": [
+      "按用户点名的“棉花数据库”定位结构化来源（棉花测试集内的xlsx：棉花数据库.xlsx），在字段目录中查找“郑棉仓单”相关字段，核对字段口径、单位和日期覆盖，确认是否能覆盖2024-03-10。",
+      "如结构化字段目录未直接覆盖该日期或该指标，则在同一授权范围内读取棉花数据库工作表对应日期的原单元格（含原值、日期和表头/单位），区分“无记录”与“有记录但无值”。"
+    ],
+    "source_discovery": {"mode":"discover","query":"棉花数据库中2024年3月10日的郑棉仓单（郑州商品交易所棉花仓单数量）指标字段与当日数值","source_domains":["structured"]},
+    "tool_names": ["structured_capabilities","structured_list_datasets","structured_list_series","structured_query_series","structured_inspect_source"],
+    "completion_criteria": ["给出2024年3月10日郑棉仓单的已核实数值（含原单位或注明原表未标单位），并标明来源为棉花数据库及对应工作表/字段。","若该日期确无数据，说明所查范围无该日数值，并给出该字段最近的有效日期、原值和出处，不编造数值。"],
+    "delivery_requirements": [{"kind":"text","criteria":"以文字给出2024年3月10日郑棉仓单数值及来源（棉花数据库），注明原单位或单位未标；如缺数则说明缺口及最近有效值日期与出处。","format":"prose"}],
+    "coverage_targets": [
+      {
+        "goal_index": 0,
+        "request_basis": "棉花数据库里2024年3月10日的郑棉仓单是多少？",
+        "criteria": "所问指标为郑棉仓单，观测日期为2024年3月10日，来源限定为棉花数据库；需给出该日数值或明确的缺数说明及同字段最近有效值。",
+        "source_scope": "用户点名的“棉花数据库”，先查该来源"
+      }
+    ],
+    "reasoning_depth": "direct"
+  },
+  "replay": [
+    {
+      "after": 3,
+      "stage": "progress",
+      "action": "keep",
+      "feedback": "保留进度。",
+      "kind": "constructed",
+      "source": "backend-qa4.log:95290 initial_schema_failure=keep_feedback_nonempty"
+    },
+    {"after":3,"stage":"progress","action":"keep","kind":"verdict_projection","source":"backend-qa4.log:95290 (logged verdict; replay envelope)"},
+    {
+      "after": 3,
+      "stage": "candidate",
+      "content": "**棉花数据库里查不到 2024年3月10日的郑棉仓单数值。** 原文件“郑棉仓单”工作表的仓单数量：一号棉花（B列）只覆盖到 2023-09-25，且 2023-09-22 之后的两行（9月22日、9月25日）都没有数值，因此 2024年3月10日不在该字段的覆盖范围内，没有记录。\n\n该字段最后一个有效值是 **2023年9月21日的 5160**（“郑棉仓单”表 B3340 单元格）；随后的 2023-09-22（B3341）、2023-09-25（B3342）均为空值，没有数值可查。原表该列没有明确标注单位，目录中单位状态也为待确认，因此上面按原值报告，不附单位。\n\n口径说明：这里取的是“仓单数量:一号棉花”（表头 B3，数据源代码 S0049502）这一列，即郑州商品交易所棉花仓单总量；同表另有分仓库和“仓单和有效预报:合计”等列，但覆盖期同样止于 2023年9月。",
+      "kind": "historical_excerpt",
+      "source": "final and replies[1] agree; omit the prior-turn evidence identifier"
+    },
+    {"after":3,"stage":"result","action":"keep","kind":"verdict_projection","source":"backend-qa4.log:95337 (logged verdict; replay envelope)"}
+  ]
+}
