@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -129,6 +131,7 @@ func qa4ReplayRegistry(steps ...types.AgentStep) *agenttools.ToolRegistry {
 }
 
 func TestQA4HistoricalReplay(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "false")
 	t.Setenv("COMMODITY_RESEARCH_TOKEN_FILE", "")
 	t.Setenv("STRUCTURED_DATA_URL", "")
 	for _, id := range []string{"r5-1-kb16", "r5-1-kb07", "r6-2-kb31", "r7-1-kb31", "r7-2-kb31", "r7-3-kb31", "r6-1-kb16", "r6-1-kb07"} {
@@ -205,20 +208,56 @@ func runQA4HistoricalReplay(t *testing.T, id, future string) {
 			switch reply.Stage {
 			case "candidate", "timeout":
 				candidates := model.counts[reply.Stage]
-				if future == "gap" && guards.evidenceRecoveryAttempts > 0 {
+				if (future == "gap" || future == "irrelevant" && i+1 == len(trace.Steps)) && guards.evidenceRecoveryAttempts > 0 {
 					// Replace the next recorded draft with the supported textual
 					// portion of the final response, leaving the same gap and tools.
-					model.replies = []qa4ReplayReply{{Stage: "candidate", Content: lastAnswer}, {Stage: "result", Action: "keep"}}
+					model.replies = []qa4ReplayReply{{Stage: "candidate", Content: lastAnswer}}
 					_, err := e.runReActIteration(ctx, state, &messages, e.buildToolsForLLM(), "session", "message", trace.Question, guards)
 					require.NoError(t, err)
 					require.Equal(t, candidateNeedSource, e.turnReview.Last.Disposition)
+					gap, exists := e.evidenceCompletionGap()
+					require.True(t, exists)
+					if future == "irrelevant" {
+						require.Equal(t, coverageExhausted, gap.State)
+						require.True(t, state.IsComplete)
+						require.NotEmpty(t, e.evidenceCompletion.record.Attempts, "unrelated directory attempts remain visible")
+						require.Equal(t, countTotalToolCalls(trace.Steps), countTotalToolCalls(state.RoundSteps))
+						require.Len(t, e.turnReview.ClosedStreams, 1)
+						return
+					}
 					require.False(t, state.IsComplete)
+					require.Equal(t, coverageOpen, gap.State)
+					require.Equal(t, "read", gap.NextRead)
+					require.Equal(t, 1, gap.BudgetRemaining)
+					require.Empty(t, e.evidenceCompletion.record.Attempts)
+					require.Equal(t, countTotalToolCalls(trace.Steps), countTotalToolCalls(state.RoundSteps))
+					// A second rewrite spends the remaining decision allowance,
+					// and remains an incomplete delivery.
+					model.replies = []qa4ReplayReply{{Stage: "candidate", Content: lastAnswer}}
+					state.CurrentRound++
+					_, err = e.runReActIteration(ctx, state, &messages, e.buildToolsForLLM(), "session", "message", trace.Question, guards)
+					require.NoError(t, err)
+					require.Equal(t, candidateNeedSource, e.turnReview.Last.Disposition)
+					exhausted, exists := e.evidenceCompletionGap()
+					require.True(t, exists)
+					require.Equal(t, gap.GapID, exhausted.GapID)
+					require.Equal(t, coverageExhausted, exhausted.State)
+					require.Empty(t, exhausted.NextRead)
+					require.Zero(t, exhausted.BudgetRemaining)
+					require.Equal(t, "recovery_budget_exhausted", exhausted.Reason)
+					require.True(t, state.IsComplete)
+					require.Len(t, e.turnReview.ClosedStreams, 1)
 					return
 				}
 				state.CurrentRound++
 				_, err := e.runReActIteration(ctx, state, &messages, e.buildToolsForLLM(), "session", "message", trace.Question, guards)
 				require.NoError(t, err)
 				require.Equal(t, candidates+1, model.counts[reply.Stage])
+				if future == "irrelevant" && len(model.replies) > 0 && model.replies[0].Stage == "delivery" {
+					require.Equal(t, candidateNeedSource, e.turnReview.Last.Disposition)
+					require.Equal(t, "evidence_completion_gap", e.turnReview.Last.ReasonCode)
+					model.replies = model.replies[1:] // The active local gap supersedes the historical second semantic review.
+				}
 			case "budget":
 				require.Equal(t, reply.Reason, e.standardAnswerBudgetReason(ctx, state, agentExecutionStart(ctx)))
 				finished, err := e.finishStandardAnswerBudget(ctx, state, trace.Question, "session", "message", &messages, guards)
@@ -239,6 +278,11 @@ func runQA4HistoricalReplay(t *testing.T, id, future string) {
 	require.True(t, e.turnReview.Committed)
 	require.True(t, state.IsComplete)
 	require.Len(t, e.turnReview.ClosedStreams, 1)
+	if future == "inventory" {
+		assertQA4OriginalFactHandoff(t, ctx, e, state)
+		return
+	}
+
 	if future == "retain" {
 		require.Contains(t, state.FinalAnswer, "2023-09-22")
 		require.Contains(t, state.FinalAnswer, "17110")
@@ -303,11 +347,121 @@ func TestQA4ReplayPendingCoverage(t *testing.T) {
 		require.Contains(t, string(encoded), `"source_mode":"named_first"`)
 	})
 	t.Run("stage_2_zero_read_gap", func(t *testing.T) {
-		t.Skip("stage 2 will keep the gap open after a recovery draft with zero reads")
+		t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
 		synctest.Test(t, func(t *testing.T) { runQA4HistoricalReplay(t, "r6-2-kb31", "gap") })
+	})
+	t.Run("stage_2_unrelated_directory_keeps_gap", func(t *testing.T) {
+		t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
+		synctest.Test(t, func(t *testing.T) { runQA4HistoricalReplay(t, "r7-1-kb31", "irrelevant") })
+	})
+	t.Run("stage_2_budget_keeps_observed_original_cells", func(t *testing.T) {
+		t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "false")
+		synctest.Test(t, func(t *testing.T) { runQA4HistoricalReplay(t, "r5-1-kb16", "inventory") })
 	})
 	t.Run("stage_3_budget_preserves_original_cell", func(t *testing.T) {
 		t.Skip("stage 3 will pin evidence across budget synthesis")
 		synctest.Test(t, func(t *testing.T) { runQA4HistoricalReplay(t, "r5-1-kb16", "retain") })
 	})
+}
+
+func assertQA4OriginalFactHandoff(t *testing.T, ctx context.Context, legacy *AgentEngine, replayed *types.AgentState) {
+	t.Helper()
+	cells := map[string]coverageEvidence{}
+	for _, batch := range legacy.taskCoverageEvidenceBatches(replayed) {
+		for _, fact := range batch.Evidence {
+			if fact.Kind == "cell" && fact.Operation == "inspect_source" && fact.Cell != "" {
+				cells[fact.Cell] = fact
+			}
+		}
+	}
+	dateCell, valueCell, neighbor := cells["A4705"], cells["B4705"], cells["C4705"]
+	require.Equal(t, "2023-09-22T00:00:00", fmt.Sprint(dateCell.Raw))
+	require.Equal(t, "17110", fmt.Sprint(valueCell.Raw))
+	require.Equal(t, valueCell.Raw, neighbor.Raw)
+	require.Equal(t, valueCell.EvidenceID, dateCell.EvidenceID)
+	require.NotEqual(t, valueCell.JSONPointer, neighbor.JSONPointer)
+
+	// Event #9 identifies the native column, date column and version. Event
+	// #18 reports that same source hash for the captured original cells. The
+	// frozen trace omits these fields, so restore this small projection with
+	// a consistent anonymized hash. The model declaration below is constructed.
+	const snapshot = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const query = "Use the register first to find the March values for the selected field."
+	const seriesID = "futures.close.CF.CZC"
+	const from, to = "2024-03-01", "2024-03-31"
+	for _, cell := range []string{"B4705", "C4705"} {
+		e := newTestEngine(t, &mockChat{})
+		e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
+		e.evidenceCompletion = evidenceCompletionTurn{initialized: true, enabled: true}
+		e.toolRegistry = legacy.toolRegistry
+		e.taskPlan = &taskEvidencePlan{CoverageTargets: []taskCoverageTarget{{RequestBasis: query, StructuredTaskGoal: &StructuredTaskGoal{
+			SourceMode: "named_first", Metric: "selected field", SourceTime: "observed_period",
+			Period: map[string]any{"from": from, "to": to, "grain": "day"}, OnVerifiedGap: []string{"last_valid_same_field"},
+		}}}}
+		e.reviewConversation = []chat.Message{{Role: "user", Content: query}}
+		e.reviewConversationReady = true
+		sourceContext := map[string]any{"knowledge_base_id": valueCell.KnowledgeBaseID}
+		catalog := types.ToolCall{ID: "fixture-catalog", Name: "structured_list_series", Args: map[string]any{"dataset_id": valueCell.SourceID},
+			Result: &types.ToolResult{Success: true, Data: map[string]any{
+				"_structured_execution": map[string]any{"canonical_operation": "list_series", "effect_class": "read", "scope_mode": "knowledge_base"},
+				"dataset_id":            valueCell.SourceID, "source_context": sourceContext, "truncated": false, "total": 1,
+				"series": []any{map[string]any{"series_id": seriesID, "sheet": valueCell.Sheet, "first_date": "2004-06-01",
+					"last_date": "2023-09-22", "last_valid_date": "2023-09-22", "header_cells": []any{"B1", "B4"},
+					"source_context": map[string]any{"source_column": "B", "source_sha256": snapshot, "formula_source": map[string]any{"date_cell": "A4484"}},
+				}},
+			}}}
+		restoreQA4ToolResult(t, ctx, e.toolRegistry, catalog)
+		var read types.ToolCall
+		for _, step := range replayed.RoundSteps {
+			for _, call := range step.ToolCalls {
+				if call.ID == valueCell.ToolCallID {
+					read = call
+					break
+				}
+			}
+		}
+		require.NotNil(t, read.Result)
+		resultCopy := *read.Result
+		resultCopy.Data = maps.Clone(read.Result.Data)
+		resultCopy.Data["sha256"] = snapshot
+		read.Result = &resultCopy
+		state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{catalog, read}}}}
+		e.refreshEvidenceCompletion(ctx, query, state, e.reviewConversation)
+		var fieldRef, dateRef, valueRef string
+		for ref, observed := range e.evidenceCompletion.refs {
+			if observed.SeriesID == seriesID && observed.Kind == "directory" {
+				fieldRef = ref
+			}
+			switch observed.Cell {
+			case dateCell.Cell:
+				dateRef = ref
+			case cell:
+				valueRef = ref
+			}
+		}
+		require.NotEmpty(t, fieldRef)
+		require.NotEmpty(t, dateRef)
+		require.NotEmpty(t, valueRef)
+		notice := e.evidenceCompletionNotice()
+		require.Contains(t, notice, dateRef)
+		require.Contains(t, notice, valueRef)
+		require.Contains(t, notice, `"address":"`+dateCell.Cell+`"`)
+		require.Contains(t, notice, `"address":"`+cell+`"`)
+		require.Contains(t, notice, `"observation_refs_omitted":0`)
+		declaration, err := json.Marshal(map[string]any{"goal_index": 0, "role": "primary", "selection_ref": fieldRef,
+			"date_ref": dateRef, "value_ref": valueRef, "period_from": from, "period_to": to, "grain": "day"})
+		require.NoError(t, err)
+		_, accepted := e.acceptCoverageDeclaration(ctx, query, e.reviewConversation, declaration)
+		require.Equal(t, cell == valueCell.Cell, accepted)
+		e.stopEvidenceCompletion(ctx, query, state, e.reviewConversation, "tool_rounds")
+		handoff := e.evidenceCompletionFinalNotice()
+		if accepted {
+			for _, exact := range []string{"last_valid_date", "last_valid_value", "2023-09-22", "17110", "A4705", "B4705", "棉花数据库.xlsx", `"ref":`} {
+				require.Contains(t, handoff, exact)
+			}
+		} else {
+			require.NotContains(t, handoff, "17110", "an equal value at a different source cell is not the selected original")
+			require.NotContains(t, handoff, "C4705")
+		}
+	}
 }

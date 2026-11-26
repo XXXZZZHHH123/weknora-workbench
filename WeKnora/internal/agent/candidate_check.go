@@ -18,6 +18,7 @@ const (
 	candidateAccepted        candidateDisposition = "accepted"
 	candidateRevise          candidateDisposition = "revise"
 	candidateNeedSource      candidateDisposition = "need_source"
+	candidateEvidencePartial candidateDisposition = "evidence_partial"
 	candidateNumericFailure  candidateDisposition = "numeric_failure"
 	candidateNumericWarning  candidateDisposition = "numeric_warning"
 	candidateProtocolFailure candidateDisposition = "protocol_failure"

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"strings"
+	"unicode/utf8"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -192,4 +193,142 @@ func discoveryImageNavigation(value any) map[string]any {
 		samples = append(samples, row)
 	}
 	return map[string]any{"samples": samples, "omitted_rows": rows.Len() - len(samples)}
+}
+
+func (e *AgentEngine) coverageDocumentBodies(call types.ToolCall, base coverageEvidence, data map[string]any, search bool) []coverageEvidence {
+	var evidence []coverageEvidence
+	key := "chunks"
+	if search {
+		key = "results"
+	}
+	coverageRows(data, key, func(row map[string]any, path string) {
+		item := base
+		item.Kind, item.JSONPointer = "navigation", "/data"+path
+		item.SourceID = sourceNavigationString(row, "knowledge_id")
+		item.KnowledgeBaseID = sourceNavigationString(row, "knowledge_base_id")
+		item.SourceTitle = sourceNavigationString(row, "knowledge_title")
+		if item.SourceID == data["knowledge_id"] {
+			if item.KnowledgeBaseID == "" {
+				item.KnowledgeBaseID = sourceNavigationString(data, "knowledge_base_id")
+			}
+			if item.SourceTitle == "" {
+				item.SourceTitle = sourceNavigationString(data, "knowledge_title")
+			}
+		}
+		item.ChunkID = sourceNavigationString(row, "chunk_id")
+		if item.SourceID == "" || item.KnowledgeBaseID == "" || !e.coverageScopeAllows(item.KnowledgeBaseID, item.SourceID) {
+			return
+		}
+		item.SnapshotHash = coverageDocumentSnapshot(row, data)
+		item.Page = coverageReadPage(row, data)
+		pageRead := !search && item.Page > 0
+		if !pageRead {
+			item.Page = coverageLocatorPage(row)
+		}
+		if next := coverageOffset(row["next_content_offset"]); next != nil {
+			item.NextOffset = next
+		}
+		item.SpanStart = coverageOffset(row["content_offset"])
+		item.Complete = citationViewIsFull(citationSourceView{row: row, data: data})
+		body := sourceNavigationString(row, "content")
+		bound := e.taskCoverageDocumentCurrent(item, call)
+		// Search may return an exact current chunk as well as a highlighted
+		// snippet. Navigation alone, or a rewritten/partial search view, is
+		// insufficient. An explicit page read can return an exact page view.
+		if pageRead {
+			item.Complete = row["content_rewritten"] != true && row["content_complete"] == true && item.SpanStart != nil && *item.SpanStart == 0
+		}
+		if bound && item.SnapshotHash != "" && body != "" && item.Complete {
+			item.Kind, item.Bound, item.JSONPointer, item.Raw = "body", true, "/data"+path+"/content", body
+			item.ContentHash, item.CitationID = candidateTextDigest(body), item.ChunkID
+			stop := *item.SpanStart + utf8.RuneCountInString(body)
+			item.SpanEnd = &stop
+		}
+		evidence = append(evidence, item)
+	})
+	return evidence
+}
+
+func (e *AgentEngine) taskCoverageDocumentCurrent(observation coverageEvidence, call types.ToolCall) bool {
+	if call.Result == nil || !call.Result.Success || !e.coverageScopeAllows(observation.KnowledgeBaseID, observation.SourceID) {
+		return false
+	}
+	data := call.Result.Data
+	if call.ExecutionName() == agenttools.ToolSearchKnowledge {
+		return agenttools.IsCurrentDocumentSearchChunk(e.toolRegistry, call.Result, observation.SourceID) &&
+			coverageContainsString(data["document_ids"], observation.SourceID)
+	}
+	return call.ExecutionName() == agenttools.ToolReadDocument &&
+		observation.SourceID == data["knowledge_id"] && agenttools.IsCurrentDocumentRead(e.toolRegistry, call.Result)
+}
+
+func coverageContainsString(value any, want string) bool {
+	if list, ok := value.([]string); ok {
+		for _, item := range list {
+			if item == want {
+				return true
+			}
+		}
+		return false
+	}
+	list, _ := value.([]any)
+	for _, item := range list {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+func coverageLocatorPage(row map[string]any) int {
+	// A full chunk may span several PDF pages. Only one actual parser page
+	// locator can safely qualify the whole body with a physical page.
+	var page int
+	for _, locator := range sourceNavigationRows(row["source_locators"]) {
+		first := citationInt(locator["page"])
+		if locator["type"] == types.SourceLocatorSlide {
+			first = citationInt(locator["slide"])
+		}
+		if first == 0 || locator["mapping"] != "exact" || locator["partial"] == true || page != 0 && page != first {
+			return 0
+		}
+		page = first
+	}
+	return page
+}
+
+func coverageReadPage(row, data map[string]any) int {
+	page := citationInt(row["page"])
+	if page == 0 {
+		return 0
+	}
+	if data["offset_space"] == "physical_page_chunks" && page == citationInt(data["page"]) {
+		return page
+	}
+	for _, result := range sourceNavigationRows(data["page_results"]) {
+		if page == citationInt(result["page"]) && result["success"] == true && result["offset_space"] == "physical_page_chunks" {
+			return page
+		}
+	}
+	return 0
+}
+
+func coverageDocumentSnapshot(row, data map[string]any) string {
+	identity, ok := citationViewIdentity(citationSourceView{row: row, data: data})
+	if !ok {
+		return ""
+	}
+	hash := ""
+	for _, locator := range sourceNavigationRows(row["source_locators"]) {
+		if current := sourceNavigationString(locator, "source_hash"); current != "" {
+			if hash != "" && hash != current {
+				return ""
+			}
+			hash = current
+		}
+	}
+	if hash != "" {
+		return reviewDigest([]any{hash, row["content_revision"]})
+	}
+	return identity
 }

@@ -550,3 +550,19 @@ func restrictDocumentTargets(ctx context.Context, targets types.SearchTargets, s
 	}
 	return result, nil
 }
+
+// DocumentCoverageCapabilities reports whether the registered native readers
+// have a configured authorized route. It grants no source or page access.
+func (r *ToolRegistry) DocumentCoverageCapabilities() (search, read bool) {
+	if tool, err := r.GetTool(ToolSearchKnowledge); err == nil {
+		if native, ok := tool.(*SearchKnowledgeTool); ok {
+			search = native.knowledgeService != nil && native.knowledgeBaseService != nil && len(native.searchTargets) > 0
+		}
+	}
+	if tool, err := r.GetTool(ToolReadDocument); err == nil {
+		if native, ok := tool.(*ReadDocumentTool); ok {
+			read = native.knowledgeService != nil && native.chunkService != nil && len(native.searchTargets) > 0
+		}
+	}
+	return search, read
+}

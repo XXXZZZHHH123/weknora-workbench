@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1285,7 +1286,7 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	var answerPrefix strings.Builder
 	var inlineReasoning strings.Builder
 	boundedDecision, _ := ctx.Value(standardAnswerDecisionKey{}).(bool)
-	deferAnswerReview := boundedDecision || e.answerReviewPending || e.structuredReviewMode || hasStructuredHistoryEvidence(messages) || e.config.SandboxConfigID != ""
+	deferAnswerReview := boundedDecision || e.answerReviewPending || e.structuredReviewMode || hasStructuredHistoryEvidence(messages) || e.config.SandboxConfigID != "" || e.evidenceCompletion.enabled && len(e.evidenceCompletion.refs) > 0
 	var documentViewStream documentTableStreamGuard
 
 	emitThought := func(content string, done bool) {
@@ -1387,6 +1388,10 @@ func (e *AgentEngine) streamThinkingToEventBus(
 				toolCallID, _ := chunk.Data["tool_call_id"].(string)
 				toolName, _ := chunk.Data["tool_name"].(string)
 				args, _ := chunk.Data["arguments"].(map[string]any)
+				if e.evidenceCompletion.enabled && args[coverageArgument] != nil {
+					args = maps.Clone(args)
+					delete(args, coverageArgument)
+				}
 
 				if toolCallID != "" && toolName != "" && !pendingToolCalls[toolCallID] {
 					pendingToolCalls[toolCallID] = true
@@ -1820,6 +1825,9 @@ func (e *AgentEngine) callLLMWithRetry(
 	}
 	if response.Content != "" {
 		preview := response.Content
+		if e.evidenceCompletion.enabled && e.hasEvidenceCompletionContext() {
+			preview, _ = splitCoverageAnswer(preview)
+		}
 		if len(preview) > 300 {
 			preview = preview[:300] + "..."
 		}

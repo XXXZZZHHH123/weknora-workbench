@@ -457,6 +457,9 @@ func (e *AgentEngine) resetDocumentTurnProgress(guards *loopGuards, query string
 	if state != nil {
 		guards.sourceProgressStartStep = len(state.RoundSteps)
 	}
+	if e.evidenceCompletion.initialized {
+		e.evidenceCompletion = evidenceCompletionTurn{initialized: true, enabled: e.evidenceCompletion.enabled, startStep: guards.sourceProgressStartStep}
+	}
 	if e.config != nil && e.config.WorkbenchDefault && e.toolRegistry != nil {
 		agenttools.PrepareDocumentScope(e.toolRegistry, documentScopeUserTexts(query, e.reviewConversation)...)
 	}

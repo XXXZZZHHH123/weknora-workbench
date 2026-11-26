@@ -59,7 +59,10 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 		approved := e.turnReview.Last.Candidate
 		submittedHash := candidateTextDigest(agenttools.TrimAnswerWhitespace(answer))
 		approvedHash := candidateTextDigest(agenttools.TrimAnswerWhitespace(approved))
-		if submittedHash == approvedHash && e.candidateApprovalCurrent(approved, state) {
+		coveredPartial := outcome == "partial" && e.turnReview.Last.Disposition == candidateEvidencePartial &&
+			e.evidenceCompletionEnabled() && e.turnReview.Last.SourceScopeHash == e.unverifiedSourceScopeDigest(ctx) &&
+			e.candidateDecisionCurrent(e.turnReview.Last, approved, state)
+		if submittedHash == approvedHash && (e.candidateApprovalCurrent(approved, state) || coveredPartial) {
 			// Store the checked text so citation bindings still have its exact bytes.
 			answer = approved
 		} else {

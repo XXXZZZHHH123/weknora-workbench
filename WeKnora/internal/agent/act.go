@@ -351,6 +351,8 @@ func (e *AgentEngine) executeToolCallsParallel(
 
 	_ = g.Wait()
 
+	// Complete the step in model order before source progress can interpret
+	// this batch. The observe phase receives the same shape after serial reads.
 	e.appendToolOutcomes(ctx, step, results, iteration, sessionID)
 	return nil
 }
@@ -437,9 +439,7 @@ func (e *AgentEngine) executeSingleToolCall(
 		return s
 	}
 	e.recordCall(i, toolCall)
-	e.retainTaskSourceProtocol(toolCall)
-	step.ToolCalls = append(step.ToolCalls, toolCall)
-	e.emitToolOutcome(ctx, toolCall, iteration, sessionID)
+	e.appendToolOutcomes(ctx, step, []types.ToolCall{toolCall}, iteration, sessionID)
 	return nil
 }
 
@@ -460,6 +460,12 @@ func (e *AgentEngine) runToolCallAnswered(
 ) types.ToolCall {
 	ctx = e.memoryContextForTools(ctx, sessionID)
 	tc.ID = agenttools.NormalizeToolCallID(tc.ID, tc.Function.Name, i)
+	if reason := e.evidenceCompletion.blocked[tc.ID]; reason != "" {
+		var args map[string]any
+		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+		return types.ToolCall{ID: tc.ID, Name: tc.Function.Name, Args: args, ProviderMetadata: tc.ProviderMetadata,
+			Result: &types.ToolResult{PreflightRejected: true, Error: reason}}
+	}
 	total := "?" // unknown in isolation; callers log the batch size
 	toolTag := fmt.Sprintf("[Agent][Round-%d][Tool %s (%d/%s)]",
 		round, tc.Function.Name, i+1, total)

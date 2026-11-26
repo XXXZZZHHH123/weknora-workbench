@@ -18,6 +18,7 @@ const maxEvidenceRecoveryAttempts = 2
 // never interprets feedback words or turns the evaluator's advice into facts.
 func (e *AgentEngine) resumeEvidenceCollection(ctx context.Context, state *types.AgentState, messages *[]chat.Message, guards *loopGuards, sessionID string) {
 	guards.evidenceRecoveryAttempts++
+	e.beginEvidenceCompletionRecovery(ctx, state)
 	restored, restoredOriginal := restoreStructuredReviewConversation(*messages, guards)
 	*messages = restored
 	*messages = append(*messages, chat.Message{Role: "system", Content: evidenceRecoveryInstructions + e.answerRepairAdvice()})

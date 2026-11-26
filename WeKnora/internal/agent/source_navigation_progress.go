@@ -214,3 +214,45 @@ func (e *AgentEngine) appendSourceNavigationProgress(messages []chat.Message, st
 	}
 	return append(messages, message)
 }
+
+func (e *AgentEngine) coverageDocumentEvidence(call types.ToolCall, base coverageEvidence, data map[string]any) []coverageEvidence {
+	var evidence []coverageEvidence
+	directory := base.Operation == agenttools.ToolListDocuments
+	search := base.Operation == agenttools.ToolSearchKnowledge
+	if directory || search {
+		complete := directory && directoryCoverage(data, len(sourceNavigationRows(data["documents"]))) == "unfiltered_directory_complete"
+		coverageRows(data, "documents", func(row map[string]any, path string) {
+			item := base
+			item.Kind, item.SourceID = "directory", sourceNavigationString(row, "knowledge_id")
+			item.KnowledgeBaseID = sourceNavigationString(row, "knowledge_base_id")
+			if item.KnowledgeBaseID == "" {
+				item.KnowledgeBaseID = sourceNavigationString(data, "knowledge_base_id")
+			}
+			item.SourceTitle, item.JSONPointer, item.Raw = sourceNavigationString(row, "title", "file_name"), "/data"+path, row
+			item.Bound = item.SourceID != "" && item.KnowledgeBaseID != "" && e.coverageScopeAllows(item.KnowledgeBaseID, item.SourceID)
+			item.Complete = complete
+			if item.Bound {
+				evidence = append(evidence, item)
+				if search {
+					coverageRows(row, "navigation_matches", func(match map[string]any, matchPath string) {
+						if match["navigation_only"] != true {
+							return
+						}
+						navigation := item
+						navigation.Kind, navigation.Complete = "navigation", false
+						navigation.Page = citationInt(match["page_hint"])
+						if navigation.Page == 0 {
+							navigation.Page = citationInt(match["slide_hint"])
+						}
+						navigation.JSONPointer, navigation.Raw = item.JSONPointer+matchPath, match
+						evidence = append(evidence, navigation)
+					})
+				}
+			}
+		})
+		if directory {
+			return evidence
+		}
+	}
+	return append(evidence, e.coverageDocumentBodies(call, base, data, search)...)
+}

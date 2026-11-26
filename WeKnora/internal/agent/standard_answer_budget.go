@@ -244,6 +244,7 @@ func (e *AgentEngine) finishStandardAnswerBudget(
 		_ = e.eventBus.Emit(ctx, event.Event{ID: generateEventID("preliminary"), Type: event.EventAgentProgress, SessionID: sessionID,
 			Data: event.AgentProgressData{Content: standardAnswerBudgetProgress(ctx), Iteration: state.CurrentRound}})
 	}
+	e.stopEvidenceCompletion(ctx, query, state, *messages, reason)
 	err := e.streamFinalAnswerToEventBus(ctx, query, state, sessionID, restoreForFinalAnswer(*messages, guards), finalAnswerOptions{preliminary: true, assistantMessageID: messageID})
 	return true, err
 }

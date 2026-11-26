@@ -176,9 +176,25 @@ func (e *AgentEngine) checkDiscoveryOnlyDelivery(ctx context.Context, query stri
 	return e.checkDiscoveryDeliveryPhase(ctx, query, decision, state, conversation, "delivery", nil)
 }
 
-func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query string, decision candidateDecision, state *types.AgentState, conversation []chat.Message, phase string, progress map[string]any) candidateDecision {
+func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query string, decision candidateDecision, state *types.AgentState, conversation []chat.Message, phase string, progress map[string]any) (result candidateDecision) {
 	if !e.standardAnswerReview() || !e.config.WorkbenchDefault || e.chatModel == nil || e.toolRegistry == nil {
 		return decision
+	}
+	e.refreshEvidenceCompletion(ctx, query, state, conversation)
+	if !e.evidenceCompletionEnabled() && len(e.evidenceCompletion.result) > 0 {
+		defer func() {
+			gap, exists := e.evidenceCompletionGap()
+			if !exists {
+				gap = e.evidenceCompletion.result[0]
+			}
+			common.PipelineInfo(ctx, "Agent", "evidence_completion_shadow", map[string]any{
+				"phase": phase, "legacy_disposition": result.Disposition, "legacy_reason": result.ReasonCode,
+				"local_gap_id": gap.GapID, "local_state": gap.State, "local_reason": gap.Reason,
+			})
+		}()
+	}
+	if local, handled := e.checkEvidenceCompletion(ctx, decision, phase); handled {
+		return local
 	}
 	previous := e.turnReview.DiscoveryReview
 	sourceObservations := e.discoverySourceObservations(state)

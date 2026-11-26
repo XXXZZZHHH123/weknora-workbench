@@ -22,6 +22,9 @@ const (
 // reopens the ordinary executor or changes source bindings, iteration limits,
 // candidate repair allowances, or the shared final deadline.
 func (e *AgentEngine) finalCoverageRead(ctx context.Context, query string, state *types.AgentState, sessionID, assistantMessageID string, messages []chat.Message, decision candidateDecision) (*types.AgentStep, error) {
+	if e.evidenceCompletionEnabled() && e.evidenceCompletionEligible() && len(e.evidenceCompletion.result) > 0 {
+		return nil, nil // Active coverage owns the ordinary executor's shared recovery budget.
+	}
 	deadline, bounded := ctx.Value(standardAnswerFinalDeadlineKey{}).(time.Time)
 	if outer, ok := ctx.Deadline(); ok && outer.Before(deadline) {
 		deadline = outer

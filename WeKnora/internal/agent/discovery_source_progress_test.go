@@ -33,35 +33,49 @@ func sourceProgressFixture(t *testing.T, action string) (*AgentEngine, *types.Ag
 }
 
 func TestSourceProgressReviewRecoversBeforeCandidateWithoutResettingIterations(t *testing.T) {
-	e, state, model, messages, guards := sourceProgressFixture(t, "recover")
-	before := reviewDigest(state.RoundSteps)
-	query := "Explain the original source pattern qualitatively."
-	e.config.KnowledgeIDs = []string{"only-file"}
-	e.selectedDocs = []*SelectedDocumentInfo{{KnowledgeID: "only-file", Title: "Only permitted source"}}
-	e.reviewSourceProgress(t.Context(), query, state, &messages, guards, "session")
-	require.Len(t, model.calls, 1)
-	require.Equal(t, "progress", e.turnReview.DiscoveryReview.Phase)
-	require.Equal(t, "recover", e.turnReview.DiscoveryReview.Action)
-	require.Empty(t, e.turnReview.DiscoveryReview.CandidateHash)
-	require.Zero(t, e.turnReview.Checks, "a plan review is not a candidate check")
-	require.Equal(t, 1, e.turnReview.Repairs)
-	require.Equal(t, 1, guards.evidenceRecoveryAttempts)
-	require.Equal(t, 1, state.CurrentRound)
-	require.Equal(t, before, reviewDigest(state.RoundSteps))
-	require.Nil(t, e.taskProjection, "existing recovery exposes registered capabilities, never new permissions")
-	require.Contains(t, messages[len(messages)-1].Content, "original qualitative goal")
-	require.Contains(t, model.calls[0][1].Content, query)
-	require.Contains(t, model.calls[0][1].Content, "Only permitted source")
-	require.Contains(t, model.calls[0][1].Content, "search_knowledge")
-	require.NotContains(t, model.calls[0][1].Content, "forbidden_unregistered_tool")
-	require.Contains(t, model.calls[0][0].Content, "there is no candidate answer yet")
-	require.Equal(t, 512, model.opts[0].MaxCompletionTokens)
-	require.Empty(t, model.opts[0].Tools)
-	e.reviewSourceProgress(t.Context(), query, state, &messages, guards, "session")
-	require.Len(t, model.calls, 1)
-	decision := candidateDecision{Disposition: candidateAccepted, Candidate: "Supported final explanation", CandidateHash: "real-final"}
-	require.Equal(t, decision, e.checkDiscoveryOnlyDelivery(t.Context(), query, decision, state, messages), "spent progress receipt does not masquerade as a final draft verdict")
-	require.Len(t, model.calls, 1)
+	for _, flag := range []string{"true", "false"} {
+		t.Run(flag, func(t *testing.T) {
+			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", flag)
+			e, state, model, messages, guards := sourceProgressFixture(t, "recover")
+			before := reviewDigest(state.RoundSteps)
+			query := "Explain the original source pattern qualitatively."
+			e.config.KnowledgeIDs = []string{"only-file"}
+			e.selectedDocs = []*SelectedDocumentInfo{{KnowledgeID: "only-file", Title: "Only permitted source"}}
+			e.reviewSourceProgress(t.Context(), query, state, &messages, guards, "session")
+			require.Len(t, model.calls, 1)
+			require.Equal(t, "progress", e.turnReview.DiscoveryReview.Phase)
+			require.Equal(t, "recover", e.turnReview.DiscoveryReview.Action)
+			require.Empty(t, e.turnReview.DiscoveryReview.CandidateHash)
+			require.Zero(t, e.turnReview.Checks, "a plan review is not a candidate check")
+			require.Equal(t, 1, e.turnReview.Repairs)
+			require.Equal(t, 1, guards.evidenceRecoveryAttempts)
+			require.Equal(t, 1, state.CurrentRound)
+			require.Equal(t, before, reviewDigest(state.RoundSteps))
+			require.Nil(t, e.taskProjection, "existing recovery exposes registered capabilities, never new permissions")
+			require.Contains(t, messages[len(messages)-1].Content, "original qualitative goal")
+			require.Contains(t, model.calls[0][1].Content, query)
+			require.Contains(t, model.calls[0][1].Content, "Only permitted source")
+			require.Contains(t, model.calls[0][1].Content, "search_knowledge")
+			require.NotContains(t, model.calls[0][1].Content, "forbidden_unregistered_tool")
+			require.Contains(t, model.calls[0][0].Content, "there is no candidate answer yet")
+			require.Equal(t, 512, model.opts[0].MaxCompletionTokens)
+			require.Empty(t, model.opts[0].Tools)
+			e.reviewSourceProgress(t.Context(), query, state, &messages, guards, "session")
+			require.Len(t, model.calls, 1)
+			decision := candidateDecision{Disposition: candidateAccepted, Candidate: "Supported final explanation", CandidateHash: "real-final"}
+			result := e.checkDiscoveryOnlyDelivery(t.Context(), query, decision, state, messages)
+			if flag == "true" {
+				require.Equal(t, candidateNeedSource, result.Disposition)
+				gap, exists := e.evidenceCompletionGap()
+				require.True(t, exists)
+				require.Equal(t, coverageOpen, gap.State)
+			} else {
+				require.Equal(t, decision, result, "the old progress verdict remains advisory")
+			}
+			require.Len(t, model.calls, 1)
+
+		})
+	}
 }
 
 func TestSourceProgressReviewKeepsCorrectStructuredInvestigationAndExactTask(t *testing.T) {

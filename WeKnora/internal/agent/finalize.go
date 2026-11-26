@@ -85,6 +85,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	if _, bounded := ctx.Value(standardAnswerFinalDeadlineKey{}).(time.Time); bounded && e.standardPreliminaryProse() {
 		runtimeNotice += "\nGive a concise answer led by the supported findings. Briefly identify any specific part of the request left unanswered."
 	}
+	runtimeNotice += e.evidenceCompletionFinalNotice()
 	if e.finalAnswerNeedsCompaction(messages, runtimeNotice) {
 		messages, _ = e.compactFinalAnswerContext(ctx, messages, state.CurrentRound+1,
 			runtimeNotice, compaction.ReasonThreshold)
@@ -197,7 +198,8 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 				break
 			}
 			unsupported = decision.Unsupported
-			invalid = decision.Disposition != candidateAccepted && decision.Disposition != candidateNumericWarning
+			invalid = decision.Disposition != candidateAccepted && decision.Disposition != candidateNumericWarning &&
+				decision.Disposition != candidateEvidencePartial
 			if decision.Disposition == candidateNumericWarning {
 				if delivery, ok := e.numericWarningDelivery(fullAnswer, state); ok {
 					fullAnswer = delivery
@@ -211,7 +213,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		}
 		if !invalid {
 			outcome = "answer"
-			if preliminary {
+			if preliminary || checked.Disposition == candidateEvidencePartial {
 				outcome = "partial"
 			}
 			break

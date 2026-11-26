@@ -75,7 +75,17 @@ func (e *AgentEngine) sourceExecutionProgress(state *types.AgentState) (int, map
 // a final draft that might never arrive. This spends the SAME once-turn review
 // receipt as candidate delivery. Keep/error never grants candidate approval.
 func (e *AgentEngine) reviewSourceProgress(ctx context.Context, query string, state *types.AgentState, messages *[]chat.Message, guards *loopGuards, sessionID string) {
-	if ctx.Err() != nil || state == nil || messages == nil || guards == nil || !e.standardTextDelivery(state) || e.turnReview.DiscoveryReview != nil || e.turnReview.Repairs >= maxTurnCandidateRepairs || guards.evidenceRecoveryAttempts >= maxEvidenceRecoveryAttempts {
+	if ctx.Err() != nil || state == nil || messages == nil || guards == nil {
+		return
+	}
+	e.refreshEvidenceCompletion(ctx, query, state, *messages)
+	e.observeEvidenceCompletionRecovery(ctx, state)
+	e.refreshEvidenceCompletion(ctx, query, state, *messages)
+	if e.evidenceCompletionEnabled() && e.evidenceCompletionEligible() && len(e.evidenceCompletion.result) > 0 {
+		e.advanceEvidenceCompletion(ctx, query, state, messages, guards, sessionID)
+		return
+	}
+	if !e.standardTextDelivery(state) || e.turnReview.DiscoveryReview != nil || e.turnReview.Repairs >= maxTurnCandidateRepairs || guards.evidenceRecoveryAttempts >= maxEvidenceRecoveryAttempts {
 		return
 	}
 	// Planning is advisory and may fail protocol validation. Actual source

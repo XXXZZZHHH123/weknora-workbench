@@ -123,6 +123,7 @@ type AgentEngine struct {
 	// Hold speculative parent prose until delegated work has been reviewed.
 	holdCollaborationAnswer bool
 	artifactFileSource      agenttools.SandboxFileSource
+	evidenceCompletion      evidenceCompletionTurn
 	chartWriter             chart.Writer
 }
 
@@ -425,6 +426,7 @@ func (e *AgentEngine) Execute(
 		}
 	}
 	e.turnReview = turnReviewState{}
+	e.evidenceCompletion = newEvidenceCompletionTurn(0)
 	e.memoryAcceptedSteers = nil
 	e.structuredReviewMode = false
 	e.reviewedAnswerDeliveryRepairUsed = false
@@ -552,7 +554,7 @@ func (e *AgentEngine) Execute(
 	if !strings.HasPrefix(query, fieldConfirmationPrefix) {
 		messages = e.prepareWorkbenchCapabilities(prepCtx, state, messages, query, sessionID, messageID)
 		messages = e.planWorkbenchTask(prepCtx, state, query, messages, sessionID)
-		messages = e.discoverWorkbenchSources(prepCtx, state, messages, query, sessionID, messageID, e.plannedSourceDiscoverySelection())
+		messages = e.discoverWorkbenchSources(prepCtx, state, messages, query, sessionID, messageID, e.coveragePrefetchSelection(e.plannedSourceDiscoverySelection()))
 	}
 	if err := e.executionLeaseError(ctx); err != nil {
 		finishAgentSpan(agentSpan, state, err)
@@ -996,6 +998,7 @@ loop:
 	// A suspended run has not finished either; it resumes once the user
 	// answers, so no answer is synthesized for it.
 	if !state.IsComplete && ctx.Err() == nil && state.Suspended == nil {
+		e.stopEvidenceCompletion(ctx, query, state, messages, "iteration_budget_exhausted")
 		var charts *boundedChartAnswer
 		if b := e.collaboration; b != nil && b.Child == nil {
 			if err := e.executionLeaseError(ctx); err != nil {
@@ -1214,6 +1217,13 @@ func (e *AgentEngine) runReActIteration(
 	e.answerReviewPending = hasStructuredEvidence(state.RoundSteps) || hasCurrentDocumentEvidence(state.RoundSteps) || e.needsSourceConsistencyCheck(state) || hasStructuredHistoryEvidence(*messagesPtr)
 	runtimeNotice := guards.pendingRuntimeNotice
 	guards.pendingRuntimeNotice = ""
+	if e.evidenceCompletionEnabled() && e.evidenceCompletionEligible() {
+		e.refreshEvidenceCompletion(ctx, query, state, *messagesPtr)
+		if coverageNotice := e.evidenceCompletionNotice(); coverageNotice != "" {
+			runtimeNotice = strings.TrimSpace(runtimeNotice + "\n" + coverageNotice)
+		}
+		tools = e.evidenceCompletionTools(tools)
+	}
 	resp, err := e.callLLMWithRetry(ctx, messagesPtr, tools, state, query, state.CurrentRound, sessionID, runtimeNotice)
 	if err != nil {
 		if errors.Is(err, errStandardAnswerModelBudget) {
@@ -1293,6 +1303,9 @@ func (e *AgentEngine) runReActIteration(
 			response.Usage.PromptCacheHitRate(), response.Usage.CacheStatus)
 	}
 
+	response.Content = e.acceptCoverageAnswer(ctx, query, state, *messagesPtr, response.Content,
+		ctx.Err() == nil && len(response.ToolCalls) == 0 && isNaturalStopFinishReason(response.FinishReason))
+
 	// Every round in a row that the provider cut off at the completion cap.
 	// A truncated *answer* already ends the turn in analyzeResponse, so a run
 	// of these means the truncation keeps landing inside tool-call arguments:
@@ -1336,6 +1349,10 @@ func (e *AgentEngine) runReActIteration(
 		}
 	} else {
 		guards.consecutiveLength = 0
+	}
+
+	if ctx.Err() == nil && !isLengthFinishReason(response.FinishReason) {
+		e.processEvidenceCompletionCalls(ctx, query, state, *messagesPtr, response.ToolCalls)
 	}
 
 	// Detect stuck loops: a round with no tool calls that repeats the previous
@@ -1493,7 +1510,8 @@ func (e *AgentEngine) runReActIteration(
 			e.finishStalledTurnWithGuards(ctx, state, sessionID, &fallback, false, query, *messagesPtr, guards, true)
 			return iterOutcomeBreak, nil
 		} else {
-			needsAnswerRepair = decision.Disposition != candidateAccepted && decision.Disposition != candidateNumericWarning
+			needsAnswerRepair = decision.Disposition != candidateAccepted && decision.Disposition != candidateNumericWarning &&
+				decision.Disposition != candidateEvidencePartial
 			if decision.Disposition == candidateNumericWarning {
 				if delivery, ok := e.numericWarningDelivery(response.Content, state); ok {
 					response.Content = delivery
@@ -1508,10 +1526,33 @@ func (e *AgentEngine) runReActIteration(
 
 	if needsAnswerRepair {
 		state.RoundSteps = append(state.RoundSteps, step)
-		if e.answerReviewAction == reviewCollectEvidence && guards.evidenceRecoveryAttempts < maxEvidenceRecoveryAttempts {
-			e.resumeEvidenceCollection(ctx, state, messagesPtr, guards, sessionID)
-			return iterOutcomeNext, nil
+		if e.answerReviewAction == reviewCollectEvidence {
+			if guards.evidenceRecoveryAttempts < maxEvidenceRecoveryAttempts && e.canResumeEvidenceCompletion(ctx, query, state, *messagesPtr) {
+				e.resumeEvidenceCollection(ctx, state, messagesPtr, guards, sessionID)
+				return iterOutcomeNext, nil
+			}
+			if e.evidenceCompletionEnabled() && e.turnReview.Last.ReasonCode == "evidence_completion_gap" {
+				if e.evidenceCompletion.stopReason == "" {
+					e.stopEvidenceCompletion(ctx, query, state, *messagesPtr, "recovery_budget_exhausted")
+				}
+				e.turnReview.Last.ReasonCode = "evidence_completion_exhausted"
+				if len(e.coverageHandoffFacts()) > 0 {
+					// The original decision already passed the standard numeric and
+					// citation gates. Keep its checked text on the partial outlet.
+					state.RoundSteps = state.RoundSteps[:len(state.RoundSteps)-1]
+					e.turnReview.Last.Disposition = candidateEvidencePartial
+					needsAnswerRepair = false
+				}
+			}
 		}
+		if needsAnswerRepair && e.evidenceCompletionEnabled() && decisionNeedsExhaustedCoverage(e.turnReview.Last) {
+			fallback := *response
+			fallback.Content, fallback.AnswerStreamed, fallback.AnswerEventID = incompleteAnswerFallback, false, ""
+			e.finishStalledTurnWithGuards(ctx, state, sessionID, &fallback, false, query, *messagesPtr, guards, true)
+			return iterOutcomeBreak, nil
+		}
+	}
+	if needsAnswerRepair {
 		guards.incompleteAnswerRetries++
 		if guards.incompleteAnswerRetries <= 2 && e.spendCandidateRepair() {
 			if guards.structuredAnswerReviewed || needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, response.Content) || hasCurrentDocumentEvidence(state.RoundSteps) {
@@ -1697,7 +1738,7 @@ func (e *AgentEngine) runReActIteration(
 		outcome := "answer"
 		if runtimeAnswerFailure {
 			outcome = "failed"
-		} else if verdict.truncated {
+		} else if verdict.truncated || e.turnReview.Last.Disposition == candidateEvidencePartial {
 			outcome = "partial"
 		}
 		e.commitTerminalResult(ctx, state, sessionID, verdict.finalAnswer, verdict.answerID, outcome, verdict.truncated)
@@ -1795,6 +1836,7 @@ func (e *AgentEngine) runReActIteration(
 			if e.collaborationOwnsFailure(ctx) {
 				return iterOutcomeBreak, fmt.Errorf("source collection stopped after repeated rounds without new evidence")
 			}
+			e.stopEvidenceCompletion(ctx, query, state, *messagesPtr, "source_progress_stalled")
 			if observation.ResultWorkflow {
 				reason := "Recent tool rounds returned only failures or previously observed content; repeated tool execution has stopped."
 				if observation.RenderLimit {
