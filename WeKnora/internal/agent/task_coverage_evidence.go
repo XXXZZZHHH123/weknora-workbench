@@ -479,6 +479,7 @@ func coverageInspectedBoundary(field, last coverageEvidence, from, to, grain str
 	item := field
 	item.Kind, item.Status, item.Complete, item.NextOffset = "gap", "outside_published_valid_observations", true, nil
 	item.SourceTitle = firstNonEmptyAgent(field.SourceTitle, last.SourceTitle)
+	item.Subject = firstNonEmptyAgent(field.Subject, last.Subject)
 	if observed, err := time.Parse(time.DateOnly, field.LastObservedDate); err == nil && start.After(observed) {
 		item.Status = "outside_published_observations"
 	}
@@ -521,7 +522,7 @@ func coverageSeriesEvidence(base coverageEvidence, args, data map[string]any, co
 	if base.Grain == "" && base.PeriodFrom != "" && base.PeriodFrom == base.PeriodTo {
 		// The call is complete over one calendar date. This describes the
 		// lookup, not the frequency or business meaning of the series.
-		base.Grain = "day"
+		base.Grain, base.GrainFromLookup = "day", true
 	}
 	var result []coverageEvidence
 	valueFilters, filtersKnown := filters["value_filters"].([]any)
@@ -893,6 +894,18 @@ func nativeCoverageGapFacts(target taskCoverageTarget, record coverageRecord) []
 			start, end, frequency = date, date, "day"
 		}
 		context := coverageObject(coverageObject(field.Raw)["source_context"])
+		if bound && context["source_sha256"] == field.SnapshotHash {
+			for _, last := range record.Evidence {
+				if last.Operation != "query_series" || last.DatasetID == "" || last.DatasetID != field.DatasetID ||
+					!sameCoverageLastValid(record, field, last) {
+					continue
+				}
+				if gap, ok := coverageInspectedBoundary(field, last, start, end, frequency); ok {
+					gap.Subject = firstNonEmptyAgent(gap.Subject, coverageAnalysisSubject(coverageObject(coverageObject(field.Raw)["dimensions"])))
+					result = append(result, gap)
+				}
+			}
+		}
 		dateColumn, _ := coverageCellPosition(sourceNavigationString(coverageObject(context["formula_source"]), "date_cell"))
 		if dateColumn == "" {
 			continue

@@ -137,7 +137,7 @@ func (e *AgentEngine) publishNumericUnverifiedReferences(ctx context.Context, st
 	if !ok || state.FinalAnswer != binding.FinalText || delivery != binding.FinalText || count != binding.Marked ||
 		unverifiedReferenceDigest(refs, legacy) != binding.ReferencesHash {
 		// Completion/persistence must not publish a stale candidate or reference.
-		state.FinalAnswer, refs, legacy = e.terminalCoverageFailure(ctx, state, numericFailureFallback), nil, nil
+		state.FinalAnswer, refs, legacy = e.terminalCoverageFailure(ctx, state), nil, nil
 	}
 	state.EvidenceRefs, state.KnowledgeRefs = refs, legacy
 	return true

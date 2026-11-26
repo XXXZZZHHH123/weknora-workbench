@@ -1356,8 +1356,9 @@ func (e *AgentEngine) streamThinkingToEventBus(
 			return
 		}
 		answerPrefix.WriteString(content)
-		if utf8.RuneCountInString(strings.TrimSpace(answerPrefix.String())) >= 8 && !suspectAnswerFragment(answerPrefix.String(), "") {
-			emitAnswerText(answerPrefix.String())
+		prefix := answerPrefix.String()
+		if utf8.RuneCountInString(strings.TrimSpace(prefix)) >= 8 && !suspectAnswerFragment(prefix, "") && !terminalFallbackPrefix(prefix) {
+			emitAnswerText(prefix)
 			answerPrefix.Reset()
 		}
 	}
@@ -1589,7 +1590,8 @@ func (e *AgentEngine) streamThinkingToEventBus(
 		finishReason = "stop"
 	}
 	abnormalShort := !isNaturalStopFinishReason(finishReason) && utf8.RuneCountInString(strings.TrimSpace(fullContent)) <= 4
-	if !deferAnswerReview && answerPrefix.Len() > 0 && (len(llmResult.ToolCalls) > 0 || (!abnormalShort && !suspectAnswerFragment(fullContent, llmResult.ReasoningContent))) {
+	if !deferAnswerReview && answerPrefix.Len() > 0 && !terminalCandidateFallback(answerPrefix.String()) &&
+		(len(llmResult.ToolCalls) > 0 || !abnormalShort && !suspectAnswerFragment(fullContent, llmResult.ReasoningContent)) {
 		emitAnswerText(answerPrefix.String())
 	}
 

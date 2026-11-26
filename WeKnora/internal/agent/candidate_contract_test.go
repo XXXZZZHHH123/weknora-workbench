@@ -102,7 +102,7 @@ func TestFinalSynthesisDoesNotRefreshSpentCandidateBudget(t *testing.T) {
 	e.turnReview.Repairs = maxTurnCandidateRepairs
 	state := &types.AgentState{}
 	require.NoError(t, e.streamFinalAnswerToEventBus(t.Context(), "Complete the task.", state, "s", nil))
-	require.Equal(t, incompleteAnswerFallback, state.FinalAnswer)
+	requireTerminalEvidenceGap(t, state.FinalAnswer)
 	require.Len(t, model.calls, 2, "synthesis may inspect its first candidate but gets no new repairs")
 	require.Equal(t, maxTurnCandidateRepairs, e.turnReview.Repairs)
 }

@@ -395,7 +395,7 @@ func TestFinalSynthesisRejectsTruncationAfterBoundedRepair(t *testing.T) {
 	require.NoError(t, engine.streamFinalAnswerToEventBus(t.Context(), "Summarize", state, "session", emptyMessages()))
 	require.Len(t, model.finals, 3, "output truncation has a bounded repair budget, independent of overflow recovery")
 	require.Zero(t, model.summaries)
-	require.Equal(t, incompleteAnswerFallback, state.FinalAnswer, "partial synthesis is not a verified terminal answer")
+	requireTerminalEvidenceGap(t, state.FinalAnswer)
 }
 
 func TestFinalSynthesisRejectsUnshrinkableInput(t *testing.T) {
@@ -609,7 +609,7 @@ func TestMaxIterationsPropagatesSynthesisFailureAndStillCompletes(t *testing.T) 
 	require.ErrorIs(t, err, want)
 	require.Len(t, model.finals, 1)
 	require.True(t, state.IsComplete)
-	require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer)
+	requireTerminalEvidenceGap(t, state.FinalAnswer)
 	require.Len(t, completions, 1)
 	require.Equal(t, state.FinalAnswer, completions[0].FinalAnswer)
 	require.Equal(t, state.RoundSteps, completions[0].AgentSteps)

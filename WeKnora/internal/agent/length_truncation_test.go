@@ -193,8 +193,7 @@ func TestExecuteLoop_ConsecutiveTruncatedToolCallsStopAtTheGuard(t *testing.T) {
 	assert.Equal(t, maxConsecutiveLengthRounds, mock.callCount,
 		"the guard must fire on the Nth consecutive capped round, not at MaxIterations")
 	assert.True(t, state.IsComplete)
-	assert.Equal(t, truncatedAnswerFallback, state.FinalAnswer,
-		"no round produced answer text, so the fallback explains why")
+	requireTerminalEvidenceGap(t, state.FinalAnswer)
 }
 
 // A finish reason the loop does not recognise, with no content and no tool
@@ -219,7 +218,7 @@ func TestExecuteLoop_RepeatedEmptyRoundsStopAtTheStuckGuard(t *testing.T) {
 	assert.Equal(t, maxRepeatedResponseRounds+1, mock.callCount,
 		"identical empty rounds must count as repeats")
 	assert.True(t, state.IsComplete)
-	assert.Equal(t, stalledAnswerFallback, state.FinalAnswer)
+	requireTerminalEvidenceGap(t, state.FinalAnswer)
 }
 
 // A guard can stop a turn on a round whose text never went out as a stream —
@@ -240,16 +239,14 @@ func TestFinishStalledTurn_EmitsAnswerThatNeverStreamed(t *testing.T) {
 			wantAnswer: "half an answer",
 		},
 		{
-			name:       "no text at all falls back to the truncation message",
-			response:   &types.ChatResponse{Content: ""},
-			truncated:  true,
-			wantAnswer: truncatedAnswerFallback,
+			name:      "empty capped output reports absent verified evidence",
+			response:  &types.ChatResponse{Content: ""},
+			truncated: true,
 		},
 		{
-			name:       "a non-truncation stall falls back to the generic message",
-			response:   &types.ChatResponse{Content: "   "},
-			truncated:  false,
-			wantAnswer: stalledAnswerFallback,
+			name:      "a stall reports absent verified evidence",
+			response:  &types.ChatResponse{Content: "   "},
+			truncated: false,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -261,15 +258,19 @@ func TestFinishStalledTurn_EmitsAnswerThatNeverStreamed(t *testing.T) {
 			engine.finishStalledTurn(context.Background(), state, "sess-1", tc.response, tc.truncated, "question", nil)
 
 			assert.True(t, state.IsComplete)
-			assert.Equal(t, tc.wantAnswer, state.FinalAnswer)
+			if tc.wantAnswer == "" {
+				requireTerminalEvidenceGap(t, state.FinalAnswer)
+			} else {
+				require.Equal(t, tc.wantAnswer, state.FinalAnswer)
+			}
 
 			emitted := recorder.snapshot()
 			require.Len(t, emitted, 2, "the text, then the Done marker")
-			assert.Equal(t, tc.wantAnswer, emitted[0].Content)
+			assert.Equal(t, state.FinalAnswer, emitted[0].Content)
 			assert.False(t, emitted[0].Done)
-			assert.Equal(t, tc.truncated, emitted[0].Truncated)
+			assert.Equal(t, tc.truncated && tc.wantAnswer != "", emitted[0].Truncated)
 			assert.True(t, emitted[1].Done)
-			assert.Equal(t, tc.truncated, emitted[1].Truncated)
+			assert.Equal(t, tc.truncated && tc.wantAnswer != "", emitted[1].Truncated)
 		})
 	}
 }
@@ -372,11 +373,10 @@ func TestFinishStalledTurn_IgnoresAToolCallPreamble(t *testing.T) {
 		}},
 	}, true, "question", nil)
 
-	assert.Equal(t, truncatedAnswerFallback, state.FinalAnswer,
-		"a preamble must not become the answer")
+	requireTerminalEvidenceGap(t, state.FinalAnswer)
 	emitted := recorder.snapshot()
 	require.Len(t, emitted, 2)
-	assert.Equal(t, truncatedAnswerFallback, emitted[0].Content)
+	require.Equal(t, state.FinalAnswer, emitted[0].Content)
 	assert.True(t, emitted[1].Done)
 }
 
@@ -415,5 +415,5 @@ func TestExecuteLoop_ConsecutiveLengthRecordsTheFinalRound(t *testing.T) {
 	require.Len(t, last.ToolCalls, 1, "its tool calls are recorded as refused")
 	require.NotNil(t, last.ToolCalls[0].Result)
 	assert.False(t, last.ToolCalls[0].Result.Success)
-	assert.Equal(t, truncatedAnswerFallback, state.FinalAnswer)
+	requireTerminalEvidenceGap(t, state.FinalAnswer)
 }

@@ -135,7 +135,7 @@ func TestResultWorkflowLoopDoesNotSynthesizeWithoutExecutedResults(t *testing.T)
 			state, err := e.executeLoop(t.Context(), &types.AgentState{}, "Summarize the actual available results.", emptyMessages(), nil, "s", "m")
 			require.NoError(t, err)
 			require.Len(t, model.calls, expectedCalls, "neither pure directories nor failed renders justify an extra synthesis")
-			require.Equal(t, sourceProgressStalledFallback, state.FinalAnswer)
+			requireTerminalEvidenceGap(t, state.FinalAnswer)
 		})
 	}
 }

@@ -24,10 +24,10 @@ func TestFinalSynthesisRejectsToolRequestsInsteadOfPublishingProgress(t *testing
 	recorder.attach(engine.eventBus)
 	state := &types.AgentState{}
 	require.NoError(t, engine.streamFinalAnswerToEventBus(context.Background(), "完成先前任务", state, "s", emptyMessages()))
-	require.Equal(t, incompleteAnswerFallback, state.FinalAnswer)
+	requireTerminalEvidenceGap(t, state.FinalAnswer)
 	done, visible := recorder.snapshot()
 	require.Equal(t, 1, done)
-	require.Equal(t, incompleteAnswerFallback, visible)
+	require.Equal(t, state.FinalAnswer, visible)
 	require.Len(t, model.calls, 3)
 }
 

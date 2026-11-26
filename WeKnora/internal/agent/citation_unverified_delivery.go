@@ -301,7 +301,7 @@ func (e *AgentEngine) publishCitationUnverifiedReferences(ctx context.Context, s
 	b := e.turnReview.CitationUnverifiedDelivery
 	text, citations, numbers, refs, legacy, ok := e.citationUnverifiedPresentation(ctx, state, b.Decision)
 	if !ok || state.FinalAnswer != b.FinalText || text != b.FinalText || citations != b.MarkedCitations || numbers != b.MarkedNumbers || unverifiedReferenceDigest(refs, legacy) != b.ReferencesHash {
-		state.FinalAnswer, refs, legacy = e.terminalCoverageFailure(ctx, state, answerReviewUnavailableFallback), nil, nil
+		state.FinalAnswer, refs, legacy = e.terminalCoverageFailure(ctx, state), nil, nil
 	}
 	state.EvidenceRefs, state.KnowledgeRefs = refs, legacy
 	return true

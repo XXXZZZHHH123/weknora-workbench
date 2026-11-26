@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -276,6 +275,7 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 	planMessages[0].Content += "\n根据原问题判断实际候选的覆盖价值；已发现相关页或原图导航时，不因另一结构化目录有相似文字而忽略其正文，也不把某表示待映射当作所有来源失效。"
 	if structured && e.evidenceCompletionEnabled() {
 		planMessages[0].Content += "若用户为该目标明确给出单位，在结构化 coverage_targets 的 requested_unit 中逐字摘录 request_basis 内的单位。"
+		planMessages[0].Content += "\n" + tableComparisonGoalInstructions
 	} else {
 		planMessages[0].Content += "所需单位必须绑定当前字段或曲线原证据，不能以行业惯例、邻字段、同分块其他数字或附带保留语的猜测补全；未知单位保持未知。"
 	}
@@ -303,12 +303,7 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 	}
 	plan, err := decodeTaskEvidencePlan(response.Content, definitions, len(sources))
 	if err == nil {
-		err = validateTaskCoverageBasis(plan, query, e.semanticReviewConversation(messages), humanTurns, func(ref string) bool {
-			return ref != "" && slices.ContainsFunc(e.selectedDocs, func(doc *SelectedDocumentInfo) bool {
-				return doc != nil && agenttools.SearchTargetsIncludeSource(e.config.SearchTargets, doc.KnowledgeBaseID, doc.KnowledgeID) &&
-					e.modelContext.RegisterDocument(doc.KnowledgeID) == ref
-			})
-		})
+		err = validateTaskCoverageBasis(plan, query, e.semanticReviewConversation(messages), humanTurns, e.coveragePinnedSelection)
 	}
 	if err != nil {
 		logger.Warnf(ctx, "[Agent][TaskPlan] Invalid plan; retain the full tool set: %v", err)
@@ -332,6 +327,8 @@ func (e *AgentEngine) planWorkbenchTask(ctx context.Context, state *types.AgentS
 }
 
 const structuredTaskPlanInstructions = "\n使用protocol_version=1；以结构化字段表达前述范围和交付，旧criteria和source_scope可省略。basis_turn=0引用current_user_basis（缺省时为current_user_question），历史原文只引带basis_turn的行。source_mode用only表示排他限源或限定统计总体，named_first表示点名首查，open表示未限定。only的restriction_basis及点名材料的primary_ref引用原文或runtime_scope中pinned_documents的句柄。metric、period、source_time和version_task分别保留指标、期次、时间口径和版本关系；required、delivery和on_verified_gap保留证据角色、交付及核实缺口后的行动。"
+
+const tableComparisonGoalInstructions = "如果用户要求比较两份点名材料中同一张表、同一指标和同期的原值，声明一个 compare_sources 目标，table 保留表名，period 保留观测期和粒度，comparison_sources 分别逐字摘录两处材料的用户原文或已选句柄。两侧是独立角色，省略单一主来源的 primary_ref。source_mode 仍按用户原意填写。文件全名、资料署期与工作表名可以作为检索依据，不能替代对应的原文引文。"
 
 const taskScopeGuidance = "\n有来源任务但计划缺少有效范围声明时，先沿用当前权限、明确选择和已有窄绑定。根据用户原文、显式选择及真实目录区分限源、首查和未限定，并保留依据。仅通过现有绑定或读取参数选择实际来源、期次、字段或页。调用bind_document_scope时，在selection_reason保留已有goal_index及选择依据，明示限页与原文引句填user_page_constraint。目录裁剪后继续查找；只在已核实缺口且用户允许时补充有独立出处的资料。"
 

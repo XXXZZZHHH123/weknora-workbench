@@ -29,11 +29,12 @@ func (index *coverageRuntimeIndex) HybridSearch(_ context.Context, _ string, par
 
 func TestEvidenceCompletionNamedFirstDiscoveryAndRead(t *testing.T) {
 	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
-	t.Run("available", func(t *testing.T) { runEvidenceCompletionNamedFirst(t, true) })
-	t.Run("unavailable", func(t *testing.T) { runEvidenceCompletionNamedFirst(t, false) })
+	t.Run("available", func(t *testing.T) { runEvidenceCompletionNamedFirst(t, true, true) })
+	t.Run("available_without_read_metadata", func(t *testing.T) { runEvidenceCompletionNamedFirst(t, true, false) })
+	t.Run("unavailable", func(t *testing.T) { runEvidenceCompletionNamedFirst(t, false, false) })
 }
 
-func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute bool) {
+func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute, readMetadata bool) {
 	t.Helper()
 	const (
 		query = "Use the equipment register first for the duration on 2021-06-10."
@@ -198,9 +199,13 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute bool) {
 	require.Equal(t, decisions, engine.evidenceCompletion.recoveryDecisions)
 	require.Len(t, engine.evidenceCompletion.record.Bindings, priorBindings)
 	require.Empty(t, engine.evidenceCompletion.recoveryCalls)
-	run(chatToolCall("matching-read", agenttools.ToolReadDocument, wire(map[string]any{
-		"id": handle, "page": 8, "source_scope": sourceScope, coverageArgument: readDeclaration,
-	})))
+	readArgs := map[string]any{
+		"id": handle, "page": 8, "source_scope": sourceScope,
+	}
+	if readMetadata {
+		readArgs[coverageArgument] = readDeclaration
+	}
+	run(chatToolCall("matching-read", agenttools.ToolReadDocument, wire(readArgs)))
 	read := state.RoundSteps[len(state.RoundSteps)-1].ToolCalls[0]
 	require.True(t, read.Result.Success, fmt.Sprint(read.Result))
 	require.Equal(t, document.ID, read.ExecutionArgs()["id"], "the runtime gate receives the decoded source handle")

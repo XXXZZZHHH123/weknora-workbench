@@ -881,6 +881,7 @@ func (e *AgentEngine) executeLoop(
 	// maps before any new turn work begins.
 	e.turnReview = turnReviewState{
 		Query:                   query,
+		DeferTerminalClose:      true,
 		StructuredCitations:     e.turnReview.StructuredCitations,
 		StructuredCitationCalls: e.turnReview.StructuredCitationCalls,
 		StructuredCitationNonce: e.turnReview.StructuredCitationNonce,
@@ -1741,17 +1742,6 @@ func (e *AgentEngine) runReActIteration(
 				return iterOutcomeNext, nil
 			}
 		}
-		if e.holdCollaborationAnswer && response.FinishReason != "content_filter" {
-			_ = e.eventBus.Emit(
-				ctx,
-				event.Event{
-					ID: verdict.answerID, Type: event.EventAgentFinalAnswer, SessionID: sessionID,
-					Data: event.AgentFinalAnswerData{Content: verdict.finalAnswer, Truncated: verdict.truncated},
-				},
-			)
-		}
-		state.FinalAnswer = verdict.finalAnswer
-		state.IsComplete = true
 		if buttonsRan {
 			// The text is the turn's answer; left on the step it would replay
 			// twice in later turns and show again as a step on reload.

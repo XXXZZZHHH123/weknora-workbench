@@ -300,7 +300,7 @@ func TestToolStopSynthesisDeadlineCommitsBodyOnLiveParent(t *testing.T) {
 	require.NoError(t, ctx.Err())
 	require.True(t, state.IsComplete)
 	require.NotEmpty(t, state.FinalAnswer)
-	require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer)
+	requireTerminalEvidenceGap(t, state.FinalAnswer)
 }
 
 type continuousFinalStreamChat struct {

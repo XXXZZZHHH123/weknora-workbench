@@ -192,7 +192,10 @@ func (e *AgentEngine) plannedAnalysisGap(target taskCoverageTarget, record cover
 		target.VersionTask == "compare_sources" || target.VersionTask == "compare_versions" ||
 		slices.Equal(target.Required, []string{"optional"}) ||
 		!slices.Contains(target.OnVerifiedGap, "last_valid_same_field") || target.PrimaryRef == "" || target.Metric == "" ||
-		target.SourceTime != "observed_period" || target.Delivery["kind"] != "text" || item.Metric != target.Metric {
+		target.SourceTime != "observed_period" || target.Delivery["kind"] != "text" {
+		return coverageEvidence{}, false
+	}
+	if selected, matches := coveragePrimaryField(target, record, item); !matches && (selected || item.Metric != target.Metric) {
 		return coverageEvidence{}, false
 	}
 	from, to, grain := coverageTargetDateRange(target)

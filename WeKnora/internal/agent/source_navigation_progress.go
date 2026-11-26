@@ -254,5 +254,10 @@ func (e *AgentEngine) coverageDocumentEvidence(call types.ToolCall, base coverag
 			return evidence
 		}
 	}
-	return append(evidence, e.coverageDocumentBodies(call, base, data, search)...)
+	bodies := e.coverageDocumentBodies(call, base, data, search)
+	evidence = append(evidence, bodies...)
+	if !search && e.evidenceCompletionEnabled() {
+		evidence = append(evidence, coverageImageTableBodies(data, bodies)...)
+	}
+	return evidence
 }

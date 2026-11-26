@@ -977,7 +977,7 @@ func TestFragmentRepairIsBoundedAndFallsBackClearly(t *testing.T) {
 	_, err := engine.executeLoop(context.Background(), state, "请解释该周报图表", emptyMessages(), nil, "sess", "msg")
 	require.NoError(t, err)
 	require.Len(t, model.calls, 6)
-	require.Equal(t, incompleteAnswerFallback, state.FinalAnswer)
+	requireTerminalEvidenceGap(t, state.FinalAnswer)
 	require.Equal(t, state.FinalAnswer, emitted)
 	require.NotEqual(t, "-", state.FinalAnswer)
 }
@@ -1022,7 +1022,7 @@ func TestFinalSynthesisRepairsFragmentsBeforeEmitting(t *testing.T) {
 				require.Equal(t, "红线代表2401合约年度。", state.FinalAnswer)
 				require.Len(t, model.calls, 4)
 			} else {
-				require.Equal(t, incompleteAnswerFallback, state.FinalAnswer)
+				requireTerminalEvidenceGap(t, state.FinalAnswer)
 				require.Len(t, model.calls, 6)
 			}
 			for _, opts := range model.opts {

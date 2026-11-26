@@ -452,7 +452,7 @@ func TestQA4AnalysisEndpointClippedRangeRequiresBoundFieldAndRequest(t *testing.
 				latest.Arguments["source_binding"] = analysis.Arguments["source_binding"]
 				r.trace.Calls = append(r.trace.Calls, latest)
 				r.calls([]qa4Stage2Call{latest})
-				final := r.engine.terminalCoverageFailure(r.ctx, r.state, answerReviewUnavailableFallback)
+				final := r.engine.terminalCoverageFailure(r.ctx, r.state)
 				for _, expected := range []string{"2024-03-01", "2024-03-31", "没有有效记录", "CF.CZC", "2023-09-22", "17110", "B4705"} {
 					require.Contains(t, final, expected)
 				}

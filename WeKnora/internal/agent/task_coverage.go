@@ -27,18 +27,20 @@ type taskCoverageTarget struct {
 // StructuredTaskGoal is embedded so the decoder can distinguish old targets
 // from targets carrying any of the newer fields.
 type StructuredTaskGoal struct {
-	SourceMode       string         `json:"source_mode,omitempty"`
-	BasisTurn        *int           `json:"basis_turn,omitempty"`
-	RestrictionBasis string         `json:"restriction_basis,omitempty"`
-	PrimaryRef       string         `json:"primary_ref,omitempty"`
-	Metric           string         `json:"metric,omitempty"`
-	RequestedUnit    string         `json:"requested_unit,omitempty"`
-	Period           map[string]any `json:"period,omitempty"`
-	SourceTime       string         `json:"source_time,omitempty"`
-	VersionTask      string         `json:"version_task,omitempty"`
-	Required         []string       `json:"required,omitempty"`
-	OnVerifiedGap    []string       `json:"on_verified_gap,omitempty"`
-	Delivery         map[string]any `json:"delivery,omitempty"`
+	SourceMode        string         `json:"source_mode,omitempty"`
+	BasisTurn         *int           `json:"basis_turn,omitempty"`
+	RestrictionBasis  string         `json:"restriction_basis,omitempty"`
+	PrimaryRef        string         `json:"primary_ref,omitempty"`
+	Metric            string         `json:"metric,omitempty"`
+	RequestedUnit     string         `json:"requested_unit,omitempty"`
+	Table             string         `json:"table,omitempty"`
+	ComparisonSources []string       `json:"comparison_sources,omitempty"`
+	Period            map[string]any `json:"period,omitempty"`
+	SourceTime        string         `json:"source_time,omitempty"`
+	VersionTask       string         `json:"version_task,omitempty"`
+	Required          []string       `json:"required,omitempty"`
+	OnVerifiedGap     []string       `json:"on_verified_gap,omitempty"`
+	Delivery          map[string]any `json:"delivery,omitempty"`
 }
 
 const structuredTaskCoverageBeforeUnit = `{
@@ -70,6 +72,8 @@ const structuredTaskCoverageAfterUnit = `  "period":{"type":"object","additional
 
 const legacyStructuredTaskCoverageSchema = structuredTaskCoverageBeforeUnit + structuredTaskCoverageAfterUnit
 const structuredTaskCoverageSchema = structuredTaskCoverageBeforeUnit + `  "requested_unit":{"type":"string","minLength":1,"maxLength":32,"pattern":"\\S"},
+  "table":{"type":"string","minLength":1,"maxLength":128,"pattern":"\\S"},
+  "comparison_sources":{"type":"array","minItems":2,"maxItems":2,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128,"pattern":"\\S"}},
 ` + structuredTaskCoverageAfterUnit
 
 var structuredTaskCoverageValidator = sync.OnceValues(func() (*jsonschema.Resolved, error) {
@@ -141,12 +145,23 @@ func validateTaskCoverageBasis(plan *taskEvidencePlan, query string, messages []
 		if target.RequestedUnit != "" && !strings.Contains(target.RequestBasis, target.RequestedUnit) {
 			return fmt.Errorf("coverage requested_unit must quote a unit in the human request basis")
 		}
+		if len(target.ComparisonSources) > 0 && (target.VersionTask != "compare_sources" || target.Table == "" || target.Metric == "") {
+			return fmt.Errorf("named table comparison requires a table and metric")
+		}
+		if target.Table != "" && len(target.ComparisonSources) != 2 {
+			return fmt.Errorf("table comparison requires two named sources")
+		}
+		for _, ref := range target.ComparisonSources {
+			if !(pinned != nil && pinned(ref)) && (taskCoverageSourceHandle(ref) || !quoted(ref, turns)) {
+				return fmt.Errorf("comparison source references need a user quotation or verified source selection")
+			}
+		}
 		for _, ref := range []string{target.PrimaryRef, target.RestrictionBasis} {
-			if ref != "" && !pinned(ref) && (taskCoverageSourceHandle(ref) || !quoted(ref, turns)) {
+			if ref != "" && !(pinned != nil && pinned(ref)) && (taskCoverageSourceHandle(ref) || !quoted(ref, turns)) {
 				return fmt.Errorf("coverage source references need a user quotation or verified source selection")
 			}
 		}
-		if target.RestrictionBasis != target.PrimaryRef && pinned(target.RestrictionBasis) && pinned(target.PrimaryRef) {
+		if target.RestrictionBasis != target.PrimaryRef && pinned != nil && pinned(target.RestrictionBasis) && pinned(target.PrimaryRef) {
 			return fmt.Errorf("coverage pinned restriction and primary_ref identify different sources")
 		}
 	}

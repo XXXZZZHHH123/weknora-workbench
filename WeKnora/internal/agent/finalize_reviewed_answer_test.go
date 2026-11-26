@@ -113,7 +113,7 @@ func TestFinalReviewSynthesisRejectsEmptyOrInvalidProtocolBeforePermissiveComple
 			recorder.attach(engine.eventBus)
 			state := &types.AgentState{}
 			require.NoError(t, engine.streamFinalAnswerToEventBus(context.Background(), "交付当前任务", state, "s", emptyMessages()))
-			require.Equal(t, incompleteAnswerFallback, state.FinalAnswer)
+			requireTerminalEvidenceGap(t, state.FinalAnswer)
 			require.Equal(t, 3, model.reviewCalls)
 			require.Zero(t, model.completenessCalls, "a permissive completeness model cannot accept malformed or empty protocol output")
 			done, visible := recorder.snapshot()

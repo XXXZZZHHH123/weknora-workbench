@@ -10,7 +10,6 @@ import (
 	"time"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
-	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -156,9 +155,8 @@ func (e *AgentEngine) executeStructuredConfirmation(ctx context.Context, state *
 	if err != nil {
 		state.FinalAnswer = err.Error()
 	}
-	state.IsComplete = true
-	e.eventBus.Emit(ctx, event.Event{ID: generateEventID("answer"), Type: event.EventAgentFinalAnswer, SessionID: sessionID,
-		Data: event.AgentFinalAnswerData{Content: state.FinalAnswer, Done: true}})
+	e.turnReview.DeferTerminalClose = true
+	e.commitTerminalResult(ctx, state, sessionID, state.FinalAnswer, "", "field_confirmation", false)
 	e.emitCompletionEvent(ctx, state, sessionID, messageID, started)
 	return true
 }

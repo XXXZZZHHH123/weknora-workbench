@@ -26,7 +26,7 @@ type coverageEvidence struct {
 	Page                                                                             int
 	SpanStart, SpanEnd, NextOffset                                                   *int
 	Raw                                                                              any
-	Complete, Bound, RangeComplete, LatestInScope, WorkbookBound                     bool
+	Complete, Bound, RangeComplete, LatestInScope, WorkbookBound, GrainFromLookup    bool
 }
 
 type coverageAttempt struct {
@@ -48,6 +48,8 @@ type coverageBinding struct {
 	EvidenceID, JSONPointer, CitationID, Subject, Metric, TargetField string
 	Period, PeriodFrom, PeriodTo, Grain, GrainBasis, Date             string
 	Unit, Span, RawClaim                                              string
+	SourceRef                                                         string
+	VersionBasisRef, VersionBasis                                     string
 	RequireUnit, Provisional                                          bool
 }
 
@@ -98,6 +100,9 @@ func evaluateTaskCoverage(target taskCoverageTarget, input coverageRecord) []cov
 	if target.StructuredTaskGoal == nil || target.SourceTime == "general_concept" ||
 		(len(target.Required) == 1 && target.Required[0] == "optional") {
 		return nil
+	}
+	if tableComparison(target) {
+		return []coverageCompletion{evaluateTableComparison(target, input)}
 	}
 	from, to, grain := coverageTargetDateRange(target)
 	type slot struct{ from, to, grain, period, field string }
@@ -357,15 +362,26 @@ func resolveCoverageSupplement(target taskCoverageTarget, input coverageRecord, 
 			result.AttemptReceipt = receipt
 		}
 	}
-	var matched, navigable bool
+	var matched, navigable, related bool
 	for _, binding := range input.Bindings {
 		if binding.GoalIndex != target.GoalIndex || binding.Role != "supplement" || binding.SourceID == "" ||
-			binding.TargetField != field || !coverageEqual(from, binding.PeriodFrom) || !coverageEqual(to, binding.PeriodTo) ||
-			!coverageEqual(period, binding.Period) || !coverageGrain(grain, binding.Grain) {
+			binding.TargetField != field {
 			continue
 		}
+		exact := coverageEqual(from, binding.PeriodFrom) && coverageEqual(to, binding.PeriodTo) &&
+			coverageEqual(period, binding.Period) && coverageGrain(grain, binding.Grain)
 		for _, evidence := range input.Evidence {
 			if !coverageSameSource(binding, evidence) || !coverageCurrentEvidence(input, evidence) {
+				continue
+			}
+			if !exact {
+				if binding.Kind == "body" && evidence.Kind == "body" {
+					if fact, ok := matchCoverageEvidence(target, input, binding, evidence); ok &&
+						(fact.Date != "" || fact.Period != "" || coverageDatedSupplement(fact, from, to)) {
+						result.pin("supplement_context", fact)
+						related = true
+					}
+				}
 				continue
 			}
 			if (evidence.Kind == "navigation" || evidence.Kind == "directory") && coverageLocation(binding, evidence) &&
@@ -381,6 +397,9 @@ func resolveCoverageSupplement(target taskCoverageTarget, input coverageRecord, 
 	}
 	if matched {
 		return result.satisfied("matching_supplement")
+	}
+	if related {
+		return result.withStop("supplementary_observation_checked")
 	}
 	if input.StopReason != "" {
 		return result.withStop(input.StopReason)
@@ -399,9 +418,18 @@ func resolveCoverageSupplement(target taskCoverageTarget, input coverageRecord, 
 	return result
 }
 
+// The native reader verified this as the material date. It can support an
+// attributed disclosure for the requested period without proving that the
+// figure is an observation on that date.
+func coverageDatedSupplement(fact coverageEvidence, from, to string) bool {
+	date := coverageDay(fact.SourceDate)
+	return date != "" && from != "" && to != "" && from <= date && date <= to && fact.Metric != "" && fact.ReportedValue != ""
+}
+
 func coverageSupplementNavigation(record coverageRecord, callID string, observation coverageEvidence) bool {
 	return callID != "" && observation.ToolCallID == callID && observation.SourceDomain == "knowledge" &&
-		(observation.Kind == "navigation" || observation.Kind == "body") && observation.ChunkID != "" &&
+		(observation.Kind == "navigation" && (observation.ChunkID != "" || observation.Page > 0) ||
+			observation.Kind == "body" && observation.ChunkID != "") &&
 		coverageCurrentEvidence(record, observation)
 }
 
@@ -525,6 +553,11 @@ func coverageBodyFact(binding coverageBinding, evidence coverageEvidence, requir
 	if !coverageBodyRange(binding, evidence) {
 		return evidence, false
 	}
+	if binding.Role == "supplement" && binding.Grain == "day" && claim != "" &&
+		(strings.Contains(binding.Span, " | ") || evidence.Object != "" && strings.Contains(body, "\t")) &&
+		!coverageDailyBodyClaim(body, start, binding, claim, evidence.Object != "") {
+		return evidence, false
+	}
 	start = utf8.RuneCountInString(body[:start])
 	if evidence.SpanStart != nil {
 		start += *evidence.SpanStart
@@ -549,6 +582,39 @@ func coverageBodyFact(binding coverageBinding, evidence coverageEvidence, requir
 		evidence.Unit, evidence.UnitBasis = binding.Unit, evidence.EvidenceID+"#"+evidence.JSONPointer
 	}
 	return evidence, true
+}
+
+func coverageDailyBodyClaim(body string, start int, binding coverageBinding, value string, imageOCR bool) bool {
+	header := firstNonEmptyAgent(binding.Subject, binding.Metric)
+	day := coverageDay(binding.Date)
+	if header == "" || day == "" {
+		return false
+	}
+	if strings.Contains(strings.TrimSpace(body), "\n") {
+		cell, ok := comparisonTableIntersection(body, header, binding.Date, imageOCR)
+		return ok && cell == value
+	}
+	// A flattened table can have merged headers. Only the leading column
+	// has an unambiguous position when no complete row layout is available.
+	// The selected span must start at that actual heading and include the
+	// requested date and first cell of its row.
+	fields := strings.Split(body, "|")
+	if strings.TrimSpace(body[:start]) != "" || len(fields) < 3 || strings.TrimSpace(fields[0]) != header {
+		return false
+	}
+	row := -1
+	for i, field := range fields {
+		if coverageDay(strings.TrimSpace(field)) != day {
+			continue
+		}
+		if row != -1 {
+			return false
+		}
+		row = i
+	}
+	selected := strings.Split(binding.Span, "|")
+	return row >= 0 && row+1 < len(fields) && row+1 < len(selected) &&
+		strings.TrimSpace(fields[row+1]) == value && strings.TrimSpace(selected[row+1]) == value
 }
 
 // A declared literal may not start or end inside an original number or date.

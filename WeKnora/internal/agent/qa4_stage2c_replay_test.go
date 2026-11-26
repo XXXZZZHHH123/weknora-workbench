@@ -118,8 +118,9 @@ func (s *qa4Stage2CChunkRepository) ListChunksByParentIDs(_ context.Context, ten
 
 type qa4Stage2CIndex struct {
 	*sourceDiscoveryKnowledgeService
-	result   *types.SearchResult
-	searches []types.SearchParams
+	result     *types.SearchResult
+	additional []*types.SearchResult
+	searches   []types.SearchParams
 }
 
 func (i *qa4Stage2CIndex) HybridSearch(_ context.Context, kb string, p types.SearchParams) ([]*types.SearchResult, error) {
@@ -128,7 +129,7 @@ func (i *qa4Stage2CIndex) HybridSearch(_ context.Context, kb string, p types.Sea
 		return nil, nil
 	}
 	result := *i.result
-	return []*types.SearchResult{&result}, nil
+	return append([]*types.SearchResult{&result}, i.additional...), nil
 }
 
 type qa4Stage2CModel struct {
@@ -136,6 +137,7 @@ type qa4Stage2CModel struct {
 	t           *testing.T
 	reply       mockResponse
 	review      mockResponse
+	discovery   mockResponse
 	reviewInput []chat.Message
 	reviewCalls int
 }
@@ -161,7 +163,10 @@ func (m *qa4Stage2CModel) ChatStream(ctx context.Context, messages []chat.Messag
 			next = chatAnswer(string(encoded))
 		}
 	case "discovery_delivery":
-		next = discoveryReply("keep", "")
+		next = m.discovery
+		if len(next.chunks) == 0 {
+			next = discoveryReply("keep", "")
+		}
 	case "structured_result_delivery":
 		m.reviewInput = messages
 		m.reviewCalls++
@@ -239,6 +244,12 @@ func newQA4Stage2CReplay(t *testing.T, fixture string, enabled, reportSearch boo
 		}
 		source := r.trace.Documents[len(r.trace.Documents)-1]
 		page := repo.rows[0]
+		for _, row := range repo.rows {
+			if row.KnowledgeID == source.ID {
+				page = row
+				break
+			}
+		}
 		r.index = &qa4Stage2CIndex{sourceDiscoveryKnowledgeService: &sourceDiscoveryKnowledgeService{}, result: &types.SearchResult{
 			ID: page.ID, KnowledgeID: source.ID, KnowledgeBaseID: qa4Stage2Library, KnowledgeTitle: source.Title,
 			Content: page.Content, ChunkIndex: page.ChunkIndex, SourceLocators: page.SourceLocators, Score: .99}}

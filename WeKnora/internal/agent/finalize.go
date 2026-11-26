@@ -376,8 +376,34 @@ func (e *AgentEngine) emitCompletionEvent(
 			BackgroundSeenIDs:    seen,
 		})
 	}
-	// Convert knowledge refs to interface{} slice for event data
+	// Resolve navigation against the bytes completing the turn. A stale
+	// reference binding can change the text that was originally streamed.
+	streamed := state.FinalAnswer
+	if e.turnReview.TableComparisonDelivery.answerHash != "" && !e.tableComparisonDeliveryCurrent(ctx, state) {
+		// A comparison assembled from a stale scope must not survive in the
+		// complete event or durable references.
+		e.turnReview.TableComparisonDelivery = tableComparisonDeliveryReceipt{}
+		e.refreshEvidenceCompletion(ctx, e.turnReview.Query, state, e.turnReview.Conversation)
+		state.FinalAnswer = e.terminalCoverageFailure(ctx, state)
+		state.KnowledgeRefs, state.EvidenceRefs = nil, nil
+	}
 	e.publishFinalKnowledgeReferences(ctx, state, sessionID)
+	if state.IsComplete && state.Suspended == nil {
+		state.FinalAnswer = stripCoverageAnswer(state.FinalAnswer)
+		if terminalCandidateFallback(state.FinalAnswer) {
+			state.FinalAnswer = e.terminalCoverageFailure(ctx, state)
+			state.EvidenceRefs, state.KnowledgeRefs = nil, nil
+		}
+		if id := e.turnReview.TerminalStreamID; id != "" && state.FinalAnswer != streamed {
+			_ = e.eventBus.Emit(ctx, event.Event{ID: id, Type: event.EventAgentFinalAnswer, SessionID: sessionID,
+				Data: event.AgentFinalAnswerData{Content: state.FinalAnswer, Replace: true}})
+		}
+		e.closeAnswerStream(ctx, sessionID, e.turnReview.TerminalStreamID, e.turnReview.TerminalTruncated)
+	} else if terminalCandidateFallback(stripCoverageAnswer(state.FinalAnswer)) {
+		// An interrupted or suspended run has no terminal answer. An abandoned
+		// placeholder draft is not checkpoint text worth publishing.
+		state.FinalAnswer = ""
+	}
 	knowledgeRefs := state.KnowledgeRefs
 	if !e.config.CitationsEnabled() {
 		// A resumed checkpoint keeps its durable references, while this run's

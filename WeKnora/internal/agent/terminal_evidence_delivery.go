@@ -20,37 +20,32 @@ const terminalCoverageContextLimit = 5
 
 type terminalCoverageFact struct {
 	coverageFact
-	requestedUnit string
-	required      bool
-	sqlFollowUp   bool
+	requestedUnit     string
+	required, adopted bool
+	includeCitation   bool
 }
 
 type terminalCoverageDelivery struct {
-	facts              []terminalCoverageFact
-	context            []string
-	goal, limitation   string
-	comparisonLead     string
-	documentBodies     []coverageEvidence
-	zeroCountCalls     map[string]string
-	presentationUnit   string
-	chinese            bool
-	explicitOnly       bool
-	inspected          bool
-	naturalSQLFallback bool
+	facts             []terminalCoverageFact
+	context           []string
+	goal, limitation  string
+	comparisonLead    string
+	versionChoice     terminalVersionChoice
+	documentBodies    []coverageEvidence
+	zeroCountCalls    map[string]string
+	presentationUnit  string
+	chinese           bool
+	includeCitations  bool
+	prioritizePrimary bool
+	explicitOnly      bool
+	inspected         bool
 }
 
 // Reproject native executions before delivery. A result changed after its
 // initial registration or a source outside the current scope cannot be used.
 func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types.AgentState, failure bool) terminalCoverageDelivery {
 	var delivery terminalCoverageDelivery
-	if state == nil || e.holdCollaborationAnswer {
-		return delivery
-	}
-	if failure {
-		if !e.workbenchEvidenceTask() || e.collaboration != nil || e.needsDeliveryReview(state) || hasWorkspaceExecution(state) {
-			return delivery
-		}
-	} else if !e.evidenceCompletionEligible() {
+	if !failure && (state == nil || e.holdCollaborationAnswer || !e.evidenceCompletionEligible()) {
 		return delivery
 	}
 	hadCoverage := e.hasEvidenceCompletionContext()
@@ -63,7 +58,7 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 		record.AuthScope = e.unverifiedSourceScopeDigest(ctx)
 	}
 	var attempts []coverageAttempt
-	if e.toolRegistry != nil {
+	if state != nil && e.toolRegistry != nil {
 		record, attempts = e.projectCurrentTaskCoverage(state, turn.startStep, record)
 	}
 	catalogs := make(map[string]map[string]any)
@@ -86,6 +81,8 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 		return delivery
 	}
 	delivery.chinese = strings.HasPrefix(types.LanguageFromContextOrDefault(ctx), "zh")
+	delivery.includeCitations = e.config != nil && e.config.CitationsEnabled()
+	delivery.prioritizePrimary = slices.ContainsFunc(targets, func(target taskCoverageTarget) bool { return target.SourceMode == "named_first" })
 	delivery.explicitOnly = slices.ContainsFunc(targets, func(target taskCoverageTarget) bool { return target.SourceMode == "only" })
 
 	for _, attempt := range attempts {
@@ -142,6 +139,9 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 			}
 		}
 		if index := slices.IndexFunc(delivery.facts, func(prior terminalCoverageFact) bool {
+			if role == "coverage_boundary" && prior.Role == role && terminalSameFieldGap(record, item, prior.Evidence) {
+				return true
+			}
 			if coverageAnalysisEndpoint(item) && coverageAnalysisEndpoint(prior.Evidence) && prior.Role == role {
 				checked := prior.Evidence
 				return item.KnowledgeBaseID == checked.KnowledgeBaseID && item.SourceID == checked.SourceID &&
@@ -195,32 +195,14 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 				}
 				delivered := add(fact.Role, fact.Evidence, unit, requiredAnalysis || terminalRequestedPinnedFact(record, target, fact))
 				if delivered != nil && requiredAnalysis && fact.Role == "last_valid_value" && fact.Evidence.Operation == "query_series" {
-					delivered.sqlFollowUp = true
 					delivered.Evidence.Subject = firstNonEmptyAgent(fact.Evidence.Subject, delivered.Evidence.Subject)
 				}
 			}
 		}
 		supplementExpected = supplementExpected || supplementOpen
-		if supplementOpen && target.SourceMode == "named_first" {
-			// An actual report can provide closest related context without
-			// filling the original field or proving its observation period.
-			for _, binding := range record.Bindings {
-				if binding.GoalIndex != target.GoalIndex || binding.Role != "supplement" || binding.Kind != "body" {
-					continue
-				}
-				for _, item := range record.Evidence {
-					if item.Kind != "body" || !coverageSameSource(binding, item) || !coverageLocation(binding, item) ||
-						binding.EvidenceID != item.EvidenceID || binding.JSONPointer != item.JSONPointer {
-						continue
-					}
-					if fact, ok := coverageBodyFact(binding, item, true); ok && (fact.SourceDate != "" || fact.Date != "" || fact.Period != "") {
-						add("supplement_context", fact, "", true)
-					}
-				}
-			}
-		}
 	}
 	question := e.coverageAnalysisQuestion()
+	independentReads := failure && turn.legacyGap != "" && turn.stopReason != "" && len(targets) == 0
 	if delivery.goal == "" {
 		delivery.goal = terminalEvidenceText(taskPlanPrefix(question, 400))
 	}
@@ -274,7 +256,6 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 				if sameCoverageLastValid(record, item, value) || item.WorkbookSnapshotHash == "" && coverageAnalysisFollowUpMatches(record, item, value) {
 					foundLast = true
 					if latest := add("last_valid_value", value, unit, required); latest != nil && required && value.Operation == "query_series" {
-						latest.sqlFollowUp = true
 						if latest.Evidence.Subject == "" {
 							latest.Evidence.Subject = item.Subject
 						}
@@ -295,7 +276,8 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 				return fact.Role == "last_valid_value" && last.EvidenceID == item.EvidenceID && last.SeriesID == item.SeriesID &&
 					last.Date == item.Date && last.Cell == item.Cell && last.Raw == item.Raw
 			})
-			if !repeatsEndpoint && (len(targets) != 0 || linkedReads[item.EvidenceID]) && (!item.LatestInScope || target.StructuredTaskGoal != nil && target.SourceTime == "latest_observation") {
+			if !repeatsEndpoint && (len(targets) != 0 || linkedReads[item.EvidenceID] || independentReads) &&
+				(!item.LatestInScope || target.StructuredTaskGoal != nil && target.SourceTime == "latest_observation") {
 				add("scoped_value", item, unit, false)
 			}
 		case item.Kind == "derived" && item.Operation == "query_series" && item.SeriesID != "" && item.Complete && coverageExactRange(item) &&
@@ -355,6 +337,9 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 	if delivery.hasGap() && !delivery.explicitOnly && !delivery.hasSupplement() && (supplementExpected || attemptedSupplement) {
 		delivery.limitation = terminalSupplementStatus(delivery.chinese, recoveredSearch, recoveredRead, recoverySearchCount)
 	}
+	if independentReads && len(delivery.facts) != 0 && delivery.limitation == "" {
+		delivery.limitation = delivery.text("以上是本轮实际取得的来源读数。所求结果仍有内容待核实。", "These are the verified source readings. The rest of the requested result remains unverified.")
+	}
 	if len(delivery.facts) == 0 && len(delivery.context) == 0 {
 		switch {
 		case recoveredSearch:
@@ -373,7 +358,72 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 			delivery.limitation = delivery.text("本轮没有完成可用于核对该结果的来源读取。", "No source read for checking that result completed this turn.")
 		}
 	}
+	if turn.enabled && turn.legacyGap != "" && turn.stopReason != "" && len(targets) == 0 && len(delivery.facts) == 0 {
+		var source, sheet, lastDate string
+		var uniformDate bool
+		for _, item := range record.Evidence {
+			if item.Kind != "directory" || item.Operation != "list_series" || item.DatasetID == "" || item.Sheet == "" {
+				continue
+			}
+			title := item.SourceTitle
+			if title == "" {
+				for _, dataset := range record.Evidence {
+					if dataset.Operation == "list_datasets" && dataset.Kind == "directory" &&
+						dataset.DatasetID == item.DatasetID && dataset.KnowledgeBaseID == item.KnowledgeBaseID &&
+						dataset.SnapshotHash == item.SnapshotHash {
+						title = dataset.SourceTitle
+						break
+					}
+				}
+			}
+			if title == "" || source != "" && (source != title || sheet != item.Sheet) {
+				source = ""
+				break
+			}
+			if source == "" {
+				lastDate, uniformDate = item.LastValidDate, coverageDay(item.LastValidDate) != ""
+			} else {
+				uniformDate = uniformDate && lastDate == item.LastValidDate
+			}
+			source, sheet = title, item.Sheet
+		}
+		if source != "" {
+			delivery.context, delivery.goal = nil, ""
+			label := delivery.checkedFactSource(coverageEvidence{SourceTitle: source, Sheet: sheet})
+			delivery.limitation = fmt.Sprintf(delivery.text("本轮已定位%s的字段目录，尚未完成所问原值的核对。", "This turn located the field directory for %s. Verification of the requested value remains incomplete."), label)
+			if uniformDate {
+				delivery.limitation += fmt.Sprintf(delivery.text("本轮列出的字段最后有效日均为 %s。", "The fields shown in that directory share a last valid date of %s."), lastDate)
+			}
+			delivery.context, delivery.limitation = []string{delivery.limitation}, ""
+			seen := make(map[string]bool)
+			for _, report := range delivery.documentBodies {
+				if seen[report.SourceID] {
+					continue
+				}
+				seen[report.SourceID] = true
+				delivery.addContext(terminalCoverageDocumentRead(report, delivery.chinese))
+			}
+		}
+	}
+	delivery.versionChoice = currentTerminalVersionChoice(record, delivery.facts)
 	return delivery
+}
+
+func terminalSameFieldGap(record coverageRecord, item, prior coverageEvidence) bool {
+	if item.Kind != "gap" || prior.Kind != "gap" || item.SeriesID == "" || item.DatasetID == "" ||
+		item.KnowledgeBaseID != prior.KnowledgeBaseID || item.SourceID != prior.SourceID || item.DatasetID != prior.DatasetID ||
+		item.Sheet != prior.Sheet || item.SeriesID != prior.SeriesID || item.Column != prior.Column ||
+		item.PeriodFrom != prior.PeriodFrom || item.PeriodTo != prior.PeriodTo || item.Period != prior.Period ||
+		item.LastValidDate != prior.LastValidDate {
+		return false
+	}
+	workbook := func(gap coverageEvidence) string {
+		if gap.WorkbookSnapshotHash != "" && coverageCurrentAnalysisWorkbook(record, gap) {
+			return gap.WorkbookSnapshotHash
+		}
+		return gap.SnapshotHash
+	}
+	return workbook(item) != "" && workbook(item) == workbook(prior)
 }
 
 func (e *AgentEngine) terminalPlannedLastValid(target taskCoverageTarget, record coverageRecord, pinned []coverageFact, item coverageEvidence) (checked coverageEvidence, required, inScope bool) {
@@ -401,7 +451,7 @@ func (e *AgentEngine) terminalPlannedLastValid(target taskCoverageTarget, record
 }
 
 func terminalRequestedPinnedFact(record coverageRecord, target taskCoverageTarget, fact coverageFact) bool {
-	if fact.Role == "supplement" {
+	if fact.Role == "supplement" || fact.Role == "supplement_context" {
 		return true
 	}
 	item := fact.Evidence
@@ -417,12 +467,8 @@ func terminalRequestedPinnedFact(record coverageRecord, target taskCoverageTarge
 	})
 }
 
-func (e *AgentEngine) terminalCoverageFailure(ctx context.Context, state *types.AgentState, legacy string) string {
+func (e *AgentEngine) terminalCoverageFailure(ctx context.Context, state *types.AgentState) string {
 	delivery := e.terminalCoverageDelivery(ctx, state, true)
-	if !delivery.inspected {
-		return legacy
-	}
-	delivery.naturalSQLFallback = e.evidenceCompletionEnabled() && delivery.hasGap()
 	return delivery.render(true, "")
 }
 
@@ -436,6 +482,27 @@ func (e *AgentEngine) terminalCoverageWarning(ctx context.Context, state *types.
 }
 
 func terminalCoverageAttemptContext(record coverageRecord, attempt coverageAttempt, blocked, chinese bool) string {
+	d := terminalCoverageDelivery{chinese: chinese}
+	switch attempt.Operation {
+	case agenttools.ToolSearchKnowledge:
+		query := terminalEvidenceText(taskPlanPrefix(sourceNavigationString(attempt.Args, "query"), 160))
+		if blocked {
+			return d.text("授权文档检索在执行前被拦下。", "The authorized document search stopped before it ran.")
+		}
+		if query != "" && attempt.Success {
+			return fmt.Sprintf(d.text("已在授权文档中检索“%s”。", "The authorized documents were searched for “%s”."), query)
+		}
+		if !attempt.Success {
+			return d.text("尝试检索授权文档，未取得可用结果。", "The authorized document search returned no usable result.")
+		}
+	case agenttools.ToolReadDocument:
+		if blocked {
+			return d.text("已选文档的读取请求在执行前被拦下。", "The selected document read stopped before it ran.")
+		}
+		if !attempt.Success {
+			return d.text("尝试读取已选文档，未取得可核实的正文。", "The selected document read returned no verifiable passage.")
+		}
+	}
 	if attempt.Operation != "query_series" && attempt.Operation != "analyze_table" && attempt.Operation != "inspect_source" {
 		return ""
 	}
@@ -465,7 +532,6 @@ func terminalCoverageAttemptContext(record coverageRecord, attempt coverageAttem
 	if scope == "" {
 		return ""
 	}
-	d := terminalCoverageDelivery{chinese: chinese}
 	if blocked {
 		return fmt.Sprintf(d.text("%s 的数据请求在读取开始前被拦下。", "The data request for %s stopped before a read began."), scope)
 	}
@@ -642,6 +708,21 @@ func (d terminalCoverageDelivery) render(fallback bool, candidate string) string
 	paragraphs := strings.Split(strings.TrimSpace(candidate), "\n\n")
 	var insertions []terminalCoverageInsertion
 	sourced := false
+	primaryLead := -1
+	if !fallback && d.prioritizePrimary {
+		paragraphs, primaryLead, sourced = d.primarySourceOpening(paragraphs)
+	}
+	var supplementalSource string
+	for _, fact := range d.facts {
+		if fact.Role != "supplement" && fact.Role != "supplement_context" {
+			continue
+		}
+		if supplementalSource != "" && supplementalSource != fact.Evidence.SourceID {
+			supplementalSource = ""
+			break
+		}
+		supplementalSource = fact.Evidence.SourceID
+	}
 	// Lead with the requested range and verified absence, where established.
 	for _, gapFirst := range []bool{true, false} {
 		for _, fact := range d.facts {
@@ -649,16 +730,18 @@ func (d terminalCoverageDelivery) render(fallback bool, candidate string) string
 			if unitFactsAlreadyPresent || (item.Kind == "gap") != gapFirst {
 				continue
 			}
-			naturalSQL := fallback && d.naturalSQLFallback && (fact.sqlFollowUp ||
-				item.Operation == "analyze_table" && (item.Kind == "gap" && item.Complete || coverageAnalysisEndpoint(item)))
-			if naturalSQL || !fallback && (item.Kind == "gap" || item.Kind == "last_valid") {
+			if item.Kind == "gap" || item.Kind == "last_valid" {
 				present, anchor, addSource := d.checkedFieldLocation(paragraphs, fact)
+				if primaryLead >= 0 && fact.required && (fact.Role == "coverage_boundary" || fact.Role == "last_valid_value") &&
+					(anchor < 0 || d.supplementParagraph(paragraphs[anchor])) {
+					present, anchor, addSource = false, primaryLead, false
+				}
 				if addSource {
 					paragraphs[anchor] = fmt.Sprintf(d.text("据%s，%s", "From %s. %s"),
 						d.checkedFactSource(item), paragraphs[anchor])
 					sourced = true
 				}
-				if present || !fact.required && anchor < 0 && !d.mentionsCheckedField(candidate, fact) {
+				if present || !fallback && !fact.required && anchor < 0 && !d.mentionsCheckedField(candidate, fact) {
 					continue
 				}
 				if item.Kind == "last_valid" && item.Raw == nil && slices.ContainsFunc(d.facts, func(peer terminalCoverageFact) bool {
@@ -671,9 +754,19 @@ func (d terminalCoverageDelivery) render(fallback bool, candidate string) string
 				usedRequestedUnit = usedRequestedUnit || item.Raw != nil && fact.requestedUnit != "" && terminalUnitUnspecified(item)
 				continue
 			}
+			if primaryLead >= 0 && fact.required && fact.Role == "scoped_value" && item.SourceDomain == "structured" &&
+				!slices.ContainsFunc(paragraphs[:primaryLead+1], func(paragraph string) bool { return terminalCoverageFactPresent(paragraph, fact) }) {
+				insertions = append(insertions, terminalCoverageInsertion{primaryLead, fact})
+				continue
+			}
 			if !fallback && (!fact.required && !d.mentionsCheckedField(candidate, fact) || terminalCoverageFactPresent(candidate, fact)) {
 				continue
 			}
+			if !fallback && (fact.Role == "supplement" || fact.Role == "supplement_context") && d.supplementFactPresent(paragraphs, fact.Evidence) {
+				continue
+			}
+			fact.adopted = supplementalSource != "" && supplementalSource == item.SourceID
+			fact.includeCitation = d.includeCitations
 			if line := terminalCoverageFactText(fact, d.chinese); line != "" && !slices.Contains(lines, line) {
 				lines = append(lines, line)
 				usedRequestedUnit = usedRequestedUnit || (fact.Evidence.Kind == "cell" || fact.Evidence.Kind == "last_valid" || fact.Evidence.Kind == "derived") &&
@@ -690,9 +783,10 @@ func (d terminalCoverageDelivery) render(fallback bool, candidate string) string
 			candidate = d.directValueOpening()
 		}
 		if candidate == "" && len(lines) == 0 && len(insertions) == 0 {
-			candidate = d.text("所求结果仍待核实。", "The requested result remains unverified.")
 			if d.goal != "" {
 				candidate = d.text(d.goal+" 仍待核实。", "The requested result for "+d.goal+" remains unverified.")
+			} else if d.limitation == "" && len(d.context) == 0 {
+				candidate = d.text("所求结果仍待核实。", "The requested result remains unverified.")
 			}
 		}
 		if len(lines) == 0 && len(insertions) == 0 || d.comparisonLead != "" && !slices.ContainsFunc(d.facts, func(f terminalCoverageFact) bool { return f.Evidence.Kind == "body" }) {
@@ -701,6 +795,9 @@ func (d terminalCoverageDelivery) render(fallback bool, candidate string) string
 	}
 	if d.limitation != "" && (fallback || (len(lines) != 0 || len(insertions) != 0) && !d.citesCurrentDocument(candidate)) {
 		lines = append(lines, d.limitation)
+	}
+	if choice := d.versionChoice.render(d.chinese); choice != "" && !strings.Contains(candidate, choice) {
+		lines = append(lines, choice)
 	}
 	if len(insertions) != 0 {
 		if fallback && candidate != "" {
@@ -718,6 +815,107 @@ func (d terminalCoverageDelivery) render(fallback bool, candidate string) string
 		return strings.TrimSpace(candidate) + "\n\n" + strings.Join(lines, "\n\n")
 	}
 	return strings.Join(lines, "\n\n")
+}
+
+func (d terminalCoverageDelivery) supplementFactPresent(paragraphs []string, item coverageEvidence) bool {
+	if item.SourceTitle == "" || item.ChunkID == "" || item.ReportedValue == "" || item.Date == "" || item.Metric == "" && item.Subject == "" {
+		return false
+	}
+	return slices.ContainsFunc(paragraphs, func(paragraph string) bool {
+		if !slices.Contains(uniqueCandidateCitationIDs(paragraph), item.ChunkID) &&
+			(d.includeCitations || !terminalContainsLabel(paragraph, item.SourceTitle)) {
+			return false
+		}
+		for _, clause := range terminalClaimBreak.Split(sourceCitationTag.ReplaceAllStringFunc(paragraph, numericMask), -1) {
+			if coverageTextHasDate(clause, item.Date) &&
+				(item.Subject == "" || terminalContainsLabel(clause, item.Subject)) &&
+				(item.Metric == "" || terminalContainsLabel(clause, item.Metric)) &&
+				(item.Unit == "" || strings.Contains(clause, item.Unit)) &&
+				coverageClaimInBody(clause, 0, clause, item.ReportedValue, item.Unit) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func (d terminalCoverageDelivery) primarySourceOpening(paragraphs []string) ([]string, int, bool) {
+	if len(d.documentBodies) == 0 || d.comparisonLead != "" {
+		return paragraphs, -1, false
+	}
+	firstSupplement := slices.IndexFunc(paragraphs, d.supplementParagraph)
+	if firstSupplement < 0 {
+		return paragraphs, -1, false
+	}
+	if firstSupplement == 0 {
+		// A paragraph may already give the primary finding before the report.
+		// A report citation at its end does not make that opening a supplement.
+		sentences := terminalSentenceBreak.Split(paragraphs[0], 2)
+		if len(sentences) == 2 && !d.supplementParagraph(sentences[0]) {
+			return paragraphs, -1, false
+		}
+	}
+	var primary []int
+	var requiredPrimary bool
+	for _, fact := range d.facts {
+		if !fact.required {
+			continue
+		}
+		anchor := -1
+		switch {
+		case fact.Role == "coverage_boundary" || fact.Role == "last_valid_value":
+			present, found, _ := d.checkedFieldLocation(paragraphs, fact)
+			if present || fact.Role == "coverage_boundary" {
+				anchor = found
+			}
+		case fact.Role == "scoped_value" && fact.Evidence.SourceDomain == "structured":
+			anchor = slices.IndexFunc(paragraphs, func(paragraph string) bool {
+				return !d.supplementParagraph(paragraph) && terminalCoverageFactPresent(paragraph, fact)
+			})
+		default:
+			continue
+		}
+		requiredPrimary = true
+		if anchor >= 0 && !d.supplementParagraph(paragraphs[anchor]) && !slices.Contains(primary, anchor) {
+			primary = append(primary, anchor)
+		}
+	}
+	if len(primary) == 0 {
+		if requiredPrimary {
+			return append([]string{""}, paragraphs...), 0, true
+		}
+		return paragraphs, -1, false
+	}
+	slices.Sort(primary)
+	if primary[len(primary)-1] < firstSupplement {
+		return paragraphs, primary[0], false
+	}
+	ordered := make([]string, 0, len(paragraphs))
+	for _, index := range primary {
+		ordered = append(ordered, paragraphs[index])
+	}
+	for i, paragraph := range paragraphs {
+		if !slices.Contains(primary, i) {
+			ordered = append(ordered, paragraph)
+		}
+	}
+	return ordered, 0, true
+}
+
+func (d terminalCoverageDelivery) supplementParagraph(paragraph string) bool {
+	if d.citesCurrentDocument(paragraph) {
+		return true
+	}
+	return slices.ContainsFunc(d.documentBodies, func(item coverageEvidence) bool {
+		title := item.SourceTitle
+		if terminalContainsLabel(paragraph, title) {
+			return true
+		}
+		if i := strings.LastIndexByte(title, '.'); i > 0 {
+			return terminalContainsLabel(paragraph, title[:i])
+		}
+		return false
+	})
 }
 
 func (d terminalCoverageDelivery) directValueOpening() string {
@@ -909,16 +1107,17 @@ func terminalCoveragePeriod(from, to, period string) string {
 }
 
 var (
-	terminalClaimBreak  = regexp.MustCompile(`[。！？!?；;\n]+|\.[ \t]+`)
-	terminalDateSpacing = regexp.MustCompile(`[ \t]*([年月日])[ \t]*`)
-	terminalGapDisplay  = regexp.MustCompile(`(?i)(?:返回\s*)?(?:零|0)\s*条(?:有效)?(?:记录|观测值)|没有有效(?:记录|观测值)|有效(?:记录|观测)数(?:都|均)?(?:是|为|[:：=])\s*0\b|\b(?:0|no|zero) valid (?:records?|observations?)\b`)
-	terminalGroupedZero = regexp.MustCompile(`(?i)有效(?:记录|观测)数(?:都|均)(?:是|为|[:：=])\s*0\b|\b(?:all|each) (?:have|has) (?:0|zero) valid (?:records?|observations?)\b`)
-	terminalTableRow    = regexp.MustCompile(`(?m)^[ \t]*\|`)
-	terminalRangeJoin   = regexp.MustCompile(`(?i)^\s*(?:至|到|[-—–~～]|to|through)\s*$`)
-	terminalAssignment  = regexp.MustCompile("(?i)[:：=为是]|\\b(?:is|was)\\b")
-	terminalUnasserted  = regexp.MustCompile(`(?i)并非|不是|不能|无法|是否|\b(?:not|cannot|whether)\b`)
-	terminalWorkbookExt = regexp.MustCompile(`(?i)\.(?:xlsx|xlsm|xlsb|xls|ods|csv|tsv)\b`)
-	terminalDateLabel   = regexp.MustCompile(`(?i)最后有效日期|最后有值的日期|\b(?:last|latest) valid date\b`)
+	terminalClaimBreak    = regexp.MustCompile(`[。！？!?；;\n]+|\.[ \t]+`)
+	terminalSentenceBreak = regexp.MustCompile(`[。！？!?]+|\.[ \t]+`)
+	terminalDateSpacing   = regexp.MustCompile(`[ \t]*([年月日])[ \t]*`)
+	terminalGapDisplay    = regexp.MustCompile(`(?i)(?:返回\s*)?(?:零|0)\s*条(?:有效)?(?:记录|观测值)|没有有效(?:记录|观测值)|有效(?:记录|观测)数(?:都|均)?(?:是|为|[:：=])\s*0\b|\b(?:0|no|zero) valid (?:records?|observations?)\b`)
+	terminalGroupedZero   = regexp.MustCompile(`(?i)有效(?:记录|观测)数(?:都|均)(?:是|为|[:：=])\s*0\b|\b(?:all|each) (?:have|has) (?:0|zero) valid (?:records?|observations?)\b`)
+	terminalTableRow      = regexp.MustCompile(`(?m)^[ \t]*\|`)
+	terminalRangeJoin     = regexp.MustCompile(`(?i)^\s*(?:至|到|[-—–~～]|to|through)\s*$`)
+	terminalAssignment    = regexp.MustCompile("(?i)[:：=为是]|\\b(?:is|was)\\b")
+	terminalUnasserted    = regexp.MustCompile(`(?i)并非|不是|不能|无法|是否|\b(?:not|cannot|whether)\b`)
+	terminalWorkbookExt   = regexp.MustCompile(`(?i)\.(?:xlsx|xlsm|xlsb|xls|ods|csv|tsv)\b`)
+	terminalDateLabel     = regexp.MustCompile(`(?i)最后有效日期|最后有值的日期|\b(?:last|latest) valid date\b`)
 )
 
 // Check the displayed operands of a verified fact. A paragraph may establish
@@ -1151,7 +1350,7 @@ func terminalDisplayedValue(statement string, fact terminalCoverageFact, cited b
 		left := strings.TrimRight(strings.TrimSpace(statement[:assignment[0]]), "」”\"*` ")
 		hasLabel := item.Subject != "" && strings.HasSuffix(left, item.Subject) ||
 			item.Subject == "" && item.Metric != "" && strings.HasSuffix(left, item.Metric)
-		if !cited && !hasLabel && (item.Subject != "" || !terminalContainsLabel(statement, item.Cell)) {
+		if !cited && !hasLabel && !terminalContainsLabel(statement, item.Cell) {
 			continue
 		}
 		if match(masked[assignment[1]:]) {
@@ -1210,7 +1409,7 @@ func (d terminalCoverageDelivery) insertCheckedFacts(paragraphs []string, insert
 			output = append(output, at[i]...)
 			output = append(output, lines...)
 		} else if len(at[i]) != 0 {
-			if terminalTableRow.MatchString(paragraph) {
+			if paragraph == "" || terminalTableRow.MatchString(paragraph) {
 				output = append(output, at[i]...)
 			} else {
 				separator := " "
@@ -1230,6 +1429,9 @@ func (d terminalCoverageDelivery) insertCheckedFacts(paragraphs []string, insert
 func (d terminalCoverageDelivery) checkedFactSentence(facts []terminalCoverageFact) string {
 	fact := facts[0]
 	item := fact.Evidence
+	if fact.Role == "scoped_value" {
+		return terminalCoverageFactText(fact, d.chinese)
+	}
 	if item.SourceTitle == "" || item.Metric == "" {
 		return terminalCoverageFactText(fact, d.chinese)
 	}
@@ -1247,7 +1449,15 @@ func (d terminalCoverageDelivery) checkedFactSentence(facts []terminalCoverageFa
 			}
 			field += d.text("（"+strings.Join(subjects, "、")+"）", " ("+strings.Join(subjects, ", ")+")")
 		}
-		return fmt.Sprintf(d.text("%s中，%s 在 %s 没有有效记录。", "%s has no valid records for %s in %s."), source, field, period)
+		gap := d.text("%s中，%s 在 %s 没有有效记录。", "%s has no valid records for %s in %s.")
+		if d.chinese && item.Operation == "query_series" {
+			gap = "%s中，%s 在 %s 没有有效观测值。"
+		}
+		return fmt.Sprintf(gap, source, field, period)
+	}
+	if item.Kind == "last_valid" && item.Raw == nil && coverageDay(item.Date) != "" {
+		return fmt.Sprintf(d.text("%s中，%s 的最后有效日期是 %s。本轮尚未取得该日原值。", "%s records the latest valid date for %s as %s. This read verified the date."),
+			source, field, terminalEvidenceText(item.Date))
 	}
 	if item.Date == "" || item.Raw == nil {
 		return terminalCoverageFactText(fact, d.chinese)
@@ -1382,15 +1592,28 @@ func terminalCoverageFactText(fact terminalCoverageFact, chinese bool) string {
 		if len(details) > 0 {
 			title += " (" + strings.Join(details, ", ") + ")"
 		}
-		if fact.Role == "supplement" {
-			return fmt.Sprintf(d.text("补充资料 %s 的原文为“%s”。", "The supplemental source %s reports “%s”."), title, raw)
-		}
-		if fact.Role == "supplement_context" {
-			return fmt.Sprintf(d.text("补充资料 %s 按其披露口径载明“%s”。", "The supplemental source %s reports “%s” in its own reporting scope."), title, raw)
+		if fact.Role == "supplement" || fact.Role == "supplement_context" {
+			var cited string
+			if fact.includeCitation && item.CitationID != "" && item.CitationID == item.ChunkID && item.KnowledgeBaseID != "" {
+				cited = fmt.Sprintf(`<kb doc="%s" chunk_id="%s" kb_id="%s" />`, html.EscapeString(item.SourceTitle),
+					html.EscapeString(item.ChunkID), html.EscapeString(item.KnowledgeBaseID))
+			}
+			if item.ReportedValue != "" && item.Date != "" && firstNonEmptyAgent(item.Subject, item.Metric) != "" {
+				measure := terminalEvidenceText(strings.TrimSpace(item.Subject + " " + item.Metric))
+				value := terminalCoverageValueDetails(fact, chinese, terminalEvidenceText(item.ReportedValue), nil, false)
+				raw = d.text(measure+"为 "+value, measure+" is "+value)
+			}
+			if fact.adopted {
+				return fmt.Sprintf(d.text("本次补充采用 %s，按该材料的披露口径记录为“%s”%s。", "This answer uses %s as a supplement. It reports “%s” in its own reporting scope%s."), title, raw, cited)
+			}
+			return fmt.Sprintf(d.text("补充材料 %s 按其披露口径记载“%s”%s。", "Supplemental material %s reports “%s” in its own reporting scope%s."), title, raw, cited)
 		}
 		return fmt.Sprintf(d.text("%s 的原文为“%s”。", "%s reports “%s”."), title, raw)
 	}
 	raw = terminalCoverageValueDetails(fact, chinese, raw, details, false)
+	if fact.Role == "scoped_value" && item.SourceDomain == "structured" && item.SourceTitle != "" && item.Metric != "" {
+		return fmt.Sprintf(d.text("%s中，%s的原值为 %s。", "%s records %s as %s."), d.checkedFactSource(item), terminalEvidenceText(item.Metric), raw)
+	}
 	descriptor := d.text("原值", "Recorded value")
 	if item.LatestInScope || item.Kind == "last_valid" {
 		descriptor = d.text("已核查范围内的最近有效值", "Latest valid observation in the checked scope")

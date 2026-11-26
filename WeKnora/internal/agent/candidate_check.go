@@ -62,6 +62,9 @@ type turnReviewState struct {
 	ReadEvidence             *reviewEvidenceHandoff
 	ClosedStreams            map[string]bool
 	Committed                bool
+	TerminalStreamID         string
+	TerminalTruncated        bool
+	DeferTerminalClose       bool
 	Query                    string
 	Conversation             []chat.Message
 	TaskConversation         []chat.Message
@@ -84,6 +87,7 @@ type turnReviewState struct {
 	CoverageDraft              candidateDecision
 	CoverageDraftFacts         []string
 	CoverageDraftDeliveryHash  string
+	TableComparisonDelivery    tableComparisonDeliveryReceipt
 }
 
 // Preserve the existing two numeric and two semantic repair allowances while
@@ -432,6 +436,7 @@ func (e *AgentEngine) invalidateCandidateTask() {
 	e.turnReview.CoverageDraft = candidateDecision{}
 	e.turnReview.CoverageDraftFacts = nil
 	e.turnReview.CoverageDraftDeliveryHash = ""
+	e.turnReview.TableComparisonDelivery = tableComparisonDeliveryReceipt{}
 }
 
 func (e *AgentEngine) rememberCoverageDraft(ctx context.Context, decision candidateDecision, reasoning string, state *types.AgentState) {

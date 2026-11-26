@@ -139,6 +139,24 @@ func IsCurrentDocumentRead(registry *ToolRegistry, result *types.ToolResult) boo
 	return true
 }
 
+// DocumentScopeAllowsAssociation protects a later semantic association from
+// widening an already verified document binding.
+func DocumentScopeAllowsAssociation(registry *ToolRegistry, knowledgeID string) bool {
+	if registry == nil || knowledgeID == "" {
+		return false
+	}
+	tool, err := registry.GetTool(ToolBindDocumentScope)
+	if err != nil {
+		return true
+	}
+	binder, ok := tool.(*bindDocumentScopeTool)
+	if !ok || binder.state == nil {
+		return false
+	}
+	ids := binder.state.selectedIDs()
+	return len(ids) == 0 || slices.Contains(ids, knowledgeID)
+}
+
 // Multi-document searches carry actual row identities and document_ids rather
 // than one document_scope. Reuse each row only while its real document remains
 // selected. User page restrictions still require the reader's explicit page

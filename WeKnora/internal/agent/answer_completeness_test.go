@@ -133,12 +133,12 @@ func TestStalledShortAnswerUsesSemanticFormatVerification(t *testing.T) {
 			recorder.attach(engine.eventBus)
 			state := &types.AgentState{}
 			engine.finishStalledTurn(context.Background(), state, "session", &types.ChatResponse{Content: test.answer, FinishReason: "incomplete"}, false, test.question, nil)
-			want := stalledAnswerFallback
-			if test.complete {
-				want = test.answer
-			}
 			require.True(t, state.IsComplete)
-			require.Equal(t, want, state.FinalAnswer)
+			if test.complete {
+				require.Equal(t, test.answer, state.FinalAnswer)
+			} else {
+				requireTerminalEvidenceGap(t, state.FinalAnswer)
+			}
 			require.Len(t, model.calls, 1)
 			var input map[string]any
 			require.NoError(t, json.Unmarshal([]byte(model.calls[0][1].Content), &input))
@@ -146,7 +146,7 @@ func TestStalledShortAnswerUsesSemanticFormatVerification(t *testing.T) {
 			require.Equal(t, test.answer, input["candidate_answer"])
 			emitted := recorder.snapshot()
 			require.Len(t, emitted, 2)
-			require.Equal(t, want, emitted[0].Content)
+			require.Equal(t, state.FinalAnswer, emitted[0].Content)
 			require.True(t, emitted[1].Done)
 		})
 	}
@@ -159,7 +159,7 @@ func TestStalledShortAnswerInvalidVerdictIsRuntimeFailure(t *testing.T) {
 	state := &types.AgentState{}
 	engine.finishStalledTurn(context.Background(), state, "session", &types.ChatResponse{Content: "6", FinishReason: "incomplete"}, true, "Return the requested symbol.", nil)
 	require.True(t, state.IsComplete)
-	require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer)
+	requireTerminalEvidenceGap(t, state.FinalAnswer)
 }
 
 func TestAbnormalShortAnswerDoesNotStreamBeforeSemanticVerification(t *testing.T) {

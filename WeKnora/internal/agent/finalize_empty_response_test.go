@@ -145,7 +145,7 @@ func TestFinalEmptyDeliveryRecoveryDoesNotReclassifyOtherResponses(t *testing.T)
 			if test.name == "unsupported nonempty answer" {
 				require.Contains(t, state.FinalAnswer, "999〔数字待核对〕")
 			} else {
-				require.Contains(t, []string{incompleteAnswerFallback, finalNumericFailureFallback}, state.FinalAnswer)
+				requireTerminalEvidenceGap(t, state.FinalAnswer)
 			}
 		})
 	}
@@ -186,7 +186,7 @@ func TestFinalEmptyDeliveryRecoveryKeepsExistingModeAndExhaustedBudget(t *testin
 		require.NoError(t, engine.streamFinalAnswerToEventBus(t.Context(), "Report the result.", state, "session", emptyMessages()))
 		require.Len(t, model.calls, 1, "delivery recovery cannot create a new repair allowance")
 		require.Equal(t, existingMode, isReviewedAnswerFormat(model.opts[0].Format))
-		require.Equal(t, incompleteAnswerFallback, state.FinalAnswer)
+		requireTerminalEvidenceGap(t, state.FinalAnswer)
 	}
 }
 

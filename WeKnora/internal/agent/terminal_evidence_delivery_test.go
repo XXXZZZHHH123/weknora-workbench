@@ -23,7 +23,7 @@ func TestTerminalEvidenceCompletionFallback(t *testing.T) {
 		omit       []string
 	}{
 		{name: "native facts without declarations", want: []string{
-			"Elapsed time 在已核查范围 2021-07-02", "Equipment.xlsx", "Operating hours", "2021-06-03", "47.25", "A15", "B15", "单位未确认",
+			"「Elapsed time」 在 2021-07-02 没有有效观测值", "Equipment.xlsx", "Operating hours", "2021-06-03", "47.25", "A15", "B15", "单位未确认",
 		}, omit: []string{"2021-01-01", "Unrelated field", "其余要求"}},
 		{name: "normal delivery does not attach an unlinked field", submission: "Readings in scope were reviewed.", want: []string{"Readings in scope were reviewed."}, omit: []string{"2021-01-01", "Unrelated field", "47.25"}},
 		{name: "normal delivery supplements a checked field", submission: "Equipment.xlsx, Operating hours. Elapsed time had no valid records on 2021-07-02.\n\nThe requested day remains uncovered.",
@@ -75,7 +75,7 @@ func TestTerminalEvidenceCompletionFallback(t *testing.T) {
 		}, want: []string{"2021-07-02", "47.25", "B15"}, omit: []string{answerReviewUnavailableFallback}},
 		{name: "exact format", alter: func(e *AgentEngine, _ *types.AgentState) {
 			e.taskPlan = &taskEvidencePlan{DeliveryRequirements: []taskDeliveryRequirement{{Kind: "text", Format: "exact"}}}
-		}, want: []string{answerReviewUnavailableFallback}, omit: []string{"47.25"}},
+		}, want: []string{"2021-07-02", "47.25", "B15"}, omit: []string{answerReviewUnavailableFallback}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
@@ -249,7 +249,6 @@ func TestTerminalCoverageSameMetricSeriesStayDistinct(t *testing.T) {
 	require.Equal(t, 1, strings.Count(answer, "units unconfirmed"), answer)
 	require.Equal(t, answer, delivery.render(false, answer))
 
-	delivery.naturalSQLFallback = true
 	for i := range delivery.facts {
 		last := &delivery.facts[i].Evidence
 		last.Operation, last.Complete, last.LatestInScope = "analyze_table", true, true
@@ -281,7 +280,7 @@ func TestTerminalSQLFollowUpWithoutDraft(t *testing.T) {
 			r := newQA4Stage2CReplay(t, "s2-3-kb16-bounded-latest", true, false)
 			r.calls(r.trace.Calls)
 			ctx := context.WithValue(r.ctx, types.LanguageContextKey, tt.language)
-			fallback := r.engine.terminalCoverageFailure(ctx, r.state, answerReviewUnavailableFallback)
+			fallback := r.engine.terminalCoverageFailure(ctx, r.state)
 			for _, expected := range []string{tt.gap, tt.endpoint, "CF.CZC", "A4705", "B4705"} {
 				require.Contains(t, fallback, expected)
 			}

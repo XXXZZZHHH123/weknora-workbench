@@ -14,21 +14,16 @@ import (
 // publishAnswer reuses an existing stream, or emits the buffered candidate
 // once. Closing remains separate so a queued human correction can continue.
 func (e *AgentEngine) publishAnswer(ctx context.Context, sessionID, answer, existingID string, truncated bool) string {
-	if ctx.Err() != nil {
+	answer = stripCoverageAnswer(answer)
+	if ctx.Err() != nil || terminalCandidateFallback(answer) ||
+		!e.turnReview.Committed && (e.holdCollaborationAnswer || e.terminalEvidenceCompletionPending()) {
 		return ""
 	}
 	if existingID != "" {
 		return existingID
 	}
-	// analyzeResponse may encounter a runtime placeholder before the terminal
-	// outlet selects a current candidate. Do not stream that placeholder and
-	// then append its replacement as a second answer.
-	answer = stripCoverageAnswer(answer)
-	if !e.turnReview.Committed && (terminalCandidateFallback(answer) || e.terminalEvidenceCompletionPending()) {
-		return ""
-	}
 	id := generateEventID("answer")
-	if e.eventBus != nil && !e.holdCollaborationAnswer {
+	if e.eventBus != nil {
 		_ = e.eventBus.Emit(ctx, event.Event{ID: id, Type: event.EventAgentFinalAnswer, SessionID: sessionID, Data: event.AgentFinalAnswerData{Content: answer, Done: false, Truncated: truncated}})
 	}
 	return id
@@ -62,10 +57,21 @@ const (
 	finalNumericFailureFallback = "已有取数依据，但完整回答的部分数字未通过来源核验。此次暂不提供未经核验的统计结论，请查看来源或重试。"
 )
 
+var terminalFallbacks = [...]string{
+	answerReviewUnavailableFallback, incompleteAnswerFallback, stalledAnswerFallback, sourceProgressStalledFallback,
+	truncatedAnswerFallback, numericFailureFallback, finalNumericFailureFallback,
+}
+
 func terminalCandidateFallback(answer string) bool {
 	answer = strings.TrimSpace(answer)
-	return answer == answerReviewUnavailableFallback || answer == incompleteAnswerFallback || answer == stalledAnswerFallback ||
-		answer == sourceProgressStalledFallback || answer == truncatedAnswerFallback || answer == numericFailureFallback || answer == finalNumericFailureFallback || answer == ""
+	return answer == "" || slices.Contains(terminalFallbacks[:], answer)
+}
+
+// A streamed prefix can still become a runtime placeholder. Wait until the
+// content distinguishes it from every placeholder before sending the prefix.
+func terminalFallbackPrefix(prefix string) bool {
+	prefix = strings.TrimSpace(prefix)
+	return slices.ContainsFunc(terminalFallbacks[:], func(fallback string) bool { return strings.HasPrefix(fallback, prefix) })
 }
 
 // Only checked candidates or explicit runtime failure messages reach this
@@ -74,7 +80,6 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	if ctx.Err() != nil || e.turnReview.Committed {
 		return
 	}
-	e.turnReview.Committed = true
 	answer = stripCoverageAnswer(answer)
 	markedNumbers := 0
 	markedCitations := 0
@@ -131,11 +136,7 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 			}
 		}
 	}
-	if terminalCandidateFallback(answer) {
-		if delivery := e.terminalCoverageFailure(ctx, state, answer); delivery != answer {
-			answer, existingID, outcome, truncated = delivery, "", "evidence_incomplete", false
-		}
-	} else if e.evidenceCompletionEnabled() && (outcome == "answer" || outcome == "partial" || coverageDraft ||
+	if !terminalCandidateFallback(answer) && e.evidenceCompletionEnabled() && (outcome == "answer" || outcome == "partial" || coverageDraft ||
 		outcome == "stalled" && e.candidateApprovalCurrent(answer, state)) {
 		base := answer
 		answer = e.terminalCoverageDelivery(ctx, state, false).render(false, base)
@@ -150,10 +151,38 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 			e.turnReview.Last.Candidate, e.turnReview.Last.CandidateHash = answer, candidateTextDigest(answer)
 		}
 	}
+	if comparison, complete, handled := e.terminalTableComparison(ctx, state); handled {
+		if comparison != answer {
+			existingID = ""
+		}
+		answer, truncated = comparison, false
+		markedCitations, markedNumbers = 0, 0
+		outcome = "evidence_partial"
+		if complete {
+			outcome = "answer"
+		}
+		e.turnReview.TableComparisonDelivery = tableComparisonDeliveryReceipt{candidateTextDigest(answer), e.tableComparisonDeliveryRevision(ctx, state)}
+	} else if e.evidenceCompletionEnabled() && e.evidenceCompletion.legacyGap != "" && e.evidenceCompletion.stopReason != "" &&
+		len(e.evidenceCompletionTargets()) == 0 && !e.candidateApprovalCurrent(answer, state) {
+		// A draft cannot settle an unresolved semantic requirement without a
+		// current association. Preserve the verified primary-gap route, which
+		// reports that gap and separately attributed source evidence.
+		delivery := e.terminalCoverageDelivery(ctx, state, true)
+		if !delivery.hasGap() {
+			answer, existingID, outcome, truncated = delivery.render(true, ""), "", "evidence_partial", false
+		}
+	}
 	answer = stripCoverageAnswer(answer)
-	id := e.publishAnswer(ctx, sessionID, answer, existingID, truncated)
-	e.closeAnswerStream(ctx, sessionID, id, truncated)
+	if terminalCandidateFallback(answer) {
+		answer, existingID, outcome, truncated = e.terminalCoverageFailure(ctx, state), "", "evidence_incomplete", false
+	}
+	e.turnReview.Committed = true
 	state.FinalAnswer = answer
 	state.IsComplete = true
+	id := e.publishAnswer(ctx, sessionID, answer, existingID, truncated)
+	e.turnReview.TerminalStreamID, e.turnReview.TerminalTruncated = id, truncated
+	if !e.turnReview.DeferTerminalClose {
+		e.closeAnswerStream(ctx, sessionID, id, truncated)
+	}
 	common.PipelineInfo(ctx, "Agent", "terminal_commit", map[string]interface{}{"outcome": outcome, "candidate_hash": candidateTextDigest(answer), "repairs": e.turnReview.Repairs, "checks": e.turnReview.Checks, "marked_numeric_count": markedNumbers, "marked_citation_count": markedCitations})
 }
