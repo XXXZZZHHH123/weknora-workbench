@@ -54,9 +54,9 @@ func TestStandardAnswerGuidanceReachesPlannerAndExecutionWithoutChangingUserScop
 					require.Contains(t, prompt, "所选资料库的近期目录未列出相关文件时，仍按事件查找，不只凭库名或标签排除相关资料")
 					require.Regexp(t, `对象、方向和区间或时长.*当期观察、随后变化和预测.*摘要和明细沿用同一口径`, prompt)
 					require.Contains(t, prompt, "比较重复与更新时按类别说明，区分预告与结果披露")
-					require.Contains(t, prompt, "从同主题目录选相关期次，首批各次读取携同一完整 source_scope 实读主题所在位置，导航摘录仅供定位")
-					require.Contains(t, prompt, "按实际资料日期归并沿用期、更新前后值及分项、后续复述期次")
-					require.Contains(t, prompt, "复述不另计更新")
+					require.Contains(t, prompt, "用系列材料的实例解释术语或指标且有沿用或修订线索时，从同主题目录选相关沿用期、修订期和后续期")
+					require.Contains(t, prompt, "首批各次读取携同一完整 source_scope 实读同一事项，覆盖至范围内最新复述期。导航摘录仅供定位")
+					require.Contains(t, prompt, "完成条件包括按实读日期交代各期沿用、修订前后值及分项、后续复述和各期出处，复述不另计修订")
 					require.Contains(t, prompt, "所问表有原题时按原题独立定位，以实际包含所问观测期的表为准；若命中另一表题或另一观测粒度，回到指定原件找目标表")
 					require.Contains(t, prompt, "按真实行列方向和分隔位置对齐所问期次与完整字段，列出各来源的行标、列名及交点原值，带回对应的可核分项")
 					require.Contains(t, prompt, "日期写法不同时核对实际观测期；有源定义差异的证据才判定口径不同")
@@ -64,6 +64,8 @@ func TestStandardAnswerGuidanceReachesPlannerAndExecutionWithoutChangingUserScop
 					require.Contains(t, prompt, "直接披露的原值不能用邻项、他源数值或重建值代替")
 					require.Contains(t, prompt, "区分百分比增幅和基期指数")
 					require.Contains(t, prompt, "用已读的本期和基期原值复算，按各自披露精度舍入")
+					require.Contains(t, prompt, "总数有差异时，一并读取两侧同期直接组成项的原格值，随各自总数列示")
+					require.Contains(t, prompt, "引用公式时照抄原式，保留各项运算符")
 					require.Contains(t, prompt, "能核实保存或披露先后时，说明较晚资料给出的值")
 					require.Contains(t, prompt, "先说本次采用哪版及理由，依次遵循用户指定、已核实的正式勘误、可辨认的正式版或原始版")
 					require.Contains(t, prompt, "证据等强时也点名一份已核版本暂用")
@@ -261,8 +263,8 @@ func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 	const reportID = "contract-document"
 	const reportFile = "6月10日设备巡检周报"
 	const reportChunk = "inspection-report-page"
-	const dbConclusion = "设备台账没有6月10日的记录，这项指标最后有值是2021年6月7日。"
-	const supplement = "另据6月10日设备巡检周报第2页，运行时长为13小时。"
+	const dbConclusion = "设备台账6月10日未查到运行时长，这项指标最后有值是2021年6月7日。"
+	const supplement = "另据6月10日设备巡检周报第2页，受检设备累计运行时长为13小时。"
 
 	for _, onlyTable := range []bool{false, true} {
 		name := "authorized supplement"
@@ -278,7 +280,10 @@ func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 				question += "只查设备台账这张表。"
 				discovery = "recover"
 			} else {
-				responses = append(responses, chatToolCall("report", agenttools.ToolReadDocument, `{"id":"`+reportID+`","page":2}`))
+				responses = append(responses,
+					chatToolCall("report", agenttools.ToolReadDocument, `{"id":"`+reportID+`","page":2}`),
+					chatAnswer(dbConclusion+supplement+"粗估为17小时。"),
+				)
 				answer += supplement + `<ref id="c1" />`
 			}
 			model := &taskPlannerChat{
@@ -299,7 +304,7 @@ func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 				Title: reportFile, FileName: reportFile + ".pdf", FileType: "pdf", ParseStatus: types.ParseStatusCompleted}
 			chunks := &citationContractChunkRepository{rows: []*types.Chunk{{
 				ID: reportChunk, KnowledgeID: report.ID, KnowledgeBaseID: report.KnowledgeBaseID, TenantID: 7,
-				ChunkType: types.ChunkTypeText, IsEnabled: true, Content: "# 第2页\n\n2021年6月10日，设备运行时长为13小时。",
+				ChunkType: types.ChunkTypeText, IsEnabled: true, Content: "# 第2页\n\n2021年6月10日，受检设备累计运行时长为13小时。",
 				SourceLocators: types.SourceLocators{{Type: types.SourceLocatorPDF, Page: 2, SourceHash: strings.Repeat("b", 64)}},
 			}}}
 			engine.toolRegistry.RegisterTool(table)
@@ -313,6 +318,10 @@ func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 			require.True(t, state.IsComplete)
 			require.Equal(t, 1, table.calls)
 			require.Len(t, model.calls, len(responses)+1)
+			require.Len(t, model.requests, 1)
+			planner := model.requests[0][0].Content
+			require.Contains(t, planner, "按用户原意区分点名首查与排他限源，未限定时写明未限定，明确限源时只在范围内交付")
+			require.Contains(t, planner, "用户未排除补充且有同期授权线索，把主源缺口及按各来源原口径分别交付的已核原值、日期和出处列为完成条件")
 			input := rawMessageText(model.calls[1])
 			require.Contains(t, input, question)
 			require.Contains(t, input, "这项指标最后有值是某年某月某日")
@@ -338,10 +347,16 @@ func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 			} else {
 				require.Equal(t, 1, docReads)
 				require.Contains(t, listToolNames(model.opts[1].Tools), agenttools.ToolReadDocument)
-				finalInput := rawMessageText(model.calls[2])
-				require.Contains(t, finalInput, reportFile)
-				require.Contains(t, finalInput, "设备运行时长为13小时")
+				readInput := rawMessageText(model.calls[2])
+				require.Contains(t, readInput, reportFile)
+				require.Contains(t, readInput, "受检设备累计运行时长为13小时")
+				repair := model.calls[3][len(model.calls[3])-1]
+				require.Equal(t, "system", repair.Role)
+				require.Contains(t, repair.Content, `"token":"17"`)
+				require.Contains(t, repair.Content, "修订保留能回答所问的已核原值、日期和各自出处，缺引文时补引载值原文")
+				require.Contains(t, repair.Content, "按各来源原口径分别交付，不要求用户选择口径")
 				require.True(t, strings.HasPrefix(state.FinalAnswer, dbConclusion+supplement))
+				require.NotContains(t, state.FinalAnswer, "17小时")
 				require.Equal(t, []string{reportChunk}, uniqueCandidateCitationIDs(state.FinalAnswer))
 			}
 		})

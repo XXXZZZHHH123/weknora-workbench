@@ -369,6 +369,47 @@ func TestUnboundSearchProjectsSamePeriodFilesAndComparisonGuidance(t *testing.T)
 	require.Contains(t, projected, "<hint>"+notice+"</hint>")
 }
 
+func TestNavigationEstimateCitesItsReadPage(t *testing.T) {
+	const estimate = "Projected output is 76 units, including 18 from the eastern district."
+	read, repo := newReadDocumentFixture(2)
+	source, neighbor := repo.ordered[0], repo.ordered[1]
+	source.Content = "<!-- PDF page 4 -->\n" + estimate
+	source.SourceLocators = types.SourceLocators{{Type: types.SourceLocatorPDF, Page: 4, Mapping: "exact"}}
+	neighbor.Content = "<!-- PDF page 5 -->\nThe forecast was revised."
+	index := &documentRecallIndex{keywordOnly: true, results: []*types.SearchResult{{
+		ID: source.ID, KnowledgeID: source.KnowledgeID, KnowledgeBaseID: source.KnowledgeBaseID,
+		Content: estimate, SourceLocators: source.SourceLocators, Score: 1,
+	}}}
+	scope := NewDocumentScopeState()
+	search := NewSearchKnowledgeTool(index, read.knowledgeService, read.chunkService, read.searchTargets, nil, nil).WithDocumentConstraint(scope)
+	result, err := search.Execute(t.Context(), json.RawMessage(`{"query":"projected output","mode":"keyword"}`))
+	require.NoError(t, err)
+	require.True(t, result.Success, result.Error)
+	model := modelcontext.NewRegistry(true)
+	preview := model.ModelToolResultForTool(ToolSearchKnowledge, result)
+	require.Contains(t, preview, `navigation_only="true" requires_read="true" page_hint="4"`)
+	require.Contains(t, preview, estimate)
+	require.Contains(t, preview, "数值只引用实读文件中载有该值的段落或图表")
+	require.Contains(t, preview, "将该文件的对应页纳入同一批读取，从载值段落引用")
+	require.Contains(t, preview, "其中披露的预测年度、总量、分区量及相应增幅")
+	require.Empty(t, model.CitableChunkHandle(source.ID))
+
+	doc := result.Data["documents"].([]map[string]any)[0]
+	match := doc["navigation_matches"].([]map[string]any)[0]
+	args, err := json.Marshal(map[string]any{"id": doc["knowledge_id"], "page": match["page_hint"]})
+	require.NoError(t, err)
+	page, err := read.WithDocumentConstraint(scope).Execute(t.Context(), args)
+	require.NoError(t, err)
+	require.True(t, page.Success, page.Error)
+	require.Equal(t, []string{source.ID}, chunkIDsFromData(t, page.Data))
+	row := page.Data["chunks"].([]map[string]any)[0]
+	require.Equal(t, doc["knowledge_id"], row["knowledge_id"])
+	require.Equal(t, match["page_hint"], row["page"])
+	require.Contains(t, model.ModelToolResultForTool(ToolReadDocument, page), estimate)
+	require.NotEmpty(t, model.CitableChunkHandle(source.ID))
+	require.Empty(t, model.CitableChunkHandle(neighbor.ID))
+}
+
 func TestVerifiedScopeIsPerTurnAndSupportsExplicitComparativePlans(t *testing.T) {
 	read, _ := reportScopeFixture(t, "first20240310.pptx", "second20250310.pptx")
 	require.Contains(t, read.Description(), "pass the same complete source_scope on every read")

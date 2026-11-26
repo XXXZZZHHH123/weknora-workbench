@@ -126,6 +126,7 @@ func TestReadDocumentReviewWithoutInlineCitationsRetainsAllViews(t *testing.T) {
 			require.Contains(t, model.calls[0][0].Content, "A filename or a different measure alone establishes no authority.")
 			require.Contains(t, model.calls[0][0].Content, "A related but differently defined measure cannot corroborate the requested measure.")
 			require.Contains(t, model.calls[0][0].Content, "Preserve separate attribution for differing versions and independent sources.")
+			require.Contains(t, model.calls[0][0].Content, "Change the institution, country or entity being measured only if the corresponding table title or passage in that source directly supports the replacement.")
 		})
 	}
 }
