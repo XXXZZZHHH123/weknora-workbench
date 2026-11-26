@@ -168,6 +168,11 @@ func runQA4HistoricalReplay(t *testing.T, id, future string) {
 	e.reviewConversation, e.reviewConversationReady = conversationThroughLastHuman(messages), true
 	messages = e.planWorkbenchTask(ctx, state, trace.Question, messages, "session")
 	require.Equal(t, len(trace.Plan) == 0 || string(trace.Plan) == "null", e.taskPlan == nil, "old or unavailable plan")
+	if e.taskPlan != nil {
+		for _, target := range e.taskPlan.CoverageTargets {
+			require.Nil(t, target.StructuredTaskGoal, "historic text does not declare a structured scope")
+		}
+	}
 	guards := &loopGuards{}
 	sources, expectedCalls := map[string]int{}, map[string]int{"agent_task_plan": 1}
 	var lastAnswer string
@@ -289,7 +294,7 @@ func TestQA4ReplayPendingCoverage(t *testing.T) {
 	t.Setenv("COMMODITY_RESEARCH_TOKEN_FILE", "")
 	t.Setenv("STRUCTURED_DATA_URL", "")
 	t.Run("stage_1_explicit_source_mode", func(t *testing.T) {
-		t.Skip("stage 1 will accept a structured plan with an explicit source mode")
+		t.Setenv("WEKNORA_AGENT_STRUCTURED_TASK_PLAN", "")
 		const planJSON = `{"goals":["先查台账"],"evidence":[],"tool_names":[],"completion_criteria":["给出记录"],"coverage_targets":[{"goal_index":0,"request_basis":"先查台账","criteria":"给出记录","source_scope":"首查台账","source_mode":"named_first"}]}`
 		plan, err := decodeTaskEvidencePlan(planJSON, nil, 0)
 		require.NoError(t, err)

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/xml"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -128,6 +129,67 @@ func TestRuntimeDocumentDirectoryUsesRemainingTitleBudget(t *testing.T) {
 	for _, omitted := range []string{"乙", strings.Repeat("&amp;", 32), "丙", "丁", "Eleventh entry", "title-only-id", "title-only-chunk", "not a navigation title"} {
 		require.NotContains(t, context, omitted)
 	}
+}
+
+func TestRuntimeDocumentDirectoryCoverageUsesAuthorizedCandidates(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_STRUCTURED_TASK_PLAN", "true")
+	const date = "2025-02-04"
+	const title = `Versions <&>"`
+	engine := &AgentEngine{
+		config: &types.AgentConfig{WorkbenchDefault: true, TaskPlanningEnabled: true, SearchTargets: types.SearchTargets{
+			{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "whole"},
+			{Type: types.SearchTargetTypeKnowledge, KnowledgeBaseID: "file-base", KnowledgeIDs: []string{"pinned-id"}, ScopeTagIDs: []string{"tag-id"}},
+			{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "tag-base", ScopeTagIDs: []string{"tag-id"}},
+		}},
+		modelContext: modelcontext.NewRegistry(true),
+		knowledgeBasesInfo: []*KnowledgeBaseInfo{
+			{ID: "whole", DocCount: 9, RecentDocs: []RecentDocInfo{
+				{KnowledgeID: "initial-one", Title: strings.Repeat("甲", 160), CreatedAt: `"><foreign/>`},
+				{KnowledgeID: "initial-two", Title: strings.Repeat("&", 34)},
+				{KnowledgeID: "budget-hidden", Title: strings.Repeat("乙", 159) + "&"},
+				{KnowledgeID: "version-one", Title: title, CreatedAt: date},
+				{KnowledgeID: "version-two", Title: title, CreatedAt: date},
+				{Title: "No source ID"},
+			}},
+			{ID: "file-base", DocCount: 22, RecentDocs: []RecentDocInfo{{KnowledgeID: "hidden-file", Title: "Outside files"}},
+				Profile: &types.KnowledgeBaseProfile{Gist: "Full library profile"}},
+			{ID: "tag-base", DocCount: 32, RecentDocs: []RecentDocInfo{{KnowledgeID: "hidden-tag", Title: "Outside tags"}}},
+			{ID: "ungranted-base", Name: "Unavailable base"},
+		},
+		selectedDocs: []*SelectedDocumentInfo{{KnowledgeID: "pinned-id", KnowledgeBaseID: "file-base", Title: "Selected file"}},
+	}
+	hiddenFile := `knowledge_id="` + engine.modelContext.RegisterDocument("hidden-file") + `"`
+	hiddenTag := `knowledge_id="` + engine.modelContext.RegisterDocument("hidden-tag") + `"`
+	targets := engine.config.SearchTargets
+	require.True(t, tools.SearchTargetsIncludeSource(targets, "file-base", "pinned-id"))
+	require.False(t, tools.SearchTargetsIncludeSource(targets, "file-base", "hidden-file"))
+	require.False(t, tools.SearchTargetsIncludeSource(targets, "tag-base", "hidden-tag"))
+	content := engine.RenderUserTurnContent("session", "")
+	require.Contains(t, content, `<coverage shown="3" omitted="3" outside_recent="3"`)
+	require.Contains(t, content, "Continue via authorized directory tools.")
+	require.Equal(t, 2, strings.Count(content, `added_at="`))
+	require.Equal(t, 2, strings.Count(content, ` scope="selected"`))
+	for i, id := range []string{"version-one", "version-two"} {
+		handle := engine.modelContext.RegisterDocument(id)
+		require.Contains(t, content, fmt.Sprintf(`<title knowledge_id="%s" chunk_id="" position="%d" added_at="%s">Versions &lt;&amp;&gt;&quot;</title>`, handle, i+4, date))
+	}
+	require.Contains(t, content, `title="Selected file"`)
+	for _, hidden := range []string{"乙", strings.Repeat("&amp;", 34), "No source ID", "<foreign", "Outside files", "Outside tags", "Unavailable base", "Full library profile", `doc_count="22"`, `doc_count="32"`} {
+		require.NotContains(t, content, hidden)
+	}
+	require.NotContains(t, content, hiddenFile)
+	require.NotContains(t, content, hiddenTag)
+	t.Setenv("WEKNORA_AGENT_STRUCTURED_TASK_PLAN", "false")
+	content = engine.RenderUserTurnContent("session", "")
+	require.Contains(t, content, strings.Repeat("&amp;", 34))
+	require.Contains(t, content, `<name>Outside tags</name>`)
+	require.Contains(t, content, hiddenTag)
+	require.NotContains(t, content, `<coverage`)
+	t.Setenv("WEKNORA_AGENT_STRUCTURED_TASK_PLAN", "true")
+	engine.config.TaskPlanningEnabled = false
+	require.Equal(t, content, engine.RenderUserTurnContent("session", ""))
+	engine.config.TaskPlanningEnabled, engine.config.WorkbenchDefault = true, false
+	require.Equal(t, content, engine.RenderUserTurnContent("session", ""))
 }
 
 func TestFinalSynthesisKeepsConversationRolesImagesAndSteering(t *testing.T) {

@@ -1,0 +1,19 @@
+{
+  "off_new": {},
+  "off_old": {},
+  "unavailable": {},
+  "wrong_human_turn": {"basis_turn": 1},
+  "assistant_quote": {"restriction_basis": "Assistant-only restriction."},
+  "runtime_quote": {"restriction_basis": "Runtime-only restriction."},
+  "attached_quote": {"restriction_basis": "Attached limitation."},
+  "current_rendered_quote": {"restriction_basis": "Rendered-only restriction."},
+  "unmarked_user": {"restriction_basis": "Unmarked user restriction."},
+  "selected_outside_scope": {"primary_ref": "doc://2"},
+  "unverified_source_handle": {"primary_ref": "doc://9999"},
+  "unverified_restriction_handle": {"restriction_basis": "doc://9999"},
+  "conflicting_gap": {"on_verified_gap": ["attributed_supplement"]},
+  "missing_limit": {"restriction_basis": null},
+  "unknown_scope_mode": {"source_mode": "exclusive"},
+  "unknown_field": {"completion_status": "complete"},
+  "invalid_period": {"period": {"grain": "day", "count": -1}}
+}

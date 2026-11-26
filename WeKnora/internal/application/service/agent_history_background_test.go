@@ -33,13 +33,15 @@ func rolesAndContents(msgs []chat.Message) [][2]string {
 }
 
 func TestAssistantHistoryReplaysBackgroundInjectionBeforeItsStep(t *testing.T) {
-	got := rolesAndContents(buildAssistantHistoryMessages(backgroundStepAssistant()))
+	messages := buildAssistantHistoryMessages(backgroundStepAssistant())
+	got := rolesAndContents(messages)
 
 	require.Equal(t, [][2]string{
 		{"user", replayNotice},
 		{"assistant", "checking the build"},
 		{"assistant", "all green"},
 	}, got)
+	require.Nil(t, messages[0].HumanContent)
 }
 
 func TestTurnBodyReplaysSteerThenBackgroundThenStep(t *testing.T) {

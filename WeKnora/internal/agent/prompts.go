@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/agent/skills"
+	"github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/config"
 	"github.com/Tencent/WeKnora/internal/sandbox"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -211,32 +212,39 @@ func AvailablePlaceholders() []PlaceholderDefinition {
 }
 
 // formatKnowledgeBaseList formats knowledge base information as XML for the prompt
-func formatKnowledgeBaseList(kbInfos []*KnowledgeBaseInfo) string {
+func formatKnowledgeBaseList(kbInfos []*KnowledgeBaseInfo, directoryScope ...types.SearchTargets) string {
 	if len(kbInfos) == 0 {
 		return "<knowledge_bases />"
 	}
 
 	var b strings.Builder
+	coverage := len(directoryScope) > 0
 	b.WriteString("<knowledge_bases>\n")
 	for _, kb := range kbInfos {
-		if kb == nil {
+		if kb == nil || coverage && !directoryScope[0].ContainsKB(kb.ID) {
 			continue
 		}
 		kbType := kb.Type
 		if kbType == "" {
 			kbType = "document"
 		}
-		fmt.Fprintf(&b, "<knowledge_base id=\"%s\" name=\"%s\" type=\"%s\" doc_count=\"%d\" capabilities=\"%s\">\n",
-			escapeXMLAttr(kb.ID), escapeXMLAttr(formatDocSummary(kb.Name, 160)), escapeXMLAttr(kbType), kb.DocCount,
-			escapeXMLAttr(strings.Join(kb.Capabilities, ",")))
+		capabilities := escapeXMLAttr(strings.Join(kb.Capabilities, ","))
+		fmt.Fprintf(&b, `<knowledge_base id="%s" name="%s" type="%s"`,
+			escapeXMLAttr(kb.ID), escapeXMLAttr(formatDocSummary(kb.Name, 160)), escapeXMLAttr(kbType))
+		if coverage && !tools.SearchTargetsIncludeSource(directoryScope[0], kb.ID, "") {
+			fmt.Fprintf(&b, ` scope="selected" capabilities="%s" note="Use authorized directory tools for the selected scope." />`+"\n", capabilities)
+			continue
+		}
+		fmt.Fprintf(&b, " doc_count=\"%d\" capabilities=\"%s\">\n", kb.DocCount, capabilities)
 		if kb.Description != "" {
 			fmt.Fprintf(&b, "<description>%s</description>\n", escapeXMLAttr(formatDocSummary(kb.Description, 240)))
 		}
 		writeKnowledgeBaseProfile(&b, kb.Profile)
-		if len(kb.RecentDocs) > 0 {
+		if len(kb.RecentDocs) > 0 || coverage && kb.DocCount > 0 {
 			const detailLimit, titleLimit, recentLimit = 2, 160, 10
 			// Charge the text shown to the model, including XML escaping.
 			titleBudget := detailLimit * titleLimit
+			shown := 0
 			b.WriteString("<recent_documents note=\"Recent navigation examples only. The authorized directory may contain other relevant sources.\">\n")
 			for j, doc := range kb.RecentDocs {
 				if j >= recentLimit || (j >= detailLimit && kbType != types.KnowledgeBaseTypeDocument) {
@@ -249,27 +257,45 @@ func formatKnowledgeBaseList(kbInfos []*KnowledgeBaseInfo) string {
 				if name == "" {
 					name = doc.FileName
 				}
-				if j >= detailLimit {
+				if coverage && doc.KnowledgeID == "" && doc.ChunkID == "" {
+					continue
+				}
+				compact := j >= detailLimit
+				if compact {
 					name = strings.Join(strings.Fields(name), " ")
 					if name == "" || utf8.RuneCountInString(name) > titleLimit {
 						continue
 					}
-					title := escapeXMLAttr(name)
-					cost := utf8.RuneCountInString(title)
-					if cost <= titleBudget {
-						fmt.Fprintf(&b, "<title>%s</title>\n", title)
-						titleBudget -= cost
-					}
+				} else {
+					name = formatDocSummary(name, titleLimit)
+				}
+				title := escapeXMLAttr(name)
+				cost := utf8.RuneCountInString(title)
+				if (coverage || compact) && cost > titleBudget {
 					continue
 				}
-				title := escapeXMLAttr(formatDocSummary(name, titleLimit))
-				titleBudget -= utf8.RuneCountInString(title)
-				fmt.Fprintf(&b,
-					"<document knowledge_id=\"%s\" chunk_id=\"%s\" type=\"%s\"><name>%s</name></document>\n",
-					escapeXMLAttr(doc.KnowledgeID),
-					escapeXMLAttr(doc.ChunkID),
-					escapeXMLAttr(doc.Type),
-					title)
+				titleBudget -= cost
+				shown++
+				attrs := ""
+				if coverage || !compact {
+					attrs = fmt.Sprintf(` knowledge_id="%s" chunk_id="%s"`, escapeXMLAttr(doc.KnowledgeID), escapeXMLAttr(doc.ChunkID))
+				}
+				if coverage {
+					attrs += fmt.Sprintf(` position="%d"`, j+1)
+					if added, err := time.Parse(time.DateOnly, doc.CreatedAt); err == nil && !added.IsZero() {
+						attrs += ` added_at="` + doc.CreatedAt + `"`
+					}
+				}
+				if compact {
+					fmt.Fprintf(&b, "<title%s>%s</title>\n", attrs, title)
+				} else {
+					fmt.Fprintf(&b, "<document%s type=\"%s\"><name>%s</name></document>\n", attrs, escapeXMLAttr(doc.Type), title)
+				}
+			}
+			if coverage {
+				recent := len(kb.RecentDocs)
+				fmt.Fprintf(&b, `<coverage shown="%d" omitted="%d" outside_recent="%d" note="Positions index recent entries. outside_recent counts additional matching rows. added_at is the library addition date. Continue via authorized directory tools." />`+"\n",
+					shown, recent-shown, max(0, kb.DocCount-recent))
 			}
 			b.WriteString("</recent_documents>\n")
 		}

@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -25,21 +26,21 @@ func TestTaskCoveragePlanProtocolIsBoundedAndAnchoredToHumanRequests(t *testing.
 	decoded, err := decodeTaskEvidencePlan(string(encoded), nil, 0)
 	require.NoError(t, err)
 	require.Equal(t, plan.CoverageTargets, decoded.CoverageTargets)
-	require.NoError(t, validateTaskCoverageBasis(decoded, "Return all observations from the selected source.", nil))
-	require.NoError(t, validateTaskCoverageBasis(decoded, "Use the same scope.", []chat.Message{{Role: "user", Content: "Include all observations."}}))
+	require.NoError(t, validateTaskCoverageBasis(decoded, "Return all observations from the selected source.", nil, nil, nil))
+	require.NoError(t, validateTaskCoverageBasis(decoded, "Use the same scope.", []chat.Message{{Role: "user", Content: "Include all observations."}}, nil, nil))
 	for _, messages := range [][]chat.Message{
 		{{Role: "assistant", Content: "Include all observations."}},
 		{{Role: "tool", Content: "Include all observations."}},
 		{{Role: "user", Kind: chat.MessageKindReviewEvidence, Content: "Include all observations."}},
 	} {
-		require.Error(t, validateTaskCoverageBasis(decoded, "Return a summary.", messages), "runtime review envelopes, sources and assistant plans cannot invent a human requirement")
+		require.Error(t, validateTaskCoverageBasis(decoded, "Return a summary.", messages, nil, nil), "runtime review envelopes, sources and assistant plans cannot invent a human requirement")
 	}
 	for _, mutate := range []func(*taskEvidencePlan){
 		func(p *taskEvidencePlan) { p.CoverageTargets[0].GoalIndex = 1 },
 		func(p *taskEvidencePlan) { p.CoverageTargets[0].Criteria = "" },
 		func(p *taskEvidencePlan) { p.CoverageTargets[0].SourceScope = strings.Repeat("界", 513) },
 		func(p *taskEvidencePlan) {
-			p.CoverageTargets = append(p.CoverageTargets, make([]taskCoverageTarget, 8)...)
+			p.CoverageTargets = slices.Repeat(p.CoverageTargets, 9)
 		},
 	} {
 		invalid := coveragePlanFixture()

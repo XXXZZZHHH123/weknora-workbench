@@ -126,6 +126,9 @@ type Message struct {
 	// exactly on a stored turn, the only kind it can persist for later turns.
 	// Engine-internal like Kind, and kept off the wire for the same reason.
 	TurnID string `json:"-"`
+	// HumanContent is the original text of a stored user message before replay
+	// adds tool-facing context. Synthetic messages have no human content.
+	HumanContent *string `json:"-"`
 	// NumericObservations is created only for an in-memory verification pass.
 	// It must never be sent to providers or persisted as factual tool output.
 	NumericObservations *NumericObservations `json:"-"`

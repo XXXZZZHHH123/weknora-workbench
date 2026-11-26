@@ -474,7 +474,9 @@ func (r *historyReplay) openingUserMessage(m *types.Message) chat.Message {
 	if strings.TrimSpace(m.Content) == "" && (len(m.Images) > 0 || len(m.Attachments) > 0) {
 		asked := *m
 		asked.Content = types.UploadOnlyQuestion(r.locale)
-		return buildUserHistoryMessage(&asked)
+		message := buildUserHistoryMessage(&asked)
+		message.HumanContent = new(m.Content)
+		return message
 	}
 	return buildUserHistoryMessage(m)
 }
@@ -495,7 +497,7 @@ func buildUserHistoryMessage(m *types.Message) chat.Message {
 	if len(m.Attachments) > 0 {
 		content += m.Attachments.BuildAgentPrompt()
 	}
-	return chat.Message{Role: "user", Content: content}
+	return chat.Message{Role: "user", Content: content, HumanContent: new(m.Content)}
 }
 
 // buildAssistantHistoryMessages reconstructs the assistant side of one

@@ -573,6 +573,7 @@ func buildRuntimeContextBlock(
 	origin *QuestionOriginInfo,
 	page *PageContextInfo,
 	assistantName string,
+	directoryScope ...types.SearchTargets,
 ) string {
 	var sb strings.Builder
 	sb.WriteString("<runtime_context scope=\"this_turn\">\n")
@@ -592,14 +593,15 @@ func buildRuntimeContextBlock(
 		// semantics explicit and to match the naming the prompt templates use
 		// when referring back to this block.
 		sb.WriteString("  <bound_knowledge_bases>\n")
-		sb.WriteString(indentLines(formatKnowledgeBaseList(kbs), "    "))
+		sb.WriteString(indentLines(formatKnowledgeBaseList(kbs, directoryScope...), "    "))
 		sb.WriteString("\n  </bound_knowledge_bases>\n")
 	}
 
 	if len(docs) > 0 {
 		sb.WriteString("  <pinned_documents scope=\"authoritative_for_this_turn\">\n")
 		for _, d := range docs {
-			if d == nil {
+			if d == nil || len(directoryScope) > 0 && directoryScope[0] != nil &&
+				(d.KnowledgeID == "" || !agenttools.SearchTargetsIncludeSource(directoryScope[0], d.KnowledgeBaseID, d.KnowledgeID)) {
 				continue
 			}
 			title := d.Title
@@ -899,8 +901,12 @@ func commonStringPrefix(a, b string) string {
 // not written to rendered_content / history.
 func (e *AgentEngine) RenderUserTurnContent(sessionID, query string) string {
 	e.registerRuntimeReferences()
+	var directoryScope []types.SearchTargets
+	if e.config != nil && e.config.TaskPlanningEnabled && e.config.WorkbenchDefault && structuredTaskPlanEnabled() {
+		directoryScope = []types.SearchTargets{e.config.SearchTargets}
+	}
 	runtimeCtx := buildRuntimeContextBlock(
-		sessionID, e.knowledgeBasesInfo, e.selectedDocs, e.questionOrigin, e.pageContext, e.assistantName)
+		sessionID, e.knowledgeBasesInfo, e.selectedDocs, e.questionOrigin, e.pageContext, e.assistantName, directoryScope...)
 	runtimeCtx = e.modelContext.EncodeKnownIssues(e.modelContext.CompactKnownText(runtimeCtx))
 	mustUse := buildMustUseBlock(e.pinnedMCPServices, e.pinnedSkills)
 	return composeUserTurnContent(runtimeCtx, mustUse, query)

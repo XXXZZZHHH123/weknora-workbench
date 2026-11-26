@@ -104,6 +104,8 @@ type AgentConfig struct {
 	WorkbenchDefault          bool `json:"-"` // scoped ordinary-chat runtime, never a user configurable agent preset
 	TaskPlanningEnabled       bool `json:"-"` // internal, per-request tool projection; never changes authorization
 	CandidateAdditionsEnabled bool `json:"-"` // internal source-grounded deletion pass, enabled explicitly by the workbench runtime
+	// Original user text, before model-facing context is appended.
+	TaskPlanningHumanQuestion *string `json:"-"`
 	// One bounded consistency pass over successful structured query results in
 	// standard workbench answers. Never enables the strict source-review loop.
 	StructuredResultReviewEnabled bool `json:"-"`

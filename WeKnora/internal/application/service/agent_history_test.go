@@ -66,6 +66,7 @@ func TestBuildUserHistoryMessage_AppendsAttachmentsWhenNoRenderedContent(t *test
 	assert.Contains(t, got.Content, "summarize this")
 	assert.Contains(t, got.Content, `<attachment index="1" name="report.pdf">`)
 	assert.Contains(t, got.Content, "hello world")
+	assert.Equal(t, &msg.Content, got.HumanContent)
 }
 
 // TestBuildUserHistoryMessage_RenderedContentRebuildsAttachment verifies that

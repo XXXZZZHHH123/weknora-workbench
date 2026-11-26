@@ -107,6 +107,7 @@ func (s *sessionService) AgentQA(
 	if err != nil {
 		return err
 	}
+	agentConfig.TaskPlanningHumanQuestion = new(req.Query)
 	if delegated, err := delegatedConfigFromBinding(ctx); err != nil {
 		return err
 	} else if delegated != nil {

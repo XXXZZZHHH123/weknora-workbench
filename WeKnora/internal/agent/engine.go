@@ -260,6 +260,9 @@ func (e *AgentEngine) buildSystemPrompt(ctx context.Context) string {
 		logger.Debugf(ctx, "[Agent][Prompt] section=%s bytes=%d", section.Name, len(section.Content))
 	}
 	prompt := renderSystemPromptSections(sections) + e.collaborationGuidance()
+	if e.config.WorkbenchDefault && e.config.TaskPlanningEnabled && structuredTaskPlanEnabled() {
+		prompt += taskScopeGuidance
+	}
 	if e.runNote != "" {
 		prompt += "\n\n" + e.runNote
 	}

@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Tencent/WeKnora/internal/types"
@@ -50,6 +51,13 @@ func searchTargetIsWholeKB(target *types.SearchTarget) bool {
 	knowledgeIDs, tagIDs := searchTargetScope(target)
 	return target.Type == types.SearchTargetTypeKnowledgeBase &&
 		len(knowledgeIDs) == 0 && len(tagIDs) == 0
+}
+
+// SearchTargetsIncludeSource checks whole-base or resolved document grants.
+// An empty knowledge ID requires whole-base access.
+func SearchTargetsIncludeSource(targets types.SearchTargets, kbID, knowledgeID string) bool {
+	allowed, _ := searchTargetGrants(targets, kbID, knowledgeID)
+	return allowed
 }
 
 // authorizeKnowledgeInSearchTargets is the shared authorization boundary for
@@ -168,37 +176,34 @@ func searchTargetsAllowKnowledgeID(
 	kbID string,
 	knowledgeService interfaces.KnowledgeService,
 ) (bool, error) {
-	if knowledgeID == "" || kbID == "" {
+	if knowledgeID == "" {
 		return false, nil
 	}
+	allowed, tagIDs := searchTargetGrants(searchTargets, kbID, knowledgeID)
+	if allowed || len(tagIDs) == 0 || knowledgeService == nil {
+		return allowed, nil
+	}
 
+	matches, err := knowledgeIDsMatchingAnyTag(ctx, []string{knowledgeID}, tagIDs, knowledgeService.GetKnowledgeTags)
+	return err == nil && matches[knowledgeID], err
+}
+
+func searchTargetGrants(targets types.SearchTargets, kbID, knowledgeID string) (bool, []string) {
 	var tagIDs []string
-	matchedKB := false
-	for _, target := range searchTargets {
-		if target == nil || target.KnowledgeBaseID != kbID {
+	for _, target := range targets {
+		if target == nil || kbID == "" || target.KnowledgeBaseID != kbID {
 			continue
 		}
-		matchedKB = true
 		if searchTargetIsWholeKB(target) {
 			return true, nil
 		}
 		targetKnowledgeIDs, targetTagIDs := searchTargetScope(target)
-		for _, allowedID := range targetKnowledgeIDs {
-			if allowedID == knowledgeID {
-				return true, nil
-			}
+		if slices.Contains(targetKnowledgeIDs, knowledgeID) {
+			return true, nil
 		}
 		tagIDs = append(tagIDs, targetTagIDs...)
 	}
-	if !matchedKB || len(tagIDs) == 0 || knowledgeService == nil {
-		return false, nil
-	}
-
-	matches, err := knowledgeIDsMatchingAnyTag(ctx, []string{knowledgeID}, tagIDs, knowledgeService.GetKnowledgeTags)
-	if err != nil {
-		return false, err
-	}
-	return matches[knowledgeID], nil
+	return false, tagIDs
 }
 
 // filterSearchResultsInSearchTargets applies the same whole-KB/document/tag

@@ -1,0 +1,223 @@
+{
+  "KB-03": {
+    "case": "KB-03",
+    "target": {
+      "source_mode": "named_first",
+      "basis_turn": 0,
+      "request_basis": "3月10日周报第12页",
+      "primary_ref": "doc://1",
+      "metric": "红线的合约年度、图上右端价差及横向位次",
+      "period": {"scope": "次年1月附近的右端", "grain": "chart_endpoint"},
+      "source_time": "observed_period",
+      "version_task": "single",
+      "delivery": {"kind": "text", "aggregation": "as_reported"},
+      "required": ["scoped_value"]
+    }
+  },
+  "KB-06": {
+    "case": "KB-06",
+    "domains": ["structured"],
+    "target": {
+      "source_mode": "named_first",
+      "basis_turn": 0,
+      "request_basis": "CF主力合约收盘价是多少？CF09合约呢？",
+      "primary_ref": "棉花数据库里，郑棉期货sheet",
+      "metric": "按合约区分同名收盘价列：CF主力合约、CF09合约",
+      "period": {"scope": "2023-09-22", "grain": "day"},
+      "source_time": "observed_period",
+      "version_task": "single",
+      "delivery": {"kind": "text", "aggregation": "as_reported"},
+      "required": ["scoped_value"]
+    }
+  },
+  "KB-09": {
+    "case": "KB-09",
+    "target": {
+      "source_mode": "named_first",
+      "basis_turn": 0,
+      "request_basis": "2024年3月10日到3月31日四份周报",
+      "primary_ref": "2024年3月10日到3月31日四份周报",
+      "metric": "对齐周度仓单总量和周变动，比较转折",
+      "period": {"from": "2024-03-10", "to": "2024-03-31", "grain": "week", "count": 4},
+      "source_time": "observed_period",
+      "version_task": "separate_conflicts",
+      "delivery": {"kind": "text", "aggregation": "as_reported"},
+      "required": ["scoped_value"]
+    }
+  },
+  "KB-13-first": {
+    "case": "KB-13",
+    "target": {
+      "source_mode": "named_first",
+      "basis_turn": 0,
+      "request_basis": "如果你看到两个不同的数字，应该以哪个为准？",
+      "primary_ref": "2024年3月10日的周报",
+      "metric": "仓单读数冲突时选择本次采用的说法",
+      "period": {"scope": "2024-03-10", "grain": "week"},
+      "source_time": "observed_period",
+      "version_task": "adopt_if_conflict",
+      "delivery": {"kind": "text", "aggregation": "as_reported"},
+      "required": ["scoped_value"]
+    }
+  },
+  "KB-13-followup": {
+    "case": "KB-13",
+    "turn": 1,
+    "target": {
+      "source_mode": "named_first",
+      "basis_turn": 1,
+      "request_basis": "2024年3月10日的周报",
+      "primary_ref": "2024年3月10日的周报",
+      "metric": "两个说法分别对应的文件身份及可定位出处",
+      "period": {"scope": "2024-03-10", "grain": "week"},
+      "source_time": "observed_period",
+      "version_task": "compare_versions",
+      "delivery": {"kind": "text", "aggregation": "as_reported"},
+      "required": ["scoped_value"]
+    }
+  },
+  "MT-01-followup": {
+    "case": "MT-01",
+    "turn": 2,
+    "target": {
+      "source_mode": "named_first",
+      "basis_turn": 2,
+      "request_basis": "3月24日周报里郑棉仓单是多少？",
+      "primary_ref": "3月24日周报",
+      "metric": "前两期的新疆与内地仓单分别计算差额",
+      "period": {"scope": "3月24日报告及下一期", "grain": "week", "count": 2},
+      "source_time": "observed_period",
+      "version_task": "consistent_series",
+      "delivery": {"kind": "text", "aggregation": "difference"},
+      "required": ["scoped_value"]
+    }
+  },
+  "MT-03-followup": {
+    "case": "MT-03",
+    "turn": 1,
+    "domains": ["structured"],
+    "target": {
+      "source_mode": "open",
+      "basis_turn": 1,
+      "request_basis": "郑棉主力合约2023年走势怎么样？",
+      "metric": "2023年郑棉主力日收盘按月平均并绘图",
+      "period": {"scope": "2023年有效记录", "grain": "month"},
+      "source_time": "observed_period",
+      "version_task": "single",
+      "delivery": {"kind": "line_chart", "aggregation": "mean"},
+      "required": ["scoped_value"]
+    }
+  },
+  "warehouse_sheet_only": {
+    "case": "KB-31",
+    "domains": ["structured"],
+    "target": {
+      "source_mode": "only",
+      "basis_turn": 0,
+      "request_basis": "只查棉花数据库的郑棉仓单表",
+      "restriction_basis": "只查棉花数据库的郑棉仓单表",
+      "primary_ref": "棉花数据库的郑棉仓单表",
+      "metric": "指定仓单数量列的日值与末条有效记录",
+      "period": {"scope": "2024-03-10", "grain": "day"},
+      "source_time": "observed_period",
+      "version_task": "single",
+      "delivery": {"kind": "text", "aggregation": "as_reported"},
+      "required": ["scoped_value"],
+      "on_verified_gap": ["last_valid_same_field"]
+    }
+  },
+  "futures_sheet_only": {
+    "case": "KB-16",
+    "domains": ["structured"],
+    "target": {
+      "source_mode": "only",
+      "basis_turn": 0,
+      "request_basis": "只依数据库里的郑棉期货表",
+      "restriction_basis": "只依数据库里的郑棉期货表",
+      "primary_ref": "数据库里的郑棉期货表",
+      "metric": "期货主力收盘价及原列末条有效记录",
+      "period": {"scope": "2024-03", "grain": "month"},
+      "source_time": "observed_period",
+      "version_task": "single",
+      "delivery": {"kind": "text", "aggregation": "as_reported"},
+      "required": ["scoped_value"],
+      "on_verified_gap": ["last_valid_same_field"]
+    }
+  },
+  "warehouse_sheet_before_report": {
+    "case": "KB-31",
+    "domains": ["structured", "knowledge"],
+    "target": {
+      "source_mode": "named_first",
+      "basis_turn": 0,
+      "request_basis": "先查棉花数据库的郑棉仓单表，确实缺这天的数据才参考同期周报",
+      "primary_ref": "棉花数据库的郑棉仓单表",
+      "metric": "日仓单数量及缺日时可独立归属的同期披露",
+      "period": {"scope": "2024-03-10", "grain": "day"},
+      "source_time": "observed_period",
+      "version_task": "adopt_if_conflict",
+      "delivery": {"kind": "text", "aggregation": "as_reported"},
+      "required": ["scoped_value"],
+      "on_verified_gap": ["last_valid_same_field", "attributed_supplement"]
+    }
+  },
+  "compare_versions_without_adoption": {
+    "case": "KB-13",
+    "target": {
+      "source_mode": "named_first",
+      "basis_turn": 0,
+      "request_basis": "注明各是哪一版，不必选哪版为准",
+      "primary_ref": "3月10日棉花周报两版",
+      "metric": "并排列出不同版本的仓单合计及环比",
+      "period": {"scope": "3月10日报告周", "grain": "week"},
+      "source_time": "observed_period",
+      "version_task": "compare_versions",
+      "delivery": {"kind": "text", "aggregation": "as_reported"},
+      "required": ["scoped_value"]
+    }
+  },
+  "warehouse_by_publication": {
+    "case": "VG-01",
+    "target": {
+      "source_mode": "open",
+      "basis_turn": 0,
+      "request_basis": "先按报告发布日期找最新一份有郑棉仓单数据的周报",
+      "metric": "按可证发布日期选出的周报仓单合计和环比",
+      "period": {"scope": "最近披露的有记录的周报", "grain": "report_period"},
+      "source_time": "publication_date",
+      "version_task": "single",
+      "delivery": {"kind": "text", "aggregation": "as_reported"},
+      "required": ["scoped_value"]
+    }
+  },
+  "warehouse_by_observation": {
+    "case": "VG-01",
+    "target": {
+      "source_mode": "open",
+      "basis_turn": 0,
+      "request_basis": "按数据观测的时间判断，别按报告发布日期或上传顺序排",
+      "metric": "最近实际观察周的仓单总量和周环比",
+      "period": {"scope": "最后观测周", "grain": "week"},
+      "source_time": "latest_observation",
+      "version_task": "single",
+      "delivery": {"kind": "text", "aggregation": "as_reported"},
+      "required": ["scoped_value"]
+    }
+  },
+  "explicit_month_end": {
+    "case": "MT-03",
+    "turn": 1,
+    "domains": ["structured"],
+    "target": {
+      "source_mode": "open",
+      "basis_turn": 0,
+      "request_basis": "用每月最后一个有数据的交易日收盘价画一张折线图",
+      "metric": "2023年主力序列各月最后一笔有效交易日收盘",
+      "period": {"scope": "沿用2023年实际覆盖", "grain": "month"},
+      "source_time": "observed_period",
+      "version_task": "single",
+      "delivery": {"kind": "line_chart", "aggregation": "last_valid_trading_day"},
+      "required": ["scoped_value"]
+    }
+  }
+}
