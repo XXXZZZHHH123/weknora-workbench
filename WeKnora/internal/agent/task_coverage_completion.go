@@ -7,6 +7,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/Tencent/WeKnora/internal/types"
 )
 
 // Observations contain runtime provenance only. Bindings separately express a
@@ -19,6 +21,8 @@ type coverageEvidence struct {
 	RowLabel, Column, Cell, ChunkID, Object, Period, PeriodFrom, PeriodTo            string
 	Date, DateCell, CitationID, JSONPointer, Status, LastValidDate                   string
 	LastObservedDate, LastValidRef, DateEvidenceID, DateJSONPointer                  string
+	SourceDate, ReportedValue                                                        string
+	ResultJSONPointer                                                                string
 	Page                                                                             int
 	SpanStart, SpanEnd, NextOffset                                                   *int
 	Raw                                                                              any
@@ -29,6 +33,7 @@ type coverageAttempt struct {
 	ToolCallID, Operation, EvidenceID string
 	Success                           bool
 	Args                              map[string]any
+	result                            *types.ToolResult
 }
 
 type coverageEvidenceBatch struct {
@@ -94,7 +99,7 @@ func evaluateTaskCoverage(target taskCoverageTarget, input coverageRecord) []cov
 		(len(target.Required) == 1 && target.Required[0] == "optional") {
 		return nil
 	}
-	from, to, grain := coveragePeriod(target.Period)
+	from, to, grain := coverageTargetDateRange(target)
 	type slot struct{ from, to, grain, period, field string }
 	selections := map[slot][]coverageBinding{}
 	order := []slot{}
@@ -380,6 +385,9 @@ func resolveCoverageSupplement(target taskCoverageTarget, input coverageRecord, 
 	if input.StopReason != "" {
 		return result.withStop(input.StopReason)
 	}
+	navigable = navigable || discover != nil && slices.ContainsFunc(input.Evidence, func(observation coverageEvidence) bool {
+		return coverageSupplementNavigation(input, discover.ToolCallID, observation)
+	})
 	if read != nil || discover != nil && !navigable {
 		return result.withStop(coverageReceiptReason(result.AttemptReceipt))
 	}
@@ -389,6 +397,12 @@ func resolveCoverageSupplement(target taskCoverageTarget, input coverageRecord, 
 		result.NextRead = "discover"
 	}
 	return result
+}
+
+func coverageSupplementNavigation(record coverageRecord, callID string, observation coverageEvidence) bool {
+	return callID != "" && observation.ToolCallID == callID && observation.SourceDomain == "knowledge" &&
+		(observation.Kind == "navigation" || observation.Kind == "body") && observation.ChunkID != "" &&
+		coverageCurrentEvidence(record, observation)
 }
 
 func coverageCellCompletesPeriod(target taskCoverageTarget, fact coverageEvidence) bool {
@@ -516,6 +530,7 @@ func coverageBodyFact(binding coverageBinding, evidence coverageEvidence, requir
 	}
 	end := start + utf8.RuneCountInString(binding.Span)
 	evidence.SpanStart, evidence.SpanEnd, evidence.Raw = &start, &end, binding.Span
+	evidence.ReportedValue = claim
 	evidence.Grain, evidence.PeriodFrom, evidence.PeriodTo = binding.Grain, binding.PeriodFrom, binding.PeriodTo
 	if binding.Subject != "" {
 		evidence.Subject = binding.Subject

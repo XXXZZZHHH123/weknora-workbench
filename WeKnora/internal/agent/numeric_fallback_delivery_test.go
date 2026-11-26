@@ -25,7 +25,9 @@ func TestNumericFailureFallbackDeliversEarlierGroundedCandidate(t *testing.T) {
 		engine = sourceConsistencyEngine(t, &mockChat{})
 		state = sourceConsistencyState()
 		engine.commitTerminalResult(t.Context(), state, "session", fallback, "", "failed", false)
-		require.Equal(t, fallback, state.FinalAnswer, "without a grounded candidate the fallback remains")
+		require.False(t, terminalCandidateFallback(state.FinalAnswer), "a fixed runtime message is not the published result")
+		require.Contains(t, state.FinalAnswer, "本轮没有取得可用于回答的已核实内容")
+		require.NotContains(t, state.FinalAnswer, "999")
 	}
 }
 

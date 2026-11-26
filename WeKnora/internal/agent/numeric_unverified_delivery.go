@@ -89,7 +89,7 @@ func (e *AgentEngine) numericUnverifiedPresentation(ctx context.Context, state *
 	if !ok || count == 0 {
 		return "", 0, nil, nil, false
 	}
-	delivery := marked + "\n\n> 提示：" + unverifiedNumberNotice
+	delivery := e.terminalCoverageWarning(ctx, state, marked+"\n\n> 提示："+unverifiedNumberNotice)
 	refs, legacy := e.unverifiedNavigationReferences(delivery, state)
 	if len(refs) != len(uniqueCandidateEvidenceIDs(delivery)) || len(legacy) != len(uniqueCandidateCitationIDs(delivery)) ||
 		!numericUnverifiedReferenceBudgetFits(refs, legacy) {
@@ -137,7 +137,7 @@ func (e *AgentEngine) publishNumericUnverifiedReferences(ctx context.Context, st
 	if !ok || state.FinalAnswer != binding.FinalText || delivery != binding.FinalText || count != binding.Marked ||
 		unverifiedReferenceDigest(refs, legacy) != binding.ReferencesHash {
 		// Completion/persistence must not publish a stale candidate or reference.
-		state.FinalAnswer, refs, legacy = numericFailureFallback, nil, nil
+		state.FinalAnswer, refs, legacy = e.terminalCoverageFailure(ctx, state, numericFailureFallback), nil, nil
 	}
 	state.EvidenceRefs, state.KnowledgeRefs = refs, legacy
 	return true

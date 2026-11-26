@@ -169,6 +169,24 @@ func IsCurrentDocumentSearchChunk(registry *ToolRegistry, result *types.ToolResu
 	return err == nil && json.Unmarshal(encoded, &scope) == nil && scope.KnowledgeID == knowledgeID && IsCurrentDocumentRead(registry, result)
 }
 
+// CurrentDocumentSourceDate returns the date proof already validated against
+// the actual selected document. It is a material date, not an observation date.
+func CurrentDocumentSourceDate(registry *ToolRegistry, knowledgeID string) string {
+	if registry == nil || knowledgeID == "" {
+		return ""
+	}
+	tool, err := registry.GetTool(ToolBindDocumentScope)
+	binder, ok := tool.(*bindDocumentScopeTool)
+	if err != nil || !ok || binder.state == nil {
+		return ""
+	}
+	selection, err := binder.state.selection(knowledgeID)
+	if err == nil && selection.Date != nil {
+		return selection.Date.Date
+	}
+	return ""
+}
+
 func (r *RequestedDocumentConstraint) selection(id string) (DocumentSourceSelection, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

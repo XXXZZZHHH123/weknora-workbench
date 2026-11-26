@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"slices"
+	"strings"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/common"
@@ -21,7 +23,8 @@ func (e *AgentEngine) publishAnswer(ctx context.Context, sessionID, answer, exis
 	// analyzeResponse may encounter a runtime placeholder before the terminal
 	// outlet selects a current candidate. Do not stream that placeholder and
 	// then append its replacement as a second answer.
-	if !e.turnReview.Committed && terminalCandidateFallback(answer) {
+	answer = stripCoverageAnswer(answer)
+	if !e.turnReview.Committed && (terminalCandidateFallback(answer) || e.terminalEvidenceCompletionPending()) {
 		return ""
 	}
 	id := generateEventID("answer")
@@ -29,6 +32,26 @@ func (e *AgentEngine) publishAnswer(ctx context.Context, sessionID, answer, exis
 		_ = e.eventBus.Emit(ctx, event.Event{ID: id, Type: event.EventAgentFinalAnswer, SessionID: sessionID, Data: event.AgentFinalAnswerData{Content: answer, Done: false, Truncated: truncated}})
 	}
 	return id
+}
+
+func (e *AgentEngine) terminalEvidenceCompletionPending() bool {
+	return e.evidenceCompletionEnabled() && e.terminalCoverageContextKnown()
+}
+
+func (e *AgentEngine) terminalCoverageContextKnown() bool {
+	if !e.evidenceCompletionEligible() || e.holdCollaborationAnswer {
+		return false
+	}
+	if e.hasEvidenceCompletionContext() {
+		return true
+	}
+	if e.taskPlan != nil && e.taskPlan.SourceDiscovery != nil && e.taskPlan.SourceDiscovery.Mode != "none" &&
+		slices.ContainsFunc(e.taskPlan.SourceDiscovery.SourceDomains, func(domain string) bool { return domain == "knowledge" || domain == "structured" }) {
+		return true
+	}
+	return slices.ContainsFunc(e.evidenceCompletionTargets(), func(target taskCoverageTarget) bool {
+		return target.SourceTime != "general_concept" && !slices.Equal(target.Required, []string{"optional"})
+	})
 }
 
 // Numeric-failure fallbacks. A later candidate that fails numeric grounding
@@ -40,8 +63,9 @@ const (
 )
 
 func terminalCandidateFallback(answer string) bool {
+	answer = strings.TrimSpace(answer)
 	return answer == answerReviewUnavailableFallback || answer == incompleteAnswerFallback || answer == stalledAnswerFallback ||
-		answer == sourceProgressStalledFallback || answer == truncatedAnswerFallback || answer == numericFailureFallback || answer == finalNumericFailureFallback
+		answer == sourceProgressStalledFallback || answer == truncatedAnswerFallback || answer == numericFailureFallback || answer == finalNumericFailureFallback || answer == ""
 }
 
 // Only checked candidates or explicit runtime failure messages reach this
@@ -51,6 +75,7 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 		return
 	}
 	e.turnReview.Committed = true
+	answer = stripCoverageAnswer(answer)
 	markedNumbers := 0
 	markedCitations := 0
 	if delivery, ok := e.numericWarningDelivery(answer, state); ok {
@@ -77,6 +102,13 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 			truncated = false
 		}
 	}
+	coverageDraft := false
+	if terminalCandidateFallback(answer) {
+		if draft, ok := e.currentCoverageDraft(ctx, state); ok {
+			answer, existingID, outcome, truncated = stripCoverageAnswer(draft), "", "evidence_partial", false
+			coverageDraft = true
+		}
+	}
 	if terminalCandidateFallback(answer) {
 		if delivery, citations, numbers, ok := e.currentCitationUnverifiedDelivery(ctx, state); ok {
 			answer, outcome, markedCitations, markedNumbers = delivery, "citation_unverified", citations, numbers
@@ -100,10 +132,25 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 		}
 	}
 	if terminalCandidateFallback(answer) {
-		if delivery := e.terminalEvidenceCompletionDelivery(ctx, state); delivery != "" {
+		if delivery := e.terminalCoverageFailure(ctx, state, answer); delivery != answer {
 			answer, existingID, outcome, truncated = delivery, "", "evidence_incomplete", false
 		}
+	} else if e.evidenceCompletionEnabled() && (outcome == "answer" || outcome == "partial" || coverageDraft ||
+		outcome == "stalled" && e.candidateApprovalCurrent(answer, state)) {
+		base := answer
+		answer = e.terminalCoverageDelivery(ctx, state, false).render(false, base)
+		if answer != base {
+			existingID = ""
+		}
+		if coverageDraft || outcome == "partial" {
+			e.bindCoverageDraftDelivery(base, answer)
+		} else if answer != base && e.candidateApprovalCurrent(base, state) {
+			// The candidate kept its verified claims. Bind persistent inline
+			// citations to the final bytes after the runtime added its facts.
+			e.turnReview.Last.Candidate, e.turnReview.Last.CandidateHash = answer, candidateTextDigest(answer)
+		}
 	}
+	answer = stripCoverageAnswer(answer)
 	id := e.publishAnswer(ctx, sessionID, answer, existingID, truncated)
 	e.closeAnswerStream(ctx, sessionID, id, truncated)
 	state.FinalAnswer = answer

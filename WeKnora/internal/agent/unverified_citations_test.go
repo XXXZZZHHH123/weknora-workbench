@@ -165,7 +165,8 @@ func TestUnverifiedCitationNoPrivateDecisionOrChangedBeforeDeliveryCannotNavigat
 			if mutation == "public_only" {
 				require.Contains(t, state.FinalAnswer, "未能完成自动核验", "same-task warning delivery remains available without a navigation binding")
 			} else {
-				require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer, "a warning cannot authorize a stale or ineligible answer body")
+				require.False(t, terminalCandidateFallback(state.FinalAnswer))
+				require.NotContains(t, state.FinalAnswer, "12.500", "a warning cannot authorize a stale or ineligible answer body")
 			}
 			require.NotContains(t, state.FinalAnswer, "<evidence")
 			require.Empty(t, state.EvidenceRefs)
@@ -198,7 +199,8 @@ func TestUnverifiedLegacyCitationKeepsOnlyActualCurrentReadAndVersion(t *testing
 			e.publishFinalKnowledgeReferences(t.Context(), state, "session")
 			require.Empty(t, state.EvidenceRefs)
 			if changed {
-				require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer, "an original-source change invalidates the answer body before terminal delivery")
+				require.False(t, terminalCandidateFallback(state.FinalAnswer))
+				require.NotContains(t, state.FinalAnswer, "The indicator measures covered area.", "an original-source change invalidates the answer body before terminal delivery")
 				require.Empty(t, state.KnowledgeRefs)
 				require.NotContains(t, state.FinalAnswer, "<kb")
 			} else {

@@ -240,6 +240,7 @@ func (e *AgentEngine) coverageDocumentBodies(call types.ToolCall, base coverageE
 		}
 		if bound && item.SnapshotHash != "" && body != "" && item.Complete {
 			item.Kind, item.Bound, item.JSONPointer, item.Raw = "body", true, "/data"+path+"/content", body
+			item.SourceDate = agenttools.CurrentDocumentSourceDate(e.toolRegistry, item.SourceID)
 			item.ContentHash, item.CitationID = candidateTextDigest(body), item.ChunkID
 			stop := *item.SpanStart + utf8.RuneCountInString(body)
 			item.SpanEnd = &stop

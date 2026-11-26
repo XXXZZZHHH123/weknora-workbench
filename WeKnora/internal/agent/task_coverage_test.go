@@ -212,7 +212,9 @@ func TestSourceStallFallbackCannotDeliverStaleTaskEvidenceOrScope(t *testing.T) 
 			require.True(t, current, "same-task numerically grounded warning delivery remains permitted")
 			mutate(e, state)
 			e.commitTerminalResult(t.Context(), state, "session", sourceProgressStalledFallback, "", "stalled", false)
-			require.Equal(t, sourceProgressStalledFallback, state.FinalAnswer, "resource exhaustion cannot publish a stale draft under a warning")
+			require.False(t, terminalCandidateFallback(state.FinalAnswer))
+			require.Contains(t, state.FinalAnswer, e.turnReview.Query)
+			require.NotContains(t, state.FinalAnswer, "An earlier source-based draft.", "resource exhaustion cannot publish a stale draft under a warning")
 		})
 	}
 }

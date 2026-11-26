@@ -5,8 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"math"
+	"slices"
+	"strconv"
 	"strings"
 
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -77,6 +81,9 @@ type turnReviewState struct {
 	StructuredResultReview     *structuredResultReviewTurn
 	DiscoveryReview            *discoveryDeliveryReviewTurn
 	FinalCoverageReadAttempted bool
+	CoverageDraft              candidateDecision
+	CoverageDraftFacts         []string
+	CoverageDraftDeliveryHash  string
 }
 
 // Preserve the existing two numeric and two semantic repair allowances while
@@ -117,6 +124,7 @@ func reviewDigest(value any) string {
 // exceptional synthesis. Numeric provenance precedes semantic review everywhere.
 // forceReview retains the existing exceptional-path completeness policy.
 func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reasoning string, state *types.AgentState, conversation []chat.Message, forceReview bool) (decision candidateDecision) {
+	candidate = stripCoverageAnswer(candidate)
 	e.turnReview.ReadEvidence = nil
 	e.turnReview.Query = query
 	e.turnReview.Conversation = append([]chat.Message(nil), conversation...)
@@ -141,6 +149,10 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		e.turnReview.Checks++
 		e.turnReview.Last = decision
 		e.rememberNumericUnverifiedCandidate(ctx, decision, state)
+		if decision.ReasonCode == "evidence_completion_gap" || decision.ReasonCode == "evidence_completion_exhausted" ||
+			decision.ReasonCode == "discovery_coverage_recovery" || decision.Disposition == candidateNumericFailure {
+			e.rememberCoverageDraft(ctx, decision, reasoning, state)
+		}
 		if e.needsSourceConsistencyCheck(state) && !suspectAnswerFragment(candidate, reasoning) {
 			// Only candidates judged by the source critic qualify; completeness
 			// checks of fragments or non-sourced replies never become deliveries.
@@ -417,6 +429,295 @@ func (e *AgentEngine) invalidateCandidateTask() {
 	e.turnReview.NumericUnverifiedDecision = candidateDecision{}
 	e.turnReview.NumericUnverifiedDelivery = nil
 	e.turnReview.CitationUnverifiedDelivery = nil
+	e.turnReview.CoverageDraft = candidateDecision{}
+	e.turnReview.CoverageDraftFacts = nil
+	e.turnReview.CoverageDraftDeliveryHash = ""
+}
+
+func (e *AgentEngine) rememberCoverageDraft(ctx context.Context, decision candidateDecision, reasoning string, state *types.AgentState) {
+	if !e.evidenceCompletionEnabled() || !e.evidenceCompletionEligible() || decision.Err != nil ||
+		suspectAnswerFragment(decision.Candidate, reasoning) {
+		return
+	}
+	anchors, unmatched, comparedSources := e.coverageDraftGrounding(ctx, decision.Candidate, state)
+	if len(decision.Unsupported) > 0 && (!comparedSources || slices.ContainsFunc(decision.Unsupported, func(token string) bool {
+		return !slices.ContainsFunc(unmatched, func(item numericOccurrence) bool { return token == item.Token })
+	})) {
+		return
+	}
+	if comparedSources && len(unmatched) > 0 {
+		// A comparison draft can add a calculation that happened to match a
+		// number elsewhere. Retain the independently supported comparison and
+		// its citations when the affected details are in separate paragraphs.
+		qualified := coverageDraftSupportedParagraphs(decision.Candidate, unmatched)
+		qualifiedAnchors, remaining, compared := e.coverageDraftGrounding(ctx, qualified, state)
+		if qualified != "" && len(remaining) == 0 && compared &&
+			len(ungroundedStructuredNumbers(qualified, e.answerNumericEvidence(qualified, state.RoundSteps, e.turnReview.Conversation), state.RoundSteps)) == 0 {
+			decision.Candidate, decision.CandidateHash = qualified, candidateTextDigest(qualified)
+			anchors, unmatched = qualifiedAnchors, nil
+		}
+	}
+	if len(anchors) == 0 || len(unmatched) != 0 {
+		return
+	}
+	prior := e.turnReview.CoverageDraft
+	if prior.Candidate != "" && prior.TaskHash == decision.TaskHash && prior.SourceScopeHash == decision.SourceScopeHash &&
+		len(anchors) <= len(e.turnReview.CoverageDraftFacts) {
+		// A no-read rewrite can shorten a candidate without substantiating more
+		// of the task. Preserve the original facts across that recovery round.
+		if _, current := e.currentCoverageDraft(ctx, state); current {
+			return
+		}
+	}
+	e.turnReview.CoverageDraft, e.turnReview.CoverageDraftFacts = decision, anchors
+}
+
+func (e *AgentEngine) currentCoverageDraft(ctx context.Context, state *types.AgentState) (string, bool) {
+	draft := e.turnReview.CoverageDraft
+	if draft.Candidate == "" || !e.evidenceCompletionEnabled() || !e.evidenceCompletionEligible() ||
+		draft.TaskHash != e.candidateTaskDigest(e.turnReview.Query, e.turnReview.TaskConversation) ||
+		draft.SourceScopeHash != e.unverifiedSourceScopeDigest(ctx) ||
+		draft.CandidateHash != candidateTextDigest(draft.Candidate) ||
+		draft.StructuredResultReview != e.structuredResultReviewEnabled() {
+		return "", false
+	}
+	anchors := e.coverageDraftAnchors(ctx, draft.Candidate, state)
+	if len(anchors) == 0 || slices.ContainsFunc(e.turnReview.CoverageDraftFacts, func(ref string) bool { return !slices.Contains(anchors, ref) }) {
+		return "", false
+	}
+	return draft.Candidate, true
+}
+
+func (e *AgentEngine) bindCoverageDraftDelivery(base, final string) {
+	if base == e.turnReview.CoverageDraft.Candidate && final != "" {
+		e.turnReview.CoverageDraftDeliveryHash = candidateTextDigest(final)
+	}
+}
+
+func (e *AgentEngine) coverageDraftDeliveryCurrent(ctx context.Context, state *types.AgentState) bool {
+	if state == nil || e.turnReview.CoverageDraftDeliveryHash == "" || e.turnReview.CoverageDraftDeliveryHash != candidateTextDigest(state.FinalAnswer) {
+		return false
+	}
+	base, ok := e.currentCoverageDraft(ctx, state)
+	if !ok || e.candidateCitationsInvalid(state.FinalAnswer, state, e.turnReview.Conversation) {
+		return false
+	}
+	return strings.HasPrefix(state.FinalAnswer, base) || e.terminalCoverageDelivery(ctx, state, false).render(false, base) == state.FinalAnswer
+}
+
+// A completion association is optional. For a retained partial answer require
+// current native evidence for the draft, through its real citations or named
+// field and observation. The user's question and model tool transcript are
+// deliberately excluded from numeric grounding at this outlet.
+func (e *AgentEngine) coverageDraftAnchors(ctx context.Context, candidate string, state *types.AgentState) []string {
+	anchors, unsupported, _ := e.coverageDraftGrounding(ctx, candidate, state)
+	if len(unsupported) > 0 {
+		return nil
+	}
+	return anchors
+}
+
+func (e *AgentEngine) coverageDraftGrounding(ctx context.Context, candidate string, state *types.AgentState) ([]string, []numericOccurrence, bool) {
+	if state == nil || !e.standardTextDelivery(state) || !e.candidateEvidenceBudgetFits(candidate, state) ||
+		strings.TrimSpace(candidate) == "" || terminalCandidateFallback(candidate) ||
+		e.candidateCitationsInvalid(candidate, state, e.turnReview.Conversation) {
+		return nil, nil, false
+	}
+	if e.structuredResultReviewEnabled() && hasExecutedPDFAnalysis(state.RoundSteps) {
+		return nil, nil, false // Preserve the configured PDF result conflict check.
+	}
+	turn := &e.evidenceCompletion
+	steps := state.RoundSteps[min(turn.startStep, len(state.RoundSteps)):]
+	record, _ := e.projectCurrentTaskCoverage(state, turn.startStep, coverageRecord{
+		Revision: turn.revision, AuthScope: e.unverifiedSourceScopeDigest(ctx), Bindings: turn.record.Bindings,
+	})
+	targets := e.evidenceCompletionTargets()
+	compare := slices.ContainsFunc(targets, func(target taskCoverageTarget) bool {
+		return target.VersionTask == "compare_sources" || target.VersionTask == "compare_versions"
+	})
+	for _, target := range targets {
+		record.Evidence = append(record.Evidence, nativeCoverageGapFacts(target, record)...)
+	}
+	citedChunks := uniqueCandidateCitationIDs(candidate)
+	citedResults := uniqueCandidateEvidenceIDs(candidate)
+	candidateText := strings.ToLower(candidate)
+	lines := coverageDraftLines(candidate)
+	safeCalls := map[string]bool{}
+	sourceIDs := map[[2]string]bool{}
+	var anchors []string
+	var values []float64
+	for _, item := range record.Evidence {
+		if !item.Bound || !coverageCurrentEvidence(record, item) || !e.terminalCoverageScopeAllowed(targets, item) ||
+			!e.coverageScopeAllows(item.KnowledgeBaseID, item.KnowledgeID) && item.SourceDomain == "structured" {
+			continue
+		}
+		associated := item.CitationID != "" && slices.Contains(citedResults, item.CitationID)
+		metricMentioned := item.Metric != "" && strings.Contains(candidateText, strings.ToLower(item.Metric))
+		switch item.Kind {
+		case "body":
+			associated = item.ChunkID != "" && slices.Contains(citedChunks, item.ChunkID)
+		case "gap":
+			associated = associated || metricMentioned && (coverageTextHasDate(candidate, item.LastValidDate) ||
+				coverageTextHasDate(candidate, item.PeriodFrom)) ||
+				item.SourceTitle != "" && strings.Contains(candidateText, strings.ToLower(item.SourceTitle)) &&
+					slices.ContainsFunc(targets, func(target taskCoverageTarget) bool {
+						return e.coverageMatchesPrimaryReference(target, item) && slices.ContainsFunc(record.Bindings, func(binding coverageBinding) bool {
+							return binding.GoalIndex == target.GoalIndex && binding.Role == "primary" && coverageSameSource(binding, item) &&
+								binding.SeriesID == item.SeriesID
+						})
+					})
+		case "cell", "last_valid", "derived":
+			cited := associated
+			associated = false
+			value, numeric := coverageDraftNumber(item.Raw)
+			if !numeric || !coverageDraftValueInScope(targets, item, candidate) {
+				continue
+			}
+			if cited || metricMentioned && item.SeriesID != "" && (item.Operation == "query_series" || item.Kind == "last_valid") {
+				metric := strings.ToLower(item.Metric)
+				associated = slices.ContainsFunc(lines, func(line coverageDraftLine) bool {
+					return (cited && slices.Contains(line.citations, item.CitationID) ||
+						metricMentioned && strings.Contains(line.text, metric)) &&
+						slices.ContainsFunc(line.numbers, func(number coverageDraftNumeric) bool {
+							return math.Abs(number.value-value) <= number.tolerance
+						})
+				})
+			}
+			if associated {
+				values = append(values, value)
+			}
+		default:
+			continue
+		}
+		if associated {
+			if item.Operation == "query_series" || item.Kind == "body" || item.Kind == "derived" && item.CitationID != "" {
+				safeCalls[item.ToolCallID] = true
+			}
+			anchor := reviewDigest([]string{coverageFactRef(item), item.SnapshotHash, item.SourceID, item.SeriesID})
+			if !slices.Contains(anchors, anchor) {
+				anchors = append(anchors, anchor)
+			}
+			if item.Kind != "gap" {
+				source := item.KnowledgeID
+				if source == "" {
+					source = item.SourceID
+				}
+				sourceIDs[[2]string{item.KnowledgeBaseID, source}] = true
+			}
+		}
+	}
+	if len(anchors) == 0 {
+		return nil, nil, false
+	}
+	var selected []types.AgentStep
+	for _, step := range steps {
+		var calls []types.ToolCall
+		for _, call := range step.ToolCalls {
+			if safeCalls[call.ID] || len(citedChunks) > 0 &&
+				call.ExecutionName() == agenttools.ToolReadDocument &&
+				agenttools.IsCurrentDocumentRead(e.toolRegistry, call.Result) &&
+				len(citedImageObservations(call, coverageCitedChunks(citedChunks))) > 0 {
+				calls = append(calls, call)
+			}
+		}
+		selected = append(selected, types.AgentStep{ToolCalls: calls})
+	}
+	evidence := e.answerNumericEvidence(candidate, selected)
+	evidence = append(evidence, chat.Message{Role: "tool", NumericObservations: &chat.NumericObservations{Values: values}})
+	unmatched := ungroundedStructuredNumberOccurrencesWithEmptyEvidence(candidate, evidence, true, selected)
+	return anchors, unmatched, compare && len(sourceIDs) > 1 && len(values) > 0
+}
+
+func coverageDraftValueInScope(targets []taskCoverageTarget, item coverageEvidence, candidate string) bool {
+	if len(targets) == 0 {
+		return true
+	}
+	return slices.ContainsFunc(targets, func(target taskCoverageTarget) bool {
+		if target.SourceTime == "latest_observation" {
+			return item.LatestInScope || item.Kind == "last_valid" && coverageTextHasDate(candidate, item.Date)
+		}
+		from, to, _ := coverageTargetDateRange(target)
+		if coverageDay(from) == "" || coverageDay(to) == "" {
+			return true
+		}
+		if item.Kind == "last_valid" && coverageTextHasDate(candidate, item.Date) {
+			return true // A separately dated boundary value keeps its own time.
+		}
+		switch item.Kind {
+		case "derived":
+			return item.PeriodFrom == from && item.PeriodTo == to
+		default:
+			return item.Date >= from && item.Date <= to
+		}
+	})
+}
+
+func coverageDraftSupportedParagraphs(candidate string, unmatched []numericOccurrence) string {
+	var paragraphs []string
+	for start := 0; start < len(candidate); {
+		paragraph, after, _ := strings.Cut(candidate[start:], "\n\n")
+		end := start + len(paragraph)
+		omitted := slices.ContainsFunc(unmatched, func(number numericOccurrence) bool {
+			return number.Start >= start && number.Start < end
+		})
+		if omitted && start == 0 {
+			return ""
+		}
+		if !omitted && strings.TrimSpace(paragraph) != "" {
+			paragraphs = append(paragraphs, paragraph)
+		}
+		start = len(candidate) - len(after)
+	}
+	return strings.Join(paragraphs, "\n\n")
+}
+
+func coverageCitedChunks(ids []string) map[string]bool {
+	cited := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		cited[id] = true
+	}
+	return cited
+}
+
+func coverageDraftNumber(raw any) (float64, bool) {
+	number, ok := raw.(json.Number)
+	if !ok {
+		if text, ok := raw.(string); ok {
+			number = json.Number(text)
+		}
+	}
+	value, err := number.Float64()
+	return value, err == nil
+}
+
+type coverageDraftNumeric struct {
+	value, tolerance float64
+}
+
+type coverageDraftLine struct {
+	text      string
+	citations []string
+	numbers   []coverageDraftNumeric
+}
+
+func coverageDraftLines(candidate string) []coverageDraftLine {
+	var lines []coverageDraftLine
+	for _, body := range strings.Split(candidate, "\n") {
+		line := coverageDraftLine{text: strings.ToLower(body), citations: uniqueCandidateEvidenceIDs(body)}
+		for _, token := range proseNumber.FindAllString(documentNumericProse(body), -1) {
+			token = strings.ReplaceAll(strings.ReplaceAll(token, ",", ""), "−", "-")
+			number, err := strconv.ParseFloat(token, 64)
+			if err != nil {
+				continue
+			}
+			_, fraction, _ := strings.Cut(token, ".")
+			line.numbers = append(line.numbers, coverageDraftNumeric{number, 0.500001 * math.Pow10(-len(fraction))})
+		}
+		if len(line.numbers) != 0 {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 // A warning permits delivery after review failure, never reuse of another

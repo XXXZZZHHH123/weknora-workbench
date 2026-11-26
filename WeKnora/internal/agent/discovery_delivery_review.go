@@ -193,7 +193,7 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 			})
 		}()
 	}
-	if local, handled := e.checkEvidenceCompletion(ctx, decision, phase); handled {
+	if local, handled := e.checkEvidenceCompletion(ctx, decision, state, phase); handled {
 		return local
 	}
 	previous := e.turnReview.DiscoveryReview

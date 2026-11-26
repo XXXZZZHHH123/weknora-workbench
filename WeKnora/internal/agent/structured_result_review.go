@@ -45,6 +45,8 @@ type structuredResultEdit struct {
 	New string `json:"new"`
 }
 
+const structuredResultRequestedUnitInstructions = `For an original-value lookup, treat an explicitly stated unit for the requested field in the human question as part of the requested presentation. If selected fields' own source metadata shows the unit is unspecified and the available bound source evidence contains no contrary unit, present the same original values in the unit supplied by the question, using its exact wording and a brief statement of that basis. Correct a contrary unit conclusion with the smallest edit preserving each value and citation. This does not establish that the source labeled the unit, authorize an inferred unit, or authorize a conversion. If the source specifies a different unit, the selected fields have conflicting units, or unit evidence is merely omitted from this view, preserve the verified source units or uncertainty. Do not borrow a unit from another field, chart or source.`
+
 // One optional check/correction, with at most one protocol-only repair, shared by ordinary and
 // exceptional finalization. A new candidate never replenishes time or calls.
 type structuredResultReviewTurn struct {
@@ -249,8 +251,12 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 	if e.config.ReviewReasoningEffort != "" {
 		reasoning = chat.ReasoningEffort(e.config.ReviewReasoningEffort)
 	}
+	instructions := structuredResultReviewInstructions
+	if e.evidenceCompletionEligible() && e.evidenceCompletionEnabled() && rows != nil {
+		instructions = structuredResultRequestedUnitInstructions + "\n" + instructions
+	}
 	reviewMessages := []chat.Message{
-		{Role: "system", Content: structuredResultReviewInstructions + string(structuredResultReviewSchema)},
+		{Role: "system", Content: instructions + string(structuredResultReviewSchema)},
 		{Role: "user", Content: string(input)},
 	}
 	var answer string
@@ -326,6 +332,7 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 		protocolRepairAttempted = true
 	}
 
+	answer = stripCoverageAnswer(answer)
 	// The presentation decoder intentionally removes unregistered citations.
 	// Reject those before decoding so stripping one cannot launder a correction.
 	if len(uniqueCandidateCitationIDs(answer)) != len(e.currentCandidateKnowledgeReferences(answer, state, conversation)) ||
@@ -336,7 +343,7 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 	encoded := e.modelContext.EncodeMessages([]chat.Message{{Role: "assistant", Content: answer}})
 	// Use the same presentation cleanup as ordinary delivery before binding
 	// approval. A deletion can leave whitespace that analyzeResponse will trim.
-	presentation := agenttools.StripThinkBlocks(e.modelContext.DecodeOutputText(encoded[0].Content))
+	presentation := stripCoverageAnswer(agenttools.StripThinkBlocks(e.modelContext.DecodeOutputText(encoded[0].Content)))
 	if len(structuredReviewCitationTag.FindAllString(answer, -1)) != len(structuredReviewCitationTag.FindAllString(presentation, -1)) {
 		correctionFailure = "citation_decoding"
 		return decision

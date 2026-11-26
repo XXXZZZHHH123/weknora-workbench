@@ -17,7 +17,7 @@ type unverifiedCitationDeliveryBinding struct {
 	CheckedHash, BaseHash, WarningHash, FinalHash string
 	TaskHash, EvidenceHash, ScopeHash             string
 	ReferencesHash                                string
-	FinalText                                     string
+	FinalText, OriginalFinalText                  string
 	Eligible                                      bool
 }
 
@@ -117,7 +117,7 @@ func (e *AgentEngine) prepareUnverifiedCitationDelivery(ctx context.Context, sta
 	missingNotice := "\n\n> 部分引用无法提供核查入口，请以实际可打开的来源为准。"
 	var refs types.EvidenceReferences
 	var legacy []*types.SearchResult
-	final := ""
+	final, originalFinal := "", ""
 	// Removing a tag changes positions/hashes, so rebuild bindings and measure
 	// exact storage envelopes until the set fits. Never truncate a manifest or
 	// retain a tag whose corresponding record cannot be stored.
@@ -126,6 +126,8 @@ func (e *AgentEngine) prepareUnverifiedCitationDelivery(ctx context.Context, sta
 		if omitted {
 			final += missingNotice
 		}
+		originalFinal = final
+		final = e.terminalCoverageWarning(ctx, state, final)
 		refs, legacy = e.unverifiedNavigationReferences(final, state)
 		rejected := false
 		total, count := 0, 0
@@ -159,7 +161,7 @@ func (e *AgentEngine) prepareUnverifiedCitationDelivery(ctx context.Context, sta
 	e.turnReview.UnverifiedCitationDelivery = &unverifiedCitationDeliveryBinding{
 		CheckedHash: d.CandidateHash, BaseHash: candidateTextDigest(base), WarningHash: candidateTextDigest(warning), FinalHash: candidateTextDigest(final),
 		TaskHash: d.TaskHash, EvidenceHash: d.EvidenceHash, ScopeHash: e.unverifiedSourceScopeDigest(ctx),
-		ReferencesHash: unverifiedReferenceDigest(refs, legacy), FinalText: final, Eligible: eligible,
+		ReferencesHash: unverifiedReferenceDigest(refs, legacy), FinalText: final, OriginalFinalText: originalFinal, Eligible: eligible,
 	}
 	return final
 }
@@ -201,7 +203,8 @@ func (e *AgentEngine) publishUnverifiedCitationReferences(ctx context.Context, s
 	if !valid {
 		// A changed task, result, scope or final candidate cannot inherit the
 		// navigation binding. Retain the warning; remove every unusable tag.
-		state.FinalAnswer = filterFallbackCitationTags(e.turnReview.UnverifiedCitationDelivery.FinalText, nil, nil)
+		binding := e.turnReview.UnverifiedCitationDelivery
+		state.FinalAnswer = filterFallbackCitationTags(firstNonEmptyAgent(binding.OriginalFinalText, binding.FinalText), nil, nil)
 		refs, chunks = nil, nil
 	}
 	state.EvidenceRefs, state.KnowledgeRefs = refs, chunks

@@ -56,6 +56,8 @@ func TestUnverifiedCandidateEarlyBudgetFailureWithoutPriorDraftHasNoFallback(t *
 	_, ok := e.unverifiedDelivery()
 	require.False(t, ok)
 	e.commitTerminalResult(t.Context(), state, "session", answerReviewUnavailableFallback, "", "failed", false)
-	require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer)
+	require.False(t, terminalCandidateFallback(state.FinalAnswer))
+	require.Contains(t, state.FinalAnswer, "Report the selected observation.")
+	require.NotContains(t, state.FinalAnswer, "999")
 	require.Empty(t, state.EvidenceRefs)
 }

@@ -220,11 +220,13 @@ func TestTaskCoverageEvidenceSQLPublishedInputAndRawInspection(t *testing.T) {
 	data["rows"] = []any{}
 	require.NoError(t, rehashCoverageSQLFixture(data))
 	batch := engine.taskCoverageBatch(types.AgentStep{ToolCalls: []types.ToolCall{sql}}, nil, map[string]bool{})
-	require.Len(t, batch.Evidence, 1)
-	require.Equal(t, "gap", batch.Evidence[0].Kind)
+	require.Len(t, batch.Evidence, 2)
+	require.Equal(t, "analysis_input", batch.Evidence[0].Kind)
 	require.Equal(t, seriesID, batch.Evidence[0].SeriesID)
-	require.Contains(t, batch.Evidence[0].JSONPointer, "/valid_count")
-	require.NotEqual(t, coverageObject(data["source"])["sha256"], batch.Evidence[0].SnapshotHash,
+	require.Equal(t, "gap", batch.Evidence[1].Kind)
+	require.Equal(t, seriesID, batch.Evidence[1].SeriesID)
+	require.Contains(t, batch.Evidence[1].JSONPointer, "/valid_count")
+	require.NotEqual(t, coverageObject(data["source"])["sha256"], batch.Evidence[1].SnapshotHash,
 		"loaded SQL dataset inputs may retain series from an older workbook")
 
 	call := coverageSourceFixture(t, "inspect_source", `{"dataset_id":"dataset","sheet":"sheet"}`,

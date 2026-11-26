@@ -43,7 +43,8 @@ func TestUnverifiedCitationSearchTargetScopeCannotChangeBeforeOrAfterWarningBind
 				require.Empty(t, state.EvidenceRefs)
 				require.Empty(t, state.KnowledgeRefs)
 				if phase == "before_warning" {
-					require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer, "a changed authorization scope cannot deliver an earlier answer body under a warning")
+					require.False(t, terminalCandidateFallback(state.FinalAnswer))
+					require.NotContains(t, state.FinalAnswer, "12.500", "a changed authorization scope cannot deliver an earlier answer body under a warning")
 				} else {
 					require.Contains(t, state.FinalAnswer, "未能完成自动核验", "an already committed warning retains its body while stale navigation is removed")
 				}

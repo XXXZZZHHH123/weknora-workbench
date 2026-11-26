@@ -1286,8 +1286,9 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	var answerPrefix strings.Builder
 	var inlineReasoning strings.Builder
 	boundedDecision, _ := ctx.Value(standardAnswerDecisionKey{}).(bool)
-	deferAnswerReview := boundedDecision || e.answerReviewPending || e.structuredReviewMode || hasStructuredHistoryEvidence(messages) || e.config.SandboxConfigID != "" || e.evidenceCompletion.enabled && len(e.evidenceCompletion.refs) > 0
+	deferAnswerReview := boundedDecision || e.answerReviewPending || e.structuredReviewMode || hasStructuredHistoryEvidence(messages) || e.config.SandboxConfigID != "" || e.evidenceCompletion.enabled && len(e.evidenceCompletion.refs) > 0 || e.terminalEvidenceCompletionPending()
 	var documentViewStream documentTableStreamGuard
+	var coverageStream coverageAnswerStream
 
 	emitThought := func(content string, done bool) {
 		if content == "" && !done {
@@ -1361,22 +1362,26 @@ func (e *AgentEngine) streamThinkingToEventBus(
 		}
 	}
 
-	emitAnswer := func(content string) {
+	deferAnswer := func() {
+		if answerStreamed {
+			_ = e.eventBus.Emit(ctx, event.Event{
+				ID: answerID, Type: event.EventAgentFinalAnswer, SessionID: sessionID,
+				Data: event.AgentFinalAnswerData{Replace: true},
+			})
+		}
+		answerStreamed = false
+		answerPrefix.Reset()
+		deferAnswerReview = true
+	}
+	emitDocumentAnswer := func(content string) {
 		safe, held := documentViewStream.Feed(content)
 		if held {
-			// No protocol bytes have streamed. Retract earlier prose too so a
-			// later expanded/failed candidate cannot concatenate a stale prefix.
-			if answerStreamed {
-				_ = e.eventBus.Emit(ctx, event.Event{
-					ID: answerID, Type: event.EventAgentFinalAnswer, SessionID: sessionID,
-					Data: event.AgentFinalAnswerData{Replace: true},
-				})
-			}
-			answerStreamed = false
-			answerPrefix.Reset()
-			deferAnswerReview = true
+			deferAnswer()
 		}
 		emitAnswerBody(safe)
+	}
+	emitAnswer := func(content string) {
+		emitDocumentAnswer(coverageStream.Feed(content))
 	}
 
 	llmResult, err := e.streamLLMToEventBus(
@@ -1388,7 +1393,7 @@ func (e *AgentEngine) streamThinkingToEventBus(
 				toolCallID, _ := chunk.Data["tool_call_id"].(string)
 				toolName, _ := chunk.Data["tool_name"].(string)
 				args, _ := chunk.Data["arguments"].(map[string]any)
-				if e.evidenceCompletion.enabled && args[coverageArgument] != nil {
+				if _, private := args[coverageArgument]; private {
 					args = maps.Clone(args)
 					delete(args, coverageArgument)
 				}
@@ -1535,6 +1540,11 @@ func (e *AgentEngine) streamThinkingToEventBus(
 		emitThought(thinkTail, false)
 	}
 	emitAnswer(answerTail)
+	if tail, private := coverageStream.Flush(); private {
+		deferAnswer()
+	} else {
+		emitDocumentAnswer(tail)
+	}
 	emitAnswerBody(documentViewStream.Flush())
 	closeThinking()
 
@@ -1545,7 +1555,7 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	fullContent := agenttools.StripThinkBlocks(llmResult.Content)
 	var deliveryRepairUsage *types.TokenUsage
 	if e.structuredReviewMode && len(llmResult.ToolCalls) == 0 {
-		rawDelivery := llmResult.Content
+		rawDelivery := cleanReviewedAnswerEnvelope(llmResult.Content)
 		if reviewedAnswerDeliveryNeedsRepair(rawDelivery) {
 			// Do not repair a truncated, tool-requesting or otherwise unfinished
 			// provider turn. Only a naturally ended, tool-free response is an

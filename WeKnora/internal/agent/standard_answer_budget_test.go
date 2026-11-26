@@ -77,7 +77,7 @@ func TestStandardAnswerBudgetEightSourceRoundsUseOneCheckedFinalSynthesis(t *tes
 	require.Equal(t, standardAnswerToolRounds, reader.calls)
 	require.Len(t, model.calls, standardAnswerToolRounds+1, "only one synthesis follows the eight real tool barriers")
 	require.Equal(t, candidate+" "+gap, state.FinalAnswer)
-	require.Contains(t, model.calls[len(model.calls)-1][0].Content, standardAnswerGuidance)
+	require.Contains(t, model.calls[len(model.calls)-1][0].Content, e.standardAnswerPolicyGuidance())
 	require.Contains(t, model.opts[len(model.opts)-1].RuntimeNotice, standardAnswerBudgetNotice)
 	require.Equal(t, "none", model.opts[len(model.opts)-1].ToolChoice)
 	require.True(t, e.candidateApprovalCurrent(state.FinalAnswer, state))

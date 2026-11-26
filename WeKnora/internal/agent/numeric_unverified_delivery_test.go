@@ -127,7 +127,7 @@ func TestNumericUnverifiedPreservesOnlyUnmatchedOccurrencesAndReferences(t *test
 	}
 }
 
-func TestNumericUnverifiedStillRefusesInvalidOrStaleCandidate(t *testing.T) {
+func TestNumericUnverifiedStillRejectsInvalidOrStaleCandidate(t *testing.T) {
 	for _, mutation := range []string{"citation", "malformed citation", "task", "evidence", "scope", "candidate", "code"} {
 		t.Run(mutation, func(t *testing.T) {
 			e := numericRecoveryTestEngine(t, &mockChat{})
@@ -155,7 +155,10 @@ func TestNumericUnverifiedStillRefusesInvalidOrStaleCandidate(t *testing.T) {
 				e.turnReview.NumericUnverifiedDecision.Candidate += " replacement"
 			}
 			e.commitTerminalResult(t.Context(), state, "numeric", numericFailureFallback, "", "failed", false)
-			require.Equal(t, numericFailureFallback, state.FinalAnswer)
+			require.False(t, terminalCandidateFallback(state.FinalAnswer))
+			require.Contains(t, state.FinalAnswer, "没有取得可用于回答的已核实内容")
+			require.NotContains(t, state.FinalAnswer, "999")
+			require.Nil(t, e.turnReview.NumericUnverifiedDelivery)
 		})
 	}
 }
@@ -193,7 +196,9 @@ func TestNumericUnverifiedStrictCannotReuseInvalidCitation(t *testing.T) {
 	require.Equal(t, candidateNumericFailure, d.Disposition)
 	require.Empty(t, e.turnReview.NumericUnverifiedDecision.Candidate)
 	e.commitTerminalResult(t.Context(), state, "numeric", finalNumericFailureFallback, "", "failed", false)
-	require.Equal(t, finalNumericFailureFallback, state.FinalAnswer)
+	require.False(t, terminalCandidateFallback(state.FinalAnswer))
+	require.Contains(t, state.FinalAnswer, query)
+	require.NotContains(t, state.FinalAnswer, "999")
 }
 
 func TestNumericUnverifiedCompletionKeepsOnlyCurrentEvidenceNavigation(t *testing.T) {
@@ -213,7 +218,9 @@ func TestNumericUnverifiedCompletionKeepsOnlyCurrentEvidenceNavigation(t *testin
 			}
 			e.emitCompletionEvent(t.Context(), state, "numeric", "message", time.Now())
 			if changed {
-				require.Equal(t, numericFailureFallback, state.FinalAnswer)
+				require.False(t, terminalCandidateFallback(state.FinalAnswer))
+				require.Contains(t, state.FinalAnswer, "Report the observations.")
+				require.NotContains(t, state.FinalAnswer, "999")
 				require.Empty(t, state.EvidenceRefs)
 			} else {
 				require.Len(t, state.EvidenceRefs, 1)

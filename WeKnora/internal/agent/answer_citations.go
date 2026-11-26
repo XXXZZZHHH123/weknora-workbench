@@ -341,6 +341,9 @@ func (e *AgentEngine) publishFinalKnowledgeReferences(ctx context.Context, state
 	if approved {
 		state.KnowledgeRefs = e.finalAnswerKnowledgeReferences(state)
 		state.EvidenceRefs = e.finalAnswerEvidenceReferences(state)
+	} else if e.coverageDraftDeliveryCurrent(ctx, state) {
+		state.KnowledgeRefs = e.currentCandidateKnowledgeReferences(state.FinalAnswer, state, e.turnReview.Conversation)
+		state.EvidenceRefs = e.currentCandidateEvidenceReferences(state.FinalAnswer, state)
 	} else if !e.publishUnverifiedCitationReferences(ctx, state) {
 		return
 	}

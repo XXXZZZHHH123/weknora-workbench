@@ -41,7 +41,7 @@ func TestStandardAnswerGuidanceReachesPlannerAndExecutionWithoutChangingUserScop
 			require.Equal(t, 1, strings.Count(model.requests[0][0].Content, sourceTimeGuidance))
 			for _, prompt := range []string{model.requests[0][0].Content, model.calls[0][0].Content} {
 				if mode == "standard" {
-					require.Equal(t, 1, strings.Count(prompt, standardAnswerGuidance), "planner and executor share exactly the same practical policy")
+					require.Equal(t, 1, strings.Count(prompt, engine.standardAnswerPolicyGuidance()), "planner and executor share exactly the same practical policy")
 					require.Contains(t, prompt, "<standard_answer_policy>\n先给明确结论或数值。")
 					require.Contains(t, prompt, "有同口径已读值就给最近值、日期和出处。确无同口径已核值时，给出材料证实的具体事实，注明可核日期和出处。说明具体缺口，当轮交付")
 					require.Contains(t, prompt, "不以“待确认”“无法确定”或请用户补件、选版或开放联网收尾")
@@ -78,7 +78,12 @@ func TestStandardAnswerGuidanceReachesPlannerAndExecutionWithoutChangingUserScop
 					require.Contains(t, prompt, "不凭行业惯例或邻字段推定原始单位")
 					require.Contains(t, prompt, "简写数值按原文报数，改用完整单位时按已核倍率同步换算数值")
 					require.Contains(t, prompt, "单位未核到时照常给出原值，并注明“原表未标单位”。")
-					require.Contains(t, prompt, "若问题已给出单位，且原值与同表其他已核数据的量级一致，可按用户给出的单位作答，并注明单位取自问题及同表量级依据。")
+					if engine.evidenceCompletionEnabled() {
+						require.Contains(t, prompt, "来源未标注单位且无相反证据，按问题给出的单位列示原值")
+						require.NotContains(t, prompt, "同表其他已核数据的量级一致")
+					} else {
+						require.Contains(t, prompt, "若问题已给出单位，且原值与同表其他已核数据的量级一致，可按用户给出的单位作答，并注明单位取自问题及同表量级依据。")
+					}
 					require.Contains(t, prompt, "字段或图题中的并列词可能是一个合并口径")
 					require.Contains(t, prompt, "用户明确只用某表、某文件或已发布结构化数据时必须遵守")
 					require.Contains(t, prompt, "不自行选择默认候选，也不因多候选就一律要求用户再选")

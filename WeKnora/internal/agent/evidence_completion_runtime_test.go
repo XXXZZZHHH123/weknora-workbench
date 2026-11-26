@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
+	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
@@ -75,7 +76,7 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute bool) {
 	}
 	series := map[string]any{"series_id": "duration", "sheet": "operating hours", "column": "B", "metric": "duration", "grain": "day"}
 	scope := map[string]any{"knowledge_base_id": "contract-library"}
-	source := map[string]any{"sha256": strings.Repeat("b", 64)}
+	source := map[string]any{"sha256": strings.Repeat("b", 64), "file": "equipment register"}
 	const native = "structured_query_series"
 	args := map[string]any{"dataset_id": "dataset", "series_id": "duration", "start_date": date, "end_date": date}
 	catalogue := types.ToolCall{ID: "catalogue", Name: "structured_list_series", Args: map[string]any{"dataset_id": "dataset"},
@@ -138,7 +139,8 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute bool) {
 		require.Equal(t, candidateEvidencePartial, engine.turnReview.Last.Disposition)
 		require.False(t, engine.candidateApprovalCurrent(state.FinalAnswer, state))
 		require.True(t, state.IsComplete)
-		require.Equal(t, limitation, state.FinalAnswer)
+		require.True(t, strings.HasPrefix(state.FinalAnswer, limitation))
+		require.Contains(t, state.FinalAnswer, date)
 		require.Len(t, model.calls, 1)
 		require.Zero(t, guards.evidenceRecoveryAttempts)
 		require.Zero(t, index.calls)
@@ -156,20 +158,13 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute bool) {
 		args[coverageArgument] = declaration
 		return types.LLMToolCall{ID: id, Function: types.FunctionCall{Name: tool, Arguments: wire(args)}}
 	}
-	run(mockResponse{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Done: true, FinishReason: "tool_calls",
-		ToolCalls: []types.LLMToolCall{
-			wrong("repeated-series", "structured_list_series", map[string]any{"dataset_id": "dataset"}),
-			wrong("document-directory", agenttools.ToolListDocuments, map[string]any{}),
-			wrong("blank-search", agenttools.ToolSearchKnowledge, map[string]any{"query": "  "}),
-		},
-	}}})
-	rejected := state.RoundSteps[len(state.RoundSteps)-1].ToolCalls
-	require.Len(t, rejected, 3)
-	for _, call := range rejected {
-		require.NotNil(t, call.Result, call.ID)
-		require.True(t, call.Result.PreflightRejected, call.ID)
-		require.Equal(t, "source call is outside the current coverage scope or recovery action", call.Result.Error, call.ID)
-	}
+	engine.processEvidenceCompletionCalls(ctx, query, state, messages, []types.LLMToolCall{
+		wrong("repeated-series", "structured_list_series", map[string]any{"dataset_id": "dataset"}),
+		wrong("document-directory", agenttools.ToolListDocuments, map[string]any{}),
+		wrong("blank-search", agenttools.ToolSearchKnowledge, map[string]any{"query": "  "}),
+	})
+	require.Empty(t, engine.evidenceCompletion.blocked, "ordinary calls go to native validation")
+	require.Empty(t, engine.evidenceCompletion.recoveryCalls)
 	require.Zero(t, index.calls)
 	require.Empty(t, engine.evidenceCompletion.record.Attempts, "a rejected directory or missing query does not spend discovery")
 	require.NotNil(t, engine.evidenceCompletion.pending)
@@ -198,7 +193,7 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute bool) {
 	}
 	engine.modelContext.DecodeToolCalls(wrongReads)
 	engine.processEvidenceCompletionCalls(ctx, query, state, messages, wrongReads)
-	require.Len(t, engine.evidenceCompletion.blocked, 2)
+	require.Empty(t, engine.evidenceCompletion.blocked, "non-matching reads go to native validation")
 	require.Nil(t, engine.evidenceCompletion.pending, "neither rejected read should activate the pending action")
 	require.Equal(t, decisions, engine.evidenceCompletion.recoveryDecisions)
 	require.Len(t, engine.evidenceCompletion.record.Bindings, priorBindings)
@@ -236,7 +231,7 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute bool) {
 	const answer = "The register has no matching date. The inspection report gives a duration of thirteen hours."
 	run(draft(answer, bodyClaim(subject, metric)))
 	require.True(t, state.IsComplete)
-	require.Equal(t, answer, state.FinalAnswer)
+	require.True(t, strings.HasPrefix(state.FinalAnswer, answer))
 	require.Equal(t, candidateAccepted, engine.turnReview.Last.Disposition)
 	require.Len(t, engine.evidenceCompletion.record.Attempts, 2)
 	require.Equal(t, []string{"discover", "read"}, []string{engine.evidenceCompletion.record.Attempts[0].Action, engine.evidenceCompletion.record.Attempts[1].Action})
@@ -245,7 +240,7 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute bool) {
 	require.Contains(t, engine.evidenceCompletion.result[0].PinnedFacts[1].Evidence.Raw, metric)
 	require.Equal(t, subject, engine.evidenceCompletion.result[0].PinnedFacts[1].Evidence.Subject)
 	require.Equal(t, metric, engine.evidenceCompletion.result[0].PinnedFacts[1].Evidence.Metric)
-	require.Len(t, model.calls, 5)
+	require.Len(t, model.calls, 4)
 }
 
 func TestEvidenceCompletionPendingAcceptsFirstBindingWithoutGapID(t *testing.T) {
@@ -273,9 +268,7 @@ func TestEvidenceCompletionPendingAcceptsFirstBindingWithoutGapID(t *testing.T) 
 		call("matching-goal", `"goal_index":0`),
 	}
 	e.processEvidenceCompletionCalls(t.Context(), "Read the equipment duration.", &types.AgentState{}, nil, calls)
-	require.Contains(t, turn.blocked, "wrong-goal")
-	require.Contains(t, turn.blocked, "wrong-gap")
-	require.NotContains(t, turn.blocked, "matching-goal")
+	require.Empty(t, turn.blocked)
 	require.Equal(t, map[string]bool{"matching-goal": true}, turn.recoveryCalls)
 	require.Len(t, turn.record.Bindings, 1)
 	require.Equal(t, 0, turn.record.Bindings[0].GoalIndex)
@@ -323,8 +316,185 @@ func TestEvidenceCompletionOptionalPendingReadUsesCurrentBinding(t *testing.T) {
 	require.Len(t, turn.record.Bindings, 1, "discarded metadata must not create a new binding")
 	require.Empty(t, turn.declared)
 	require.Len(t, turn.record.Evidence, 1)
-	for _, id := range []string{"wrong-field", "wrong-period", "wrong-source", "wrong-domain", "wrong-action", "wrong-library", "wrong-inspection-sheet", "over-budget"} {
-		require.Equal(t, "source call is outside the current coverage scope or recovery action", turn.blocked[id], id)
+	require.Empty(t, turn.blocked, "named-first recovery scopes receipts, and native execution still checks access")
+}
+
+func TestEvidenceCompletionRetainsNativeDraftWithoutDeclaration(t *testing.T) {
+	const question = "What value did the register report?"
+	const native = "structured_query_series"
+	for _, enabled := range []string{"true", "false"} {
+		t.Run(enabled, func(t *testing.T) {
+			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", enabled)
+			e := newTestEngine(t, &mockChat{})
+			e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
+			e.toolRegistry = qa4ReplayRegistry()
+			e.taskPlan = &taskEvidencePlan{CoverageTargets: []taskCoverageTarget{{RequestBasis: question,
+				StructuredTaskGoal: &StructuredTaskGoal{SourceMode: "open", Metric: "elapsed runtime", Required: []string{"scoped_value"}}}}}
+			ctx := t.Context()
+			call := coverageSourceFixture(t, "query_series", `{"dataset_id":"register","series_id":"runtime"}`, `{
+				"dataset_id":"register","status":"ok","truncated":false,
+				"source":{"file":"register.xlsx","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sheet":"Values"},
+				"series":{"series_id":"runtime","metric":"elapsed runtime","last_valid_date":"2025-01-01","header_cells":["B1"]},
+				"rows":[{"date":"2025-01-01","date_cell":"A2","source_cell":"B2","value":13,"value_status":"valid"}],
+				"filters":{"series_id":"runtime","value_filters":[]}
+			}`)
+			require.Equal(t, native, call.Name)
+			wire, err := json.Marshal(call.Result.Data)
+			require.NoError(t, err)
+			call.Result.Output = string(wire)
+			state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}}
+			conversation := []chat.Message{{Role: "user", Content: question + " Was it 97?"}}
+			draft := "The elapsed runtime was 13."
+			e.refreshEvidenceCompletion(ctx, question, state, conversation)
+			decision := e.checkCandidate(ctx, question, draft, "", state, conversation, false)
+			if enabled == "false" {
+				require.Empty(t, e.turnReview.CoverageDraft.Candidate)
+				return
+			}
+			require.Equal(t, candidateNeedSource, decision.Disposition)
+			require.Equal(t, draft, e.turnReview.CoverageDraft.Candidate)
+			for _, unrelated := range []string{
+				"The elapsed runtime was 97.", // The number occurs only in the question.
+				"Pressure was 13.",            // The same numeric literal belongs to a different field.
+				"The source contains useful information.",
+			} {
+				e.checkCandidate(ctx, question, unrelated, "", state, conversation, false)
+				current, ok := e.currentCoverageDraft(ctx, state)
+				require.True(t, ok, unrelated)
+				require.Equal(t, draft, current, unrelated)
+			}
+			call.Result.PreflightRejected = true
+			_, ok := e.currentCoverageDraft(ctx, state)
+			require.False(t, ok, "a changed execution receipt invalidates the retained draft")
+			replacement := call
+			replacementResult := *call.Result
+			replacement.ID, replacementResult.PreflightRejected = "new-query", false
+			replacement.Result = &replacementResult
+			state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{replacement}})
+			const revised = "The register's elapsed runtime was 13."
+			e.checkCandidate(ctx, question, revised, "", state, conversation, false)
+			current, ok := e.currentCoverageDraft(ctx, state)
+			require.True(t, ok)
+			require.Equal(t, revised, current, "an equally supported current answer can replace a stale draft")
+		})
+	}
+}
+
+func TestEvidenceCompletionLatestReusesOnlyCurrentModelSelectedSeries(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
+	e := newTestEngine(t, &mockChat{})
+	e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
+	e.toolRegistry = qa4ReplayRegistry()
+	ctx := t.Context()
+	call := coverageSourceFixture(t, "query_series",
+		`{"dataset_id":"register","series_id":"duration","start_date":"2025-02-01","end_date":"2025-02-28"}`, `{
+		"dataset_id":"register","status":"no_data","valid_count":0,"truncated":false,
+		"source":{"file":"register.xlsx","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sheet":"Values"},
+		"series":{"series_id":"duration","metric":"duration","header_cells":["B1"],"last_valid_date":"2025-01-31"},
+		"filters":{"series_id":"duration","start_date":"2025-02-01","end_date":"2025-02-28","value_filters":[]}
+	}`)
+	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}}
+	e.refreshEvidenceCompletion(ctx, "Read duration for February.", state, nil)
+	key, name, args := e.coverageSameFieldLatestRead(state)
+	require.NotEmpty(t, key)
+	require.Equal(t, "structured_query_series", name)
+	require.Equal(t, map[string]any{"dataset_id": "register", "knowledge_base_id": "authorized-library",
+		"series_id": "duration", "operation": "latest", "limit": 1}, args)
+	t.Run("exhausted recovery does not execute a native read", func(t *testing.T) {
+		t.Setenv("STRUCTURED_DATA_URL", "")
+		t.Setenv("COMMODITY_RESEARCH_TOKEN_FILE", "")
+		toolCalls := 0
+		e.eventBus.On(event.EventAgentToolCall, func(_ context.Context, _ event.Event) error {
+			toolCalls++
+			return nil
+		})
+		original := e.evidenceCompletion
+		for _, tc := range []struct {
+			name, stop string
+			pending    *coverageCompletion
+			decisions  int
+			attempts   int
+		}{
+			{name: "turn stopped", stop: "model_call_time"},
+			{name: "pending exhausted", pending: &coverageCompletion{State: coverageExhausted, NextRead: "read", BudgetRemaining: 1}},
+			{name: "no pending allowance", pending: &coverageCompletion{State: coverageOpen, NextRead: "read"}},
+			{name: "runtime decisions exhausted", decisions: maxEvidenceRecoveryAttempts},
+			{name: "loop attempts exhausted", attempts: maxEvidenceRecoveryAttempts},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				e.evidenceCompletion = original
+				t.Cleanup(func() { e.evidenceCompletion = original })
+				turn := &e.evidenceCompletion
+				turn.stopReason, turn.pending, turn.recoveryDecisions = tc.stop, tc.pending, tc.decisions
+				guards := loopGuards{evidenceRecoveryAttempts: tc.attempts}
+				var messages []chat.Message
+				current := *state
+				read, err := e.executeCoverageDraftRead(ctx, "Read duration for February.", &current, &messages, &guards, "session", "turn", types.AgentStep{}, candidateDecision{})
+				require.NoError(t, err)
+				require.False(t, read)
+				require.Zero(t, toolCalls)
+				require.Equal(t, state.RoundSteps, current.RoundSteps)
+				require.Empty(t, turn.latestAttempts)
+				require.Equal(t, tc.attempts, guards.evidenceRecoveryAttempts)
+			})
+		}
+	})
+	gap := e.evidenceCompletion.record.Evidence[0]
+	stale := gap
+	stale.SnapshotHash = strings.Repeat("b", 64)
+	e.evidenceCompletion.record.Evidence[0] = stale
+	_, name, args = e.coverageSameFieldLatestRead(state)
+	require.Empty(t, name)
+	require.Nil(t, args)
+	e.evidenceCompletion.record.Evidence[0] = gap
+	e.evidenceCompletion.latestAttempts = map[string]bool{key: true}
+	_, name, _ = e.coverageSameFieldLatestRead(state)
+	require.Empty(t, name, "one matching field cannot take a second automatic shot")
+
+	other := gap
+	other.SeriesID, other.Metric, other.Column = "pressure", "pressure", "C"
+	turn := &e.evidenceCompletion
+	turn.record.Evidence = append(turn.record.Evidence, other)
+	_, name, _ = e.coverageSameFieldLatestRead(state)
+	require.Empty(t, name, "independent fields without a model association leave the selection unresolved")
+	turn.result = []coverageCompletion{
+		{GoalIndex: 0, PinnedFacts: []coverageFact{{Role: "coverage_boundary", Evidence: gap}}},
+		{GoalIndex: 1, PinnedFacts: []coverageFact{{Role: "coverage_boundary", Evidence: other}}},
+	}
+	_, name, args = e.coverageSameFieldLatestRead(state)
+	require.Equal(t, "structured_query_series", name)
+	require.Equal(t, "pressure", args["series_id"], "one attempted field does not consume another associated goal's read")
+}
+
+func TestEvidenceCompletionAdvanceHonorsBothRecoveryCounts(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
+	for _, tc := range []struct {
+		name, stop, expectedStop string
+		decisions, attempts      int
+	}{
+		{name: "turn stopped", stop: "model_call_time", expectedStop: "model_call_time"},
+		{name: "runtime decisions exhausted", decisions: maxEvidenceRecoveryAttempts, expectedStop: "recovery_budget_exhausted"},
+		{name: "loop attempts exhausted", attempts: maxEvidenceRecoveryAttempts, expectedStop: "recovery_budget_exhausted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEngine(t, &mockChat{})
+			e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
+			e.toolRegistry = qa4ReplayRegistry()
+			e.evidenceCompletionEnabled()
+			turn := &e.evidenceCompletion
+			turn.stopReason, turn.recoveryDecisions = tc.stop, tc.decisions
+			turn.result = []coverageCompletion{{GapID: "verified-gap", State: coverageOpen, NextRead: "discover",
+				OpenItems: []string{"attributed_supplement"}, BudgetRemaining: 2}}
+			guards := loopGuards{evidenceRecoveryAttempts: tc.attempts}
+			var messages []chat.Message
+			e.advanceEvidenceCompletion(t.Context(), "Find the reported duration.", &types.AgentState{}, &messages, &guards, "session")
+			require.Nil(t, turn.pending)
+			require.Equal(t, tc.expectedStop, turn.stopReason)
+			require.Equal(t, tc.decisions, turn.recoveryDecisions)
+			require.Equal(t, tc.attempts, guards.evidenceRecoveryAttempts)
+			require.Zero(t, e.turnReview.Repairs)
+			require.Empty(t, messages)
+		})
 	}
 }
 

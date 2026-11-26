@@ -350,7 +350,8 @@ func runQA4Stage2BReplay(t *testing.T, trace qa4Stage2Trace, enabled, rows bool)
 	require.Empty(t, done.Content)
 	require.Len(t, model.calls, modelCalls, "no model calls were added to the prescribed replay")
 	if !enabled {
-		require.Equal(t, trace.HistoricalFinal, state.FinalAnswer)
+		require.False(t, terminalCandidateFallback(state.FinalAnswer), "legacy execution skips coverage enforcement but publishes available evidence")
+		require.Contains(t, state.FinalAnswer, "棉花数据库.xlsx")
 		return
 	}
 	require.NotEmpty(t, state.FinalAnswer)

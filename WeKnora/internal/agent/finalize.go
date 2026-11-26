@@ -166,9 +166,11 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		}
 		fullAnswer = agenttools.StripThinkBlocks(llmResult.Content)
 		if isReviewedAnswerFormat(opts.Format) {
-			fullAnswer = agenttools.StripThinkBlocks(decodeReviewedAnswer(llmResult.Content))
+			fullAnswer = agenttools.StripThinkBlocks(decodeReviewedAnswer(cleanReviewedAnswerEnvelope(llmResult.Content)))
 			fullAnswer = e.modelContext.DecodeOutputText(fullAnswer)
 		}
+		fullAnswer = e.acceptCoverageAnswer(ctx, query, state, conversation, fullAnswer,
+			llmResult.StreamError == "" && len(llmResult.ToolCalls) == 0 && isNaturalStopFinishReason(llmResult.FinishReason))
 		truncated = isLengthFinishReason(llmResult.FinishReason)
 		// A provider can ignore tool_choice=none. Never accept its pre-tool
 		// progress text as the final answer, or silently drop requested calls.

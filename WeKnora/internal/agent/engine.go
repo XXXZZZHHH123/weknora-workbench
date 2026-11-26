@@ -255,7 +255,7 @@ func (e *AgentEngine) buildSystemPrompt(ctx context.Context) string {
 		e.systemPromptTemplate,
 	)
 	if e.config.AnswerReviewMode == "standard" {
-		sections = append(sections, SystemPromptSection{"answer_policy", standardAnswerGuidance})
+		sections = append(sections, SystemPromptSection{"answer_policy", e.standardAnswerPolicyGuidance()})
 	}
 	for _, section := range sections {
 		logger.Debugf(ctx, "[Agent][Prompt] section=%s bytes=%d", section.Name, len(section.Content))
@@ -1474,6 +1474,16 @@ func (e *AgentEngine) runReActIteration(
 	// Agents without the workbench source critic retain their existing
 	// independent source-audit path; direct acceptance requires that critic.
 	pendingLegacySourceRewrite := !e.needsSourceConsistencyCheck(state) && len(response.ToolCalls) == 0 && response.Content != "" && !guards.structuredAnswerReviewed && (needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, response.Content) || hasCurrentDocumentEvidence(state.RoundSteps))
+	if len(response.ToolCalls) == 0 && strings.TrimSpace(response.Content) == "" && strings.TrimSpace(response.ReasoningContent) == "" &&
+		isNaturalStopFinishReason(response.FinishReason) {
+		read, err := e.executeCoverageDraftRead(ctx, query, state, messagesPtr, guards, sessionID, assistantMessageID, step, candidateDecision{})
+		if err != nil || read && state.Suspended != nil {
+			return iterOutcomeBreak, err
+		}
+		if read {
+			return iterOutcomeNext, nil
+		}
+	}
 	if len(response.ToolCalls) == 0 && (!pendingLegacySourceRewrite || suspectAnswerFragment(response.Content, response.ReasoningContent)) && (strings.TrimSpace(response.Content) != "" || strings.TrimSpace(response.ReasoningContent) != "") && (isNaturalStopFinishReason(response.FinishReason) || isLengthFinishReason(response.FinishReason)) {
 		reviewConversation, _ := restoreStructuredReviewConversation(*messagesPtr, guards)
 		decision := e.checkCandidate(ctx, query, response.Content, response.ReasoningContent, state, reviewConversation, false)
@@ -1485,6 +1495,18 @@ func (e *AgentEngine) runReActIteration(
 		if ctx.Err() != nil {
 			state.RoundSteps = append(state.RoundSteps, step)
 			return iterOutcomeBreak, nil
+		}
+		if !isLengthFinishReason(response.FinishReason) {
+			read, readErr := e.executeCoverageDraftRead(ctx, query, state, messagesPtr, guards, sessionID, assistantMessageID, step, decision)
+			if readErr != nil {
+				return iterOutcomeBreak, readErr
+			}
+			if read {
+				if state.Suspended != nil {
+					return iterOutcomeBreak, nil
+				}
+				return iterOutcomeNext, nil
+			}
 		}
 		if decision.Disposition == candidateNumericFailure {
 			if guards.structuredEvidenceRepairs < 2 && e.spendCandidateRepair() {
@@ -1537,7 +1559,7 @@ func (e *AgentEngine) runReActIteration(
 					e.stopEvidenceCompletion(ctx, query, state, *messagesPtr, "recovery_budget_exhausted")
 				}
 				e.turnReview.Last.ReasonCode = "evidence_completion_exhausted"
-				if len(e.coverageHandoffFacts()) > 0 {
+				if current, ok := e.currentCoverageDraft(ctx, state); ok && current == response.Content {
 					// The original decision already passed the standard numeric and
 					// citation gates. Keep its checked text on the partial outlet.
 					state.RoundSteps = state.RoundSteps[:len(state.RoundSteps)-1]

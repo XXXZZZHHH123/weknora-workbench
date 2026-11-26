@@ -32,6 +32,7 @@ type StructuredTaskGoal struct {
 	RestrictionBasis string         `json:"restriction_basis,omitempty"`
 	PrimaryRef       string         `json:"primary_ref,omitempty"`
 	Metric           string         `json:"metric,omitempty"`
+	RequestedUnit    string         `json:"requested_unit,omitempty"`
 	Period           map[string]any `json:"period,omitempty"`
 	SourceTime       string         `json:"source_time,omitempty"`
 	VersionTask      string         `json:"version_task,omitempty"`
@@ -40,7 +41,7 @@ type StructuredTaskGoal struct {
 	Delivery         map[string]any `json:"delivery,omitempty"`
 }
 
-const structuredTaskCoverageSchema = `{
+const structuredTaskCoverageBeforeUnit = `{
  "type":"object","additionalProperties":false,
  "if":{"properties":{"source_mode":{"const":"only"}}},
  "then":{"required":["restriction_basis"],"properties":{"restriction_basis":{"type":"string"},"on_verified_gap":{"not":{"contains":{"const":"attributed_supplement"}}}}},
@@ -56,7 +57,9 @@ const structuredTaskCoverageSchema = `{
   "primary_ref":{"type":"string","minLength":1,"maxLength":512,"pattern":"\\S"},
   "source_mode":{"type":"string","enum":["only","named_first","open"]},
   "metric":{"type":"string","minLength":1,"maxLength":512},
-  "period":{"type":"object","additionalProperties":false,"required":["grain"],"if":{"properties":{"grain":{"const":"none"}}},"then":{"not":{"anyOf":[{"required":["from"]},{"required":["to"]},{"required":["count"]}]}},"properties":{"scope":{"type":"string","minLength":1,"maxLength":256},"from":{"type":"string","minLength":1,"maxLength":128},"to":{"type":"string","minLength":1,"maxLength":128},"count":{"type":"integer","minimum":1},"grain":{"type":"string","enum":["none","day","week","month","quarter","year","report_period","report_date","crop_year","episode","event_date","event_period","chart_endpoint","chart_trend","forecast_scenario"]}}},
+`
+
+const structuredTaskCoverageAfterUnit = `  "period":{"type":"object","additionalProperties":false,"required":["grain"],"if":{"properties":{"grain":{"const":"none"}}},"then":{"not":{"anyOf":[{"required":["from"]},{"required":["to"]},{"required":["count"]}]}},"properties":{"scope":{"type":"string","minLength":1,"maxLength":256},"from":{"type":"string","minLength":1,"maxLength":128},"to":{"type":"string","minLength":1,"maxLength":128},"count":{"type":"integer","minimum":1},"grain":{"type":"string","enum":["none","day","week","month","quarter","year","report_period","report_date","crop_year","episode","event_date","event_period","chart_endpoint","chart_trend","forecast_scenario"]}}},
   "source_time":{"type":"string","enum":["observed_period","latest_observation","disclosed_at","forecast_period","general_concept","latest_relevant_assessment","cover_date","catalog_snapshot","publication_date"]},
   "version_task":{"type":"string","enum":["single","compare_versions","compare_sources","adopt_if_conflict","consistent_series","separate_conflicts","any_attributed_source"]},
   "required":{"type":"array","maxItems":4,"uniqueItems":true,"items":{"enum":["scoped_value","explicit","supporting","optional"]}},
@@ -64,6 +67,10 @@ const structuredTaskCoverageSchema = `{
   "delivery":{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"type":"string","enum":["text","chart","line_chart","bar_chart","file","image"]},"aggregation":{"type":"string","enum":["as_reported","mean","sum","count","min_max","difference","difference_and_return","last_valid_trading_day"]}}}
  }
 }`
+
+const legacyStructuredTaskCoverageSchema = structuredTaskCoverageBeforeUnit + structuredTaskCoverageAfterUnit
+const structuredTaskCoverageSchema = structuredTaskCoverageBeforeUnit + `  "requested_unit":{"type":"string","minLength":1,"maxLength":32,"pattern":"\\S"},
+` + structuredTaskCoverageAfterUnit
 
 var structuredTaskCoverageValidator = sync.OnceValues(func() (*jsonschema.Resolved, error) {
 	var schema jsonschema.Schema
@@ -130,6 +137,9 @@ func validateTaskCoverageBasis(plan *taskEvidencePlan, query string, messages []
 		}
 		if target.StructuredTaskGoal == nil {
 			continue
+		}
+		if target.RequestedUnit != "" && !strings.Contains(target.RequestBasis, target.RequestedUnit) {
+			return fmt.Errorf("coverage requested_unit must quote a unit in the human request basis")
 		}
 		for _, ref := range []string{target.PrimaryRef, target.RestrictionBasis} {
 			if ref != "" && !pinned(ref) && (taskCoverageSourceHandle(ref) || !quoted(ref, turns)) {

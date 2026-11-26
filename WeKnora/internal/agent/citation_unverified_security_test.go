@@ -37,14 +37,17 @@ func TestCitationWarningRejectsForgedOrDuplicateIdentityAttributes(t *testing.T)
 	}
 }
 
-func TestCitationValidChunkWithForgedLibraryStillRefuses(t *testing.T) {
+func TestCitationValidChunkWithForgedLibraryStillRejectsCandidate(t *testing.T) {
 	e, state := citationWarningFixture(t, &mockChat{})
 	draft := `另段说明。<kb chunk_id="other-current" kb_id="foreign-library" />`
 	d := e.checkCandidate(t.Context(), "说明内容。", draft, "", state, nil, false)
 	require.Equal(t, "citation_identity_invalid", d.ReasonCode)
 	require.NotEqual(t, candidateAccepted, d.Disposition)
 	e.commitTerminalResult(t.Context(), state, "citation", answerReviewUnavailableFallback, "", "failed", false)
-	require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer)
+	require.False(t, terminalCandidateFallback(state.FinalAnswer))
+	require.Contains(t, state.FinalAnswer, "说明内容")
+	require.NotContains(t, state.FinalAnswer, "foreign-library")
+	require.NotContains(t, state.FinalAnswer, "另段说明")
 	require.Nil(t, e.turnReview.CitationUnverifiedDelivery)
 }
 
@@ -57,7 +60,10 @@ func TestCitationWarningDoesNotRewriteCodeOrLinkExamples(t *testing.T) {
 			e.checkCandidate(t.Context(), "保留原格式说明。", draft, "", state, nil, false)
 			e.commitTerminalResult(t.Context(), state, "citation-code", answerReviewUnavailableFallback, "", "failed", false)
 			require.Nil(t, e.turnReview.CitationUnverifiedDelivery, "a citation-looking example in protected syntax cannot be rewritten as prose")
-			require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer)
+			require.False(t, terminalCandidateFallback(state.FinalAnswer))
+			require.Contains(t, state.FinalAnswer, "保留原格式说明")
+			require.NotContains(t, state.FinalAnswer, "正文")
+			require.NotContains(t, state.FinalAnswer, invalidTag)
 		})
 	}
 }

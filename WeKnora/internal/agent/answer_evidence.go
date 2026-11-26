@@ -55,7 +55,19 @@ func (e *AgentEngine) answerNumericEvidence(answer string, steps []types.AgentSt
 		}
 		documentSteps = append(documentSteps, current)
 	}
-	return answerNumericEvidenceWithDocumentReads(answer, steps, documentSteps, groups...)
+	evidence := answerNumericEvidenceWithDocumentReads(answer, steps, documentSteps, groups...)
+	if e.evidenceCompletionEnabled() {
+		rows := map[string]bool{}
+		for _, step := range steps {
+			for _, call := range step.ToolCalls {
+				analyzedSourceRows(call, rows)
+			}
+		}
+		if len(rows) > 0 {
+			evidence = append(evidence, chat.Message{Role: "tool", NumericObservations: &chat.NumericObservations{WorkbookRows: rows}})
+		}
+	}
+	return evidence
 }
 
 func answerNumericEvidenceWithDocumentReads(answer string, steps, documentSteps []types.AgentStep, groups ...[]chat.Message) []chat.Message {

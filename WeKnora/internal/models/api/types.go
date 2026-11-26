@@ -88,8 +88,9 @@ const MessageKindReviewEvidence MessageKind = "review_evidence_handoff"
 // NumericObservations carries validator-only runtime observations. It is not
 // a tool-result protocol and cannot be restored from model output or history.
 type NumericObservations struct {
-	Values   []float64
-	Percents []float64
+	Values       []float64
+	Percents     []float64
+	WorkbookRows map[string]bool
 }
 
 // Message 表示聊天消息

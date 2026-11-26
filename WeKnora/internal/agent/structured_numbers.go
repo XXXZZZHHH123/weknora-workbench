@@ -158,6 +158,42 @@ func queriedSourceRows(data map[string]any, rows map[string]bool) {
 	}
 }
 
+// SQL output expressions can print invented coordinates. Use the native
+// pre-SQL singleton input receipts, which already verify the selected field,
+// exact date, snapshot, cell and original value together.
+func analyzedSourceRows(call types.ToolCall, rows map[string]bool) {
+	if call.Result == nil || !call.Result.Success || call.Result.PreflightRejected || call.Name != call.ExecutionName() {
+		return
+	}
+	args := call.ExecutionArgs()
+	if call.Name == "structured_data" && args["operation"] == "analyze_table" {
+		args = coverageObject(args["arguments"])
+	} else if call.Name != "structured_analyze_table" {
+		return
+	}
+	raw, err := json.Marshal(call.Result.Data)
+	if err != nil {
+		return
+	}
+	data, err := decodeCitationJSON(string(raw))
+	if err != nil {
+		return
+	}
+	execution := coverageObject(data["_structured_execution"])
+	if execution["canonical_operation"] != "analyze_table" || execution["effect_class"] != "read" || execution["tool_name"] != call.Name {
+		return
+	}
+	for _, item := range coverageStructuredEvidence(coverageEvidence{Operation: "analyze_table", Status: sourceNavigationString(data, "status")}, args, data) {
+		if item.Kind == "cell" && item.Bound && item.RangeComplete {
+			if match := sourceCellRow.FindStringSubmatch(item.Cell); len(match) == 2 {
+				if number, err := strconv.Atoi(match[1]); err == nil && number <= 1048576 {
+					rows[match[1]] = true
+				}
+			}
+		}
+	}
+}
+
 func maskInspectedMarkdownRows(answer string, rows map[string]bool) string {
 	lines := strings.Split(answer, "\n")
 	column := -1
@@ -549,6 +585,9 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 				// not acquire a percent conversion simply by appending a sign.
 				values = append(values, observed.Values...)
 				percentageValues = append(percentageValues, observed.Percents...)
+				for row := range observed.WorkbookRows {
+					inspectedRows[row] = true
+				}
 			}
 			name := msg.Name
 			if executed := canonicalDocumentTools[msg.ToolCallID]; executed != "" {

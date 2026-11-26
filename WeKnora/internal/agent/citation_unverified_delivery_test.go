@@ -97,7 +97,9 @@ func TestCitationUnverifiedRejectsUnknownUnauthorizedStaleOrForgedSources(t *tes
 				state.RoundSteps[0].ToolCalls[0].Result.Data["changed"] = true
 			}
 			e.commitTerminalResult(t.Context(), state, "citation", answerReviewUnavailableFallback, "", "failed", false)
-			require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer)
+			require.False(t, terminalCandidateFallback(state.FinalAnswer))
+			require.NotContains(t, state.FinalAnswer, "面积描述")
+			require.NotContains(t, state.FinalAnswer, "<kb")
 			require.Nil(t, e.turnReview.CitationUnverifiedDelivery)
 		})
 	}
@@ -110,7 +112,9 @@ func TestCitationUnverifiedRechecksReceiptBeforePublishing(t *testing.T) {
 	require.NotNil(t, e.turnReview.CitationUnverifiedDelivery)
 	state.RoundSteps[0].ToolCalls[0].Result.Data["changed"] = true
 	e.emitCompletionEvent(t.Context(), state, "citation", "message", time.Now())
-	require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer)
+	require.False(t, terminalCandidateFallback(state.FinalAnswer))
+	require.NotContains(t, state.FinalAnswer, "面积描述")
+	require.NotContains(t, state.FinalAnswer, "<kb")
 	require.Empty(t, state.KnowledgeRefs)
 	require.Empty(t, state.EvidenceRefs)
 }

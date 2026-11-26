@@ -279,7 +279,7 @@ func (e *AgentEngine) citationUnverifiedPresentation(ctx context.Context, state 
 	if markedNumbers > 0 {
 		notice += unverifiedNumberNotice
 	}
-	delivery := marked + "\n\n> 提示：" + notice
+	delivery := e.terminalCoverageWarning(ctx, state, marked+"\n\n> 提示："+notice)
 	refs, legacy := e.unverifiedNavigationReferences(delivery, state)
 	if len(refs) != len(uniqueCandidateEvidenceIDs(delivery)) || len(legacy) != len(uniqueCandidateCitationIDs(delivery)) || !numericUnverifiedReferenceBudgetFits(refs, legacy) {
 		return "", 0, 0, nil, nil, false
@@ -301,7 +301,7 @@ func (e *AgentEngine) publishCitationUnverifiedReferences(ctx context.Context, s
 	b := e.turnReview.CitationUnverifiedDelivery
 	text, citations, numbers, refs, legacy, ok := e.citationUnverifiedPresentation(ctx, state, b.Decision)
 	if !ok || state.FinalAnswer != b.FinalText || text != b.FinalText || citations != b.MarkedCitations || numbers != b.MarkedNumbers || unverifiedReferenceDigest(refs, legacy) != b.ReferencesHash {
-		state.FinalAnswer, refs, legacy = answerReviewUnavailableFallback, nil, nil
+		state.FinalAnswer, refs, legacy = e.terminalCoverageFailure(ctx, state, answerReviewUnavailableFallback), nil, nil
 	}
 	state.EvidenceRefs, state.KnowledgeRefs = refs, legacy
 	return true

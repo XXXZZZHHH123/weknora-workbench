@@ -33,7 +33,9 @@ func TestTerminalCannotReuseApprovalForChangedCandidate(t *testing.T) {
 	recorder.attach(e.eventBus)
 	e.checkCandidate(t.Context(), "Explain the indicator.", "The indicator is covered area.", "", state, nil, false)
 	e.commitTerminalResult(t.Context(), state, "s", "A different unreviewed claim.", "", "answer", false)
-	require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer)
+	require.False(t, terminalCandidateFallback(state.FinalAnswer))
+	require.Contains(t, state.FinalAnswer, "Explain the indicator.")
+	require.NotContains(t, state.FinalAnswer, "A different unreviewed claim.")
 	e.commitTerminalResult(t.Context(), state, "s", "Duplicate delivery.", "", "failed", false)
 	done, visible := recorder.snapshot()
 	require.Equal(t, 1, done)
@@ -62,11 +64,17 @@ func TestTerminalApprovalIgnoresOnlySurroundingWhitespace(t *testing.T) {
 
 			e.commitTerminalResult(t.Context(), state, "s", tc.submitted, "", "answer", false)
 
-			require.Equal(t, tc.expected, state.FinalAnswer)
+			if tc.expected == answerReviewUnavailableFallback {
+				require.False(t, terminalCandidateFallback(state.FinalAnswer))
+				require.Contains(t, state.FinalAnswer, "Explain the indicator.")
+				require.NotContains(t, state.FinalAnswer, tc.submitted)
+			} else {
+				require.Equal(t, tc.expected, state.FinalAnswer)
+			}
 			require.Equal(t, tc.expected == tc.approved, e.candidateApprovalCurrent(state.FinalAnswer, state))
 			done, visible := recorder.snapshot()
 			require.Equal(t, 1, done)
-			require.Equal(t, tc.expected, visible)
+			require.Equal(t, state.FinalAnswer, visible)
 		})
 	}
 }
@@ -127,6 +135,7 @@ func TestTerminalCannotReuseApprovalAfterTaskOrEvidenceChanges(t *testing.T) {
 			state.RoundSteps[0].ToolCalls[0].Result.Output = "A changed observation"
 		}
 		e.commitTerminalResult(t.Context(), state, "s", " \t"+candidate+"\n", "", "answer", false)
-		require.Equal(t, answerReviewUnavailableFallback, state.FinalAnswer, "a stale task or evidence revision must not be committed")
+		require.False(t, terminalCandidateFallback(state.FinalAnswer))
+		require.NotContains(t, state.FinalAnswer, candidate, "a stale task or evidence revision must not be committed")
 	}
 }
