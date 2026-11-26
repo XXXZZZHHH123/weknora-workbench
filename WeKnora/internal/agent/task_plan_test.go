@@ -97,6 +97,8 @@ func TestTaskPlanProjectsOnlyRealToolsAndKeepsExecutionAuthorization(t *testing.
 	require.Equal(t, 17, state.TurnUsage.TotalTokens)
 	require.Contains(t, planned[0].Content, "advisory_task_plan")
 	require.NotContains(t, messages[0].Content, "advisory_task_plan", "do not mutate the input transcript")
+	require.Contains(t, model.requests[0][0].Content, "request_basis从当前问题或近期用户消息中原样复制一段与该目标有关的连续原文，短问可全文复制")
+	require.Contains(t, model.requests[0][0].Content, "逐字保留标点及用词，不改写、不拼接片段")
 	require.Equal(t, 0.7, engine.config.Temperature)
 	require.Zero(t, model.options[0].Temperature)
 	require.Equal(t, 1152, model.options[0].MaxCompletionTokens)

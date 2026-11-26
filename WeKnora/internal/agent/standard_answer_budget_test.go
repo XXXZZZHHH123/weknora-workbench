@@ -66,15 +66,18 @@ func TestStandardAnswerBudgetEightSourceRoundsUseOneCheckedFinalSynthesis(t *tes
 		}}, Done: true, FinishReason: "tool_calls"}}})
 	}
 	handle := e.modelContext.CitableChunkHandle("contract-supporting")
-	model.responses = append(model.responses, chatAnswer(`The indicator measures covered area.<ref id="`+handle+`"/> The remaining scope has not been covered by the material read in this run.`))
+	const gap = "The material read gives no previous observation date."
+	model.responses = append(model.responses, chatAnswer(`The indicator measures covered area.<ref id="`+handle+`"/> `+gap))
 	recorder := &terminalAnswerRecorder{}
 	recorder.attach(e.eventBus)
-	_, err := e.executeLoop(withAgentExecutionStart(t.Context()), state, "Report the observed indicator.", emptyMessages(), e.buildToolsForLLM(), "s", "m")
+	messages := emptyMessages()
+	messages[0].Content = e.buildSystemPrompt(t.Context())
+	_, err := e.executeLoop(withAgentExecutionStart(t.Context()), state, "Report the observed indicator and its previous observation date.", messages, e.buildToolsForLLM(), "s", "m")
 	require.NoError(t, err)
 	require.Equal(t, standardAnswerToolRounds, reader.calls)
 	require.Len(t, model.calls, standardAnswerToolRounds+1, "only one synthesis follows the eight real tool barriers")
-	require.Contains(t, state.FinalAnswer, candidate)
-	require.Contains(t, state.FinalAnswer, standardPreliminaryAnswerNotice(t.Context()))
+	require.Equal(t, candidate+" "+gap, state.FinalAnswer)
+	require.Contains(t, model.calls[len(model.calls)-1][0].Content, standardAnswerGuidance)
 	require.Contains(t, model.opts[len(model.opts)-1].RuntimeNotice, standardAnswerBudgetNotice)
 	require.Equal(t, "none", model.opts[len(model.opts)-1].ToolChoice)
 	require.True(t, e.candidateApprovalCurrent(state.FinalAnswer, state))
@@ -157,12 +160,13 @@ func TestStandardAnswerBudgetUsesActiveIntervalAndActualLazyProtocol(t *testing.
 	require.Equal(t, "active_time", e.standardAnswerBudgetReason(t.Context(), state, time.Now().Add(-61*time.Second)), "the real lazy bootstrap is a recognized read-only protocol")
 }
 
-func TestStandardPreliminaryNoticeUsesLocaleAndDoesNotDuplicate(t *testing.T) {
-	for _, language := range []string{"zh-CN", "en-US"} {
+func TestStandardAnswerBudgetProgressUsesLocale(t *testing.T) {
+	for language, want := range map[string]string{
+		"zh-CN": "本轮取证已达到阶段预算，正在整理已有结果。",
+		"en-US": "This stage has reached its evidence budget. Preparing an answer from the available results.",
+	} {
 		ctx := context.WithValue(t.Context(), types.LanguageContextKey, language)
-		answer := withStandardPreliminaryNotice(ctx, "A supported finding.")
-		require.Equal(t, standardPreliminaryAnswerNotice(ctx)+"\n\nA supported finding.", answer)
-		require.Equal(t, answer, withStandardPreliminaryNotice(ctx, answer))
+		require.Equal(t, want, standardAnswerBudgetProgress(ctx))
 	}
 }
 

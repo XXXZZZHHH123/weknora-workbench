@@ -49,6 +49,9 @@ func TestListDocumentsRequiresKnowledgeBaseInScope(t *testing.T) {
 
 func TestListDocumentsRendersRowsForModelAndUI(t *testing.T) {
 	tool := newListDocumentsFixture()
+	if !strings.Contains(tool.Description(), "most recently added first") || !strings.Contains(tool.Description(), "verify the observation date in its content") {
+		t.Fatalf("directory should distinguish listing order from the report period: %s", tool.Description())
+	}
 	res, err := tool.Execute(context.Background(), json.RawMessage(`{"knowledge_base_id":"kb-1","page_size":2}`))
 	if err != nil || !res.Success {
 		t.Fatalf("res=%+v err=%v", res, err)

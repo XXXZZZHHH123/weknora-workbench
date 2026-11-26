@@ -161,8 +161,35 @@ func fitStructuredItemDirectory(ctx context.Context, operation string, result *t
 				encoded = []byte("0")
 			}
 		}
+	} else if operation == "list_series" && len(rows) > 0 {
+		// Preserve the established page before attempting to add formula samples.
+		baseline := encoded
+		for i, row := range rows {
+			if references := structuredSeriesReferenceSamples(original[i]); len(references) > 0 {
+				row["source_context"] = map[string]any{"referenced_by": references}
+			}
+		}
+		if !render() {
+			encoded = baseline
+		}
 	}
 	copy := *result
 	copy.Output = string(encoded)
 	return &copy
+}
+
+func structuredSeriesReferenceSamples(series map[string]any) []map[string]any {
+	sourceContext, _ := series["source_context"].(map[string]any)
+	references, _ := sourceContext["referenced_by"].([]any)
+	var samples []map[string]any
+	for _, entry := range references {
+		ref, _ := entry.(map[string]any)
+		formula, _ := ref["formula"].(string)
+		sheet, _ := ref["sheet"].(string)
+		cell, _ := ref["cell"].(string)
+		if formula != "" && sheet != "" && cell != "" {
+			samples = append(samples, structuredDirectoryKeys(ref, "sheet", "series_id", "metric", "headers", "cell", "formula", "date", "kind", "target_column", "target_reference"))
+		}
+	}
+	return samples
 }

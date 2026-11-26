@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/modelcontext"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -92,6 +93,93 @@ func TestStructuredSeriesBriefPaginationNeverSkipsOmittedFields(t *testing.T) {
 	require.Len(t, seen, total-start)
 	for index, id := range seen {
 		require.Equal(t, fmt.Sprintf("field-%03d", start+index), id)
+	}
+}
+
+func TestStructuredSeriesBriefKeepsFormulaSamplesInRemainingBudget(t *testing.T) {
+	const offset, count, total = 7, 8, 23
+	const formula = "=VLOOKUP(A8,'原始记录'!A:B,2,0)"
+	bare := wideItemCatalog(t, "list_series", count, offset, total)
+	limited := fitStructuredDirectory(WithOutputBudget(t.Context(), 1900), "list_series", bare)
+	tightBudget := utf8.RuneCountInString(limited.Output)
+
+	original := wideItemCatalog(t, "list_series", count, offset, total)
+	rows := original.Data["series"].([]map[string]any)
+	references := []map[string]any{
+		{
+			"sheet": "计算视图", "series_id": "referencing-column", "metric": "出厂读数",
+			"headers": []map[string]any{{"cell": "B2", "value": "出厂读数"}},
+			"cell":    "B8", "formula": formula, "date": "2020-03-31", "kind": "vlookup",
+			"target_column": "B", "target_reference": "A:B", "file_version": "private-version-detail",
+		},
+		{
+			"sheet": "交接记录", "series_id": "handoff-column", "metric": "交接读数",
+			"headers": []map[string]any{{"cell": "D2", "value": "交接读数"}},
+			"cell":    "D9", "formula": "='原始记录'!B9", "kind": "direct", "target_column": "B", "target_reference": "B9",
+		},
+	}
+	rows[0]["source_context"] = map[string]any{
+		"formula_source": "unrelated-formula-context",
+		"referenced_by":  append([]map[string]any{{"sheet": "Malformed", "formula": "=A1"}}, references...),
+	}
+	rows[1]["source_context"] = map[string]any{"formula_source": "unrelated-outbound-formula"}
+	serviceOutput, err := json.Marshal(original.Data)
+	require.NoError(t, err)
+	original.Output = string(serviceOutput)
+	original.Data["source_context"] = map[string]any{
+		"knowledge_base_id": "private-library", "knowledge_base_tenant_id": 7,
+	}
+	before, err := json.Marshal(original.Data)
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name   string
+		budget int
+		sample bool
+	}{{"room for evidence", 4200, true}, {"only room for existing page", tightBudget, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := WithOutputBudget(t.Context(), tc.budget)
+			baseline := structuredDirectoryView(t, fitStructuredDirectory(ctx, "list_series", bare), tc.budget)
+			projected := fitStructuredDirectory(ctx, "list_series", original)
+			view := structuredDirectoryView(t, projected, tc.budget)
+			if !tc.sample {
+				require.Equal(t, limited.Output, projected.Output, "oversized reference group leaves the whole original page intact")
+			}
+			for _, key := range []string{"offset", "total", "next_offset", "truncated", "directory_projection"} {
+				require.Equal(t, baseline[key], view[key], key)
+			}
+			visible := modelcontext.NewRegistry(true).ModelToolResultForTool("structured_list_series", projected)
+			var modelView map[string]any
+			require.NoError(t, json.Unmarshal([]byte(visible), &modelView))
+			require.NotContains(t, modelView, "source_context", "runtime context stays private")
+			require.NotContains(t, visible, "private-library")
+			require.NotContains(t, visible, "unrelated-formula-context")
+			require.NotContains(t, visible, "private-version-detail")
+			shown := structuredRecallRows(modelView["series"])
+			want := structuredRecallRows(baseline["series"])
+			require.NotEmpty(t, shown)
+			require.Len(t, shown, len(want))
+			for i, row := range shown {
+				require.Equal(t, want[i]["series_id"], row["series_id"])
+				require.Equal(t, want[i]["catalog_offset"], row["catalog_offset"])
+				if i != 0 || !tc.sample {
+					require.NotContains(t, row, "source_context")
+					continue
+				}
+				context := row["source_context"].(map[string]any)
+				samples := structuredRecallRows(context["referenced_by"])
+				require.Len(t, samples, len(references))
+				for j, reference := range references {
+					for _, field := range []string{"sheet", "series_id", "metric", "cell", "formula", "date", "kind", "target_column", "target_reference"} {
+						require.Equal(t, reference[field], samples[j][field], field)
+					}
+					require.Equal(t, structuredRecallRows(reference["headers"]), structuredRecallRows(samples[j]["headers"]))
+				}
+			}
+			after, err := json.Marshal(projected.Data)
+			require.NoError(t, err)
+			require.Equal(t, before, after)
+		})
 	}
 }
 

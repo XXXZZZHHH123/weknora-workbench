@@ -374,7 +374,9 @@ func withDocumentScopeParameter(tool BaseTool) BaseTool {
 	properties["source_scope"] = parameter
 	tool.schema, _ = json.Marshal(schema)
 	if tool.name == ToolReadDocument {
-		tool.description += "\nChoose the actual read id from authorized metadata and the complete question/context. When this turn has no source binding, this explicit read target is verified against real authorized document metadata in the same call; a separate bind_document_scope call is unnecessary. An existing source plan or user document/page restriction remains binding. To change sources, compare multiple documents, or declare explicit source-date/user-page constraints, provide source_scope or bind_document_scope with the actual metadata and constraints. Never guess an ID or substitute a same-name source."
+		tool.description += "\nChoose the read ID from authorized metadata for the complete request. When no plan is bound, a read by ID alone binds only that document. " +
+			"For initial reads of different documents in one batch, pass the same complete source_scope on every read, or bind_document_scope once before the batch. " +
+			"To change sources or declare source-date or user-page constraints, supply the full plan with actual metadata. Existing bindings and user document/page limits apply. Never guess an ID or substitute a same-name source."
 	} else {
 		tool.description += "\nWhen this workbench requires a document source plan, inspect authorized document metadata first, then pass source_scope or bind_document_scope using the complete question/context: selected actual sources, exact metadata, requested pages/date proof and selection reason. Candidates are not content evidence until verified. Comparisons explicitly select multiple documents; do not decide scope from keywords."
 	}
@@ -506,7 +508,11 @@ func (t *SearchKnowledgeTool) documentCandidates(ctx context.Context, results []
 		navigationBudget -= cost
 		document["navigation_matches"] = append(matches, match)
 	}
-	data := map[string]any{"display_type": "document_info", "documents": documents, "query": query, "requires_source_scope": true, "notice": "这些是实际授权文档候选元数据，不是已核内容证据。navigation_matches 仅为真实检索命中的有界导航摘录，不可直接引用、计算或认定图表数值；请据此选择来源并 read_document 核对正文或原图。文件名/发布日期不等于内容的数据覆盖期，未读正文不能据此断言历史数据不存在。根据完整问题和上下文选择真实来源，歧义时澄清。可直接用 read_document 读取明确选择的文档ID，首次读取在同一调用核对真实文件身份和权限；已有来源计划不可被读取目标覆盖。比较或显式日期、用户页码限制使用 source_scope 或 bind_document_scope 声明完整范围，不得用其他报告的同名图替代。"}
+	data := map[string]any{"display_type": "document_info", "documents": documents, "query": query, "requires_source_scope": true,
+		"notice": "候选来自授权目录，navigation_matches 仅供定位。引用、计算或判断图表数值前，用 read_document 核对正文或原图，数值只引用实读文件中载有该值的段落或图表。拟采用导航数值时，将该文件的对应页纳入同一批读取，从载值段落引用。采用该段估算时，一并列出其中披露的预测年度、总量、分区量及相应增幅。文件名和发布日期不能说明正文覆盖期。" +
+			"根据完整问题和上下文选源，遵守用户指定文件及页码。明确选定的单文件可按 ID 直接读取，同一文件内比较无需另绑。首次读取核对身份和权限，已有来源计划仍有效。" +
+			"按问题决定比较期次还是文件。按期比较时归组同期文件，分别核对同一事项的不同版本，同期只计一次。多文件取证按需用授权目录补齐来源，首批各 read_document 携同一完整 source_scope，或先 bind_document_scope。显式来源日期证明和用户限页随来源计划提交。" +
+			"跨文件比较按报告类别核对重复与更新。用系列材料解释术语且发现修订线索时，选取相关的沿用期、修订期和后续期，按同一事项查各期正文，即使后期摘录只命中别的主题。按实读日期归并沿用、修订前后值及分项和后续复述，保留各期出处，复述不另计修订。导航摘录、摘要或一次查询未见，只能说明已查范围。不得用其他报告的同名图替代。"}
 	encoded, _ := json.Marshal(data)
 	return &types.ToolResult{Success: true, Data: data, Output: string(encoded)}
 }

@@ -39,6 +39,13 @@ func ImageReadPrompt(detail, focus string) string {
 	prompt := ImageReadBriefPrompt
 	if detail == ImageDetailFull {
 		prompt = ImageReadFullPrompt
+		if focus != "" {
+			prompt = "Read the requested part of this image closely. " + ImageReadChartPrompt +
+				"For tables, follow the target row label and actual column header to their intersection. " +
+				"Report both labels and visible units with each value. Keep directly related entries from the same row. " +
+				"Preserve qualifiers such as estimates when a legend or footnote explains the marker or style. " +
+				"Mark illegible content rather than guessing. Plain text only."
+		}
 	}
 	if focus != "" {
 		prompt += "\nThe assistant is looking for: " + focus +

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Tencent/WeKnora/internal/modelcontext"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/stretchr/testify/require"
@@ -318,8 +319,100 @@ func TestUnboundSearchProvidesNavigationOnlyThenExplicitPlanReadsActualPage(t *t
 	require.False(t, res.Success, "the shared boundary survives later search calls")
 }
 
+func TestUnboundSearchProjectsSamePeriodFilesAndComparisonGuidance(t *testing.T) {
+	read, _ := reportScopeFixture(t, "dispatch-a.pptx", "dispatch-b.pptx")
+	service := read.knowledgeService.(*readDocKnowledgeService)
+	index := &documentRecallIndex{keywordOnly: true}
+	hits := map[string]struct{ date, excerpt string }{
+		"report-a": {"2025-02-01", "Quarterly equipment review"},
+		"doc-1":    {"2025-03-01", "Warehouse update"},
+		"report-b": {"2025-02-01", "Terminal inspection"},
+	}
+	for i, id := range []string{"report-b", "doc-1", "report-a"} {
+		hit := hits[id]
+		service.docs[id].Metadata = types.JSON(`{"report_date":"` + hit.date + `"}`)
+		index.results = append(index.results, &types.SearchResult{ID: id + "-chunk", KnowledgeID: id, KnowledgeBaseID: "kb-1",
+			Content: hit.excerpt, Score: float64(i+1) / 4})
+	}
+	search := NewSearchKnowledgeTool(index, service, read.chunkService, read.searchTargets, nil, nil).WithDocumentConstraint(NewDocumentScopeState())
+	res, err := search.Execute(t.Context(), json.RawMessage(`{"query":"equipment updates","mode":"keyword"}`))
+	require.NoError(t, err)
+	require.True(t, res.Success, res.Error)
+	docs := res.Data["documents"].([]map[string]any)
+	require.Len(t, docs, 3)
+	model := modelcontext.NewRegistry(true)
+	projected := model.ModelToolResultForTool(ToolSearchKnowledge, res)
+	for _, row := range docs {
+		id := row["knowledge_id"].(string)
+		hit, ok := hits[id]
+		require.True(t, ok, "each candidate must have a distinct known ID: %s", id)
+		delete(hits, id)
+		doc := service.docs[id]
+		require.Equal(t, doc.FileName, row["file_name"])
+		require.Equal(t, map[string]any{"report_date": hit.date}, row["metadata"])
+		require.Equal(t, []map[string]any{{"navigation_only": true, "excerpt": hit.excerpt}}, row["navigation_matches"])
+		_, body, found := strings.Cut(projected, `<document id="`+model.RegisterDocument(id)+`"`)
+		require.True(t, found)
+		body, _, _ = strings.Cut(body, "</document>")
+		require.Contains(t, body, `<source_file_name>`+doc.FileName+`</source_file_name>`)
+		require.Contains(t, body, `<source_metadata>`+string(doc.Metadata)+`</source_metadata>`)
+		require.Contains(t, body, `<excerpt>`+hit.excerpt+`</excerpt>`)
+	}
+	require.Equal(t, 3, strings.Count(projected, `navigation_only="true" requires_read="true"`))
+	notice := res.Data["notice"].(string)
+	for _, guidance := range []string{"归组同期文件，分别核对", "首批各 read_document 携同一完整 source_scope",
+		"同一文件内比较无需另绑", "选取相关的沿用期、修订期和后续期，按同一事项查各期正文，即使后期摘录只命中别的主题",
+		"按实读日期归并沿用、修订前后值及分项和后续复述，保留各期出处，复述不另计修订",
+		"只能说明已查范围"} {
+		require.Contains(t, notice, guidance)
+	}
+	require.Contains(t, projected, "<hint>"+notice+"</hint>")
+}
+
+func TestNavigationEstimateCitesItsReadPage(t *testing.T) {
+	const estimate = "Projected output is 76 units, including 18 from the eastern district."
+	read, repo := newReadDocumentFixture(2)
+	source, neighbor := repo.ordered[0], repo.ordered[1]
+	source.Content = "<!-- PDF page 4 -->\n" + estimate
+	source.SourceLocators = types.SourceLocators{{Type: types.SourceLocatorPDF, Page: 4, Mapping: "exact"}}
+	neighbor.Content = "<!-- PDF page 5 -->\nThe forecast was revised."
+	index := &documentRecallIndex{keywordOnly: true, results: []*types.SearchResult{{
+		ID: source.ID, KnowledgeID: source.KnowledgeID, KnowledgeBaseID: source.KnowledgeBaseID,
+		Content: estimate, SourceLocators: source.SourceLocators, Score: 1,
+	}}}
+	scope := NewDocumentScopeState()
+	search := NewSearchKnowledgeTool(index, read.knowledgeService, read.chunkService, read.searchTargets, nil, nil).WithDocumentConstraint(scope)
+	result, err := search.Execute(t.Context(), json.RawMessage(`{"query":"projected output","mode":"keyword"}`))
+	require.NoError(t, err)
+	require.True(t, result.Success, result.Error)
+	model := modelcontext.NewRegistry(true)
+	preview := model.ModelToolResultForTool(ToolSearchKnowledge, result)
+	require.Contains(t, preview, `navigation_only="true" requires_read="true" page_hint="4"`)
+	require.Contains(t, preview, estimate)
+	require.Contains(t, preview, "数值只引用实读文件中载有该值的段落或图表")
+	require.Contains(t, preview, "将该文件的对应页纳入同一批读取，从载值段落引用")
+	require.Contains(t, preview, "其中披露的预测年度、总量、分区量及相应增幅")
+	require.Empty(t, model.CitableChunkHandle(source.ID))
+
+	doc := result.Data["documents"].([]map[string]any)[0]
+	match := doc["navigation_matches"].([]map[string]any)[0]
+	args, err := json.Marshal(map[string]any{"id": doc["knowledge_id"], "page": match["page_hint"]})
+	require.NoError(t, err)
+	page, err := read.WithDocumentConstraint(scope).Execute(t.Context(), args)
+	require.NoError(t, err)
+	require.True(t, page.Success, page.Error)
+	require.Equal(t, []string{source.ID}, chunkIDsFromData(t, page.Data))
+	row := page.Data["chunks"].([]map[string]any)[0]
+	require.Equal(t, doc["knowledge_id"], row["knowledge_id"])
+	require.Equal(t, match["page_hint"], row["page"])
+	require.Contains(t, model.ModelToolResultForTool(ToolReadDocument, page), estimate)
+	require.NotEmpty(t, model.CitableChunkHandle(source.ID))
+	require.Empty(t, model.CitableChunkHandle(neighbor.ID))
+}
+
 func TestVerifiedScopeIsPerTurnAndSupportsExplicitComparativePlans(t *testing.T) {
 	read, _ := reportScopeFixture(t, "first20240310.pptx", "second20250310.pptx")
+	require.Contains(t, read.Description(), "pass the same complete source_scope on every read")
 	registry := NewToolRegistry()
 	registry.RegisterTool(read)
 	PrepareDocumentScope(registry)

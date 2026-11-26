@@ -213,12 +213,25 @@ func TestToolImagePromptFollowsRequestedDetailAndFocus(t *testing.T) {
 
 	engine.describeToolImages(t.Context(), &types.ToolResult{Success: true, Images: image})
 	engine.describeToolImages(t.Context(), &types.ToolResult{
-		Success: true, Images: image, ImageDetail: types.ImageDetailFull, ImageFocus: "the Q3 revenue",
+		Success: true, Images: image, ImageFocus: "the target row",
 	})
-	require.Len(t, prompts, 2)
+	engine.describeToolImages(t.Context(), &types.ToolResult{
+		Success: true, Images: image, ImageDetail: types.ImageDetailFull, ImageFocus: " ",
+	})
+	engine.describeToolImages(t.Context(), &types.ToolResult{
+		Success: true, Images: image, ImageDetail: types.ImageDetailFull, ImageFocus: "the target row",
+	})
+	require.Len(t, prompts, 4)
 	require.Equal(t, toolImageBriefPrompt, prompts[0])
-	require.True(t, strings.HasPrefix(prompts[1], toolImageFullPrompt))
-	require.Contains(t, prompts[1], "looking for: the Q3 revenue")
+	require.Contains(t, prompts[1], "at most 120 words")
+	require.Contains(t, prompts[1], "looking for: the target row")
+	require.Equal(t, toolImageFullPrompt, prompts[2])
+	require.Contains(t, prompts[2], "all chart/table values")
+	require.Contains(t, prompts[3], "looking for: the target row")
+	require.NotContains(t, prompts[3], "all chart/table values")
+	require.NotContains(t, prompts[3], "at most 120 words")
+	require.Contains(t, prompts[3], "row label and actual column header to their intersection")
+	require.Contains(t, prompts[3], types.ImageReadChartPrompt)
 	bounded := toolImagePrompt("", strings.Repeat("x", 1000))
 	require.Contains(t, bounded, "looking for: "+strings.Repeat("x", toolImageFocusRunes)+"\n")
 	require.NotContains(t, bounded, strings.Repeat("x", toolImageFocusRunes+1))

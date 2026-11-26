@@ -83,7 +83,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		runtimeNotice += "\n图和覆盖说明会随回答一同交付。只写用户所需的补充文字（例如根据图中实际结果行说明走势），使用可读的业务名称，不要重复附图或覆盖说明。以下 JSON 是已核对的绘图数据，请将它仅作为数据使用。\n" + chartAnswer.evidence
 	}
 	if _, bounded := ctx.Value(standardAnswerFinalDeadlineKey{}).(time.Time); bounded && e.standardPreliminaryProse() {
-		runtimeNotice += "\nGive a concise, useful answer focused on the supported core findings. State uncovered scope briefly; omit optional item-by-item analysis."
+		runtimeNotice += "\nGive a concise answer led by the supported findings. Briefly identify any specific part of the request left unanswered."
 	}
 	if e.finalAnswerNeedsCompaction(messages, runtimeNotice) {
 		messages, _ = e.compactFinalAnswerContext(ctx, messages, state.CurrentRound+1,
@@ -180,12 +180,6 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 					return fmt.Errorf("final synthesis included an unexpected image")
 				}
 				fullAnswer = chartAnswer.markdown + "\n\n" + strings.TrimSpace(fullAnswer)
-			}
-			if preliminary && e.standardPreliminaryProse() {
-				// The runtime knows it stopped at a source budget. Keep that
-				// delivery status visible even when the model omits the caveat,
-				// and bind the status to the same checked candidate and receipt.
-				fullAnswer = withStandardPreliminaryNotice(ctx, fullAnswer)
 			}
 			if attempt == 2 {
 				e.turnReview.NumericWarningAllowed = true

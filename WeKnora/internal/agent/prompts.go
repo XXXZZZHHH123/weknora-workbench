@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/agent/skills"
 	"github.com/Tencent/WeKnora/internal/config"
@@ -233,9 +234,12 @@ func formatKnowledgeBaseList(kbInfos []*KnowledgeBaseInfo) string {
 		}
 		writeKnowledgeBaseProfile(&b, kb.Profile)
 		if len(kb.RecentDocs) > 0 {
-			b.WriteString("<recent_documents>\n")
+			const detailLimit, titleLimit, recentLimit = 2, 160, 10
+			// Charge the text shown to the model, including XML escaping.
+			titleBudget := detailLimit * titleLimit
+			b.WriteString("<recent_documents note=\"Recent navigation examples only. The authorized directory may contain other relevant sources.\">\n")
 			for j, doc := range kb.RecentDocs {
-				if j >= 2 {
+				if j >= recentLimit || (j >= detailLimit && kbType != types.KnowledgeBaseTypeDocument) {
 					break
 				}
 				name := doc.Title
@@ -245,12 +249,27 @@ func formatKnowledgeBaseList(kbInfos []*KnowledgeBaseInfo) string {
 				if name == "" {
 					name = doc.FileName
 				}
+				if j >= detailLimit {
+					name = strings.Join(strings.Fields(name), " ")
+					if name == "" || utf8.RuneCountInString(name) > titleLimit {
+						continue
+					}
+					title := escapeXMLAttr(name)
+					cost := utf8.RuneCountInString(title)
+					if cost <= titleBudget {
+						fmt.Fprintf(&b, "<title>%s</title>\n", title)
+						titleBudget -= cost
+					}
+					continue
+				}
+				title := escapeXMLAttr(formatDocSummary(name, titleLimit))
+				titleBudget -= utf8.RuneCountInString(title)
 				fmt.Fprintf(&b,
 					"<document knowledge_id=\"%s\" chunk_id=\"%s\" type=\"%s\"><name>%s</name></document>\n",
 					escapeXMLAttr(doc.KnowledgeID),
 					escapeXMLAttr(doc.ChunkID),
 					escapeXMLAttr(doc.Type),
-					escapeXMLAttr(formatDocSummary(name, 160)))
+					title)
 			}
 			b.WriteString("</recent_documents>\n")
 		}

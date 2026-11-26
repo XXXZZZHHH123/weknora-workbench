@@ -91,6 +91,8 @@ func TestBeginCandidateRevisionKeepsLargeCitedBodyWhenGenericViewIsTruncated(t *
 
 	engine.beginCandidateRevision(t.Context(), state, &messages, guards, query, candidate)
 	input := candidateRevisionInput(t, messages)
+	require.Contains(t, messages[0].Content, "修订保留能回答所问的已核原值、日期和各自出处，缺引文时补引载值原文")
+	require.Contains(t, messages[0].Content, "主来源缺数且允许补充时，按各来源原口径分别交付，不要求用户选择口径")
 	generic, ok := input["source_tool_results"].([]any)
 	require.True(t, ok)
 	require.NotEmpty(t, generic)
