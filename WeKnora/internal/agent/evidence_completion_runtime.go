@@ -350,8 +350,13 @@ func (e *AgentEngine) acceptCoverageDeclaration(ctx context.Context, query strin
 		declaredGoal = &target
 		targets = append(targets, target)
 	}
-	if !slices.ContainsFunc(targets, findTarget) {
+	targetIndex := slices.IndexFunc(targets, findTarget)
+	if targetIndex < 0 {
 		return request, turn.legacyGap != "" && request.GapID == turn.legacyGap && request.Selection == ""
+	}
+	target := targets[targetIndex]
+	if request.Role == "supplement" && target.SourceMode != "named_first" {
+		return request, false
 	}
 	if request.Selection == "" {
 		valid := request.Role == "" || request.Role == "primary" || request.Role == "supplement"
@@ -364,9 +369,7 @@ func (e *AgentEngine) acceptCoverageDeclaration(ctx context.Context, query strin
 	if !known || request.Role != "primary" && request.Role != "supplement" || bodyDimensions && selected.Kind != "body" {
 		return request, false
 	}
-	target := targets[slices.IndexFunc(targets, findTarget)]
-	if request.Role == "supplement" && target.SourceMode != "named_first" ||
-		request.PeriodFrom != "" && request.PeriodTo != "" && request.PeriodFrom > request.PeriodTo ||
+	if request.PeriodFrom != "" && request.PeriodTo != "" && request.PeriodFrom > request.PeriodTo ||
 		request.Page != 0 && selected.Page != 0 && request.Page != selected.Page ||
 		request.Object != "" && selected.Object != "" && request.Object != selected.Object {
 		return request, false
@@ -759,36 +762,95 @@ func (e *AgentEngine) processEvidenceCompletionCalls(ctx context.Context, query 
 		var declared coverageDeclaration
 		bindings, goals, evidence := len(turn.record.Bindings), len(turn.declared), len(turn.record.Evidence)
 		legacyGoal := turn.legacyGoal
-		if len(metadata) != 0 {
-			call.Function.Arguments = raw
-			call.ModelArguments, _, _ = splitCoverageArgument(call.ModelArguments)
-			var valid bool
-			declared, valid = e.acceptCoverageDeclaration(ctx, query, conversation, metadata)
-			if !valid {
-				e.blockCoverageCall(*call, i, "task_coverage declaration did not match a visible source or a current human goal")
-				continue
-			}
-		}
-		if declared.GapID != "" && declared.Role == "supplement" {
-			e.refreshEvidenceCompletion(ctx, query, state, conversation)
-			if gap, exists := e.evidenceCompletionGap(); exists && gap.GapID == declared.GapID &&
-				gap.State == coverageOpen && gap.NextRead == "read" {
-				if turn.pending != nil && turn.pending.GapID == gap.GapID && len(turn.recoveryCalls) == 0 {
-					turn.pending = &gap // Reuse a verified lead already present.
-				} else if turn.pending == nil && turn.recoveryDecisions < maxEvidenceRecoveryAttempts {
-					e.beginEvidenceCompletionRecovery(ctx, state)
-				}
-			}
-		}
-		if !e.coverageAllowsCall(*call, i, args, domain, declared) {
+		undoDeclaration := func() {
 			turn.record.Bindings = turn.record.Bindings[:bindings]
 			turn.declared = turn.declared[:goals]
 			turn.record.Evidence = turn.record.Evidence[:evidence]
 			turn.legacyGoal = legacyGoal
+		}
+		modelArguments, _, modelMetadata := splitCoverageArgument(call.ModelArguments)
+		if len(metadata) != 0 || len(modelMetadata) != 0 {
+			call.Function.Arguments, call.ModelArguments = raw, modelArguments
+			if len(call.UnresolvedHandles) > 0 {
+				// The initial decode also inspected the optional declaration.
+				// Recheck only the stripped tool arguments for unresolved handles.
+				clean := []types.LLMToolCall{*call}
+				if modelArguments != "" {
+					clean[0].Function.Arguments = modelArguments
+				}
+				e.modelContext.DecodeToolCalls(clean)
+				call.UnresolvedHandles = clean[0].UnresolvedHandles
+				call.ArgumentResolution = clean[0].ArgumentResolution
+			}
+		}
+		if len(metadata) != 0 {
+			if accepted, valid := e.acceptCoverageDeclaration(ctx, query, conversation, metadata); valid && e.coverageCallDeclaresCurrentGap(&accepted) {
+				declared = accepted
+			} else {
+				undoDeclaration()
+			}
+		}
+		refresh := declared.GapID != "" && declared.Role == "supplement"
+		var nextPending *coverageCompletion
+		if refresh {
+			e.refreshEvidenceCompletion(ctx, query, state, conversation)
+			if gap, exists := e.evidenceCompletionGap(); exists && gap.GapID == declared.GapID &&
+				gap.State == coverageOpen && gap.NextRead == "read" {
+				canAdvance := turn.pending != nil && turn.pending.GapID == gap.GapID && len(turn.recoveryCalls) == 0
+				canStart := turn.pending == nil && turn.recoveryDecisions < maxEvidenceRecoveryAttempts
+				if canAdvance || canStart {
+					nextPending = &gap
+				}
+			}
+		}
+		pending := turn.pending
+		if nextPending != nil {
+			pending = nextPending
+		}
+		if !e.coverageAllowsCall(*call, i, args, domain, declared, pending) {
+			undoDeclaration()
+			if refresh {
+				e.refreshEvidenceCompletion(ctx, query, state, conversation)
+			}
 			e.blockCoverageCall(*call, i, "source call is outside the current coverage scope or recovery action")
+			continue
+		}
+		// A proposed binding changes the pending action only after its call passes scope checks.
+		if nextPending != nil {
+			if turn.pending == nil {
+				e.beginEvidenceCompletionRecovery(ctx, state)
+			} else {
+				turn.pending = nextPending
+			}
 		}
 	}
 	e.refreshEvidenceCompletion(ctx, query, state, conversation)
+}
+
+func (e *AgentEngine) coverageCallDeclaresCurrentGap(declaration *coverageDeclaration) bool {
+	turn := &e.evidenceCompletion
+	if turn.pending != nil {
+		gap := turn.pending
+		if declaration.GapID != "" && declaration.GapID != gap.GapID {
+			return false
+		}
+		if gap.GapID != turn.legacyGap {
+			if *declaration.GoalIndex != gap.GoalIndex {
+				return false
+			}
+			declaration.GapID = gap.GapID
+		}
+		return true
+	}
+	if declaration.GapID == "" {
+		return true
+	}
+	// A completed discovery may look exhausted until its actual navigation
+	// evidence is selected for the matching read.
+	return slices.ContainsFunc(turn.result, func(gap coverageCompletion) bool {
+		return gap.State != coverageSatisfied && declaration.GapID == gap.GapID &&
+			(declaration.GapID == turn.legacyGap || *declaration.GoalIndex == gap.GoalIndex)
+	})
 }
 
 func splitCoverageArgument(raw string) (string, map[string]any, json.RawMessage) {
@@ -825,7 +887,7 @@ func (e *AgentEngine) coverageUnpermittedSourceCall(name string, args map[string
 	}
 }
 
-func (e *AgentEngine) coverageAllowsCall(call types.LLMToolCall, index int, args map[string]any, domain string, declaration coverageDeclaration) bool {
+func (e *AgentEngine) coverageAllowsCall(call types.LLMToolCall, index int, args map[string]any, domain string, declaration coverageDeclaration, pending *coverageCompletion) bool {
 	turn := &e.evidenceCompletion
 	onlyDomain := e.coverageOnlyDomain()
 	if onlyDomain != "" && onlyDomain != domain {
@@ -842,9 +904,13 @@ func (e *AgentEngine) coverageAllowsCall(call types.LLMToolCall, index int, args
 	ids := coverageSourceIDs(args)
 	targets := e.evidenceCompletionTargets()
 	scopedTargets := targets
-	if declaration.GoalIndex != nil {
+	goalIndex := declaration.GoalIndex
+	if goalIndex == nil && pending != nil && pending.GapID != turn.legacyGap {
+		goalIndex = &pending.GoalIndex
+	}
+	if goalIndex != nil {
 		if index := slices.IndexFunc(targets, func(target taskCoverageTarget) bool {
-			return target.GoalIndex == *declaration.GoalIndex
+			return target.GoalIndex == *goalIndex
 		}); index >= 0 {
 			scopedTargets = targets[index : index+1]
 		}
@@ -883,7 +949,7 @@ func (e *AgentEngine) coverageAllowsCall(call types.LLMToolCall, index int, args
 			return false
 		}
 	}
-	if turn.pending == nil {
+	if pending == nil {
 		// Before a verified gap, use the plan's sole declared primary channel.
 		// Once that primary is verified, the supplemental route only runs
 		// through a matched, budgeted discovery/read declaration.
@@ -901,11 +967,13 @@ func (e *AgentEngine) coverageAllowsCall(call types.LLMToolCall, index int, args
 		}
 		return true
 	}
-	if turn.legacyGap == turn.pending.GapID {
+	if turn.legacyGap == pending.GapID {
 		return true
 	}
-	gap := *turn.pending
-	if declaration.GapID != gap.GapID || declaration.GoalIndex == nil || *declaration.GoalIndex != gap.GoalIndex {
+	gap := *pending
+	declaredRecovery := declaration.GoalIndex != nil
+	if gap.State != coverageOpen || gap.BudgetRemaining < 1 ||
+		declaredRecovery && (declaration.GapID != gap.GapID || *declaration.GoalIndex != gap.GoalIndex) {
 		return false
 	}
 	supplement := slices.Contains(gap.OpenItems, "attributed_supplement")
@@ -921,7 +989,8 @@ func (e *AgentEngine) coverageAllowsCall(call types.LLMToolCall, index int, args
 		if len(ids) == 0 || slices.ContainsFunc(ids, func(id string) bool {
 			return !slices.ContainsFunc(bindings, func(binding coverageBinding) bool {
 				return binding.GoalIndex == gap.GoalIndex && (binding.Role == "supplement") == supplement &&
-					binding.SourceID == id && coverageReadLocation(action, operation, args, binding)
+					binding.SourceID == id && coverageReadLocation(action, operation, args, binding) &&
+					coverageRecoverySourceMatches(turn.record, binding, domain, args)
 			})
 		}) {
 			return false
@@ -942,14 +1011,23 @@ func (e *AgentEngine) coverageAllowsCall(call types.LLMToolCall, index int, args
 	return true
 }
 
+func coverageRecoverySourceMatches(record coverageRecord, binding coverageBinding, domain string, args map[string]any) bool {
+	if kb := sourceNavigationString(args, "knowledge_base_id"); kb != "" && kb != binding.KnowledgeBaseID {
+		return false
+	}
+	return slices.ContainsFunc(record.Evidence, func(evidence coverageEvidence) bool {
+		return evidence.SourceDomain == domain && coverageCurrentEvidence(record, evidence) &&
+			coverageSameSource(binding, evidence) && coverageEqual(binding.EvidenceID, evidence.EvidenceID)
+	})
+}
+
 func coverageReadLocation(action, operation string, args map[string]any, binding coverageBinding) bool {
 	if action == "setup" {
 		return true // Source identity and detailed binding validation still run.
 	}
 	if operation == agenttools.ToolReadDocument && binding.Page > 0 {
-		page, _ := args["page"].(float64)
-		if int(page) == binding.Page {
-			return true
+		if page, ok := args["page"].(float64); ok {
+			return page == float64(binding.Page) && args["pages"] == nil
 		}
 		pages, _ := args["pages"].([]any)
 		return len(pages) == 1 && pages[0] == float64(binding.Page)
@@ -960,7 +1038,10 @@ func coverageReadLocation(action, operation string, args map[string]any, binding
 	if sheet, _ := args["sheet"].(string); sheet != "" && binding.Sheet != "" && sheet != binding.Sheet {
 		return false
 	}
-	return true
+	matchesPeriod := func(key, bound string) bool {
+		return bound == "" || coverageEqual(sourceNavigationString(args, key), bound)
+	}
+	return matchesPeriod("start_date", binding.PeriodFrom) && matchesPeriod("end_date", binding.PeriodTo) && matchesPeriod("period", binding.Period)
 }
 
 func coverageCallOperation(registry *agenttools.ToolRegistry, call types.LLMToolCall, args map[string]any) string {

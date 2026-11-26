@@ -880,6 +880,7 @@ func (e *AgentEngine) executeLoop(
 	// suppresses registration while replaying old steps; Execute clears these
 	// maps before any new turn work begins.
 	e.turnReview = turnReviewState{
+		Query:                   query,
 		StructuredCitations:     e.turnReview.StructuredCitations,
 		StructuredCitationCalls: e.turnReview.StructuredCitationCalls,
 		StructuredCitationNonce: e.turnReview.StructuredCitationNonce,

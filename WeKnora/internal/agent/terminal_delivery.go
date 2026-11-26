@@ -77,8 +77,6 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 			truncated = false
 		}
 	}
-	// Review failure or exhausted revisions: deliver the latest numerically
-	// grounded candidate with a notice rather than a bare failure message.
 	if terminalCandidateFallback(answer) {
 		if delivery, citations, numbers, ok := e.currentCitationUnverifiedDelivery(ctx, state); ok {
 			answer, outcome, markedCitations, markedNumbers = delivery, "citation_unverified", citations, numbers
@@ -99,6 +97,11 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 				answer, outcome, markedNumbers = delivery, "numeric_unverified", marked
 				existingID, truncated = "", false
 			}
+		}
+	}
+	if terminalCandidateFallback(answer) {
+		if delivery := e.terminalEvidenceCompletionDelivery(ctx, state); delivery != "" {
+			answer, existingID, outcome, truncated = delivery, "", "evidence_incomplete", false
 		}
 	}
 	id := e.publishAnswer(ctx, sessionID, answer, existingID, truncated)

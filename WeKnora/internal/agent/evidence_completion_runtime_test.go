@@ -168,6 +168,7 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute bool) {
 	for _, call := range rejected {
 		require.NotNil(t, call.Result, call.ID)
 		require.True(t, call.Result.PreflightRejected, call.ID)
+		require.Equal(t, "source call is outside the current coverage scope or recovery action", call.Result.Error, call.ID)
 	}
 	require.Zero(t, index.calls)
 	require.Empty(t, engine.evidenceCompletion.record.Attempts, "a rejected directory or missing query does not spend discovery")
@@ -176,7 +177,7 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute bool) {
 	require.Equal(t, "discover", engine.evidenceCompletion.pending.NextRead)
 
 	run(chatToolCall("targeted-search", agenttools.ToolSearchKnowledge, wire(map[string]any{
-		"query": "equipment duration 2021-06-10", coverageArgument: declare("", "supplement", first.GapID, nil),
+		"query": "equipment duration 2021-06-10", coverageArgument: declare("", "supplement", first.GapID, map[string]any{"unknown": true}),
 	})))
 	require.Equal(t, 1, index.calls)
 	navigation := ref("navigation")
@@ -184,8 +185,26 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute bool) {
 	require.True(t, strings.HasPrefix(handle, "doc://"))
 	sourceScope := map[string]any{"selection_reason": "The authorized search led to the requested report and page.",
 		"sources": []any{map[string]any{"knowledge_id": handle, "expected_file_name": document.FileName, "page": 8}}}
+	readDeclaration := declare(navigation, "supplement", first.GapID, map[string]any{"page": 8})
+	require.Nil(t, engine.evidenceCompletion.pending)
+	decisions, priorBindings := engine.evidenceCompletion.recoveryDecisions, len(engine.evidenceCompletion.record.Bindings)
+	wrongReads := []types.LLMToolCall{
+		{ID: "neighbor-page", Function: types.FunctionCall{Name: agenttools.ToolReadDocument, Arguments: wire(map[string]any{
+			"id": handle, "page": 9, "source_scope": sourceScope, coverageArgument: readDeclaration,
+		})}},
+		{ID: "unbound-document", Function: types.FunctionCall{Name: agenttools.ToolReadDocument, Arguments: wire(map[string]any{
+			"id": "different-document", "page": 8, coverageArgument: readDeclaration,
+		})}},
+	}
+	engine.modelContext.DecodeToolCalls(wrongReads)
+	engine.processEvidenceCompletionCalls(ctx, query, state, messages, wrongReads)
+	require.Len(t, engine.evidenceCompletion.blocked, 2)
+	require.Nil(t, engine.evidenceCompletion.pending, "neither rejected read should activate the pending action")
+	require.Equal(t, decisions, engine.evidenceCompletion.recoveryDecisions)
+	require.Len(t, engine.evidenceCompletion.record.Bindings, priorBindings)
+	require.Empty(t, engine.evidenceCompletion.recoveryCalls)
 	run(chatToolCall("matching-read", agenttools.ToolReadDocument, wire(map[string]any{
-		"id": handle, "page": 8, "source_scope": sourceScope, coverageArgument: declare(navigation, "supplement", first.GapID, map[string]any{"page": 8}),
+		"id": handle, "page": 8, "source_scope": sourceScope, coverageArgument: readDeclaration,
 	})))
 	read := state.RoundSteps[len(state.RoundSteps)-1].ToolCalls[0]
 	require.True(t, read.Result.Success, fmt.Sprint(read.Result))
@@ -229,6 +248,139 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute bool) {
 	require.Len(t, model.calls, 5)
 }
 
+func TestEvidenceCompletionPendingAcceptsFirstBindingWithoutGapID(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
+	e := newTestEngine(t, &mockChat{})
+	e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
+	e.toolRegistry = qa4ReplayRegistry()
+	e.taskPlan = &taskEvidencePlan{CoverageTargets: []taskCoverageTarget{
+		{GoalIndex: 0, StructuredTaskGoal: &StructuredTaskGoal{SourceMode: "named_first"}},
+		{GoalIndex: 1, StructuredTaskGoal: &StructuredTaskGoal{SourceMode: "named_first"}},
+	}}
+	e.evidenceCompletionEnabled()
+	turn := &e.evidenceCompletion
+	turn.pending = &coverageCompletion{GoalIndex: 0, GapID: "current-gap", State: coverageOpen, NextRead: "read", BudgetRemaining: 1}
+	observation := coverageEvidence{Kind: "directory", SourceDomain: "structured", SourceID: "register", KnowledgeBaseID: "library", SeriesID: "duration", EvidenceID: "directory", JSONPointer: "/data/series/0"}
+	turn.seenObservations = map[string]bool{}
+	turn.record.Evidence = []coverageEvidence{observation}
+	turn.refs = map[string]coverageEvidence{"verified-field": observation}
+	call := func(id, add string) types.LLMToolCall {
+		return types.LLMToolCall{ID: id, Function: types.FunctionCall{Name: "structured_query_series", Arguments: `{"dataset_id":"register","series_id":"duration","task_coverage":{"role":"primary","selection_ref":"verified-field",` + add + `}}`}}
+	}
+	calls := []types.LLMToolCall{
+		call("wrong-goal", `"goal_index":1`),
+		call("wrong-gap", `"goal_index":0,"gap_id":"stale-gap"`),
+		call("matching-goal", `"goal_index":0`),
+	}
+	e.processEvidenceCompletionCalls(t.Context(), "Read the equipment duration.", &types.AgentState{}, nil, calls)
+	require.Contains(t, turn.blocked, "wrong-goal")
+	require.Contains(t, turn.blocked, "wrong-gap")
+	require.NotContains(t, turn.blocked, "matching-goal")
+	require.Equal(t, map[string]bool{"matching-goal": true}, turn.recoveryCalls)
+	require.Len(t, turn.record.Bindings, 1)
+	require.Equal(t, 0, turn.record.Bindings[0].GoalIndex)
+	require.Equal(t, "register", turn.record.Bindings[0].SourceID)
+}
+
+func TestEvidenceCompletionOptionalPendingReadUsesCurrentBinding(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
+	const (
+		day      = "2021-06-10"
+		baseArgs = `"dataset_id":"verified-register","series_id":"duration","start_date":"` + day + `","end_date":"` + day + `"`
+		gapID    = "current-gap"
+	)
+	e := newTestEngine(t, &mockChat{})
+	e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
+	e.toolRegistry = qa4ReplayRegistry()
+	e.taskPlan = &taskEvidencePlan{CoverageTargets: []taskCoverageTarget{{StructuredTaskGoal: &StructuredTaskGoal{SourceMode: "named_first"}}}}
+	e.evidenceCompletionEnabled()
+	turn := &e.evidenceCompletion
+	turn.pending = &coverageCompletion{GapID: gapID, State: coverageOpen, NextRead: "read", BudgetRemaining: 1}
+	turn.record.Bindings = []coverageBinding{{Role: "primary", SourceID: "verified-register", KnowledgeBaseID: "library", Sheet: "observations", SeriesID: "duration", PeriodFrom: day, PeriodTo: day}}
+	observation := coverageEvidence{Kind: "directory", SourceDomain: "structured", SourceID: "verified-register", KnowledgeBaseID: "library", Sheet: "observations", SeriesID: "duration", EvidenceID: "directory", JSONPointer: "/data/series/0"}
+	turn.seenObservations = map[string]bool{}
+	turn.record.Evidence = []coverageEvidence{observation}
+	turn.refs = map[string]coverageEvidence{"verified-field": observation}
+	call := func(id, name, args string) types.LLMToolCall {
+		return types.LLMToolCall{ID: id, Function: types.FunctionCall{Name: name, Arguments: "{" + args + "}"}}
+	}
+	calls := []types.LLMToolCall{
+		call("wrong-field", "structured_query_series", strings.Replace(baseArgs, `"duration"`, `"pressure"`, 1)),
+		call("wrong-period", "structured_query_series", strings.ReplaceAll(baseArgs, day, "2021-06-11")),
+		call("wrong-source", "structured_query_series", strings.Replace(baseArgs, `"verified-register"`, `"other-register"`, 1)),
+		call("wrong-domain", agenttools.ToolReadDocument, `"id":"verified-register","page":8`),
+		call("wrong-action", "structured_list_series", `"dataset_id":"verified-register"`),
+		call("wrong-library", "structured_query_series", baseArgs+`,"knowledge_base_id":"other-library"`),
+		call("wrong-inspection-sheet", "structured_inspect_source", `"dataset_id":"verified-register","sheet":"other","ranges":["A3:B5"]`),
+		call("bound-inspection", "structured_inspect_source", `"dataset_id":"verified-register","sheet":"observations","ranges":["A3:B5"]`),
+		call("invalid-declaration", "structured_query_series", baseArgs+`,"task_coverage":{"goal_index":0,"gap_id":"current-gap","unknown":true}`),
+		call("stale-gap", "structured_query_series", baseArgs+`,"task_coverage":{"goal_index":0,"gap_id":"stale-gap","role":"primary","selection_ref":"verified-field"}`),
+		call("valid-gap", "structured_query_series", baseArgs+`,"task_coverage":{"goal_index":0,"gap_id":"current-gap"}`),
+		call("over-budget", "structured_query_series", baseArgs),
+	}
+	e.processEvidenceCompletionCalls(t.Context(), "Read the equipment duration.", &types.AgentState{}, nil, calls)
+	require.Equal(t, map[string]bool{"bound-inspection": true, "invalid-declaration": true, "stale-gap": true, "valid-gap": true}, turn.recoveryCalls)
+	require.Len(t, turn.record.Bindings, 1, "discarded metadata must not create a new binding")
+	require.Empty(t, turn.declared)
+	require.Len(t, turn.record.Evidence, 1)
+	for _, id := range []string{"wrong-field", "wrong-period", "wrong-source", "wrong-domain", "wrong-action", "wrong-library", "wrong-inspection-sheet", "over-budget"} {
+		require.Equal(t, "source call is outside the current coverage scope or recovery action", turn.blocked[id], id)
+	}
+}
+
+func TestEvidenceCompletionDiscardInvalidOptionalDeclaration(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
+	const declaration = `{"goal_index":0,"selection_ref":"doc://999","role":"primary","unknown":"res://999"}`
+	for _, tc := range []struct {
+		name, query             string
+		modelCopyOnly, rejected bool
+	}{
+		{name: "unresolved handle is only in metadata", query: "equipment duration"},
+		{name: "metadata remains only in model arguments", query: "equipment duration", modelCopyOnly: true},
+		{name: "unresolved handle is also in actual arguments", query: "doc://999", rejected: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEngine(t, &mockChat{})
+			e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
+			document := &types.Knowledge{ID: "contract-document", KnowledgeBaseID: "contract-library", TenantID: 7, Title: "Inspection report"}
+			index := &coverageRuntimeIndex{sourceDiscoveryKnowledgeService: &sourceDiscoveryKnowledgeService{}, document: document}
+			knowledge := &plannedDocumentKnowledge{document: document}
+			targets := types.SearchTargets{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: document.KnowledgeBaseID, TenantID: 7}}
+			e.toolRegistry = agenttools.NewToolRegistry()
+			e.toolRegistry.RegisterTool(agenttools.NewSearchKnowledgeTool(index, knowledge, nil, targets, nil, nil))
+			e.taskPlan = &taskEvidencePlan{CoverageTargets: []taskCoverageTarget{{StructuredTaskGoal: &StructuredTaskGoal{SourceMode: "open"}}}}
+			arguments := fmt.Sprintf(`{"query":%q,"task_coverage":%s}`, tc.query, declaration)
+			calls := []types.LLMToolCall{{ID: "search", Function: types.FunctionCall{Name: agenttools.ToolSearchKnowledge, Arguments: arguments}}}
+			e.modelContext.DecodeToolCalls(calls)
+			require.Contains(t, calls[0].UnresolvedHandles, "res://999")
+			if tc.modelCopyOnly {
+				calls[0].Function.Arguments, _, _ = splitCoverageArgument(calls[0].Function.Arguments)
+			}
+			ctx := types.WithCaller(t.Context(), types.Caller{TenantID: 7, UserID: "approved-reader", Role: types.TenantRoleViewer})
+			e.processEvidenceCompletionCalls(ctx, "Read the equipment duration.", &types.AgentState{}, nil, calls)
+			require.Empty(t, e.evidenceCompletion.blocked)
+			for _, args := range []string{calls[0].Function.Arguments, calls[0].ModelArguments} {
+				require.JSONEq(t, fmt.Sprintf(`{"query":%q}`, tc.query), args)
+			}
+			require.Empty(t, e.evidenceCompletion.record.Bindings)
+			require.Empty(t, e.evidenceCompletion.declared)
+			require.Empty(t, e.evidenceCompletion.record.Attempts)
+			checked := e.runToolCall(ctx, calls[0], 0, 0, 0, "session", "turn")
+			require.NotNil(t, checked.Result)
+			if tc.rejected {
+				require.Equal(t, []string{"doc://999"}, calls[0].UnresolvedHandles)
+				require.True(t, checked.Result.PreflightRejected)
+				require.Contains(t, checked.Result.Error, "unresolved model handles")
+				require.Zero(t, index.calls)
+				return
+			}
+			require.Empty(t, calls[0].UnresolvedHandles)
+			require.True(t, checked.Result.Success, checked.Result.Error)
+			require.Equal(t, 1, index.calls)
+		})
+	}
+}
+
 func TestEvidenceCompletionOnlyScopeKeepsSourceCallsInsideBinding(t *testing.T) {
 	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
 	e := newTestEngine(t, &mockChat{})
@@ -244,14 +396,14 @@ func TestEvidenceCompletionOnlyScopeKeepsSourceCallsInsideBinding(t *testing.T) 
 		return types.LLMToolCall{ID: id, Function: types.FunctionCall{Name: name, Arguments: arguments}}
 	}
 	calls := []types.LLMToolCall{
-		call("document", agenttools.ToolSearchKnowledge, `{"query":"duration"}`),
-		call("other-register", "structured_query_series", `{"dataset_id":"other-register","series_id":"duration"}`),
-		call("verified-register", "structured_query_series", `{"dataset_id":"verified-register","series_id":"duration"}`),
+		call("document", agenttools.ToolSearchKnowledge, `{"query":"duration","task_coverage":null}`),
+		call("other-register", "structured_query_series", `{"dataset_id":"other-register","series_id":"duration","task_coverage":{"goal_index":0,"selection_ref":"unknown"}}`),
+		call("verified-register", "structured_query_series", `{"dataset_id":"verified-register","series_id":"duration","task_coverage":{"goal_index":0,"role":"supplement"}}`),
 	}
 	e.processEvidenceCompletionCalls(ctx, "Use only the selected register.", state, nil, calls)
 	require.Len(t, e.evidenceCompletion.blocked, 2)
-	require.Contains(t, e.evidenceCompletion.blocked, "document")
-	require.Contains(t, e.evidenceCompletion.blocked, "other-register")
+	require.Equal(t, "source call is outside the current coverage scope or recovery action", e.evidenceCompletion.blocked["document"])
+	require.Equal(t, "source call is outside the current coverage scope or recovery action", e.evidenceCompletion.blocked["other-register"])
 	require.NotContains(t, e.evidenceCompletion.blocked, "verified-register")
 	require.False(t, e.coveragePrefetchSelection(nil)[agenttools.ToolSearchKnowledge])
 }

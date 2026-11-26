@@ -1,0 +1,1628 @@
+{
+  "question": "棉花数据库里2024年3月10日的郑棉仓单是多少？",
+  "answer_event": 48,
+  "complete_event": 50,
+  "provenance": {
+    "run": "qa4-s2-1",
+    "event_file": "KB-31.t1.events.json",
+    "answer_file": "KB-31.json",
+    "event_indexing": "One-based positions in the saved SSE array.",
+    "argument_source": "Matched by tool call ID to messages.agent_steps in the same session of the read-only qa4 SQLite database.",
+    "declaration_boundary": "Blocked calls have null SSE arguments. SQLite preserves the decoded business arguments after stripping the optional declaration. Original declaration bytes are unavailable.",
+    "response_boundary": "Only calls with a response object have a recorded service payload. The replay injects an invalid declaration and simulates a response for each historically blocked call.",
+    "projection": "Catalog entries are excerpted. Library, dataset and document IDs are fixture aliases. The v2 payload hashes were recomputed after aliasing.",
+    "draft_source": "The two drafts are the thought fields of iterations 9 and 10 in the same SQLite agent_steps row."
+  },
+  "historical_final": "模型未能完成回答核验。本次未返回完整结论，请稍后重试。",
+  "drafts": [
+    "**棉花数据库里没有 2024 年 3 月 10 日的郑棉仓单数据。** 该表「郑棉仓单」的已导入记录截至 2023 年 9 月 25 日，有效数值最后一天为 2023 年 9 月 21 日；文件中 2024 年这一日期没有任何记录。\n\n已核实的最近同口径数值（同一文件、同一工作表「郑棉仓单」）：\n\n| 字段 | 日期 | 原值 | 原单元格 |\n|---|---|---|---|\n| 仓单数量:一号棉花（B 列总计） | 2023-09-21 | 5160 | B3340 |\n| 仓单和有效预报:合计 | 2023-09-21 | 表中未取得当日数值 | — |\n\n补充说明：\n- 「仓单数量:一号棉花」B3/B4 表头处未标注单位，系统标注为“待确认”，因此 5160 只能按原值报出，不能换算成张或万吨。同一工作表中另有「仓单和有效预报:合计/新疆库/内地库」三列，其单位为万吨（AF/AG/AH 列），但它们是“仓单＋有效预报”的合计口径，不能等同于仓单数量。\n- 该工作簿最后保存时间为 2023-09-28，数据覆盖本就止于 2023 年 9 月，因此所问的 2024 年 3 月 10 日在「棉花数据库.xlsx」的郑棉仓单表内无法取得。\n",
+    "2024年3月10日，棉花数据库的“郑棉仓单”表中没有数据。\n\n这份文件的“郑棉仓单”表只覆盖到2023年9月25日，其中有效数值最后一天为2023年9月21日。针对2024年3月10日这个日期查询时返回了0条记录；按2024年全年查询也同样是0条，因此这不属于映射错列或口径问题，而是该文件尚未更新到2024年。\n\n同一表中“仓单数量:一号棉花”这个字段，最后有效观测是2023年9月21日，其值为5160，取自单元格 B3340（日期在 A3340）。表头未标注单位，目前单位尚未确认，因此我照原值给出。\n\n如果你需要的是2024年3月10日的郑棉仓单数据，这需要另一份更新的数据来源；本轮只按你指定的棉花数据库作答。\n"
+  ],
+  "calls": [
+    {
+      "event": 7,
+      "iteration": 0,
+      "tool": "structured_list_datasets",
+      "arguments": {
+        "knowledge_base_id": "replay-library",
+        "question": "棉花数据库里2024年3月10日的郑棉仓单是多少？",
+        "search": "棉花数据库"
+      },
+      "response": {
+        "source_data_read": false,
+        "catalog_source_types": ["registered_spreadsheet_versions", "published_pdf_tables"],
+        "dataset_count": 1,
+        "total_dataset_count": 69,
+        "offset": 0,
+        "limit": 8,
+        "latest_only": true,
+        "datasets_truncated": false,
+        "next_offset": null,
+        "datasets": [
+          {
+            "dataset_id": "replay-workbook",
+            "source_file": "棉花数据库.xlsx",
+            "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe"
+          }
+        ]
+      }
+    },
+    {
+      "event": 12,
+      "iteration": 1,
+      "tool": "structured_list_series",
+      "arguments": {
+        "dataset_id": "replay-workbook",
+        "knowledge_base_id": "replay-library",
+        "limit": 100,
+        "sheet": "郑棉仓单"
+      },
+      "response": {
+        "dataset_id": "replay-workbook",
+        "source_data_read": false,
+        "match_mode": "all_terms",
+        "next_offset": null,
+        "offset": 0,
+        "total": 33,
+        "series": [
+          {
+            "series_id": "warehouse.B",
+            "sheet": "郑棉仓单",
+            "metric": "仓单数量:一号棉花",
+            "unit": null,
+            "unit_status": "needs_review",
+            "first_date": "2010-01-04",
+            "last_date": "2023-09-25",
+            "first_valid_date": "2010-01-04",
+            "last_valid_date": "2023-09-21",
+            "valid_count": 3336,
+            "record_count": 3338,
+            "header_cells": ["B3", "B4"]
+          },
+          {
+            "series_id": "warehouse.AF",
+            "sheet": "郑棉仓单",
+            "metric": "仓单和有效预报:合计",
+            "unit": "万吨",
+            "unit_status": "explicit",
+            "first_date": "2010-01-04",
+            "last_date": "2023-09-25",
+            "first_valid_date": "2010-01-04",
+            "last_valid_date": "2023-09-21",
+            "valid_count": 3336,
+            "record_count": 3338,
+            "header_cells": ["AF3", "AF4"]
+          },
+          {
+            "series_id": "warehouse.AG",
+            "sheet": "郑棉仓单",
+            "metric": "仓单和有效预报:新疆库",
+            "unit": "万吨",
+            "unit_status": "explicit",
+            "first_date": "2010-01-04",
+            "last_date": "2023-09-25",
+            "first_valid_date": "2010-01-04",
+            "last_valid_date": "2023-09-21",
+            "valid_count": 3336,
+            "record_count": 3338,
+            "header_cells": ["AG3", "AG4"]
+          },
+          {
+            "series_id": "warehouse.AH",
+            "sheet": "郑棉仓单",
+            "metric": "仓单和有效预报:内地库",
+            "unit": "万吨",
+            "unit_status": "explicit",
+            "first_date": "2010-01-04",
+            "last_date": "2023-09-25",
+            "first_valid_date": "2010-01-04",
+            "last_valid_date": "2023-09-21",
+            "valid_count": 3336,
+            "record_count": 3338,
+            "header_cells": ["AH3", "AH4"]
+          }
+        ],
+        "truncated": true
+      }
+    },
+    {
+      "event": 16,
+      "iteration": 2,
+      "tool": "structured_analyze_table",
+      "arguments": {
+        "dataset_id": "replay-workbook",
+        "end_date": "2024-03-10",
+        "knowledge_base_id": "replay-library",
+        "series_ids": ["warehouse.B", "warehouse.AF", "warehouse.AG", "warehouse.AH"],
+        "source_question": "棉花数据库里2024年3月10日的郑棉仓单是多少？",
+        "sql": "SELECT series_id, date, value, source_cell, unit, metric FROM data WHERE date = DATE '2024-03-10' ORDER BY series_id",
+        "start_date": "2024-03-10"
+      },
+      "response": {
+        "kind": "structured_analysis",
+        "status": "ok",
+        "dataset_id": "replay-workbook",
+        "sql": "SELECT series_id, date, value, source_cell, unit, metric FROM data WHERE date = DATE '2024-03-10' ORDER BY series_id",
+        "columns": ["series_id", "date", "value", "source_cell", "unit", "metric"],
+        "rows": [],
+        "output_truncated": false,
+        "returned_row_count": 0,
+        "input_complete": true,
+        "input_count": 0,
+        "requested_range": {"start_date": "2024-03-10", "end_date": "2024-03-10"},
+        "source_semantics": {
+          "published_series_dates": [
+            {
+              "series_id": "warehouse.B",
+              "metric": "仓单数量:一号棉花",
+              "sheet": "郑棉仓单",
+              "last_valid_date": "2023-09-21",
+              "last_date": "2023-09-25"
+            },
+            {
+              "series_id": "warehouse.AF",
+              "metric": "仓单和有效预报:合计",
+              "sheet": "郑棉仓单",
+              "last_valid_date": "2023-09-21",
+              "last_date": "2023-09-25"
+            },
+            {
+              "series_id": "warehouse.AG",
+              "metric": "仓单和有效预报:新疆库",
+              "sheet": "郑棉仓单",
+              "last_valid_date": "2023-09-21",
+              "last_date": "2023-09-25"
+            },
+            {
+              "series_id": "warehouse.AH",
+              "metric": "仓单和有效预报:内地库",
+              "sheet": "郑棉仓单",
+              "last_valid_date": "2023-09-21",
+              "last_date": "2023-09-25"
+            }
+          ]
+        },
+        "inputs": {
+          "warehouse.B": {
+            "series": {
+              "series_id": "warehouse.B",
+              "sheet": "郑棉仓单",
+              "metric": "仓单数量:一号棉花",
+              "dimensions": {"block": "warehouse", "source_series_code": "S0049502"},
+              "unit": null,
+              "unit_status": "needs_review",
+              "header_cells": ["B3", "B4"],
+              "description": "郑棉仓单 / 仓单数量:一号棉花；日期取A列；源表未明确单位，尚待确认",
+              "record_count": 3338,
+              "valid_count": 3336,
+              "first_date": "2010-01-04",
+              "last_date": "2023-09-25",
+              "first_valid_date": "2010-01-04",
+              "last_valid_date": "2023-09-21"
+            },
+            "input_count": 0,
+            "valid_count": 0,
+            "actual_first_date": null,
+            "actual_last_date": null,
+            "valid_first_date": null,
+            "valid_last_date": null,
+            "example_cells": [],
+            "observation_coverage": {
+              "scope_record_count": 0,
+              "scope_valid_count": 0,
+              "scope_start_date": null,
+              "scope_end_date": null,
+              "segments": [],
+              "total_segment_count": 0,
+              "truncated": false,
+              "max_segments": 64,
+              "value_changes": {
+                "scope": {
+                  "record_count": 0,
+                  "valid_value_count": 0,
+                  "eligible_record_count": 0,
+                  "eligible_start_date": null,
+                  "eligible_end_date": null,
+                  "complete_filtered_input": true
+                },
+                "first": {"date": null, "value": null},
+                "last": {"date": null, "value": null},
+                "minimum": {"date": null, "value": null},
+                "maximum": {"date": null, "value": null},
+                "adjacent_comparison_count": 0,
+                "increase_count": 0,
+                "decrease_count": 0,
+                "unchanged_count": 0,
+                "excluded_boundary_records": {
+                  "null_date_count": 0,
+                  "missing_value_count": 0,
+                  "duplicate_date_record_count": 0
+                },
+                "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+              },
+              "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+            },
+            "observation_coverage_scope": "loaded_analysis_inputs_before_user_sql"
+          },
+          "warehouse.AF": {
+            "series": {
+              "series_id": "warehouse.AF",
+              "sheet": "郑棉仓单",
+              "metric": "仓单和有效预报:合计",
+              "dimensions": {"block": "warehouse"},
+              "unit": "万吨",
+              "unit_status": "explicit",
+              "header_cells": ["AF3", "AF4"],
+              "description": "郑棉仓单 / 仓单和有效预报:合计；日期取A列；源表明确单位：万吨",
+              "record_count": 3338,
+              "valid_count": 3336,
+              "first_date": "2010-01-04",
+              "last_date": "2023-09-25",
+              "first_valid_date": "2010-01-04",
+              "last_valid_date": "2023-09-21"
+            },
+            "input_count": 0,
+            "valid_count": 0,
+            "actual_first_date": null,
+            "actual_last_date": null,
+            "valid_first_date": null,
+            "valid_last_date": null,
+            "example_cells": [],
+            "observation_coverage": {
+              "scope_record_count": 0,
+              "scope_valid_count": 0,
+              "scope_start_date": null,
+              "scope_end_date": null,
+              "segments": [],
+              "total_segment_count": 0,
+              "truncated": false,
+              "max_segments": 64,
+              "value_changes": {
+                "scope": {
+                  "record_count": 0,
+                  "valid_value_count": 0,
+                  "eligible_record_count": 0,
+                  "eligible_start_date": null,
+                  "eligible_end_date": null,
+                  "complete_filtered_input": true
+                },
+                "first": {"date": null, "value": null},
+                "last": {"date": null, "value": null},
+                "minimum": {"date": null, "value": null},
+                "maximum": {"date": null, "value": null},
+                "adjacent_comparison_count": 0,
+                "increase_count": 0,
+                "decrease_count": 0,
+                "unchanged_count": 0,
+                "excluded_boundary_records": {
+                  "null_date_count": 0,
+                  "missing_value_count": 0,
+                  "duplicate_date_record_count": 0
+                },
+                "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+              },
+              "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+            },
+            "observation_coverage_scope": "loaded_analysis_inputs_before_user_sql"
+          },
+          "warehouse.AG": {
+            "series": {
+              "series_id": "warehouse.AG",
+              "sheet": "郑棉仓单",
+              "metric": "仓单和有效预报:新疆库",
+              "dimensions": {"block": "warehouse"},
+              "unit": "万吨",
+              "unit_status": "explicit",
+              "header_cells": ["AG3", "AG4"],
+              "description": "郑棉仓单 / 仓单和有效预报:新疆库；日期取A列；源表明确单位：万吨",
+              "record_count": 3338,
+              "valid_count": 3336,
+              "first_date": "2010-01-04",
+              "last_date": "2023-09-25",
+              "first_valid_date": "2010-01-04",
+              "last_valid_date": "2023-09-21"
+            },
+            "input_count": 0,
+            "valid_count": 0,
+            "actual_first_date": null,
+            "actual_last_date": null,
+            "valid_first_date": null,
+            "valid_last_date": null,
+            "example_cells": [],
+            "observation_coverage": {
+              "scope_record_count": 0,
+              "scope_valid_count": 0,
+              "scope_start_date": null,
+              "scope_end_date": null,
+              "segments": [],
+              "total_segment_count": 0,
+              "truncated": false,
+              "max_segments": 64,
+              "value_changes": {
+                "scope": {
+                  "record_count": 0,
+                  "valid_value_count": 0,
+                  "eligible_record_count": 0,
+                  "eligible_start_date": null,
+                  "eligible_end_date": null,
+                  "complete_filtered_input": true
+                },
+                "first": {"date": null, "value": null},
+                "last": {"date": null, "value": null},
+                "minimum": {"date": null, "value": null},
+                "maximum": {"date": null, "value": null},
+                "adjacent_comparison_count": 0,
+                "increase_count": 0,
+                "decrease_count": 0,
+                "unchanged_count": 0,
+                "excluded_boundary_records": {
+                  "null_date_count": 0,
+                  "missing_value_count": 0,
+                  "duplicate_date_record_count": 0
+                },
+                "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+              },
+              "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+            },
+            "observation_coverage_scope": "loaded_analysis_inputs_before_user_sql"
+          },
+          "warehouse.AH": {
+            "series": {
+              "series_id": "warehouse.AH",
+              "sheet": "郑棉仓单",
+              "metric": "仓单和有效预报:内地库",
+              "dimensions": {"block": "warehouse"},
+              "unit": "万吨",
+              "unit_status": "explicit",
+              "header_cells": ["AH3", "AH4"],
+              "description": "郑棉仓单 / 仓单和有效预报:内地库；日期取A列；源表明确单位：万吨",
+              "record_count": 3338,
+              "valid_count": 3336,
+              "first_date": "2010-01-04",
+              "last_date": "2023-09-25",
+              "first_valid_date": "2010-01-04",
+              "last_valid_date": "2023-09-21"
+            },
+            "input_count": 0,
+            "valid_count": 0,
+            "actual_first_date": null,
+            "actual_last_date": null,
+            "valid_first_date": null,
+            "valid_last_date": null,
+            "example_cells": [],
+            "observation_coverage": {
+              "scope_record_count": 0,
+              "scope_valid_count": 0,
+              "scope_start_date": null,
+              "scope_end_date": null,
+              "segments": [],
+              "total_segment_count": 0,
+              "truncated": false,
+              "max_segments": 64,
+              "value_changes": {
+                "scope": {
+                  "record_count": 0,
+                  "valid_value_count": 0,
+                  "eligible_record_count": 0,
+                  "eligible_start_date": null,
+                  "eligible_end_date": null,
+                  "complete_filtered_input": true
+                },
+                "first": {"date": null, "value": null},
+                "last": {"date": null, "value": null},
+                "minimum": {"date": null, "value": null},
+                "maximum": {"date": null, "value": null},
+                "adjacent_comparison_count": 0,
+                "increase_count": 0,
+                "decrease_count": 0,
+                "unchanged_count": 0,
+                "excluded_boundary_records": {
+                  "null_date_count": 0,
+                  "missing_value_count": 0,
+                  "duplicate_date_record_count": 0
+                },
+                "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+              },
+              "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+            },
+            "observation_coverage_scope": "loaded_analysis_inputs_before_user_sql"
+          }
+        },
+        "source": {
+          "file": "棉花数据库.xlsx",
+          "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+          "knowledge_id": "replay-document",
+          "knowledge_base_id": "replay-library",
+          "knowledge_base_tenant_id": 1,
+          "file_hash": "e6beb36ce153ab62a3efd43c3a6d4521",
+          "workbook_declared_last_saved_at": "2023-09-28T02:27:37Z"
+        },
+        "notice": "inputs是装载到隔离表的范围，series.first_date/last_date是原列可用范围，不等于SQL筛选后实际统计范围。时间限制请优先用start_date/end_date传入；聚合需在SQL中返回used_first_date、used_last_date、used_count，以供核对实际使用记录。原文件没有声明指标可加性和统计年度定义，不能假定这些业务规则。SQL在上述全部输入上执行；输出行截断不等于计算输入截断。inputs日期是输入覆盖范围，极值日期必须来自SQL返回记录。单位与业务口径按原字段，不自动换算。data.metric和data.unit来自真实系列元数据，可直接选择或分组以保留业务名称和单位；CASE改写series_id不能证明业务标签。混合单位需要重新选择同单位真实字段分别查询；SQL条件本身不证明单位归属。",
+        "result_id": "4513e20a39e77aaf41b0da20",
+        "result_contract": {
+          "schema_version": 2,
+          "hash_algorithm": "sha256-typed-json-v1",
+          "result_id": "4513e20a39e77aaf41b0da20",
+          "hash_input_keys": [
+            "columns",
+            "dataset_id",
+            "input_complete",
+            "input_count",
+            "inputs",
+            "notice",
+            "output_truncated",
+            "requested_range",
+            "returned_row_count",
+            "rows",
+            "source",
+            "source_semantics",
+            "sql"
+          ],
+          "source_snapshot": {
+            "kind": "excel_observations",
+            "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "file": "棉花数据库.xlsx",
+            "versions": {"manifest_sha256": "4949ec1b4b1a2e3efaf80e6b5b7649a836f43083a9ec6eb0309ee11662abf416"},
+            "input_digest_sha256": "90f9a4657249941e0fac87627150d9b390f8a1b4c1516c0ae6d2364888887fa2",
+            "knowledge_base_id": "replay-library",
+            "knowledge_id": "replay-document",
+            "dataset_id": "replay-workbook",
+            "scope": "loaded_inputs_before_user_sql"
+          },
+          "execution": {
+            "kind": "sql",
+            "engine": "duckdb",
+            "engine_version": "1.5.5",
+            "numeric_semantics": "DuckDB DOUBLE source values; DECIMAL result values encoded as strings",
+            "sql_sha256": "55d9fb947ac636391d1ec87ccd93644f5e43cab932e239de462341ca7be41a6f",
+            "input_scope": "loaded_inputs_before_user_sql",
+            "cell_lineage_verified": false
+          },
+          "column_metadata": [
+            {
+              "index": 0,
+              "name": "series_id",
+              "display_name": "series_id",
+              "logical_type": "VARCHAR",
+              "operation": {
+                "kind": "column_reference",
+                "names": ["series_id"],
+                "scope": "sql_relation_not_original_cell",
+                "direct_source_column": "series_id"
+              },
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["series_id"],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 1,
+              "name": "date",
+              "display_name": "date",
+              "logical_type": "DATE",
+              "operation": {
+                "kind": "column_reference",
+                "names": ["date"],
+                "scope": "sql_relation_not_original_cell"
+              },
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["date"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 2,
+              "name": "value",
+              "display_name": "value",
+              "logical_type": "DOUBLE",
+              "operation": {
+                "kind": "column_reference",
+                "names": ["value"],
+                "scope": "sql_relation_not_original_cell"
+              },
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["value"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "At least one loaded series has no unit declaration"
+              }
+            },
+            {
+              "index": 3,
+              "name": "source_cell",
+              "display_name": "source_cell",
+              "logical_type": "VARCHAR",
+              "operation": {
+                "kind": "column_reference",
+                "names": ["source_cell"],
+                "scope": "sql_relation_not_original_cell"
+              },
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["source_cell"],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 4,
+              "name": "unit",
+              "display_name": "unit",
+              "logical_type": "VARCHAR",
+              "operation": {
+                "kind": "column_reference",
+                "names": ["unit"],
+                "scope": "sql_relation_not_original_cell"
+              },
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["unit"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 5,
+              "name": "metric",
+              "display_name": "metric",
+              "logical_type": "VARCHAR",
+              "operation": {
+                "kind": "column_reference",
+                "names": ["metric"],
+                "scope": "sql_relation_not_original_cell"
+              },
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["metric"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            }
+          ],
+          "evidence_capabilities": {
+            "level": "dependency_only",
+            "column_dependencies_verified": true,
+            "cell_lineage_verified": false,
+            "source_cells_available": false,
+            "aggregate_membership_verified": false
+          },
+          "result_hash": "5272a3fd172653e8a67c30c997aa7c6d85e8c68c768b82b2150217f368d859b1"
+        }
+      }
+    },
+    {
+      "event": 22,
+      "iteration": 3,
+      "tool": "structured_analyze_table",
+      "arguments": {
+        "dataset_id": "replay-workbook",
+        "end_date": "2024-12-31",
+        "knowledge_base_id": "replay-library",
+        "series_ids": ["warehouse.B", "warehouse.AF"],
+        "source_question": "棉花数据库里2024年3月10日的郑棉仓单是多少？",
+        "sql": "SELECT series_id, metric, unit, max(CASE WHEN value IS NOT NULL THEN date END) AS last_valid_date, min(date) AS first_date, max(date) AS last_date, count(*) AS recs, sum(CASE WHEN value IS NOT NULL THEN 1 ELSE 0 END) AS valid_recs, max(CASE WHEN date >= DATE '2024-01-01' THEN date END) AS last_2024_date FROM data GROUP BY series_id, metric, unit",
+        "start_date": "2024-01-01"
+      },
+      "response": {
+        "kind": "structured_analysis",
+        "status": "ok",
+        "dataset_id": "replay-workbook",
+        "sql": "SELECT series_id, metric, unit, max(CASE WHEN value IS NOT NULL THEN date END) AS last_valid_date, min(date) AS first_date, max(date) AS last_date, count(*) AS recs, sum(CASE WHEN value IS NOT NULL THEN 1 ELSE 0 END) AS valid_recs, max(CASE WHEN date >= DATE '2024-01-01' THEN date END) AS last_2024_date FROM data GROUP BY series_id, metric, unit",
+        "columns": [
+          "series_id",
+          "metric",
+          "unit",
+          "last_valid_date",
+          "first_date",
+          "last_date",
+          "recs",
+          "valid_recs",
+          "last_2024_date"
+        ],
+        "rows": [],
+        "output_truncated": false,
+        "returned_row_count": 0,
+        "input_complete": true,
+        "input_count": 0,
+        "requested_range": {"start_date": "2024-01-01", "end_date": "2024-12-31"},
+        "source_semantics": {
+          "published_series_dates": [
+            {
+              "series_id": "warehouse.B",
+              "metric": "仓单数量:一号棉花",
+              "sheet": "郑棉仓单",
+              "last_valid_date": "2023-09-21",
+              "last_date": "2023-09-25"
+            },
+            {
+              "series_id": "warehouse.AF",
+              "metric": "仓单和有效预报:合计",
+              "sheet": "郑棉仓单",
+              "last_valid_date": "2023-09-21",
+              "last_date": "2023-09-25"
+            }
+          ]
+        },
+        "inputs": {
+          "warehouse.B": {
+            "series": {
+              "series_id": "warehouse.B",
+              "sheet": "郑棉仓单",
+              "metric": "仓单数量:一号棉花",
+              "dimensions": {"block": "warehouse", "source_series_code": "S0049502"},
+              "unit": null,
+              "unit_status": "needs_review",
+              "header_cells": ["B3", "B4"],
+              "description": "郑棉仓单 / 仓单数量:一号棉花；日期取A列；源表未明确单位，尚待确认",
+              "record_count": 3338,
+              "valid_count": 3336,
+              "first_date": "2010-01-04",
+              "last_date": "2023-09-25",
+              "first_valid_date": "2010-01-04",
+              "last_valid_date": "2023-09-21"
+            },
+            "input_count": 0,
+            "valid_count": 0,
+            "actual_first_date": null,
+            "actual_last_date": null,
+            "valid_first_date": null,
+            "valid_last_date": null,
+            "example_cells": [],
+            "observation_coverage": {
+              "scope_record_count": 0,
+              "scope_valid_count": 0,
+              "scope_start_date": null,
+              "scope_end_date": null,
+              "segments": [],
+              "total_segment_count": 0,
+              "truncated": false,
+              "max_segments": 64,
+              "value_changes": {
+                "scope": {
+                  "record_count": 0,
+                  "valid_value_count": 0,
+                  "eligible_record_count": 0,
+                  "eligible_start_date": null,
+                  "eligible_end_date": null,
+                  "complete_filtered_input": true
+                },
+                "first": {"date": null, "value": null},
+                "last": {"date": null, "value": null},
+                "minimum": {"date": null, "value": null},
+                "maximum": {"date": null, "value": null},
+                "adjacent_comparison_count": 0,
+                "increase_count": 0,
+                "decrease_count": 0,
+                "unchanged_count": 0,
+                "excluded_boundary_records": {
+                  "null_date_count": 0,
+                  "missing_value_count": 0,
+                  "duplicate_date_record_count": 0
+                },
+                "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+              },
+              "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+            },
+            "observation_coverage_scope": "loaded_analysis_inputs_before_user_sql"
+          },
+          "warehouse.AF": {
+            "series": {
+              "series_id": "warehouse.AF",
+              "sheet": "郑棉仓单",
+              "metric": "仓单和有效预报:合计",
+              "dimensions": {"block": "warehouse"},
+              "unit": "万吨",
+              "unit_status": "explicit",
+              "header_cells": ["AF3", "AF4"],
+              "description": "郑棉仓单 / 仓单和有效预报:合计；日期取A列；源表明确单位：万吨",
+              "record_count": 3338,
+              "valid_count": 3336,
+              "first_date": "2010-01-04",
+              "last_date": "2023-09-25",
+              "first_valid_date": "2010-01-04",
+              "last_valid_date": "2023-09-21"
+            },
+            "input_count": 0,
+            "valid_count": 0,
+            "actual_first_date": null,
+            "actual_last_date": null,
+            "valid_first_date": null,
+            "valid_last_date": null,
+            "example_cells": [],
+            "observation_coverage": {
+              "scope_record_count": 0,
+              "scope_valid_count": 0,
+              "scope_start_date": null,
+              "scope_end_date": null,
+              "segments": [],
+              "total_segment_count": 0,
+              "truncated": false,
+              "max_segments": 64,
+              "value_changes": {
+                "scope": {
+                  "record_count": 0,
+                  "valid_value_count": 0,
+                  "eligible_record_count": 0,
+                  "eligible_start_date": null,
+                  "eligible_end_date": null,
+                  "complete_filtered_input": true
+                },
+                "first": {"date": null, "value": null},
+                "last": {"date": null, "value": null},
+                "minimum": {"date": null, "value": null},
+                "maximum": {"date": null, "value": null},
+                "adjacent_comparison_count": 0,
+                "increase_count": 0,
+                "decrease_count": 0,
+                "unchanged_count": 0,
+                "excluded_boundary_records": {
+                  "null_date_count": 0,
+                  "missing_value_count": 0,
+                  "duplicate_date_record_count": 0
+                },
+                "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+              },
+              "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+            },
+            "observation_coverage_scope": "loaded_analysis_inputs_before_user_sql"
+          }
+        },
+        "source": {
+          "file": "棉花数据库.xlsx",
+          "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+          "knowledge_id": "replay-document",
+          "knowledge_base_id": "replay-library",
+          "knowledge_base_tenant_id": 1,
+          "file_hash": "e6beb36ce153ab62a3efd43c3a6d4521",
+          "workbook_declared_last_saved_at": "2023-09-28T02:27:37Z"
+        },
+        "notice": "inputs是装载到隔离表的范围，series.first_date/last_date是原列可用范围，不等于SQL筛选后实际统计范围。时间限制请优先用start_date/end_date传入；聚合需在SQL中返回used_first_date、used_last_date、used_count，以供核对实际使用记录。原文件没有声明指标可加性和统计年度定义，不能假定这些业务规则。SQL在上述全部输入上执行；输出行截断不等于计算输入截断。inputs日期是输入覆盖范围，极值日期必须来自SQL返回记录。单位与业务口径按原字段，不自动换算。data.metric和data.unit来自真实系列元数据，可直接选择或分组以保留业务名称和单位；CASE改写series_id不能证明业务标签。混合单位需要重新选择同单位真实字段分别查询；SQL条件本身不证明单位归属。",
+        "result_id": "a7b7116fa87d985f8c85defb",
+        "result_contract": {
+          "schema_version": 2,
+          "hash_algorithm": "sha256-typed-json-v1",
+          "result_id": "a7b7116fa87d985f8c85defb",
+          "hash_input_keys": [
+            "columns",
+            "dataset_id",
+            "input_complete",
+            "input_count",
+            "inputs",
+            "notice",
+            "output_truncated",
+            "requested_range",
+            "returned_row_count",
+            "rows",
+            "source",
+            "source_semantics",
+            "sql"
+          ],
+          "source_snapshot": {
+            "kind": "excel_observations",
+            "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "file": "棉花数据库.xlsx",
+            "versions": {"manifest_sha256": "4949ec1b4b1a2e3efaf80e6b5b7649a836f43083a9ec6eb0309ee11662abf416"},
+            "input_digest_sha256": "90f9a4657249941e0fac87627150d9b390f8a1b4c1516c0ae6d2364888887fa2",
+            "knowledge_base_id": "replay-library",
+            "knowledge_id": "replay-document",
+            "dataset_id": "replay-workbook",
+            "scope": "loaded_inputs_before_user_sql"
+          },
+          "execution": {
+            "kind": "sql",
+            "engine": "duckdb",
+            "engine_version": "1.5.5",
+            "numeric_semantics": "DuckDB DOUBLE source values; DECIMAL result values encoded as strings",
+            "sql_sha256": "2b2696f78322af7cefd3c78edaaffe85c7b872da93bb61720b1e7a802da584d5",
+            "input_scope": "loaded_inputs_before_user_sql",
+            "cell_lineage_verified": false
+          },
+          "column_metadata": [
+            {
+              "index": 0,
+              "name": "series_id",
+              "display_name": "series_id",
+              "logical_type": "VARCHAR",
+              "operation": {
+                "kind": "column_reference",
+                "names": ["series_id"],
+                "scope": "sql_relation_not_original_cell",
+                "direct_source_column": "series_id"
+              },
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["series_id"],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 1,
+              "name": "metric",
+              "display_name": "metric",
+              "logical_type": "VARCHAR",
+              "operation": {
+                "kind": "column_reference",
+                "names": ["metric"],
+                "scope": "sql_relation_not_original_cell"
+              },
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["metric"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 2,
+              "name": "unit",
+              "display_name": "unit",
+              "logical_type": "VARCHAR",
+              "operation": {
+                "kind": "column_reference",
+                "names": ["unit"],
+                "scope": "sql_relation_not_original_cell"
+              },
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["unit"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 3,
+              "name": "last_valid_date",
+              "display_name": "last_valid_date",
+              "logical_type": "DATE",
+              "operation": {
+                "kind": "function",
+                "name": "max",
+                "arguments": [{"kind": "unknown", "reason": "unsupported_expression_shape"}],
+                "modifiers": "consult_executed_sql",
+                "meaning": "extreme_of_argument_itself"
+              },
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["date", "value"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "SQL shape has no supported deterministic unit rule"
+              }
+            },
+            {
+              "index": 4,
+              "name": "first_date",
+              "display_name": "first_date",
+              "logical_type": "DATE",
+              "operation": {
+                "kind": "function",
+                "name": "min",
+                "arguments": [
+                  {"kind": "column_reference", "names": ["date"], "scope": "sql_relation_not_original_cell"}
+                ],
+                "modifiers": "consult_executed_sql",
+                "meaning": "extreme_of_argument_itself"
+              },
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["date"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "SQL shape has no supported deterministic unit rule"
+              }
+            },
+            {
+              "index": 5,
+              "name": "last_date",
+              "display_name": "last_date",
+              "logical_type": "DATE",
+              "operation": {
+                "kind": "function",
+                "name": "max",
+                "arguments": [
+                  {"kind": "column_reference", "names": ["date"], "scope": "sql_relation_not_original_cell"}
+                ],
+                "modifiers": "consult_executed_sql",
+                "meaning": "extreme_of_argument_itself"
+              },
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["date"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "SQL shape has no supported deterministic unit rule"
+              }
+            },
+            {
+              "index": 6,
+              "name": "recs",
+              "display_name": "recs",
+              "logical_type": "BIGINT",
+              "operation": {
+                "kind": "function",
+                "name": "count_star",
+                "arguments": [],
+                "modifiers": "consult_executed_sql"
+              },
+              "dependency": {
+                "kind": "source_cardinality",
+                "source_columns": [],
+                "source_row_dependency": true,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "derived",
+                "symbol": "1",
+                "evidence_level": "deterministic_expression",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "expression": "sql_count",
+                "quantity": "record_count"
+              }
+            },
+            {
+              "index": 7,
+              "name": "valid_recs",
+              "display_name": "valid_recs",
+              "logical_type": "HUGEINT",
+              "operation": {
+                "kind": "function",
+                "name": "sum",
+                "arguments": [{"kind": "unknown", "reason": "unsupported_expression_shape"}],
+                "modifiers": "consult_executed_sql"
+              },
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["value"],
+                "source_row_dependency": true,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "SQL shape has no supported deterministic unit rule"
+              }
+            },
+            {
+              "index": 8,
+              "name": "last_2024_date",
+              "display_name": "last_2024_date",
+              "logical_type": "DATE",
+              "operation": {
+                "kind": "function",
+                "name": "max",
+                "arguments": [{"kind": "unknown", "reason": "unsupported_expression_shape"}],
+                "modifiers": "consult_executed_sql",
+                "meaning": "extreme_of_argument_itself"
+              },
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["date"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "SQL shape has no supported deterministic unit rule"
+              }
+            }
+          ],
+          "evidence_capabilities": {
+            "level": "dependency_only",
+            "column_dependencies_verified": true,
+            "cell_lineage_verified": false,
+            "source_cells_available": false,
+            "aggregate_membership_verified": false
+          },
+          "result_hash": "69ac628717ae0637b2886c64e1afceeba1f3e7f1fae97701adce03a88051dd1c"
+        }
+      }
+    },
+    {
+      "event": 26,
+      "iteration": 4,
+      "tool": "structured_inspect_source",
+      "arguments": {
+        "dataset_id": "replay-workbook",
+        "knowledge_base_id": "replay-library",
+        "max_matches": 10,
+        "searches": ["2024/3/10", "2024-03-10", "2024/3/8"],
+        "sheet": "郑棉仓单"
+      },
+      "response": {
+        "kind": "structured_source_inspection",
+        "status": "ok",
+        "dataset_id": "replay-workbook",
+        "source_file": "棉花数据库.xlsx",
+        "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+        "hash_verified": true,
+        "sheets": ["郑棉仓单"],
+        "requested_max_cells": 200,
+        "effective_max_cells": 200,
+        "max_cells_adjustment_reason": null,
+        "coverage": {
+          "郑棉仓单": {
+            "parsed_ranges": ["A5:AH3342"],
+            "excluded_regions": [],
+            "source_used_range": "A1:AH3342",
+            "source_extent_status": "complete",
+            "source_extent_cells_scanned": 113592
+          }
+        },
+        "matches": [],
+        "ranges": [],
+        "calculations": [],
+        "truncated": false,
+        "truncation_reasons": [],
+        "notice": "原件只读证据；公式使用 Excel 保存的缓存值，不重新计算。source_used_range 是有界扫描得到的原件非空单元格边界，source_extent_status=unknown_budget 时边界未知；parsed_ranges 仅代表已解析区域。ranges[].read_window 是本次请求读取窗口，calculations[].input_ranges 是计算输入范围；读取窗口不代表原表有效范围。单位、年度定义和多个表的优先级须依原件或文档核对，不自行推断。",
+        "scan": {
+          "cells_scanned": 113628,
+          "rows_scanned": 3342,
+          "sheets_scanned": ["郑棉仓单"],
+          "complete": true,
+          "unscanned_sheets": [],
+          "incomplete_sheets": [],
+          "limits": {"cells": 250000, "rows": 50000, "seconds": 8},
+          "elapsed_seconds": 1.404
+        }
+      }
+    },
+    {
+      "event": 31,
+      "iteration": 5,
+      "tool": "structured_inspect_source",
+      "arguments": {
+        "dataset_id": "replay-workbook",
+        "knowledge_base_id": "replay-library",
+        "max_cells": 400,
+        "ranges": ["A3330:AH3342"],
+        "sheet": "郑棉仓单"
+      },
+      "response": {
+        "kind": "structured_source_inspection",
+        "status": "error",
+        "error": "指定范围及求和输入共 442 格，超过 max_cells 硬上限 400；沿用原 dataset_id，分别执行以下拆分建议（每次不超过 400 格）：[{\"sheet\": \"郑棉仓单\", \"ranges\": [\"A3330:AH3340\"], \"max_cells\": 400}, {\"sheet\": \"郑棉仓单\", \"ranges\": [\"A3341:AH3342\"], \"max_cells\": 400}]。共 2 次调用。这些调用只分批读取原单元格；原 sums 需覆盖全部输入后另行计算，不能把某一批当作完整求和结果。",
+        "retryable": true,
+        "next_step": "缩小读取范围或修正参数；数据集编号必须重新从当前空间的版本目录取得。这是系统反馈，不是原表没有数据。"
+      }
+    },
+    {
+      "event": 34,
+      "iteration": 6,
+      "tool": "structured_inspect_source",
+      "arguments": {
+        "dataset_id": "replay-workbook",
+        "knowledge_base_id": "replay-library",
+        "max_cells": 400,
+        "ranges": ["A3330:AH3340"],
+        "sheet": "郑棉仓单"
+      },
+      "historical_error": "task_coverage declaration did not match a visible source or a current human goal"
+    },
+    {
+      "event": 37,
+      "iteration": 7,
+      "tool": "structured_inspect_source",
+      "arguments": {
+        "dataset_id": "replay-workbook",
+        "knowledge_base_id": "replay-library",
+        "max_cells": 400,
+        "ranges": ["A3330:AH3340"],
+        "sheet": "郑棉仓单"
+      },
+      "historical_error": "task_coverage declaration did not match a visible source or a current human goal"
+    },
+    {
+      "event": 43,
+      "iteration": 8,
+      "tool": "structured_query_series",
+      "arguments": {
+        "dataset_id": "replay-workbook",
+        "knowledge_base_id": "replay-library",
+        "limit": 10,
+        "operation": "latest",
+        "series_id": "warehouse.B",
+        "source_question": "棉花数据库里2024年3月10日的郑棉仓单是多少？"
+      },
+      "response": {
+        "dataset_id": "replay-workbook",
+        "status": "ok",
+        "series": {
+          "series_id": "warehouse.B",
+          "sheet": "郑棉仓单",
+          "metric": "仓单数量:一号棉花",
+          "dimensions": {"block": "warehouse", "source_series_code": "S0049502"},
+          "unit": null,
+          "unit_status": "needs_review",
+          "header_cells": ["B3", "B4"],
+          "description": "郑棉仓单 / 仓单数量:一号棉花；日期取A列；源表未明确单位，尚待确认",
+          "record_count": 3338,
+          "valid_count": 3336,
+          "first_date": "2010-01-04",
+          "last_date": "2023-09-25",
+          "first_valid_date": "2010-01-04",
+          "last_valid_date": "2023-09-21"
+        },
+        "filters": {
+          "series_id": "warehouse.B",
+          "start_date": null,
+          "end_date": null,
+          "operation": "latest",
+          "period": null,
+          "value_filters": [],
+          "last_n": null,
+          "top_n": null,
+          "order": "desc"
+        },
+        "scope_record_count": 3338,
+        "record_count": 3338,
+        "valid_count": 3336,
+        "formula_count": 1,
+        "valid_formula_count": 1,
+        "valid_non_formula_count": 3335,
+        "missing_count": 2,
+        "actual_first_date": "2010-01-04",
+        "actual_last_date": "2023-09-25",
+        "valid_first_date": "2010-01-04",
+        "valid_last_date": "2023-09-21",
+        "aggregate": null,
+        "rows": [
+          {
+            "date": "2023-09-21",
+            "period": null,
+            "period_cell": null,
+            "metric_cell": null,
+            "value": 5160.0,
+            "source_cell": "B3340",
+            "value_status": "valid",
+            "formula": null,
+            "date_cell": "A3340",
+            "raw_value": "5160",
+            "category_cell": null
+          }
+        ],
+        "extremum_rows": null,
+        "extremum_count": null,
+        "rows_are": "latest_valid_observation",
+        "truncated": false,
+        "source_semantics": {
+          "date_representation": "date",
+          "statistical_calendar": null,
+          "aggregation_rule": null,
+          "notice": "未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"
+        },
+        "source": {
+          "file": "棉花数据库.xlsx",
+          "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+          "sheet": "郑棉仓单",
+          "header_cells": ["B3", "B4"],
+          "knowledge_id": "replay-document",
+          "knowledge_base_id": "replay-library",
+          "knowledge_base_tenant_id": 1,
+          "file_hash": "e6beb36ce153ab62a3efd43c3a6d4521",
+          "workbook_declared_last_saved_at": "2023-09-28T02:27:37Z"
+        },
+        "warnings": [
+          "当前字段目录尚未确认单位，不表示原件其他位置没有单位证据；可检查实际表头、脚注或与该字段范围对应的图表，并判断适用范围。没有实际依据前不补充或换算单位。",
+          "范围内 2 条记录没有有效数值；统计排除这些记录。",
+          "查询范围内有 1 条公式记录，其中 1 条有有效缓存数值；有效数值中另有 3335 条是非公式记录。仅公式结果来自原文件保存的缓存，本服务未重新计算 Excel 公式，不把普通数值称为公式缓存。",
+          "源工作簿 Wind 查询使用 ShowBlank==0，已有零值可能包含上游缺失填充，无法逆向判别。",
+          "missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。"
+        ],
+        "source_evidence": {
+          "kind": "structured_query_source_evidence",
+          "status": "ok",
+          "source": {
+            "file": "棉花数据库.xlsx",
+            "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "sheet": "郑棉仓单",
+            "hash_verified": true
+          },
+          "scope": {
+            "requested_value_cells": ["B3340"],
+            "requested_value_cell_count": 1,
+            "invalid_source_cell_count": 0,
+            "value_cells_truncated": false,
+            "query_rows_are": "latest_valid_observation",
+            "query_record_count": 3338,
+            "query_rows_returned_count": 1,
+            "query_rows_truncated": false,
+            "query_filters": {
+              "series_id": "warehouse.B",
+              "start_date": null,
+              "end_date": null,
+              "operation": "latest",
+              "period": null,
+              "value_filters": [],
+              "last_n": null,
+              "top_n": null,
+              "order": "desc"
+            },
+            "query_notice": "仅对应query_series返回的行；聚合操作的这些行可能是来源示例，不代表全部聚合输入。",
+            "chart_scope": "仅列出原生图表系列引用与这些实际返回值单元格直接相交的证据",
+            "chart_scope_complete": false,
+            "chart_scope_reasons": [
+              "candidate_index_source_sha_unbound",
+              "candidate_index_has_unresolved_references"
+            ],
+            "chart_references_truncated": false,
+            "truncated": true,
+            "original_inspection_truncated": true
+          },
+          "cells": [
+            {
+              "sheet": "郑棉仓单",
+              "cell": "B3340",
+              "value": 5160,
+              "raw_value": 5160,
+              "formula": null,
+              "cached_value": null,
+              "value_status": "original"
+            }
+          ],
+          "chart_references": [],
+          "notice": "原件证据仅补充来源文字、单元格和相交图表原始引用；不自动认定单位或业务含义。chart_scope_complete=false、空图表列表或截断结果不能证明原件其他区域/未返回图表中不存在相关证据。"
+        },
+        "result_contract": {
+          "schema_version": 2,
+          "hash_algorithm": "sha256-typed-json-v1",
+          "result_id": "2d8df75e9092f9e330704f62",
+          "hash_input_keys": [
+            "actual_first_date",
+            "actual_last_date",
+            "aggregate",
+            "dataset_id",
+            "extremum_count",
+            "extremum_rows",
+            "filters",
+            "missing_count",
+            "record_count",
+            "rows",
+            "rows_are",
+            "scope_record_count",
+            "series",
+            "source",
+            "source_evidence",
+            "source_semantics",
+            "truncated",
+            "valid_count",
+            "valid_first_date",
+            "valid_last_date",
+            "warnings"
+          ],
+          "source_snapshot": {
+            "kind": "excel_observations",
+            "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "file": "棉花数据库.xlsx",
+            "versions": {"manifest_sha256": "4949ec1b4b1a2e3efaf80e6b5b7649a836f43083a9ec6eb0309ee11662abf416"},
+            "input_digest_sha256": "b241e7c258a7531e6889e776e70aed02fb13528eff7964154dcf5f724ee7af35",
+            "knowledge_base_id": "replay-library",
+            "knowledge_id": "replay-document",
+            "dataset_id": "replay-workbook",
+            "scope": "returned_source_rows"
+          },
+          "execution": {
+            "kind": "series_query",
+            "engine": "duckdb",
+            "engine_version": "1.5.5",
+            "numeric_semantics": "saved DOUBLE values; Excel formulas are not recalculated",
+            "input_scope": "returned_source_rows",
+            "cell_lineage_verified": false,
+            "operation": "latest",
+            "column_metadata_scope": "returned_rows_not_aggregate"
+          },
+          "column_metadata": [
+            {
+              "index": 0,
+              "name": "category_cell",
+              "display_name": "category_cell",
+              "logical_type": "source_value",
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": ["category_cell"],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 1,
+              "name": "date",
+              "display_name": "date",
+              "logical_type": "source_value",
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["date"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 2,
+              "name": "date_cell",
+              "display_name": "date_cell",
+              "logical_type": "source_value",
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": ["date_cell"],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 3,
+              "name": "formula",
+              "display_name": "formula",
+              "logical_type": "source_value",
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": ["formula"],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 4,
+              "name": "metric_cell",
+              "display_name": "metric_cell",
+              "logical_type": "source_value",
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": ["metric_cell"],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 5,
+              "name": "period",
+              "display_name": "period",
+              "logical_type": "source_value",
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["period"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 6,
+              "name": "period_cell",
+              "display_name": "period_cell",
+              "logical_type": "source_value",
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": ["period_cell"],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 7,
+              "name": "raw_value",
+              "display_name": "raw_value",
+              "logical_type": "source_value",
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["raw_value"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 8,
+              "name": "source_cell",
+              "display_name": "source_cell",
+              "logical_type": "source_value",
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": ["source_cell"],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            },
+            {
+              "index": 9,
+              "name": "value",
+              "display_name": "仓单数量:一号棉花",
+              "logical_type": "DOUBLE",
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["value"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "At least one loaded series has no unit declaration"
+              }
+            },
+            {
+              "index": 10,
+              "name": "value_status",
+              "display_name": "value_status",
+              "logical_type": "source_value",
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": ["value_status"],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "unit": {
+                "status": "unknown",
+                "evidence_level": "none",
+                "binding_scope": "result_column",
+                "evidence": [],
+                "reason": "No bound unit declaration for this expression"
+              }
+            }
+          ],
+          "evidence_capabilities": {
+            "level": "source_cells",
+            "column_dependencies_verified": true,
+            "cell_lineage_verified": false,
+            "source_cells_available": true,
+            "aggregate_membership_verified": false
+          },
+          "result_hash": "759f08c4ae01d6065f202174aa2e3984480d602613f079e9c4bb1b9cabf11c4a"
+        }
+      }
+    }
+  ]
+}
