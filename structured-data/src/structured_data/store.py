@@ -84,6 +84,28 @@ def dump(path: Path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=json_default), encoding="utf-8")
 
 
+def _catalog_file_version(path):
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return None
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _read_catalog_review(path, cache):
+    if cache is None:
+        return json.loads(path.read_text())
+    versions, reviews = cache
+    version = _catalog_file_version(path)
+    if path not in versions:
+        versions[path] = version
+        doc = json.loads(path.read_text())
+        if isinstance(doc, dict):
+            reviews[path] = {key: doc[key] for key in ('import_id', 'sha256', 'source_file', 'storage_file',
+                                                      'native_source_bindings') if key in doc}
+    return reviews.get(path) if versions[path] == version else None
+
+
 def published_series_dates(series):
     """Project the saved full-field dates without reading observations or the workbook."""
     return [
@@ -196,12 +218,13 @@ class DataStore:
         manifest['source_file'] = self._display_native_source(manifest)
         return manifest
 
-    def _display_native_source(self, manifest):
+    def _display_native_source(self, manifest, *, review_cache=None):
         """Resolve a presentation name from a saved native binding when available."""
-        binding=self._native_source_binding(manifest)
+        binding = self._native_source_binding(manifest, review_cache=review_cache)
         return binding['file_name'] if binding else manifest.get('source_file')
 
-    def _native_source_binding(self, manifest, *, verify_content=False, source_knowledge_id=None):
+    def _native_source_binding(self, manifest, *, verify_content=False, source_knowledge_id=None,
+                               review_cache=None):
         """Return an existing exact native binding, never choose by file name."""
         from .workspaces import current_identity, valid_knowledge_base_id
         kb_id = self.root.name
@@ -217,7 +240,7 @@ class DataStore:
         try:
             if review_path.is_symlink() or not review_path.resolve().is_relative_to(self.root.resolve()):
                 return None
-            review = json.loads(review_path.read_text())
+            review = _read_catalog_review(review_path, review_cache)
         except (OSError, ValueError):
             return None
         if (not isinstance(review, dict) or review.get('import_id') != import_id
@@ -346,34 +369,45 @@ class DataStore:
 
     def list_datasets(self, *, include_samples=False) -> list[dict]:
         from .dataset_kind import dataset_kind
+        reuse = os.environ.get('STRUCTURED_DATA_CATALOG_MANIFEST_REUSE', 'true').strip().lower() not in {'false', '0'}
+        versions = {}
+        review_cache = (versions, {}) if reuse else None
         reviews = {}
         items = []
         for path in sorted(self.datasets.glob("*/manifest.json")):
             if not re.fullmatch(r"[0-9a-f]{24}", path.parent.name):
                 continue
+            if reuse:
+                versions[path] = _catalog_file_version(path)
             doc = json.loads(path.read_text())
             kind = dataset_kind(doc, self.root)
             if kind == 'sample' and not include_samples:
                 continue
-            stored_source_file = doc.get('source_file')
-            doc['source_file'] = self._display_native_source(doc)
+            if reuse and doc.get('dataset_id') != path.parent.name:
+                raise ValueError('目录中的数据集 ID 与快照路径不一致。')
+            source_file = self._display_native_source(doc, review_cache=review_cache)
             item = {'dataset_kind': kind, 'changed_sheets': doc.get('changed_sheets', []),
-                          '_review_source_file': stored_source_file,
+                          '_review_source_file': doc.get('source_file'),
                           'import_id': doc.get('import_id'),
                           'use_reviewed_mappings': doc.get('use_reviewed_mappings', True),
                           'parent_dataset_id': doc.get('parent_dataset_id'),
                           **({'source_update': doc['source_update']} if doc.get('source_update') else {}),
-                          **{k: doc[k] for k in ("dataset_id", "source_file", "sha256", "rule_version", "imported_at", "series_count", "observation_count", "valid_count", "issue_count", "sheets", "excluded_regions")}}
-            if doc.get('source_lineage') and not any(key[0] == 'native' for key in self._history_source_keys(item, reviews)):
+                          'dataset_id': doc['dataset_id'], 'source_file': source_file,
+                          **{k: doc[k] for k in ("sha256", "rule_version", "imported_at", "series_count", "observation_count", "valid_count", "issue_count", "sheets", "excluded_regions")}}
+            if doc.get('source_lineage') and not any(key[0] == 'native' for key in
+                    self._history_source_keys(item, reviews, review_cache=review_cache)):
                 # Source updates become visible after their exact native review
                 # binding is committed. An interrupted review write leaves the
                 # previous publication visible and the retry can reuse staging.
                 continue
+            if reuse:
+                item['coverage'] = doc.get('coverage', [])
             items.append(item)
         for item in items:
-            manifest = self.manifest(item["dataset_id"])
+            manifest = item if reuse else self.manifest(item["dataset_id"])
             coverage = manifest.get("coverage", [])
             item['unmapped_sheets'] = _unmapped_sheet_states(manifest)
+            item.pop('coverage', None)
             item["pending_sheets"] = [s["name"] for s in coverage if s["status"] in {"needs_review", "unsupported"}]
             item["pending_sheet_states"] = [
                 {"name": s["name"], "status": s["status"], "reasons": s.get("reasons", [])}
@@ -391,17 +425,19 @@ class DataStore:
         source_keys = {}
         seen = set()
         for item in items:
-            keys = self._history_source_keys(item, reviews)
+            keys = self._history_source_keys(item, reviews, review_cache=review_cache)
             source_keys[item['dataset_id']] = keys
             # One immutable snapshot may serve several identical native files.
             # A later version of one original must not hide the others.
             item["is_latest_for_source"] = bool(set(keys) - seen)
             seen.update(keys)
             item.pop('_review_source_file', None)
+        if any(_catalog_file_version(path) != version for path, version in versions.items()):
+            raise ValueError('目录版本已变化，请重新读取当前数据集目录。')
         from .dataset_history import describe_history
         return describe_history(items, source_keys=source_keys)
 
-    def _history_source_keys(self, item, reviews):
+    def _history_source_keys(self, item, reviews, *, review_cache=None):
         """Use persisted verified native IDs only inside their own KB directory.
 
         The authenticated import path already verified the original bytes and
@@ -420,7 +456,7 @@ class DataStore:
         import_id = item.get('import_id')
         if not isinstance(import_id, str) or not re.fullmatch(r'[0-9a-f]{24}', import_id):
             return legacy
-        if import_id not in reviews:
+        if review_cache is not None or import_id not in reviews:
             folder = self.root / 'imports' / import_id
             path = folder / 'review.json'
             try:
@@ -428,7 +464,7 @@ class DataStore:
                         or not path.resolve().is_relative_to(self.root.resolve())):
                     reviews[import_id] = None
                 else:
-                    reviews[import_id] = json.loads(path.read_text())
+                    reviews[import_id] = _read_catalog_review(path, review_cache)
             except (OSError, ValueError):
                 reviews[import_id] = None
         review = reviews[import_id]

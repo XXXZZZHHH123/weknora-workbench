@@ -1,4 +1,6 @@
 """Discovery stays bounded, source-scoped, and independent of workbook parsing."""
+from asyncio import CancelledError
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
@@ -10,6 +12,40 @@ import pytest
 
 from structured_data import discovery_catalog as discovery
 from structured_data.store import DataStore
+from test_native_source_update import versioned, write_workbook
+
+
+MANIFEST_REUSE = 'STRUCTURED_DATA_CATALOG_MANIFEST_REUSE'
+
+
+def count_catalog_json(monkeypatch):
+    read_text, loads = Path.read_text, json.loads
+    reads, decodes = Counter(), Counter()
+    after_decode = {}
+
+    class CatalogText(str):
+        pass
+
+    def read(path, *args, **kwargs):
+        data = read_text(path, *args, **kwargs)
+        if path.name in {'manifest.json', 'review.json'}:
+            reads[path] += 1
+            data = CatalogText(data)
+            data.path = path
+        return data
+
+    def decode(data, *args, **kwargs):
+        doc = loads(data, *args, **kwargs)
+        if isinstance(data, CatalogText):
+            decodes[data.path] += 1
+            callback = after_decode.pop(data.path, None)
+            if callback is not None:
+                callback(doc)
+        return doc
+
+    monkeypatch.setattr(Path, 'read_text', read)
+    monkeypatch.setattr(json, 'loads', decode)
+    return reads, decodes, after_decode
 
 
 def publish(store, number=0, *, name=None, count=1, sheet_count=1, field_metadata=None):
@@ -66,6 +102,60 @@ def test_file_pagination_keeps_all_identities_and_explicit_history(tmp_path):
                                                                         limit=20)['datasets']}
     assert len(store.list_datasets()) == 12  # Management API retains its complete report.
     assert discovery.list_datasets(store, offset=100)['datasets'] == []
+
+
+def test_catalog_reuses_manifest_and_review_until_revocation(versioned, monkeypatch):
+    manager, path, original, first = versioned
+    store = manager.store
+    update = manager.ingest(path, native_source=write_workbook(path, append=True))
+    manager.bind_native_source(first['import_id'], {**original, 'file_name': 'original.xlsx'})
+    manifests = set(store.datasets.glob('*/manifest.json'))
+    shared_review = manager.path(first['import_id']) / 'review.json'
+    update_review = manager.path(update['import_id']) / 'review.json'
+    assert len(manifests) >= 3
+    reads, decodes, after_decode = count_catalog_json(monkeypatch)
+    monkeypatch.delenv(MANIFEST_REUSE, raising=False)
+    options = {'search': 'Daily', 'latest_only': False}
+    optimized = discovery.list_datasets(store, **options)
+    assert optimized['field_candidates'] and len(optimized['datasets']) == len(manifests)
+    assert {item['source_file'] for item in optimized['datasets']} == {'original.xlsx', path.name}
+    assert [item['dataset_id'] for item in optimized['datasets'] if item['is_latest_for_source']] == [update['dataset_id']]
+    catalog_files = manifests | {shared_review, update_review}
+    assert reads == decodes == dict.fromkeys(catalog_files, 1)
+    assert discovery.list_datasets(store, **options) == optimized
+    assert reads == decodes == dict.fromkeys(catalog_files, 2)
+    with monkeypatch.context() as scope:
+        scope.setenv(MANIFEST_REUSE, '0')
+        assert discovery.list_datasets(store, **options) == optimized
+    assert reads == decodes and {reads[path] for path in manifests} == {4}
+    assert reads[shared_review] > 3
+
+    after_decode[update_review] = lambda _: update_review.unlink()
+    with pytest.raises(ValueError, match='目录版本已变化'):
+        discovery.list_datasets(store)
+    assert [item['dataset_id'] for item in discovery.list_datasets(store)['datasets']] == [first['dataset_id']]
+
+
+@pytest.mark.parametrize('interruption', [None, RuntimeError, CancelledError])
+def test_catalog_rereads_after_change_or_cancellation(tmp_path, monkeypatch, interruption):
+    monkeypatch.delenv(MANIFEST_REUSE, raising=False)
+    store = DataStore(tmp_path)
+    path = store._path(publish(store)) / 'manifest.json'
+    reads, decodes, after_decode = count_catalog_json(monkeypatch)
+
+    def change(manifest):
+        if interruption:
+            raise interruption('interrupted after decoding manifest')
+        replacement = path.with_suffix('.new')
+        replacement.write_text(json.dumps({**manifest, 'source_file': 'replacement.xlsx'}))
+        replacement.replace(path)
+
+    after_decode[path] = change
+    with pytest.raises(interruption or ValueError, match='interrupted' if interruption else '目录版本已变化'):
+        discovery.list_datasets(store)
+    item, = discovery.list_datasets(store)['datasets']
+    assert item['source_file'] == ('source-0.xlsx' if interruption else 'replacement.xlsx')
+    assert reads == decodes == {path: 2}
 
 
 def test_explicit_search_only_recalls_real_metadata_and_does_not_hide_files(tmp_path):
@@ -194,15 +284,19 @@ def test_existing_snapshots_build_once_across_concurrent_requests_and_repair_cor
 
 
 def test_same_dataset_id_in_different_workspace_does_not_reuse_other_headers(tmp_path):
-    left, right = DataStore(tmp_path / 'left'), DataStore(tmp_path / 'right')
+    left, right = [DataStore(tmp_path / 'knowledge-bases' / kb) for kb in ('left', 'right')]
     dataset = publish(left)
-    assert publish(right) == dataset
+    assert publish(right, name='separate.xlsx') == dataset
     path = right._path(dataset) / 'series.json'
     fields = json.loads(path.read_text())
     fields[0]['metric'] = 'Other workspace'
     path.write_text(json.dumps(fields))
     assert discovery.search_fields(right, dataset, '', search='Other workspace')[1] == 1
     assert discovery.search_fields(left, dataset, '', search='Other workspace')[1] == 0
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        left_result, right_result = pool.map(discovery.list_datasets, (left, right))
+    assert left_result['datasets'][0]['source_file'] == 'source-0.xlsx'
+    assert right_result['datasets'][0]['source_file'] == 'separate.xlsx'
 
 
 @pytest.mark.parametrize('arguments', [{'question': '请查看Pending-299中的字段'},
