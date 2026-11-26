@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"math/big"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,18 +22,21 @@ type terminalCoverageFact struct {
 	coverageFact
 	requestedUnit string
 	required      bool
+	sqlFollowUp   bool
 }
 
 type terminalCoverageDelivery struct {
-	facts            []terminalCoverageFact
-	context          []string
-	goal, limitation string
-	comparisonLead   string
-	documentBodies   []coverageEvidence
-	presentationUnit string
-	chinese          bool
-	explicitOnly     bool
-	inspected        bool
+	facts              []terminalCoverageFact
+	context            []string
+	goal, limitation   string
+	comparisonLead     string
+	documentBodies     []coverageEvidence
+	zeroCountCalls     map[string]string
+	presentationUnit   string
+	chinese            bool
+	explicitOnly       bool
+	inspected          bool
+	naturalSQLFallback bool
 }
 
 // Reproject native executions before delivery. A result changed after its
@@ -72,7 +76,8 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 			catalogs[attempt.EvidenceID] = attempt.result.Data
 		}
 	}
-	targets := slices.DeleteFunc(slices.Clone(e.evidenceCompletionTargets()), func(target taskCoverageTarget) bool {
+	plannedTargets := e.evidenceCompletionTargets()
+	targets := slices.DeleteFunc(slices.Clone(plannedTargets), func(target taskCoverageTarget) bool {
 		return target.SourceTime == "general_concept" || slices.Equal(target.Required, []string{"optional"})
 	})
 	hasSourceContext := len(attempts) > 0 || hadCoverage || len(targets) > 0 || e.terminalCoverageContextKnown()
@@ -82,6 +87,23 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 	}
 	delivery.chinese = strings.HasPrefix(types.LanguageFromContextOrDefault(ctx), "zh")
 	delivery.explicitOnly = slices.ContainsFunc(targets, func(target taskCoverageTarget) bool { return target.SourceMode == "only" })
+
+	for _, attempt := range attempts {
+		if !attempt.Success || attempt.Operation != "analyze_table" {
+			continue
+		}
+		call := types.ToolCall{ID: attempt.ToolCallID, Result: attempt.result}
+		for _, id := range e.coverageCallCitations(call, attempt.EvidenceID) {
+			for _, scalar := range coverageObject(e.turnReview.StructuredCitations[id].Directory["value"]) {
+				if reviewDigest(scalar) == reviewDigest(0) {
+					if delivery.zeroCountCalls == nil {
+						delivery.zeroCountCalls = make(map[string]string)
+					}
+					delivery.zeroCountCalls[id] = attempt.EvidenceID
+				}
+			}
+		}
+	}
 
 	record.Evidence = slices.DeleteFunc(record.Evidence, func(item coverageEvidence) bool {
 		return !item.Bound || !coverageCurrentEvidence(record, item) || !e.terminalCoverageScopeAllowed(targets, item)
@@ -100,11 +122,11 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 		return item.Kind == "gap" && item.Complete && item.PeriodFrom != "" && item.PeriodFrom == item.PeriodTo
 	})
 
-	add := func(role string, item coverageEvidence, unit string, required bool) {
+	add := func(role string, item coverageEvidence, unit string, required bool) *terminalCoverageFact {
 		switch item.Kind {
 		case "cell", "last_valid", "derived", "gap", "body":
 		default:
-			return
+			return nil
 		}
 		if unit != "" && terminalUnitUnspecified(item) && item.SeriesID != "" {
 			for _, peer := range record.Evidence {
@@ -119,13 +141,23 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 				item.Unit, item.UnitBasis = peer.Unit, peer.UnitBasis
 			}
 		}
-		if slices.ContainsFunc(delivery.facts, func(prior terminalCoverageFact) bool {
+		if index := slices.IndexFunc(delivery.facts, func(prior terminalCoverageFact) bool {
+			if coverageAnalysisEndpoint(item) && coverageAnalysisEndpoint(prior.Evidence) && prior.Role == role {
+				checked := prior.Evidence
+				return item.KnowledgeBaseID == checked.KnowledgeBaseID && item.SourceID == checked.SourceID &&
+					item.SnapshotHash == checked.SnapshotHash && item.Sheet == checked.Sheet && item.SeriesID == checked.SeriesID &&
+					item.Date == checked.Date && item.Cell == checked.Cell && item.Raw == checked.Raw
+			}
 			return coverageFactRef(prior.Evidence) == coverageFactRef(item) && prior.Evidence.Kind == item.Kind &&
 				prior.Evidence.PeriodFrom == item.PeriodFrom && prior.Evidence.PeriodTo == item.PeriodTo && prior.Evidence.Period == item.Period
-		}) {
-			return
+		}); index >= 0 {
+			delivery.facts[index].required = delivery.facts[index].required || required
+			return &delivery.facts[index]
 		}
-		delivery.facts = append(delivery.facts, terminalCoverageFact{coverageFact{role, item}, unit, required})
+		delivery.facts = append(delivery.facts, terminalCoverageFact{
+			coverageFact: coverageFact{role, item}, requestedUnit: unit, required: required,
+		})
+		return &delivery.facts[len(delivery.facts)-1]
 	}
 	for _, target := range targets {
 		if delivery.goal == "" && target.Metric != "" {
@@ -147,8 +179,24 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 				}
 			}
 			for _, fact := range result.PinnedFacts {
-				if fact.Role != "last_valid_date" {
-					add(fact.Role, fact.Evidence, unit, terminalRequestedPinnedFact(record, target, fact))
+				if fact.Role == "last_valid_date" {
+					continue
+				}
+				var requiredAnalysis bool
+				switch fact.Role {
+				case "coverage_boundary":
+					_, requiredAnalysis = e.plannedAnalysisGap(target, record, fact.Evidence)
+				case "last_valid_value":
+					var scoped bool
+					fact.Evidence, requiredAnalysis, scoped = e.terminalPlannedLastValid(target, record, result.PinnedFacts, fact.Evidence)
+					if !scoped {
+						continue
+					}
+				}
+				delivered := add(fact.Role, fact.Evidence, unit, requiredAnalysis || terminalRequestedPinnedFact(record, target, fact))
+				if delivered != nil && requiredAnalysis && fact.Role == "last_valid_value" && fact.Evidence.Operation == "query_series" {
+					delivered.sqlFollowUp = true
+					delivered.Evidence.Subject = firstNonEmptyAgent(fact.Evidence.Subject, delivered.Evidence.Subject)
 				}
 			}
 		}
@@ -172,12 +220,31 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 			}
 		}
 	}
+	question := e.coverageAnalysisQuestion()
 	if delivery.goal == "" {
-		question := e.turnReview.Query
-		if e.config.TaskPlanningHumanQuestion != nil {
-			question = *e.config.TaskPlanningHumanQuestion
-		}
 		delivery.goal = terminalEvidenceText(taskPlanPrefix(question, 400))
+	}
+	if len(plannedTargets) == 0 {
+		for _, item := range record.Evidence {
+			if !(coverageAnalysisEndpoint(item) || coverageAnalysisMissingCell(item)) || !e.coverageScopeAllows(item.KnowledgeBaseID, item.KnowledgeID) {
+				continue
+			}
+			from, to := coverageAnalysisRetriedScope(attempts, item, question)
+			if gap, ok := coverageAnalysisGap(item, from, to, ""); ok {
+				if coverageAnalysisMissingCell(item) {
+					record.Evidence = append(record.Evidence, gap)
+				} else {
+					add("coverage_boundary", gap, "", true)
+					add("last_valid_value", item, "", true)
+				}
+			}
+		}
+	}
+	inPlannedAnalysisScope := func(analysis coverageEvidence) bool {
+		return len(plannedTargets) == 0 || slices.ContainsFunc(targets, func(target taskCoverageTarget) bool {
+			_, matches := e.plannedAnalysisGap(target, record, analysis)
+			return matches
+		})
 	}
 	for _, item := range record.Evidence {
 		target, relevant := terminalCoverageTarget(record, targets, item)
@@ -192,15 +259,29 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 		unit := e.terminalRequestedUnit(target)
 		switch {
 		case item.Kind == "gap" && item.Complete && coverageExactRange(item):
-			add("coverage_boundary", item, "", false)
+			analysisGap := coverageAnalysisLatestBoundary(item)
+			analysisInScope := !analysisGap || inPlannedAnalysisScope(item)
+			required := analysisGap && analysisInScope && coverageCurrentAnalysisWorkbook(record, item) &&
+				slices.ContainsFunc(attempts, func(attempt coverageAttempt) bool {
+					return attempt.EvidenceID == item.EvidenceID && attempt.Success && e.coverageBoundAnalysisField(item, attempt.Args)
+				})
+			add("coverage_boundary", item, "", required)
 			foundLast := false
 			for _, value := range record.Evidence {
-				if terminalCoverageLastValidMatches(record, item, value) {
+				if !analysisInScope || coverageAnalysisEndpoint(value) && !inPlannedAnalysisScope(value) {
+					continue
+				}
+				if sameCoverageLastValid(record, item, value) || item.WorkbookSnapshotHash == "" && coverageAnalysisFollowUpMatches(record, item, value) {
 					foundLast = true
-					add("last_valid_value", value, unit, false)
+					if latest := add("last_valid_value", value, unit, required); latest != nil && required && value.Operation == "query_series" {
+						latest.sqlFollowUp = true
+						if latest.Evidence.Subject == "" {
+							latest.Evidence.Subject = item.Subject
+						}
+					}
 				}
 			}
-			if !foundLast && item.LastValidDate != "" {
+			if !foundLast && analysisInScope && item.LastValidDate != "" {
 				boundary := item
 				boundary.Kind, boundary.Date, boundary.Raw = "last_valid", item.LastValidDate, nil
 				add("last_valid_date", boundary, "", false)
@@ -209,7 +290,12 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 			(item.Operation == "query_series" || item.Operation == "analyze_table") &&
 			(item.LatestInScope || item.RangeComplete && (item.Period != "" || item.Date != "" && item.Date >= item.PeriodFrom && item.Date <= item.PeriodTo) ||
 				item.Date != "" && item.Date == item.PeriodFrom && item.Date == item.PeriodTo):
-			if (len(targets) != 0 || linkedReads[item.EvidenceID]) && (!item.LatestInScope || target.StructuredTaskGoal != nil && target.SourceTime == "latest_observation") {
+			repeatsEndpoint := item.Operation == "analyze_table" && item.WorkbookSnapshotHash != "" && slices.ContainsFunc(delivery.facts, func(fact terminalCoverageFact) bool {
+				last := fact.Evidence
+				return fact.Role == "last_valid_value" && last.EvidenceID == item.EvidenceID && last.SeriesID == item.SeriesID &&
+					last.Date == item.Date && last.Cell == item.Cell && last.Raw == item.Raw
+			})
+			if !repeatsEndpoint && (len(targets) != 0 || linkedReads[item.EvidenceID]) && (!item.LatestInScope || target.StructuredTaskGoal != nil && target.SourceTime == "latest_observation") {
 				add("scoped_value", item, unit, false)
 			}
 		case item.Kind == "derived" && item.Operation == "query_series" && item.SeriesID != "" && item.Complete && coverageExactRange(item) &&
@@ -290,6 +376,30 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 	return delivery
 }
 
+func (e *AgentEngine) terminalPlannedLastValid(target taskCoverageTarget, record coverageRecord, pinned []coverageFact, item coverageEvidence) (checked coverageEvidence, required, inScope bool) {
+	if coverageAnalysisEndpoint(item) {
+		_, matches := e.plannedAnalysisGap(target, record, item)
+		return item, matches, matches
+	}
+	var analysisBoundary, otherBoundary bool
+	for _, boundary := range pinned {
+		gap := boundary.Evidence
+		if boundary.Role != "coverage_boundary" || !sameCoverageLastValid(record, gap, item) {
+			continue
+		}
+		if !coverageAnalysisLatestBoundary(gap) {
+			otherBoundary = true
+			continue
+		}
+		analysisBoundary = true
+		if _, matches := e.plannedAnalysisGap(target, record, gap); matches {
+			item.Subject = firstNonEmptyAgent(gap.Subject, item.Subject)
+			return item, true, true
+		}
+	}
+	return item, false, !analysisBoundary || otherBoundary
+}
+
 func terminalRequestedPinnedFact(record coverageRecord, target taskCoverageTarget, fact coverageFact) bool {
 	if fact.Role == "supplement" {
 		return true
@@ -312,6 +422,7 @@ func (e *AgentEngine) terminalCoverageFailure(ctx context.Context, state *types.
 	if !delivery.inspected {
 		return legacy
 	}
+	delivery.naturalSQLFallback = e.evidenceCompletionEnabled() && delivery.hasGap()
 	return delivery.render(true, "")
 }
 
@@ -440,24 +551,6 @@ func terminalComparisonNumber(item coverageEvidence) (*big.Rat, bool) {
 	return new(big.Rat).SetString(value)
 }
 
-func terminalCoverageLastValidMatches(record coverageRecord, gap, value coverageEvidence) bool {
-	if sameCoverageLastValid(record, gap, value) {
-		return true
-	}
-	if gap.Operation != "analyze_table" || value.Operation != "query_series" || value.Kind != "last_valid" ||
-		value.DateCell == "" || value.Cell == "" || value.Raw == nil || gap.LastValidDate == "" || value.Date != gap.LastValidDate ||
-		gap.SourceID != value.SourceID || gap.KnowledgeBaseID != value.KnowledgeBaseID || gap.Sheet != value.Sheet ||
-		gap.SeriesID != value.SeriesID || gap.Column != value.Column {
-		return false
-	}
-	// The published input and original observation have separate snapshot
-	// identities. The native result also records the actual workbook hash.
-	return slices.ContainsFunc(record.Evidence, func(input coverageEvidence) bool {
-		return input.Kind == "analysis_input" && input.EvidenceID == gap.EvidenceID && input.SeriesID == gap.SeriesID &&
-			input.SnapshotHash == gap.SnapshotHash && input.Raw == value.SnapshotHash
-	})
-}
-
 func (e *AgentEngine) terminalRequestedUnit(target taskCoverageTarget) string {
 	if target.StructuredTaskGoal == nil || target.RequestedUnit == "" || !strings.Contains(target.RequestBasis, target.RequestedUnit) {
 		return ""
@@ -546,11 +639,39 @@ func (d terminalCoverageDelivery) render(fallback bool, candidate string) string
 	if !fallback && d.presentationUnit != "" {
 		candidate, unitFactsAlreadyPresent, usedRequestedUnit = terminalAddDeclaredUnit(candidate, d.presentationUnit, d.facts)
 	}
+	paragraphs := strings.Split(strings.TrimSpace(candidate), "\n\n")
+	var insertions []terminalCoverageInsertion
+	sourced := false
 	// Lead with the requested range and verified absence, where established.
 	for _, gapFirst := range []bool{true, false} {
 		for _, fact := range d.facts {
-			if unitFactsAlreadyPresent || (fact.Evidence.Kind == "gap") != gapFirst || !fallback && !fact.required && !d.mentionsCheckedField(candidate, fact) ||
-				!fallback && terminalCoverageFactPresent(candidate, fact) {
+			item := fact.Evidence
+			if unitFactsAlreadyPresent || (item.Kind == "gap") != gapFirst {
+				continue
+			}
+			naturalSQL := fallback && d.naturalSQLFallback && (fact.sqlFollowUp ||
+				item.Operation == "analyze_table" && (item.Kind == "gap" && item.Complete || coverageAnalysisEndpoint(item)))
+			if naturalSQL || !fallback && (item.Kind == "gap" || item.Kind == "last_valid") {
+				present, anchor, addSource := d.checkedFieldLocation(paragraphs, fact)
+				if addSource {
+					paragraphs[anchor] = fmt.Sprintf(d.text("据%s，%s", "From %s. %s"),
+						d.checkedFactSource(item), paragraphs[anchor])
+					sourced = true
+				}
+				if present || !fact.required && anchor < 0 && !d.mentionsCheckedField(candidate, fact) {
+					continue
+				}
+				if item.Kind == "last_valid" && item.Raw == nil && slices.ContainsFunc(d.facts, func(peer terminalCoverageFact) bool {
+					return peer.Evidence.Kind == "last_valid" && peer.Evidence.Raw != nil && peer.Evidence.Date == item.Date &&
+						terminalSameImport(item, peer.Evidence) && peer.Evidence.Sheet == item.Sheet && peer.Evidence.SeriesID == item.SeriesID
+				}) {
+					continue
+				}
+				insertions = append(insertions, terminalCoverageInsertion{anchor, fact})
+				usedRequestedUnit = usedRequestedUnit || item.Raw != nil && fact.requestedUnit != "" && terminalUnitUnspecified(item)
+				continue
+			}
+			if !fallback && (!fact.required && !d.mentionsCheckedField(candidate, fact) || terminalCoverageFactPresent(candidate, fact)) {
 				continue
 			}
 			if line := terminalCoverageFactText(fact, d.chinese); line != "" && !slices.Contains(lines, line) {
@@ -568,18 +689,27 @@ func (d terminalCoverageDelivery) render(fallback bool, candidate string) string
 		if candidate == "" && len(d.facts) > 1 {
 			candidate = d.directValueOpening()
 		}
-		if candidate == "" && len(lines) == 0 {
+		if candidate == "" && len(lines) == 0 && len(insertions) == 0 {
 			candidate = d.text("所求结果仍待核实。", "The requested result remains unverified.")
 			if d.goal != "" {
 				candidate = d.text(d.goal+" 仍待核实。", "The requested result for "+d.goal+" remains unverified.")
 			}
 		}
-		if len(lines) == 0 || d.comparisonLead != "" && !slices.ContainsFunc(d.facts, func(f terminalCoverageFact) bool { return f.Evidence.Kind == "body" }) {
+		if len(lines) == 0 && len(insertions) == 0 || d.comparisonLead != "" && !slices.ContainsFunc(d.facts, func(f terminalCoverageFact) bool { return f.Evidence.Kind == "body" }) {
 			lines = append(lines, d.context...)
 		}
 	}
-	if d.limitation != "" && (fallback || len(lines) != 0 && !d.citesCurrentDocument(candidate)) {
+	if d.limitation != "" && (fallback || (len(lines) != 0 || len(insertions) != 0) && !d.citesCurrentDocument(candidate)) {
 		lines = append(lines, d.limitation)
+	}
+	if len(insertions) != 0 {
+		if fallback && candidate != "" {
+			lines = append([]string{candidate}, lines...)
+		}
+		candidate = d.insertCheckedFacts(paragraphs, insertions, lines)
+		lines = nil
+	} else if sourced {
+		candidate = strings.Join(paragraphs, "\n\n")
 	}
 	if len(lines) == 0 {
 		return candidate
@@ -778,12 +908,398 @@ func terminalCoveragePeriod(from, to, period string) string {
 	return from + " – " + to
 }
 
+var (
+	terminalClaimBreak  = regexp.MustCompile(`[。！？!?；;\n]+|\.[ \t]+`)
+	terminalDateSpacing = regexp.MustCompile(`[ \t]*([年月日])[ \t]*`)
+	terminalGapDisplay  = regexp.MustCompile(`(?i)(?:返回\s*)?(?:零|0)\s*条(?:有效)?(?:记录|观测值)|没有有效(?:记录|观测值)|有效(?:记录|观测)数(?:都|均)?(?:是|为|[:：=])\s*0\b|\b(?:0|no|zero) valid (?:records?|observations?)\b`)
+	terminalGroupedZero = regexp.MustCompile(`(?i)有效(?:记录|观测)数(?:都|均)(?:是|为|[:：=])\s*0\b|\b(?:all|each) (?:have|has) (?:0|zero) valid (?:records?|observations?)\b`)
+	terminalTableRow    = regexp.MustCompile(`(?m)^[ \t]*\|`)
+	terminalRangeJoin   = regexp.MustCompile(`(?i)^\s*(?:至|到|[-—–~～]|to|through)\s*$`)
+	terminalAssignment  = regexp.MustCompile("(?i)[:：=为是]|\\b(?:is|was)\\b")
+	terminalUnasserted  = regexp.MustCompile(`(?i)并非|不是|不能|无法|是否|\b(?:not|cannot|whether)\b`)
+	terminalWorkbookExt = regexp.MustCompile(`(?i)\.(?:xlsx|xlsm|xlsb|xls|ods|csv|tsv)\b`)
+	terminalDateLabel   = regexp.MustCompile(`(?i)最后有效日期|最后有值的日期|\b(?:last|latest) valid date\b`)
+)
+
+// Check the displayed operands of a verified fact. A paragraph may establish
+// the source and field. The observed date and result must be in one assertion.
+func (d terminalCoverageDelivery) checkedFieldLocation(paragraphs []string, fact terminalCoverageFact) (present bool, anchor int, addSource bool) {
+	item := fact.Evidence
+	rendered := strings.TrimRight(d.checkedFactSentence([]terminalCoverageFact{fact}), ".。")
+	anchor = -1
+	for i, paragraph := range paragraphs {
+		if strings.Contains(paragraph, "```") {
+			continue
+		}
+		visible := sourceCitationTag.ReplaceAllStringFunc(paragraph, numericMask)
+		contextual := terminalFieldMention(visible, item) && !d.competingSource(paragraph, item, false)
+		if contextual && anchor < 0 {
+			anchor = i
+		}
+		if contextual && item.Kind == "gap" && item.Subject != "" {
+			group := slices.DeleteFunc(slices.Clone(d.facts), func(other terminalCoverageFact) bool {
+				return !terminalGroupable(item, other.Evidence)
+			})
+			if len(group) > 1 && strings.Contains(visible, d.checkedFactSentence(group)) {
+				return true, i, false
+			}
+		}
+		for _, clause := range terminalClaimBreak.Split(paragraph, -1) {
+			ids := uniqueCandidateEvidenceIDs(clause)
+			cited := item.CitationID != "" && slices.Contains(ids, item.CitationID)
+			statement := sourceCitationTag.ReplaceAllStringFunc(clause, numericMask)
+			if contextual && rendered != "" && strings.TrimRight(strings.TrimSpace(statement), ".。") == rendered {
+				return true, i, false
+			}
+			local := terminalFieldMention(statement, item)
+			coordinates := !contextual && !local && !cited && !terminalTableRow.MatchString(paragraph) &&
+				d.checkedCoordinates(statement, paragraph, item)
+			if !contextual && !local && !cited && !coordinates || d.competingSource(clause, item, cited) {
+				continue
+			}
+			if anchor < 0 {
+				anchor = i
+			}
+			groupCount := item.Kind == "gap" && contextual && item.EvidenceID != "" && terminalGroupedZero.MatchString(statement) && slices.ContainsFunc(ids, func(id string) bool {
+				return d.zeroCountCalls[id] == item.EvidenceID
+			})
+			if terminalUnasserted.MatchString(statement) || !cited && !groupCount && !d.terminalFieldApplies(statement, visible, item) {
+				continue
+			}
+			dates := terminalDateSpacing.ReplaceAllString(statement, "$1")
+			if item.Kind == "gap" && terminalGapDisplay.MatchString(statement) && terminalGapPeriodPresent(dates, item) {
+				return true, i, false
+			}
+			if item.Kind == "last_valid" && terminalExactDay(dates, item.Date) {
+				anchor = i
+				if item.Raw == nil && terminalDateLabel.MatchString(statement) && (cited || terminalContainsLabel(statement, item.Metric)) ||
+					item.Raw != nil && terminalDisplayedValue(dates, fact, cited) {
+					return true, i, coordinates
+				}
+			}
+		}
+	}
+	return false, anchor, false
+}
+
+func (d terminalCoverageDelivery) checkedCoordinates(statement, paragraph string, item coverageEvidence) bool {
+	if item.Kind != "last_valid" || item.Raw == nil || item.SourceTitle == "" || item.DateCell == "" || item.Cell == "" ||
+		!terminalContainsLabel(statement, item.Metric) || !terminalContainsLabel(statement, item.DateCell) ||
+		!terminalContainsLabel(statement, item.Cell) || d.competingSource(paragraph, item, false) {
+		return false
+	}
+	return !slices.ContainsFunc(d.facts, func(fact terminalCoverageFact) bool {
+		peer := fact.Evidence
+		return !terminalSameImport(item, peer) && peer.Metric == item.Metric &&
+			peer.Date == item.Date && peer.DateCell == item.DateCell && peer.Cell == item.Cell
+	})
+}
+
+func terminalFieldMention(text string, item coverageEvidence) bool {
+	return terminalSourceMention(text, item.SourceTitle) && terminalContainsLabel(text, item.Metric) &&
+		(item.Sheet == "" || terminalContainsLabel(text, item.Sheet))
+}
+
+func terminalSourceMention(text, title string) bool {
+	stem := terminalWorkbookExt.ReplaceAllString(title, "")
+	return terminalContainsLabel(text, title) || stem != title && terminalContainsLabel(text, stem)
+}
+
+func terminalContainsLabel(text, label string) bool {
+	if label == "" {
+		return false
+	}
+	text = strings.ToLower(text)
+	return maskExactSourceIdentity(text, strings.ToLower(label), true) != text
+}
+
+func terminalSameImport(item, peer coverageEvidence) bool {
+	return item.SourceID == peer.SourceID && item.KnowledgeBaseID == peer.KnowledgeBaseID &&
+		firstNonEmptyAgent(item.WorkbookSnapshotHash, item.SnapshotHash) == firstNonEmptyAgent(peer.WorkbookSnapshotHash, peer.SnapshotHash)
+}
+
+func (d terminalCoverageDelivery) competingSource(text string, item coverageEvidence, cited bool) bool {
+	if len(uniqueCandidateCitationIDs(text)) > 0 {
+		return true
+	}
+	visible := sourceCitationTag.ReplaceAllStringFunc(text, numericMask)
+	withoutTitle := strings.ReplaceAll(strings.ToLower(visible), strings.ToLower(item.SourceTitle), "")
+	return terminalWorkbookExt.MatchString(withoutTitle) || slices.ContainsFunc(d.documentBodies, func(body coverageEvidence) bool {
+		return terminalContainsLabel(visible, body.SourceTitle)
+	}) || slices.ContainsFunc(d.facts, func(fact terminalCoverageFact) bool {
+		peer := fact.Evidence
+		return !terminalSameImport(item, peer) && (!cited || !strings.EqualFold(item.SourceTitle, peer.SourceTitle)) &&
+			terminalSourceMention(visible, peer.SourceTitle)
+	})
+}
+
+func (d terminalCoverageDelivery) terminalFieldApplies(statement, paragraph string, item coverageEvidence) bool {
+	if item.Subject != "" && !terminalContainsLabel(statement, item.Subject) && !terminalContainsLabel(statement, item.Cell) {
+		return false
+	}
+	return !slices.ContainsFunc(d.facts, func(fact terminalCoverageFact) bool {
+		peer := fact.Evidence
+		if !terminalSameImport(item, peer) || peer.SeriesID == item.SeriesID {
+			return false
+		}
+		if peer.Metric == item.Metric && peer.Sheet == item.Sheet {
+			return item.Subject == "" && !terminalContainsLabel(statement, item.Cell) ||
+				item.Kind == "gap" && terminalContainsLabel(statement, peer.Subject)
+		}
+		return peer.Sheet != item.Sheet && terminalContainsLabel(statement, peer.Sheet) ||
+			peer.Metric != item.Metric && (terminalContainsLabel(statement, peer.Metric) ||
+				!terminalContainsLabel(statement, item.Metric) && terminalContainsLabel(paragraph, peer.Metric))
+	})
+}
+
+func terminalExactDay(text, day string) bool {
+	found := false
+	for _, span := range calendarDateLiteral.FindAllStringIndex(text, -1) {
+		if date := coverageDay(text[span[0]:span[1]]); date != "" && standaloneDateToken(text, span[0], span[1]) {
+			if date != day {
+				return false
+			}
+			found = true
+		}
+	}
+	return found
+}
+
+func terminalGapPeriodPresent(text string, item coverageEvidence) bool {
+	if item.Period != "" {
+		return terminalContainsLabel(text, item.Period)
+	}
+	from, to := item.PeriodFrom, item.PeriodTo
+	if from == to {
+		return terminalExactDay(text, from)
+	}
+	if strings.Contains(text, terminalCoveragePeriod(from, to, "")) {
+		return true
+	}
+	if start := strings.Index(text, from); start >= 0 {
+		between, _, found := strings.Cut(text[start+len(from):], to)
+		if found && terminalRangeJoin.MatchString(between) {
+			return true
+		}
+	}
+	if date, err := time.Parse(time.DateOnly, from); err == nil && date.Day() == 1 && date.AddDate(0, 1, -1).Format(time.DateOnly) == to {
+		return slices.ContainsFunc(calendarDateLiteral.FindAllStringIndex(text, -1), func(span []int) bool {
+			literal := text[span[0]:span[1]]
+			return standaloneDateToken(text, span[0], span[1]) && (literal == date.Format("2006年1月") || literal == date.Format("2006-01"))
+		})
+	}
+	return false
+}
+
+func terminalDisplayedValue(statement string, fact terminalCoverageFact, cited bool) bool {
+	item := fact.Evidence
+	raw, ok := reviewScalarWitnessQuote(item.Raw)
+	if !ok {
+		return false
+	}
+	original, numeric := new(big.Rat).SetString(raw)
+	unit := fact.requestedUnit
+	if terminalUnitFromSource(item) {
+		unit = item.Unit
+	}
+	match := func(right string) bool {
+		right = strings.TrimLeft(right, " \t*_\x60")
+		if !numeric {
+			return terminalContainsLabel(right, raw) && strings.HasPrefix(right, raw)
+		}
+		span := proseNumber.FindStringIndex(right)
+		if span == nil || span[0] != 0 || unit == "" && span[1] < len(right) && numericASCIIWord(right[span[1]]) {
+			return false
+		}
+		value, valid := new(big.Rat).SetString(strings.ReplaceAll(strings.ReplaceAll(right[:span[1]], ",", ""), "−", "-"))
+		suffix := strings.TrimSpace(right[span[1]:])
+		if unit != "" {
+			remainder, found := strings.CutPrefix(suffix, unit)
+			if !found {
+				return false
+			}
+			suffix = strings.TrimSpace(strings.TrimLeft(remainder, "*_`"))
+			if strings.HasPrefix(suffix, ".") && len(suffix) > 1 {
+				return false
+			}
+		}
+		endsValue := suffix == "" || strings.ContainsRune(".,，。；;（()）|", []rune(suffix)[0]) || suffix == "on"
+		return valid && original.Cmp(value) == 0 && endsValue
+	}
+	masked := cellOrListMarker.ReplaceAllStringFunc(maskValidatedCalendarDates(statement), numericMask)
+	if item.Subject != "" && item.Cell != "" {
+		// The compact display lists an exact field dimension immediately
+		// before its observation, with the receipt's own cell in parentheses.
+		if _, after, found := strings.Cut(statement, item.Subject+" "); found {
+			if claim, _, closed := strings.Cut(after, ")"); closed && terminalContainsLabel(claim, item.Cell) && match(claim) {
+				return true
+			}
+		}
+	}
+	if strings.HasPrefix(strings.TrimSpace(statement), "|") && (cited || terminalContainsLabel(statement, item.Cell)) {
+		numbers, observed := 0, false
+		for _, cell := range strings.Split(masked, "|") {
+			cell = strings.Trim(strings.TrimSpace(cell), "*_`")
+			if span := proseNumber.FindStringIndex(cell); span != nil && span[0] == 0 {
+				numbers++
+			}
+			observed = observed || match(cell)
+		}
+		return numbers == 1 && observed
+	}
+	for _, assignment := range terminalAssignment.FindAllStringIndex(masked, -1) {
+		left := strings.TrimRight(strings.TrimSpace(statement[:assignment[0]]), "」”\"*` ")
+		hasLabel := item.Subject != "" && strings.HasSuffix(left, item.Subject) ||
+			item.Subject == "" && item.Metric != "" && strings.HasSuffix(left, item.Metric)
+		if !cited && !hasLabel && (item.Subject != "" || !terminalContainsLabel(statement, item.Cell)) {
+			continue
+		}
+		if match(masked[assignment[1]:]) {
+			return true
+		}
+	}
+	return false
+}
+
+type terminalCoverageInsertion struct {
+	anchor int
+	fact   terminalCoverageFact
+}
+
+func terminalGroupable(item, peer coverageEvidence) bool {
+	return item.Kind == peer.Kind && item.Subject != "" && peer.Subject != "" &&
+		terminalSameImport(item, peer) && item.Sheet == peer.Sheet && item.Metric == peer.Metric &&
+		(item.Kind == "gap" && peer.PeriodFrom == item.PeriodFrom && peer.PeriodTo == item.PeriodTo && peer.Period == item.Period ||
+			item.Kind == "last_valid" && peer.Raw != nil && item.Raw != nil && peer.Date == item.Date)
+}
+
+func (d terminalCoverageDelivery) insertCheckedFacts(paragraphs []string, insertions []terminalCoverageInsertion, lines []string) string {
+	at := make([][]string, len(paragraphs))
+	keepPrefix := len(paragraphs) == 1 && !slices.ContainsFunc(insertions, func(item terminalCoverageInsertion) bool {
+		return item.anchor >= 0
+	})
+	for len(insertions) > 0 {
+		first := insertions[0]
+		item := first.fact.Evidence
+		insertions = insertions[1:]
+		group := []terminalCoverageFact{first.fact}
+		if item.Subject != "" && (item.Kind == "gap" || item.Raw != nil) {
+			insertions = slices.DeleteFunc(insertions, func(other terminalCoverageInsertion) bool {
+				if other.anchor != first.anchor || !terminalGroupable(item, other.fact.Evidence) {
+					return false
+				}
+				group = append(group, other.fact)
+				return true
+			})
+		}
+		index := first.anchor
+		if index < 0 {
+			index = len(paragraphs) - 1
+		}
+		if line := d.checkedFactSentence(group); line != "" && !slices.Contains(at[index], line) {
+			at[index] = append(at[index], line)
+		}
+	}
+	var output []string
+	for i, paragraph := range paragraphs {
+		if keepPrefix && paragraph != "" {
+			output = append(output, paragraph)
+			paragraph = ""
+		}
+		if i == len(paragraphs)-1 {
+			output = append(output, at[i]...)
+			output = append(output, lines...)
+		} else if len(at[i]) != 0 {
+			if terminalTableRow.MatchString(paragraph) {
+				output = append(output, at[i]...)
+			} else {
+				separator := " "
+				if trimmed := strings.TrimSpace(paragraph); strings.TrimRight(trimmed, ".!?。！？") == trimmed {
+					separator = "\n"
+				}
+				paragraph += separator + strings.Join(at[i], " ")
+			}
+		}
+		if paragraph != "" {
+			output = append(output, paragraph)
+		}
+	}
+	return strings.Join(output, "\n\n")
+}
+
+func (d terminalCoverageDelivery) checkedFactSentence(facts []terminalCoverageFact) string {
+	fact := facts[0]
+	item := fact.Evidence
+	if item.SourceTitle == "" || item.Metric == "" {
+		return terminalCoverageFactText(fact, d.chinese)
+	}
+	source, field := d.checkedFactSource(item), terminalEvidenceText(item.Metric)
+	if item.Subject != "" && len(facts) == 1 {
+		field += "（" + terminalEvidenceText(item.Subject) + "）"
+	}
+	field = fmt.Sprintf(d.text("「%s」", "“%s”"), field)
+	if item.Kind == "gap" && item.Complete && coverageExactRange(item) {
+		period := terminalEvidenceText(terminalCoveragePeriod(item.PeriodFrom, item.PeriodTo, item.Period))
+		if len(facts) > 1 {
+			var subjects []string
+			for _, gap := range facts {
+				subjects = append(subjects, terminalEvidenceText(gap.Evidence.Subject))
+			}
+			field += d.text("（"+strings.Join(subjects, "、")+"）", " ("+strings.Join(subjects, ", ")+")")
+		}
+		return fmt.Sprintf(d.text("%s中，%s 在 %s 没有有效记录。", "%s has no valid records for %s in %s."), source, field, period)
+	}
+	if item.Date == "" || item.Raw == nil {
+		return terminalCoverageFactText(fact, d.chinese)
+	}
+	var values []string
+	sharedUnitUnknown := len(facts) > 1 && !slices.ContainsFunc(facts, func(fact terminalCoverageFact) bool {
+		return terminalUnitFromSource(fact.Evidence) || fact.requestedUnit != ""
+	})
+	for _, latest := range facts {
+		evidence := latest.Evidence
+		raw, ok := reviewScalarWitnessQuote(evidence.Raw)
+		if !ok {
+			continue
+		}
+		var details []string
+		if len(facts) == 1 && evidence.DateCell != "" {
+			details = append(details, d.text("日期格 ", "date cell ")+terminalEvidenceText(evidence.DateCell))
+		} else if evidence.DateCell != "" {
+			details = append(details, terminalEvidenceText(evidence.DateCell))
+		}
+		if len(facts) == 1 && evidence.Cell != "" {
+			details = append(details, d.text("取值格 ", "value cell ")+terminalEvidenceText(evidence.Cell))
+		} else if evidence.Cell != "" {
+			details = append(details, terminalEvidenceText(evidence.Cell))
+		}
+		value := terminalCoverageValueDetails(latest, d.chinese, terminalEvidenceText(raw), details, sharedUnitUnknown)
+		if len(facts) > 1 {
+			value = terminalEvidenceText(evidence.Subject) + " " + value
+		}
+		values = append(values, value)
+	}
+	if len(values) == 0 {
+		return terminalCoverageFactText(fact, d.chinese)
+	}
+	tail := strings.Join(values, d.text("，", ", "))
+	if sharedUnitUnknown {
+		tail += d.text("，原表单位未确认", ", with units unconfirmed")
+	}
+	return fmt.Sprintf(d.text("%s中，%s 最后有值的日期为 %s，原值为 %s。", "%s records the latest valid values for %s on %s as %s."),
+		source, field, terminalEvidenceText(item.Date), tail)
+}
+
+func (d terminalCoverageDelivery) checkedFactSource(item coverageEvidence) string {
+	source := fmt.Sprintf(d.text("《%s》", "%s"), terminalEvidenceText(item.SourceTitle))
+	if item.Sheet != "" {
+		source += fmt.Sprintf(d.text("的「%s」表", ", sheet “%s”"), terminalEvidenceText(item.Sheet))
+	}
+	return source
+}
+
 func terminalCoverageFactPresent(candidate string, fact terminalCoverageFact) bool {
 	item := fact.Evidence
-	if item.Kind == "gap" {
-		return strings.Contains(candidate, terminalCoverageFactText(fact, true)) ||
-			strings.Contains(candidate, terminalCoverageFactText(fact, false))
-	}
 	if item.SourceTitle == "" || !strings.Contains(candidate, item.SourceTitle) ||
 		item.Cell != "" && !strings.Contains(candidate, item.Cell) || item.DateCell != "" && !strings.Contains(candidate, item.DateCell) {
 		return false
@@ -874,17 +1390,7 @@ func terminalCoverageFactText(fact terminalCoverageFact, chinese bool) string {
 		}
 		return fmt.Sprintf(d.text("%s 的原文为“%s”。", "%s reports “%s”."), title, raw)
 	}
-	switch {
-	case terminalUnitFromSource(item):
-		raw += " " + terminalEvidenceText(item.Unit)
-		if fact.requestedUnit != "" && item.Unit != fact.requestedUnit {
-			details = append(details, d.text("按来源单位保留原值", "original source unit"))
-		}
-	case fact.requestedUnit != "" && terminalUnitUnspecified(item):
-		raw += " " + terminalEvidenceText(fact.requestedUnit)
-	case item.Kind == "cell" || item.Kind == "last_valid":
-		details = append(details, d.text("单位未确认", "unit unconfirmed"))
-	}
+	raw = terminalCoverageValueDetails(fact, chinese, raw, details, false)
 	descriptor := d.text("原值", "Recorded value")
 	if item.LatestInScope || item.Kind == "last_valid" {
 		descriptor = d.text("已核查范围内的最近有效值", "Latest valid observation in the checked scope")
@@ -894,10 +1400,27 @@ func terminalCoverageFactText(fact terminalCoverageFact, chinese bool) string {
 	if fact.Role == "supplement" {
 		descriptor = d.text("补充来源披露值", "Value reported by the supplemental source")
 	}
+	return fmt.Sprintf(d.text("%s，%s %s。", "%s. %s %s."), label, descriptor, raw)
+}
+
+func terminalCoverageValueDetails(fact terminalCoverageFact, chinese bool, raw string, details []string, unitAlreadyStated bool) string {
+	item := fact.Evidence
+	d := terminalCoverageDelivery{chinese: chinese}
+	switch {
+	case terminalUnitFromSource(item):
+		raw += " " + terminalEvidenceText(item.Unit)
+		if fact.requestedUnit != "" && item.Unit != fact.requestedUnit {
+			details = append(details, d.text("按来源单位保留原值", "original source unit"))
+		}
+	case fact.requestedUnit != "" && terminalUnitUnspecified(item):
+		raw += " " + terminalEvidenceText(fact.requestedUnit)
+	case !unitAlreadyStated && (item.Kind == "cell" || item.Kind == "last_valid"):
+		details = append(details, d.text("单位未确认", "unit unconfirmed"))
+	}
 	if len(details) > 0 {
 		raw += " (" + strings.Join(details, ", ") + ")"
 	}
-	return fmt.Sprintf(d.text("%s，%s %s。", "%s. %s %s."), label, descriptor, raw)
+	return raw
 }
 
 func terminalAddDeclaredUnit(candidate, unit string, facts []terminalCoverageFact) (string, bool, bool) {

@@ -183,7 +183,7 @@ func analyzedSourceRows(call types.ToolCall, rows map[string]bool) {
 	if execution["canonical_operation"] != "analyze_table" || execution["effect_class"] != "read" || execution["tool_name"] != call.Name {
 		return
 	}
-	for _, item := range coverageStructuredEvidence(coverageEvidence{Operation: "analyze_table", Status: sourceNavigationString(data, "status")}, args, data) {
+	for _, item := range coverageStructuredEvidence(coverageEvidence{Operation: "analyze_table", Status: sourceNavigationString(data, "status")}, args, data, false) {
 		if item.Kind == "cell" && item.Bound && item.RangeComplete {
 			if match := sourceCellRow.FindStringSubmatch(item.Cell); len(match) == 2 {
 				if number, err := strconv.Atoi(match[1]); err == nil && number <= 1048576 {

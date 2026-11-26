@@ -22,11 +22,11 @@ type coverageEvidence struct {
 	Date, DateCell, CitationID, JSONPointer, Status, LastValidDate                   string
 	LastObservedDate, LastValidRef, DateEvidenceID, DateJSONPointer                  string
 	SourceDate, ReportedValue                                                        string
-	ResultJSONPointer                                                                string
+	ResultJSONPointer, CellJSONPointer, WorkbookSnapshotHash                         string
 	Page                                                                             int
 	SpanStart, SpanEnd, NextOffset                                                   *int
 	Raw                                                                              any
-	Complete, Bound, RangeComplete, LatestInScope                                    bool
+	Complete, Bound, RangeComplete, LatestInScope, WorkbookBound                     bool
 }
 
 type coverageAttempt struct {
@@ -431,7 +431,8 @@ func coverageCurrentEvidence(input coverageRecord, evidence coverageEvidence) bo
 	if current == "" {
 		current = input.Snapshots[evidence.SourceID]
 	}
-	return current == "" || current == evidence.SnapshotHash
+	return (current == "" || current == evidence.SnapshotHash) &&
+		(!(coverageAnalysisEndpoint(evidence) || coverageAnalysisMissingCell(evidence)) || coverageCurrentAnalysisWorkbook(input, evidence))
 }
 
 func coverageSameSource(binding coverageBinding, evidence coverageEvidence) bool {
@@ -616,15 +617,42 @@ func coverageDay(literal string) string {
 }
 
 func sameCoverageLastValid(input coverageRecord, gap, value coverageEvidence) bool {
-	if value.Kind != "last_valid" || !value.Bound || !coverageCurrentEvidence(input, value) || value.Raw == nil || value.Date == "" || value.DateCell == "" || value.Cell == "" {
+	analysisEndpoint := coverageAnalysisEndpoint(value)
+	if value.Kind != "last_valid" || !value.Bound || !coverageCurrentEvidence(input, value) || value.Raw == nil || value.Date == "" ||
+		!analysisEndpoint && value.DateCell == "" || value.Cell == "" {
 		return false
 	}
-	if value.SourceID != gap.SourceID || value.KnowledgeBaseID != gap.KnowledgeBaseID || value.SnapshotHash != gap.SnapshotHash ||
+	if analysisEndpoint && ((gap.Operation != "analyze_table" && gap.Operation != "query_series") ||
+		gap.LastValidRef != "" && gap.LastValidRef != value.EvidenceID || value.Date >= gap.PeriodFrom) {
+		return false
+	}
+	if value.SourceID != gap.SourceID || value.KnowledgeBaseID != gap.KnowledgeBaseID ||
 		value.Sheet != gap.Sheet || gap.SeriesID == "" || value.SeriesID != gap.SeriesID || !coverageEqual(gap.Column, value.Column) {
 		return false
+	}
+	if value.SnapshotHash != gap.SnapshotHash {
+		if analysisEndpoint && gap.Operation == "query_series" {
+			return gap.Column == value.Column && gap.SnapshotHash == value.WorkbookSnapshotHash && gap.LastValidDate == value.Date
+		}
+		return gap.WorkbookSnapshotHash != "" && coverageCurrentAnalysisWorkbook(input, gap) &&
+			coverageAnalysisFollowUpMatches(input, gap, value)
 	}
 	if gap.LastValidDate != "" {
 		return gap.LastValidDate == value.Date
 	}
 	return value.EvidenceID == gap.EvidenceID || gap.LastValidRef != "" && value.EvidenceID == gap.LastValidRef
+}
+
+func coverageAnalysisFollowUpMatches(record coverageRecord, gap, value coverageEvidence) bool {
+	if gap.Operation != "analyze_table" || value.Operation != "query_series" || value.Kind != "last_valid" ||
+		value.DateCell == "" || value.Cell == "" || value.Raw == nil || gap.LastValidDate == "" || value.Date != gap.LastValidDate ||
+		gap.SourceID != value.SourceID || gap.KnowledgeBaseID != value.KnowledgeBaseID || gap.Sheet != value.Sheet ||
+		gap.SeriesID != value.SeriesID || gap.Column != value.Column {
+		return false
+	}
+	// The analysis and original observation have separate snapshot identities.
+	return slices.ContainsFunc(record.Evidence, func(item coverageEvidence) bool {
+		return item.Kind == "analysis_input" && item.EvidenceID == gap.EvidenceID && item.SeriesID == gap.SeriesID &&
+			item.SnapshotHash == gap.SnapshotHash && item.Raw == value.SnapshotHash
+	})
 }

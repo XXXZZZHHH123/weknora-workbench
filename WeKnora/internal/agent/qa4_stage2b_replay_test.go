@@ -385,11 +385,14 @@ func runQA4Stage2BReplay(t *testing.T, trace qa4Stage2Trace, enabled, rows bool)
 				gapLine = line
 			}
 		}
-		for _, expected := range []string{"棉花数据库.xlsx", "郑棉仓单", "仓单数量:一号棉花", "2023-09-21", "A3340", "B3340", "单位未确认"} {
+		for _, expected := range []string{"棉花数据库.xlsx", "郑棉仓单", "仓单数量:一号棉花", "A3340", "B3340"} {
 			require.Contains(t, valueLine, expected, "the historical value stays paired with its actual date and source")
 		}
+		require.Regexp(t, `2023(?:-09-21|年9月21日)`, valueLine)
+		require.Regexp(t, `单位(?:尚)?未确认`, valueLine)
+		require.Equal(t, 1, strings.Count(state.FinalAnswer, "5160"), state.FinalAnswer)
 		require.NotContains(t, valueLine, "2024-03-10")
-		require.Contains(t, gapLine, "没有有效观测值", "the exact-date gap must cover the requested field: %s", state.FinalAnswer)
+		require.Regexp(t, `没有有效(?:观测值|记录)`, gapLine, "the exact-date gap must cover the requested field: %s", state.FinalAnswer)
 		require.NotContains(t, gapLine, "5160")
 	}
 }

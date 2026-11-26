@@ -193,7 +193,7 @@ type qa4Stage2CReplay struct {
 	repo        *qa4Stage2CChunkRepository
 }
 
-func newQA4Stage2CReplay(t *testing.T, fixture string, enabled, reportSearch bool) *qa4Stage2CReplay {
+func newQA4Stage2CReplay(t *testing.T, fixture string, enabled, reportSearch bool, additionalSchemaCalls ...qa4Stage2Call) *qa4Stage2CReplay {
 	t.Helper()
 	const endpoint = "https://stage2c-structured.invalid"
 	raw, err := os.ReadFile("testdata/qa4/replay/" + fixture + ".json")
@@ -210,10 +210,11 @@ func newQA4Stage2CReplay(t *testing.T, fixture string, enabled, reportSearch boo
 	registry.RegisterTool(agenttools.NewStructuredDataTool().WithSearchTargets(targets))
 	registry.PrepareStructuredProtocol()
 	manifest := structuredCodecManifest()
+	schemaCalls := slices.Concat(r.trace.Calls, additionalSchemaCalls)
 	for _, raw := range manifest["tools"].([]any) {
 		entry := raw.(map[string]any)
 		props := entry["inputSchema"].(map[string]any)["properties"].(map[string]any)
-		for _, call := range r.trace.Calls {
+		for _, call := range schemaCalls {
 			if call.Tool == "structured_"+entry["name"].(string) {
 				for k := range call.Arguments {
 					if k != "knowledge_base_id" {

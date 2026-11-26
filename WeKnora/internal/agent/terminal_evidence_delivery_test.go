@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,6 +26,11 @@ func TestTerminalEvidenceCompletionFallback(t *testing.T) {
 			"Elapsed time 在已核查范围 2021-07-02", "Equipment.xlsx", "Operating hours", "2021-06-03", "47.25", "A15", "B15", "单位未确认",
 		}, omit: []string{"2021-01-01", "Unrelated field", "其余要求"}},
 		{name: "normal delivery does not attach an unlinked field", submission: "Readings in scope were reviewed.", want: []string{"Readings in scope were reviewed."}, omit: []string{"2021-01-01", "Unrelated field", "47.25"}},
+		{name: "normal delivery supplements a checked field", submission: "Equipment.xlsx, Operating hours. Elapsed time had no valid records on 2021-07-02.\n\nThe requested day remains uncovered.",
+			want: []string{"2021-06-03", "47.25", "B15", "\n\nThe requested day remains uncovered."}, omit: []string{"returned no valid observation", "Unrelated field"}},
+		{name: "legacy switch preserves the normal candidate", submission: "Equipment.xlsx, Operating hours. Elapsed time had no valid records on 2021-07-02.\n\nThe requested day remains uncovered.",
+			alter: func(e *AgentEngine, _ *types.AgentState) { e.evidenceCompletion.enabled = false },
+			want:  []string{"\n\nThe requested day remains uncovered."}, omit: []string{"2021-06-03", "47.25", "B15"}},
 		{name: "scope narrowed", alter: func(e *AgentEngine, _ *types.AgentState) {
 			e.config.SearchTargets = types.SearchTargets{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "different-library"}}
 		}, want: []string{"仍待核实"}, omit: []string{"Equipment.xlsx", "47.25"}},
@@ -135,6 +141,161 @@ func TestTerminalEvidenceCompletionFallback(t *testing.T) {
 			for _, value := range test.omit {
 				require.NotContains(t, state.FinalAnswer, value)
 			}
+		})
+	}
+}
+
+func TestTerminalCoverageNaturalFieldAssertions(t *testing.T) {
+	field := coverageEvidence{
+		SourceID: "meter-readings", KnowledgeBaseID: "maintenance", SnapshotHash: "current",
+		SourceTitle: "机台记录.xlsx", Sheet: "运行时长", Metric: "一号机累计时长", SeriesID: "meter.B",
+	}
+	gap, last := field, field
+	gap.Kind, gap.Complete, gap.PeriodFrom, gap.PeriodTo = "gap", true, "2021-07-02", "2021-07-02"
+	last.Kind, last.Raw, last.Date, last.DateCell, last.Cell = "last_valid", json.Number("47.25"), "2021-06-03", "A15", "B15"
+	delivery := terminalCoverageDelivery{inspected: true, chinese: true, facts: []terminalCoverageFact{
+		{coverageFact: coverageFact{"coverage_boundary", gap}, required: true},
+		{coverageFact: coverageFact{"last_valid_value", last}, required: true},
+	}}
+	const closing = "\n\n所问期间无可比原值。<kb doc=\"检修说明.pdf\" chunk_id=\"checked-note\" kb_id=\"maintenance\" />"
+	for _, test := range []struct {
+		name, draft       string
+		addGap, addLatest bool
+	}{
+		{"naturally complete",
+			"**机台记录里查不到 2021年7月2日这一天的数据。** 该文件「运行时长」表最后一条有数值的记录为 2021年6月3日，「一号机累计时长」为 47.25（字段单位尚未确认），原单元格为运行时长!B15。2021年7月2日的单日查询返回零条有效记录。",
+			false, false},
+		{"gap only", "机台记录的「运行时长」表中，一号机累计时长在 2021 年 7 月 2 日没有有效记录。", false, true},
+		{"latest only", "机台记录的「运行时长」表中，2021年6月3日的最后一条记录中，一号机累计时长为 47.25。",
+			true, false},
+		{"same date and value in different paragraphs", "机台记录的「运行时长」表中，一号机累计时长最后一条记录在 2021年6月3日。\n\n校准系数是 47.25。", true, true},
+		{"other file in the same paragraph", "机台记录的「运行时长」表中有一号机累计时长。年度汇总.xlsx 在 2021年7月2日没有有效记录，最后一条记录为 2021年6月3日的 47.25。", true, true},
+		{"other file with coinciding cells", "年度汇总.xlsx 的一号机累计时长最后一条记录在 2021年6月3日，值为 47.25，日期在 A15，原格在 B15。", true, true},
+		{"other date in same assertion", "机台记录的「运行时长」表中，一号机累计时长最后一条记录在 2021年6月4日，为 47.25，前一天 2021年6月3日也有记录。", true, true},
+		{"negated assertions", "机台记录的「运行时长」表中，不能断定一号机累计时长在 2021年7月2日没有有效记录。最后一条记录在 2021年6月3日，并非 47.25。", true, true},
+		{"number appears only in file or coordinates", "机台记录的「运行时长」表中，一号机累计时长的最后有效日期是 2021年6月3日，原格为 B47，备注标识 ID47.25。", true, true},
+		{"value has unsupported units", "机台记录的「运行时长」表中，最后一条记录在 2021年6月3日，一号机累计时长为 47.25 万小时。", true, true},
+		{"same number from another metric", "机台记录的「运行时长」表中，一号机累计时长最后一条记录在 2021年6月3日，校准系数为 47.25。", true, true},
+		{"table with source cell", "机台记录的「运行时长」表包含一号机累计时长。\n| 一号机累计时长 | 2021-06-03 | 47.25 | B15 |", true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := test.draft + closing
+			result := delivery.render(false, candidate)
+			if test.addGap || test.addLatest {
+				require.True(t, strings.HasSuffix(result, closing), result)
+				for _, paragraph := range strings.Split(test.draft, "\n\n") {
+					require.Contains(t, result, paragraph)
+				}
+				require.Equal(t, test.addGap, strings.Contains(result, "在 2021-07-02 没有有效记录"), result)
+				require.Equal(t, test.addLatest, strings.Contains(result, "最后有值的日期为 2021-06-03，原值为 47.25"), result)
+			} else {
+				require.Equal(t, candidate, result)
+			}
+			require.Equal(t, result, delivery.render(false, result))
+		})
+	}
+}
+
+func TestTerminalDisplayedValueRequiresWholeUnit(t *testing.T) {
+	for _, tt := range []struct {
+		unit, display string
+		want          bool
+	}{
+		{"m", "Reading was 47.25 m (B15)", true},
+		{"m", "Reading was 47.25 min (B15)", false},
+		{"m", "Reading was 47.25 m.s (B15)", false},
+		{"m", "Reading was 47.25m (B15)", true},
+		{"m", "Reading was 47.25min (B15)", false},
+		{"m", "Reading was 47.25m/s (B15)", false},
+		{"元", "Reading was 47.25 元。", true},
+		{"元", "Reading was 47.25 元/吨。", false},
+		{"元", "Reading was 47.25 元 / 吨。", false},
+		{"元", "Reading是47.25元。", true},
+		{"", "Reading是47.25。", true},
+		{"", "Reading was 47.25on", false},
+	} {
+		t.Run(tt.display, func(t *testing.T) {
+			fact := terminalCoverageFact{coverageFact: coverageFact{Evidence: coverageEvidence{
+				Metric: "Reading", Raw: json.Number("47.25"), Unit: tt.unit, UnitBasis: "explicit",
+			}}}
+			require.Equal(t, tt.want, terminalDisplayedValue(tt.display, fact, false))
+		})
+	}
+}
+
+func TestTerminalCoverageSameMetricSeriesStayDistinct(t *testing.T) {
+	last := coverageEvidence{
+		Kind: "last_valid", SourceID: "meter-readings", KnowledgeBaseID: "maintenance", SnapshotHash: "current",
+		SourceTitle: "Meter log.xlsx", Sheet: "Sessions", Metric: "Elapsed time", SeriesID: "meter-early",
+		Subject: "AX01.EX", Date: "2021-06-03", Raw: json.Number("47.25"), DateCell: "A15", Cell: "B15",
+	}
+	peer, third := last, last
+	peer.SeriesID, peer.Subject, peer.Cell = "meter-late", "AX07.EX", "D15"
+	third.SeriesID, third.Subject, third.Cell, third.Raw = "meter-final", "AX11.EX", "F15", json.Number("48.5")
+	delivery := terminalCoverageDelivery{inspected: true, facts: []terminalCoverageFact{
+		{coverageFact: coverageFact{"last_valid_value", last}, required: true},
+		{coverageFact: coverageFact{"last_valid_value", peer}, required: true},
+		{coverageFact: coverageFact{"last_valid_value", third}, required: true},
+	}}
+	const draft = "In Meter log.xlsx, sheet Sessions, the latest Elapsed time for AX01.EX was 47.25 on 2021-06-03. AX07 and AX11 both have their latest valid date on 2021-06-03."
+	const closing = "\n\nThe requested month is outside the register's coverage."
+	answer := delivery.render(false, draft+closing)
+	require.True(t, strings.HasSuffix(answer, closing), answer)
+	require.Contains(t, answer, draft)
+	require.Equal(t, 2, strings.Count(answer, "Meter log.xlsx"), answer)
+	require.NotContains(t, answer, "value cell B15")
+	require.Contains(t, answer, "AX07.EX 47.25 (A15, D15)")
+	require.Contains(t, answer, "AX11.EX 48.5 (A15, F15)")
+	require.Equal(t, 1, strings.Count(answer, "units unconfirmed"), answer)
+	require.Equal(t, answer, delivery.render(false, answer))
+
+	delivery.naturalSQLFallback = true
+	for i := range delivery.facts {
+		last := &delivery.facts[i].Evidence
+		last.Operation, last.Complete, last.LatestInScope = "analyze_table", true, true
+		last.EvidenceID, last.DateEvidenceID = "analysis", "analysis"
+		last.CellJSONPointer, last.DateJSONPointer = "/data/cell", "/data/date"
+	}
+	for _, last := range slices.Clone(delivery.facts) {
+		gap, ok := coverageAnalysisGap(last.Evidence, "2021-07-01", "2021-07-31", "month")
+		require.True(t, ok)
+		delivery.facts = append(delivery.facts, terminalCoverageFact{coverageFact: coverageFact{"coverage_boundary", gap}, required: true})
+	}
+	fallback := delivery.render(true, "")
+	require.Equal(t, 1, strings.Count(fallback, "has no valid records"), fallback)
+	require.Equal(t, 1, strings.Count(fallback, "records the latest valid values"), fallback)
+	require.Contains(t, fallback, "AX01.EX 47.25 (A15, B15)")
+	require.Contains(t, fallback, "AX07.EX 47.25 (A15, D15)")
+	require.Contains(t, fallback, "AX11.EX 48.5 (A15, F15)")
+	require.Equal(t, fallback, delivery.render(false, fallback))
+}
+
+func TestTerminalSQLFollowUpWithoutDraft(t *testing.T) {
+	for _, tt := range []struct {
+		language, gap, endpoint string
+	}{
+		{"zh-CN", "没有有效记录", "最后有值的日期为 2023-09-22，原值为 17110"},
+		{"en-US", "has no valid records", "on 2023-09-22 as 17110"},
+	} {
+		t.Run(tt.language, func(t *testing.T) {
+			r := newQA4Stage2CReplay(t, "s2-3-kb16-bounded-latest", true, false)
+			r.calls(r.trace.Calls)
+			ctx := context.WithValue(r.ctx, types.LanguageContextKey, tt.language)
+			fallback := r.engine.terminalCoverageFailure(ctx, r.state, answerReviewUnavailableFallback)
+			for _, expected := range []string{tt.gap, tt.endpoint, "CF.CZC", "A4705", "B4705"} {
+				require.Contains(t, fallback, expected)
+			}
+			require.True(t, slices.ContainsFunc(strings.Split(fallback, "\n\n"), func(paragraph string) bool {
+				return strings.Contains(paragraph, tt.endpoint) && strings.Contains(paragraph, "CF.CZC")
+			}), fallback)
+			require.NotContains(t, fallback, "棉花数据库.xlsx /")
+
+			delivery := r.engine.terminalCoverageDelivery(ctx, r.state, false)
+			require.Equal(t, fallback, delivery.render(false, fallback))
+			const draft = "已核查《棉花数据库.xlsx》的「郑棉期货」表及「收盘价」列\n\n这里保留结论。"
+			final := delivery.render(false, draft)
+			require.Contains(t, final, tt.endpoint)
+			require.Equal(t, final, delivery.render(false, final))
 		})
 	}
 }

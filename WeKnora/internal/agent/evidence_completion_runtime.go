@@ -200,14 +200,23 @@ func (e *AgentEngine) refreshEvidenceCompletion(ctx context.Context, query strin
 }
 
 func (e *AgentEngine) coverageRecordForTarget(target taskCoverageTarget, record coverageRecord) coverageRecord {
-	if target.SourceMode != "named_first" || target.VersionTask == "compare_sources" || target.VersionTask == "compare_versions" {
+	if target.VersionTask == "compare_sources" || target.VersionTask == "compare_versions" {
 		return record
 	}
-	facts := nativeCoverageGapFacts(target, record)
+	var facts []coverageEvidence
+	if target.SourceMode == "named_first" {
+		facts = nativeCoverageGapFacts(target, record)
+	} else if target.SourceMode != "only" {
+		return record
+	}
+	facts = append(facts, e.plannedAnalysisGaps(target, record)...)
+	if target.SourceMode == "only" && len(facts) == 0 {
+		return record
+	}
 	from, to, grain := coverageTargetDateRange(target)
 	var directGaps []coverageEvidence
 	for _, item := range record.Evidence {
-		if item.Kind == "gap" && item.Operation == "query_series" && item.Bound && item.Complete && item.SeriesID != "" &&
+		if target.SourceMode == "named_first" && item.Kind == "gap" && item.Operation == "query_series" && item.Bound && item.Complete && item.SeriesID != "" &&
 			coverageCurrentEvidence(record, item) && target.PrimaryRef != "" && item.Metric == target.Metric &&
 			from != "" && to != "" && item.PeriodFrom == from && item.PeriodTo == to && coverageGrain(grain, item.Grain) {
 			directGaps = append(directGaps, item)
@@ -710,7 +719,7 @@ func (e *AgentEngine) evidenceCompletionNotice() string {
 	refs := make([]reference, 0, 16)
 	for i := len(turn.record.Evidence) - 1; i >= 0 && len(refs) < 16; i-- {
 		item := turn.record.Evidence[i]
-		if item.SourceID == "" || item.EvidenceID == "" {
+		if item.SourceID == "" || item.EvidenceID == "" || (coverageAnalysisEndpoint(item) || coverageAnalysisMissingCell(item)) && !coverageCurrentEvidence(turn.record, item) {
 			continue
 		}
 		ref := coverageObservationRef(item)
@@ -1387,7 +1396,10 @@ func (e *AgentEngine) executeCoverageDraftRead(ctx context.Context, query string
 	}
 	var args map[string]any
 	var name, latestKey string
-	if pending != nil && pending.NextRead == "discover" &&
+	if pending != nil && slices.Contains(pending.OpenItems, "attributed_supplement") {
+		latestKey, name, args = e.coverageLatestRead(state, true)
+	}
+	if name == "" && pending != nil && pending.NextRead == "discover" &&
 		slices.Contains(pending.OpenItems, "attributed_supplement") && len(state.RoundSteps) >= turn.pendingStep {
 		name, args = e.coverageDirectedSearch(*pending)
 	}
@@ -1495,13 +1507,30 @@ func (e *AgentEngine) coverageSearchMatchesGap(gap coverageCompletion, query str
 }
 
 func (e *AgentEngine) coverageSameFieldLatestRead(state *types.AgentState) (string, string, map[string]any) {
+	return e.coverageLatestRead(state, false)
+}
+
+func (e *AgentEngine) coverageLatestRead(state *types.AgentState, analysisOnly bool) (string, string, map[string]any) {
 	turn := &e.evidenceCompletion
+	targets := e.evidenceCompletionTargets()
+	observations := turn.record.Evidence
+	if gaps := e.clippedAnalysisGaps(state, targets); len(gaps) != 0 {
+		observations = slices.Concat(observations, gaps)
+	}
 	var verified, selected []coverageEvidence
-	for _, gap := range turn.record.Evidence {
-		if gap.Kind != "gap" || gap.Operation != "query_series" || !gap.Bound || gap.DatasetID == "" || gap.SeriesID == "" ||
+	for _, gap := range observations {
+		if gap.Kind != "gap" || gap.Operation != "query_series" && (!coverageAnalysisLatestBoundary(gap) || !coverageCurrentAnalysisWorkbook(turn.record, gap)) ||
+			analysisOnly && gap.Operation != "analyze_table" ||
+			!gap.Bound || gap.DatasetID == "" || gap.SeriesID == "" ||
 			gap.Metric == "" || gap.Column == "" || coverageDay(gap.LastValidDate) == "" || coverageDay(gap.PeriodFrom) == "" ||
 			gap.LastValidDate >= gap.PeriodFrom || !coverageCurrentEvidence(turn.record, gap) ||
 			!e.coverageScopeAllows(gap.KnowledgeBaseID, gap.KnowledgeID) {
+			continue
+		}
+		if gap.Operation == "analyze_table" && len(targets) != 0 && !slices.ContainsFunc(targets, func(target taskCoverageTarget) bool {
+			_, matches := e.plannedAnalysisGap(target, turn.record, gap)
+			return matches
+		}) {
 			continue
 		}
 		if slices.ContainsFunc(verified, func(prior coverageEvidence) bool {
@@ -1524,7 +1553,6 @@ func (e *AgentEngine) coverageSameFieldLatestRead(state *types.AgentState) (stri
 			selected = append(selected, gap)
 		}
 	}
-	targets := e.evidenceCompletionTargets()
 	if len(selected) == 0 {
 		for _, target := range targets {
 			if !slices.Contains(target.OnVerifiedGap, "last_valid_same_field") || target.PrimaryRef == "" {
@@ -1533,12 +1561,18 @@ func (e *AgentEngine) coverageSameFieldLatestRead(state *types.AgentState) (stri
 			from, to, _ := coverageTargetDateRange(target)
 			var matching []coverageEvidence
 			for _, gap := range verified {
-				if from == gap.PeriodFrom && to == gap.PeriodTo && e.coverageMatchesPrimaryReference(target, gap) {
+				if gap.Operation == "analyze_table" {
+					if _, ok := e.plannedAnalysisGap(target, turn.record, gap); ok {
+						matching = append(matching, gap)
+					}
+				} else if from == gap.PeriodFrom && to == gap.PeriodTo && e.coverageMatchesPrimaryReference(target, gap) {
 					matching = append(matching, gap)
 				}
 			}
-			if len(matching) == 1 {
-				selected = append(selected, matching[0])
+			if len(matching) == 1 || len(matching) > 1 && !slices.ContainsFunc(matching, func(gap coverageEvidence) bool {
+				return gap.Operation != "analyze_table" || gap.ToolCallID != matching[0].ToolCallID
+			}) {
+				selected = append(selected, matching...)
 			}
 		}
 	}
@@ -1550,8 +1584,13 @@ func (e *AgentEngine) coverageSameFieldLatestRead(state *types.AgentState) (stri
 				selected = append(selected, gap)
 			}
 		}
-		if len(selected) != 1 {
-			return "", "", nil // Multiple independent fields need the existing model to identify the requested one.
+		if len(selected) > 1 {
+			return e.coverageAnalysisGroupLatestRead(state, selected)
+		}
+	}
+	if len(selected) > 1 {
+		if key, name, args := e.coverageAnalysisGroupLatestRead(state, selected); name != "" {
+			return key, name, args
 		}
 	}
 	for _, gap := range selected {
@@ -1563,6 +1602,7 @@ func (e *AgentEngine) coverageSameFieldLatestRead(state *types.AgentState) (stri
 		}
 		args := map[string]any{"knowledge_base_id": gap.KnowledgeBaseID, "dataset_id": gap.DatasetID, "series_id": gap.SeriesID,
 			"operation": "latest", "limit": 1}
+		analysis := gap.Operation == "analyze_table"
 		for _, step := range state.RoundSteps {
 			for _, call := range step.ToolCalls {
 				if call.ID != gap.ToolCallID {
@@ -1573,12 +1613,21 @@ func (e *AgentEngine) coverageSameFieldLatestRead(state *types.AgentState) (stri
 				if _, inner, ok := e.toolRegistry.StructuredInvocation(call.ExecutionName(), raw); ok {
 					actual = inner
 				}
+				if analysis && !e.coverageBoundAnalysisLatest(gap, actual) {
+					continue
+				}
 				// An explicit selection validated by the original read can be
 				// reused without opening a new field-resolution model call.
 				if actual["source_binding"] != nil && actual["source_question"] != nil {
 					args["source_binding"], args["source_question"] = actual["source_binding"], actual["source_question"]
 				}
 			}
+		}
+		if analysis {
+			if args["source_binding"] == nil {
+				continue
+			}
+			args["start_date"], args["end_date"] = gap.LastValidDate, gap.LastValidDate
 		}
 		typed := "structured_query_series"
 		raw, _ := json.Marshal(args)
@@ -1589,6 +1638,119 @@ func (e *AgentEngine) coverageSameFieldLatestRead(state *types.AgentState) (stri
 		raw, _ = json.Marshal(legacyArgs)
 		if descriptor, _, exists := e.toolRegistry.StructuredInvocation(agenttools.ToolStructuredData, raw); exists && descriptor.Operation == "query_series" && descriptor.EffectClass == "read" {
 			return key, agenttools.ToolStructuredData, legacyArgs
+		}
+	}
+	return "", "", nil
+}
+
+func (e *AgentEngine) coverageBoundAnalysisLatest(gap coverageEvidence, args map[string]any) bool {
+	ids, _ := args["series_ids"].([]any)
+	return len(ids) == 1 && e.coverageBoundAnalysisField(gap, args)
+}
+
+func (e *AgentEngine) coverageBoundAnalysisField(gap coverageEvidence, args map[string]any) bool {
+	ids, _ := args["series_ids"].([]any)
+	return slices.Contains(ids, any(gap.SeriesID)) && e.coverageAnalysisQuestionBound(args) && coverageExplicitAnalysisField(args, gap.SeriesID)
+}
+
+func (e *AgentEngine) coverageAnalysisQuestionBound(args map[string]any) bool {
+	question := e.coverageAnalysisQuestion()
+	return question != "" && args["source_question"] == question
+}
+
+func (e *AgentEngine) coverageAnalysisQuestion() string {
+	question := e.turnReview.Query
+	if e.config != nil && e.config.TaskPlanningHumanQuestion != nil {
+		question = *e.config.TaskPlanningHumanQuestion
+	}
+	return question
+}
+
+func (e *AgentEngine) clippedAnalysisGaps(state *types.AgentState, targets []taskCoverageTarget) []coverageEvidence {
+	turn := &e.evidenceCompletion
+	var attempts []coverageAttempt
+	var gaps []coverageEvidence
+	for _, item := range turn.record.Evidence {
+		if !coverageAnalysisMissingCell(item) || !coverageCurrentEvidence(turn.record, item) {
+			continue
+		}
+		if len(targets) != 0 {
+			for _, target := range targets {
+				if gap, ok := e.plannedAnalysisGap(target, turn.record, item); ok {
+					gaps = append(gaps, gap)
+				}
+			}
+			continue
+		}
+		if attempts == nil {
+			_, attempts = e.projectCurrentTaskCoverage(state, turn.startStep, coverageRecord{Revision: turn.revision, AuthScope: turn.scope})
+		}
+		from, to := coverageAnalysisRetriedScope(attempts, item, e.coverageAnalysisQuestion())
+		if gap, ok := coverageAnalysisGap(item, from, to, ""); ok {
+			gaps = append(gaps, gap)
+		}
+	}
+	return gaps
+}
+
+func (e *AgentEngine) coverageAnalysisGroupLatestRead(state *types.AgentState, gaps []coverageEvidence) (string, string, map[string]any) {
+	first := gaps[0]
+	turn := &e.evidenceCompletion
+	selected := make(map[string]bool, len(gaps))
+	missing := false
+	for _, gap := range gaps {
+		if !coverageAnalysisEmptyInput(gap) || gap.ToolCallID != first.ToolCallID || gap.DatasetID != first.DatasetID ||
+			gap.KnowledgeBaseID != first.KnowledgeBaseID || gap.SnapshotHash != first.SnapshotHash || gap.LastValidDate != first.LastValidDate ||
+			gap.PeriodFrom != first.PeriodFrom || gap.PeriodTo != first.PeriodTo || selected[gap.SeriesID] {
+			return "", "", nil
+		}
+		selected[gap.SeriesID] = true
+		missing = missing || !slices.ContainsFunc(turn.record.Evidence, func(item coverageEvidence) bool {
+			return sameCoverageLastValid(turn.record, gap, item)
+		})
+	}
+	if !missing {
+		return "", "", nil
+	}
+	for _, step := range state.RoundSteps {
+		for _, call := range step.ToolCalls {
+			if call.ID != first.ToolCallID || call.Result == nil || !call.Result.Success || call.Result.PreflightRejected ||
+				call.Result.Data["status"] != "ok" || call.Result.Data["execution_started"] == false {
+				continue
+			}
+			raw, _ := json.Marshal(call.ExecutionArgs())
+			descriptor, original, ok := e.toolRegistry.StructuredInvocation(call.ExecutionName(), raw)
+			if !ok || descriptor.Operation != "analyze_table" || descriptor.EffectClass != "read" ||
+				original["knowledge_base_id"] != first.KnowledgeBaseID || original["dataset_id"] != first.DatasetID ||
+				!e.coverageAnalysisQuestionBound(original) {
+				return "", "", nil
+			}
+			ids, _ := original["series_ids"].([]any)
+			if len(ids) != len(selected) {
+				return "", "", nil
+			}
+			fields := make([]string, 0, len(ids))
+			for _, raw := range ids {
+				id, _ := raw.(string)
+				if !selected[id] || !coverageExplicitAnalysisField(original, id) {
+					return "", "", nil
+				}
+				delete(selected, id)
+				fields = append(fields, id)
+			}
+			slices.Sort(fields)
+			key := reviewDigest([]any{first.KnowledgeBaseID, first.DatasetID, first.SnapshotHash, fields, first.LastValidDate})
+			if turn.latestAttempts[key] {
+				return "", "", nil
+			}
+			args := map[string]any{"knowledge_base_id": first.KnowledgeBaseID, "dataset_id": first.DatasetID, "series_ids": ids,
+				"source_question": original["source_question"], "source_binding": original["source_binding"],
+				"start_date": first.LastValidDate, "end_date": first.LastValidDate, "limit": len(ids),
+				"sql": "SELECT series_id, date, value, source_cell, date_cell FROM data ORDER BY series_id"}
+			if call.ExecutionName() == agenttools.ToolStructuredData {
+				args = map[string]any{"operation": "analyze_table", "arguments": args}
+			}
+			return key, call.ExecutionName(), args
 		}
 	}
 	return "", "", nil

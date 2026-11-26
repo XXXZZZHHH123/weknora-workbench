@@ -117,7 +117,7 @@ func (e *AgentEngine) taskCoverageBatch(step types.AgentStep, state *types.Agent
 		case "knowledge":
 			batch.Evidence = append(batch.Evidence, e.coverageDocumentEvidence(call, base, data)...)
 		case "structured":
-			bases := coverageStructuredEvidence(base, args, data)
+			bases := coverageStructuredEvidence(base, args, data, operation == "analyze_table" && e.evidenceCompletionEnabled())
 			citations := e.coverageCallCitations(call, id)
 			for _, item := range bases {
 				if e.coverageScopeAllows(item.KnowledgeBaseID, "") {
@@ -210,7 +210,7 @@ func (e *AgentEngine) coverageScopeAllows(kb, source string) bool {
 		agenttools.SearchTargetsIncludeSource(e.config.SearchTargets, kb, source)
 }
 
-func coverageStructuredEvidence(base coverageEvidence, args, data map[string]any) []coverageEvidence {
+func coverageStructuredEvidence(base coverageEvidence, args, data map[string]any, includeAnalysisEndpoints bool) []coverageEvidence {
 	scope, source := coverageObject(data["source_context"]), coverageObject(data["source"])
 	base.KnowledgeBaseID = sourceNavigationString(scope, "knowledge_base_id")
 	if base.KnowledgeBaseID == "" || source["knowledge_base_id"] != nil && source["knowledge_base_id"] != base.KnowledgeBaseID ||
@@ -259,7 +259,7 @@ func coverageStructuredEvidence(base coverageEvidence, args, data map[string]any
 	case "query_series":
 		return coverageSeriesEvidence(base, args, data, contract)
 	case "analyze_table":
-		return coverageAnalysisEvidence(base, args, data, contract)
+		return coverageAnalysisEvidence(base, args, data, contract, includeAnalysisEndpoints)
 	case "inspect_source":
 		return coverageInspectionEvidence(base, args, data)
 	case "read_pdf_table":
@@ -581,7 +581,7 @@ func coverageSeriesEvidence(base coverageEvidence, args, data map[string]any, co
 	return result
 }
 
-func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, contract *structuredresult.Contract) []coverageEvidence {
+func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, contract *structuredresult.Contract, includeEndpoints bool) []coverageEvidence {
 	if !base.Bound || base.Status != "ok" || data["input_complete"] != true || contract == nil ||
 		contract.Execution.InputScope != "loaded_inputs_before_user_sql" {
 		return nil
@@ -598,6 +598,13 @@ func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, 
 	workbookHash := base.SnapshotHash
 	base.SnapshotHash = reviewDigest([]any{workbookHash, contract.SourceSnapshot.Versions["manifest_sha256"]})
 	inputs := coverageObject(data["inputs"])
+	// The service emits this verified workbook metadata only when every
+	// loaded sheet belongs to the current workbook, including on republish.
+	_, workbookErr := time.Parse(time.RFC3339Nano, sourceNavigationString(coverageObject(data["source"]), "workbook_declared_last_saved_at"))
+	includeEndpoints = includeEndpoints && base.PeriodTo != "" && contract.Execution.Kind == "sql" && contract.SourceSnapshot.Kind == "excel_observations" &&
+		contract.SourceSnapshot.DatasetID == base.DatasetID && base.DatasetID != "" && args["dataset_id"] == base.DatasetID &&
+		contract.SourceSnapshot.KnowledgeBaseID == base.KnowledgeBaseID && contract.SourceSnapshot.KnowledgeID == base.KnowledgeID &&
+		args["sql"] == data["sql"]
 	var result []coverageEvidence
 	var inputSeries coverageEvidence
 	ids, _ := args["series_ids"].([]any)
@@ -612,6 +619,9 @@ func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, 
 		if item.Grain == "" && item.PeriodFrom != "" && item.PeriodFrom == item.PeriodTo {
 			item.Grain = "day"
 		}
+		if includeEndpoints {
+			item.WorkbookSnapshotHash, item.WorkbookBound = workbookHash, workbookErr == nil
+		}
 		inputSeries = item
 		// Keep the exact model-selected field identity for matching separately
 		// verified original-workbook observations. This receipt is not a result.
@@ -619,6 +629,16 @@ func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, 
 		selection.Kind, selection.Raw = "analysis_input", workbookHash
 		selection.JSONPointer = "/data/inputs/" + coveragePointerKey(id) + "/series"
 		result = append(result, selection)
+		if includeEndpoints {
+			if endpoint, ok := coverageAnalysisLastValid(item, input); ok {
+				if coverageAnalysisEndpoint(endpoint) {
+					endpoint.ResultJSONPointer = coverageDirectAnalysisResultPointer(endpoint, data, contract)
+					result = append(result, endpoint)
+				} else if len(ids) == 1 && coverageExplicitAnalysisField(args, id) {
+					result = append(result, endpoint)
+				}
+			}
+		}
 		if coverageExactRange(item) && coveragePinSingleAnalysisInput(item, input) {
 			coverage := coverageObject(input["observation_coverage"])
 			changes := coverageObject(coverage["value_changes"])
@@ -637,6 +657,9 @@ func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, 
 			item.Kind, item.Complete = "gap", true
 			item.LastValidDate = sourceNavigationString(series, "last_valid_date")
 			item.JSONPointer = "/data/inputs/" + coveragePointerKey(id) + "/valid_count"
+			if includeEndpoints && item.Subject == "" {
+				item.Subject = coverageAnalysisSubject(coverageObject(series["dimensions"]))
+			}
 			result = append(result, item)
 		}
 	}
