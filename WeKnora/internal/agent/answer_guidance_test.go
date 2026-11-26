@@ -259,12 +259,13 @@ func (s *sourceTimeDocumentStore) GetKnowledgeByIDOnly(_ context.Context, id str
 
 func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 	const queryTool = "structured_analyze_table"
+	const lastTool = "structured_query_series"
 	const tableResult = `{"kind":"structured_analysis","status":"ok","rows":[],"requested_range":{"start_date":"2021-06-10","end_date":"2021-06-10"},"source":{"file":"设备台账.xlsx"},"source_semantics":{"published_series_dates":[{"series_id":"hours","metric":"运行时长","sheet":"设备","last_valid_date":"2021-06-07","last_date":"2021-06-09"}]}}`
 	const reportID = "contract-document"
 	const reportFile = "6月10日设备巡检周报"
 	const reportChunk = "inspection-report-page"
-	const dbConclusion = "设备台账6月10日未查到运行时长，这项指标最后有值是2021年6月7日。"
-	const supplement = "另据6月10日设备巡检周报第2页，受检设备累计运行时长为13小时。"
+	const dbConclusion = "设备台账6月10日未查到运行时长。最后有效日为2021年6月7日，设备表D4原值为8.75小时。"
+	const supplement = "该期据6月10日设备巡检周报第2页，受检设备当周累计运行时长为13小时。"
 
 	for _, onlyTable := range []bool{false, true} {
 		name := "authorized supplement"
@@ -275,7 +276,10 @@ func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 			question := "设备台账里2021年6月10日的运行时长是多少？"
 			answer := dbConclusion
 			discovery := "discover"
-			responses := []mockResponse{chatToolCall("table", queryTool, `{}`)}
+			responses := []mockResponse{
+				chatToolCall("table", queryTool, `{}`),
+				chatToolCall("last", lastTool, `{"series_id":"hours","start_date":"2021-06-07","end_date":"2021-06-07"}`),
+			}
 			if onlyTable {
 				question += "只查设备台账这张表。"
 				discovery = "recover"
@@ -300,14 +304,23 @@ func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 				BaseTool: agenttools.NewBaseTool(queryTool, "Query the authorized table.", json.RawMessage(`{"type":"object"}`)),
 				result:   &types.ToolResult{Success: true, Output: tableResult, Data: data},
 			}
+			lastObservation, _ := structuredQueryFixture(t, lastTool, "last", nil, map[string]any{
+				"status": "ok", "series": map[string]any{"series_id": "hours", "sheet": "设备", "metric": "运行时长", "unit": "小时"},
+				"rows": []any{map[string]any{"date": "2021-06-07", "value": 8.75, "raw_value": "8.75", "source_cell": "D4"}},
+			}, true)
+			last := &evidenceContinuationTool{
+				BaseTool: agenttools.NewBaseTool(lastTool, "Read the authorized series.", json.RawMessage(`{"type":"object"}`)),
+				result:   lastObservation.Result,
+			}
 			report := &types.Knowledge{ID: reportID, KnowledgeBaseID: "inspection-library", TenantID: 7,
 				Title: reportFile, FileName: reportFile + ".pdf", FileType: "pdf", ParseStatus: types.ParseStatusCompleted}
 			chunks := &citationContractChunkRepository{rows: []*types.Chunk{{
 				ID: reportChunk, KnowledgeID: report.ID, KnowledgeBaseID: report.KnowledgeBaseID, TenantID: 7,
-				ChunkType: types.ChunkTypeText, IsEnabled: true, Content: "# 第2页\n\n2021年6月10日，受检设备累计运行时长为13小时。",
+				ChunkType: types.ChunkTypeText, IsEnabled: true, Content: "# 第2页\n\n2021年6月10日巡检周报，受检设备当周累计运行时长为13小时。",
 				SourceLocators: types.SourceLocators{{Type: types.SourceLocatorPDF, Page: 2, SourceHash: strings.Repeat("b", 64)}},
 			}}}
 			engine.toolRegistry.RegisterTool(table)
+			engine.toolRegistry.RegisterTool(last)
 			engine.toolRegistry.RegisterTool(agenttools.NewReadDocumentTool(&plannedDocumentKnowledge{document: report},
 				&citationContractChunkService{repo: chunks}, types.SearchTargets{{
 					Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: report.KnowledgeBaseID, TenantID: report.TenantID,
@@ -317,6 +330,7 @@ func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, state.IsComplete)
 			require.Equal(t, 1, table.calls)
+			require.Equal(t, 1, last.calls)
 			require.Len(t, model.calls, len(responses)+1)
 			require.Len(t, model.requests, 1)
 			planner := model.requests[0][0].Content
@@ -324,12 +338,22 @@ func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 			require.Contains(t, planner, "用户未排除补充且有同期授权线索，把主源缺口及按各来源原口径分别交付的已核原值、日期和出处列为完成条件")
 			input := rawMessageText(model.calls[1])
 			require.Contains(t, input, question)
-			require.Contains(t, input, "这项指标最后有值是某年某月某日")
-			require.Contains(t, input, "本轮按所问日期和指标定向查找，定位并实读能补答的正文或原图")
-			require.Contains(t, input, "补充记载按该来源的指标原名、日期和具体出处另列")
-			require.Contains(t, input, "若只核到同口径最近值，给出该值及其日期、出处")
-			require.Contains(t, input, "用户限定只用数据库、某表或某文件时，直接交付限定范围内的结论")
+			// The model replies are scripted. Check the instructions and source data it actually receives.
+			for _, rule := range []string{
+				"先交付所问期的已核库内值，明确缺数的日期或区间",
+				"给出同字段的最后有效日、该日原值和出处",
+				"只问日期且摘要足够时直接使用", "只有日期时用现有库内读取能力核实该日同字段原值",
+				"库内可查范围时，交付范围内已核事实，不扩读文档或索要材料",
+				"按缺口的指标和时段定向实读正文或原图，复用已有实读证据",
+				"终稿仍保留库内最后有效日、原值和出处",
+				"用其披露值直接回答该期问题，点名补充来源", "仅披露期间值时按该粒度作答",
+				"按既有规则点名采用或暂用的一份，并列其他已核版本及出处",
+				"未核到同期记载时，交付已核事实并说明缺口",
+			} {
+				require.Contains(t, model.calls[1][0].Content, rule)
+			}
 			require.Contains(t, input, `"last_valid_date":"2021-06-07","last_date":"2021-06-09"`)
+			require.Contains(t, rawMessageText(model.calls[2]), `"raw_value":"8.75"`)
 			docReads := 0
 			for _, step := range state.RoundSteps {
 				for _, call := range step.ToolCalls {
@@ -347,10 +371,12 @@ func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 			} else {
 				require.Equal(t, 1, docReads)
 				require.Contains(t, listToolNames(model.opts[1].Tools), agenttools.ToolReadDocument)
-				readInput := rawMessageText(model.calls[2])
+				readInput := rawMessageText(model.calls[3])
 				require.Contains(t, readInput, reportFile)
-				require.Contains(t, readInput, "受检设备累计运行时长为13小时")
-				repair := model.calls[3][len(model.calls[3])-1]
+				require.Contains(t, readInput, "受检设备当周累计运行时长为13小时")
+				revision := model.calls[len(model.calls)-1]
+				require.Contains(t, rawMessageText(revision), `"raw_value":"8.75"`)
+				repair := revision[len(revision)-1]
 				require.Equal(t, "system", repair.Role)
 				require.Contains(t, repair.Content, `"token":"17"`)
 				require.Contains(t, repair.Content, "修订保留能回答所问的已核原值、日期和各自出处，缺引文时补引载值原文")
