@@ -784,9 +784,9 @@ func (e *AgentEngine) finishStalledTurn(
 	truncated bool,
 	query string,
 	conversation []chat.Message,
-	runtimeFallback ...bool,
+	failures ...terminalFailure,
 ) {
-	e.finishStalledTurnWithGuards(ctx, state, sessionID, response, truncated, query, conversation, nil, runtimeFallback...)
+	e.finishStalledTurnWithGuards(ctx, state, sessionID, response, truncated, query, conversation, nil, failures...)
 }
 
 func (e *AgentEngine) finishStalledTurnWithGuards(
@@ -798,7 +798,7 @@ func (e *AgentEngine) finishStalledTurnWithGuards(
 	query string,
 	conversation []chat.Message,
 	guards *loopGuards,
-	runtimeFallback ...bool,
+	failures ...terminalFailure,
 ) {
 	conversation = restoreForFinalAnswer(conversation, guards)
 	// Text that arrived alongside tool calls is a preamble — "let me look that
@@ -806,48 +806,46 @@ func (e *AgentEngine) finishStalledTurnWithGuards(
 	// answer would show an opening line and call the turn finished, so the
 	// fallback speaks for it instead.
 	answer := response.Content
-	answerStreamed := response.AnswerStreamed
+	failure := terminalNoFailure
+	if len(failures) != 0 {
+		failure = failures[0]
+	}
 	if len(response.ToolCalls) > 0 {
 		answer = ""
 	}
-	if !(len(runtimeFallback) > 0 && runtimeFallback[0]) && strings.TrimSpace(answer) != "" {
+	if failure == terminalNoFailure && !terminalCandidateFallback(answer) {
 		e.turnReview.NumericWarningAllowed = true // This terminal path has no repair round left.
 		decision := e.checkCandidate(ctx, query, answer, response.ReasoningContent, state, conversation, utf8.RuneCountInString(strings.TrimSpace(answer)) <= 4)
-		if decision.Candidate != answer {
-			answer, answerStreamed = decision.Candidate, false
-		}
+		answer = decision.Candidate
 		if ctx.Err() != nil {
 			return
 		}
 		if decision.Err != nil {
-			answer = answerReviewUnavailableFallback
-			answerStreamed = false
+			failure = terminalReview
 		} else if decision.Disposition == candidateNumericFailure {
-			answer, answerStreamed = numericFailureFallback, false
-		} else if decision.Disposition != candidateAccepted && decision.Disposition != candidateNumericWarning {
-			answer = ""
+			failure = terminalNumeric
+		} else if decision.Disposition != candidateAccepted && decision.Disposition != candidateNumericWarning && decision.Disposition != candidateEvidencePartial {
+			failure = terminalIncomplete
 		} else if decision.Disposition == candidateNumericWarning {
 			if delivery, ok := e.numericWarningDelivery(answer, state); ok {
 				answer = delivery
 			} else {
-				answer = ""
+				failure = terminalNumeric
 			}
-			answerStreamed = false
 		}
 	}
 
-	answerID := ""
-	if answerStreamed && answer != "" {
-		answerID = response.AnswerEventID
-	}
-	if strings.TrimSpace(answer) == "" {
-		answer = stalledAnswerFallback
+	if failure == terminalNoFailure && strings.TrimSpace(answer) == "" {
+		failure = terminalStalled
 		if truncated {
-			answer = truncatedAnswerFallback
+			failure = terminalTruncated
 		}
-		answerID = ""
 	}
-	e.commitTerminalResult(ctx, state, sessionID, answer, answerID, "stalled", truncated)
+	if failure != terminalNoFailure {
+		e.commitTerminalResult(ctx, state, sessionID, response.Content, response.AnswerEventID, "stalled", truncated, failure)
+		return
+	}
+	e.commitTerminalResult(ctx, state, sessionID, answer, response.AnswerEventID, "stalled", truncated)
 }
 
 func (e *AgentEngine) maxIterationsDisplay() string {
@@ -1219,7 +1217,7 @@ func (e *AgentEngine) runReActIteration(
 	e.answerReviewPending = hasStructuredEvidence(state.RoundSteps) || hasCurrentDocumentEvidence(state.RoundSteps) || e.needsSourceConsistencyCheck(state) || hasStructuredHistoryEvidence(*messagesPtr)
 	runtimeNotice := guards.pendingRuntimeNotice
 	guards.pendingRuntimeNotice = ""
-	if e.evidenceCompletionEnabled() && e.evidenceCompletionEligible() {
+	if e.evidenceCompletionEligible() {
 		e.refreshEvidenceCompletion(ctx, query, state, *messagesPtr)
 		if coverageNotice := e.evidenceCompletionNotice(); coverageNotice != "" {
 			runtimeNotice = strings.TrimSpace(runtimeNotice + "\n" + coverageNotice)
@@ -1471,7 +1469,10 @@ func (e *AgentEngine) runReActIteration(
 		e.recordArtifactInventory(ctx, state, messagesPtr, sessionID)
 	}
 	needsAnswerRepair := false
+	var coverageFeedback *coverageDraftFeedback
 	runtimeAnswerFailure := response.FinishReason == "content_filter"
+	failure := terminalNoFailure
+	liveAnswerID := response.AnswerEventID
 	// Agents without the workbench source critic retain their existing
 	// independent source-audit path; direct acceptance requires that critic.
 	pendingLegacySourceRewrite := !e.needsSourceConsistencyCheck(state) && len(response.ToolCalls) == 0 && response.Content != "" && !guards.structuredAnswerReviewed && (needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, response.Content) || hasCurrentDocumentEvidence(state.RoundSteps))
@@ -1516,26 +1517,27 @@ func (e *AgentEngine) runReActIteration(
 				state.RoundSteps = append(state.RoundSteps, step)
 				return iterOutcomeNext, nil
 			}
-			response.Content = numericFailureFallback
-			response.AnswerStreamed = false
-			response.AnswerEventID = ""
-			pendingLegacySourceRewrite = false
+			failure = terminalNumeric
 			runtimeAnswerFailure = true
+			pendingLegacySourceRewrite = false
 		} else if decision.Err != nil {
 			if e.collaborationOwnsFailure(ctx) {
 				return iterOutcomeBreak, fmt.Errorf("collaboration stopped after answer verification failed: %w", decision.Err)
 			}
 			logger.Warnf(ctx, "[Agent][Round-%d] Answer check failed: %v", round, decision.Err)
 			state.RoundSteps = append(state.RoundSteps, step)
-			fallback := *response
-			fallback.Content = answerReviewUnavailableFallback
-			fallback.AnswerStreamed = false
-			fallback.AnswerEventID = ""
-			e.finishStalledTurnWithGuards(ctx, state, sessionID, &fallback, false, query, *messagesPtr, guards, true)
+			e.finishStalledTurnWithGuards(ctx, state, sessionID, response, false, query, *messagesPtr, guards, terminalReview)
 			return iterOutcomeBreak, nil
 		} else {
 			needsAnswerRepair = decision.Disposition != candidateAccepted && decision.Disposition != candidateNumericWarning &&
 				decision.Disposition != candidateEvidencePartial
+			if !needsAnswerRepair && (decision.Disposition == candidateAccepted || decision.Disposition == candidateEvidencePartial) && decision.CoverageFeedback != nil &&
+				(len(decision.CoverageFeedback.Missing) > 0 || decision.CoverageFeedback.VersionMissing) && !e.turnReview.CoverageFeedbackSent &&
+				!isLengthFinishReason(response.FinishReason) && e.withinIterationBudget(state.CurrentRound+1) &&
+				guards.incompleteAnswerRetries < 2 && e.turnReview.Repairs < maxTurnCandidateRepairs {
+				needsAnswerRepair = true
+				coverageFeedback = decision.CoverageFeedback
+			}
 			if decision.Disposition == candidateNumericWarning {
 				if delivery, ok := e.numericWarningDelivery(response.Content, state); ok {
 					response.Content = delivery
@@ -1569,33 +1571,31 @@ func (e *AgentEngine) runReActIteration(
 				}
 			}
 		}
-		if needsAnswerRepair && e.evidenceCompletionEnabled() && decisionNeedsExhaustedCoverage(e.turnReview.Last) {
-			fallback := *response
-			fallback.Content, fallback.AnswerStreamed, fallback.AnswerEventID = incompleteAnswerFallback, false, ""
-			e.finishStalledTurnWithGuards(ctx, state, sessionID, &fallback, false, query, *messagesPtr, guards, true)
+		if needsAnswerRepair && coverageFeedback == nil && e.evidenceCompletionEnabled() && decisionNeedsExhaustedCoverage(e.turnReview.Last) {
+			e.finishStalledTurnWithGuards(ctx, state, sessionID, response, false, query, *messagesPtr, guards, terminalBudget)
 			return iterOutcomeBreak, nil
 		}
 	}
 	if needsAnswerRepair {
 		guards.incompleteAnswerRetries++
 		if guards.incompleteAnswerRetries <= 2 && e.spendCandidateRepair() {
-			if guards.structuredAnswerReviewed || needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, response.Content) || hasCurrentDocumentEvidence(state.RoundSteps) {
+			if coverageFeedback != nil || guards.structuredAnswerReviewed || needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, response.Content) || hasCurrentDocumentEvidence(state.RoundSteps) {
 				e.beginCandidateRevision(ctx, state, messagesPtr, guards, query, response.Content)
 			}
 			e.structuredReviewMode = true
 			guards.sawPlainRound = false
 			guards.consecutiveSameContent = 0
+			if coverageFeedback != nil {
+				e.turnReview.CoverageFeedbackSent = true
+				e.answerReviewFeedback += "\n" + coverageDraftFeedbackInstructions + "\n" + coverageFeedback.text()
+			}
 			*messagesPtr = append(*messagesPtr, chat.Message{Role: "system", Content: "内部运行时反馈：上一轮答复的完整性未能确认。请依据本轮真实工具结果，按用户要求的语言和格式完成原问题；用户要求短答或特定字符时保持该格式。不要继续长篇推理，不要把草稿当成事实；证据缺失时明确说明缺哪项，不得编造数值。" + e.answerRepairAdvice()})
 			return iterOutcomeContinue, nil
 		}
 		if e.collaborationOwnsFailure(ctx) {
 			return iterOutcomeBreak, fmt.Errorf("collaboration stopped after incomplete answer repairs")
 		}
-		fallback := *response
-		fallback.Content = incompleteAnswerFallback
-		fallback.AnswerStreamed = false
-		fallback.AnswerEventID = ""
-		e.finishStalledTurnWithGuards(ctx, state, sessionID, &fallback, false, query, *messagesPtr, guards, true)
+		e.finishStalledTurnWithGuards(ctx, state, sessionID, response, false, query, *messagesPtr, guards, terminalIncomplete)
 		return iterOutcomeBreak, nil
 	}
 
@@ -1617,7 +1617,13 @@ func (e *AgentEngine) runReActIteration(
 			analyzed = &answer
 		}
 	}
-	verdict := e.analyzeResponse(ctx, analyzed, step, state.CurrentRound, sessionID, roundStart)
+	var verdict responseVerdict
+	if failure != terminalNoFailure {
+		verdict = responseVerdict{isDone: true, step: step, answerID: liveAnswerID}
+	} else {
+		analyzed.AnswerEventID = liveAnswerID
+		verdict = e.analyzeResponse(ctx, analyzed, step, state.CurrentRound, sessionID, roundStart)
+	}
 	if verdict.isDone {
 		// Guard against empty content: when the LLM stops naturally with no
 		// content and no tool calls (e.g., thinking-only loop without KB),
@@ -1645,8 +1651,7 @@ func (e *AgentEngine) runReActIteration(
 			// sole terminal answer event (#2906).
 			logger.Warnf(ctx, "[Agent][Round-%d] Empty content after %d retries - using fallback",
 				round, maxEmptyResponseRetries)
-			fallback := incompleteAnswerFallback
-			e.commitTerminalResult(ctx, state, sessionID, fallback, "", "failed", false)
+			e.commitTerminalResult(ctx, state, sessionID, "", "", "failed", false, terminalEmpty)
 			state.RoundSteps = append(state.RoundSteps, verdict.step)
 			return iterOutcomeBreak, nil
 		}
@@ -1754,7 +1759,7 @@ func (e *AgentEngine) runReActIteration(
 		} else if verdict.truncated || e.turnReview.Last.Disposition == candidateEvidencePartial {
 			outcome = "partial"
 		}
-		e.commitTerminalResult(ctx, state, sessionID, verdict.finalAnswer, verdict.answerID, outcome, verdict.truncated)
+		e.commitTerminalResult(ctx, state, sessionID, verdict.finalAnswer, firstNonEmptyAgent(liveAnswerID, verdict.answerID), outcome, verdict.truncated, failure)
 		return iterOutcomeBreak, nil
 	}
 
@@ -1862,7 +1867,7 @@ func (e *AgentEngine) runReActIteration(
 			}
 			// Reaching a resource bound is a runtime failure, never semantic
 			// completion. No unchecked draft or extra synthesis is published.
-			e.commitTerminalResult(ctx, state, sessionID, sourceProgressStalledFallback, "", "stalled", false)
+			e.commitTerminalResult(ctx, state, sessionID, "", "", "stalled", false, terminalSourceStalled)
 			return iterOutcomeBreak, nil
 		}
 	}

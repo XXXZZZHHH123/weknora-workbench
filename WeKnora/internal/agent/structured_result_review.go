@@ -198,7 +198,18 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 			inputView[documentField] = documents
 		}
 	}
+	feedback := decision.CoverageFeedback
+	if feedback != nil && !e.turnReview.CoverageFeedbackSent {
+		inputView["verified_draft_feedback"] = feedback
+	}
 	input, err := json.Marshal(inputView)
+	// Keep the existing reviewer available when its actual evidence fills the
+	// budget. The ordinary revision path can carry the feedback in that case.
+	if feedback != nil && len(input) > structuredResultReviewInputBytes {
+		delete(inputView, "verified_draft_feedback")
+		feedback = nil
+		input, err = json.Marshal(inputView)
+	}
 	// Only recover an oversized representation. Keep ordinary inputs unchanged
 	// and never fetch, trim, summarize or select bodies to fit this editor.
 	if err == nil && len(input) > structuredResultReviewInputBytes && len(documents) > 0 {
@@ -252,8 +263,11 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 		reasoning = chat.ReasoningEffort(e.config.ReviewReasoningEffort)
 	}
 	instructions := structuredResultReviewInstructions
-	if e.evidenceCompletionEligible() && e.evidenceCompletionEnabled() && rows != nil {
+	if e.evidenceCompletionEligible() && rows != nil {
 		instructions = structuredResultRequestedUnitInstructions + "\n" + instructions
+	}
+	if feedback != nil {
+		instructions += "\n" + coverageDraftFeedbackInstructions
 	}
 	reviewMessages := []chat.Message{
 		{Role: "system", Content: instructions + string(structuredResultReviewSchema)},
@@ -273,6 +287,9 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 		if budgetErr != nil {
 			decision.StructuredResultReviewStatus = "not_checked_generation_budget"
 			return decision
+		}
+		if feedback != nil && protocolAttempt == 0 {
+			e.turnReview.CoverageFeedbackSent = true
 		}
 		result, callErr := e.streamLLMToEventBusWithModel(checkCtx, e.chatModel, reviewMessages, opts, nil)
 		if result != nil && result.Usage != nil {

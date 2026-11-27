@@ -460,12 +460,6 @@ func (e *AgentEngine) runToolCallAnswered(
 ) types.ToolCall {
 	ctx = e.memoryContextForTools(ctx, sessionID)
 	tc.ID = agenttools.NormalizeToolCallID(tc.ID, tc.Function.Name, i)
-	if reason := e.evidenceCompletion.blocked[tc.ID]; reason != "" {
-		var args map[string]any
-		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
-		return types.ToolCall{ID: tc.ID, Name: tc.Function.Name, Args: args, ProviderMetadata: tc.ProviderMetadata,
-			Result: &types.ToolResult{PreflightRejected: true, Error: reason}}
-	}
 	total := "?" // unknown in isolation; callers log the batch size
 	toolTag := fmt.Sprintf("[Agent][Round-%d][Tool %s (%d/%s)]",
 		round, tc.Function.Name, i+1, total)
@@ -515,12 +509,15 @@ func (e *AgentEngine) runToolCallAnswered(
 		}
 		logger.Warnf(ctx, "%s Repaired malformed JSON arguments", toolTag)
 		normalizationRaw = repaired
+		if e.coverageRegistrationEligible() {
+			normalizationRaw, _, _ = splitCoverageArgument(normalizationRaw)
+		}
 		// The initial model-context pass could not inspect malformed JSON.
 		// Decode the repaired payload before execution, while preserving the
 		// exact provider payload already stored in tc.ModelArguments.
 		decoded := tc
 		decoded.ModelArguments = ""
-		decoded.Function.Arguments = repaired
+		decoded.Function.Arguments = normalizationRaw
 		decodedCalls := []types.LLMToolCall{decoded}
 		e.modelContext.DecodeToolCalls(decodedCalls)
 		tc.Function.Arguments = decodedCalls[0].Function.Arguments
@@ -618,6 +615,15 @@ func (e *AgentEngine) runToolCallAnswered(
 			target.Args = args
 		}
 	}
+	var selectionGoal *int
+	if (len(tc.UnresolvedHandles) == 0 || webFetchValidatesReferences(tc)) && !e.coverageSourceCallAllowed(ctx, tc, args) {
+		selectionGoal = e.coverageNativeSelectionGoal(ctx, tc, args)
+		if selectionGoal == nil {
+			return types.ToolCall{ID: tc.ID, Name: tc.Function.Name, Target: target, Args: replayArgs, ProviderMetadata: tc.ProviderMetadata,
+				Result: &types.ToolResult{PreflightRejected: true, Error: coverageScopeRejection}}
+		}
+	}
+	ctx = e.coverageDocumentExecutionContext(ctx, tc, selectionGoal)
 
 	logger.Debugf(ctx, "%s Args: %s", toolTag, tc.Function.Arguments)
 
@@ -731,13 +737,14 @@ func (e *AgentEngine) runToolCallAnswered(
 	duration := time.Since(toolCallStartTime).Milliseconds()
 
 	toolCall := types.ToolCall{
-		Target:           target,
-		ID:               tc.ID,
-		Name:             tc.Function.Name,
-		Args:             replayArgs,
-		Result:           result,
-		Duration:         duration,
-		ProviderMetadata: tc.ProviderMetadata,
+		Target:                target,
+		ID:                    tc.ID,
+		Name:                  tc.Function.Name,
+		Args:                  replayArgs,
+		Result:                result,
+		Duration:              duration,
+		ProviderMetadata:      tc.ProviderMetadata,
+		CoverageSelectionGoal: selectionGoal,
 	}
 
 	if err != nil {

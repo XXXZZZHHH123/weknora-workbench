@@ -94,8 +94,11 @@ func (e *AgentEngine) executeStructuredConfirmation(ctx context.Context, state *
 		return false
 	}
 	started := time.Now()
+	answer := ""
+	failure := terminalFieldInput
 	name := ""
 	if err == nil {
+		failure = terminalFieldService
 		name, err = agenttools.StructuredConfirmationTool(ctx, e.toolRegistry, submission.SourceTool)
 		if err != nil {
 			if pending, ok := ctx.Value(fieldConfirmationTurnKey{}).(*fieldConfirmationTurn); ok && pending.pendingID == submission.ResolutionID && pending.pendingTool == submission.SourceTool && (pending.pendingTool == "structured_resolve_fields" || pending.pendingTool == "structured_confirm_fields") {
@@ -121,7 +124,7 @@ func (e *AgentEngine) executeStructuredConfirmation(ctx context.Context, state *
 		}
 		args, marshalErr := json.Marshal(input)
 		if marshalErr != nil {
-			err = marshalErr
+			failure = terminalFieldInput
 		} else {
 			humanCtx := context.WithValue(ctx, fieldConfirmationHumanKey{}, true)
 			call := e.runToolCall(humanCtx, types.LLMToolCall{ID: generateEventID("field-confirm"), Type: "function", Function: types.FunctionCall{Name: name, Arguments: string(args)}}, 0, 0, 1, sessionID, messageID)
@@ -135,28 +138,28 @@ func (e *AgentEngine) executeStructuredConfirmation(ctx context.Context, state *
 				state.CurrentRound = 1
 				return false
 			}
-			if call.Result != nil {
+			switch {
+			case call.Result == nil:
+				failure = terminalFieldResult
+			case call.Result.PreflightRejected:
+				failure = terminalFieldBlocked
+			case !call.Result.Success:
+				failure = terminalFieldResult
+			default:
+				failure = terminalNoFailure
 				if data := structuredOutcome(call.Result.Output); data != nil {
-					if answer, ok := data["answer"].(map[string]any); ok {
-						if summary, ok := answer["summary"].(string); ok {
-							state.FinalAnswer = summary
+					if result, ok := data["answer"].(map[string]any); ok {
+						if summary, ok := result["summary"].(string); ok {
+							answer = summary
 						}
 					}
 				}
-			}
-			if state.FinalAnswer == "" {
-				state.FinalAnswer = "已处理字段确认，请查看原表结果。"
-			}
-			if call.Result == nil || !call.Result.Success {
-				state.FinalAnswer = "字段确认未完成，请查看工具错误；不会重复提交同样的参数。"
+				answer = firstNonEmptyAgent(answer, "已处理字段确认，请查看原表结果。")
 			}
 		}
 	}
-	if err != nil {
-		state.FinalAnswer = err.Error()
-	}
 	e.turnReview.DeferTerminalClose = true
-	e.commitTerminalResult(ctx, state, sessionID, state.FinalAnswer, "", "field_confirmation", false)
+	e.commitTerminalResult(ctx, state, sessionID, answer, "", "field_confirmation", false, failure)
 	e.emitCompletionEvent(ctx, state, sessionID, messageID, started)
 	return true
 }

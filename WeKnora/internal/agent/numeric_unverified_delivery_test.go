@@ -156,7 +156,7 @@ func TestNumericUnverifiedStillRejectsInvalidOrStaleCandidate(t *testing.T) {
 			}
 			e.commitTerminalResult(t.Context(), state, "numeric", numericFailureFallback, "", "failed", false)
 			require.False(t, terminalCandidateFallback(state.FinalAnswer))
-			require.Contains(t, state.FinalAnswer, "没有取得可用于回答的已核实内容")
+			require.Contains(t, state.FinalAnswer, "没有取得可核实的来源回执")
 			require.NotContains(t, state.FinalAnswer, "999")
 			require.Nil(t, e.turnReview.NumericUnverifiedDelivery)
 		})

@@ -447,11 +447,7 @@ func (e *AgentEngine) analyzeResponse(
 		//       same event ID.
 		//   (b) Not streamed live (e.g. the content only surfaced in the
 		//       accumulated result) — emit the full content, then Done.
-		existingID := ""
-		if response.AnswerStreamed {
-			existingID = response.AnswerEventID
-		}
-		answerID := e.publishAnswer(ctx, sessionID, response.Content, existingID, false)
+		answerID := e.publishAnswer(ctx, sessionID, response.Content, response.AnswerEventID, false)
 
 		// Do not emit Done:true here. The caller drains any loop-end inject
 		// first; a premature close makes the client think the turn is idle
@@ -508,11 +504,7 @@ func (e *AgentEngine) analyzeResponse(
 		// Same two delivery paths as Case 1: reuse the live stream when the
 		// text already went out, otherwise emit it once here. Done is left to
 		// the caller so a loop-end steer inject can still continue the turn.
-		existingID := ""
-		if response.AnswerStreamed {
-			existingID = response.AnswerEventID
-		}
-		answerID := e.publishAnswer(ctx, sessionID, response.Content, existingID, true)
+		answerID := e.publishAnswer(ctx, sessionID, response.Content, response.AnswerEventID, true)
 
 		step.Truncated = true
 		return responseVerdict{

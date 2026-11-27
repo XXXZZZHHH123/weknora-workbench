@@ -93,7 +93,7 @@ func qa4Stage2EAssertHistoricalKB31(r *qa4Stage2CReplay) {
 }
 
 func TestQA4Stage2EKB31AuthorizedRecovery(t *testing.T) {
-	for _, mode := range []string{"normal", "rewrite", "budget"} {
+	for _, mode := range []string{"normal", "rewrite", "ignored", "budget"} {
 		t.Run(mode, func(t *testing.T) { qa4Stage2EKB31AuthorizedRecovery(t, mode) })
 	}
 }
@@ -222,34 +222,58 @@ func qa4Stage2EKB31AuthorizedRecovery(t *testing.T, mode string) {
 	declarations[1]["version_basis"] = "冲突测试版"
 	declaration, err := json.Marshal(declarations)
 	require.NoError(t, err)
-	prose := "《棉花数据库.xlsx》的「郑棉仓单」表中，仓单数量:一号棉花在2024-03-10没有有效观测值。该字段最新原值为5160，日期是2023-09-21，日期格A3340，取值格B3340，单位未确认。\n\n" +
+	prose := "《棉花数据库.xlsx》的「郑棉仓单」表中，仓单数量:一号棉花（S0049502）在2024-03-10没有有效观测值。该字段最新原值为5160，日期是2023-09-21，日期格A3340，取值格B3340，单位未确认。\n\n" +
 		"2024-03-10《棉花周报20240310.pptx》第18页的周度披露是“郑棉仓单：合计60.6万吨”" + citations[1] +
 		"。同日《棉花周报20240310-冲突测试版.pptx》第18页写的是“郑棉仓单：合计62.3万吨”" + citations[0] +
 		"。数据库没有当天的日度记录。"
-	draft := prose + coverageAnswerTag + string(declaration) + coverageAnswerClose
+	// A model must author the version decision. The fixture keeps it apart
+	// from the saved historical answer and from the native report receipts.
+	const choice = "补充披露暂采用《棉花周报20240310.pptx》；另一份《棉花周报20240310-冲突测试版.pptx》明确标有“冲突测试版”，两者都保留各自出处。"
+	full := prose + "\n\n" + choice
+	draft := full + coverageAnswerTag + string(declaration) + coverageAnswerClose
 	switch mode {
 	case "budget":
-		r.engine.stopEvidenceCompletion(r.ctx, r.trace.Question, r.state, r.messages, "iteration_budget_exhausted")
-		// No publishable candidate survived. The structured choice is driven
-		// by the actual same-measure conflicting receipts.
-		r.engine.acceptCoverageAnswer(r.ctx, r.trace.Question, r.state, r.messages, draft, true)
-		require.Empty(t, r.engine.turnReview.CoverageDraft.Candidate)
-		r.exhaust()
-	case "rewrite":
 		initial := r.engine.acceptCoverageAnswer(r.ctx, r.trace.Question, r.state, r.messages, draft, true)
 		checked := r.engine.checkCandidate(r.ctx, r.trace.Question, r.engine.modelContext.DecodeOutputText(initial), "", r.state, r.messages, false)
 		require.NoError(t, checked.Err)
 		require.Empty(t, checked.Unsupported)
-		r.run(chatAnswer(prose))
-		require.True(t, r.state.IsComplete, "the rewrite omitted the version declaration")
+		require.Equal(t, r.engine.modelContext.DecodeOutputText(full), r.engine.turnReview.CoverageDraft.Candidate)
+		r.engine.turnReview.Repairs = maxTurnCandidateRepairs
+		r.exhaust()
+	case "rewrite", "ignored":
+		r.engine.config.StructuredResultReviewEnabled = false
+		r.engine.acceptCoverageAnswer(r.ctx, r.trace.Question, r.state, r.messages, draft, true)
+		review := r.engine.currentCoverageDraftReview(r.ctx, r.state)
+		require.NotEmpty(t, review.version.SelectedSource, "native comparable version verification")
+		r.run(chatAnswer(prose + coverageAnswerTag + string(declaration) + coverageAnswerClose))
+		require.False(t, r.state.IsComplete)
+		require.True(t, r.engine.turnReview.CoverageFeedbackSent, "the original revision receives the verified version choice")
+		var feedback string
+		for _, message := range r.messages {
+			feedback += message.Content
+		}
+		require.Contains(t, feedback, "checked_provisional_version_choice")
+		require.Contains(t, feedback, "basis_quote")
+		if mode == "ignored" {
+			paid := r.engine.turnReview.Repairs
+			r.run(chatAnswer(prose))
+			require.Equal(t, paid, r.engine.turnReview.Repairs, "a second reply cannot consume another revision for the same omission")
+			require.Equal(t, r.engine.modelContext.DecodeOutputText(prose), r.answer())
+			require.NotContains(t, r.state.FinalAnswer, choice)
+			return
+		}
+		r.run(chatAnswer(full))
+		require.True(t, r.state.IsComplete, "the original revision supplied the complete answer")
 	default:
 		r.run(chatAnswer(draft))
-		require.True(t, r.state.IsComplete, "ordinary execution should complete with both checked report versions")
+		require.True(t, r.state.IsComplete, "ordinary execution should complete with both checked report versions: %+v", r.engine.turnReview.Last.CoverageFeedback)
 	}
+	require.Equal(t, r.engine.modelContext.DecodeOutputText(full), r.state.FinalAnswer)
+
 	answer := r.answer()
 	t.Logf("Published answer: %s", answer)
 	for _, item := range []string{"2024-03-10", "2023-09-21", "5160", "B3340", "单位未确认", "棉花周报20240310", "第18页", "60.6万吨", "62.3万吨",
-		"补充披露暂采用《棉花周报20240310.pptx》", "《棉花周报20240310-冲突测试版.pptx》中的“冲突测试版”"} {
+		"补充披露暂采用《棉花周报20240310.pptx》", "《棉花周报20240310-冲突测试版.pptx》明确标有“冲突测试版”"} {
 		require.Contains(t, answer, item)
 	}
 	require.Equal(t, 1, strings.Count(answer, "没有有效"))

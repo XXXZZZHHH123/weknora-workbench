@@ -2,8 +2,10 @@ package agent
 
 import (
 	"encoding/json"
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Tencent/WeKnora/internal/types"
@@ -73,7 +75,7 @@ func TestQA4AnalysisEndpointUsesUniqueCompleteNativeCell(t *testing.T) {
 	}
 }
 
-func TestQA4AnalysisEndpointProjectionRequiresCurrentWorkbookAndActiveSwitch(t *testing.T) {
+func TestQA4AnalysisEndpointProjectionRequiresCurrentWorkbookOnBothSwitchPaths(t *testing.T) {
 	fixture, err := os.ReadFile("testdata/qa4/replay/r7-2-kb31.json")
 	require.NoError(t, err)
 	for _, tt := range []struct {
@@ -81,7 +83,7 @@ func TestQA4AnalysisEndpointProjectionRequiresCurrentWorkbookAndActiveSwitch(t *
 		change        func(types.ToolCall)
 	}{
 		{name: "enabled", enabled: "true"},
-		{name: "rollback", enabled: "false"},
+		{name: "shadow", enabled: "false"},
 		{name: "unbound original workbook", enabled: "true", change: func(call types.ToolCall) {
 			delete(coverageObject(call.Result.Data["source"]), "workbook_declared_last_saved_at")
 		}},
@@ -122,7 +124,7 @@ func TestQA4AnalysisEndpointProjectionRequiresCurrentWorkbookAndActiveSwitch(t *
 			require.NoError(t, rehashCoverageSQLFixture(call.Result.Data))
 			state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}}
 			record, _ := engine.projectCurrentTaskCoverage(state, 0, coverageRecord{})
-			require.Equal(t, tt.name == "enabled", slices.ContainsFunc(record.Evidence, func(item coverageEvidence) bool {
+			require.Equal(t, tt.change == nil, slices.ContainsFunc(record.Evidence, func(item coverageEvidence) bool {
 				return coverageAnalysisEndpoint(item) && coverageCurrentEvidence(record, item)
 			}))
 		})
@@ -248,6 +250,10 @@ func TestQA4AnalysisEndpointMissingValueSchedulesBoundedLatest(t *testing.T) {
 	engine.turnReview.Query = question
 	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}}
 	engine.refreshEvidenceCompletion(t.Context(), question, state, nil)
+	engine.evidenceCompletion.enabled = false
+	_, shadowTool, _ := engine.coverageLatestRead(state, true)
+	require.Empty(t, shadowTool)
+	engine.evidenceCompletion.enabled = true
 	key, name, args := engine.coverageLatestRead(state, true)
 	require.NotEmpty(t, key)
 	require.Equal(t, "structured_query_series", name)
@@ -320,15 +326,15 @@ func TestQA4AnalysisEndpointHonorsTypedTargetInReadAndDelivery(t *testing.T) {
 			// An ordinary authorized read can still return the field, even if a different
 			// task target cannot use it as its automatic or required last observation.
 			r.calls([]qa4Stage2Call{latest})
-			delivery := engine.terminalCoverageDelivery(r.ctx, r.state, false)
+			delivery := engine.terminalCoverageDelivery(r.ctx, r.state)
 			require.Equal(t, want, slices.ContainsFunc(delivery.facts, func(fact terminalCoverageFact) bool {
 				return fact.required && fact.Role == "coverage_boundary" && coverageAnalysisEmptyInput(fact.Evidence)
 			}))
 			require.Equal(t, want, slices.ContainsFunc(delivery.facts, func(fact terminalCoverageFact) bool {
 				return fact.Role == "last_valid_value" && fact.Evidence.Cell == "B4705" && fact.required
 			}))
-			if !want {
-				require.NotContains(t, delivery.render(true, ""), "17110")
+			if !want && !slices.Equal(goal.Required, []string{"optional"}) {
+				require.NotContains(t, delivery.renderFallback(terminalNoFailure), "17110")
 			}
 		})
 	}
@@ -453,10 +459,11 @@ func TestQA4AnalysisEndpointClippedRangeRequiresBoundFieldAndRequest(t *testing.
 				r.trace.Calls = append(r.trace.Calls, latest)
 				r.calls([]qa4Stage2Call{latest})
 				final := r.engine.terminalCoverageFailure(r.ctx, r.state)
-				for _, expected := range []string{"2024-03-01", "2024-03-31", "没有有效记录", "CF.CZC", "2023-09-22", "17110", "B4705"} {
+				for _, expected := range []string{"2024-03-01", "2024-03-31", "无有效记录", "CF.CZC", "2023-09-22", "17110", "B4705"} {
 					require.Contains(t, final, expected)
 				}
-				require.NotContains(t, final, "棉花数据库.xlsx /")
+				require.Contains(t, final, "棉花数据库.xlsx")
+				require.Equal(t, 1, strings.Count(final, "17110"))
 			}
 		})
 	}
@@ -490,8 +497,10 @@ func TestQA4AnalysisEndpointCurrentWorkbookFieldProof(t *testing.T) {
 }
 
 func TestQA4AnalysisEndpointGroupReadsOneCompleteBoundSelection(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
 	const question, from, to, lastDay = "What are the readings this month?", "2025-02-01", "2025-02-28", "2025-01-31"
 	engine := newTestEngine(t, &mockChat{})
+	engine.evidenceCompletionEnabled()
 	engine.toolRegistry = qa4ReplayRegistry()
 	engine.turnReview.Query = question
 	for _, tt := range []struct {
@@ -555,6 +564,83 @@ func TestQA4AnalysisEndpointGroupReadsOneCompleteBoundSelection(t *testing.T) {
 			engine.evidenceCompletion.latestAttempts = map[string]bool{key: true}
 			_, name, _ = engine.coverageLatestRead(state, true)
 			require.Empty(t, name)
+		})
+	}
+}
+
+func TestQA4AnalysisEndpointUnboundedSQLNeedsMatchingReturnedRow(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/qa4/replay/s2-1-kb28.json")
+	require.NoError(t, err)
+	for _, mode := range []string{"false", "true"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", mode)
+			for _, test := range []struct {
+				name   string
+				mutate func(map[string]any)
+			}{
+				{name: "matching direct row"},
+				{name: "empty output", mutate: func(data map[string]any) {
+					data["rows"], data["returned_row_count"] = []any{}, json.Number("0")
+				}},
+				{name: "different source cell", mutate: func(data map[string]any) {
+					data["rows"].([]any)[0].([]any)[3] = "G88"
+				}},
+				{name: "different result value", mutate: func(data map[string]any) {
+					data["rows"].([]any)[0].([]any)[2] = json.Number("111")
+				}},
+				{name: "input over limit", mutate: func(data map[string]any) {
+					data["status"], data["input_complete"] = "input_limit_exceeded", false
+				}},
+				{name: "business clarification", mutate: func(data map[string]any) {
+					data["status"] = "needs_clarification"
+				}},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					var replay qa4Stage2CTrace
+					require.NoError(t, json.Unmarshal(fixture, &replay))
+					var executed qa4Stage2Call
+					for _, call := range replay.Calls {
+						if call.Tool == "structured_analyze_table" {
+							executed = call
+							break
+						}
+					}
+					require.NotEmpty(t, executed.Tool)
+					data, err := decodeCitationJSON(string(executed.Response))
+					require.NoError(t, err)
+					delete(executed.Arguments, "start_date")
+					delete(executed.Arguments, "end_date")
+					data["requested_range"] = map[string]any{"start_date": nil, "end_date": nil}
+					if test.mutate != nil {
+						test.mutate(data)
+					}
+					require.NoError(t, rehashCoverageSQLFixture(data))
+					data["source_context"] = map[string]any{"knowledge_base_id": executed.Arguments["knowledge_base_id"]}
+					data["_structured_execution"] = agenttools.StructuredOperationDescriptor{Operation: "analyze_table",
+						ToolName: executed.Tool, EffectClass: "read", ScopeMode: "knowledge_base"}
+					call := types.ToolCall{ID: "native-query", Name: executed.Tool, Args: executed.Arguments,
+						Result: &types.ToolResult{Success: true, Data: data}}
+					state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}}
+					engine := &AgentEngine{toolRegistry: qa4ReplayRegistry()}
+					record, _ := engine.projectCurrentTaskCoverage(state, 0, coverageRecord{})
+					var cells []coverageEvidence
+					for _, item := range record.Evidence {
+						require.NotEqual(t, "gap", item.Kind)
+						if item.Kind == "cell" && coverageCurrentEvidence(record, item) {
+							cells = append(cells, item)
+						}
+					}
+					if test.mutate != nil {
+						require.Empty(t, cells)
+					} else {
+						require.Len(t, cells, 1)
+						require.Equal(t, "G87", cells[0].Cell)
+						require.Equal(t, "2023-10-31", cells[0].Date)
+						require.Equal(t, "/data/rows/0/2", cells[0].ResultJSONPointer)
+						require.Empty(t, cells[0].PeriodTo)
+					}
+				})
+			}
 		})
 	}
 }

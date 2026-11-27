@@ -89,7 +89,7 @@ func (e *AgentEngine) numericUnverifiedPresentation(ctx context.Context, state *
 	if !ok || count == 0 {
 		return "", 0, nil, nil, false
 	}
-	delivery := e.terminalCoverageWarning(ctx, state, marked+"\n\n> 提示："+unverifiedNumberNotice)
+	delivery := marked + "\n\n> 提示：" + unverifiedNumberNotice
 	refs, legacy := e.unverifiedNavigationReferences(delivery, state)
 	if len(refs) != len(uniqueCandidateEvidenceIDs(delivery)) || len(legacy) != len(uniqueCandidateCitationIDs(delivery)) ||
 		!numericUnverifiedReferenceBudgetFits(refs, legacy) {

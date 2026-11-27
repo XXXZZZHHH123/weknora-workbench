@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"strings"
 
@@ -16,13 +17,14 @@ import (
 func (e *AgentEngine) publishAnswer(ctx context.Context, sessionID, answer, existingID string, truncated bool) string {
 	answer = stripCoverageAnswer(answer)
 	if ctx.Err() != nil || terminalCandidateFallback(answer) ||
-		!e.turnReview.Committed && (e.holdCollaborationAnswer || e.terminalEvidenceCompletionPending()) {
+		!e.turnReview.Committed && (e.holdCollaborationAnswer || e.terminalEvidenceCompletionPending() || e.turnReview.TerminalSensitive) {
 		return ""
 	}
 	if existingID != "" {
 		return existingID
 	}
 	id := generateEventID("answer")
+	e.turnReview.TerminalStreamID, e.turnReview.TerminalReceipt.streamed = id, answer
 	if e.eventBus != nil {
 		_ = e.eventBus.Emit(ctx, event.Event{ID: id, Type: event.EventAgentFinalAnswer, SessionID: sessionID, Data: event.AgentFinalAnswerData{Content: answer, Done: false, Truncated: truncated}})
 	}
@@ -30,7 +32,7 @@ func (e *AgentEngine) publishAnswer(ctx context.Context, sessionID, answer, exis
 }
 
 func (e *AgentEngine) terminalEvidenceCompletionPending() bool {
-	return e.evidenceCompletionEnabled() && e.terminalCoverageContextKnown()
+	return e.terminalCoverageContextKnown()
 }
 
 func (e *AgentEngine) terminalCoverageContextKnown() bool {
@@ -74,115 +76,179 @@ func terminalFallbackPrefix(prefix string) bool {
 	return slices.ContainsFunc(terminalFallbacks[:], func(fallback string) bool { return strings.HasPrefix(fallback, prefix) })
 }
 
-// Only checked candidates or explicit runtime failure messages reach this
-// terminal outlet. IsComplete remains loop termination, not semantic success.
-func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.AgentState, sessionID, answer, existingID, outcome string, truncated bool) {
+type terminalFailure string
+
+const (
+	terminalNoFailure     terminalFailure = ""
+	terminalEmpty         terminalFailure = "empty"
+	terminalReview        terminalFailure = "review_failed"
+	terminalNumeric       terminalFailure = "numeric_failed"
+	terminalIncomplete    terminalFailure = "incomplete"
+	terminalStalled       terminalFailure = "stalled"
+	terminalTruncated     terminalFailure = "truncated"
+	terminalBudget        terminalFailure = "budget_exhausted"
+	terminalSourceStalled terminalFailure = "source_stalled"
+	terminalSourceChanged terminalFailure = "source_changed"
+	terminalFieldInput    terminalFailure = "field_confirmation_input"
+	terminalFieldService  terminalFailure = "field_confirmation_service"
+	terminalFieldBlocked  terminalFailure = "field_confirmation_preflight"
+	terminalFieldResult   terminalFailure = "field_confirmation_result"
+)
+
+type terminalPublicationReceipt struct {
+	answerHash string
+	evidence   terminalEvidenceSnapshot
+	staleCalls map[string]bool
+	failure    terminalFailure
+	streamed   string
+}
+
+// This is the only translation of legacy candidate strings into failure reasons.
+func legacyTerminalFailure(answer string) terminalFailure {
+	switch strings.TrimSpace(answer) {
+	case answerReviewUnavailableFallback:
+		return terminalReview
+	case numericFailureFallback, finalNumericFailureFallback:
+		return terminalNumeric
+	case incompleteAnswerFallback:
+		return terminalIncomplete
+	case stalledAnswerFallback:
+		return terminalStalled
+	case sourceProgressStalledFallback:
+		return terminalSourceStalled
+	case truncatedAnswerFallback:
+		return terminalTruncated
+	default:
+		return terminalEmpty
+	}
+}
+
+// Only checked candidates or explicit runtime failures reach this outlet.
+func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.AgentState, sessionID, answer, existingID, outcome string, truncated bool, failures ...terminalFailure) {
 	if ctx.Err() != nil || e.turnReview.Committed {
 		return
 	}
+	original := answer
 	answer = stripCoverageAnswer(answer)
-	markedNumbers := 0
-	markedCitations := 0
-	if delivery, ok := e.numericWarningDelivery(answer, state); ok {
-		answer, outcome = delivery, "numeric_warning"
-	} else if (outcome == "answer" || outcome == "partial") && e.needsSourceConsistencyCheck(state) {
-		approved := e.turnReview.Last.Candidate
-		submittedHash := candidateTextDigest(agenttools.TrimAnswerWhitespace(answer))
-		approvedHash := candidateTextDigest(agenttools.TrimAnswerWhitespace(approved))
-		coveredPartial := outcome == "partial" && e.turnReview.Last.Disposition == candidateEvidencePartial &&
-			e.evidenceCompletionEnabled() && e.turnReview.Last.SourceScopeHash == e.unverifiedSourceScopeDigest(ctx) &&
-			e.candidateDecisionCurrent(e.turnReview.Last, approved, state)
-		if submittedHash == approvedHash && (e.candidateApprovalCurrent(approved, state) || coveredPartial) {
-			// Store the checked text so citation bindings still have its exact bytes.
-			answer = approved
+	failure := terminalNoFailure
+	if len(failures) != 0 {
+		failure = failures[0]
+	}
+	if failure == terminalNoFailure && terminalCandidateFallback(answer) {
+		failure = legacyTerminalFailure(answer)
+	}
+
+	last := e.turnReview.Last
+	evidenceRevision := e.terminalEvidenceRevision(ctx, state)
+	scopeChanged := last.PublicationEvidence.scope == "" && last.SourceScopeHash != "" &&
+		last.SourceScopeHash != e.unverifiedSourceScopeDigest(ctx) || !last.PublicationEvidence.current(evidenceRevision) ||
+		!e.turnReview.TerminalInput.current(evidenceRevision)
+	staleCalls := last.PublicationEvidence.staleCalls(evidenceRevision)
+	if staleInput := e.turnReview.TerminalInput.staleCalls(evidenceRevision); len(staleInput) != 0 {
+		if staleCalls == nil {
+			staleCalls = staleInput
 		} else {
-			common.PipelineWarn(ctx, "Agent", "terminal_approval_mismatch", map[string]interface{}{
-				"submitted_candidate_hash": candidateTextDigest(answer),
-				"checked_candidate_hash":   e.turnReview.Last.CandidateHash,
-				"checked_disposition":      e.turnReview.Last.Disposition,
-			})
-			answer = answerReviewUnavailableFallback
-			existingID = ""
-			outcome = "failed"
-			truncated = false
+			maps.Copy(staleCalls, staleInput)
 		}
 	}
-	coverageDraft := false
-	if terminalCandidateFallback(answer) {
+	if scopeChanged {
+		common.PipelineWarn(ctx, "Agent", "terminal_source_revision_changed", map[string]any{
+			"checked_scope_changed": last.PublicationEvidence.scope != "" && last.PublicationEvidence.scope != evidenceRevision.scope,
+			"checked_task_changed":  last.PublicationEvidence.task != "" && last.PublicationEvidence.task != evidenceRevision.task,
+			"input_scope_changed":   e.turnReview.TerminalInput.scope != "" && e.turnReview.TerminalInput.scope != evidenceRevision.scope,
+			"stale_receipts":        len(staleCalls),
+		})
+		failure = terminalSourceChanged
+	}
+	markedNumbers, markedCitations := 0, 0
+	if failure == terminalNoFailure {
+		if delivery, ok := e.numericWarningDelivery(answer, state); ok {
+			answer, outcome = delivery, "numeric_warning"
+		} else if (outcome == "answer" || outcome == "partial") && e.needsSourceConsistencyCheck(state) {
+			submittedHash := candidateTextDigest(agenttools.TrimAnswerWhitespace(answer))
+			approvedHash := candidateTextDigest(agenttools.TrimAnswerWhitespace(last.Candidate))
+			coveredPartial := outcome == "partial" && last.Disposition == candidateEvidencePartial &&
+				e.candidateDecisionCurrent(last, last.Candidate, state)
+			if submittedHash == approvedHash && (e.candidateApprovalCurrent(last.Candidate, state) || coveredPartial) {
+				answer = last.Candidate
+				if coveredPartial {
+					e.bindCoverageDraftDelivery(last.Candidate, answer)
+				}
+			} else {
+				common.PipelineWarn(ctx, "Agent", "terminal_approval_mismatch", map[string]interface{}{
+					"submitted_candidate_hash": candidateTextDigest(answer),
+					"checked_candidate_hash":   last.CandidateHash,
+					"checked_disposition":      last.Disposition,
+				})
+				failure = terminalReview
+			}
+		}
+	}
+	if failure != terminalNoFailure && failure != terminalSourceChanged {
 		if draft, ok := e.currentCoverageDraft(ctx, state); ok {
-			answer, existingID, outcome, truncated = stripCoverageAnswer(draft), "", "evidence_partial", false
-			coverageDraft = true
-		}
-	}
-	if terminalCandidateFallback(answer) {
-		if delivery, citations, numbers, ok := e.currentCitationUnverifiedDelivery(ctx, state); ok {
+			answer, outcome, truncated = stripCoverageAnswer(draft), "evidence_partial", false
+			e.bindCoverageDraftDelivery(draft, answer)
+			failure = terminalNoFailure
+		} else if delivery, citations, numbers, ok := e.currentCitationUnverifiedDelivery(ctx, state); ok {
 			answer, outcome, markedCitations, markedNumbers = delivery, "citation_unverified", citations, numbers
 			if numbers > 0 {
 				outcome = "citation_numeric_unverified"
 			}
-			existingID, truncated = "", false
+			failure, truncated = terminalNoFailure, false
 		} else if delivery, ok := e.numericWarningDelivery(e.turnReview.UnverifiedCandidate, state); ok {
-			answer, outcome = delivery, "numeric_warning"
-			existingID, truncated = "", false
+			answer, outcome, failure, truncated = delivery, "numeric_warning", terminalNoFailure, false
 		} else if delivery, ok := e.currentUnverifiedDelivery(ctx, state); ok {
-			answer = e.prepareUnverifiedCitationDelivery(ctx, state, delivery)
-			existingID = ""
-			outcome = "unverified"
-			truncated = false
-		} else if answer == numericFailureFallback || answer == finalNumericFailureFallback {
+			answer, outcome, failure, truncated = e.prepareUnverifiedCitationDelivery(ctx, state, delivery), "unverified", terminalNoFailure, false
+		} else if failure == terminalNumeric {
 			if delivery, marked, ok := e.currentNumericUnverifiedDelivery(ctx, state); ok {
 				answer, outcome, markedNumbers = delivery, "numeric_unverified", marked
-				existingID, truncated = "", false
+				failure, truncated = terminalNoFailure, false
 			}
 		}
 	}
-	if !terminalCandidateFallback(answer) && e.evidenceCompletionEnabled() && (outcome == "answer" || outcome == "partial" || coverageDraft ||
-		outcome == "stalled" && e.candidateApprovalCurrent(answer, state)) {
-		base := answer
-		answer = e.terminalCoverageDelivery(ctx, state, false).render(false, base)
-		if answer != base {
-			existingID = ""
-		}
-		if coverageDraft || outcome == "partial" {
-			e.bindCoverageDraftDelivery(base, answer)
-		} else if answer != base && e.candidateApprovalCurrent(base, state) {
-			// The candidate kept its verified claims. Bind persistent inline
-			// citations to the final bytes after the runtime added its facts.
-			e.turnReview.Last.Candidate, e.turnReview.Last.CandidateHash = answer, candidateTextDigest(answer)
-		}
-	}
-	if comparison, complete, handled := e.terminalTableComparison(ctx, state); handled {
-		if comparison != answer {
-			existingID = ""
-		}
-		answer, truncated = comparison, false
-		markedCitations, markedNumbers = 0, 0
-		outcome = "evidence_partial"
-		if complete {
-			outcome = "answer"
-		}
-		e.turnReview.TableComparisonDelivery = tableComparisonDeliveryReceipt{candidateTextDigest(answer), e.tableComparisonDeliveryRevision(ctx, state)}
-	} else if e.evidenceCompletionEnabled() && e.evidenceCompletion.legacyGap != "" && e.evidenceCompletion.stopReason != "" &&
-		len(e.evidenceCompletionTargets()) == 0 && !e.candidateApprovalCurrent(answer, state) {
-		// A draft cannot settle an unresolved semantic requirement without a
-		// current association. Preserve the verified primary-gap route, which
-		// reports that gap and separately attributed source evidence.
-		delivery := e.terminalCoverageDelivery(ctx, state, true)
-		if !delivery.hasGap() {
-			answer, existingID, outcome, truncated = delivery.render(true, ""), "", "evidence_partial", false
-		}
-	}
+
 	answer = stripCoverageAnswer(answer)
-	if terminalCandidateFallback(answer) {
-		answer, existingID, outcome, truncated = e.terminalCoverageFailure(ctx, state), "", "evidence_incomplete", false
+	if failure == terminalNoFailure && terminalCandidateFallback(answer) {
+		failure = legacyTerminalFailure(answer)
+	}
+	if failure != terminalNoFailure {
+		answer, outcome, truncated = e.terminalCoverageFailure(ctx, terminalCurrentState(state, staleCalls), failure), "evidence_incomplete", false
+		state.EvidenceRefs, state.KnowledgeRefs = nil, nil
+	}
+
+	if existingID != "" && e.turnReview.TerminalStreamID == existingID {
+		original = e.turnReview.TerminalReceipt.streamed
 	}
 	e.turnReview.Committed = true
 	state.FinalAnswer = answer
 	state.IsComplete = true
-	id := e.publishAnswer(ctx, sessionID, answer, existingID, truncated)
-	e.turnReview.TerminalStreamID, e.turnReview.TerminalTruncated = id, truncated
-	if !e.turnReview.DeferTerminalClose {
-		e.closeAnswerStream(ctx, sessionID, id, truncated)
+	e.turnReview.TerminalStreamID, e.turnReview.TerminalTruncated = existingID, truncated
+	e.turnReview.TerminalReceipt = terminalPublicationReceipt{
+		answerHash: candidateTextDigest(answer), evidence: evidenceRevision, failure: failure,
+		staleCalls: staleCalls,
+		streamed:   original,
 	}
-	common.PipelineInfo(ctx, "Agent", "terminal_commit", map[string]interface{}{"outcome": outcome, "candidate_hash": candidateTextDigest(answer), "repairs": e.turnReview.Repairs, "checks": e.turnReview.Checks, "marked_numeric_count": markedNumbers, "marked_citation_count": markedCitations})
+	if existingID == "" {
+		e.turnReview.TerminalReceipt.streamed = ""
+	}
+	deferPublication := e.turnReview.DeferTerminalClose && (e.turnReview.TerminalSensitive || e.terminalCoverageContextKnown() || failure != terminalNoFailure)
+	if !deferPublication {
+		e.publishTerminalStream(ctx, state, sessionID)
+	}
+	if !e.turnReview.DeferTerminalClose {
+		e.closeAnswerStream(ctx, sessionID, e.turnReview.TerminalStreamID, truncated)
+	}
+	common.PipelineInfo(ctx, "Agent", "terminal_commit", map[string]interface{}{"outcome": outcome, "failure": failure, "candidate_hash": candidateTextDigest(answer), "repairs": e.turnReview.Repairs, "checks": e.turnReview.Checks, "marked_numeric_count": markedNumbers, "marked_citation_count": markedCitations})
+}
+
+func (e *AgentEngine) publishTerminalStream(ctx context.Context, state *types.AgentState, sessionID string) {
+	receipt := &e.turnReview.TerminalReceipt
+	id, truncated := e.turnReview.TerminalStreamID, e.turnReview.TerminalTruncated
+	if id == "" {
+		e.turnReview.TerminalStreamID = e.publishAnswer(ctx, sessionID, state.FinalAnswer, "", truncated)
+	} else if receipt.streamed != state.FinalAnswer && e.eventBus != nil {
+		_ = e.eventBus.Emit(ctx, event.Event{ID: id, Type: event.EventAgentFinalAnswer, SessionID: sessionID,
+			Data: event.AgentFinalAnswerData{Content: state.FinalAnswer, Replace: true, Truncated: truncated}})
+	}
+	receipt.streamed = state.FinalAnswer
 }

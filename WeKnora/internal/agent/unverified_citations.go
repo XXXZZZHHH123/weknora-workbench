@@ -24,20 +24,27 @@ type unverifiedCitationDeliveryBinding struct {
 var fallbackCitationTag = regexp.MustCompile(`(?is)<(?:evidence|kb)\b[^>]*(?:>|$)|</(?:evidence|kb)\s*>`)
 
 func (e *AgentEngine) unverifiedSourceScopeDigest(ctx context.Context) string {
+	return e.sourceScopeDigest(ctx, true)
+}
+
+func (e *AgentEngine) sourceScopeDigest(ctx context.Context, presentation bool) string {
 	if e == nil || e.config == nil {
 		return ""
 	}
 	principal, hasPrincipal := types.PrincipalFromContext(ctx)
 	key, hasKey := types.TenantAPIKeyScopeFromContext(ctx)
-	return reviewDigest(map[string]any{
+	scope := map[string]any{
 		"caller": types.CallerFromContext(ctx), "principal": principal, "has_principal": hasPrincipal,
 		"key_scope": key, "has_key_scope": hasKey,
 		"knowledge_bases": e.config.KnowledgeBases, "knowledge_ids": e.config.KnowledgeIDs,
 		"search_targets":  e.config.SearchTargets,
 		"question_origin": e.config.QuestionOrigin, "page_context": e.config.PageContext,
-		"shared_agent_read_only": e.config.SharedAgentReadOnly, "citations": e.config.CitationsEnabled(),
-		"evidence_client": e.config.EvidenceReferencesEnabled,
-	})
+		"shared_agent_read_only": e.config.SharedAgentReadOnly,
+	}
+	if presentation {
+		scope["citations"], scope["evidence_client"] = e.config.CitationsEnabled(), e.config.EvidenceReferencesEnabled
+	}
+	return reviewDigest(scope)
 }
 
 // Keep only complete canonical tags in the selected base. Any malformed,
@@ -127,7 +134,6 @@ func (e *AgentEngine) prepareUnverifiedCitationDelivery(ctx context.Context, sta
 			final += missingNotice
 		}
 		originalFinal = final
-		final = e.terminalCoverageWarning(ctx, state, final)
 		refs, legacy = e.unverifiedNavigationReferences(final, state)
 		rejected := false
 		total, count := 0, 0
@@ -202,9 +208,13 @@ func (e *AgentEngine) publishUnverifiedCitationReferences(ctx context.Context, s
 	refs, chunks, valid := e.currentUnverifiedCitationReferences(ctx, state)
 	if !valid {
 		// A changed task, result, scope or final candidate cannot inherit the
-		// navigation binding. Retain the warning; remove every unusable tag.
+		// navigation binding. Presentation changes can retain the warning.
 		binding := e.turnReview.UnverifiedCitationDelivery
-		state.FinalAnswer = filterFallbackCitationTags(firstNonEmptyAgent(binding.OriginalFinalText, binding.FinalText), nil, nil)
+		if binding.EvidenceHash != reviewDigest(e.sourceConsistencyMessages(state, e.turnReview.Conversation)) {
+			state.FinalAnswer = e.terminalCoverageFailure(ctx, state, terminalSourceChanged)
+		} else {
+			state.FinalAnswer = filterFallbackCitationTags(firstNonEmptyAgent(binding.OriginalFinalText, binding.FinalText), nil, nil)
+		}
 		refs, chunks = nil, nil
 	}
 	state.EvidenceRefs, state.KnowledgeRefs = refs, chunks

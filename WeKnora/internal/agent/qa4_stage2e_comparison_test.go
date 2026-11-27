@@ -39,7 +39,7 @@ func TestQA4Stage2ETableComparisonHistory(t *testing.T) {
 	})
 	for _, mode := range []string{"default", "false", "recovery", "revoked", "canonical revoked", "only", "supporting", "wrong verdict", "no verdict"} {
 		t.Run("s2-4 "+mode, func(t *testing.T) {
-			on := mode != "false"
+			repair := mode != "default" && mode != "false"
 			var extensions []qa4Stage2Call
 			if mode == "supporting" {
 				// Independently queried in the original import after the
@@ -52,9 +52,9 @@ func TestQA4Stage2ETableComparisonHistory(t *testing.T) {
 				require.NoError(t, json.Unmarshal(raw, &read))
 				extensions = append(extensions, read)
 			}
-			r := newQA4Stage2CReplay(t, "s2-4-kb28", on, false, extensions...)
+			r := newQA4Stage2CReplay(t, "s2-4-kb28", repair, false, extensions...)
 			r.trace.Calls = append(r.trace.Calls, extensions...)
-			if on {
+			if mode == "default" {
 				require.NoError(t, os.Unsetenv("WEKNORA_AGENT_EVIDENCE_COMPLETION"))
 			}
 			require.Nil(t, r.engine.taskPlan, "historical plan failed validation")
@@ -63,11 +63,16 @@ func TestQA4Stage2ETableComparisonHistory(t *testing.T) {
 				r.trace.Question = "只用这两份材料回答。" + r.trace.Question
 				r.messages[len(r.messages)-1].Content = r.trace.Question
 				r.engine.turnReview.Query = r.trace.Question
+				r.engine.reviewConversation = conversationThroughLastHuman(r.messages)
+				r.engine.turnReview.Conversation = r.engine.reviewConversation
+				for _, doc := range r.trace.Documents {
+					r.engine.selectedDocs = append(r.engine.selectedDocs, &SelectedDocumentInfo{KnowledgeID: doc.ID, KnowledgeBaseID: qa4Stage2Library, FileName: doc.FileName, Title: doc.Title})
+				}
 			}
 			r.through(21)
-			if on {
-				// The logged source-progress recovery opened this gap before
-				// the first read of the annual pages.
+			if repair {
+				// The logged source-progress recovery selected the wrong page
+				// first. Replay its existing bounded recovery separately.
 				r.engine.beginEvidenceCompletionRecovery(r.ctx, r.state)
 			}
 			r.through(33)
@@ -76,7 +81,6 @@ func TestQA4Stage2ETableComparisonHistory(t *testing.T) {
 			require.Contains(t, report.Output, "876")
 			require.NotContains(t, report.Output, "331.2")
 			draft := qa4Stage2EComparisonDraft(t, r, 21)
-			repair := mode != "default" && mode != "false"
 			if repair {
 				qa4Stage2ECompareRecover(t, r, draft, mode, extensions)
 			} else {
@@ -86,11 +90,14 @@ func TestQA4Stage2ETableComparisonHistory(t *testing.T) {
 			answer := r.answer()
 			require.Contains(t, answer, "298.93")
 			require.Contains(t, answer, "G87")
-			if !on {
-				require.Contains(t, documentNumericProse(answer), "876")
-				return
+			if repair {
+				require.NotContains(t, documentNumericProse(answer), "876")
+			} else {
+				require.Nil(t, r.engine.taskPlan)
+				require.Empty(t, r.engine.evidenceCompletionTargets())
+				require.Empty(t, r.engine.currentCoverageDraftReview(r.ctx, r.state).comparisons)
+				require.Contains(t, documentNumericProse(answer), "876", "the original model paired different tables; the same-table result was never read")
 			}
-			require.NotContains(t, documentNumericProse(answer), "876")
 			require.NotContains(t, answer, "<task_coverage>")
 			if repair {
 				require.Contains(t, answer, "331.2")
@@ -154,9 +161,8 @@ func qa4Stage2EComparisonDraft(t *testing.T, r *qa4Stage2CReplay, event int) str
 
 func qa4Stage2ECompareRecover(t *testing.T, r *qa4Stage2CReplay, historicalDraft, mode string, extensions []qa4Stage2Call) {
 	t.Helper()
-	// The model selections here are repair variants. Values and citations
-	// are derived only from the replayed native reads, never injected into
-	// the repaired candidate. The historical draft is deliberately wrong.
+	// These are new model selection and response fixtures. The historical
+	// draft above used another table and actually lacked the requested cell.
 	raw, err := os.ReadFile("testdata/qa4/replay/s2-2-kb28.json")
 	require.NoError(t, err)
 	var earlier qa4Stage2CTrace
@@ -167,7 +173,11 @@ func qa4Stage2ECompareRecover(t *testing.T, r *qa4Stage2CReplay, historicalDraft
 	}
 	const table = "中国棉花平衡表"
 	const metric = "工商业期末库存"
-	const report, book = "3月31日周报", "棉花数据库"
+	report, book := "3月31日周报", "棉花数据库"
+	if mode == "only" {
+		book = r.engine.modelContext.RegisterDocument(r.trace.Documents[0].ID)
+		report = r.engine.modelContext.RegisterDocument(r.trace.Documents[1].ID)
+	}
 	gap := r.engine.evidenceCompletion.legacyGap
 	goal := map[string]any{"goal_index": 0, "request_basis": r.trace.Question, "source_mode": "open",
 		"version_task": "compare_sources", "table": table, "comparison_sources": []string{report, book},
@@ -197,25 +207,31 @@ func qa4Stage2ECompareRecover(t *testing.T, r *qa4Stage2CReplay, historicalDraft
 	bookChoice["grain"], bookChoice["period_from"], bookChoice["period_to"] = "month", "2023-10-01", "2023-10-31"
 	announce, err := json.Marshal([]any{bookChoice, selection(report, annualRef)})
 	require.NoError(t, err)
+
 	r.run(chatAnswer(historicalDraft + coverageAnswerTag + string(announce) + coverageAnswerClose))
 	require.False(t, r.state.IsComplete)
-	var recalled *types.ToolCall
-	for step := len(r.state.RoundSteps) - 1; step >= 0 && recalled == nil; step-- {
-		for _, call := range r.state.RoundSteps[step].ToolCalls {
-			if call.ExecutionName() == agenttools.ToolReadDocument && call.ExecutionArgs()["regex"] == true {
-				recalled = &call
-				break
+	if mode != "only" {
+		var recalled *types.ToolCall
+		for step := len(r.state.RoundSteps) - 1; step >= 0 && recalled == nil; step-- {
+			for _, call := range r.state.RoundSteps[step].ToolCalls {
+				if call.ExecutionName() == agenttools.ToolReadDocument && call.ExecutionArgs()["regex"] == true {
+					recalled = &call
+					break
+				}
 			}
 		}
+		require.NotNil(t, recalled, "one bounded native lookup used the selected report")
+		require.True(t, recalled.Result.Success)
+		require.Equal(t, "replay-comparison-report", recalled.ExecutionArgs()["id"])
+		for _, term := range []string{table, metric, "2023-10-31"} {
+			require.Contains(t, recalled.ExecutionArgs()["query"], term)
+		}
+		require.Contains(t, recalled.Result.Output, "# 第6页")
+		require.NotContains(t, recalled.Result.Output, "# 第28页")
+	} else {
+		require.Len(t, r.engine.evidenceCompletionTargets(), 1, "the comparison scope uses both selected document handles")
+		require.Equal(t, "only", r.engine.evidenceCompletionTargets()[0].SourceMode)
 	}
-	require.NotNil(t, recalled, "one bounded native lookup used the selected report")
-	require.True(t, recalled.Result.Success)
-	require.Equal(t, "replay-comparison-report", recalled.ExecutionArgs()["id"])
-	for _, term := range []string{table, metric, "2023-10-31"} {
-		require.Contains(t, recalled.ExecutionArgs()["query"], term)
-	}
-	require.Contains(t, recalled.Result.Output, "# 第6页")
-	require.NotContains(t, recalled.Result.Output, "# 第28页")
 	// The replay model chooses the page actually exposed by the lookup.
 	readArgs := map[string]any{"id": "replay-comparison-report", "page": 6}
 	if len(extensions) != 0 {
@@ -230,7 +246,10 @@ func qa4Stage2ECompareRecover(t *testing.T, r *qa4Stage2CReplay, historicalDraft
 	if mode == "only" {
 		r.calls([]qa4Stage2Call{{Event: 103, Tool: agenttools.ToolReadDocument, Arguments: map[string]any{"id": "same-library-third-source", "page": 6}}})
 		require.True(t, r.results[103].Result.PreflightRejected)
-		require.Contains(t, r.results[103].Result.Error, "outside the current coverage scope")
+		require.Contains(t, r.results[103].Result.Error, coverageScopeRejection)
+		// The same verified restriction still applies with the legacy gap
+		// controller in shadow, as does comparison of the two current sides.
+		r.engine.evidenceCompletion.enabled = false
 	}
 	receipt := selectRef(func(item coverageEvidence) bool { return item.Kind == "body" && item.Page == 6 && item.Object != "" })
 	asOf := selection(report, receipt)
@@ -252,28 +271,70 @@ func qa4Stage2ECompareRecover(t *testing.T, r *qa4Stage2CReplay, historicalDraft
 	}
 	wire, err := json.Marshal(declarations)
 	require.NoError(t, err)
-	candidate := historicalDraft
-	switch mode {
-	case "canonical revoked":
-		r.engine.acceptCoverageAnswer(r.ctx, r.trace.Question, r.state, r.messages, candidate+coverageAnswerTag+string(wire)+coverageAnswerClose, true)
-		canonical, complete, handled := r.engine.terminalTableComparison(r.ctx, r.state)
-		require.True(t, handled && complete)
+	reportItem := r.engine.evidenceCompletion.refs[receipt]
+	bookItem := r.engine.evidenceCompletion.refs[bookRef]
+	known := func(item coverageEvidence) string {
+		handle := r.engine.modelContext.CitableEvidenceHandle(item.CitationID)
+		if item.Kind == "body" {
+			handle = r.engine.modelContext.CitableChunkHandle(item.ChunkID)
+		}
+		require.NotEmpty(t, handle, item.Metric)
+		return fmt.Sprintf(`<ref id="%s"/>`, handle)
+	}
+	const verdict = "两份材料所列数字不同。"
+	prose := "《棉花周报20240331.pptx》第6页的中国棉花平衡表显示，2023-10 工商业期末库存为 **331.2 万吨**" + known(reportItem) + "。\n\n" +
+		"棉花数据库的中国棉花平衡表同月工商业期末库存则是 **298.93 万吨**（G87）" + known(bookItem) + "。"
+	if len(extensions) != 0 {
+		prose += "\n\n周报同一行的工商业期初库存、产量、进口和公开抛储依次为 217.2、116.0、28.7 和 25.1 万吨" + known(reportItem) + "。材料日期 2024-03-31。"
+		for _, component := range []struct{ metric, cell, value string }{
+			{"工商业期初库存", "B87", "231.9329"},
+			{"产量", "C87", "**110.0**"},
+			{"进口", "D87", "**10.0**"},
+			{"公开抛储", "E87", "**17.0**"},
+		} {
+			item := r.engine.evidenceCompletion.refs[selectRef(func(item coverageEvidence) bool {
+				return item.Kind == "cell" && item.Cell == component.cell && item.Operation == "analyze_table"
+			})]
+			prose += "\n\n数据库同一行的" + component.metric + "为 " + component.value + " 万吨（" + component.cell + "）" + known(item) + "。"
+		}
+	}
+	candidate := verdict + "\n\n" + prose
+	if mode == "wrong verdict" || mode == "no verdict" {
+		bad := "这两个数字相同。"
+		if mode == "no verdict" {
+			bad = "以下列出两份来源。"
+		}
+		candidate = bad + "\n\n" + prose
+		wire, err := json.Marshal(map[string]any{"action": "correct", "edits": []map[string]string{{"old": bad, "new": verdict}}})
+		require.NoError(t, err)
+		r.model.review = chatAnswer(string(wire))
+	}
+	if mode == "canonical revoked" {
+		initial := r.engine.acceptCoverageAnswer(r.ctx, r.trace.Question, r.state, r.messages, candidate+coverageAnswerTag+string(wire)+coverageAnswerClose, true)
+		decoded := r.engine.modelContext.DecodeOutputText(initial)
+		decision := r.engine.checkCandidate(r.ctx, r.trace.Question, decoded, "", r.state, r.messages, false)
+		require.Equal(t, candidateAccepted, decision.Disposition)
+		require.Equal(t, decoded, decision.Candidate)
 		const streamID = "existing-comparison-stream"
 		require.NoError(t, r.engine.eventBus.Emit(r.ctx, event.Event{ID: streamID, Type: event.EventAgentFinalAnswer, SessionID: "s2e",
-			Data: event.AgentFinalAnswerData{Content: canonical}}))
-		r.engine.commitTerminalResult(r.ctx, r.state, "s2e", canonical, streamID, "stalled", false)
+			Data: event.AgentFinalAnswerData{Content: decoded}}))
+		r.engine.commitTerminalResult(r.ctx, r.state, "s2e", decoded, streamID, "stalled", false)
 		require.Equal(t, streamID, r.engine.turnReview.TerminalStreamID)
-		require.Equal(t, canonical, r.state.FinalAnswer)
-		require.True(t, r.engine.tableComparisonDeliveryCurrent(r.ctx, r.state))
+		require.Equal(t, decoded, r.state.FinalAnswer)
 		return
-	case "wrong verdict":
-		// A deliberately adversarial scripted candidate has both correct
-		// values, while its conclusion contradicts the actual pair.
-		candidate = "这两个数字相同，周报为 331.2，数据库为 298.93。"
-	case "no verdict":
-		candidate = "周报列示 331.2，数据库列示 298.93。"
 	}
+	reviews := r.model.reviewCalls
+
 	r.run(chatAnswer(candidate + coverageAnswerTag + string(wire) + coverageAnswerClose))
+	if mode == "wrong verdict" || mode == "no verdict" {
+		require.Equal(t, reviews+1, r.model.reviewCalls, "use the existing structured-result editor")
+		require.Contains(t, r.model.reviewInput[1].Content, "checked_same_table_comparisons")
+		require.Contains(t, r.model.reviewInput[1].Content, `"reported_numbers":"different"`)
+	}
+	if r.state.IsComplete {
+		require.Equal(t, r.engine.modelContext.DecodeOutputText(verdict+"\n\n"+prose), r.state.FinalAnswer)
+	}
+
 	require.True(t, r.engine.evidenceCompletion.result[0].State == coverageSatisfied)
 	require.False(t, r.engine.coverageComparisonSourceMatches(0, book, coverageEvidence{
 		KnowledgeBaseID: qa4Stage2Library, SourceID: "same-library-third-source", KnowledgeID: "same-library-third-source", SourceDomain: "structured",
@@ -375,30 +436,40 @@ func TestEvidenceCompletionDoesNotAddTypedProtocolToConceptTurns(t *testing.T) {
 }
 
 func TestTerminalExhaustedSemanticRecoveryKeepsIndependentRows(t *testing.T) {
-	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
-	e := newTestEngine(t, &mockChat{})
-	e.config.AnswerReviewMode, e.config.WorkbenchDefault = "standard", true
-	e.toolRegistry = qa4ReplayRegistry()
-	e.turnReview.Query = "Explain the findings in these records."
-	const date = "2021-06-03"
-	call := terminalLatestSeriesCall()
-	call.Args["operation"], call.Args["start_date"], call.Args["end_date"] = "rows", date, date
-	data := call.Result.Data
-	filters := data["filters"].(map[string]any)
-	filters["operation"], filters["start_date"], filters["end_date"] = "rows", date, date
-	data["rows"] = append(data["rows"].([]any), map[string]any{
-		"date": date, "date_cell": "A16", "source_cell": "B16", "value": 48.5, "value_status": "valid",
-	})
-	data["rows_are"], data["record_count"], data["scope_record_count"], data["valid_count"] = "observations", 2, 2, 2
-	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}}
-	ctx := context.WithValue(t.Context(), types.LanguageContextKey, "en-US")
-	e.refreshEvidenceCompletion(ctx, e.turnReview.Query, state, nil)
-	e.beginEvidenceCompletionRecovery(ctx, state)
-	e.stopEvidenceCompletion(ctx, e.turnReview.Query, state, nil, "recovery_budget_exhausted")
-	e.commitTerminalResult(ctx, state, "terminal", "Unsupported relationship", "", "partial", false)
-	for _, want := range []string{"47.25", "48.5", "B15", "B16", "remains unverified"} {
-		require.Contains(t, state.FinalAnswer, want)
+	for _, enabled := range []string{"true", "false"} {
+		t.Run(enabled, func(t *testing.T) {
+			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", enabled)
+			model := &mockChat{}
+			e := newTestEngine(t, model)
+			e.config.AnswerReviewMode, e.config.WorkbenchDefault = "standard", true
+			e.toolRegistry = qa4ReplayRegistry()
+			e.turnReview.Query = "Explain the findings in these records."
+			const date = "2021-06-03"
+			call := terminalLatestSeriesCall()
+			call.Args["operation"], call.Args["start_date"], call.Args["end_date"] = "rows", date, date
+			data := call.Result.Data
+			filters := data["filters"].(map[string]any)
+			filters["operation"], filters["start_date"], filters["end_date"] = "rows", date, date
+			data["rows"] = append(data["rows"].([]any), map[string]any{
+				"date": date, "date_cell": "A16", "source_cell": "B16", "value": 48.5, "value_status": "valid",
+			})
+			data["rows_are"], data["record_count"], data["scope_record_count"], data["valid_count"] = "observations", 2, 2, 2
+			state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}}
+			ctx := context.WithValue(t.Context(), types.LanguageContextKey, "en-US")
+			e.refreshEvidenceCompletion(ctx, e.turnReview.Query, state, nil)
+			e.beginEvidenceCompletionRecovery(ctx, state)
+			e.stopEvidenceCompletion(ctx, e.turnReview.Query, state, nil, "recovery_budget_exhausted")
+			e.commitTerminalResult(ctx, state, "terminal", "Unsupported relationship", "", "failed", false, terminalBudget)
+			require.Equal(t, terminalBudget, e.turnReview.TerminalReceipt.failure)
+			require.True(t, state.IsComplete)
+			require.Contains(t, state.FinalAnswer, date)
+			require.Regexp(t, `47\.25[^.;]*B15`, state.FinalAnswer)
+			require.Regexp(t, `48\.5[^.;]*B16`, state.FinalAnswer)
+			require.Contains(t, state.FinalAnswer, "multiple records for the same field and date")
+			require.Contains(t, state.FinalAnswer, "A single value has not been established.")
+			require.NotContains(t, state.FinalAnswer, "Unsupported relationship")
+			require.NotContains(t, state.FinalAnswer, "comparison")
+			require.Zero(t, model.callCount)
+		})
 	}
-	require.NotContains(t, state.FinalAnswer, "Unsupported relationship")
-	require.NotContains(t, state.FinalAnswer, "comparison")
 }

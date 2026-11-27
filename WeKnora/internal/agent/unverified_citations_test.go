@@ -106,12 +106,18 @@ func TestUnverifiedCitationFinalCompletionRechecksTaskSourceScopeAndExactBody(t 
 				return nil
 			})
 			e.emitCompletionEvent(t.Context(), state, "session", "message", time.Now())
-			require.Equal(t, filterFallbackCitationTags(original, nil, nil), completed.FinalAnswer,
-				"completion/persistence must receive the reconciled server warning body, never a stale local answer or later substituted prose")
+			switch mutation {
+			case "task", "source", "scope":
+				requireTerminalEvidenceGap(t, completed.FinalAnswer)
+				require.NotContains(t, completed.FinalAnswer, "12.500")
+			default:
+				require.Equal(t, filterFallbackCitationTags(original, nil, nil), completed.FinalAnswer,
+					"presentation-only changes may keep the known warning body without stale navigation")
+				require.Contains(t, completed.FinalAnswer, "未能完成自动核验")
+			}
 			require.Equal(t, state.FinalAnswer, completed.FinalAnswer)
 			require.Empty(t, completed.EvidenceRefs)
 			require.Empty(t, completed.KnowledgeRefs)
-			require.Contains(t, completed.FinalAnswer, "未能完成自动核验")
 			require.NotContains(t, completed.FinalAnswer, "<evidence")
 			require.False(t, e.candidateApprovalCurrent(state.FinalAnswer, state))
 		})

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,8 +12,38 @@ import (
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
+
+func TestEvidenceCompletionShadowReportsDifferenceAndLeavesCandidate(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "false")
+	engine := newTestEngine(t, &mockChat{})
+	engine.config.WorkbenchDefault, engine.config.AnswerReviewMode = true, "standard"
+	engine.toolRegistry = qa4ReplayRegistry()
+	engine.evidenceCompletionEnabled()
+	var logs bytes.Buffer
+	log := logrus.New()
+	log.SetOutput(&logs)
+	ctx := context.WithValue(t.Context(), types.LoggerContextKey, logrus.NewEntry(log))
+	decision := candidateDecision{Candidate: "A verified draft.", Disposition: candidateAccepted}
+	state := &types.AgentState{}
+	checked, handled := engine.checkEvidenceCompletion(ctx, decision, state, "delivery")
+	require.False(t, handled)
+	require.Equal(t, decision, checked)
+	require.Contains(t, logs.String(), "no_validated_coverage_target")
+	logs.Reset()
+	engine.evidenceCompletion.result = []coverageCompletion{{GapID: "observation-gap", State: coverageOpen, Reason: "primary_unverified"}}
+	checked, handled = engine.checkEvidenceCompletion(ctx, decision, state, "delivery")
+	require.False(t, handled)
+	require.Equal(t, decision, checked)
+	require.Empty(t, engine.answerReviewAction)
+	require.Empty(t, engine.answerReviewFeedback)
+	require.Zero(t, engine.evidenceCompletion.recoveryDecisions)
+	for _, field := range []string{"disposition_changed=true", "candidate_disposition=accepted", "local_disposition=need_source"} {
+		require.Contains(t, logs.String(), field)
+	}
+}
 
 type coverageRuntimeIndex struct {
 	*sourceDiscoveryKnowledgeService
@@ -42,7 +73,7 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute, readMetadata b
 		body  = "The test pump's elapsed operating time on 2021-06-10 was thirteen hours."
 	)
 	model := &mockChat{}
-	engine := newTestEngine(t, model)
+	engine := newTestEngine(t, model, withCitationsEnabled(true))
 	engine.config.WorkbenchDefault, engine.config.TaskPlanningEnabled, engine.config.AnswerReviewMode = true, true, "standard"
 	engine.toolRegistry = agenttools.NewToolRegistry()
 	base := agenttools.NewStructuredDataTool()
@@ -130,17 +161,17 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute, readMetadata b
 	draft := func(answer string, d map[string]any) mockResponse {
 		return chatAnswer(answer + coverageAnswerTag + wire([]any{d}) + coverageAnswerClose)
 	}
-	const limitation = "The equipment register has no matching date."
+	const limitation = "The equipment register has no matching entry on 2021-06-10."
 	run(draft(limitation, declare(ref("directory"), "primary", "", nil)))
 	first, ok := engine.evidenceCompletionGap()
 	require.True(t, ok)
 	if !documentRoute {
 		require.Equal(t, coverageExhausted, first.State)
 		require.Equal(t, "no_authorized_supplemental_route", first.Reason)
-		require.Equal(t, candidateEvidencePartial, engine.turnReview.Last.Disposition)
+		require.Equal(t, "evidence_completion_exhausted", engine.turnReview.Last.ReasonCode)
 		require.False(t, engine.candidateApprovalCurrent(state.FinalAnswer, state))
 		require.True(t, state.IsComplete)
-		require.True(t, strings.HasPrefix(state.FinalAnswer, limitation))
+		require.Contains(t, state.FinalAnswer, "equipment register")
 		require.Contains(t, state.FinalAnswer, date)
 		require.Len(t, model.calls, 1)
 		require.Zero(t, guards.evidenceRecoveryAttempts)
@@ -164,7 +195,6 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute, readMetadata b
 		wrong("document-directory", agenttools.ToolListDocuments, map[string]any{}),
 		wrong("blank-search", agenttools.ToolSearchKnowledge, map[string]any{"query": "  "}),
 	})
-	require.Empty(t, engine.evidenceCompletion.blocked, "ordinary calls go to native validation")
 	require.Empty(t, engine.evidenceCompletion.recoveryCalls)
 	require.Zero(t, index.calls)
 	require.Empty(t, engine.evidenceCompletion.record.Attempts, "a rejected directory or missing query does not spend discovery")
@@ -194,10 +224,9 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute, readMetadata b
 	}
 	engine.modelContext.DecodeToolCalls(wrongReads)
 	engine.processEvidenceCompletionCalls(ctx, query, state, messages, wrongReads)
-	require.Empty(t, engine.evidenceCompletion.blocked, "non-matching reads go to native validation")
 	require.Nil(t, engine.evidenceCompletion.pending, "neither rejected read should activate the pending action")
 	require.Equal(t, decisions, engine.evidenceCompletion.recoveryDecisions)
-	require.Len(t, engine.evidenceCompletion.record.Bindings, priorBindings)
+	require.Len(t, engine.evidenceCompletion.record.Bindings, priorBindings+1, "the valid source association survives a mismatched recovery action")
 	require.Empty(t, engine.evidenceCompletion.recoveryCalls)
 	readArgs := map[string]any{
 		"id": handle, "page": 8, "source_scope": sourceScope,
@@ -233,10 +262,13 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute, readMetadata b
 	remaining, _ := engine.evidenceCompletionGap()
 	require.NotEqual(t, coverageSatisfied, remaining.State)
 
-	const answer = "The register has no matching date. The inspection report gives a duration of thirteen hours."
-	run(draft(answer, bodyClaim(subject, metric)))
+	const answer = "The equipment register has no matching duration entry on 2021-06-10. The Inspection report gives an elapsed operating time of thirteen hours for the test pump on 2021-06-10."
+	citation := engine.modelContext.CitableChunkHandle("contract-supporting")
+	require.NotEmpty(t, citation)
+	run(draft(answer+`<ref id="`+citation+`"/>`, bodyClaim(subject, metric)))
 	require.True(t, state.IsComplete)
-	require.True(t, strings.HasPrefix(state.FinalAnswer, answer))
+	require.Equal(t, answer, documentAnswerCitation.ReplaceAllString(state.FinalAnswer, ""))
+	require.Equal(t, []string{"contract-supporting"}, uniqueCandidateCitationIDs(state.FinalAnswer))
 	require.Equal(t, candidateAccepted, engine.turnReview.Last.Disposition)
 	require.Len(t, engine.evidenceCompletion.record.Attempts, 2)
 	require.Equal(t, []string{"discover", "read"}, []string{engine.evidenceCompletion.record.Attempts[0].Action, engine.evidenceCompletion.record.Attempts[1].Action})
@@ -257,10 +289,10 @@ func TestEvidenceCompletionPendingAcceptsFirstBindingWithoutGapID(t *testing.T) 
 		{GoalIndex: 0, StructuredTaskGoal: &StructuredTaskGoal{SourceMode: "named_first"}},
 		{GoalIndex: 1, StructuredTaskGoal: &StructuredTaskGoal{SourceMode: "named_first"}},
 	}}
-	e.evidenceCompletionEnabled()
+	e.refreshEvidenceCompletion(t.Context(), "Read the equipment duration.", &types.AgentState{}, nil)
 	turn := &e.evidenceCompletion
 	turn.pending = &coverageCompletion{GoalIndex: 0, GapID: "current-gap", State: coverageOpen, NextRead: "read", BudgetRemaining: 1}
-	observation := coverageEvidence{Kind: "directory", SourceDomain: "structured", SourceID: "register", KnowledgeBaseID: "library", SeriesID: "duration", EvidenceID: "directory", JSONPointer: "/data/series/0"}
+	observation := coverageEvidence{Kind: "directory", SourceDomain: "structured", SourceID: "register", KnowledgeBaseID: "library", SeriesID: "duration", EvidenceID: "directory", JSONPointer: "/data/series/0", Revision: turn.revision, AuthScope: turn.scope}
 	turn.seenObservations = map[string]bool{}
 	turn.record.Evidence = []coverageEvidence{observation}
 	turn.refs = map[string]coverageEvidence{"verified-field": observation}
@@ -273,11 +305,11 @@ func TestEvidenceCompletionPendingAcceptsFirstBindingWithoutGapID(t *testing.T) 
 		call("matching-goal", `"goal_index":0`),
 	}
 	e.processEvidenceCompletionCalls(t.Context(), "Read the equipment duration.", &types.AgentState{}, nil, calls)
-	require.Empty(t, turn.blocked)
-	require.Equal(t, map[string]bool{"matching-goal": true}, turn.recoveryCalls)
-	require.Len(t, turn.record.Bindings, 1)
-	require.Equal(t, 0, turn.record.Bindings[0].GoalIndex)
-	require.Equal(t, "register", turn.record.Bindings[0].SourceID)
+	require.Equal(t, map[string]bool{"wrong-gap": true, "matching-goal": true}, turn.recoveryCalls)
+	require.Len(t, turn.record.Bindings, 2)
+	require.Equal(t, 1, turn.record.Bindings[0].GoalIndex)
+	require.Equal(t, 0, turn.record.Bindings[1].GoalIndex)
+	require.Equal(t, "register", turn.record.Bindings[1].SourceID)
 }
 
 func TestEvidenceCompletionOptionalPendingReadUsesCurrentBinding(t *testing.T) {
@@ -291,11 +323,11 @@ func TestEvidenceCompletionOptionalPendingReadUsesCurrentBinding(t *testing.T) {
 	e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
 	e.toolRegistry = qa4ReplayRegistry()
 	e.taskPlan = &taskEvidencePlan{CoverageTargets: []taskCoverageTarget{{StructuredTaskGoal: &StructuredTaskGoal{SourceMode: "named_first"}}}}
-	e.evidenceCompletionEnabled()
+	e.refreshEvidenceCompletion(t.Context(), "Read the equipment duration.", &types.AgentState{}, nil)
 	turn := &e.evidenceCompletion
 	turn.pending = &coverageCompletion{GapID: gapID, State: coverageOpen, NextRead: "read", BudgetRemaining: 1}
 	turn.record.Bindings = []coverageBinding{{Role: "primary", SourceID: "verified-register", KnowledgeBaseID: "library", Sheet: "observations", SeriesID: "duration", PeriodFrom: day, PeriodTo: day}}
-	observation := coverageEvidence{Kind: "directory", SourceDomain: "structured", SourceID: "verified-register", KnowledgeBaseID: "library", Sheet: "observations", SeriesID: "duration", EvidenceID: "directory", JSONPointer: "/data/series/0"}
+	observation := coverageEvidence{Kind: "directory", SourceDomain: "structured", SourceID: "verified-register", KnowledgeBaseID: "library", Sheet: "observations", SeriesID: "duration", EvidenceID: "directory", JSONPointer: "/data/series/0", Revision: turn.revision, AuthScope: turn.scope}
 	turn.seenObservations = map[string]bool{}
 	turn.record.Evidence = []coverageEvidence{observation}
 	turn.refs = map[string]coverageEvidence{"verified-field": observation}
@@ -318,10 +350,9 @@ func TestEvidenceCompletionOptionalPendingReadUsesCurrentBinding(t *testing.T) {
 	}
 	e.processEvidenceCompletionCalls(t.Context(), "Read the equipment duration.", &types.AgentState{}, nil, calls)
 	require.Equal(t, map[string]bool{"bound-inspection": true, "invalid-declaration": true, "stale-gap": true, "valid-gap": true}, turn.recoveryCalls)
-	require.Len(t, turn.record.Bindings, 1, "discarded metadata must not create a new binding")
+	require.Len(t, turn.record.Bindings, 2, "only the valid source association can add a binding")
 	require.Empty(t, turn.declared)
 	require.Len(t, turn.record.Evidence, 1)
-	require.Empty(t, turn.blocked, "named-first recovery scopes receipts, and native execution still checks access")
 }
 
 func TestEvidenceCompletionRetainsNativeDraftWithoutDeclaration(t *testing.T) {
@@ -353,7 +384,9 @@ func TestEvidenceCompletionRetainsNativeDraftWithoutDeclaration(t *testing.T) {
 			e.refreshEvidenceCompletion(ctx, question, state, conversation)
 			decision := e.checkCandidate(ctx, question, draft, "", state, conversation, false)
 			if enabled == "false" {
-				require.Empty(t, e.turnReview.CoverageDraft.Candidate)
+				require.Equal(t, candidateAccepted, decision.Disposition)
+				require.Equal(t, draft, e.turnReview.CoverageDraft.Candidate)
+				require.False(t, e.evidenceCompletion.enabled)
 				return
 			}
 			require.Equal(t, candidateNeedSource, decision.Disposition)
@@ -533,7 +566,6 @@ func TestEvidenceCompletionDiscardInvalidOptionalDeclaration(t *testing.T) {
 			}
 			ctx := types.WithCaller(t.Context(), types.Caller{TenantID: 7, UserID: "approved-reader", Role: types.TenantRoleViewer})
 			e.processEvidenceCompletionCalls(ctx, "Read the equipment duration.", &types.AgentState{}, nil, calls)
-			require.Empty(t, e.evidenceCompletion.blocked)
 			for _, args := range []string{calls[0].Function.Arguments, calls[0].ModelArguments} {
 				require.JSONEq(t, fmt.Sprintf(`{"query":%q}`, tc.query), args)
 			}
@@ -557,30 +589,46 @@ func TestEvidenceCompletionDiscardInvalidOptionalDeclaration(t *testing.T) {
 }
 
 func TestEvidenceCompletionOnlyScopeKeepsSourceCallsInsideBinding(t *testing.T) {
-	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
-	e := newTestEngine(t, &mockChat{})
-	e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
-	e.toolRegistry = qa4ReplayRegistry()
-	e.taskPlan = &taskEvidencePlan{SourceDiscovery: &taskSourceDiscovery{Mode: "discover", SourceDomains: []string{"structured"}},
-		CoverageTargets: []taskCoverageTarget{{StructuredTaskGoal: &StructuredTaskGoal{SourceMode: "only"}}}}
-	e.evidenceCompletionEnabled()
-	e.evidenceCompletion.record.Bindings = []coverageBinding{{GoalIndex: 0, Role: "primary", SourceID: "verified-register"}}
-	ctx := t.Context()
-	state := &types.AgentState{}
-	call := func(id, name, arguments string) types.LLMToolCall {
-		return types.LLMToolCall{ID: id, Function: types.FunctionCall{Name: name, Arguments: arguments}}
+	for _, mode := range []string{"false", "true"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", mode)
+			e := newTestEngine(t, &mockChat{})
+			e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
+			e.config.SearchTargets = types.SearchTargets{
+				{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "library", TenantID: 7},
+				{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "unrelated", TenantID: 7},
+			}
+			e.toolRegistry = qa4ReplayRegistry()
+			e.taskPlan = &taskEvidencePlan{SourceDiscovery: &taskSourceDiscovery{Mode: "discover", SourceDomains: []string{"structured"}},
+				CoverageTargets: []taskCoverageTarget{{StructuredTaskGoal: &StructuredTaskGoal{SourceMode: "only"}}}}
+			ctx := t.Context()
+			state := &types.AgentState{}
+			e.refreshEvidenceCompletion(ctx, "Use only the selected register.", state, nil)
+			turn := &e.evidenceCompletion
+			turn.nativeSelections = map[int][]coverageEvidence{0: {{SourceDomain: "structured", KnowledgeBaseID: "library", SourceID: "verified-register"}}}
+			call := func(id, name, arguments string) types.LLMToolCall {
+				return types.LLMToolCall{ID: id, Function: types.FunctionCall{Name: name, Arguments: arguments}}
+			}
+			calls := []types.LLMToolCall{
+				call("document", agenttools.ToolSearchKnowledge, `{"query":"duration","task_coverage":null}`),
+				call("other-register", "structured_query_series", `{"knowledge_base_id":"library","dataset_id":"other-register","series_id":"duration","task_coverage":{"goal_index":0,"selection_ref":"unknown"}}`),
+				call("same-id-other-library", "structured_query_series", `{"knowledge_base_id":"unrelated","dataset_id":"verified-register","series_id":"duration"}`),
+				call("verified-register", "structured_query_series", `{"knowledge_base_id":"library","dataset_id":"verified-register","series_id":"duration","task_coverage":{"goal_index":0,"role":"supplement"}}`),
+			}
+			e.processEvidenceCompletionCalls(ctx, "Use only the selected register.", state, nil, calls)
+			for i, candidate := range calls {
+				_, args, metadata := splitCoverageArgument(candidate.Function.Arguments)
+				require.Empty(t, metadata)
+				require.Equal(t, i == 3, e.coverageSourceCallAllowed(ctx, candidate, args), candidate.ID)
+				if i < 3 {
+					result := e.runToolCall(ctx, candidate, i, 0, 0, "session", "turn").Result
+					require.True(t, result.PreflightRejected)
+					require.Equal(t, coverageScopeRejection, result.Error)
+				}
+			}
+			require.False(t, e.coveragePrefetchSelection(nil)[agenttools.ToolSearchKnowledge])
+		})
 	}
-	calls := []types.LLMToolCall{
-		call("document", agenttools.ToolSearchKnowledge, `{"query":"duration","task_coverage":null}`),
-		call("other-register", "structured_query_series", `{"dataset_id":"other-register","series_id":"duration","task_coverage":{"goal_index":0,"selection_ref":"unknown"}}`),
-		call("verified-register", "structured_query_series", `{"dataset_id":"verified-register","series_id":"duration","task_coverage":{"goal_index":0,"role":"supplement"}}`),
-	}
-	e.processEvidenceCompletionCalls(ctx, "Use only the selected register.", state, nil, calls)
-	require.Len(t, e.evidenceCompletion.blocked, 2)
-	require.Equal(t, "source call is outside the current coverage scope or recovery action", e.evidenceCompletion.blocked["document"])
-	require.Equal(t, "source call is outside the current coverage scope or recovery action", e.evidenceCompletion.blocked["other-register"])
-	require.NotContains(t, e.evidenceCompletion.blocked, "verified-register")
-	require.False(t, e.coveragePrefetchSelection(nil)[agenttools.ToolSearchKnowledge])
 }
 
 func TestEvidenceCompletionPreservesAllRequiredFactReferences(t *testing.T) {
@@ -670,10 +718,12 @@ func TestEvidenceCompletionOnlyComparisonUsesAuthorizedUISelections(t *testing.T
 			e.taskPlan = &taskEvidencePlan{SourceDiscovery: &taskSourceDiscovery{Mode: "discover", SourceDomains: []string{"knowledge"}},
 				CoverageTargets: []taskCoverageTarget{target}}
 			e.evidenceCompletionEnabled()
-			e.evidenceCompletion.record.Bindings = []coverageBinding{{Role: "primary", SourceID: first, KnowledgeBaseID: kb}}
+			if !tc.selectBoth {
+				e.evidenceCompletion.nativeSelections = map[int][]coverageEvidence{0: {{SourceDomain: "knowledge", SourceID: first, KnowledgeBaseID: kb}}}
+			}
 			for _, id := range []string{first, second, third} {
 				require.Equal(t, id == first || id == second && tc.allowSecond,
-					e.coverageMatchesPinnedTarget(target, coverageEvidence{SourceID: id, KnowledgeBaseID: kb}), id)
+					e.coverageEvidenceAllowed(t.Context(), &target, coverageEvidence{SourceDomain: "knowledge", SourceID: id, KnowledgeBaseID: kb}), id)
 			}
 
 			read := func(name, id string) types.LLMToolCall {
@@ -689,13 +739,11 @@ func TestEvidenceCompletionOnlyComparisonUsesAuthorizedUISelections(t *testing.T
 				search("compare-pair", first, second), search("extra-document", first, second, third),
 			}
 			e.processEvidenceCompletionCalls(t.Context(), "只依据所选资料", &types.AgentState{}, nil, calls)
-			require.NotContains(t, e.evidenceCompletion.blocked, "first")
-			require.Contains(t, e.evidenceCompletion.blocked, "third")
-			require.Contains(t, e.evidenceCompletion.blocked, "extra-document")
-			_, blockedSecond := e.evidenceCompletion.blocked["second"]
-			_, blockedPair := e.evidenceCompletion.blocked["compare-pair"]
-			require.Equal(t, !tc.allowSecond, blockedSecond)
-			require.Equal(t, !tc.allowSecond, blockedPair)
+			for i, call := range calls {
+				_, args, _ := splitCoverageArgument(call.Function.Arguments)
+				require.Equal(t, i == 0 || tc.allowSecond && (i == 1 || i == 3),
+					e.coverageSourceCallAllowed(t.Context(), call, args), call.ID)
+			}
 		})
 	}
 }

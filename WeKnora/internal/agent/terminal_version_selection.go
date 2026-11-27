@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -10,7 +9,10 @@ import (
 // The selected source and its basis come from the model's declaration. Both
 // receipts must still be current, and both must report comparable values.
 type terminalVersionChoice struct {
-	selected, basis, reason string
+	SelectedSource              string `json:"selected_source"`
+	AlternativeSource           string `json:"alternative_source"`
+	Basis                       string `json:"basis_quote"`
+	selectedRef, alternativeRef string
 }
 
 func coverageVersionBasis(source coverageEvidence, reason string) bool {
@@ -21,7 +23,7 @@ func coverageVersionBasis(source coverageEvidence, reason string) bool {
 	return strings.Contains(source.SourceTitle, reason) || strings.Contains(body, reason)
 }
 
-func currentTerminalVersionChoice(record coverageRecord, facts []terminalCoverageFact) terminalVersionChoice {
+func currentTerminalVersionChoice(record coverageRecord, facts []coverageFact) terminalVersionChoice {
 	var result terminalVersionChoice
 	for _, binding := range record.Bindings {
 		if binding.VersionBasisRef == "" || binding.Role != "supplement" {
@@ -57,7 +59,7 @@ func currentTerminalVersionChoice(record coverageRecord, facts []terminalCoverag
 		if !coverageVersionBasis(basis, binding.VersionBasis) {
 			continue
 		}
-		choice := terminalVersionChoice{selected.SourceTitle, alternative.SourceTitle, binding.VersionBasis}
+		choice := terminalVersionChoice{selected.SourceTitle, alternative.SourceTitle, binding.VersionBasis, coverageDraftFactIdentity(selected), coverageDraftFactIdentity(alternative)}
 		if result != (terminalVersionChoice{}) && result != choice {
 			return terminalVersionChoice{}
 		}
@@ -74,17 +76,7 @@ func terminalComparableVersions(a, b coverageEvidence) bool {
 		a.PeriodFrom != b.PeriodFrom || a.PeriodTo != b.PeriodTo {
 		return false
 	}
-	left, leftNumeric := terminalComparisonNumber(a)
-	right, rightNumeric := terminalComparisonNumber(b)
+	left, leftNumeric := coverageComparisonNumber(a)
+	right, rightNumeric := coverageComparisonNumber(b)
 	return leftNumeric && rightNumeric && left.Cmp(right) != 0
-}
-
-func (choice terminalVersionChoice) render(chinese bool) string {
-	if choice.selected == "" {
-		return ""
-	}
-	delivery := terminalCoverageDelivery{chinese: chinese}
-	return fmt.Sprintf(delivery.text("补充披露暂采用《%s》。版本选择依据是《%s》中的“%s”。",
-		"The supplemental disclosure uses “%s” provisionally. The basis for that version choice is “%s”, which contains “%s”."),
-		terminalEvidenceText(choice.selected), terminalEvidenceText(choice.basis), terminalEvidenceText(choice.reason))
 }

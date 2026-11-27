@@ -83,16 +83,12 @@ const (
 	maxConsecutiveLengthRounds = 3
 )
 
-// truncatedAnswerFallback is delivered when every attempt at this turn was cut
-// off at the completion cap and none of them produced answer text — there is
-// nothing partial to hand over, so say what happened instead of finishing with
-// an empty message.
+// Legacy provider text only. New truncation failures use terminalTruncated.
 const truncatedAnswerFallback = "Sorry, this answer kept hitting the model's per-response output limit " +
 	"before any text was produced. Try narrowing the question, or raise the agent's " +
 	"max_completion_tokens setting."
 
-// stalledAnswerFallback is delivered when a no-progress guard stopped the turn
-// and the round that tripped it produced no text.
+// Legacy provider text only. New stalls use terminalStalled.
 const stalledAnswerFallback = "I'm sorry, I was unable to generate a response. Please try again."
 
 // Empty model output is a runtime recovery condition, not new user steering.

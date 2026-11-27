@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -38,22 +37,22 @@ func TestQA4Stage2DHistoricalReplay(t *testing.T) {
 		name      string
 		fixture   string
 		lastEvent int
-		legacy    bool
+		forced    bool
 		omitValue bool
 	}{
 		{"KB16_default", "s2-3-kb16", 49, false, false},
-		{"KB16_false", "s2-3-kb16", 49, true, false},
+		{"KB16_forced", "s2-3-kb16", 49, true, false},
 		{"KB31_default", "s2-3-kb31", 34, false, false},
-		{"KB31_false", "s2-3-kb31", 34, true, false},
+		{"KB31_forced", "s2-3-kb31", 34, true, false},
 		{"KB31_draft_missing_primary_value", "s2-3-kb31", 34, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := newQA4Stage2CReplay(t, tc.fixture, !tc.legacy, false)
-			if !tc.legacy {
+			r := newQA4Stage2CReplay(t, tc.fixture, tc.forced, false)
+			if !tc.forced {
 				// The stage 2c constructor has registered the original env for cleanup.
 				require.NoError(t, os.Unsetenv("WEKNORA_AGENT_EVIDENCE_COMPLETION"))
 			}
-			require.Equal(t, !tc.legacy, r.engine.evidenceCompletionEnabled())
+			require.Equal(t, tc.forced, r.engine.evidenceCompletionEnabled())
 			require.Nil(t, r.engine.taskPlan)
 			structuredReads := qa4Stage2DCountReads()
 			// Omit superseded drafts and navigation unrelated to these final
@@ -105,7 +104,7 @@ func TestQA4Stage2DHistoricalReplay(t *testing.T) {
 				knowledgeIDs = append(knowledgeIDs, ref.ID)
 			}
 			if tc.lastEvent == 49 {
-				qa4Stage2DAssertKB16(t, r, answer, tc.legacy)
+				qa4Stage2DAssertKB16(t, r, answer)
 				require.Equal(t, []string{"replay-0331-slide-2-table"}, knowledgeIDs)
 				var savedIDs []string
 				for _, ref := range r.state.EvidenceRefs {
@@ -147,11 +146,11 @@ type qa4Stage2DLatestCell struct{ contract, value, cell string }
 func qa4Stage2DBoundedSQLRecovery(t *testing.T, fixture string, cells []qa4Stage2DLatestCell) {
 	t.Helper()
 	const lastDay = "2023-09-22"
-	for _, mode := range []string{"default", "false"} {
+	for _, mode := range []string{"true", "false", "unset"} {
 		t.Run(mode, func(t *testing.T) {
-			enabled := mode == "default"
+			enabled := mode == "true"
 			r := newQA4Stage2CReplay(t, fixture, enabled, false)
-			if enabled {
+			if mode == "unset" {
 				require.NoError(t, os.Unsetenv("WEKNORA_AGENT_EVIDENCE_COMPLETION"))
 			}
 			r.engine.config.StructuredResultReviewEnabled = false
@@ -171,6 +170,7 @@ func qa4Stage2DBoundedSQLRecovery(t *testing.T, fixture string, cells []qa4Stage
 			}
 
 			draft := r.trace.Drafts[0]
+			expectedAnswer := draft
 			require.NotContains(t, draft, "17110")
 			modelCalls := r.model.callCount
 			r.run(chatAnswer(draft))
@@ -213,8 +213,23 @@ func qa4Stage2DBoundedSQLRecovery(t *testing.T, fixture string, cells []qa4Stage
 							coverageCurrentEvidence(record, item)
 					}), "the bounded result registered the original cell for %s", cell.contract)
 				}
-				r.run(chatAnswer(draft))
-				require.Equal(t, modelCalls+3, r.model.callCount, "rechecking the unchanged draft requires no tool-verification model call")
+				// Script the model response which uses the verified endpoint
+				// from the completed bounded read. The historical draft remains
+				// unchanged for the default path where this read never ran.
+				var displayed []string
+				for _, cell := range cells {
+					field := cell.contract
+					if len(cells) > 1 {
+						field = "futures.close." + field
+					}
+					displayed = append(displayed, field+" "+cell.value+"（"+cell.cell+"）")
+				}
+				revised := draft + "\n\n同字段在 " + lastDay + " 的有效值位于日期格 A4705：" + strings.Join(displayed, "，") + "。"
+				expectedAnswer = revised
+				r.engine.evidenceCompletion.enabled = false
+				r.run(chatAnswer(revised))
+				require.Equal(t, modelCalls+3, r.model.callCount, "the existing model round authored the revised draft")
+				require.Empty(t, r.engine.turnReview.Last.Unsupported, "every displayed number comes from the bounded receipt")
 				require.EqualValues(t, 2, reads.Load(), "the same missing field may be read only once")
 			} else {
 				require.EqualValues(t, 1, reads.Load())
@@ -224,21 +239,13 @@ func qa4Stage2DBoundedSQLRecovery(t *testing.T, fixture string, cells []qa4Stage
 			r.exhaust()
 			answer := r.answer()
 			t.Logf("Published answer:\n%s", answer)
-			require.Contains(t, answer, "2024年3月")
-			require.Contains(t, answer, "没有有效记录")
-			require.Contains(t, answer, lastDay)
+			require.Equal(t, expectedAnswer, answer)
 			if enabled {
-				if len(cells) == 1 {
-					require.Contains(t, answer, "17110")
-					require.Contains(t, answer, "B4705")
-					require.Contains(t, answer, "A4705")
-				} else {
-					for _, cell := range cells {
-						require.Regexp(t, regexp.QuoteMeta(cell.contract)+`\s+`+cell.value+`(?:\.0+)?[^，\n]*`+cell.cell, answer)
-					}
+				for _, cell := range cells {
+					require.Contains(t, answer, cell.contract)
+					require.Contains(t, answer, cell.value)
+					require.Contains(t, answer, cell.cell)
 				}
-			} else {
-				require.Equal(t, draft, answer)
 			}
 		})
 	}
@@ -291,7 +298,7 @@ func qa4Stage2DRemintCitations(t *testing.T, r *qa4Stage2CReplay, fixture string
 	return draft
 }
 
-func qa4Stage2DAssertKB16(t *testing.T, r *qa4Stage2CReplay, answer string, legacy bool) {
+func qa4Stage2DAssertKB16(t *testing.T, r *qa4Stage2CReplay, answer string) {
 	t.Helper()
 	require.Equal(t, "query_unavailable", r.results[20].Result.Data["status"])
 	require.Equal(t, "needs_clarification", r.results[25].Result.Data["status"])
@@ -318,24 +325,8 @@ func qa4Stage2DAssertKB16(t *testing.T, r *qa4Stage2CReplay, answer string, lega
 	for _, want := range []string{"查不到", "2023-09-22", "2024年3月", "棉花周报20240331.pptx", "第2页", "CF2405", "CF2409", "CF2501", "16085", "16265", "16095", "不能直接补作该表", "<kb ", "<evidence "} {
 		require.Contains(t, answer, want)
 	}
-	if legacy {
-		require.NotContains(t, answer, "17110")
-		return
-	}
-	primary, supplement, ok := strings.Cut(answer, "作为补充")
-	require.True(t, ok)
-	for _, want := range []string{
-		`CF\.CZC\s+17110(?:\.0+)?[^，\n]*B4705`,
-		`CF01M\.CZC\s+17110(?:\.0+)?[^，\n]*C4705`,
-		`CF05M\.CZC\s+16865(?:\.0+)?[^，\n]*E4705`,
-		`CF09M\.CZC\s+16690(?:\.0+)?[^，\n]*G4705`,
-	} {
-		require.Regexp(t, want, primary)
-	}
-	require.NotContains(t, supplement, "17110")
-	for _, incorrect := range []string{"D2198", "F1982", "H2658", "17110元/吨", "17110 元/吨"} {
-		require.NotContains(t, answer, incorrect)
-	}
+	require.NotContains(t, answer, "17110", "the original draft omitted the endpoint already present in the SQL input")
+	require.Equal(t, r.engine.modelContext.DecodeOutputText(qa4Stage2DRemintCitations(t, r, "s2-3-kb16")), answer)
 }
 
 func qa4Stage2DAssertKB31(t *testing.T, r *qa4Stage2CReplay, answer string, omitValue bool) {
@@ -346,10 +337,12 @@ func qa4Stage2DAssertKB31(t *testing.T, r *qa4Stage2CReplay, answer string, omit
 	require.True(t, r.results[30].Result.Success)
 	require.Contains(t, r.results[34].Result.Output, "郑棉仓单：合计60.6万吨")
 	require.True(t, strings.HasPrefix(r.trace.HistoricalFinal, r.trace.Drafts[0]+"\n\n棉花数据库.xlsx /"))
-	for _, want := range []string{"查不到", "2024年3月10日", "5160", "B3340", "棉花周报20240310", "第18页", "60.6万吨", "不含有效预报", "周度值", "棉花数据库本身没有这一天的数据", "<kb "} {
+	for _, want := range []string{"查不到", "2024年3月10日", "棉花周报20240310", "第18页", "60.6万吨", "不含有效预报", "周度值", "棉花数据库本身没有这一天的数据", "<kb "} {
 		require.Contains(t, answer, want)
 	}
 	if !omitValue {
+		require.Contains(t, answer, "5160")
+		require.Contains(t, answer, "B3340")
 		require.Contains(t, answer, "2023年9月21日")
 		require.Equal(t, r.trace.Drafts[0], answer)
 		return
@@ -358,10 +351,8 @@ func qa4Stage2DAssertKB31(t *testing.T, r *qa4Stage2CReplay, answer string, omit
 	require.True(t, ok)
 	_, originalReportAndConclusion, ok := strings.Cut(r.trace.Drafts[0], "\n\n")
 	require.True(t, ok)
-	require.Equal(t, 1, strings.Count(answer, "5160"))
-	require.Contains(t, primary, "5160")
-	require.Contains(t, primary, "B3340")
-	require.Regexp(t, `2023(?:-09-21|年9月21日)`, primary)
+	require.NotContains(t, primary, "5160", "the no-plan variant cannot inject a missing primary value into the candidate")
+	require.NotContains(t, primary, "B3340")
 	require.Equal(t, originalReportAndConclusion, reportAndConclusion)
 	require.NotContains(t, answer, "5160 张")
 }

@@ -26,7 +26,7 @@ func TestNumericFailureFallbackDeliversEarlierGroundedCandidate(t *testing.T) {
 		state = sourceConsistencyState()
 		engine.commitTerminalResult(t.Context(), state, "session", fallback, "", "failed", false)
 		require.False(t, terminalCandidateFallback(state.FinalAnswer), "a fixed runtime message is not the published result")
-		require.Contains(t, state.FinalAnswer, "本轮没有取得可用于回答的已核实内容")
+		require.Contains(t, state.FinalAnswer, "没有取得可核实的来源回执")
 		require.NotContains(t, state.FinalAnswer, "999")
 	}
 }

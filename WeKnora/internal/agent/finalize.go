@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,6 +35,9 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	e.turnReview.Query, e.turnReview.Conversation = query, append([]chat.Message(nil), conversation...)
+	e.turnReview.TerminalInput = e.terminalEvidenceRevision(ctx, state)
+	e.turnReview.TerminalInput.task = "" // The checked task is captured separately.
 	ctx, cancelFinalBudget := e.standardAnswerFinalContext(ctx, state)
 	defer cancelFinalBudget()
 	if hasWorkspaceExecution(state) {
@@ -96,6 +100,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	}
 	fullAnswer := ""
 	outcome := "failed"
+	failure := terminalNoFailure
 	truncated := false
 	overflowRetried := false
 	// Synthesis is an exceptional final path (iteration exhaustion or API
@@ -195,7 +200,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			}
 			if decision.Err != nil {
 				logger.Warnf(ctx, "[Agent][FinalAnswer] Candidate check failed: %v", decision.Err)
-				fullAnswer = answerReviewUnavailableFallback
+				fullAnswer, failure = "", terminalReview
 				truncated = false
 				break
 			}
@@ -225,9 +230,13 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		}
 
 		if attempt == 2 || !e.spendCandidateRepair() {
-			fullAnswer = incompleteAnswerFallback
+			fullAnswer, failure = "", terminalIncomplete
 			if len(unsupported) > 0 {
-				fullAnswer = finalNumericFailureFallback
+				failure = terminalNumeric
+			} else if truncated {
+				failure = terminalTruncated
+			} else if emptyFinalDelivery(llmResult) || strings.TrimSpace(llmResult.Content) == "" {
+				failure = terminalEmpty
 			}
 			truncated = false
 			break
@@ -274,7 +283,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	if outcome != "answer" && e.collaboration != nil && e.collaboration.Child != nil {
 		return fmt.Errorf("delegated final answer could not be verified")
 	}
-	e.commitTerminalResult(ctx, state, sessionID, fullAnswer, "", outcome, truncated)
+	e.commitTerminalResult(ctx, state, sessionID, fullAnswer, "", outcome, truncated, failure)
 	logger.Infof(ctx, "[Agent][FinalAnswer] Final answer generated: %d characters", len(fullAnswer))
 	common.PipelineInfo(ctx, "Agent", "final_answer_done", map[string]interface{}{
 		"session_id": sessionID,
@@ -354,13 +363,16 @@ func (e *AgentEngine) handleMaxIterations(
 		"max":        e.config.MaxIterations,
 	})
 
-	return e.finishBoundedResultAnswer(ctx, query, state, sessionID, messages, "The iteration budget has been exhausted.", toolStopSynthesisBudget, answerReviewUnavailableFallback, chartAnswer...)
+	return e.finishBoundedResultAnswer(ctx, query, state, sessionID, messages, "The iteration budget has been exhausted.", toolStopSynthesisBudget, terminalBudget, chartAnswer...)
 }
 
 // emitCompletionEvent emits the EventAgentComplete event with execution summary.
 func (e *AgentEngine) emitCompletionEvent(
 	ctx context.Context, state *types.AgentState, sessionID, messageID string, startTime time.Time,
 ) {
+	if state.IsComplete && state.Suspended == nil {
+		e.finalizeTerminalPublication(ctx, state, sessionID)
+	}
 	steps := state.RoundSteps
 	if state.SuspendedStep != nil {
 		steps = append(append([]types.AgentStep(nil), steps...), *state.SuspendedStep)
@@ -376,33 +388,11 @@ func (e *AgentEngine) emitCompletionEvent(
 			BackgroundSeenIDs:    seen,
 		})
 	}
-	// Resolve navigation against the bytes completing the turn. A stale
-	// reference binding can change the text that was originally streamed.
-	streamed := state.FinalAnswer
-	if e.turnReview.TableComparisonDelivery.answerHash != "" && !e.tableComparisonDeliveryCurrent(ctx, state) {
-		// A comparison assembled from a stale scope must not survive in the
-		// complete event or durable references.
-		e.turnReview.TableComparisonDelivery = tableComparisonDeliveryReceipt{}
-		e.refreshEvidenceCompletion(ctx, e.turnReview.Query, state, e.turnReview.Conversation)
-		state.FinalAnswer = e.terminalCoverageFailure(ctx, state)
-		state.KnowledgeRefs, state.EvidenceRefs = nil, nil
-	}
-	e.publishFinalKnowledgeReferences(ctx, state, sessionID)
-	if state.IsComplete && state.Suspended == nil {
+	if !state.IsComplete || state.Suspended != nil {
 		state.FinalAnswer = stripCoverageAnswer(state.FinalAnswer)
 		if terminalCandidateFallback(state.FinalAnswer) {
-			state.FinalAnswer = e.terminalCoverageFailure(ctx, state)
-			state.EvidenceRefs, state.KnowledgeRefs = nil, nil
+			state.FinalAnswer = ""
 		}
-		if id := e.turnReview.TerminalStreamID; id != "" && state.FinalAnswer != streamed {
-			_ = e.eventBus.Emit(ctx, event.Event{ID: id, Type: event.EventAgentFinalAnswer, SessionID: sessionID,
-				Data: event.AgentFinalAnswerData{Content: state.FinalAnswer, Replace: true}})
-		}
-		e.closeAnswerStream(ctx, sessionID, e.turnReview.TerminalStreamID, e.turnReview.TerminalTruncated)
-	} else if terminalCandidateFallback(stripCoverageAnswer(state.FinalAnswer)) {
-		// An interrupted or suspended run has no terminal answer. An abandoned
-		// placeholder draft is not checkpoint text worth publishing.
-		state.FinalAnswer = ""
 	}
 	knowledgeRefs := state.KnowledgeRefs
 	if !e.config.CitationsEnabled() {
@@ -448,6 +438,94 @@ func (e *AgentEngine) emitCompletionEvent(
 	})
 
 	logger.Infof(ctx, "Agent execution completed in %d rounds", state.CurrentRound)
+}
+
+func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *types.AgentState, sessionID string) {
+	state.FinalAnswer = stripCoverageAnswer(state.FinalAnswer)
+	priorAnswer := state.FinalAnswer
+	receipt := &e.turnReview.TerminalReceipt
+	revision := e.terminalEvidenceRevision(ctx, state)
+	failure := terminalNoFailure
+	if !receipt.evidence.current(revision) {
+		failure = terminalSourceChanged
+	} else if terminalCandidateFallback(state.FinalAnswer) {
+		failure = legacyTerminalFailure(state.FinalAnswer)
+	} else if receipt.answerHash != "" && receipt.answerHash != candidateTextDigest(state.FinalAnswer) && e.turnReview.UnverifiedCitationDelivery == nil {
+		failure = terminalReview
+	} else if receipt.failure != terminalNoFailure && len(revision.calls) > len(receipt.evidence.calls) {
+		// Add newly completed receipts to a fallback without rewriting a model draft.
+		failure = receipt.failure
+	}
+	if failure == terminalNoFailure && receipt.failure == terminalNoFailure {
+		e.publishFinalKnowledgeReferences(ctx, state, sessionID)
+		state.FinalAnswer = stripCoverageAnswer(state.FinalAnswer)
+		if revision.scope != e.sourceScopeDigest(ctx, false) {
+			revision = e.terminalEvidenceRevision(ctx, state)
+			failure = terminalSourceChanged
+		} else if terminalCandidateFallback(state.FinalAnswer) {
+			failure = legacyTerminalFailure(state.FinalAnswer)
+		}
+	}
+	stale := receipt.evidence.staleCalls(revision)
+	for id := range receipt.staleCalls {
+		if stale == nil {
+			stale = make(map[string]bool)
+		}
+		stale[id] = true
+	}
+	if failure != terminalNoFailure {
+		state.FinalAnswer = e.terminalCoverageFailure(ctx, terminalCurrentState(state, stale), failure)
+		state.EvidenceRefs, state.KnowledgeRefs = nil, nil
+		e.turnReview.TerminalTruncated = false
+		receipt.failure = failure
+	}
+	if len(stale) != 0 {
+		withholdStaleTerminalTrace(state, stale, priorAnswer, e.turnReview.Last.Candidate)
+		for id := range stale {
+			delete(revision.calls, id)
+		}
+		receipt.staleCalls = nil
+	}
+	receipt.answerHash, receipt.evidence = candidateTextDigest(state.FinalAnswer), revision
+	if e.turnReview.Committed {
+		e.publishTerminalStream(ctx, state, sessionID)
+	}
+	e.closeAnswerStream(ctx, sessionID, e.turnReview.TerminalStreamID, e.turnReview.TerminalTruncated)
+}
+
+func terminalCurrentState(state *types.AgentState, stale map[string]bool) *types.AgentState {
+	if len(stale) == 0 {
+		return state
+	}
+	copy := *state
+	copy.RoundSteps = slices.Clone(state.RoundSteps)
+	for index, step := range copy.RoundSteps {
+		copy.RoundSteps[index].ToolCalls = slices.DeleteFunc(slices.Clone(step.ToolCalls), func(call types.ToolCall) bool {
+			return stale[call.ID]
+		})
+	}
+	return &copy
+}
+
+// Completed history is itself published and persisted. Withhold changed
+// native receipts and the known dependent terminal draft.
+func withholdStaleTerminalTrace(state *types.AgentState, stale map[string]bool, priorAnswer, checkedDraft string) {
+	matches := func(text string) bool {
+		text = strings.TrimSpace(stripCoverageAnswer(text))
+		return text != "" && (text == strings.TrimSpace(priorAnswer) || text == strings.TrimSpace(checkedDraft))
+	}
+	for i := range state.RoundSteps {
+		step := &state.RoundSteps[i]
+		for j, call := range step.ToolCalls {
+			if stale[call.ID] {
+				step.ToolCalls[j] = types.ToolCall{ID: call.ID, Name: call.Name, Duration: call.Duration}
+			}
+		}
+		if matches(step.Thought) || matches(step.Progress) {
+			step.Thought, step.Progress, step.ReasoningContent, step.ReasoningSignature = "", "", "", ""
+			step.ReasoningMetadata = nil
+		}
+	}
 }
 
 // turnUsage returns the turn's aggregated LLM usage, or nil when no round

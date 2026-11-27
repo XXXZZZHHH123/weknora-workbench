@@ -43,16 +43,19 @@ func TestTerminalVersionChoiceRequiresCurrentConflictingReceipts(t *testing.T) {
 			}
 			record.Bindings = []coverageBinding{choice, other}
 			record.Evidence = []coverageEvidence{selected, alternative}
-			facts := []terminalCoverageFact{
-				{coverageFact: coverageFact{Role: "supplement_context", Evidence: selected}},
-				{coverageFact: coverageFact{Role: "supplement_context", Evidence: alternative}},
+			facts := []coverageFact{
+				{Role: "supplement_context", Evidence: selected},
+				{Role: "supplement_context", Evidence: alternative},
 			}
-			rendered := currentTerminalVersionChoice(record, facts).render(false)
+			verified := currentTerminalVersionChoice(record, facts)
 			if mode == "verified" {
-				require.Contains(t, rendered, "uses “Weekly Report” provisionally")
-				require.Contains(t, rendered, "contains “experimental copy”")
+				require.Equal(t, "Weekly Report", verified.SelectedSource)
+				require.Equal(t, "Weekly Report experimental copy", verified.AlternativeSource)
+				require.Equal(t, "experimental copy", verified.Basis)
+				require.NotEmpty(t, verified.selectedRef)
+				require.NotEmpty(t, verified.alternativeRef)
 			} else {
-				require.Empty(t, rendered)
+				require.Empty(t, verified)
 			}
 		})
 	}

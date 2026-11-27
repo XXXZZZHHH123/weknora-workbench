@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,36 +22,37 @@ func TestTerminalEvidenceCompletionFallback(t *testing.T) {
 		omit       []string
 	}{
 		{name: "native facts without declarations", want: []string{
-			"「Elapsed time」 在 2021-07-02 没有有效观测值", "Equipment.xlsx", "Operating hours", "2021-06-03", "47.25", "A15", "B15", "单位未确认",
+			"Elapsed time 在 2021-07-02 无有效记录", "Equipment.xlsx", "Operating hours", "2021-06-03", "47.25", "A15", "B15", "单位未确认",
 		}, omit: []string{"2021-01-01", "Unrelated field", "其余要求"}},
 		{name: "normal delivery does not attach an unlinked field", submission: "Readings in scope were reviewed.", want: []string{"Readings in scope were reviewed."}, omit: []string{"2021-01-01", "Unrelated field", "47.25"}},
-		{name: "normal delivery supplements a checked field", submission: "Equipment.xlsx, Operating hours. Elapsed time had no valid records on 2021-07-02.\n\nThe requested day remains uncovered.",
-			want: []string{"2021-06-03", "47.25", "B15", "\n\nThe requested day remains uncovered."}, omit: []string{"returned no valid observation", "Unrelated field"}},
+		{name: "normal delivery preserves a checked field", submission: "Equipment.xlsx, Operating hours. Elapsed time had no valid records on 2021-07-02.\n\nThe requested day remains uncovered.",
+			want: []string{"\n\nThe requested day remains uncovered."}, omit: []string{"2021-06-03", "47.25", "B15", "Unrelated field"}},
 		{name: "legacy switch preserves the normal candidate", submission: "Equipment.xlsx, Operating hours. Elapsed time had no valid records on 2021-07-02.\n\nThe requested day remains uncovered.",
 			alter: func(e *AgentEngine, _ *types.AgentState) { e.evidenceCompletion.enabled = false },
 			want:  []string{"\n\nThe requested day remains uncovered."}, omit: []string{"2021-06-03", "47.25", "B15"}},
 		{name: "scope narrowed", alter: func(e *AgentEngine, _ *types.AgentState) {
 			e.config.SearchTargets = types.SearchTargets{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "different-library"}}
-		}, want: []string{"仍待核实"}, omit: []string{"Equipment.xlsx", "47.25"}},
-		{name: "new human task", alter: func(e *AgentEngine, _ *types.AgentState) {
+		}, want: []string{"当前范围内没有可用于所问结果的已核实记录"}, omit: []string{"Equipment.xlsx", "47.25"}},
+		{name: "new human task", alter: func(e *AgentEngine, state *types.AgentState) {
 			e.reviewConversation = append(e.reviewConversation, chat.Message{Role: "user", Content: "Use a different file for this question."})
-		}, want: []string{"仍待核实"}, omit: []string{"Equipment.xlsx", "47.25"}},
+			e.resetDocumentTurnProgress(&loopGuards{}, e.turnReview.Query, state)
+		}, want: []string{"没有取得可核实的来源回执"}, omit: []string{"Equipment.xlsx", "47.25"}},
 		{name: "source snapshot expires", alter: func(_ *AgentEngine, state *types.AgentState) {
 			catalogue := terminalLatestSeriesCall()
 			catalogue.ID = "newer-read"
 			catalogue.Result.Data["source"].(map[string]any)["sha256"] = strings.Repeat("b", 64)
 			catalogue.Result.Data["rows"].([]any)[0].(map[string]any)["value"] = 48.5
 			state.RoundSteps[0].ToolCalls = append(state.RoundSteps[0].ToolCalls, catalogue)
-		}, want: []string{"Equipment.xlsx"}, omit: []string{"47.25", "48.5"}},
+		}, want: []string{"Equipment.xlsx", "48.5"}, omit: []string{"47.25", "2021-07-02"}},
 		{name: "only excludes unrelated workbook", alter: func(e *AgentEngine, state *types.AgentState) {
 			e.taskPlan = &taskEvidencePlan{CoverageTargets: []taskCoverageTarget{{StructuredTaskGoal: &StructuredTaskGoal{SourceMode: "only"}}}}
 			e.evidenceCompletion = newEvidenceCompletionTurn(0)
 			e.refreshEvidenceCompletion(t.Context(), e.turnReview.Query, state, e.reviewConversation)
 			e.evidenceCompletion.record.Bindings = []coverageBinding{{Role: "primary", SourceID: "other-register", KnowledgeBaseID: "allowed-library"}}
-		}, want: []string{"仍待核实"}, omit: []string{"Equipment.xlsx", "47.25"}},
+		}, want: []string{"当前范围内没有可用于所问结果的已核实记录"}, omit: []string{"Equipment.xlsx", "47.25"}},
 		{name: "current directory only", alter: func(e *AgentEngine, state *types.AgentState) {
 			state.RoundSteps[0].ToolCalls = state.RoundSteps[0].ToolCalls[:1]
-		}, want: []string{"Equipment.xlsx", "Operating hours", "本轮来源目录", "仍待核实"}, omit: []string{"B15", "47.25", "没有有效观测值"}},
+		}, want: []string{"Equipment.xlsx", "Operating hours", "目录条目", "尚无所问范围的读数"}, omit: []string{"B15", "47.25", "没有有效观测值"}},
 		{name: "verified gap ignores an incomplete earlier period", alter: func(_ *AgentEngine, state *types.AgentState) {
 			call := state.RoundSteps[0].ToolCalls[1]
 			call.Args["operation"], call.Args["start_date"], call.Args["end_date"] = "rows", "2021-06-01", "2021-06-30"
@@ -65,11 +65,11 @@ func TestTerminalEvidenceCompletionFallback(t *testing.T) {
 				rows = append(rows, map[string]any{"date": "2021-06-03", "date_cell": "A" + cell, "source_cell": "B" + cell, "value": i, "value_status": "valid"})
 			}
 			call.Result.Data["rows"] = rows
-		}, want: []string{"没有有效观测值", "2021-07-02", "最后有效日期是 2021-06-03", "尚未取得该日原值"}, omit: []string{"2021-01-01", "Unrelated field", "47.25", "B19", "B20"}},
+		}, want: []string{"无有效记录", "2021-07-02", "最后有效日为 2021-06-03", "尚缺该日原值"}, omit: []string{"2021-01-01", "Unrelated field", "47.25", "B19", "B20"}},
 		{name: "only rejected source calls", alter: func(e *AgentEngine, state *types.AgentState) {
 			state.RoundSteps[0].ToolCalls = state.RoundSteps[0].ToolCalls[1:2]
 			state.RoundSteps[0].ToolCalls[0].Result = &types.ToolResult{PreflightRejected: true, Error: "ineligible optional selection", Data: map[string]any{"execution_started": false}}
-		}, want: []string{"读取开始前被拦下", "仍待核实"}, omit: []string{"ineligible optional selection", "47.25"}},
+		}, want: []string{"在执行前停止", "未读取来源内容"}, omit: []string{"ineligible optional selection", "47.25"}},
 		{name: "legacy switch", alter: func(e *AgentEngine, _ *types.AgentState) {
 			e.evidenceCompletion.enabled = false
 		}, want: []string{"2021-07-02", "47.25", "B15"}, omit: []string{answerReviewUnavailableFallback}},
@@ -135,6 +135,9 @@ func TestTerminalEvidenceCompletionFallback(t *testing.T) {
 			done, streamed := recorder.snapshot()
 			require.Equal(t, 1, done)
 			require.Equal(t, state.FinalAnswer, streamed)
+			if test.submission != "" {
+				require.Equal(t, test.submission, state.FinalAnswer)
+			}
 			for _, value := range test.want {
 				require.Contains(t, state.FinalAnswer, value)
 			}
@@ -145,156 +148,22 @@ func TestTerminalEvidenceCompletionFallback(t *testing.T) {
 	}
 }
 
-func TestTerminalCoverageNaturalFieldAssertions(t *testing.T) {
-	field := coverageEvidence{
-		SourceID: "meter-readings", KnowledgeBaseID: "maintenance", SnapshotHash: "current",
-		SourceTitle: "机台记录.xlsx", Sheet: "运行时长", Metric: "一号机累计时长", SeriesID: "meter.B",
-	}
-	gap, last := field, field
-	gap.Kind, gap.Complete, gap.PeriodFrom, gap.PeriodTo = "gap", true, "2021-07-02", "2021-07-02"
-	last.Kind, last.Raw, last.Date, last.DateCell, last.Cell = "last_valid", json.Number("47.25"), "2021-06-03", "A15", "B15"
-	delivery := terminalCoverageDelivery{inspected: true, chinese: true, facts: []terminalCoverageFact{
-		{coverageFact: coverageFact{"coverage_boundary", gap}, required: true},
-		{coverageFact: coverageFact{"last_valid_value", last}, required: true},
-	}}
-	const closing = "\n\n所问期间无可比原值。<kb doc=\"检修说明.pdf\" chunk_id=\"checked-note\" kb_id=\"maintenance\" />"
-	for _, test := range []struct {
-		name, draft       string
-		addGap, addLatest bool
-	}{
-		{"naturally complete",
-			"**机台记录里查不到 2021年7月2日这一天的数据。** 该文件「运行时长」表最后一条有数值的记录为 2021年6月3日，「一号机累计时长」为 47.25（字段单位尚未确认），原单元格为运行时长!B15。2021年7月2日的单日查询返回零条有效记录。",
-			false, false},
-		{"gap only", "机台记录的「运行时长」表中，一号机累计时长在 2021 年 7 月 2 日没有有效记录。", false, true},
-		{"latest only", "机台记录的「运行时长」表中，2021年6月3日的最后一条记录中，一号机累计时长为 47.25。",
-			true, false},
-		{"same date and value in different paragraphs", "机台记录的「运行时长」表中，一号机累计时长最后一条记录在 2021年6月3日。\n\n校准系数是 47.25。", true, true},
-		{"other file in the same paragraph", "机台记录的「运行时长」表中有一号机累计时长。年度汇总.xlsx 在 2021年7月2日没有有效记录，最后一条记录为 2021年6月3日的 47.25。", true, true},
-		{"other file with coinciding cells", "年度汇总.xlsx 的一号机累计时长最后一条记录在 2021年6月3日，值为 47.25，日期在 A15，原格在 B15。", true, true},
-		{"other date in same assertion", "机台记录的「运行时长」表中，一号机累计时长最后一条记录在 2021年6月4日，为 47.25，前一天 2021年6月3日也有记录。", true, true},
-		{"negated assertions", "机台记录的「运行时长」表中，不能断定一号机累计时长在 2021年7月2日没有有效记录。最后一条记录在 2021年6月3日，并非 47.25。", true, true},
-		{"number appears only in file or coordinates", "机台记录的「运行时长」表中，一号机累计时长的最后有效日期是 2021年6月3日，原格为 B47，备注标识 ID47.25。", true, true},
-		{"value has unsupported units", "机台记录的「运行时长」表中，最后一条记录在 2021年6月3日，一号机累计时长为 47.25 万小时。", true, true},
-		{"same number from another metric", "机台记录的「运行时长」表中，一号机累计时长最后一条记录在 2021年6月3日，校准系数为 47.25。", true, true},
-		{"table with source cell", "机台记录的「运行时长」表包含一号机累计时长。\n| 一号机累计时长 | 2021-06-03 | 47.25 | B15 |", true, false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			candidate := test.draft + closing
-			result := delivery.render(false, candidate)
-			if test.addGap || test.addLatest {
-				require.True(t, strings.HasSuffix(result, closing), result)
-				for _, paragraph := range strings.Split(test.draft, "\n\n") {
-					require.Contains(t, result, paragraph)
-				}
-				require.Equal(t, test.addGap, strings.Contains(result, "在 2021-07-02 没有有效记录"), result)
-				require.Equal(t, test.addLatest, strings.Contains(result, "最后有值的日期为 2021-06-03，原值为 47.25"), result)
-			} else {
-				require.Equal(t, candidate, result)
-			}
-			require.Equal(t, result, delivery.render(false, result))
-		})
-	}
-}
-
-func TestTerminalDisplayedValueRequiresWholeUnit(t *testing.T) {
-	for _, tt := range []struct {
-		unit, display string
-		want          bool
-	}{
-		{"m", "Reading was 47.25 m (B15)", true},
-		{"m", "Reading was 47.25 min (B15)", false},
-		{"m", "Reading was 47.25 m.s (B15)", false},
-		{"m", "Reading was 47.25m (B15)", true},
-		{"m", "Reading was 47.25min (B15)", false},
-		{"m", "Reading was 47.25m/s (B15)", false},
-		{"元", "Reading was 47.25 元。", true},
-		{"元", "Reading was 47.25 元/吨。", false},
-		{"元", "Reading was 47.25 元 / 吨。", false},
-		{"元", "Reading是47.25元。", true},
-		{"", "Reading是47.25。", true},
-		{"", "Reading was 47.25on", false},
-	} {
-		t.Run(tt.display, func(t *testing.T) {
-			fact := terminalCoverageFact{coverageFact: coverageFact{Evidence: coverageEvidence{
-				Metric: "Reading", Raw: json.Number("47.25"), Unit: tt.unit, UnitBasis: "explicit",
-			}}}
-			require.Equal(t, tt.want, terminalDisplayedValue(tt.display, fact, false))
-		})
-	}
-}
-
-func TestTerminalCoverageSameMetricSeriesStayDistinct(t *testing.T) {
-	last := coverageEvidence{
-		Kind: "last_valid", SourceID: "meter-readings", KnowledgeBaseID: "maintenance", SnapshotHash: "current",
-		SourceTitle: "Meter log.xlsx", Sheet: "Sessions", Metric: "Elapsed time", SeriesID: "meter-early",
-		Subject: "AX01.EX", Date: "2021-06-03", Raw: json.Number("47.25"), DateCell: "A15", Cell: "B15",
-	}
-	peer, third := last, last
-	peer.SeriesID, peer.Subject, peer.Cell = "meter-late", "AX07.EX", "D15"
-	third.SeriesID, third.Subject, third.Cell, third.Raw = "meter-final", "AX11.EX", "F15", json.Number("48.5")
-	delivery := terminalCoverageDelivery{inspected: true, facts: []terminalCoverageFact{
-		{coverageFact: coverageFact{"last_valid_value", last}, required: true},
-		{coverageFact: coverageFact{"last_valid_value", peer}, required: true},
-		{coverageFact: coverageFact{"last_valid_value", third}, required: true},
-	}}
-	const draft = "In Meter log.xlsx, sheet Sessions, the latest Elapsed time for AX01.EX was 47.25 on 2021-06-03. AX07 and AX11 both have their latest valid date on 2021-06-03."
-	const closing = "\n\nThe requested month is outside the register's coverage."
-	answer := delivery.render(false, draft+closing)
-	require.True(t, strings.HasSuffix(answer, closing), answer)
-	require.Contains(t, answer, draft)
-	require.Equal(t, 2, strings.Count(answer, "Meter log.xlsx"), answer)
-	require.NotContains(t, answer, "value cell B15")
-	require.Contains(t, answer, "AX07.EX 47.25 (A15, D15)")
-	require.Contains(t, answer, "AX11.EX 48.5 (A15, F15)")
-	require.Equal(t, 1, strings.Count(answer, "units unconfirmed"), answer)
-	require.Equal(t, answer, delivery.render(false, answer))
-
-	for i := range delivery.facts {
-		last := &delivery.facts[i].Evidence
-		last.Operation, last.Complete, last.LatestInScope = "analyze_table", true, true
-		last.EvidenceID, last.DateEvidenceID = "analysis", "analysis"
-		last.CellJSONPointer, last.DateJSONPointer = "/data/cell", "/data/date"
-	}
-	for _, last := range slices.Clone(delivery.facts) {
-		gap, ok := coverageAnalysisGap(last.Evidence, "2021-07-01", "2021-07-31", "month")
-		require.True(t, ok)
-		delivery.facts = append(delivery.facts, terminalCoverageFact{coverageFact: coverageFact{"coverage_boundary", gap}, required: true})
-	}
-	fallback := delivery.render(true, "")
-	require.Equal(t, 1, strings.Count(fallback, "has no valid records"), fallback)
-	require.Equal(t, 1, strings.Count(fallback, "records the latest valid values"), fallback)
-	require.Contains(t, fallback, "AX01.EX 47.25 (A15, B15)")
-	require.Contains(t, fallback, "AX07.EX 47.25 (A15, D15)")
-	require.Contains(t, fallback, "AX11.EX 48.5 (A15, F15)")
-	require.Equal(t, fallback, delivery.render(false, fallback))
-}
-
 func TestTerminalSQLFollowUpWithoutDraft(t *testing.T) {
-	for _, tt := range []struct {
-		language, gap, endpoint string
-	}{
-		{"zh-CN", "没有有效记录", "最后有值的日期为 2023-09-22，原值为 17110"},
-		{"en-US", "has no valid records", "on 2023-09-22 as 17110"},
-	} {
-		t.Run(tt.language, func(t *testing.T) {
+	for _, language := range []string{"zh-CN", "en-US"} {
+		t.Run(language, func(t *testing.T) {
 			r := newQA4Stage2CReplay(t, "s2-3-kb16-bounded-latest", true, false)
 			r.calls(r.trace.Calls)
-			ctx := context.WithValue(r.ctx, types.LanguageContextKey, tt.language)
-			fallback := r.engine.terminalCoverageFailure(ctx, r.state)
-			for _, expected := range []string{tt.gap, tt.endpoint, "CF.CZC", "A4705", "B4705"} {
+			ctx := context.WithValue(r.ctx, types.LanguageContextKey, language)
+			fallback := r.engine.terminalCoverageFailure(ctx, r.state, terminalBudget)
+			for _, expected := range []string{"2023-09-22", "17110", "CF.CZC", "A4705", "B4705"} {
 				require.Contains(t, fallback, expected)
 			}
+			require.Regexp(t, "无有效记录|no valid record", fallback)
 			require.True(t, slices.ContainsFunc(strings.Split(fallback, "\n\n"), func(paragraph string) bool {
-				return strings.Contains(paragraph, tt.endpoint) && strings.Contains(paragraph, "CF.CZC")
+				return strings.Contains(paragraph, "17110") && strings.Contains(paragraph, "CF.CZC") &&
+					strings.Contains(paragraph, "2023-09-22")
 			}), fallback)
-			require.NotContains(t, fallback, "棉花数据库.xlsx /")
-
-			delivery := r.engine.terminalCoverageDelivery(ctx, r.state, false)
-			require.Equal(t, fallback, delivery.render(false, fallback))
-			const draft = "已核查《棉花数据库.xlsx》的「郑棉期货」表及「收盘价」列\n\n这里保留结论。"
-			final := delivery.render(false, draft)
-			require.Contains(t, final, tt.endpoint)
-			require.Equal(t, final, delivery.render(false, final))
+			require.Equal(t, 1, strings.Count(fallback, "17110"))
 		})
 	}
 }
@@ -358,12 +227,13 @@ func TestTerminalEvidenceCompletionDocumentReadStatus(t *testing.T) {
 			e.commitTerminalResult(ctx, state, "terminal", answerReviewUnavailableFallback, "", "failed", false)
 			if example.wantQuote {
 				require.Contains(t, state.FinalAnswer, "Quarterly inspection")
-				require.Contains(t, state.FinalAnswer, "第4页")
+				require.Contains(t, state.FinalAnswer, "第 4 页")
 				require.Contains(t, state.FinalAnswer, "实际该页的图例：类型甲、类型乙。")
 			} else {
-				require.Contains(t, state.FinalAnswer, "本轮已读取 Quarterly inspection 第 4 页返回的正文")
-				require.Contains(t, state.FinalAnswer, "仍待核实")
-				require.NotContains(t, state.FinalAnswer, "类型甲")
+				require.Contains(t, state.FinalAnswer, "Quarterly inspection第 4 页")
+				require.Contains(t, state.FinalAnswer, "返回的正文片段")
+				require.Contains(t, state.FinalAnswer, "尚缺与所问范围对应的读数")
+				require.NotContains(t, state.FinalAnswer, "课件未载的 OCR 文本")
 			}
 		})
 	}
@@ -376,15 +246,15 @@ func TestTerminalSourceFailuresPublishVerifiedScopeOnce(t *testing.T) {
 		enabled               string
 		want                  string
 	}{
-		{"empty final", "", "budget", false, false, "true", "尚未完成所需的来源读取"},
-		{"missing source", answerReviewUnavailableFallback, "", false, false, "true", "本轮没有完成"},
-		{"bad tool", incompleteAnswerFallback, "", true, false, "true", "已查询 2021-07-02 的结构化记录"},
-		{"blocked scope", sourceProgressStalledFallback, "", true, true, "true", "2021-07-02 的数据请求在读取开始前被拦下"},
-		{"progress stalled", stalledAnswerFallback, "", true, false, "true", "未取得可用结果"},
-		{"truncated answer", truncatedAnswerFallback, "budget", false, false, "true", "尚未完成所需的来源读取"},
-		{"numeric fallback", numericFailureFallback, "", true, false, "true", "未取得可用结果"},
-		{"numeric final fallback", finalNumericFailureFallback, "", true, false, "true", "未取得可用结果"},
-		{"legacy tool decisions", sourceProgressStalledFallback, "", true, true, "false", "2021-07-02 的数据请求在读取开始前被拦下"},
+		{"empty final", "", "budget", false, false, "true", "没有取得可核实的来源回执"},
+		{"missing source", answerReviewUnavailableFallback, "", false, false, "true", "核验阶段未完成"},
+		{"bad tool", incompleteAnswerFallback, "", true, false, "true", "数据查询尝试"},
+		{"blocked scope", sourceProgressStalledFallback, "", true, true, "true", "数据查询在执行前停止"},
+		{"progress stalled", stalledAnswerFallback, "", true, false, "true", "未返回可核实回执"},
+		{"truncated answer", truncatedAnswerFallback, "budget", false, false, "true", "没有取得可核实的来源回执"},
+		{"numeric fallback", numericFailureFallback, "", true, false, "true", "未返回可核实回执"},
+		{"numeric final fallback", finalNumericFailureFallback, "", true, false, "true", "未返回可核实回执"},
+		{"legacy tool decisions", sourceProgressStalledFallback, "", true, true, "false", "数据查询在执行前停止"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", test.enabled)
@@ -419,7 +289,7 @@ func TestTerminalSourceFailuresPublishVerifiedScopeOnce(t *testing.T) {
 			require.Equal(t, state.FinalAnswer, streamed)
 			require.True(t, state.IsComplete)
 			require.False(t, terminalCandidateFallback(state.FinalAnswer))
-			require.True(t, strings.HasPrefix(state.FinalAnswer, "Pressure 2021-07-02 仍待核实。"), state.FinalAnswer)
+			require.Contains(t, state.FinalAnswer, "Pressure 2021-07-02")
 			require.Contains(t, state.FinalAnswer, test.want)
 			require.NotContains(t, state.FinalAnswer, "private service detail")
 			require.NotContains(t, state.FinalAnswer, "没有有效观测值")
@@ -433,7 +303,7 @@ func TestTerminalRequestedUnitUsesOnlyVerifiedInput(t *testing.T) {
 		name, request, basis, unit, sourceUnit, status, answer, want, omit string
 	}{
 		{"human unit", "How many hours were recorded on 2021-06-03?", "How many hours were recorded on 2021-06-03?", "hours",
-			"", "needs_review", "", "47.25 hours", "uncertain"},
+			"", "needs_review", "", "unit unconfirmed", "47.25 hours"},
 		{"confirmed unit", "How many hours were recorded on 2021-06-03?", "How many hours were recorded on 2021-06-03?", "hours",
 			"hours", "explicit", "", "47.25 hours", "unit supplied in the question"},
 		{"different source unit", "How many hours were recorded on 2021-06-03?", "How many hours were recorded on 2021-06-03?", "hours",
@@ -491,11 +361,11 @@ func TestTerminalNoDraftSourceComparison(t *testing.T) {
 		name, secondUnit, wantOpening string
 		value                         float64
 	}{
-		{"different values", "hours", "两处来源在所问范围给出的数值不一致。", 32.5},
-		{"equal values", "hours", "两处来源在所问范围给出的数值相同。", 47.25},
-		{"unknown unit", "", "两处来源列示的数字不同。两处单位能否直接比较仍待核实。", 32.5},
-		{"unknown unit equal figures", "", "两处来源列示的数字相同。两处单位能否直接比较仍待核实。", 47.25},
-		{"incompatible unit", "minutes", "两处来源列示的数字不同。来源使用的单位不同，以下保留各自原值。", 32.5},
+		{"different values", "hours", "两处来源在核查范围内的数值不同。", 32.5},
+		{"equal values", "hours", "两处来源在核查范围内的数值相同。", 47.25},
+		{"unknown unit", "", "两处来源的单位无法直接比较。", 32.5},
+		{"unknown unit equal figures", "", "两处来源的单位无法直接比较。", 47.25},
+		{"incompatible unit", "minutes", "两处来源的单位无法直接比较。", 32.5},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
@@ -565,10 +435,9 @@ func TestTerminalUnboundLookupDescribesExecutedScope(t *testing.T) {
 	state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}}
 	ctx := context.WithValue(t.Context(), types.LanguageContextKey, "en-US")
 	e.commitTerminalResult(ctx, state, "terminal", "", "", "failed", false)
-	require.Contains(t, state.FinalAnswer, e.turnReview.Query)
 	require.Contains(t, state.FinalAnswer, "Equipment.xlsx")
 	require.Contains(t, state.FinalAnswer, "2021-06-03")
-	require.NotContains(t, state.FinalAnswer, "47.25")
+	require.Contains(t, state.FinalAnswer, "47.25")
 }
 
 func TestTerminalWithoutPlanOrReadCarriesHumanRequest(t *testing.T) {
@@ -585,7 +454,7 @@ func TestTerminalWithoutPlanOrReadCarriesHumanRequest(t *testing.T) {
 			ctx := context.WithValue(t.Context(), types.LanguageContextKey, "en-US")
 			e.commitTerminalResult(ctx, state, "terminal", answerReviewUnavailableFallback, "", "failed", false)
 			require.Contains(t, state.FinalAnswer, e.turnReview.Query)
-			require.Contains(t, state.FinalAnswer, "no verified material")
+			require.Contains(t, state.FinalAnswer, "No verifiable source receipt was obtained")
 			require.NotContains(t, state.FinalAnswer, answerReviewUnavailableFallback)
 			count, streamed := recorder.snapshot()
 			require.Equal(t, 1, count)
@@ -594,7 +463,7 @@ func TestTerminalWithoutPlanOrReadCarriesHumanRequest(t *testing.T) {
 	}
 }
 
-func TestTerminalWarningsKeepCurrentVerifiedFacts(t *testing.T) {
+func TestTerminalWarningsDoNotAppendUnrelatedFacts(t *testing.T) {
 	for _, citation := range []bool{false, true} {
 		t.Run(strconv.FormatBool(citation), func(t *testing.T) {
 			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
@@ -651,9 +520,9 @@ func TestTerminalWarningsKeepCurrentVerifiedFacts(t *testing.T) {
 			recorder := &terminalAnswerRecorder{}
 			recorder.attach(e.eventBus)
 			e.commitTerminalResult(ctx, state, "terminal", failure, "", "failed", false)
-			require.Contains(t, state.FinalAnswer, "Equipment.xlsx")
-			require.Contains(t, state.FinalAnswer, "47.25")
-			require.Contains(t, state.FinalAnswer, "B15")
+			require.NotContains(t, state.FinalAnswer, "Equipment.xlsx")
+			require.NotContains(t, state.FinalAnswer, "47.25")
+			require.NotContains(t, state.FinalAnswer, "B15")
 			if citation {
 				require.Contains(t, state.FinalAnswer, "〔引用待核对〕")
 				require.NotContains(t, state.FinalAnswer, "view-shared")
@@ -705,24 +574,4 @@ func TestTerminalLegacyWorkbenchTextFallbackUsesNativeProof(t *testing.T) {
 			})
 		}
 	}
-}
-
-func TestTerminalUnitEditPreservesAttributedDraft(t *testing.T) {
-	const original = "The hours spent on calibration support the ordering in the report.\n\n" +
-		"Elapsed time: 47.25 <evidence evidence_id=\"current-value\" />\n\n" +
-		"The worksheet does not label the value in hours."
-	facts := []terminalCoverageFact{{coverageFact: coverageFact{Evidence: coverageEvidence{
-		Metric: "Elapsed time", Raw: json.Number("47.25"), CitationID: "current-value",
-	}}}}
-	text, complete, updated := terminalAddDeclaredUnit(original, "hours", facts)
-	require.True(t, complete)
-	require.True(t, updated)
-	require.Contains(t, text, "The hours spent on calibration support the ordering in the report.")
-	require.Contains(t, text, "47.25 hours <evidence evidence_id=\"current-value\" />")
-	require.NotContains(t, text, "The worksheet does not label")
-	wrong := strings.Replace(original, "current-value", "different-source-same-value", 1)
-	text, complete, updated = terminalAddDeclaredUnit(wrong, "hours", facts)
-	require.False(t, complete)
-	require.False(t, updated)
-	require.Equal(t, wrong, text)
 }

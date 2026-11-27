@@ -246,5 +246,8 @@ func (e *AgentEngine) finishStandardAnswerBudget(
 	}
 	e.stopEvidenceCompletion(ctx, query, state, *messages, reason)
 	err := e.streamFinalAnswerToEventBus(ctx, query, state, sessionID, restoreForFinalAnswer(*messages, guards), finalAnswerOptions{preliminary: true, assistantMessageID: messageID})
+	if err != nil && ctx.Err() == nil && e.executionLeaseError(ctx) == nil && !e.collaborationOwnsFailure(ctx) {
+		e.commitTerminalResult(ctx, state, sessionID, "", "", "failed", false, terminalBudget)
+	}
 	return true, err
 }

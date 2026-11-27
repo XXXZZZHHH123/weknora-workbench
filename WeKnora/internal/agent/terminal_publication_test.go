@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ import (
 func requireTerminalEvidenceGap(t *testing.T, answer string) {
 	t.Helper()
 	require.False(t, terminalCandidateFallback(answer), "an internal placeholder reached the user")
-	require.Regexp(t, "仍待核实|没有取得可用于回答的已核实内容|remains unverified|produced no verified material", answer)
+	require.Regexp(t, "没有取得可核实的来源回执|No verifiable source receipt was obtained", answer)
 }
 
 func TestTerminalPublicationRejectsEveryPlaceholder(t *testing.T) {
@@ -26,34 +27,109 @@ func TestTerminalPublicationRejectsEveryPlaceholder(t *testing.T) {
 			for idx, fallback := range fallbacks {
 				t.Run(fmt.Sprint(idx), func(t *testing.T) {
 					for _, held := range []bool{false, true} {
-						e := newTestEngine(t, &mockChat{})
-						e.holdCollaborationAnswer = held
-						e.turnReview.Query = "Which observations were verified?"
-						state := &types.AgentState{}
-						stream := &terminalAnswerRecorder{}
-						stream.attach(e.eventBus)
-						var complete event.AgentCompleteData
-						e.eventBus.On(event.EventAgentComplete, func(_ context.Context, evt event.Event) error {
-							complete = evt.Data.(event.AgentCompleteData)
-							return nil
-						})
+						for _, hasReceipt := range []bool{false, true} {
+							e := newTestEngine(t, &mockChat{})
+							e.toolRegistry = qa4ReplayRegistry()
+							e.holdCollaborationAnswer = held
+							e.turnReview.Query = "Which observations were verified?"
+							e.turnReview.DeferTerminalClose = true
+							state := &types.AgentState{}
+							if hasReceipt {
+								call := terminalLatestSeriesCall()
+								call.Args["source_question"] = e.turnReview.Query
+								state.RoundSteps = []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}
+							}
+							stream := &terminalAnswerRecorder{}
+							stream.attach(e.eventBus)
+							var complete event.AgentCompleteData
+							e.eventBus.On(event.EventAgentComplete, func(_ context.Context, evt event.Event) error {
+								complete = evt.Data.(event.AgentCompleteData)
+								return nil
+							})
 
-						require.Empty(t, e.publishAnswer(t.Context(), "run", " "+fallback+"\n", "stale-id", false))
-						e.commitTerminalResult(t.Context(), state, "run", fallback, "", "failed", false)
-						e.commitTerminalResult(t.Context(), state, "run", "a second candidate", "", "answer", false)
-						e.emitCompletionEvent(t.Context(), state, "run", "message", time.Now())
-						done, visible := stream.snapshot()
-						require.Equal(t, 1, done)
-						requireTerminalEvidenceGap(t, visible)
-						require.Contains(t, visible, "Which observations were verified?")
-						require.Regexp(t, "本轮没有取得可用于回答的已核实内容|this turn produced no verified material",
-							strings.ToLower(visible))
-						require.Equal(t, visible, complete.FinalAnswer)
-						require.Equal(t, visible, state.FinalAnswer)
+							require.Empty(t, e.publishAnswer(t.Context(), "run", " "+fallback+"\n", "stale-id", false))
+							e.commitTerminalResult(t.Context(), state, "run", fallback, "", "failed", false)
+							e.commitTerminalResult(t.Context(), state, "run", "a second candidate", "", "answer", false)
+							require.Empty(t, stream.contents)
+							e.emitCompletionEvent(t.Context(), state, "run", "message", time.Now())
+							done, visible := stream.snapshot()
+							require.Equal(t, 1, done)
+							require.Equal(t, []string{visible}, stream.contents)
+							if hasReceipt {
+								for _, fact := range []string{"Equipment.xlsx", "Operating hours", "Elapsed time", "47.25", "2021-06-03", "B15"} {
+									require.Contains(t, visible, fact)
+								}
+								require.NotContains(t, visible, e.turnReview.Query)
+								require.NotContains(t, visible, "No verifiable source receipt")
+							} else {
+								requireTerminalEvidenceGap(t, visible)
+								require.Contains(t, visible, e.turnReview.Query)
+							}
+							require.False(t, terminalCandidateFallback(visible))
+							require.Equal(t, visible, complete.FinalAnswer)
+							require.Equal(t, visible, state.FinalAnswer)
+						}
 					}
 				})
 			}
 		})
+	}
+}
+
+func TestTerminalPublicationRevalidatesCurrentSourceBeforeFirstEmission(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		for _, change := range []string{"authorization", "snapshot", "new unrelated receipt"} {
+			t.Run(fmt.Sprintf("%t/%s", enabled, change), func(t *testing.T) {
+				t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", fmt.Sprint(enabled))
+				e := newTestEngine(t, &mockChat{})
+				e.toolRegistry = qa4ReplayRegistry()
+				e.turnReview.TerminalSensitive, e.turnReview.DeferTerminalClose = true, true
+				e.turnReview.Query = "What reading was observed?"
+				const candidate = "Equipment.xlsx reports 47.25 on 2021-06-03."
+				state := &types.AgentState{RoundSteps: []types.AgentStep{
+					{Thought: "Preparing the source read.", ToolCalls: []types.ToolCall{terminalLatestSeriesCall()}},
+					{Thought: candidate, ReasoningContent: "The source reports 47.25."},
+				}}
+				stream := &terminalAnswerRecorder{}
+				stream.attach(e.eventBus)
+				var complete event.AgentCompleteData
+				e.eventBus.On(event.EventAgentComplete, func(_ context.Context, evt event.Event) error {
+					complete = evt.Data.(event.AgentCompleteData)
+					return nil
+				})
+				e.commitTerminalResult(t.Context(), state, "run", candidate, "", "stalled", false)
+				require.Empty(t, stream.contents)
+				switch change {
+				case "authorization":
+					e.config.SearchTargets = types.SearchTargets{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "other-library"}}
+				case "snapshot":
+					state.RoundSteps[0].ToolCalls[0].Result.Data["source"].(map[string]any)["sha256"] = strings.Repeat("b", 64)
+				case "new unrelated receipt":
+					other := terminalLatestSeriesCall()
+					other.ID, other.Args["dataset_id"], other.Result.Data["dataset_id"] = "other", "other", "other"
+					state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{other}})
+				}
+				e.emitCompletionEvent(t.Context(), state, "run", "message", time.Now())
+				done, visible := stream.snapshot()
+				require.Equal(t, 1, done)
+				require.Equal(t, []string{visible}, stream.contents)
+				require.Equal(t, visible, state.FinalAnswer)
+				require.Equal(t, visible, complete.FinalAnswer)
+				if change == "new unrelated receipt" {
+					require.Equal(t, candidate, visible)
+					return
+				}
+				require.NotContains(t, visible, "Equipment.xlsx")
+				require.NotContains(t, visible, "47.25")
+				stored, err := json.Marshal(complete.AgentSteps)
+				require.NoError(t, err)
+				require.NotContains(t, string(stored), "47.25")
+				require.NotContains(t, string(stored), "Equipment.xlsx")
+				require.Contains(t, string(stored), "Preparing the source read.")
+				require.Empty(t, complete.KnowledgeRefs)
+				require.Empty(t, complete.EvidenceRefs)
+			})
+		}
 	}
 }
 

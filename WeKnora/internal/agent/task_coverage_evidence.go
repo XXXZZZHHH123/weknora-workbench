@@ -57,7 +57,9 @@ func (e *AgentEngine) taskCoverageBatch(step types.AgentStep, state *types.Agent
 				}
 				domain = "artifact"
 			default:
-				continue
+				if name != agenttools.ToolBindDocumentScope || !agenttools.HasDocumentScopeBinder(e.toolRegistry) {
+					continue
+				}
 			}
 		}
 		encoded, err := json.Marshal(sourceReviewResultPayload(call, nativeGeometryImageIndexes(call)))
@@ -117,7 +119,7 @@ func (e *AgentEngine) taskCoverageBatch(step types.AgentStep, state *types.Agent
 		case "knowledge":
 			batch.Evidence = append(batch.Evidence, e.coverageDocumentEvidence(call, base, data)...)
 		case "structured":
-			bases := coverageStructuredEvidence(base, args, data, operation == "analyze_table" && e.evidenceCompletionEnabled())
+			bases := coverageStructuredEvidence(base, args, data, operation == "analyze_table")
 			citations := e.coverageCallCitations(call, id)
 			for _, item := range bases {
 				if e.coverageScopeAllows(item.KnowledgeBaseID, "") {
@@ -602,7 +604,7 @@ func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, 
 	// The service emits this verified workbook metadata only when every
 	// loaded sheet belongs to the current workbook, including on republish.
 	_, workbookErr := time.Parse(time.RFC3339Nano, sourceNavigationString(coverageObject(data["source"]), "workbook_declared_last_saved_at"))
-	includeEndpoints = includeEndpoints && base.PeriodTo != "" && contract.Execution.Kind == "sql" && contract.SourceSnapshot.Kind == "excel_observations" &&
+	includeEndpoints = includeEndpoints && contract.Execution.Kind == "sql" && contract.SourceSnapshot.Kind == "excel_observations" &&
 		contract.SourceSnapshot.DatasetID == base.DatasetID && base.DatasetID != "" && args["dataset_id"] == base.DatasetID &&
 		contract.SourceSnapshot.KnowledgeBaseID == base.KnowledgeBaseID && contract.SourceSnapshot.KnowledgeID == base.KnowledgeID &&
 		args["sql"] == data["sql"]
@@ -634,8 +636,16 @@ func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, 
 			if endpoint, ok := coverageAnalysisLastValid(item, input); ok {
 				if coverageAnalysisEndpoint(endpoint) {
 					endpoint.ResultJSONPointer = coverageDirectAnalysisResultPointer(endpoint, data, contract)
-					result = append(result, endpoint)
-				} else if len(ids) == 1 && coverageExplicitAnalysisField(args, id) {
+					if item.PeriodTo != "" {
+						result = append(result, endpoint)
+					} else if endpoint.WorkbookBound && endpoint.ResultJSONPointer != "" {
+						// In an unbounded query, the independently verified input
+						// endpoint identifies this returned cell. It does not prove
+						// a requested window or the absence of other values.
+						endpoint.Kind, endpoint.LatestInScope = "cell", false
+						result = append(result, endpoint)
+					}
+				} else if item.PeriodTo != "" && len(ids) == 1 && coverageExplicitAnalysisField(args, id) {
 					result = append(result, endpoint)
 				}
 			}

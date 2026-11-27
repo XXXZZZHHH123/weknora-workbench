@@ -510,6 +510,16 @@ func TestQA4Stage2CHistoricalReplay(t *testing.T) {
 					require.Len(t, selections, 4)
 					declarations, err := json.Marshal(selections)
 					require.NoError(t, err)
+					if !variant.withoutDraft {
+						// This is a complete model response. Check that
+						// publication keeps its requested-unit explanation.
+						for _, pair := range [][2]string{{"231.93 ", "231.93 万吨 "}, {"110.00 ", "110.00 万吨 "}, {"298.93 ", "298.93 万吨 "}} {
+							draft = strings.Replace(draft, pair[0], pair[1], 1)
+						}
+						paragraphs := strings.Split(strings.TrimSpace(draft), "\n\n")
+						paragraphs[len(paragraphs)-1] = "这三列原表未标单位，按问题所给单位列示，原值未换算。"
+						draft = strings.Join(paragraphs, "\n\n")
+					}
 					draft = strings.TrimSpace(draft) + coverageAnswerTag + string(declarations) + coverageAnswerClose
 					r.model.review = lightReviewReply("keep", "")
 				} else {
@@ -539,18 +549,19 @@ func TestQA4Stage2CHistoricalReplay(t *testing.T) {
 					require.Contains(t, answer, want)
 				}
 				require.NotContains(t, answer, "不能直接当成万吨")
+				if variant.withoutDraft {
+					require.Contains(t, answer, "单位未确认")
+					require.NotContains(t, answer, "按问题所给单位")
+					require.Empty(t, qa4Stage2CEvidenceTag.FindAllString(answer, -1))
+					require.Zero(t, r.model.reviewCalls)
+					return
+				}
 				require.Regexp(t, `231\.93[0-9]*\s*万吨`, answer)
 				require.Regexp(t, `110(?:\.0+)?\s*万吨`, answer)
 				require.Regexp(t, `298\.93[0-9]*\s*万吨`, answer)
 				require.Contains(t, answer, "按问题所给单位")
-				if variant.withoutDraft {
-					opening, _, _ := strings.Cut(answer, "\n")
-					for _, want := range []string{"2023-10-31", "231.93", "110", "298.93"} {
-						require.Contains(t, opening, want)
-					}
-					require.Empty(t, qa4Stage2CEvidenceTag.FindAllString(answer, -1))
-					require.Zero(t, r.model.reviewCalls)
-					return
+				if variant.requestedUnit {
+					require.Equal(t, r.engine.modelContext.DecodeOutputText(stripCoverageAnswer(draft)), answer)
 				}
 				require.NotContains(t, answer, "取值格 ", "the retained candidate already delivers the referenced values and coordinates")
 				require.Len(t, qa4Stage2CEvidenceTag.FindAllString(answer, -1), 6)
@@ -632,12 +643,17 @@ func TestQA4Stage2CHistoricalReplay(t *testing.T) {
 				require.True(t, r.results[30].Result.Success, r.results[30].Result.Error)
 				require.Contains(t, r.results[30].Result.Output, "331.2")
 				require.NotContains(t, r.repo.rows[0].Content, "331.2")
-				r.run(chatAnswer(r.draft(0, 26)))
-				if !r.state.IsComplete {
-					r.through(51)
-				}
+				saved := r.draft(0, 26)
+				require.Contains(t, saved, "32.3", "the archived model added an unverified optional calculation")
+				// A separate model response retains the sourced comparison.
+				// The product cannot edit the archived draft on publication.
+				revised, _, ok := strings.Cut(saved, "\n\n**差异说明**")
+				require.True(t, ok)
+				r.engine.evidenceCompletion.enabled = false
+				r.run(chatAnswer(revised))
 				r.exhaust()
 				answer := r.answer()
+				require.Equal(t, r.engine.modelContext.DecodeOutputText(revised), answer)
 				for _, want := range []string{"不一致", "331.2", "298.93", "G87", "2024年3月31日周报", "第6页", "<kb ", "<evidence "} {
 					require.Contains(t, answer, want)
 				}
@@ -720,7 +736,9 @@ func TestQA4Stage2CHistoricalReplay(t *testing.T) {
 						draft = r.withDeclaration(draft, map[string]any{"goal_index": 0, "selection_ref": selection, "role": "supplement",
 							"page": 18, "target_field": "warehouse.B", "metric": "郑棉仓单", "unit": "万吨", "value_text": "60.6",
 							"span": "郑棉仓单：合计60.6万吨"})
+						r.engine.evidenceCompletion.enabled = false
 						r.run(chatAnswer(draft))
+						require.Equal(t, r.engine.modelContext.DecodeOutputText(stripCoverageAnswer(draft)), r.state.FinalAnswer)
 					}
 				}
 				r.exhaust()

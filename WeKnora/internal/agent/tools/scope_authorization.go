@@ -60,6 +60,20 @@ func SearchTargetsIncludeSource(targets types.SearchTargets, kbID, knowledgeID s
 	return allowed
 }
 
+type verifiedDocumentLibrariesKey struct{}
+
+// WithVerifiedDocumentLibraries narrows native reads to the current task's
+// verified document identities. The native executor still authorizes and
+// resolves the actual document or chunk.
+func WithVerifiedDocumentLibraries(ctx context.Context, libraries map[string]string) context.Context {
+	return context.WithValue(ctx, verifiedDocumentLibrariesKey{}, libraries)
+}
+
+func verifiedDocumentLibraryAllows(ctx context.Context, kbID, knowledgeID string) bool {
+	libraries, restricted := ctx.Value(verifiedDocumentLibrariesKey{}).(map[string]string)
+	return !restricted || kbID != "" && libraries[knowledgeID] == kbID
+}
+
 // authorizeKnowledgeInSearchTargets is the shared authorization boundary for
 // every Agent tool that accepts a model-visible doc://N/knowledge_id. Handle
 // decoding is necessary but never sufficient: the durable document must also
@@ -98,8 +112,11 @@ func authorizeLoadedKnowledge(
 	if knowledge == nil {
 		return nil, fmt.Errorf("knowledge_id is required")
 	}
-	if !searchTargets.ContainsKB(knowledge.KnowledgeBaseID) {
+	if !searchTargets.ContainsKB(knowledge.KnowledgeBaseID) || !verifiedDocumentLibraryAllows(ctx, knowledge.KnowledgeBaseID, knowledge.ID) {
 		return nil, fmt.Errorf("knowledge base %s is not within the current Agent scope", knowledge.KnowledgeBaseID)
+	}
+	if err := types.AuthorizeTenantAPIKeyKnowledgeBases(ctx, knowledge.KnowledgeBaseID); err != nil {
+		return nil, err
 	}
 	allowed, err := searchTargetsAllowKnowledgeID(
 		ctx, searchTargets, knowledge.ID, knowledge.KnowledgeBaseID, knowledgeService,
@@ -141,8 +158,11 @@ func authorizeChunkInSearchTargets(
 	if !chunk.IsEnabled {
 		return nil, fmt.Errorf("chunk %s is disabled", chunk.ID)
 	}
-	if !searchTargets.ContainsKB(chunk.KnowledgeBaseID) {
+	if !searchTargets.ContainsKB(chunk.KnowledgeBaseID) || !verifiedDocumentLibraryAllows(ctx, chunk.KnowledgeBaseID, chunk.KnowledgeID) {
 		return nil, fmt.Errorf("knowledge base %s is not within the current Agent scope", chunk.KnowledgeBaseID)
+	}
+	if err := types.AuthorizeTenantAPIKeyKnowledgeBases(ctx, chunk.KnowledgeBaseID); err != nil {
+		return nil, err
 	}
 	allowed, err := searchTargetsAllowKnowledgeID(
 		ctx, searchTargets, chunk.KnowledgeID, chunk.KnowledgeBaseID, knowledgeService,
@@ -176,7 +196,7 @@ func searchTargetsAllowKnowledgeID(
 	kbID string,
 	knowledgeService interfaces.KnowledgeService,
 ) (bool, error) {
-	if knowledgeID == "" {
+	if knowledgeID == "" || !verifiedDocumentLibraryAllows(ctx, kbID, knowledgeID) || types.AuthorizeTenantAPIKeyKnowledgeBases(ctx, kbID) != nil {
 		return false, nil
 	}
 	allowed, tagIDs := searchTargetGrants(searchTargets, kbID, knowledgeID)

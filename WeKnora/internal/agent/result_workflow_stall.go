@@ -77,7 +77,7 @@ func (e *AgentEngine) finishResultWorkflowStall(ctx context.Context, state *type
 	if len(reasons) > 0 {
 		reason = reasons[0]
 	}
-	return true, e.finishBoundedResultAnswer(ctx, query, state, sessionID, messages, reason, standardAnswerFinalBudget, sourceProgressStalledFallback)
+	return true, e.finishBoundedResultAnswer(ctx, query, state, sessionID, messages, reason, standardAnswerFinalBudget, terminalSourceStalled)
 }
 
 // Both result-workflow stalls and exhausted iterations use this single no-tool
@@ -85,7 +85,7 @@ func (e *AgentEngine) finishResultWorkflowStall(ctx context.Context, state *type
 // a child deadline can still publish the existing bounded failure response.
 func (e *AgentEngine) finishBoundedResultAnswer(
 	ctx context.Context, query string, state *types.AgentState, sessionID string, messages []chat.Message,
-	reason string, budget time.Duration, fallback string, chartAnswer ...*boundedChartAnswer,
+	reason string, budget time.Duration, failure terminalFailure, chartAnswer ...*boundedChartAnswer,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -119,14 +119,14 @@ func (e *AgentEngine) finishBoundedResultAnswer(
 			e.commitTerminalResult(ctx, state, sessionID, options.chartAnswer.markdown+"\n\n文字分析未能完成。", "", "chart_partial", false)
 			return nil
 		}
-		e.commitTerminalResult(ctx, state, sessionID, fallback, "", "failed", false)
+		e.commitTerminalResult(ctx, state, sessionID, "", "", "failed", false, failure)
 		return fmt.Errorf("failed to synthesize final answer after tool execution stopped: %w", err)
 	}
 	if strings.TrimSpace(state.FinalAnswer) == "" {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		e.commitTerminalResult(ctx, state, sessionID, fallback, "", "failed", false)
+		e.commitTerminalResult(ctx, state, sessionID, "", "", "failed", false, failure)
 		return fmt.Errorf("final synthesis ended without a committed answer")
 	}
 	state.IsComplete = true

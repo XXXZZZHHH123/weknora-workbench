@@ -157,6 +157,28 @@ func DocumentScopeAllowsAssociation(registry *ToolRegistry, knowledgeID string) 
 	return len(ids) == 0 || slices.Contains(ids, knowledgeID)
 }
 
+// CurrentDocumentScopeIDs returns the native selection used when a search
+// omits document_ids. The caller still needs to check its task and KB scope.
+func CurrentDocumentScopeIDs(registry *ToolRegistry) []string {
+	tool, err := registry.GetTool(ToolBindDocumentScope)
+	if err != nil {
+		return nil
+	}
+	binder, ok := tool.(*bindDocumentScopeTool)
+	if !ok || binder.state == nil {
+		return nil
+	}
+	return binder.state.selectedIDs()
+}
+
+// HasDocumentScopeBinder distinguishes the native binder from proxy tools
+// sharing the public name.
+func HasDocumentScopeBinder(registry *ToolRegistry) bool {
+	tool, err := registry.GetTool(ToolBindDocumentScope)
+	binder, ok := tool.(*bindDocumentScopeTool)
+	return err == nil && ok && binder.state != nil
+}
+
 // Multi-document searches carry actual row identities and document_ids rather
 // than one document_scope. Reuse each row only while its real document remains
 // selected. User page restrictions still require the reader's explicit page

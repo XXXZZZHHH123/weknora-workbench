@@ -2,10 +2,62 @@ package agent
 
 import (
 	"context"
-	"github.com/Tencent/WeKnora/internal/models/chat"
-	"github.com/stretchr/testify/require"
 	"testing"
+
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
+	"github.com/Tencent/WeKnora/internal/event"
+	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/stretchr/testify/require"
 )
+
+func TestFieldConfirmationFailuresUseTerminalPublication(t *testing.T) {
+	for _, flag := range []string{"true", "false"} {
+		for _, test := range []struct {
+			name, submission, expected string
+			failure                    terminalFailure
+		}{
+			{"invalid submission", `{"unknown":"private-input"}`, "未通过格式或必填项校验", terminalFieldInput},
+			{"unavailable service", `{"resolution_id":"aaaaaaaaaaaaaaaaaaaaaaaa","source_tool":"missing","note":"private-input"}`, "未能找到与本次提交对应的可用字段确认服务", terminalFieldService},
+			{"preflight rejected", `{"resolution_id":"aaaaaaaaaaaaaaaaaaaaaaaa","source_tool":"structured_data","note":"private-input"}`, "在执行前被拦下", terminalFieldBlocked},
+		} {
+			t.Run(flag+"/"+test.name, func(t *testing.T) {
+				t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", flag)
+				model := &mockChat{}
+				e := newTestEngine(t, model)
+				e.toolRegistry = agenttools.NewToolRegistry()
+				e.toolRegistry.RegisterTool(agenttools.NewStructuredDataTool())
+				state := &types.AgentState{}
+				stream := &terminalAnswerRecorder{}
+				stream.attach(e.eventBus)
+				var complete event.AgentCompleteData
+				e.eventBus.On(event.EventAgentComplete, func(_ context.Context, evt event.Event) error {
+					complete = evt.Data.(event.AgentCompleteData)
+					return nil
+				})
+
+				submission := fieldConfirmationPrefix + test.submission
+				require.True(t, e.executeStructuredConfirmation(t.Context(), state, submission, "session", "message", nil))
+				require.True(t, state.IsComplete)
+				require.Equal(t, test.failure, e.turnReview.TerminalReceipt.failure)
+				done, visible := stream.snapshot()
+				require.Equal(t, 1, done)
+				require.Equal(t, []string{visible}, stream.contents)
+				require.Contains(t, visible, test.expected)
+				require.NotContains(t, visible, "private-input")
+				require.Equal(t, visible, state.FinalAnswer)
+				require.Equal(t, visible, complete.FinalAnswer)
+				require.Empty(t, model.calls)
+				if test.failure == terminalFieldBlocked {
+					require.Len(t, state.RoundSteps, 1)
+					require.True(t, state.RoundSteps[0].ToolCalls[0].Result.PreflightRejected)
+				} else {
+					require.Empty(t, state.RoundSteps)
+				}
+			})
+		}
+	}
+}
 
 func TestMCPConfirmationOriginAndHumanNote(t *testing.T) {
 	ctx := withFieldConfirmationTurn(context.Background(), "最近一天价格", nil)

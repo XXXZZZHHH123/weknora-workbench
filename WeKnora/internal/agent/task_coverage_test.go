@@ -213,7 +213,11 @@ func TestSourceStallFallbackCannotDeliverStaleTaskEvidenceOrScope(t *testing.T) 
 			mutate(e, state)
 			e.commitTerminalResult(t.Context(), state, "session", sourceProgressStalledFallback, "", "stalled", false)
 			require.False(t, terminalCandidateFallback(state.FinalAnswer))
-			require.Contains(t, state.FinalAnswer, e.turnReview.Query)
+			if name == "source_scope" {
+				require.Contains(t, state.FinalAnswer, "来源授权或快照在完成前发生变化")
+			} else {
+				require.Contains(t, state.FinalAnswer, e.turnReview.Query)
+			}
 			require.NotContains(t, state.FinalAnswer, "An earlier source-based draft.", "resource exhaustion cannot publish a stale draft under a warning")
 		})
 	}

@@ -180,6 +180,7 @@ type LLMToolCall struct {
 	ModelArguments     string   `json:"-"`
 	ArgumentResolution string   `json:"-"`
 	UnresolvedHandles  []string `json:"-"`
+	CoverageGoalIndex  *int     `json:"-"` // Set by the runtime after verifying a goal association.
 }
 
 // ToolCallMetadata carries provider-specific tool-call state that must round-trip

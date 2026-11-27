@@ -13,32 +13,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestQA4Stage2ENamedPrimaryValuePrecedesSupplement(t *testing.T) {
-	const supplemental = "《巡检报告.pdf》6月3日披露 45 小时。"
-	const primary = "《设备台账.xlsx》累计时长在 2024-06-03 的原值为 47.25 小时，取值格 B15。"
-	d := terminalCoverageDelivery{inspected: true, chinese: true, prioritizePrimary: true,
-		documentBodies: []coverageEvidence{{SourceTitle: "巡检报告.pdf", ChunkID: "report"}}}
-	d.facts = []terminalCoverageFact{{required: true, coverageFact: coverageFact{Role: "scoped_value", Evidence: coverageEvidence{
-		Kind: "cell", SourceDomain: "structured", SourceTitle: "设备台账.xlsx", Sheet: "运行时长", SeriesID: "meter.B", Metric: "累计时长",
-		Date: "2024-06-03", Raw: json.Number("47.25"), Cell: "B15", Unit: "小时", UnitBasis: "original_header",
-	}}}}
-	reordered := d.render(false, supplemental+"\n\n"+primary)
-	require.Equal(t, primary+"\n\n"+supplemental, reordered)
-	missing := d.render(false, supplemental)
-	require.Contains(t, missing, "B15")
-	require.Less(t, strings.Index(missing, "47.25"), strings.Index(missing, "45 小时"))
-	require.Equal(t, missing, d.render(false, missing))
-}
-
 // s2-4 had a rejected plan and only field metadata before it read the report.
 // The missing native value read and its on-wire association are the tested
 // recovery variant, using an offline original-cell result for the same snapshot.
 func TestQA4Stage2EKB16PrimaryReplay(t *testing.T) {
-	for _, mode := range []string{"default", "unrepaired", "only", "false"} {
+	for _, mode := range []string{"default", "unrepaired", "planned", "only", "false"} {
 		t.Run(mode, func(t *testing.T) {
-			enabled := mode != "false"
+			enabled := mode != "false" && mode != "default"
 			r := newQA4Stage2CReplay(t, "s2-4-kb16", enabled, true)
-			if enabled {
+			if mode == "default" {
 				require.NoError(t, os.Unsetenv("WEKNORA_AGENT_EVIDENCE_COMPLETION"))
 			}
 			if mode == "only" {
@@ -48,53 +31,63 @@ func TestQA4Stage2EKB16PrimaryReplay(t *testing.T) {
 				r.engine.reviewConversation = conversationThroughLastHuman(r.messages)
 				r.engine.turnReview.Conversation = r.engine.reviewConversation
 				r.trace.Calls[len(r.trace.Calls)-1].Arguments["source_question"] = r.trace.Question
+				r.setPlan(StructuredTaskGoal{
+					SourceMode: "only", SourceTime: "observed_period", VersionTask: "single",
+					PrimaryRef: "棉花数据库", RestrictionBasis: "仅使用棉花数据库", Metric: "郑棉期货收盘价",
+					Period:   map[string]any{"grain": "month", "from": "2024-03-01", "to": "2024-03-31"},
+					Required: []string{"scoped_value"}, OnVerifiedGap: []string{"report_gap", "last_valid_same_field"},
+				})
+				r.engine.taskPlan.SourceDiscovery.SourceDomains = []string{"structured"}
 			}
 			r.engine.config.StructuredResultReviewEnabled = false
 			reads := qa4Stage2DCountReads()
 			require.Equal(t, enabled, r.engine.evidenceCompletionEnabled())
 			r.through(12)
-			require.Nil(t, r.engine.taskPlan)
+			if mode == "only" {
+				require.NotEmpty(t, r.engine.evidenceCompletion.nativeSelections[0], "the existing native field catalog verified the scoped dataset")
+			} else {
+				require.Nil(t, r.engine.taskPlan)
+			}
 			require.EqualValues(t, 2, reads.Load())
 			require.False(t, slices.ContainsFunc(r.engine.evidenceCompletion.record.Evidence, func(item coverageEvidence) bool {
 				return item.Kind == "cell" || item.Kind == "gap" || item.Kind == "last_valid"
 			}))
-			if mode == "false" {
+			if !enabled {
 				r.through(29)
-				r.run(chatAnswer(qa4Stage2EKB16Draft(t, r)))
+				historical := qa4Stage2EKB16Draft(t, r)
+				r.run(chatAnswer(historical))
 				r.exhaust()
+				require.Equal(t, r.engine.modelContext.DecodeOutputText(historical), r.answer())
 				require.Contains(t, r.answer(), "16085")
 				require.NotContains(t, r.answer(), "17110")
+				require.Empty(t, r.engine.evidenceCompletionTargets())
 				require.EqualValues(t, 2, reads.Load())
 				return
 			}
-			r.model.discovery = discoveryReply("recover", "The actual request remains unresolved. Select the pertinent primary field from the authorized directory and read its original values for the requested scope.")
-			r.run(chatAnswer("《棉花数据库.xlsx》的字段目录已经找到。"))
-			require.False(t, r.state.IsComplete)
-			require.NotEmpty(t, r.engine.evidenceCompletion.legacyGap)
 			if mode != "only" {
+				r.model.discovery = discoveryReply("recover", "The actual request remains unresolved. Select the pertinent primary field from the authorized directory and read its original values for the requested scope.")
+				r.run(chatAnswer("《棉花数据库.xlsx》的字段目录已经找到。"))
+				require.False(t, r.state.IsComplete)
+				require.NotEmpty(t, r.engine.evidenceCompletion.legacyGap)
 				r.through(29)
 				require.True(t, r.results[25].Result.Success)
 				require.True(t, r.results[29].Result.Success)
 			}
-			declaration := qa4Stage2EKB16PrimaryDeclaration(t, r, mode == "only")
-			notice := r.engine.evidenceCompletionNotice()
-			require.Contains(t, notice, declaration["selection_ref"])
-			require.Contains(t, notice, "Use the native source-binding and read tools")
 			if mode == "unrepaired" {
 				r.run(chatAnswer(qa4Stage2EKB16Draft(t, r)))
 				r.exhaust()
 				answer := r.answer()
 				require.Contains(t, answer, "棉花数据库.xlsx")
-				require.Contains(t, answer, "尚未完成所问原值的核对")
-				require.Contains(t, answer, "2023-09-22")
-				require.Contains(t, answer, "棉花周报20240331.pptx")
-				for _, forbidden := range []string{"16085", "17110", "CF03M", "没有有效观测值"} {
-					require.NotContains(t, answer, forbidden)
-				}
+				require.NotContains(t, answer, "17110", "the historical execution did not read this original cell")
+				require.NotContains(t, answer, "B4705")
 				require.Empty(t, r.engine.evidenceCompletionTargets(), "the historical recovery has no model field association")
 				require.EqualValues(t, 2, reads.Load())
 				return
 			}
+			declaration := qa4Stage2EKB16PrimaryDeclaration(t, r, mode == "only")
+			notice := r.engine.evidenceCompletionNotice()
+			require.Contains(t, notice, declaration["selection_ref"])
+
 			latest := r.trace.Calls[len(r.trace.Calls)-1]
 			latest.Arguments = maps.Clone(latest.Arguments)
 			latest.Arguments[coverageArgument] = declaration
@@ -105,10 +98,10 @@ func TestQA4Stage2EKB16PrimaryReplay(t *testing.T) {
 			require.Equal(t, "2023-09-22", r.results[101].ExecutionArgs()["start_date"])
 			require.Equal(t, "2023-09-22", r.results[101].ExecutionArgs()["end_date"])
 			require.Len(t, r.engine.evidenceCompletionTargets(), 1)
-			var draft string
-			if mode == "only" {
-				draft = "《棉花数据库.xlsx》的郑棉期货收盘价已核到原表。"
-			} else {
+			// This new model response is separate from the actual 2d draft.
+			primary := "《棉花数据库.xlsx》的郑棉期货收盘价（CF.CZC）在 2024-03-01 至 2024-03-31 无有效月内观测；所读同字段末日为 2023-09-22，原值 17110（B4705）。"
+			draft := primary
+			if mode != "only" {
 				body := slices.IndexFunc(r.engine.evidenceCompletion.record.Evidence, func(item coverageEvidence) bool {
 					return item.Kind == "body" && item.ChunkID == "replay-0331-slide-2-table"
 				})
@@ -116,7 +109,7 @@ func TestQA4Stage2EKB16PrimaryReplay(t *testing.T) {
 				item := r.engine.evidenceCompletion.record.Evidence[body]
 				handle := r.engine.modelContext.CitableChunkHandle(item.ChunkID)
 				require.NotEmpty(t, handle)
-				draft = fmt.Sprintf("本次补充采用《棉花周报20240331.pptx》第2页的合约行情表。2024-03-29，CF2405 合约收盘为 16085，原表未标明单位<ref id=\"%s\"/>。", handle)
+				draft += fmt.Sprintf("\n\n本次补充采用《棉花周报20240331.pptx》第2页的合约行情表。2024-03-29，CF2405 合约收盘为 16085，原表未标明单位<ref id=\"%s\"/>。", handle)
 				original := item.Raw.(string)
 				const row = "2024-03-29 | 16085"
 				rowIndex := strings.Index(original, row)
@@ -142,6 +135,7 @@ func TestQA4Stage2EKB16PrimaryReplay(t *testing.T) {
 			r.run(chatAnswer(draft))
 			r.exhaust()
 			answer := r.answer()
+			require.Equal(t, r.engine.modelContext.DecodeOutputText(stripCoverageAnswer(draft)), answer)
 			for _, want := range []string{"棉花数据库.xlsx", "2024-03-01", "2024-03-31", "2023-09-22", "17110", "B4705"} {
 				require.Contains(t, answer, want)
 			}
@@ -187,13 +181,12 @@ func qa4Stage2EKB16PrimaryDeclaration(t *testing.T, r *qa4Stage2CReplay, only bo
 		"required": []string{"scoped_value"}, "on_verified_gap": []string{"report_gap", "last_valid_same_field", "attributed_supplement"},
 		"delivery": map[string]any{"kind": "text"},
 	}
-	if only {
-		goal["source_mode"], goal["restriction_basis"] = "only", "仅使用棉花数据库"
-		goal["on_verified_gap"] = []string{"report_gap", "last_valid_same_field"}
-	}
-	return map[string]any{
-		"goal_index": 0, "goal": goal, "selection_ref": coverageObservationRef(item), "role": "primary",
+	declaration := map[string]any{
+		"goal_index": 0, "selection_ref": coverageObservationRef(item), "role": "primary",
 		"period_from": "2024-03-01", "period_to": "2024-03-31", "grain": "month",
-		"gap_id": r.engine.evidenceCompletion.legacyGap,
 	}
+	if !only {
+		declaration["goal"], declaration["gap_id"] = goal, r.engine.evidenceCompletion.legacyGap
+	}
+	return declaration
 }

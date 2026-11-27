@@ -925,6 +925,8 @@ func (e *AgentEngine) streamLLMToEventBusWithModel(
 	// than stripping escaped tags or injecting unescaped canonical tags into
 	// the still-serialized envelope. Tool arguments are decoded as usual.
 	bufferReviewedAnswer := opts != nil && (isReviewedAnswerFormat(opts.Format) || isStructuredResultReviewFormat(opts.Format) || isDiscoveryDeliveryReviewFormat(opts.Format))
+	preserveCoverageDeclaration := purpose == "agent_round" && !bufferReviewedAnswer && e.coverageRegistrationEligible()
+	var rawCandidate strings.Builder
 	receivedTerminal := false
 	cancelledDrainChunks := 0
 
@@ -1009,6 +1011,10 @@ streamLoop:
 				chunk.Content += thinkingDecoder.Flush()
 			}
 		} else if !bufferReviewedAnswer {
+			if preserveCoverageDeclaration && chunk.ResponseType == types.ResponseTypeAnswer &&
+				(chunk.Data == nil || chunk.Data["source"] == nil) {
+				rawCandidate.WriteString(chunk.Content)
+			}
 			chunk.Content = answerDecoder.Feed(chunk.Content)
 			if chunk.Done {
 				chunk.Content += answerDecoder.Flush()
@@ -1093,6 +1099,12 @@ streamLoop:
 			"[Agent][Stream] Tool %s (%s) contains unresolvable model handle(s): %v",
 			toolCall.Function.Name, toolCall.ID, toolCall.UnresolvedHandles,
 		)
+	}
+	if preserveCoverageDeclaration {
+		_, declaration := splitCoverageAnswer(agenttools.StripThinkBlocks(rawCandidate.String()))
+		if declaration != "" {
+			result.Content = stripCoverageAnswer(result.Content) + coverageAnswerTag + declaration + coverageAnswerClose
+		}
 	}
 	if orphans := e.modelContext.OrphanResourceHandles(result.Content); len(orphans) > 0 {
 		logger.Warnf(ctx, "[Agent][Stream] Model emitted %d unresolvable resource handle(s): %v",
@@ -1284,9 +1296,10 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	thinkingOpen := false
 	answerStreamed := false
 	var answerPrefix strings.Builder
+	var visibleAnswer strings.Builder
 	var inlineReasoning strings.Builder
 	boundedDecision, _ := ctx.Value(standardAnswerDecisionKey{}).(bool)
-	deferAnswerReview := boundedDecision || e.answerReviewPending || e.structuredReviewMode || hasStructuredHistoryEvidence(messages) || e.config.SandboxConfigID != "" || e.evidenceCompletion.enabled && len(e.evidenceCompletion.refs) > 0 || e.terminalEvidenceCompletionPending()
+	deferAnswerReview := boundedDecision || e.answerReviewPending || e.structuredReviewMode || hasStructuredHistoryEvidence(messages) || e.config.SandboxConfigID != "" || e.turnReview.TerminalSensitive || e.terminalEvidenceCompletionPending()
 	var documentViewStream documentTableStreamGuard
 	var coverageStream coverageAnswerStream
 
@@ -1334,6 +1347,8 @@ func (e *AgentEngine) streamThinkingToEventBus(
 		}
 		closeThinking()
 		answerStreamed = true
+		e.turnReview.TerminalStreamID = answerID
+		visibleAnswer.WriteString(content)
 		emittedEventTypes["final_answer_chunk"]++
 		e.eventBus.Emit(ctx, event.Event{
 			ID:        answerID,
@@ -1371,6 +1386,7 @@ func (e *AgentEngine) streamThinkingToEventBus(
 			})
 		}
 		answerStreamed = false
+		visibleAnswer.Reset()
 		answerPrefix.Reset()
 		deferAnswerReview = true
 	}
@@ -1492,6 +1508,7 @@ func (e *AgentEngine) streamThinkingToEventBus(
 						},
 					)
 					answerStreamed = false
+					visibleAnswer.Reset()
 				}
 				if thinkPart != "" {
 					inlineReasoning.WriteString(thinkPart)
@@ -1574,7 +1591,11 @@ func (e *AgentEngine) streamThinkingToEventBus(
 		} else {
 			fullContent = agenttools.StripThinkBlocks(decodeReviewedAnswer(rawDelivery))
 		}
-		fullContent = e.modelContext.DecodeOutputText(fullContent)
+		prose, declaration := splitCoverageAnswer(fullContent)
+		fullContent = e.modelContext.DecodeOutputText(prose)
+		if declaration != "" {
+			fullContent += coverageAnswerTag + declaration + coverageAnswerClose
+		}
 	} else if e.structuredReviewMode {
 		// The model asked for more evidence. Its answer envelope is still a
 		// draft, while the actual tool calls and their provenance remain intact.
@@ -1607,8 +1628,9 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	if deliveryRepairUsage != nil {
 		resp.AuxiliaryUsage = *deliveryRepairUsage
 	}
-	if answerStreamed {
+	if e.turnReview.TerminalStreamID == answerID {
 		resp.AnswerEventID = answerID
+		e.turnReview.TerminalReceipt.streamed = visibleAnswer.String()
 	}
 	if llmResult.Usage != nil {
 		resp.Usage = *llmResult.Usage
@@ -1631,6 +1653,12 @@ func (e *AgentEngine) callLLMWithRetry(
 ) (*types.ChatResponse, error) {
 	round := iteration + 1
 	messages := *messagesPtr
+	e.turnReview.TerminalSensitive = e.answerReviewPending || e.needsDeliveryReview(state) || hasStructuredHistoryEvidence(messages) || e.terminalCoverageContextKnown()
+	e.turnReview.TerminalInput = terminalEvidenceSnapshot{}
+	if e.turnReview.TerminalSensitive {
+		e.turnReview.TerminalInput = e.terminalEvidenceRevision(ctx, state)
+		e.turnReview.TerminalInput.task = "" // The checked task is captured separately.
+	}
 
 	// Log message summary; only detail the tail messages to avoid repeating what prior rounds already logged
 	const maxDetailMsgs = 4
@@ -1801,6 +1829,9 @@ func (e *AgentEngine) callLLMWithRetry(
 			})
 			if synthErr := e.streamFinalAnswerToEventBus(ctx, query, state, sessionID, messages); synthErr != nil {
 				logger.Errorf(ctx, "[Agent] Final answer synthesis also failed: %v", synthErr)
+				if ctx.Err() == nil && e.executionLeaseError(ctx) == nil && !e.collaborationOwnsFailure(ctx) {
+					e.commitTerminalResult(ctx, state, sessionID, "", "", "failed", false, terminalReview)
+				}
 				return nil, fmt.Errorf("LLM call failed: %w (synthesis also failed: %v)", err, synthErr)
 			}
 			state.IsComplete = true

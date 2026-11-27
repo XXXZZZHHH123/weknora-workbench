@@ -139,7 +139,7 @@ func tableComparisonSupportingFacts(target taskCoverageTarget, input coverageRec
 			fact := item
 			var verified bool
 			if item.Kind == "cell" && item.RangeComplete && item.Metric == binding.Metric {
-				_, verified = terminalComparisonNumber(item)
+				_, verified = coverageComparisonNumber(item)
 			} else {
 				fact, verified = tableComparisonFact(otherField, input, binding, item, from, to, grain)
 			}
@@ -246,7 +246,7 @@ func tableComparisonFact(target taskCoverageTarget, input coverageRecord, bindin
 	if item.Metric != target.Metric && (binding.TargetField != item.Metric || !strings.Contains(item.Metric, target.Metric)) {
 		return item, false
 	}
-	_, numeric := terminalComparisonNumber(item)
+	_, numeric := coverageComparisonNumber(item)
 	return item, numeric
 }
 

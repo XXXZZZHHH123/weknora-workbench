@@ -217,7 +217,8 @@ func (e *AgentEngine) appendSourceNavigationProgress(messages []chat.Message, st
 
 func (e *AgentEngine) coverageDocumentEvidence(call types.ToolCall, base coverageEvidence, data map[string]any) []coverageEvidence {
 	var evidence []coverageEvidence
-	directory := base.Operation == agenttools.ToolListDocuments
+	directory := base.Operation == agenttools.ToolListDocuments ||
+		base.Operation == agenttools.ToolBindDocumentScope && data["source_plan_validated"] == true
 	search := base.Operation == agenttools.ToolSearchKnowledge
 	if directory || search {
 		complete := directory && directoryCoverage(data, len(sourceNavigationRows(data["documents"]))) == "unfiltered_directory_complete"

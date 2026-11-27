@@ -363,11 +363,11 @@ func runQA4Stage2BReplay(t *testing.T, trace qa4Stage2Trace, enabled, rows bool)
 		if rows {
 			require.Contains(t, state.FinalAnswer, "2024-03-01")
 			require.Contains(t, state.FinalAnswer, "2024-03-31")
-			require.Contains(t, state.FinalAnswer, "没有有效观测值")
+			require.Regexp(t, "(?:没有|无)有效(?:观测值|记录)", state.FinalAnswer)
 		} else {
 			require.Contains(t, state.FinalAnswer, "目录")
-			require.Contains(t, state.FinalAnswer, "仍待核实")
-			require.NotContains(t, state.FinalAnswer, "没有有效观测值")
+			require.Regexp(t, "(?:尚无|尚缺|仍待核实).*读数", state.FinalAnswer)
+			require.NotRegexp(t, "(?:没有|无)有效(?:观测值|记录)", state.FinalAnswer)
 			for _, line := range strings.Split(state.FinalAnswer, "\n") {
 				if strings.Contains(line, "2023-09-22") {
 					require.Contains(t, line, "目录")
@@ -377,22 +377,25 @@ func runQA4Stage2BReplay(t *testing.T, trace qa4Stage2Trace, enabled, rows bool)
 		}
 	} else {
 		var valueLine, gapLine string
-		for _, line := range strings.Split(state.FinalAnswer, "\n") {
-			if strings.Contains(line, "5160") {
-				valueLine = line
+		for _, statement := range strings.Split(state.FinalAnswer, "。") {
+			if strings.Contains(statement, "5160") {
+				valueLine = statement
 			}
-			if strings.Contains(line, "仓单数量:一号棉花") && strings.Contains(line, "2024-03-10") {
-				gapLine = line
+			if strings.Contains(statement, "仓单数量:一号棉花") && strings.Contains(statement, "2024-03-10") {
+				gapLine = statement
 			}
 		}
-		for _, expected := range []string{"棉花数据库.xlsx", "郑棉仓单", "仓单数量:一号棉花", "A3340", "B3340"} {
-			require.Contains(t, valueLine, expected, "the historical value stays paired with its actual date and source")
+		for _, expected := range []string{"棉花数据库.xlsx", "郑棉仓单", "仓单数量:一号棉花"} {
+			require.Contains(t, gapLine, expected, "the gap retains the actual source and scope")
+		}
+		for _, expected := range []string{"A3340", "B3340"} {
+			require.Contains(t, valueLine, expected, "the historical value stays paired with its actual date and locator")
 		}
 		require.Regexp(t, `2023(?:-09-21|年9月21日)`, valueLine)
 		require.Regexp(t, `单位(?:尚)?未确认`, valueLine)
 		require.Equal(t, 1, strings.Count(state.FinalAnswer, "5160"), state.FinalAnswer)
 		require.NotContains(t, valueLine, "2024-03-10")
-		require.Regexp(t, `没有有效(?:观测值|记录)`, gapLine, "the exact-date gap must cover the requested field: %s", state.FinalAnswer)
+		require.Regexp(t, `(?:没有|无)有效(?:观测值|记录)`, gapLine, "the exact-date gap must cover the requested field: %s", state.FinalAnswer)
 		require.NotContains(t, gapLine, "5160")
 	}
 }

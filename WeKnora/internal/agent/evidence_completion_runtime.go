@@ -26,7 +26,7 @@ const coverageDeclarationSchema = `{"type":"object","additionalProperties":false
  "selection_ref":{"type":"string","description":"An exact ref from the runtime coverage observations. It selects an existing source and does not authorize access."},
  "source_ref":{"type":"string","description":"For table comparisons, the exact named side from goal.comparison_sources."},
  "version_basis_ref":{"type":"string","description":"For adopt_if_conflict, another returned report's body ref containing evidence for the version choice. Set on the selected supplement only."},
- "version_basis":{"type":"string","maxLength":160,"description":"Exact version evidence from that report's title or returned body. The runtime presents the verified choice once."},
+ "version_basis":{"type":"string","maxLength":160,"description":"Exact version evidence from that report's title or returned body."},
  "role":{"type":"string","enum":["primary","supplement","supporting"]},
  "gap_id":{"type":"string","description":"Exact current gap id when carrying out a requested recovery action."},
  "period_from":{"type":"string"},"period_to":{"type":"string"},"period":{"type":"string"},"grain":{"type":"string"},
@@ -72,7 +72,9 @@ type evidenceCompletionTurn struct {
 	seenObservations         map[string]bool
 	lastAttempts             []coverageAttempt
 	documentReads            map[string]types.ToolCall
+	nativeSelections         map[int][]coverageEvidence
 	revision, scope          string
+	restrictionRevision      string
 	declared                 []taskCoverageTarget
 	record                   coverageRecord
 	result                   []coverageCompletion
@@ -84,7 +86,6 @@ type evidenceCompletionTurn struct {
 	pendingStep              int
 	recoveryDecisions        int
 	stopReason               string
-	blocked                  map[string]string
 	recoveryCalls            map[string]bool
 	latestAttempts           map[string]bool
 	directedSearches         map[string]bool
@@ -92,7 +93,7 @@ type evidenceCompletionTurn struct {
 
 func newEvidenceCompletionTurn(startStep int) evidenceCompletionTurn {
 	enabled, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("WEKNORA_AGENT_EVIDENCE_COMPLETION")))
-	return evidenceCompletionTurn{initialized: true, enabled: err != nil || enabled, startStep: startStep}
+	return evidenceCompletionTurn{initialized: true, enabled: err == nil && enabled, startStep: startStep}
 }
 
 func (e *AgentEngine) evidenceCompletionEnabled() bool {
@@ -104,6 +105,10 @@ func (e *AgentEngine) evidenceCompletionEnabled() bool {
 
 func (e *AgentEngine) evidenceCompletionEligible() bool {
 	return e.toolRegistry != nil && e.evidenceCompletionTextTask()
+}
+
+func (e *AgentEngine) coverageRegistrationEligible() bool {
+	return e.toolRegistry != nil && e.config != nil && e.config.WorkbenchDefault
 }
 
 func (e *AgentEngine) evidenceCompletionTextTask() bool {
@@ -132,21 +137,26 @@ func (e *AgentEngine) evidenceCompletionTargets() []taskCoverageTarget {
 }
 
 func (e *AgentEngine) refreshEvidenceCompletion(ctx context.Context, query string, state *types.AgentState, conversation []chat.Message) {
-	if !e.evidenceCompletionEligible() || state == nil {
+	if !e.coverageRegistrationEligible() || state == nil {
 		return
 	}
 	e.evidenceCompletionEnabled()
 	turn := &e.evidenceCompletion
 	revision, scope := e.candidateTaskDigest(query, conversation), e.unverifiedSourceScopeDigest(ctx)
+	restriction := reviewDigest([]any{query, e.semanticReviewConversation(conversation), e.taskReviewPlan()})
 	if turn.revision != "" && (turn.revision != revision || turn.scope != scope) {
-		enabled := turn.enabled
-		*turn = evidenceCompletionTurn{initialized: true, enabled: enabled, startStep: len(state.RoundSteps)}
+		reset := evidenceCompletionTurn{initialized: true, enabled: turn.enabled, startStep: len(state.RoundSteps)}
+		if turn.restrictionRevision == restriction {
+			// A changed grant invalidates observations and bindings, while the
+			// human's restrictions still apply to this same task.
+			reset.declared = turn.declared
+			reset.nativeSelections = turn.nativeSelections
+		}
+		*turn = reset
 	}
 	turn.revision, turn.scope = revision, scope
+	turn.restrictionRevision = restriction
 	targets := e.evidenceCompletionTargets()
-	if len(targets) == 0 && turn.legacyGap == "" && !turn.enabled {
-		return
-	}
 	turn.record.Revision, turn.record.AuthScope, turn.record.StopReason = revision, scope, turn.stopReason
 	if turn.seenObservations == nil {
 		turn.seenObservations = map[string]bool{}
@@ -182,6 +192,7 @@ func (e *AgentEngine) refreshEvidenceCompletion(ctx context.Context, query strin
 				turn.refs[ref] = observation
 			}
 		}
+		e.recordNativeCoverageSelections(step, batch.Evidence)
 	}
 	turn.observedSteps = len(state.RoundSteps)
 	if turn.observedSteps > turn.startStep {
@@ -190,7 +201,7 @@ func (e *AgentEngine) refreshEvidenceCompletion(ctx context.Context, query strin
 	turn.result = nil
 	search, read := e.toolRegistry.DocumentCoverageCapabilities()
 	for _, target := range targets {
-		for _, result := range evaluateTaskCoverage(target, e.coverageRecordForTarget(target, turn.record)) {
+		for _, result := range evaluateTaskCoverage(target, e.coverageRecordForTarget(ctx, target, turn.record)) {
 			if result.State == coverageOpen && slices.Contains(result.OpenItems, "attributed_supplement") {
 				if result.NextRead == "discover" && (!search || !read) ||
 					result.NextRead == "read" && !read && !e.structuredCoverageReadAvailable(target.GoalIndex) {
@@ -209,7 +220,11 @@ func (e *AgentEngine) refreshEvidenceCompletion(ctx context.Context, query strin
 	}
 }
 
-func (e *AgentEngine) coverageRecordForTarget(target taskCoverageTarget, record coverageRecord) coverageRecord {
+func (e *AgentEngine) coverageRecordForTarget(ctx context.Context, target taskCoverageTarget, record coverageRecord) coverageRecord {
+	allowed := e.verifiedCoverageSourceScope(ctx, target, record)
+	record.Evidence = slices.DeleteFunc(slices.Clone(record.Evidence), func(item coverageEvidence) bool {
+		return !e.coverageEvidenceAuthorized(ctx, item) || target.SourceMode == "only" && !allowed.contains(item)
+	})
 	if target.VersionTask == "compare_sources" || target.VersionTask == "compare_versions" {
 		return record
 	}
@@ -272,9 +287,6 @@ func coveragePrimaryField(target taskCoverageTarget, record coverageRecord, item
 }
 
 func (e *AgentEngine) coverageMatchesPrimaryReference(target taskCoverageTarget, item coverageEvidence) bool {
-	if !e.coverageMatchesPinnedTarget(target, item) {
-		return false
-	}
 	if target.PrimaryRef == "" {
 		return true
 	}
@@ -389,7 +401,7 @@ func (e *AgentEngine) stopEvidenceCompletion(ctx context.Context, query string, 
 // A declaration travels with a normal source call. The tool implementation
 // never receives it, and it cannot create an identity or claim a tool ran.
 func (e *AgentEngine) evidenceCompletionTools(tools []chat.Tool) []chat.Tool {
-	if !e.evidenceCompletionEnabled() || !e.evidenceCompletionEligible() || !e.hasEvidenceCompletionContext() {
+	if !e.evidenceCompletionEligible() || !e.coverageProtocolAvailable() {
 		return tools
 	}
 	result := slices.Clone(tools)
@@ -406,7 +418,7 @@ func (e *AgentEngine) evidenceCompletionTools(tools []chat.Tool) []chat.Tool {
 		if !ok {
 			continue
 		}
-		props[coverageArgument] = map[string]string{"type": "object", "description": "Goal declaration or verified source association. See the runtime coverage protocol."}
+		props[coverageArgument] = map[string]string{"type": "object", "description": "Optional task goal and association with an actual source observation."}
 		fn.Parameters, _ = json.Marshal(schema)
 	}
 	return result
@@ -454,6 +466,9 @@ func (e *AgentEngine) acceptCoverageDeclaration(ctx context.Context, query strin
 			validateTaskCoverageBasis(plan, query, semantic, humanTurns, e.coveragePinnedSelection) != nil {
 			return request, false
 		}
+		if target.SourceMode == "only" && request.Selection == "" && len(e.verifiedCoverageScopePins(ctx, target).sources) == 0 {
+			return request, false
+		}
 		declaredGoal = &target
 		targets = append(targets, target)
 	}
@@ -475,7 +490,8 @@ func (e *AgentEngine) acceptCoverageDeclaration(ctx context.Context, query strin
 	}
 	selected, known := turn.refs[request.Selection]
 	supporting := request.Role == "supporting" && tableComparison(target)
-	if !known || request.Role != "primary" && request.Role != "supplement" && !supporting || bodyDimensions && selected.Kind != "body" ||
+	if !known || !coverageCurrentEvidence(turn.record, selected) || !e.coverageEvidenceAuthorized(ctx, selected) ||
+		request.Role != "primary" && request.Role != "supplement" && !supporting || bodyDimensions && selected.Kind != "body" ||
 		tableComparison(target) && request.SourceRef == "" {
 		return request, false
 	}
@@ -546,14 +562,16 @@ func (e *AgentEngine) acceptCoverageDeclaration(ctx context.Context, query strin
 	}) {
 		return request, false
 	}
-	if !e.coverageMatchesPinnedTarget(target, selected) {
+	if !e.coverageEvidenceAllowed(ctx, &target, selected) {
 		return request, false
 	}
 	if request.DateRef != "" || request.ValueRef != "" {
 		date, dateOK := turn.refs[request.DateRef]
 		value, valueOK := turn.refs[request.ValueRef]
 		last, lastOK := coveragePinInspectedLastValid(selected, date, value)
-		if request.Role != "primary" || !dateOK || !valueOK || !lastOK {
+		if request.Role != "primary" || !dateOK || !valueOK || !lastOK ||
+			!coverageCurrentEvidence(turn.record, date) || !coverageCurrentEvidence(turn.record, value) ||
+			!e.coverageEvidenceAuthorized(ctx, date) || !e.coverageEvidenceAuthorized(ctx, value) {
 			return request, false
 		}
 		boundary, boundaryOK := coverageInspectedBoundary(selected, last, binding.PeriodFrom, binding.PeriodTo, binding.Grain)
@@ -587,61 +605,6 @@ func (e *AgentEngine) linkLegacyCoverageGoal(request coverageDeclaration) {
 	}
 }
 
-// A single explicit document handle narrows the UI selections. An explicit
-// comparison without such a handle can use the authorized selected documents.
-func (e *AgentEngine) coverageOnlySelectedDocuments(target taskCoverageTarget) ([]*SelectedDocumentInfo, bool) {
-	compare := target.VersionTask == "compare_versions" || target.VersionTask == "compare_sources"
-	var selected []*SelectedDocumentInfo
-	explicit := false
-	for _, doc := range e.selectedDocs {
-		if doc == nil || doc.KnowledgeID == "" {
-			continue
-		}
-		ref := e.modelContext.RegisterDocument(doc.KnowledgeID)
-		authorized := agenttools.SearchTargetsIncludeSource(e.config.SearchTargets, doc.KnowledgeBaseID, doc.KnowledgeID)
-		if ref == target.PrimaryRef || ref == target.RestrictionBasis {
-			if authorized {
-				return []*SelectedDocumentInfo{doc}, true
-			}
-			return nil, true
-		}
-		if compare {
-			explicit = true
-			if authorized {
-				selected = append(selected, doc)
-			}
-		}
-	}
-	return selected, explicit
-}
-
-func coverageSelectedDocumentMatches(docs []*SelectedDocumentInfo, selected coverageEvidence) bool {
-	return slices.ContainsFunc(docs, func(doc *SelectedDocumentInfo) bool {
-		return doc.KnowledgeBaseID == selected.KnowledgeBaseID &&
-			(doc.KnowledgeID == selected.SourceID || doc.KnowledgeID == selected.KnowledgeID)
-	})
-}
-
-func (e *AgentEngine) coverageMatchesPinnedTarget(target taskCoverageTarget, selected coverageEvidence) bool {
-	if target.SourceMode != "only" {
-		return true
-	}
-	if docs, explicit := e.coverageOnlySelectedDocuments(target); explicit {
-		return coverageSelectedDocumentMatches(docs, selected)
-	}
-	if tableComparison(target) {
-		// Side-specific selection and identity freezing still run in
-		// acceptCoverageDeclaration. No single source can occupy both sides.
-		return true
-	}
-	// Without explicit UI scope, a prospective call cannot widen a verified
-	// only-source selection, even when the whole library is authorized.
-	return !slices.ContainsFunc(e.evidenceCompletion.record.Bindings, func(binding coverageBinding) bool {
-		return binding.GoalIndex == target.GoalIndex && binding.Role == "primary" &&
-			(binding.SourceID != selected.SourceID || binding.KnowledgeBaseID != selected.KnowledgeBaseID)
-	})
-}
-
 func (e *AgentEngine) coveragePinnedSelection(ref string) bool {
 	return ref != "" && slices.ContainsFunc(e.selectedDocs, func(doc *SelectedDocumentInfo) bool {
 		return doc != nil && agenttools.SearchTargetsIncludeSource(e.config.SearchTargets, doc.KnowledgeBaseID, doc.KnowledgeID) &&
@@ -658,7 +621,7 @@ func (e *AgentEngine) coverageToolDomain(name string, args map[string]any) strin
 	case *agenttools.ReadDocumentTool, *agenttools.SearchKnowledgeTool, *agenttools.ListDocumentsTool:
 		return "knowledge"
 	}
-	if name == agenttools.ToolBindDocumentScope {
+	if name == agenttools.ToolBindDocumentScope && agenttools.HasDocumentScopeBinder(e.toolRegistry) {
 		return "knowledge"
 	}
 	if taskSourceProtocolDomain(name) == "structured" {
@@ -699,26 +662,6 @@ func coverageSourceIDs(args map[string]any) []string {
 	return ids
 }
 
-func (e *AgentEngine) coverageOnlyDomain() string {
-	targets := e.evidenceCompletionTargets()
-	if len(targets) == 0 || !slices.ContainsFunc(targets, func(target taskCoverageTarget) bool { return target.SourceMode == "only" }) {
-		return ""
-	}
-	if slices.ContainsFunc(targets, func(target taskCoverageTarget) bool { return target.SourceMode != "only" }) {
-		return ""
-	}
-	if slices.ContainsFunc(targets, tableComparison) {
-		return "" // The bounded named materials may use different domains.
-	}
-	if domain := e.coveragePlanPrimaryDomain(); domain != "" {
-		return domain
-	}
-	if len(e.selectedDocs) > 0 {
-		return "knowledge"
-	}
-	return ""
-}
-
 func (e *AgentEngine) coveragePlanPrimaryDomain() string {
 	if e.taskPlan == nil || e.taskPlan.SourceDiscovery == nil || len(e.taskPlan.SourceDiscovery.SourceDomains) != 1 {
 		return ""
@@ -731,22 +674,18 @@ func (e *AgentEngine) coveragePlanPrimaryDomain() string {
 }
 
 func (e *AgentEngine) coveragePrefetchSelection(planned map[string]bool) map[string]bool {
-	if !e.evidenceCompletionEnabled() || !e.evidenceCompletionEligible() {
+	if !e.coverageRegistrationEligible() {
 		return planned
 	}
 	switch e.coverageOnlyDomain() {
 	case "structured":
 		return map[string]bool{agenttools.ToolStructuredData: shouldPrefetchStructuredSources(planned)}
 	case "knowledge":
-		if len(e.selectedDocs) == 0 {
-			return map[string]bool{agenttools.ToolSearchKnowledge: shouldPrefetchKnowledgeSources(planned)}
-		}
 		return map[string]bool{}
 	}
 	targets := e.evidenceCompletionTargets()
-	if len(targets) > 0 && !slices.ContainsFunc(targets, func(target taskCoverageTarget) bool { return target.SourceMode == "open" }) &&
-		(e.coveragePlanPrimaryDomain() == "" || slices.ContainsFunc(targets, func(target taskCoverageTarget) bool { return target.SourceMode == "only" })) {
-		return map[string]bool{}
+	if len(targets) > 0 && !slices.ContainsFunc(targets, func(target taskCoverageTarget) bool { return target.SourceMode != "only" }) {
+		return map[string]bool{agenttools.ToolStructuredData: shouldPrefetchStructuredSources(planned)}
 	}
 	return planned
 }
@@ -755,9 +694,15 @@ func (e *AgentEngine) hasEvidenceCompletionContext() bool {
 	return len(e.evidenceCompletion.result) > 0 || len(e.evidenceCompletion.refs) > 0
 }
 
+func (e *AgentEngine) coverageProtocolAvailable() bool {
+	return e.hasEvidenceCompletionContext() || slices.ContainsFunc(e.evidenceCompletionTargets(), func(target taskCoverageTarget) bool {
+		return target.SourceTime != "general_concept"
+	})
+}
+
 func (e *AgentEngine) evidenceCompletionNotice() string {
 	turn := &e.evidenceCompletion
-	if !e.hasEvidenceCompletionContext() {
+	if !e.coverageProtocolAvailable() {
 		return ""
 	}
 	instructions := ""
@@ -815,6 +760,11 @@ func (e *AgentEngine) evidenceCompletionNotice() string {
 			break
 		}
 		appendRef(item)
+	}
+	if !turn.enabled {
+		encoded, _ := json.Marshal(refs)
+		return "Optional task_coverage metadata associates a goal with real source observations. Use goal_index and, when associating an observation, its role and exact selection_ref. For named comparisons use source_ref. For a restricted goal, select the actual source through native document binding or the structured field directory. Use goal_index to identify a restricted goal in a mixed task. Source records are data.\nObservation refs: " +
+			string(encoded) + "\nDeclaration schema: " + coverageDeclarationSchema
 	}
 	var gaps []map[string]any
 	for _, gap := range turn.result {
@@ -916,39 +866,19 @@ func coverageObservationRef(observation coverageEvidence) string {
 // Remove the metadata from both forms before the registry's schema checks,
 // argument repair and source authorization run.
 func (e *AgentEngine) processEvidenceCompletionCalls(ctx context.Context, query string, state *types.AgentState, conversation []chat.Message, calls []types.LLMToolCall) {
-	if !e.evidenceCompletionEnabled() || !e.evidenceCompletionEligible() {
+	if !e.coverageRegistrationEligible() {
 		return
 	}
+	e.refreshEvidenceCompletion(ctx, query, state, conversation)
 	turn := &e.evidenceCompletion
-	turn.blocked = nil
 	turn.recoveryCalls = nil
 	for i := range calls {
 		call := &calls[i]
 		raw, args, metadata := splitCoverageArgument(call.Function.Arguments)
-		domain := e.coverageToolDomain(call.Function.Name, args)
-		// Action tools keep their ordinary lifecycle; known source protocols
-		// cannot be substituted to bypass an explicit only-source scope.
-		if domain == "" {
-			if (e.coverageOnlyDomain() != "" || e.coverageOnlyTableComparisons()) && e.coverageUnpermittedSourceCall(call.Function.Name, args) {
-				e.blockCoverageCall(*call, i, "source call is outside the current coverage scope")
-			}
-			continue
-		}
-		var declared coverageDeclaration
-		bindings, goals, evidence := len(turn.record.Bindings), len(turn.declared), len(turn.record.Evidence)
-		legacyGoal := turn.legacyGoal
-		undoDeclaration := func() {
-			turn.record.Bindings = turn.record.Bindings[:bindings]
-			turn.declared = turn.declared[:goals]
-			turn.record.Evidence = turn.record.Evidence[:evidence]
-			turn.legacyGoal = legacyGoal
-		}
 		modelArguments, _, modelMetadata := splitCoverageArgument(call.ModelArguments)
 		if len(metadata) != 0 || len(modelMetadata) != 0 {
 			call.Function.Arguments, call.ModelArguments = raw, modelArguments
-			if len(call.UnresolvedHandles) > 0 {
-				// The initial decode also inspected the optional declaration.
-				// Recheck only the stripped tool arguments for unresolved handles.
+			if len(call.UnresolvedHandles) > 0 && e.modelContext != nil {
 				clean := []types.LLMToolCall{*call}
 				if modelArguments != "" {
 					clean[0].Function.Arguments = modelArguments
@@ -958,110 +888,43 @@ func (e *AgentEngine) processEvidenceCompletionCalls(ctx context.Context, query 
 				call.ArgumentResolution = clean[0].ArgumentResolution
 			}
 		}
+		domain := e.coverageToolDomain(call.Function.Name, args)
+		if domain == "" {
+			continue
+		}
+		var declaration coverageDeclaration
 		if len(metadata) != 0 {
-			if accepted, valid := e.acceptCoverageDeclaration(ctx, query, conversation, metadata); valid && e.coverageCallDeclaresCurrentGap(&accepted) {
-				declared = accepted
-			} else {
-				undoDeclaration()
+			if accepted, valid := e.acceptCoverageDeclaration(ctx, query, conversation, metadata); valid {
+				declaration = accepted
+				call.CoverageGoalIndex = accepted.GoalIndex
 			}
 		}
-		legacyAssociation := declared.GoalIndex != nil && turn.pending != nil && turn.pending.GapID == turn.legacyGap &&
-			declared.Role == "primary" && declared.Selection != ""
-		if legacyAssociation {
-			turn.legacyGoal = declared.GoalIndex
-		}
-		refresh := legacyAssociation || declared.GapID != "" && declared.Role == "supplement"
-		var nextPending *coverageCompletion
-		if refresh {
-			e.refreshEvidenceCompletion(ctx, query, state, conversation)
-			if gap, exists := e.evidenceCompletionGap(); exists && gap.GoalIndex == *declared.GoalIndex && gap.State == coverageOpen {
-				canAdvance := turn.pending != nil && (turn.pending.GapID == gap.GapID || legacyAssociation) && len(turn.recoveryCalls) == 0
-				canStart := turn.pending == nil && turn.recoveryDecisions < maxEvidenceRecoveryAttempts
-				if (canAdvance || canStart) && (legacyAssociation || declared.GapID == gap.GapID && declared.Role == "supplement" && gap.NextRead == "read") {
-					nextPending = &gap
-					declared.GapID = gap.GapID
-				}
-			}
-		}
-		if turn.pending == nil && nextPending == nil && call.Function.Name == agenttools.ToolReadDocument &&
-			turn.recoveryDecisions < maxEvidenceRecoveryAttempts {
-			if gap, exists := e.evidenceCompletionGap(); exists && gap.State == coverageOpen && gap.NextRead == "read" &&
-				slices.Contains(gap.OpenItems, "attributed_supplement") {
-				// A prior exact navigation hit can bind a normal page read.
-				// Register only if the actual tool arguments match that hit.
-				nextPending = &gap
-			}
-		}
-		pending := turn.pending
-		if nextPending != nil {
-			pending = nextPending
-		}
-		if domain == "knowledge" && e.coverageHoldsSupplement() {
-			undoDeclaration()
-			e.blockCoverageCall(*call, i, "establish the current primary field and its requested coverage before supplementary reads")
-			continue
-		}
-		if !e.coverageAllowsCall(*call, args, domain, declared) {
-			undoDeclaration()
-			if refresh {
-				e.refreshEvidenceCompletion(ctx, query, state, conversation)
-			}
-			e.blockCoverageCall(*call, i, "source call is outside the current coverage scope or recovery action")
-			continue
-		}
-		if !e.registerCoverageRecoveryCall(*call, i, args, domain, declared, pending) {
-			if declared.GapID != "" && !legacyAssociation {
-				undoDeclaration()
-				if refresh {
-					e.refreshEvidenceCompletion(ctx, query, state, conversation)
-				}
-			}
-			if pending != nil && pending == turn.pending && slices.Contains(pending.OpenItems, "attributed_supplement") &&
-				(call.Function.Name == agenttools.ToolReadDocument || call.Function.Name == agenttools.ToolSearchKnowledge && strings.TrimSpace(sourceNavigationString(args, "query")) != "") {
-				e.blockCoverageCall(*call, i, "source call is outside the current coverage scope or recovery action")
-			}
-			if legacyAssociation {
-				turn.pending = nextPending
-			}
-			continue
-		}
-		// A proposed binding changes the pending action only after its call passes scope checks.
-		if nextPending != nil {
-			if turn.pending == nil {
-				e.beginEvidenceCompletionRecovery(ctx, state)
-			} else {
-				turn.pending = nextPending
-			}
+		if turn.enabled && e.evidenceCompletionEligible() {
+			e.recordCoverageRecoveryCall(ctx, state, *call, i, args, domain, declaration)
 		}
 	}
 	e.refreshEvidenceCompletion(ctx, query, state, conversation)
 }
 
-func (e *AgentEngine) coverageOnlyTableComparisons() bool {
-	targets := e.evidenceCompletionTargets()
-	return slices.ContainsFunc(targets, tableComparison) && !slices.ContainsFunc(targets, func(target taskCoverageTarget) bool {
-		return target.SourceMode != "only"
-	})
-}
-
-func (e *AgentEngine) coverageHoldsSupplement() bool {
+// Recovery receipts describe an attempt for the forced comparison path.
+func (e *AgentEngine) recordCoverageRecoveryCall(ctx context.Context, state *types.AgentState, call types.LLMToolCall, index int, args map[string]any, domain string, declaration coverageDeclaration) {
 	turn := &e.evidenceCompletion
-	targets := e.evidenceCompletionTargets()
-	if len(e.selectedDocs) != 0 || len(targets) != 1 || targets[0].SourceMode != "named_first" || !slices.Contains(targets[0].Required, "scoped_value") ||
-		targets[0].VersionTask == "compare_sources" || targets[0].VersionTask == "compare_versions" ||
-		slices.Contains(targets[0].Required, "supporting") {
-		return false
+	if declaration.GoalIndex != nil && !e.coverageCallDeclaresCurrentGap(&declaration) {
+		declaration = coverageDeclaration{}
 	}
-	target := targets[0]
-	structured := e.coveragePlanPrimaryDomain() == "structured" || slices.ContainsFunc(turn.record.Evidence, func(item coverageEvidence) bool {
-		return item.Bound && item.SourceDomain == "structured" && e.coverageMatchesPrimaryReference(target, item)
-	})
-	if !structured {
-		return false
+	pending := turn.pending
+	if gap, exists := e.evidenceCompletionGap(); exists && gap.State == coverageOpen && gap.NextRead == "read" &&
+		slices.Contains(gap.OpenItems, "attributed_supplement") && turn.recoveryDecisions < maxEvidenceRecoveryAttempts &&
+		(call.Function.Name == agenttools.ToolReadDocument || declaration.GapID == gap.GapID && declaration.Role == "supplement") &&
+		(pending == nil || pending.GapID == gap.GapID) {
+		pending = &gap
 	}
-	return !slices.ContainsFunc(turn.result, func(result coverageCompletion) bool {
-		return result.GoalIndex == target.GoalIndex && result.State == coverageOpen && slices.Contains(result.OpenItems, "attributed_supplement")
-	})
+	if !e.registerCoverageRecoveryCall(call, index, args, domain, declaration, pending) {
+		return
+	}
+	if pending != nil && turn.pending == nil {
+		e.beginEvidenceCompletionRecovery(ctx, state)
+	}
 }
 
 func (e *AgentEngine) coverageCallDeclaresCurrentGap(declaration *coverageDeclaration) bool {
@@ -1106,94 +969,20 @@ func splitCoverageArgument(raw string) (string, map[string]any, json.RawMessage)
 	return raw, args, metadata
 }
 
-func (e *AgentEngine) blockCoverageCall(call types.LLMToolCall, index int, reason string) {
-	if e.evidenceCompletion.blocked == nil {
-		e.evidenceCompletion.blocked = map[string]string{}
-	}
-	e.evidenceCompletion.blocked[agenttools.NormalizeToolCallID(call.ID, call.Function.Name, index)] = reason
-}
-
 func (e *AgentEngine) coverageUnpermittedSourceCall(name string, args map[string]any) bool {
+	registered, _ := e.toolRegistry.GetTool(name)
+	switch registered.(type) {
+	case *agenttools.MCPTool, *agenttools.MCPRegisteredTool, *agenttools.BrowserSkillTool:
+		return true
+	}
 	switch name {
 	case sourceCalculationToolName, documentTableCalculationToolName, documentTableAnalysisToolName:
 		return false // These deterministic operations still require locally bound source operands.
-	case agenttools.ToolReadFile, agenttools.ToolShellExec, agenttools.ToolCallMCPTool:
+	case agenttools.ToolReadFile, agenttools.ToolShellExec, agenttools.ToolShellExecAsync, agenttools.ToolCallMCPTool, agenttools.ToolReadPage:
 		return true
 	default:
 		return e.standardAnswerSourceTool(name, args)
 	}
-}
-
-func (e *AgentEngine) coverageAllowsCall(call types.LLMToolCall, args map[string]any, domain string, declaration coverageDeclaration) bool {
-	turn := &e.evidenceCompletion
-	onlyDomain := e.coverageOnlyDomain()
-	if onlyDomain != "" && onlyDomain != domain {
-		return false
-	}
-	operation := coverageCallOperation(e.toolRegistry, call, args)
-	action := coverageCallAction(operation)
-	if operation != call.Function.Name {
-		raw, _ := json.Marshal(args)
-		if _, inner, ok := e.toolRegistry.StructuredInvocation(call.Function.Name, raw); ok {
-			args = inner
-		}
-	}
-	ids := coverageSourceIDs(args)
-	if operation == agenttools.ToolReadDocument {
-		ids = e.coverageDocumentIDs(ids)
-	}
-	targets := e.evidenceCompletionTargets()
-	scopedTargets := targets
-	goalIndex := declaration.GoalIndex
-	if goalIndex != nil {
-		if index := slices.IndexFunc(targets, func(target taskCoverageTarget) bool {
-			return target.GoalIndex == *goalIndex
-		}); index >= 0 {
-			scopedTargets = targets[index : index+1]
-		}
-	}
-	// Source-limited goals use their validated primary bindings even within a
-	// single library. An explicit declaration can also narrow a mixed task.
-	allOnly := len(scopedTargets) > 0 && !slices.ContainsFunc(scopedTargets, func(target taskCoverageTarget) bool { return target.SourceMode != "only" })
-	if allOnly {
-		if declaration.Role == "supplement" {
-			return false
-		}
-		known := map[string]bool{}
-		explicitScope := false
-		for _, target := range scopedTargets {
-			docs, explicit := e.coverageOnlySelectedDocuments(target)
-			explicitScope = explicitScope || explicit
-			for _, doc := range docs {
-				known[doc.KnowledgeID] = true
-			}
-			for _, binding := range turn.record.Bindings {
-				if binding.GoalIndex != target.GoalIndex || binding.Role != "primary" {
-					continue
-				}
-				if !explicit || known[binding.SourceID] || slices.ContainsFunc(turn.record.Evidence, func(evidence coverageEvidence) bool {
-					return evidence.SourceID == binding.SourceID && evidence.KnowledgeBaseID == binding.KnowledgeBaseID &&
-						coverageSelectedDocumentMatches(docs, evidence)
-				}) {
-					known[binding.SourceID] = true
-				}
-			}
-		}
-		// A two-material selection can use directories to obtain the real
-		// handles. Actual search/read calls still require both scope and a
-		// checked side selection or an explicit user pin.
-		if !explicitScope && slices.ContainsFunc(scopedTargets, tableComparison) &&
-			(operation == agenttools.ToolListDocuments || operation == "list_datasets") {
-			return true
-		}
-		if len(known) > 0 && (len(ids) == 0 || slices.ContainsFunc(ids, func(id string) bool { return !known[id] })) {
-			return false
-		}
-		if len(known) == 0 && (explicitScope || action != "discover" || onlyDomain == "" && domain == "knowledge" && len(ids) == 0) {
-			return false
-		}
-	}
-	return true
 }
 
 // Chunk handles in actual native results retain their owning document. Native
@@ -1430,7 +1219,7 @@ func (e *AgentEngine) observeEvidenceCompletionRecovery(ctx context.Context, sta
 
 func (e *AgentEngine) acceptCoverageAnswer(ctx context.Context, query string, state *types.AgentState, conversation []chat.Message, content string, accept bool) string {
 	before, raw := splitCoverageAnswer(content)
-	if raw == "" || !accept || !e.evidenceCompletionEnabled() || !e.evidenceCompletionEligible() || !e.hasEvidenceCompletionContext() {
+	if raw == "" || !accept || !e.evidenceCompletionEligible() || !e.hasEvidenceCompletionContext() {
 		return before
 	}
 	var selections []json.RawMessage
@@ -1450,17 +1239,33 @@ func (e *AgentEngine) acceptCoverageAnswer(ctx context.Context, query string, st
 
 func (e *AgentEngine) checkEvidenceCompletion(ctx context.Context, decision candidateDecision, state *types.AgentState, phase string) (candidateDecision, bool) {
 	turn := &e.evidenceCompletion
+	if !e.evidenceCompletionEligible() {
+		return decision, false
+	}
 	if len(turn.result) == 0 {
+		if !turn.enabled {
+			common.PipelineInfo(ctx, "Agent", "evidence_completion", map[string]any{
+				"mode": "shadow", "phase": phase, "reason": "no_validated_coverage_target", "goal_results": 0,
+			})
+		}
 		return decision, false
 	}
 	gap, open := e.evidenceCompletionGap()
 	if !open {
 		gap = turn.result[0]
 	}
+	localDisposition := decision.Disposition
+	if open {
+		localDisposition = candidateNeedSource
+		if gap.State == coverageExhausted && len(e.coverageDraftAnchors(ctx, decision.Candidate, state)) > 0 {
+			localDisposition = candidateEvidencePartial
+		}
+	}
 	common.PipelineInfo(ctx, "Agent", "evidence_completion", map[string]any{
 		"mode":  map[bool]string{true: "enforce", false: "shadow"}[turn.enabled],
 		"phase": phase, "gap_id": gap.GapID, "state": gap.State, "reason": gap.Reason,
-		"goal_results": len(turn.result),
+		"goal_results": len(turn.result), "candidate_disposition": decision.Disposition, "local_disposition": localDisposition,
+		"disposition_changed": decision.Disposition != localDisposition,
 	})
 	if !turn.enabled {
 		return decision, false
@@ -1468,16 +1273,11 @@ func (e *AgentEngine) checkEvidenceCompletion(ctx context.Context, decision cand
 	if !open {
 		return decision, true
 	}
-	decision.Disposition, decision.ReasonCode = candidateNeedSource, "evidence_completion_gap"
+	decision.Disposition, decision.ReasonCode = localDisposition, "evidence_completion_gap"
 	e.answerReviewAction = reviewCollectEvidence
 	if gap.State == coverageExhausted {
 		decision.ReasonCode = "evidence_completion_exhausted"
 		e.answerReviewAction = ""
-		anchors := e.coverageDraftAnchors(ctx, decision.Candidate, state)
-		best, grounded := e.currentCoverageDraft(ctx, state)
-		if len(anchors) > 0 && (!grounded || best == decision.Candidate || len(anchors) > len(e.turnReview.CoverageDraftFacts)) {
-			decision.Disposition = candidateEvidencePartial
-		}
 	}
 	e.answerReviewFeedback = "The current requested source coverage is incomplete. Follow the current runtime coverage record for the remaining scope and action."
 	return decision, true
@@ -1570,7 +1370,7 @@ func (e *AgentEngine) executeCoverageDraftRead(ctx context.Context, query string
 	encoded, _ := json.Marshal(args)
 	call := types.LLMToolCall{ID: generateEventID("coverage-read"), Type: "function", Function: types.FunctionCall{Name: name, Arguments: string(encoded)}}
 	domain := e.coverageToolDomain(name, args)
-	if domain == "" || !e.coverageAllowsCall(call, args, domain, coverageDeclaration{}) {
+	if domain == "" || !e.coverageSourceCallAllowed(ctx, call, args) {
 		return false, nil
 	}
 	if err := e.executionLeaseError(ctx); err != nil {
@@ -1668,6 +1468,9 @@ func (e *AgentEngine) coverageSameFieldLatestRead(state *types.AgentState) (stri
 }
 
 func (e *AgentEngine) coverageLatestRead(state *types.AgentState, analysisOnly bool) (string, string, map[string]any) {
+	if !e.evidenceCompletionEnabled() {
+		return "", "", nil
+	}
 	turn := &e.evidenceCompletion
 	targets := e.evidenceCompletionTargets()
 	observations := turn.record.Evidence
