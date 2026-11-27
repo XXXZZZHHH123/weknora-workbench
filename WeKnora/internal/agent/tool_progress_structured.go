@@ -70,19 +70,29 @@ func structuredToolProgressEvidence(operation string, original map[string]any) [
 	stripStructuredProgressTransport(data)
 	var keys [][sha256.Size]byte
 	// A directory changing order or returning previously seen entries in a
-	// different batch is not new source evidence. Empty coverage is still an
-	// actual directory observation, so retain the remaining scope metadata.
+	// different batch is not new source evidence. The page-local counts and
+	// groups describe that projection, so they do not independently add progress.
+	var directoryEntries bool
 	for _, field := range []string{"datasets", "series", "charts", "tables", "pdf_tables", "tools", "field_candidates", "literal_fields"} {
 		rows, ok := data[field].([]any)
 		if !ok || structuredProgressHasResults(operation) {
 			continue
 		}
+		directoryEntries = true
 		for _, row := range rows {
 			keys = append(keys, toolProgressKey(operation+"/"+field, map[string]any{
 				"source_context": data["source_context"], "dataset_id": data["dataset_id"], "entry": row,
 			}))
 		}
 		delete(data, field)
+	}
+	if directoryEntries {
+		if len(keys) == 0 {
+			keys = append(keys, toolProgressKey(operation, map[string]any{
+				"source_context": data["source_context"], "dataset_id": data["dataset_id"],
+			}))
+		}
+		return keys
 	}
 	if len(data) > 0 {
 		keys = append(keys, toolProgressKey(operation, data))

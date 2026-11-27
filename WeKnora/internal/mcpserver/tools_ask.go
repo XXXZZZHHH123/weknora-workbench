@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -247,19 +248,22 @@ func (s *Server) runQA(
 	}
 
 	var (
-		mu       sync.Mutex
-		answer   strings.Builder
-		final    string
-		refs     []*types.SearchResult
-		qaErr    error
-		done     = make(chan struct{})
-		complete = make(chan struct{})
-		doneOnce sync.Once
-		compOnce sync.Once
+		mu         sync.Mutex
+		answer     strings.Builder
+		final      string
+		refs       []*types.SearchResult
+		qaErr      error
+		incomplete *event.AgentIncompleteData
+		answerDone bool
+		done       = make(chan struct{})
+		complete   = make(chan struct{})
+		doneOnce   sync.Once
+		compOnce   sync.Once
 	)
 	closeDone := func() { doneOnce.Do(func() { close(done) }) }
 	closeComplete := func() { compOnce.Do(func() { close(complete) }) }
 
+	useAgent := agent.IsAgentMode()
 	bus := event.NewEventBus()
 	bus.On(event.EventAgentFinalAnswer, func(_ context.Context, evt event.Event) error {
 		data, ok := evt.Data.(event.AgentFinalAnswerData)
@@ -267,7 +271,10 @@ func (s *Server) runQA(
 			return nil
 		}
 		mu.Lock()
-		answer.WriteString(data.Content)
+		if incomplete == nil {
+			answer.WriteString(data.Content)
+			answerDone = answerDone || data.Done
+		}
 		mu.Unlock()
 		if data.Done {
 			closeDone()
@@ -286,10 +293,14 @@ func (s *Server) runQA(
 	})
 	bus.On(event.EventAgentComplete, func(_ context.Context, evt event.Event) error {
 		data, ok := evt.Data.(event.AgentCompleteData)
-		if !ok {
+		if !ok || data.MessageID != "" && data.MessageID != assistantMsg.ID {
 			return nil
 		}
 		mu.Lock()
+		if data.Incomplete != nil {
+			incomplete = data.Incomplete
+			answer.Reset()
+		}
 		if data.FinalAnswer != "" {
 			final = data.FinalAnswer
 		}
@@ -312,12 +323,13 @@ func (s *Server) runQA(
 		mu.Lock()
 		qaErr = fmt.Errorf("%s", data.Error)
 		mu.Unlock()
-		closeDone()
-		closeComplete()
+		if !useAgent {
+			closeDone()
+			closeComplete()
+		}
 		return nil
 	})
 
-	useAgent := agent.IsAgentMode()
 	go func() {
 		if useAgent {
 			defer closeDone()
@@ -343,7 +355,7 @@ func (s *Server) runQA(
 		}
 		if runErr != nil {
 			mu.Lock()
-			if qaErr == nil {
+			if qaErr == nil || errors.Is(runErr, types.ErrMessageRunInterrupted) || errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 				qaErr = runErr
 			}
 			mu.Unlock()
@@ -352,6 +364,7 @@ func (s *Server) runQA(
 		}
 	}()
 
+	var timeoutErr error
 	select {
 	case <-done:
 		if useAgent {
@@ -359,46 +372,66 @@ func (s *Server) runQA(
 			select {
 			case <-complete:
 			case <-ctx.Done():
+				timeoutErr = fmt.Errorf("answer timed out: %w", ctx.Err())
 			case <-timer.C:
-				logger.Warnf(ctx, "[mcpserver] ask timed out waiting for agent completion: session=%s", session.ID)
+				timeoutErr = fmt.Errorf("waiting for the agent's completion event: %w", context.DeadlineExceeded)
 			}
 			timer.Stop()
 		}
 	case <-ctx.Done():
-		assistantMsg.Content = "The answer was interrupted before completion."
-		assistantMsg.IsCompleted = true
-		if updateErr := s.messageService.UpdateMessage(context.WithoutCancel(ctx), assistantMsg); updateErr != nil {
-			logger.Warnf(ctx, "[mcpserver] failed to finalize interrupted message: %v", updateErr)
-		}
-		return "", nil, fmt.Errorf("answer timed out: %w", ctx.Err())
+		timeoutErr = fmt.Errorf("answer timed out: %w", ctx.Err())
 	}
 
 	mu.Lock()
 	text := answer.String()
-	if strings.TrimSpace(text) == "" && final != "" {
+	if final != "" && (useAgent || strings.TrimSpace(text) == "") {
 		text = final
 	}
+	hasAnswer := strings.TrimSpace(final) != "" || !useAgent && answerDone && strings.TrimSpace(text) != ""
 	collected := append([]*types.SearchResult(nil), refs...)
 	runErr := qaErr
+	status := incomplete
 	mu.Unlock()
 
-	if strings.TrimSpace(text) == "" && runErr != nil {
-		assistantMsg.Content = "The answer failed: " + runErr.Error()
-		assistantMsg.IsCompleted = true
-		if updateErr := s.messageService.UpdateMessage(context.WithoutCancel(ctx), assistantMsg); updateErr != nil {
-			logger.Warnf(ctx, "[mcpserver] failed to finalize failed message: %v", updateErr)
-		}
-		return "", nil, runErr
+	persistCtx := context.WithoutCancel(ctx)
+	var failure error
+	runState := types.MessageRunStateIncomplete
+	switch {
+	case errors.Is(runErr, types.ErrMessageRunInterrupted):
+		runState, failure = types.MessageRunStateInterrupted, runErr
+	case status != nil:
+		failure = errors.New(status.Notice)
+	case !hasAnswer && timeoutErr != nil:
+		runState, failure = types.MessageRunStateInterrupted, timeoutErr
+	case !hasAnswer && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)):
+		runState, failure = types.MessageRunStateInterrupted, runErr
+	case !hasAnswer && runErr != nil:
+		failure = runErr
+	case !hasAnswer:
+		failure = errors.New("the run ended without completed answer content")
 	}
-	if strings.TrimSpace(text) == "" {
-		text = "No answer could be produced for this question."
+	if failure != nil {
+		if runState == types.MessageRunStateInterrupted {
+			if prior, readErr := s.messageService.GetMessage(persistCtx, session.ID, assistantMsg.ID); readErr == nil && prior != nil &&
+				prior.IsCompleted && prior.RunState == types.MessageRunStateInterrupted {
+				if strings.TrimSpace(prior.Content) != "" {
+					failure = errors.New(prior.Content)
+				}
+				return "", nil, failure
+			}
+		}
+		assistantMsg.Content, assistantMsg.RunState, assistantMsg.IsCompleted = failure.Error(), runState, true
+		if saveErr := s.messageService.UpdateMessage(persistCtx, assistantMsg); saveErr != nil {
+			logger.Warnf(ctx, "[mcpserver] failed to persist answer status: %v", saveErr)
+		}
+		return "", nil, failure
 	}
 	assistantMsg.Content = text
 	assistantMsg.IsCompleted = true
 	if len(collected) > 0 {
 		assistantMsg.KnowledgeReferences = types.References(collected)
 	}
-	if err := s.messageService.UpdateMessage(context.WithoutCancel(ctx), assistantMsg); err != nil {
+	if err := s.messageService.UpdateMessage(persistCtx, assistantMsg); err != nil {
 		logger.Warnf(ctx, "[mcpserver] failed to persist assistant message: %v", err)
 	}
 	return text, summarizeReferences(collected), nil

@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -75,6 +76,112 @@ func (s *imageAskMessageService) CreateMessage(_ context.Context, message *types
 }
 
 func (s *imageAskMessageService) UpdateMessage(context.Context, *types.Message) error { return nil }
+
+type completionAskSessionService struct {
+	imageAskSessionService
+	run func(context.Context, *types.QARequest, *event.EventBus) error
+}
+
+func (s *completionAskSessionService) AgentQA(ctx context.Context, req *types.QARequest, bus *event.EventBus) error {
+	return s.run(ctx, req, bus)
+}
+
+type completionAskMessageService struct {
+	imageAskMessageService
+	saved       []types.Message
+	interrupted *types.Message
+}
+
+func (s *completionAskMessageService) GetMessage(context.Context, string, string) (*types.Message, error) {
+	return s.interrupted, nil
+}
+
+func (s *completionAskMessageService) UpdateMessage(_ context.Context, message *types.Message) error {
+	s.saved = append(s.saved, *message)
+	return nil
+}
+
+func TestAskPublishesFailureStatusWithoutUncheckedAnswer(t *testing.T) {
+	const notice = "The selected period remains unverified."
+	const verified = "Verified source reading."
+	const interruptedNotice = "The original value was verified. The report check was interrupted."
+	for _, scenario := range []struct {
+		name, state, content string
+		completion           *event.AgentCompleteData
+		upstreamError        error
+		errorEvent           string
+		persisted            bool
+	}{
+		{name: "typed_incomplete", state: types.MessageRunStateIncomplete, content: notice,
+			completion: &event.AgentCompleteData{Incomplete: &event.AgentIncompleteData{Reason: "endpoint_evidence_unverified", Notice: notice}},
+			errorEvent: "Earlier retry failed."},
+		{name: "no_events", state: types.MessageRunStateIncomplete, content: "the run ended without completed answer content"},
+		{name: "empty_complete", state: types.MessageRunStateIncomplete, content: "the run ended without completed answer content", completion: &event.AgentCompleteData{}},
+		{name: "upstream_failure", state: types.MessageRunStateIncomplete, content: "upstream unavailable", upstreamError: errors.New("upstream unavailable")},
+		{name: "upstream_error_event", state: types.MessageRunStateIncomplete, content: "provider returned no response", errorEvent: "provider returned no response"},
+		{name: "interrupted", state: types.MessageRunStateInterrupted, content: context.Canceled.Error(), upstreamError: context.Canceled},
+		{name: "persisted_interruption", state: types.MessageRunStateInterrupted, content: interruptedNotice,
+			upstreamError: types.ErrMessageRunInterrupted, persisted: true},
+		{name: "complete", content: verified, completion: &event.AgentCompleteData{FinalAnswer: verified}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := newResourceURLFixture(t)
+			sessions := &completionAskSessionService{run: func(ctx context.Context, req *types.QARequest, bus *event.EventBus) error {
+				if scenario.name != "no_events" {
+					if err := bus.Emit(ctx, event.Event{
+						Type: event.EventAgentFinalAnswer,
+						Data: event.AgentFinalAnswerData{Content: "Unchecked draft.", Done: scenario.name == "upstream_failure"},
+					}); err != nil {
+						return err
+					}
+				}
+				if scenario.errorEvent != "" {
+					if err := bus.Emit(ctx, event.Event{Type: event.EventError, Data: event.ErrorData{Error: scenario.errorEvent}}); err != nil {
+						return err
+					}
+				}
+				if scenario.completion == nil {
+					return scenario.upstreamError
+				}
+				data := *scenario.completion
+				data.MessageID = req.AssistantMessageID
+				return bus.Emit(ctx, event.Event{Type: event.EventAgentComplete, Data: data})
+			}}
+			messages := &completionAskMessageService{}
+			if scenario.persisted {
+				messages.interrupted = &types.Message{ID: "message-assistant", SessionID: "session-1",
+					RunState: types.MessageRunStateInterrupted, IsCompleted: true, Content: interruptedNotice}
+			}
+			f.srv.sessionService, f.srv.messageService = sessions, messages
+			f.srv.agentService = &stubAgentService{agents: map[string]*types.CustomAgent{
+				types.BuiltinQuickAnswerID: {ID: types.BuiltinQuickAnswerID, IsBuiltin: true,
+					Config: types.CustomAgentConfig{AgentMode: types.AgentModeSmartReasoning}},
+			}}
+			result, err := f.srv.handleAsk(f.ctx, mcp.CallToolRequest{Params: mcp.CallToolParams{
+				Arguments: map[string]any{"question": "What did the selected source report?"},
+			}})
+			require.NoError(t, err)
+			if scenario.state == "" {
+				require.False(t, result.IsError)
+				require.Equal(t, verified, result.StructuredContent.(map[string]any)["answer"])
+			} else {
+				require.True(t, result.IsError)
+				require.Empty(t, result.StructuredContent)
+				require.Contains(t, result.Content[0].(mcp.TextContent).Text, scenario.content)
+				require.NotContains(t, result.Content[0].(mcp.TextContent).Text, "Unchecked draft.")
+			}
+			if scenario.persisted {
+				require.Empty(t, messages.saved)
+				require.Equal(t, interruptedNotice, messages.interrupted.Content)
+				return
+			}
+			require.Len(t, messages.saved, 1)
+			require.True(t, messages.saved[0].IsCompleted)
+			require.Equal(t, scenario.state, messages.saved[0].RunState)
+			require.Equal(t, scenario.content, messages.saved[0].Content)
+		})
+	}
+}
 
 func TestAskExposesImageHandlesToTextAndStructuredClients(t *testing.T) {
 	f := newResourceURLFixture(t)

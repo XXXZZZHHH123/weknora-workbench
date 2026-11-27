@@ -1232,7 +1232,19 @@ func (e *AgentEngine) runReActIteration(
 		}
 		tools = e.evidenceCompletionTools(tools)
 	}
-	resp, err := e.callLLMWithRetry(ctx, messagesPtr, tools, state, query, state.CurrentRound, sessionID, runtimeNotice)
+	var resp *types.ChatResponse
+	var err error
+	var pendingNativeRead bool
+	if e.sourceReadWindowOpen(ctx, state, state.CurrentRound) {
+		if call, ok := e.nextCoverageLastValidRead(ctx, state); ok {
+			pendingNativeRead = true
+			resp = &types.ChatResponse{ToolCalls: []types.LLMToolCall{call}, FinishReason: "tool_calls"}
+			e.emitProgress(ctx, "sources", state.CurrentRound, sessionID)
+		}
+	}
+	if resp == nil {
+		resp, err = e.callLLMWithRetry(ctx, messagesPtr, tools, state, query, state.CurrentRound, sessionID, runtimeNotice)
+	}
 	if err != nil {
 		if errors.Is(err, errStandardAnswerModelBudget) {
 			if finished, finalErr := e.finishStandardAnswerBudget(ctx, state, query, sessionID, assistantMessageID, messagesPtr, guards, "model_call_time"); finished {
@@ -1493,6 +1505,10 @@ func (e *AgentEngine) runReActIteration(
 		if read {
 			return iterOutcomeNext, nil
 		}
+		if e.resumePendingSourceRead(ctx, query, state, messagesPtr, guards, sessionID, candidateDecision{}) {
+			state.RoundSteps = append(state.RoundSteps, step)
+			return iterOutcomeNext, nil
+		}
 	}
 	if len(response.ToolCalls) == 0 && (!pendingLegacySourceRewrite || suspectAnswerFragment(response.Content, response.ReasoningContent)) && (strings.TrimSpace(response.Content) != "" || strings.TrimSpace(response.ReasoningContent) != "") && (isNaturalStopFinishReason(response.FinishReason) || isLengthFinishReason(response.FinishReason)) {
 		reviewConversation, _ := restoreStructuredReviewConversation(*messagesPtr, guards)
@@ -1515,6 +1531,11 @@ func (e *AgentEngine) runReActIteration(
 				if state.Suspended != nil {
 					return iterOutcomeBreak, nil
 				}
+				return iterOutcomeNext, nil
+			}
+			if decision.Err == nil && decision.ReasonCode != "evidence_completion_gap" &&
+				e.resumePendingSourceRead(ctx, query, state, messagesPtr, guards, sessionID, decision) {
+				state.RoundSteps = append(state.RoundSteps, step)
 				return iterOutcomeNext, nil
 			}
 		}
@@ -1608,7 +1629,10 @@ func (e *AgentEngine) runReActIteration(
 	}
 
 	if pendingLegacySourceRewrite {
-		e.beginCandidateRevision(ctx, state, messagesPtr, guards, query, response.Content)
+		decision := candidateDecision{Candidate: response.Content}
+		if !isNaturalStopFinishReason(response.FinishReason) || !e.resumePendingSourceRead(ctx, query, state, messagesPtr, guards, sessionID, decision) {
+			e.beginCandidateRevision(ctx, state, messagesPtr, guards, query, response.Content)
+		}
 		state.RoundSteps = append(state.RoundSteps, step)
 		return iterOutcomeNext, nil
 	}
@@ -1801,7 +1825,15 @@ func (e *AgentEngine) runReActIteration(
 	}
 
 	// 3. Act: Execute tool calls
-	if !buttonsRan && e.runRoundTools(ctx, state, response, &step, sessionID, assistantMessageID) {
+	toolCtx, cancelTools := ctx, func() {}
+	if pendingNativeRead {
+		remaining := time.Until(agentExecutionStart(ctx).Add(standardAnswerActiveBudget))
+		deadline := min(finalCoverageReadBudget, remaining)
+		toolCtx, cancelTools = context.WithTimeout(ctx, deadline)
+	}
+	suspended := !buttonsRan && e.runRoundTools(toolCtx, state, response, &step, sessionID, assistantMessageID)
+	cancelTools()
+	if suspended {
 		return iterOutcomeBreak, nil
 	}
 	toolCallCount = len(step.ToolCalls)
@@ -1861,6 +1893,9 @@ func (e *AgentEngine) runReActIteration(
 			}
 			if e.collaborationOwnsFailure(ctx) {
 				return iterOutcomeBreak, fmt.Errorf("source collection stopped after repeated rounds without new evidence")
+			}
+			if !observation.RenderLimit && e.resumePendingSourceRead(ctx, query, state, messagesPtr, guards, sessionID, candidateDecision{}) {
+				return iterOutcomeNext, nil
 			}
 			e.stopEvidenceCompletion(ctx, query, state, *messagesPtr, "source_progress_stalled")
 			if observation.ResultWorkflow {

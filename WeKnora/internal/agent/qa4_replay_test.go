@@ -222,7 +222,9 @@ func runQA4HistoricalReplay(t *testing.T, id, future string) {
 						require.True(t, state.IsComplete)
 						require.NotEmpty(t, e.evidenceCompletion.record.Attempts, "unrelated directory attempts remain visible")
 						require.Equal(t, countTotalToolCalls(trace.Steps), countTotalToolCalls(state.RoundSteps))
-						require.Len(t, e.turnReview.ClosedStreams, 1)
+						require.Empty(t, e.turnReview.ClosedStreams)
+						require.Empty(t, state.FinalAnswer)
+						require.NotEmpty(t, e.turnReview.TerminalReceipt.notice)
 						return
 					}
 					require.False(t, state.IsComplete)
@@ -246,7 +248,9 @@ func runQA4HistoricalReplay(t *testing.T, id, future string) {
 					require.Zero(t, exhausted.BudgetRemaining)
 					require.Equal(t, "recovery_budget_exhausted", exhausted.Reason)
 					require.True(t, state.IsComplete)
-					require.Len(t, e.turnReview.ClosedStreams, 1)
+					require.Empty(t, e.turnReview.ClosedStreams)
+					require.Empty(t, state.FinalAnswer)
+					require.NotEmpty(t, e.turnReview.TerminalReceipt.notice)
 					return
 				}
 				state.CurrentRound++
@@ -277,6 +281,12 @@ func runQA4HistoricalReplay(t *testing.T, id, future string) {
 	require.Equal(t, countTotalToolCalls(trace.Steps), countTotalToolCalls(state.RoundSteps), "no unrecorded tool calls")
 	require.True(t, e.turnReview.Committed)
 	require.True(t, state.IsComplete)
+	if id == "r5-1-kb07" {
+		require.Empty(t, state.FinalAnswer)
+		require.Empty(t, e.turnReview.ClosedStreams)
+		require.NotEmpty(t, e.turnReview.TerminalReceipt.notice)
+		return
+	}
 	require.Len(t, e.turnReview.ClosedStreams, 1)
 	if future == "inventory" {
 		assertQA4OriginalFactHandoff(t, ctx, e, state)

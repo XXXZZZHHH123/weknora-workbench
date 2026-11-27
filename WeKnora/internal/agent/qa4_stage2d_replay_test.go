@@ -111,7 +111,6 @@ func TestQA4Stage2DHistoricalReplay(t *testing.T) {
 					require.Equal(t, candidateTextDigest(answer), ref.CandidateHash)
 					savedIDs = append(savedIDs, ref.ID)
 				}
-				require.Len(t, savedIDs, 4)
 				require.ElementsMatch(t, uniqueCandidateEvidenceIDs(answer), savedIDs)
 				require.Len(t, complete.EvidenceRefs, len(savedIDs))
 				return
@@ -239,12 +238,19 @@ func qa4Stage2DBoundedSQLRecovery(t *testing.T, fixture string, cells []qa4Stage
 			r.exhaust()
 			answer := r.answer()
 			t.Logf("Published answer:\n%s", answer)
-			require.Equal(t, expectedAnswer, answer)
 			if enabled {
+				require.Equal(t, expectedAnswer, answer)
 				for _, cell := range cells {
 					require.Contains(t, answer, cell.contract)
 					require.Contains(t, answer, cell.value)
 					require.Contains(t, answer, cell.cell)
+				}
+			} else {
+				require.NotContains(t, answer, lastDay, "the published endpoint date needs its original value")
+				for _, cell := range cells {
+					require.Contains(t, answer, cell.contract+" / 收盘价 在 2024-03-01 – 2024-03-31 无有效记录")
+					require.NotContains(t, answer, cell.cell)
+					require.NotContains(t, answer, cell.value)
 				}
 			}
 		})
@@ -322,11 +328,11 @@ func qa4Stage2DAssertKB16(t *testing.T, r *qa4Stage2CReplay, answer string) {
 	require.Contains(t, r.trace.HistoricalFinal, "2023-09-22")
 	require.NotContains(t, r.trace.HistoricalFinal, "17110")
 	require.Equal(t, r.trace.Drafts[0], r.trace.HistoricalFinal)
-	for _, want := range []string{"查不到", "2023-09-22", "2024年3月", "棉花周报20240331.pptx", "第2页", "CF2405", "CF2409", "CF2501", "16085", "16265", "16095", "不能直接补作该表", "<kb ", "<evidence "} {
+	for _, want := range []string{"2024-03-01 – 2024-03-31 无有效记录", "2023-09-22 的 17110", "B4705", "棉花周报20240331.pptx", "CF2405", "CF2409", "CF2501", "16085", "16265", "16095", "<kb "} {
 		require.Contains(t, answer, want)
 	}
-	require.NotContains(t, answer, "17110", "the original draft omitted the endpoint already present in the SQL input")
-	require.Equal(t, r.engine.modelContext.DecodeOutputText(qa4Stage2DRemintCitations(t, r, "s2-3-kb16")), answer)
+	require.Contains(t, answer, "补充材料：棉花周报20240331.pptx")
+	require.NotContains(t, answer, "元/吨", "the document explicitly leaves the unit unspecified")
 }
 
 func qa4Stage2DAssertKB31(t *testing.T, r *qa4Stage2CReplay, answer string, omitValue bool) {

@@ -14,6 +14,15 @@ export type ChatMessage = Record<string, unknown> & {
   collaboration_status?: CollaborationStatus
 }
 
+function applyIncompleteAgentResult(message: ChatMessage, notice: unknown) {
+  message.run_state = 'incomplete'
+  if (typeof notice === 'string') message.content = notice
+  if (!Array.isArray(message.agentEventStream)) return
+  for (const entry of message.agentEventStream) {
+    if (entry.type === 'answer') entry.superseded = true
+  }
+}
+
 const TERMINAL_COLLABORATION_STATES = new Set(['succeeded', 'completed', 'failed', 'interrupted', 'cancelled', 'canceled'])
 
 // Tools whose results tell open pages what changed (see dataChangeTools on
@@ -1526,7 +1535,11 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
       case 'complete': {
         if (dataId) replaySegments.delete(dataId)
         log('[Agent] Complete event received')
-        applyFinalArtifactContent(message, (dataPayload as any)?.final_content)
+        if (dataPayload?.run_state === 'incomplete') {
+          applyIncompleteAgentResult(message, dataPayload.error)
+        } else {
+          applyFinalArtifactContent(message, (dataPayload as any)?.final_content)
+        }
         if (dataPayload?.run_state === 'interrupted') message.run_state = 'interrupted'
         if (Array.isArray((dataPayload as any)?.knowledge_references)) message.knowledge_references = (dataPayload as any).knowledge_references.slice()
         if (Array.isArray((dataPayload as any)?.evidence_references)) message.evidence_references = (dataPayload as any).evidence_references
@@ -1534,7 +1547,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
         loading.value = false
         isReplying.value = false
         message.is_completed = true
-        onReplyComplete?.(String(message.content || ''))
+        onReplyComplete?.(message.run_state === 'incomplete' ? '' : String(message.content || ''))
         onTurnComplete?.(message)
         fullContent.value = ''
         currentAssistantMessageId.value = ''
@@ -1598,14 +1611,19 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
     })
 
     const metadata = data.data as ChatMessage | undefined
-    if (metadata?.run_state === 'interrupted' && (data.response_type === 'error' || data.response_type === 'complete')) {
+    if ((metadata?.run_state === 'interrupted' || metadata?.run_state === 'incomplete') &&
+      (data.response_type === 'error' || data.response_type === 'complete')) {
       const message = resolveActiveAssistantMessage(data)
       if (!data.id || !message || (message.request_id !== data.id && message.id !== data.id) || message.is_completed) return
       if (data.response_type === 'error') {
-        const firstInterruption = message.run_state !== 'interrupted'
+        const firstInterruption = message.run_state !== metadata.run_state
         const content = metadata.final_content ?? data.content
-        applyFinalArtifactContent(message, content)
-        message.run_state = 'interrupted'
+        if (metadata.run_state === 'incomplete') {
+          applyIncompleteAgentResult(message, content)
+        } else {
+          applyFinalArtifactContent(message, content)
+          message.run_state = 'interrupted'
+        }
         message.thinking = false
         // The error carries the partial answer. Complete closes the turn and
         // notifies callers once, even when either frame is replayed.
@@ -1803,7 +1821,11 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
     })
     if (data.response_type === 'complete' && existingMessage) {
       if (existingMessage.is_completed) return
-      applyFinalArtifactContent(existingMessage, metadata?.final_content)
+      if (metadata?.run_state === 'incomplete') {
+        applyIncompleteAgentResult(existingMessage, metadata.error)
+      } else {
+        applyFinalArtifactContent(existingMessage, metadata?.final_content)
+      }
       if (metadata?.run_state === 'interrupted') existingMessage.run_state = 'interrupted'
       if (Array.isArray(metadata?.knowledge_references)) existingMessage.knowledge_references = metadata.knowledge_references.slice()
       if (Array.isArray(metadata?.evidence_references)) existingMessage.evidence_references = metadata.evidence_references
@@ -1819,7 +1841,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
       fullContent.value = ''
       currentAssistantMessageId.value = ''
       emitMessageUpdated(existingMessage, { ...data, is_completed: true })
-      onReplyComplete?.(String(existingMessage.content || ''))
+      onReplyComplete?.(existingMessage.run_state === 'incomplete' ? '' : String(existingMessage.content || ''))
       onTurnComplete?.(existingMessage)
       scrollToBottom()
       return

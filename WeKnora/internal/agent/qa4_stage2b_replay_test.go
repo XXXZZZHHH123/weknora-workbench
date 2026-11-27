@@ -341,6 +341,13 @@ func runQA4Stage2BReplay(t *testing.T, trace qa4Stage2Trace, enabled, rows bool)
 	}
 	require.True(t, state.IsComplete, "the original settlement path must end the turn")
 	engine.commitTerminalResult(ctx, state, session, trace.HistoricalFinal, "", "stalled", false)
+	if notice := engine.turnReview.TerminalReceipt.notice; notice != "" {
+		require.Empty(t, state.FinalAnswer)
+		require.Empty(t, finals, "calls without verified readings must not stream an answer")
+		require.Contains(t, notice, trace.Question)
+		require.Len(t, model.calls, modelCalls)
+		return
+	}
 	require.Len(t, finals, 2, "one outward answer followed by its completion marker")
 	require.Equal(t, finals[0].ID, finals[1].ID)
 	require.Equal(t, state.FinalAnswer, finals[0].Data.(event.AgentFinalAnswerData).Content)

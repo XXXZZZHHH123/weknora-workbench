@@ -158,7 +158,15 @@ type AgentCompleteData struct {
 	Extra           map[string]interface{} `json:"extra,omitempty"`
 	// Suspended is set (*types.PromptSuspension) when the run ended waiting
 	// on a user prompt; the message is then not complete.
-	Suspended interface{} `json:"suspended,omitempty"`
+	Suspended  interface{}          `json:"suspended,omitempty"`
+	Incomplete *AgentIncompleteData `json:"incomplete,omitempty"`
+}
+
+// AgentIncompleteData reports the outcome of a turn with no checked answer.
+// Notice describes the actual execution and is separate from the answer stream.
+type AgentIncompleteData struct {
+	Reason string `json:"reason"`
+	Notice string `json:"notice"`
 }
 
 // === Streaming Event Data Structures ===

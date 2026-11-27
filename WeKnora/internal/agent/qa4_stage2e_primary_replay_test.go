@@ -76,10 +76,13 @@ func TestQA4Stage2EKB16PrimaryReplay(t *testing.T) {
 			if mode == "unrepaired" {
 				r.run(chatAnswer(qa4Stage2EKB16Draft(t, r)))
 				r.exhaust()
-				answer := r.answer()
-				require.Contains(t, answer, "棉花数据库.xlsx")
-				require.NotContains(t, answer, "17110", "the historical execution did not read this original cell")
-				require.NotContains(t, answer, "B4705")
+				require.True(t, r.state.IsComplete)
+				require.Empty(t, r.state.FinalAnswer)
+				require.Empty(t, r.finals)
+				notice := r.engine.turnReview.TerminalReceipt.notice
+				require.NotEmpty(t, notice)
+				require.NotContains(t, notice, "17110", "the historical execution did not read this original cell")
+				require.NotContains(t, notice, "B4705")
 				require.Empty(t, r.engine.evidenceCompletionTargets(), "the historical recovery has no model field association")
 				require.EqualValues(t, 2, reads.Load())
 				return

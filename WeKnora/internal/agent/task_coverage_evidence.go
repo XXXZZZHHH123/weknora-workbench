@@ -816,6 +816,10 @@ func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, 
 // A SQL result citation can point to the displayed value of a verified
 // original input only when its direct columns also identify that original row.
 func coverageDirectAnalysisResultPointer(item coverageEvidence, data map[string]any, contract *structuredresult.Contract) string {
+	return coverageAnalysisResultPointer(item, data, contract, false)
+}
+
+func coverageAnalysisResultPointer(item coverageEvidence, data map[string]any, contract *structuredresult.Contract, singleInput bool) string {
 	if !contract.Capabilities.ColumnDependenciesVerified {
 		return ""
 	}
@@ -832,7 +836,10 @@ func coverageDirectAnalysisResultPointer(item coverageEvidence, data map[string]
 			indices[name] = column.Index
 		}
 	}
-	for _, index := range indices {
+	for column, index := range indices {
+		if column == "series_id" && singleInput && index == -1 {
+			continue
+		}
 		if index < 0 || index >= len(contract.Columns) {
 			return ""
 		}
@@ -841,7 +848,7 @@ func coverageDirectAnalysisResultPointer(item coverageEvidence, data map[string]
 	rows, _ := data["rows"].([]any)
 	for rowIndex, raw := range rows {
 		row, ok := raw.([]any)
-		if !ok || len(row) != len(contract.Columns) || row[indices["series_id"]] != item.SeriesID || row[indices["date"]] != item.Date ||
+		if !ok || len(row) != len(contract.Columns) || indices["series_id"] >= 0 && row[indices["series_id"]] != item.SeriesID || row[indices["date"]] != item.Date ||
 			row[indices["source_cell"]] != item.Cell || !reviewJSONValuesEqual(row[indices["value"]], item.Raw) {
 			continue
 		}
@@ -1143,12 +1150,19 @@ func inspectedPublishedLastValid(record coverageRecord) []coverageEvidence {
 		}
 		for _, observation := range inspectedFieldLastValid(record, field) {
 			if !slices.ContainsFunc(record.Evidence, func(item coverageEvidence) bool {
-				return item.LastValidStatus != "" && coverageCurrentEvidence(record, item) &&
+				return item.LastValidDate == observation.Date && item.LastValidStatus != "" && item.LastValidStatus != "unverified" &&
+					coverageCurrentEvidence(record, item) &&
 					item.KnowledgeBaseID == observation.KnowledgeBaseID && item.DatasetID == observation.DatasetID &&
-					item.Sheet == observation.Sheet && item.SeriesID == observation.SeriesID && coverageSameEndpointSnapshot(item, observation)
+					item.Sheet == observation.Sheet && item.SeriesID == observation.SeriesID && coverageSameEndpointSnapshot(item, observation) &&
+					(item.LastValidStatus == "conflict" || item.LastValidStatus == "truncated" ||
+						coverageProtocolLastValid(item) && coverageSameOriginalCell(item, observation) && coverageSameOriginalValue(observation.Raw, item.Raw))
 			}) {
-				readings = append(readings, observation)
-				fields = append(fields, field)
+				if !slices.ContainsFunc(readings, func(existing coverageEvidence) bool {
+					return coverageSameOriginalCell(existing, observation) && reviewJSONValuesEqual(existing.Raw, observation.Raw)
+				}) {
+					readings = append(readings, observation)
+					fields = append(fields, field)
+				}
 			}
 		}
 	}

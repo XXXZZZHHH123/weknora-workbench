@@ -262,6 +262,13 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 			coverage = e.currentCoverageDraftReview(ctx, state, decision.Candidate)
 		}
 		assessment := e.assessCoverageDraft(ctx, coverage, decision.Candidate, state)
+		if assessment.endpointMismatch && decision.Disposition == candidateAccepted {
+			decision.Disposition, decision.ReasonCode = candidateRevise, string(terminalEndpointEvidence)
+			decision.CoverageFeedback = e.coverageDraftFeedback(coverage, assessment)
+			e.answerReviewAction = reviewReviseAnswer
+			e.answerReviewFeedback = coverageDraftFeedbackInstructions + "\n" + decision.CoverageFeedback.text()
+			return decision
+		}
 		if assessment.versionBlocked {
 			decision.Disposition, decision.ReasonCode = candidateRevise, incompleteVersionEvidence
 			decision.CoverageFeedback = e.coverageDraftFeedback(coverage, assessment)
@@ -282,6 +289,16 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 			decision.Disposition, decision.ReasonCode = candidateRevise, "table_evidence_attribution_incomplete"
 			e.answerReviewAction = reviewReviseAnswer
 			e.answerReviewFeedback = comparisonAttributionInstructions
+			if decision.CoverageFeedback != nil {
+				e.answerReviewFeedback += "\n" + decision.CoverageFeedback.text()
+			}
+			return decision
+		}
+		if decision.Disposition == candidateAccepted && coverage.requiresReading() && !assessment.verifiedReading {
+			decision.Disposition, decision.ReasonCode = candidateRevise, string(terminalAnswerEvidence)
+			decision.CoverageFeedback = e.coverageDraftFeedback(coverage, assessment)
+			e.answerReviewAction = reviewReviseAnswer
+			e.answerReviewFeedback = coverageDraftFeedbackInstructions
 			if decision.CoverageFeedback != nil {
 				e.answerReviewFeedback += "\n" + decision.CoverageFeedback.text()
 			}
@@ -316,7 +333,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		}
 		if decision.Candidate != candidate {
 			corrected := e.assessCoverageDraft(ctx, coverage, decision.Candidate, state)
-			if !containsCoverageDraftRoles(corrected.roles, assessment.roles) || corrected.versionBlocked || len(corrected.unattributedTable) != 0 ||
+			if !containsCoverageDraftRoles(corrected.roles, assessment.roles) || corrected.endpointMismatch || corrected.versionBlocked || len(corrected.unattributedTable) != 0 ||
 				corrected.comparisonBlocked && !comparisonDraftChecked(decision, corrected) {
 				decision.Candidate, decision.CandidateHash = candidate, candidateTextDigest(candidate)
 				decision.StructuredResultReviewStatus = "not_checked_correction_dropped_verified_roles"

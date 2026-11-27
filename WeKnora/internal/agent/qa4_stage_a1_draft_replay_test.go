@@ -69,8 +69,11 @@ func TestQA4StageA1RecordedGapsWithoutPlanOrDeclarations(t *testing.T) {
 			require.Empty(t, r.engine.evidenceCompletionTargets())
 			r.exhaust()
 			answer := r.answer()
-			require.Contains(t, answer, "2023-09-22")
-			require.NotContains(t, answer, "17110", "neither response read the historical endpoint")
+			for _, want := range []string{"棉花数据库.xlsx", "郑棉期货", "收盘价", "2024-03-01", "2024-03-31", "无有效记录"} {
+				require.Contains(t, answer, want)
+			}
+			require.NotContains(t, answer, "2023-09-22", "neither response read the historical endpoint")
+			require.NotContains(t, answer, "17110")
 			require.NotContains(t, answer, "B4705")
 			require.False(t, terminalCandidateFallback(answer))
 		})

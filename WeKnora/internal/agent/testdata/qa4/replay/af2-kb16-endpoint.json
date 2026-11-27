@@ -1,0 +1,297 @@
+{
+  "event": 15,
+  "tool": "structured_query_series",
+  "arguments": {
+    "dataset_id": "replay-dataset",
+    "end_date": "2024-03-31",
+    "include_last_valid": true,
+    "knowledge_base_id": "replay-library",
+    "limit": 60,
+    "operation": "rows",
+    "series_id": "futures.close.CF.CZC",
+    "source_question": "棉花数据库里，2024年3月的郑棉期货收盘价是多少？",
+    "start_date": "2024-03-01"
+  },
+  "response": {
+    "_structured_execution": {
+      "canonical_operation": "query_series",
+      "tool_name": "structured_query_series",
+      "schema_sha256": "095e6d0289d20d0ffa623bc720869f76d545cffe1506e9903b61ba1446b73382",
+      "manifest_sha256": "0ed11e977c8c6665b256b943d85dc9f7cd3b55f7a387acfc39ed27abb361a07a",
+      "protocol_version": "2",
+      "generation": 2,
+      "scope_mode": "knowledge_base",
+      "effect_class": "read"
+    },
+    "actual_first_date": null,
+    "actual_last_date": null,
+    "aggregate": null,
+    "coverage": {
+      "as_of_date": "2024-03-31",
+      "complete": true,
+      "last_record": {
+        "date": "2023-09-22",
+        "row_count": 1,
+        "rows": [
+          {
+            "category_cell": null,
+            "date": "2023-09-22",
+            "date_cell": "A4705",
+            "formula_cache_status": "not_formula",
+            "metric_cell": null,
+            "period": null,
+            "period_cell": null,
+            "raw_value": "17110",
+            "source_cell": "B4705",
+            "value": 17110.0,
+            "value_status": "valid"
+          }
+        ],
+        "status": "observed"
+      },
+      "last_valid": {
+        "conflict": false,
+        "date": "2023-09-22",
+        "dimensions": {
+          "block": "close",
+          "contract": "CF.CZC"
+        },
+        "direction": "before_range",
+        "manifest_sha256": "4949ec1b4b1a2e3efaf80e6b5b7649a836f43083a9ec6eb0309ee11662abf416",
+        "row_count": 1,
+        "rows": [
+          {
+            "category_cell": null,
+            "date": "2023-09-22",
+            "date_cell": "A4705",
+            "formula_cache_status": "not_formula",
+            "metric_cell": null,
+            "period": null,
+            "period_cell": null,
+            "raw_value": "17110",
+            "source_cell": "B4705",
+            "value": 17110.0,
+            "value_status": "valid"
+          }
+        ],
+        "series_id": "futures.close.CF.CZC",
+        "sheet": "郑棉期货",
+        "source_dataset_id": "replay-dataset",
+        "source_manifest_sha256": "4949ec1b4b1a2e3efaf80e6b5b7649a836f43083a9ec6eb0309ee11662abf416",
+        "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+        "status": "observed",
+        "unit": {
+          "binding_scope": "result_column",
+          "evidence": [],
+          "evidence_level": "none",
+          "reason": "At least one loaded series has no unit declaration",
+          "status": "unknown"
+        }
+      },
+      "period": null,
+      "record_first_date": "2004-06-01",
+      "record_last_date": "2023-09-22",
+      "requested_range_status_counts": {},
+      "scope": "through_requested_end",
+      "source": {
+        "dataset_id": "replay-dataset",
+        "manifest_sha256": "4949ec1b4b1a2e3efaf80e6b5b7649a836f43083a9ec6eb0309ee11662abf416",
+        "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe"
+      },
+      "valid_first_date": "2004-06-01",
+      "valid_last_date": "2023-09-22"
+    },
+    "dataset_id": "replay-dataset",
+    "extremum_count": null,
+    "extremum_rows": null,
+    "filters": {
+      "end_date": "2024-03-31",
+      "last_n": null,
+      "operation": "rows",
+      "order": "desc",
+      "period": null,
+      "series_id": "futures.close.CF.CZC",
+      "start_date": "2024-03-01",
+      "top_n": null,
+      "value_filters": []
+    },
+    "formula_count": 0,
+    "missing_count": 0,
+    "observation_coverage": {
+      "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。",
+      "max_segments": 64,
+      "scope_end_date": null,
+      "scope_record_count": 0,
+      "scope_start_date": null,
+      "scope_valid_count": 0,
+      "segments": [],
+      "total_segment_count": 0,
+      "truncated": false,
+      "value_changes": {
+        "adjacent_comparison_count": 0,
+        "decrease_count": 0,
+        "excluded_boundary_records": {
+          "duplicate_date_record_count": 0,
+          "missing_value_count": 0,
+          "null_date_count": 0
+        },
+        "first": {
+          "date": null,
+          "value": null
+        },
+        "increase_count": 0,
+        "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。",
+        "last": {
+          "date": null,
+          "value": null
+        },
+        "maximum": {
+          "date": null,
+          "value": null
+        },
+        "minimum": {
+          "date": null,
+          "value": null
+        },
+        "scope": {
+          "complete_filtered_input": true,
+          "eligible_end_date": null,
+          "eligible_record_count": 0,
+          "eligible_start_date": null,
+          "record_count": 0,
+          "valid_value_count": 0
+        },
+        "unchanged_count": 0
+      }
+    },
+    "record_count": 0,
+    "requested_range": {
+      "end_date": "2024-03-31",
+      "period": null,
+      "start_date": "2024-03-01"
+    },
+    "result_contract": {
+      "column_metadata": [],
+      "evidence_capabilities": {
+        "aggregate_membership_verified": false,
+        "cell_lineage_verified": false,
+        "column_dependencies_verified": true,
+        "level": "source_cells",
+        "source_cells_available": true
+      },
+      "execution": {
+        "cell_lineage_verified": false,
+        "column_metadata_scope": "returned_rows_not_aggregate",
+        "engine": "duckdb",
+        "engine_version": "1.5.5",
+        "input_scope": "returned_source_rows",
+        "kind": "series_query",
+        "numeric_semantics": "saved DOUBLE values; Excel formulas are not recalculated",
+        "operation": "rows"
+      },
+      "hash_algorithm": "sha256-typed-json-v1",
+      "hash_input_keys": [
+        "actual_first_date",
+        "actual_last_date",
+        "aggregate",
+        "coverage",
+        "dataset_id",
+        "extremum_count",
+        "extremum_rows",
+        "filters",
+        "missing_count",
+        "observation_coverage",
+        "record_count",
+        "requested_range",
+        "rows",
+        "rows_are",
+        "scope_record_count",
+        "series",
+        "source",
+        "source_semantics",
+        "truncated",
+        "valid_count",
+        "valid_first_date",
+        "valid_last_date",
+        "warnings"
+      ],
+      "result_hash": "6389135bd358b9c219c05be6082263ad1485aa60f61da2ee2a2681056763e9b7",
+      "result_id": "36ab29d357db4c4da984c1f5",
+      "schema_version": 2,
+      "source_snapshot": {
+        "dataset_id": "replay-dataset",
+        "file": "棉花数据库.xlsx",
+        "input_digest_sha256": "90f9a4657249941e0fac87627150d9b390f8a1b4c1516c0ae6d2364888887fa2",
+        "kind": "excel_observations",
+        "knowledge_base_id": "replay-library",
+        "knowledge_id": "replay-workbook",
+        "scope": "returned_source_rows",
+        "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+        "versions": {
+          "manifest_sha256": "4949ec1b4b1a2e3efaf80e6b5b7649a836f43083a9ec6eb0309ee11662abf416"
+        }
+      }
+    },
+    "rows": [],
+    "rows_are": "observations",
+    "scope_record_count": 0,
+    "series": {
+      "description": "郑棉期货 / 收盘价；日期取A列；源表未明确单位，尚待确认",
+      "dimensions": {
+        "block": "close",
+        "contract": "CF.CZC"
+      },
+      "first_date": "2004-06-01",
+      "first_valid_date": "2004-06-01",
+      "header_cells": [
+        "B1",
+        "B4"
+      ],
+      "last_date": "2023-09-22",
+      "last_valid_date": "2023-09-22",
+      "metric": "收盘价",
+      "record_count": 4701,
+      "series_id": "futures.close.CF.CZC",
+      "sheet": "郑棉期货",
+      "unit": null,
+      "unit_status": "needs_review",
+      "valid_count": 4701
+    },
+    "source": {
+      "file": "棉花数据库.xlsx",
+      "file_hash": "e6beb36ce153ab62a3efd43c3a6d4521",
+      "header_cells": [
+        "B1",
+        "B4"
+      ],
+      "knowledge_base_id": "replay-library",
+      "knowledge_base_tenant_id": 1,
+      "knowledge_id": "replay-workbook",
+      "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+      "sheet": "郑棉期货",
+      "workbook_declared_last_saved_at": "2023-09-28T02:27:37Z"
+    },
+    "source_context": {
+      "knowledge_base_id": "replay-library",
+      "knowledge_base_tenant_id": 1
+    },
+    "source_semantics": {
+      "aggregation_rule": null,
+      "date_representation": "date",
+      "notice": "未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。",
+      "statistical_calendar": null
+    },
+    "status": "no_data",
+    "truncated": false,
+    "valid_count": 0,
+    "valid_first_date": null,
+    "valid_formula_count": 0,
+    "valid_last_date": null,
+    "valid_non_formula_count": 0,
+    "warnings": [
+      "当前字段目录尚未确认单位，不表示原件其他位置没有单位证据；可检查实际表头、脚注或与该字段范围对应的图表，并判断适用范围。没有实际依据前不补充或换算单位。",
+      "查询范围没有有效数据，不能用其他日期或模型记忆补齐。",
+      "missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。"
+    ]
+  }
+}

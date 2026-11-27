@@ -8,20 +8,25 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/structuredresult"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
 type coverageDraftReview struct {
-	record      coverageRecord
-	targets     []taskCoverageTarget
-	facts       []coverageDraftFact
-	readings    [][]coverageDraftFact
-	comparisons []coverageComparisonCheck
-	version     terminalVersionChoice
+	record            coverageRecord
+	directory         bool
+	targets           []taskCoverageTarget
+	facts             []coverageDraftFact
+	readings          [][]coverageDraftFact
+	comparisons       []coverageComparisonCheck
+	publishedAnalysis []coverageEvidence
+	unresolvedFields  []coverageEvidence
+	version           terminalVersionChoice
 }
 
 type coverageDraftFact struct {
@@ -32,6 +37,7 @@ type coverageDraftFact struct {
 
 type coverageDraftAssessment struct {
 	anchors            []string
+	verifiedReading    bool
 	roles              []string
 	missing            []coverageDraftFact
 	versionDisplayed   bool
@@ -68,7 +74,12 @@ func (e *AgentEngine) currentCoverageDraftReview(ctx context.Context, state *typ
 	if turn.revision == task && turn.scope == scope {
 		record.Bindings = turn.record.Bindings
 	}
-	record, _ = e.projectCurrentTaskCoverage(state, turn.startStep, record)
+	record, attempts := e.projectCurrentTaskCoverage(state, turn.startStep, record)
+	directoryOperation := func(attempt coverageAttempt) bool {
+		return slices.Contains([]string{"list_datasets", "list_series", "list_pdf_tables", "list_charts", agenttools.ToolListDocuments}, attempt.Operation)
+	}
+	review.directory = slices.ContainsFunc(attempts, func(attempt coverageAttempt) bool { return attempt.Success && directoryOperation(attempt) }) &&
+		!slices.ContainsFunc(attempts, func(attempt coverageAttempt) bool { return attempt.Success && !directoryOperation(attempt) })
 	inspected := inspectedPublishedLastValid(record)
 	review.targets = e.evidenceCompletionTargets()
 	candidate := ""
@@ -128,8 +139,57 @@ func (e *AgentEngine) currentCoverageDraftReview(ctx context.Context, state *typ
 		return !item.Bound || !coverageCurrentEvidence(record, item) || !e.coverageEvidenceAllowed(ctx, nil, item)
 	})
 	review.record = record
+	if len(review.targets) == 0 && candidate != "" {
+		review.publishedAnalysis = candidatePublishedAnalysisValues(record, attempts)
+		for _, field := range record.Evidence {
+			if field.Kind != "directory" || field.Operation != "list_series" || field.SnapshotHash == "" || coverageDay(field.LastValidDate) == "" {
+				continue
+			}
+			if slices.ContainsFunc(attempts, func(attempt coverageAttempt) bool {
+				return attempt.Success && attempt.Operation == "query_series" && attempt.Args["dataset_id"] == field.DatasetID && attempt.Args["series_id"] == field.SeriesID &&
+					attempt.result.Data["status"] == "needs_clarification" && attempt.result.Data["kind"] == "structured_source_binding" &&
+					coverageObject(attempt.result.Data["source_context"])["knowledge_base_id"] == field.KnowledgeBaseID
+			}) {
+				review.unresolvedFields = append(review.unresolvedFields, field)
+			}
+		}
+	}
 	review.version = currentTerminalVersionChoice(record, versions)
 	return review
+}
+
+// A historical single-field SQL response may omit the selected series ID
+// in its output. Check its displayed value against the matching pre-SQL
+// observation. A dependency-only contract does not establish ledger lineage.
+func candidatePublishedAnalysisValues(record coverageRecord, attempts []coverageAttempt) []coverageEvidence {
+	var observed []coverageEvidence
+	for _, item := range record.Evidence {
+		if item.Kind != "analysis_input" || !item.WorkbookBound || item.PeriodFrom != "" || item.PeriodTo != "" {
+			continue
+		}
+		index := slices.IndexFunc(attempts, func(attempt coverageAttempt) bool {
+			return attempt.Success && attempt.ToolCallID == item.ToolCallID && attempt.EvidenceID == item.EvidenceID
+		})
+		if index < 0 {
+			continue
+		}
+		wire, err := json.Marshal(attempts[index].result.Data)
+		if err != nil {
+			continue
+		}
+		data, err := decodeCitationJSON(string(wire))
+		inputs := coverageObject(data["inputs"])
+		if err != nil || len(inputs) != 1 || inputs[item.SeriesID] == nil {
+			continue
+		}
+		contract, err := structuredresult.ValidatePayload(data)
+		last, ok := coverageAnalysisLastValid(item, coverageObject(inputs[item.SeriesID]))
+		if err == nil && contract != nil && ok && coverageAnalysisEndpoint(last) && coverageAnalysisResultPointer(last, data, contract, true) != "" {
+			last.Kind = "cell"
+			observed = append(observed, last)
+		}
+	}
+	return observed
 }
 
 func comparisonDraftChecked(decision candidateDecision, assessment coverageDraftAssessment) bool {
@@ -140,6 +200,19 @@ func comparisonDraftChecked(decision candidateDecision, assessment coverageDraft
 func (review coverageDraftReview) blockedComparison() bool {
 	return (agenttools.DocumentTableEvidenceEnabled() || len(review.readings) > 0) && slices.ContainsFunc(review.comparisons, func(comparison coverageComparisonCheck) bool {
 		return comparison.State != coverageSatisfied
+	})
+}
+
+func (review coverageDraftReview) requiresReading() bool {
+	if len(review.targets) != 0 {
+		return slices.ContainsFunc(review.targets, func(target taskCoverageTarget) bool {
+			return target.SourceTime != "catalog_snapshot" && target.SourceTime != "general_concept" &&
+				(tableComparison(target) || slices.Contains(target.Required, "scoped_value"))
+		})
+	}
+	return review.directory || slices.ContainsFunc(review.record.Evidence, func(item coverageEvidence) bool {
+		return item.Kind != "directory" && item.SourceDomain == "structured" &&
+			(item.Operation == "query_series" || item.Operation == "analyze_table" || item.Operation == "compare_series")
 	})
 }
 
@@ -267,8 +340,7 @@ func (e *AgentEngine) coverageDraftAnchors(ctx context.Context, candidate string
 func (e *AgentEngine) assessCoverageDraft(ctx context.Context, review coverageDraftReview, candidate string, state *types.AgentState) coverageDraftAssessment {
 	versionClaims := e.evidenceCompletion.versionClaims[candidateTextDigest(strings.TrimSpace(candidate))]
 	assessment := coverageDraftAssessment{comparisonBlocked: review.blockedComparison(), versionBlocked: len(versionClaims) > 0}
-	if state == nil || terminalCandidateFallback(candidate) || !e.candidateEvidenceBudgetFits(candidate, state, ctx) ||
-		e.candidateCitationsInvalid(candidate, state, e.turnReview.Conversation, ctx) {
+	if state == nil || terminalCandidateFallback(candidate) || !e.candidateEvidenceBudgetFits(candidate, state, ctx) {
 		return assessment
 	}
 	paragraphs := strings.Split(strings.ReplaceAll(candidate, "\r\n", "\n"), "\n\n")
@@ -276,10 +348,55 @@ func (e *AgentEngine) assessCoverageDraft(ctx context.Context, review coverageDr
 	for _, paragraph := range paragraphs {
 		visible = append(visible, newCoverageDraftParagraph(paragraph))
 	}
+	for _, field := range review.unresolvedFields {
+		headers, _ := coverageObject(field.Raw)["header_cells"].([]any)
+		if len(headers) == 0 {
+			continue
+		}
+		header, _ := headers[len(headers)-1].(string)
+		if header == "" || !slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool {
+			return paragraph.hasLabel(field.Sheet) && paragraph.hasLabel(field.Metric) && coverageTextHasDate(paragraph.text, field.LastValidDate) &&
+				slices.Contains(cellOrListMarker.FindAllString(strings.ToUpper(paragraph.text), -1), header)
+		}) {
+			continue
+		}
+		if !slices.ContainsFunc(review.record.Evidence, func(item coverageEvidence) bool {
+			return item.SourceID == field.SourceID && item.KnowledgeBaseID == field.KnowledgeBaseID && item.Sheet == field.Sheet && item.SeriesID == field.SeriesID &&
+				item.Date == field.LastValidDate && coverageSameEndpointSnapshot(field, item) &&
+				(coverageProtocolLastValid(item) && coverageDraftDisplaysEndpoint(visible, item) || displaysUniqueSourceReading(visible, review.record.Evidence, item))
+		}) {
+			assessment.endpointMismatch = true
+		}
+	}
+	if e.candidateCitationsInvalid(candidate, state, e.turnReview.Conversation, ctx) {
+		return assessment
+	}
+	assessment.verifiedReading = slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool {
+		return slices.ContainsFunc(paragraph.results, func(id string) bool {
+			observation, current := e.currentStructuredObservation(id, state, ctx)
+			if !current || observation.Reference.Kind != types.EvidenceKindRawCell {
+				return false
+			}
+			for _, value := range coverageObject(observation.Directory["value"]) {
+				if amount, ok := coverageFiniteNumber(value); ok && coverageDraftAmountOccurrences(paragraph.text, amount) > 0 {
+					return true
+				}
+			}
+			return false
+		})
+	})
+	if !assessment.verifiedReading {
+		assessment.verifiedReading = slices.ContainsFunc(review.publishedAnalysis, func(item coverageEvidence) bool {
+			return displaysUniqueSourceReading(visible, review.record.Evidence, item)
+		})
+	}
 	var witnesses []float64
 	safeCalls := map[string]bool{}
 	add := func(item coverageEvidence) {
 		assessment.anchors = appendCoverageDraftID(assessment.anchors, coverageDraftFactIdentity(item))
+		if (item.Kind == "cell" || item.Kind == "derived" || item.Kind == "last_valid" || item.Kind == "body") && item.Raw != nil {
+			assessment.verifiedReading = true
+		}
 		raw, _ := coverageDraftRaw(item)
 		if number, err := strconv.ParseFloat(raw, 64); err == nil {
 			witnesses = append(witnesses, number)
@@ -290,7 +407,8 @@ func (e *AgentEngine) assessCoverageDraft(ctx context.Context, review coverageDr
 	}
 	for _, fact := range review.facts {
 		item := fact.Evidence
-		if slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool {
+		endpoint := fact.Role == "last_valid_value" && coverageProtocolLastValid(item)
+		if endpoint && coverageDraftDisplaysEndpoint(visible, item) || !endpoint && slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool {
 			if paragraph.displaysVerifiedRole(fact, review.facts) {
 				return true
 			}
@@ -341,17 +459,40 @@ func (e *AgentEngine) assessCoverageDraft(ctx context.Context, review coverageDr
 		}
 	}
 	for _, item := range review.record.Evidence {
-		if coverageProtocolLastValid(item) && item.LastValidDirection == "before_range" && item.CitationID != "" &&
-			slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool {
-				return slices.Contains(paragraph.results, item.CitationID) && !paragraph.displaysEndpoint(item)
-			}) {
+		if item.Kind == "gap" && coverageDay(item.LastValidDate) != "" && slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool {
+			return paragraph.hasLabel(item.SourceTitle) && paragraph.hasLabel(item.Sheet) && paragraph.hasField(item) && coverageTextHasDate(paragraph.text, item.LastValidDate)
+		}) && !slices.ContainsFunc(review.record.Evidence, func(other coverageEvidence) bool {
+			return other.SourceID == item.SourceID && other.KnowledgeBaseID == item.KnowledgeBaseID && other.Sheet == item.Sheet &&
+				item.SeriesID == other.SeriesID && item.Column == other.Column && other.Date == item.LastValidDate && coverageSameEndpointSnapshot(item, other) &&
+				(coverageProtocolLastValid(other) && coverageDraftDisplaysEndpoint(visible, other) || displaysUniqueSourceReading(visible, review.record.Evidence, other))
+		}) {
+			assessment.endpointMismatch = true
+		}
+		if coverageProtocolLastValid(item) && item.LastValidDirection == "before_range" &&
+			coverageDraftSelectsEndpoint(visible, review, item) && !coverageDraftDisplaysEndpoint(visible, item) {
 			assessment.endpointMismatch = true
 			assessment.missing = append(assessment.missing, coverageDraftFact{
 				coverageFact: coverageFact{Role: "last_valid_value", Evidence: item}, slot: item.EvidenceID,
 			})
 		}
-		if slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool { return paragraph.displays(item, "", false) }) {
+		if coverageProtocolLastValid(item) && coverageDraftDisplaysEndpoint(visible, item) ||
+			slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool { return paragraph.displays(item, "", false) }) ||
+			displaysUniqueSourceReading(visible, review.record.Evidence, item) {
 			add(item)
+		}
+		if item.Kind == "body" && item.Operation == agenttools.ToolReadDocument && item.ChunkID != "" &&
+			slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool {
+				return slices.Contains(paragraph.chunks, item.ChunkID) && coverageDraftReportsCitedQuantity(paragraph, item)
+			}) {
+			assessment.verifiedReading = true
+		}
+		if item.Kind == "gap" && item.Complete && coverageExactRange(item) &&
+			!slices.ContainsFunc(review.record.Evidence, func(other coverageEvidence) bool {
+				return sameCoverageLastValid(review.record, item, other) || coverageAnalysisFollowUpMatches(review.record, item, other)
+			}) && slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool {
+			return paragraph.hasLabel(item.SourceTitle) && paragraph.hasField(item) && coverageDraftHasScope(paragraph, item)
+		}) {
+			assessment.verifiedReading = true
 		}
 		if len(review.facts) != 0 || item.CitationID == "" && item.ChunkID == "" || item.Kind == "derived" && nativeCells[item.CitationID] ||
 			!slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool { return paragraph.displays(item, "", true) }) {
@@ -360,6 +501,24 @@ func (e *AgentEngine) assessCoverageDraft(ctx context.Context, review coverageDr
 		role := reviewDigest([]any{comparisonPhysicalSource(item), item.SnapshotHash,
 			item.Sheet, item.SeriesID, item.Subject, item.Metric, item.Column, item.Object, item.Page})
 		assessment.roles = appendCoverageDraftID(assessment.roles, role)
+	}
+	for _, item := range review.record.Evidence {
+		if !coverageInspectedEndpoint(item) || !slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool {
+			return paragraph.hasLabel(item.SourceTitle) && paragraph.hasLabel(item.Sheet) && coverageTextHasDate(paragraph.text, item.Date)
+		}) || slices.ContainsFunc(review.record.Evidence, func(other coverageEvidence) bool {
+			return coverageInspectedEndpoint(other) && comparisonPhysicalSource(item) == comparisonPhysicalSource(other) &&
+				item.SnapshotHash == other.SnapshotHash && item.Sheet == other.Sheet && item.Date == other.Date &&
+				(coverageDraftDisplaysEndpoint(visible, other) || displaysUniqueSourceReading(visible, review.record.Evidence, other))
+		}) {
+			continue
+		}
+		// A checked date from an original workbook row must be accompanied
+		// by a checked value from its selected field. When no selector exists,
+		// give the existing editor the independently verified field readings.
+		assessment.endpointMismatch = true
+		assessment.missing = append(assessment.missing, coverageDraftFact{
+			coverageFact: coverageFact{Role: "last_valid_value", Evidence: item}, slot: item.EvidenceID,
+		})
 	}
 	if len(assessment.anchors) == 0 {
 		return assessment
@@ -502,6 +661,77 @@ func coverageDraftAmountOccurrences(text string, raw float64) int {
 	return matches
 }
 
+func coverageDraftReportsCitedQuantity(paragraph coverageDraftParagraph, item coverageEvidence) bool {
+	body, _ := item.Raw.(string)
+	numbers := proseNumber.FindAllString(maskValidatedCalendarDates(maskCitedPageLocator(body, item.Page)), -1)
+	text := maskCitedPageLocator(paragraph.text, item.Page)
+	if item.SourceTitle != "" {
+		text = strings.ReplaceAll(text, item.SourceTitle, numericMask(item.SourceTitle))
+	}
+	for _, token := range numbers {
+		value, err := strconv.ParseFloat(strings.ReplaceAll(strings.ReplaceAll(token, ",", ""), "−", "-"), 64)
+		if err == nil && coverageDraftAmountOccurrences(text, value) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func displaysUniqueSourceReading(paragraphs []coverageDraftParagraph, record []coverageEvidence, item coverageEvidence) bool {
+	number, ok := coverageFiniteNumber(item.Raw)
+	if raw, text := item.Raw.(string); !ok && text {
+		number, ok = coverageFiniteNumber(json.Number(raw))
+	}
+	if !ok || item.Kind != "cell" && item.Kind != "last_valid" || item.Cell == "" || item.Date == "" || item.SourceTitle == "" {
+		return false
+	}
+	workbookNamed := slices.ContainsFunc(paragraphs, func(paragraph coverageDraftParagraph) bool { return paragraph.hasLabel(item.SourceTitle) })
+	fieldNamed := slices.ContainsFunc(paragraphs, func(paragraph coverageDraftParagraph) bool { return paragraph.hasField(item) })
+	for i, paragraph := range paragraphs {
+		if !workbookNamed && (!fieldNamed || !paragraph.hasLabel(item.Sheet)) {
+			continue
+		}
+		assertions := []string{paragraph.text}
+		if !coverageDraftSharedDate(paragraphs, i, item.Date) {
+			assertions = slices.DeleteFunc(coverageDraftAssertionBoundary.Split(paragraph.text, -1), func(assertion string) bool {
+				return !coverageDraftOnlyDate(assertion, item.Date)
+			})
+		}
+		for _, assertion := range assertions {
+			if coverageDraftAmountOccurrences(assertion, number) == 0 {
+				continue
+			}
+			addresses := cellOrListMarker.FindAllString(strings.ToUpper(assertion), -1)
+			explicitCell := slices.Contains(addresses, item.Cell)
+			if !explicitCell && (len(addresses) != 0 || !paragraph.hasLabel(item.SourceTitle) || item.Kind != "cell") {
+				continue
+			}
+			if !slices.ContainsFunc(record, func(other coverageEvidence) bool {
+				return (other.Kind == "cell" || other.Kind == "last_valid") && other.Date == item.Date &&
+					(!explicitCell && other.SourceTitle == item.SourceTitle || explicitCell && other.Cell == item.Cell) &&
+					!coverageSameOriginalCell(item, other) && coverageSameOriginalValue(item.Raw, other.Raw)
+			}) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func coverageDraftHasScope(paragraph coverageDraftParagraph, item coverageEvidence) bool {
+	if paragraph.displays(item, "coverage_boundary", false) {
+		return true
+	}
+	from, to := item.PeriodFrom, item.PeriodTo
+	if len(from) != len("2006-01-02") || len(to) != len("2006-01-02") || from[:7] != to[:7] {
+		return false
+	}
+	month, _ := strconv.Atoi(from[5:7])
+	start, err := time.Parse(time.DateOnly, from)
+	return err == nil && start.Day() == 1 && start.AddDate(0, 1, -1).Format(time.DateOnly) == to &&
+		(paragraph.hasLabel(from[:7]) || paragraph.hasLabel(from[:4]+"年"+strconv.Itoa(month)+"月"))
+}
+
 func (paragraph coverageDraftParagraph) displaysVerifiedRole(fact coverageDraftFact, facts []coverageDraftFact) bool {
 	item := fact.Evidence
 	if fact.Role == "last_valid_value" && coverageProtocolLastValid(item) {
@@ -528,6 +758,10 @@ func (paragraph coverageDraftParagraph) displaysVerifiedRole(fact coverageDraftF
 }
 
 func (paragraph coverageDraftParagraph) displaysEndpoint(item coverageEvidence) bool {
+	return paragraph.displaysEndpointInScope(item, false)
+}
+
+func (paragraph coverageDraftParagraph) displaysEndpointInScope(item coverageEvidence, sharedDate bool) bool {
 	cited := item.CitationID != "" && slices.Contains(paragraph.results, item.CitationID)
 	if !cited && !paragraph.hasLabel(item.SourceTitle) {
 		return false
@@ -543,8 +777,10 @@ func (paragraph coverageDraftParagraph) displaysEndpoint(item coverageEvidence) 
 			column, _ := coverageExcelCell(address)
 			return column != "" && address != item.DateCell
 		})
-		if !coverageTextHasDate(assertion.text, item.Date) ||
-			!slices.Contains(addresses, item.Cell) && (!cited || otherCell) ||
+		explicitCell := slices.Contains(addresses, item.Cell)
+		if !coverageTextHasDate(assertion.text, item.Date) &&
+			(!sharedDate || !explicitCell || calendarDateLiteral.MatchString(assertion.text)) ||
+			!explicitCell && (!cited || otherCell) ||
 			terminalUnitFromSource(item) && !assertion.hasLabel(item.Unit) {
 			continue
 		}
@@ -557,6 +793,69 @@ func (paragraph coverageDraftParagraph) displaysEndpoint(item coverageEvidence) 
 		}
 	}
 	return false
+}
+
+func coverageDraftSelectsEndpoint(paragraphs []coverageDraftParagraph, review coverageDraftReview, item coverageEvidence) bool {
+	if slices.ContainsFunc(review.facts, func(fact coverageDraftFact) bool {
+		return fact.Role == "last_valid_value" && coverageDraftFactIdentity(fact.Evidence) == coverageDraftFactIdentity(item)
+	}) {
+		return true
+	}
+	if item.CitationID == "" || !slices.ContainsFunc(paragraphs, func(paragraph coverageDraftParagraph) bool {
+		return slices.Contains(paragraph.results, item.CitationID)
+	}) {
+		return false
+	}
+	// A whole-result citation may cover several selected columns. A draft
+	// referring to that result need not report every column in the query.
+	shared := slices.ContainsFunc(review.record.Evidence, func(other coverageEvidence) bool {
+		return coverageProtocolLastValid(other) && other.CitationID == item.CitationID && !coverageSameOriginalCell(item, other)
+	})
+	return !shared || slices.ContainsFunc(paragraphs, func(paragraph coverageDraftParagraph) bool {
+		return paragraph.hasField(item) || slices.Contains(cellOrListMarker.FindAllString(strings.ToUpper(paragraph.text), -1), item.Cell)
+	})
+}
+
+// A value row in a Markdown table can inherit the sole date in its immediate
+// introduction. In a paragraph or list a shared date also requires the exact
+// value-cell address. An explicitly dated assertion always uses its own date.
+func coverageDraftDisplaysEndpoint(paragraphs []coverageDraftParagraph, item coverageEvidence) bool {
+	for i, paragraph := range paragraphs {
+		if paragraph.displaysEndpointInScope(item, coverageDraftSharedDate(paragraphs, i, item.Date)) {
+			return true
+		}
+	}
+	return false
+}
+
+func coverageDraftSharedDate(paragraphs []coverageDraftParagraph, i int, day string) bool {
+	if coverageDraftOnlyDate(paragraphs[i].text, day) {
+		return true
+	}
+	if i == 0 {
+		return false
+	}
+	block := strings.TrimSpace(paragraphs[i].text)
+	intro := strings.TrimSpace(paragraphs[i-1].text)
+	return (strings.HasPrefix(block, "|") || strings.HasPrefix(block, "- ")) &&
+		(strings.HasSuffix(intro, ":") || strings.HasSuffix(intro, "：")) && coverageDraftOnlyDate(intro, day)
+}
+
+func coverageDraftOnlyDate(text, day string) bool {
+	var observed bool
+	for _, literal := range calendarDateLiteral.FindAllString(text, -1) {
+		if date := coverageDay(literal); date != "" {
+			if date != day {
+				return false
+			}
+			observed = true
+		}
+	}
+	return observed
+}
+
+func coverageInspectedEndpoint(item coverageEvidence) bool {
+	return item.Operation == "inspect_source" && item.Kind == "last_valid" && item.SeriesID != "" && item.DateCell != ""
 }
 
 type coverageDraftFactView struct {
@@ -632,7 +931,7 @@ func (e *AgentEngine) coverageDraftFactView(fact coverageDraftFact) coverageDraf
 }
 
 func (e *AgentEngine) coverageDraftFeedback(review coverageDraftReview, assessment coverageDraftAssessment) *coverageDraftFeedback {
-	if e.turnReview.CoverageFeedbackSent && !assessment.comparisonBlocked && !assessment.versionBlocked && len(assessment.unattributedTable) == 0 {
+	if e.turnReview.CoverageFeedbackSent && !assessment.comparisonBlocked && !assessment.versionBlocked && !assessment.endpointMismatch && len(assessment.unattributedTable) == 0 {
 		return nil
 	}
 	result := &coverageDraftFeedback{TableAttribution: assessment.unattributedTable, CheckTableScope: assessment.tableScopeReview,

@@ -10,6 +10,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
+	"github.com/stretchr/testify/require"
 )
 
 type exitSessionService struct {
@@ -28,6 +29,97 @@ func (s *exitSessionService) KnowledgeQA(ctx context.Context, _ *types.QARequest
 type qaExitResult struct {
 	answer string
 	err    error
+}
+
+type imOutcomeMessageService struct {
+	fullOutputMessageService
+	saved       []types.Message
+	interrupted *types.Message
+}
+
+func (s *imOutcomeMessageService) GetMessage(context.Context, string, string) (*types.Message, error) {
+	return s.interrupted, nil
+}
+
+func (s *imOutcomeMessageService) UpdateMessage(_ context.Context, message *types.Message) error {
+	s.saved = append(s.saved, *message)
+	return nil
+}
+
+func TestIMTerminalStatusPersistsAndReachesAdapter(t *testing.T) {
+	const notice = "The named source was checked. Its original value remains unverified."
+	const draft = "Unchecked draft."
+	const verified = "The checked value is 42."
+	const savedInterruption = "The checked value is 42. Verification of the second source was interrupted."
+	for _, mode := range []string{"stream", "full_output", "plain"} {
+		for _, scenario := range []struct {
+			name, reply, saved, state string
+			complete                  event.AgentCompleteData
+			err                       error
+		}{
+			{name: "incomplete", reply: notice, saved: notice, state: types.MessageRunStateIncomplete,
+				complete: event.AgentCompleteData{Incomplete: &event.AgentIncompleteData{Reason: "endpoint_evidence_unverified", Notice: notice}}},
+			{name: "interrupted", reply: imCancelledFallback, state: types.MessageRunStateInterrupted, err: context.Canceled},
+			{name: "persisted_interruption", reply: savedInterruption, state: types.MessageRunStateInterrupted, err: types.ErrMessageRunInterrupted},
+			{name: "success", reply: verified, saved: verified, complete: event.AgentCompleteData{FinalAnswer: verified}},
+		} {
+			t.Run(mode+"/"+scenario.name, func(t *testing.T) {
+				messageService := &imOutcomeMessageService{}
+				if scenario.name == "persisted_interruption" {
+					messageService.interrupted = &types.Message{ID: "assistant-message", SessionID: "session",
+						RunState: types.MessageRunStateInterrupted, IsCompleted: true, Content: savedInterruption}
+				}
+				sessionService := &exitSessionService{run: func(ctx context.Context, bus *event.EventBus) error {
+					content := draft
+					if scenario.name == "success" {
+						content = verified
+					}
+					if err := bus.Emit(ctx, event.Event{
+						Type: event.EventAgentFinalAnswer, Data: event.AgentFinalAnswerData{Content: content, Done: scenario.name == "success"},
+					}); err != nil {
+						return err
+					}
+					if scenario.err != nil {
+						return scenario.err
+					}
+					if scenario.name == "incomplete" {
+						if err := bus.Emit(ctx, event.Event{Type: event.EventError, Data: event.ErrorData{Error: "Earlier retry failed"}}); err != nil {
+							return err
+						}
+					}
+					return bus.Emit(ctx, event.Event{Type: event.EventAgentComplete, Data: scenario.complete})
+				}}
+				service := &Service{messageService: messageService, sessionService: sessionService, streamManager: &fullOutputStreamManager{}}
+				adapter := &fullOutputAdapter{order: &fullOutputOrder{}}
+				msg := &IncomingMessage{Platform: PlatformFeishu, UserID: "reader", Content: "question"}
+				session := &types.Session{ID: "session"}
+				ctx := t.Context()
+				agent := streamExitAgent()
+				switch mode {
+				case "stream":
+					require.NoError(t, service.handleMessageStream(ctx, msg, session, agent, nil, nil, nil, adapter, adapter, "reader", nil))
+				case "full_output":
+					require.NoError(t, service.handleMessageFullOutput(ctx, msg, session, agent, nil, nil, nil, adapter, adapter, "reader", nil))
+				case "plain":
+					require.NoError(t, service.fallbackNonStream(ctx, msg, session, agent, nil, nil, nil, adapter, "reader", nil))
+				}
+				if mode == "plain" {
+					require.Equal(t, scenario.reply, adapter.plainContent)
+				} else {
+					require.Equal(t, scenario.reply, adapter.finalContent)
+				}
+				if messageService.interrupted != nil {
+					require.Empty(t, messageService.saved)
+					require.Equal(t, savedInterruption, messageService.interrupted.Content)
+					return
+				}
+				require.Len(t, messageService.saved, 1)
+				require.True(t, messageService.saved[0].IsCompleted)
+				require.Equal(t, scenario.state, messageService.saved[0].RunState)
+				require.Equal(t, scenario.saved, messageService.saved[0].Content)
+			})
+		}
+	}
 }
 
 // Exercise both real consumers; for runQA, render errors as fallbackNonStream does.

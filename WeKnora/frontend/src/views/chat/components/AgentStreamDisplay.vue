@@ -484,7 +484,7 @@
             </div>
 
             <!-- Answer Event -->
-            <div v-else-if="event.type === 'answer' && !suppressStructuredProse(session.agentEventStream || [], !!session.is_completed) && (event.done || (event.content && event.content.trim()))"
+            <div v-else-if="event.type === 'answer' && session.run_state !== 'incomplete' && !suppressStructuredProse(session.agentEventStream || [], !!session.is_completed) && (event.done || (event.content && event.content.trim()))"
               class="answer-event">
               <div v-if="event.content && event.content.trim()" class="answer-content markdown-content">
                 <AnswerNotice v-if="answerPresentation(event).notice" :notice="answerPresentation(event).notice" />
@@ -696,6 +696,7 @@
           </div>
         </div>
       </template>
+      <p v-if="session.run_state === 'incomplete' && session.content" class="tool-failure-reason" role="status">{{ session.content }}</p>
       <div v-if="showRequestInfo && isConversationDone && !hasDoneAnswerContent" class="answer-toolbar">
         <ChatRequestInfoButton :session="session" :session-id="sessionId" />
       </div>
@@ -2013,6 +2014,7 @@ const hasDoneAnswerContent = computed(() => {
 
 // Find the final content to display (last thinking or answer)
 const finalContent = computed(() => {
+  if (props.session.run_state === 'incomplete') return null;
   const stream = eventStream.value;
   if (!stream || stream.length === 0) {
     return null;

@@ -117,6 +117,16 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 
 	// Get initial events from stream (offset 0)
 	events, currentOffset, err := h.streamManager.GetEvents(ctx, sessionID, messageID, 0)
+	if message.IsCompleted && message.RunState == types.MessageRunStateIncomplete {
+		if err != nil {
+			logger.Warnf(ctx, "Replaying saved incomplete status without stream cache: %v", err)
+		}
+		setSSEHeaders(c)
+		for _, evt := range incompleteReplayEvents(events, message) {
+			emitStreamEvent(ctx, c, evt, message.RequestID, resourceRewriter)
+		}
+		return
+	}
 	if err != nil {
 		logger.ErrorWithFields(ctx, err, nil)
 		c.Error(errors.NewInternalServerError(fmt.Sprintf("Failed to get stream data: %s", err.Error())))
@@ -170,7 +180,7 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 	replay := coalesceReplayEvents(events)
 	logger.Debugf(ctx, "Replaying %d existing events as %d frames", len(events), len(replay))
 	for _, evt := range replay {
-		if message.RunState == types.MessageRunStateInterrupted && evt.Type == types.ResponseTypeAnswer {
+		if evt.Type == types.ResponseTypeAnswer && (message.RunState == types.MessageRunStateInterrupted || message.RunState == types.MessageRunStateIncomplete) {
 			continue // Replay the saved verified response instead of an abandoned draft.
 		}
 		emitStreamEvent(ctx, c, interruptedReplayEvent(ctx, evt, message), message.RequestID, resourceRewriter)
@@ -232,8 +242,46 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 	}
 }
 
+// The saved terminal status is authoritative if Redis still has an optimistic
+// draft, a stale completion, or no events from this run.
+func incompleteReplayEvents(events []interfaces.StreamEvent, message *types.Message) []interfaces.StreamEvent {
+	var replay []interfaces.StreamEvent
+	complete := interfaces.StreamEvent{ID: message.ID + "-incomplete-complete", Type: types.ResponseTypeComplete, Timestamp: message.UpdatedAt}
+	code := types.MessageRunStateIncomplete
+	for _, evt := range coalesceReplayEvents(events) {
+		if evt.Data["run_state"] == types.MessageRunStateIncomplete {
+			if received, ok := evt.Data["code"].(string); ok && received != "" {
+				code = received
+			}
+		}
+		switch evt.Type {
+		case types.ResponseTypeAnswer, types.ResponseTypeError:
+			continue
+		case types.ResponseTypeComplete:
+			complete = evt
+		default:
+			replay = append(replay, evt)
+		}
+	}
+	errorData := map[string]any{
+		"run_state": types.MessageRunStateIncomplete, "success": false, "error": message.Content, "code": code,
+	}
+	failure := interfaces.StreamEvent{
+		ID: message.ID + "-incomplete-error", Type: types.ResponseTypeError, Content: message.Content,
+		Done: true, Data: errorData, Timestamp: message.UpdatedAt,
+	}
+	data := copyEventData(complete.Data, len(errorData)+1)
+	for key, value := range errorData {
+		data[key] = value
+	}
+	data["final_content"] = ""
+	delete(data, "final_answer")
+	complete.Content, complete.Done, complete.Data = "", true, data
+	return append(replay, failure, complete)
+}
+
 func interruptedReplayEvent(ctx context.Context, evt interfaces.StreamEvent, message *types.Message) interfaces.StreamEvent {
-	if evt.Type != types.ResponseTypeError && evt.Type != types.ResponseTypeComplete {
+	if evt.Type != types.ResponseTypeError && evt.Type != types.ResponseTypeComplete || evt.Data["run_state"] == types.MessageRunStateIncomplete {
 		return evt
 	}
 	deadline, legacy := agent.LegacyInterruptedAnswer(evt.Content)

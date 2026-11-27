@@ -201,6 +201,10 @@ func TestToolProgressCatalogOrderAndTransientHandlesDoNotCreateProgress(t *testi
 	call.Result.Data["search"], call.Result.Data["notice"] = "different words", "another message"
 	call.Result.Data["_structured_execution"] = map[string]any{"generation": 99}
 	require.Zero(t, guard.observe([]types.ToolCall{call}).NewEvidence)
+	call.Result.Data["offset"], call.Result.Data["next_offset"] = 2, 4
+	call.Result.Data["catalog_summary"] = map[string]any{"group_count": 5}
+	call.Result.Data["series"] = rows[:1]
+	require.Zero(t, guard.observe([]types.ToolCall{call}).NewEvidence, "a different projection of already observed rows is navigation")
 	rows[0].(map[string]any)["unit"] = "cm"
 	require.Positive(t, guard.observe([]types.ToolCall{call}).NewEvidence)
 }

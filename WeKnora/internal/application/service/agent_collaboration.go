@@ -641,6 +641,12 @@ func (s *AgentCollaboration) run(ctx context.Context, w collaboration.Work) (col
 			suspended = true
 			answer.RunState = types.MessageRunStateAwaitingInput
 		}
+		if data.Incomplete != nil {
+			runErr = fmt.Errorf("%s", data.Incomplete.Notice)
+			if finishStream == nil {
+				answer.RunState, answer.Content = types.MessageRunStateIncomplete, data.Incomplete.Notice
+			}
+		}
 		return nil
 	})
 	bus.On(event.EventError, func(_ context.Context, evt event.Event) error {

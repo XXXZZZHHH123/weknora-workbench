@@ -60,7 +60,8 @@ func TestA3TableComparisonPublicationUsesCheckedSide(t *testing.T) {
 			})
 			r.run(chatAnswer(draft))
 			if mode == "model-written partial" {
-				require.True(t, r.state.IsComplete)
+				require.False(t, r.state.IsComplete, "retain the checked side while the other source can still be read")
+				require.NotEmpty(t, r.guards.pendingRuntimeNotice)
 				require.Equal(t, checkedPartialComparisonReason, r.engine.turnReview.Last.ReasonCode)
 			} else {
 				require.False(t, r.state.IsComplete)

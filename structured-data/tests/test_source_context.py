@@ -355,3 +355,55 @@ def test_successful_binding_reuse_keeps_signed_scope_checks_and_queries_live(dup
         other_raw, other_headers = signed(key, body=body, tenant=10001)
         assert client.post('/api/tools/read', content=other_raw, headers=other_headers).status_code == 400
         assert len(model_calls) == 1 and len(query_calls) == 2
+
+
+def test_endpoint_query_checks_explicit_field_binding_without_a_source_model(duplicate_source, monkeypatch):
+    from fastapi.testclient import TestClient
+    from structured_data.server import create_app
+    from test_scoped_service import signed
+
+    store, dataset = duplicate_source
+
+    def unexpected_model(_payload):
+        pytest.fail('explicit endpoint binding called the source model')
+
+    monkeypatch.setattr(FieldResolver, '__init__', lambda self, data: self.__dict__.update(store=data, model_fn=unexpected_model))
+    key = b'endpoint-binding-scope-key-1234567890'
+    path = store.root / 'read-key'
+    path.write_bytes(key)
+    monkeypatch.setenv('STRUCTURED_SERVICE_TOKEN_FILE', str(path))
+    monkeypatch.setenv('STRUCTURED_TENANT_ID', '10000')
+    monkeypatch.setenv('WEKNORA_STRUCTURED_LAST_VALID', 'true')
+    arguments = {
+        'dataset_id': dataset,
+        'series_id': 'C',
+        'start_date': '2023-01-02',
+        'end_date': '2023-01-02',
+        'source_question': 'Complete source question',
+        'include_last_valid': True,
+        'source_binding': [],
+    }
+    with TestClient(create_app(store.root)) as client:
+        def read():
+            raw, headers = signed(key, body={'operation': 'query_series', 'arguments': arguments})
+            response = client.post('/api/tools/read', content=raw, headers=headers)
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        refused = read()
+        assert refused['status'] == 'plan_mismatch'
+        assert {field['series_id'] for field in refused['fields'][0]} == {'C', 'E', 'G', 'I'}
+        assert 'rows' not in refused
+
+        arguments['source_binding'] = [{
+            'considered_ids': ['I', 'G', 'E', 'C'],
+            'selected_ids': ['C'],
+            'reason': 'The complete question selects this actual formula source.',
+        }]
+        result = read()
+        assert result['status'] == 'no_data'
+        assert result['rows'] == []
+        endpoint = result['coverage']['last_valid']
+        assert (endpoint['status'], endpoint['direction'], endpoint['date'], endpoint['series_id']) == (
+            'observed', 'before_range', '2023-01-01', 'C')
+        assert (endpoint['rows'][0]['source_cell'], endpoint['rows'][0]['value']) == ('C3', 100)

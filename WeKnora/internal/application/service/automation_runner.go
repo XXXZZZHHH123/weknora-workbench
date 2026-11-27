@@ -522,6 +522,12 @@ func (s *AutomationService) agentQA(
 			suspended = p
 			answer.RunState = types.MessageRunStateAwaitingInput
 		}
+		if data.Incomplete != nil {
+			runErr = fmt.Errorf("%s", data.Incomplete.Notice)
+			if finishStream == nil {
+				answer.RunState, answer.Content = types.MessageRunStateIncomplete, data.Incomplete.Notice
+			}
+		}
 		return nil
 	})
 	bus.On(event.EventError, func(_ context.Context, evt event.Event) error {
@@ -562,7 +568,7 @@ func (s *AutomationService) agentQA(
 	mu.Lock()
 	defer mu.Unlock()
 	answer.IsCompleted = suspended == nil || err != nil
-	if answer.IsCompleted {
+	if answer.IsCompleted && answer.RunState != types.MessageRunStateIncomplete {
 		answer.RunState = ""
 	}
 	answer.UpdatedAt = s.now()

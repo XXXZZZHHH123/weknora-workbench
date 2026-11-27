@@ -608,17 +608,21 @@ func TestQA4Stage2CHistoricalReplay(t *testing.T) {
 					}
 				}
 				answer := r.answer()
-				for _, want := range []string{"2024-03-01", "2024-03-31", "2023-09-22", "棉花数据库.xlsx"} {
+				for _, want := range []string{"2024-03-01", "2024-03-31", "棉花数据库.xlsx", "郑棉期货", "无有效记录"} {
 					require.Contains(t, answer, want)
 				}
+				require.NotContains(t, answer, "2023-09-21", "the spread field's original endpoint was never read")
 				if !enabled {
 					require.Zero(t, r.latestReads)
+					require.NotContains(t, answer, "2023-09-22", "the published date has no original value read")
 					require.NotContains(t, answer, "17110")
+					require.NotContains(t, answer, "B4705")
 					return
 				}
 				require.Equal(t, 1, r.latestReads)
-				require.Contains(t, answer, "17110")
-				require.Contains(t, answer, "B4705")
+				for _, want := range []string{"2023-09-22", "17110", "A4705", "B4705"} {
+					require.Contains(t, answer, want)
+				}
 			})
 		}
 	})

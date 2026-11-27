@@ -1,0 +1,182 @@
+[
+  {
+    "event": 19,
+    "iteration": 1,
+    "tool": "read_document",
+    "arguments": {
+      "id": "replay-comparison-report",
+      "limit": 30,
+      "query": "中国棉花平衡表",
+      "regex": false
+    },
+    "response": {
+      "display_type": "knowledge_chunks_list",
+      "document": {
+        "chunk_count": 598,
+        "description": "这是一份2024年3月31日的棉花周报，作者吴奕昊，来自中哲集团。报告综述国内棉花、棉纱、棉布及进口棉纱市场的价格与成交情况：郑棉期现货窄幅震荡，现货交投清淡、纺企刚需采购为主，棉纱价格阴跌约200元、纺企现金流亏损近千元，坯布订单零星、外销缺乏大单，进口棉纱到货集中、销售承压。重点变化包括美棉3月意向种植面积10673千英亩、同比增长4%但增幅不及预期，以及广东张槎布厂负荷回升。策略部分判断郑棉在158-163区间震荡、美棉维持90-95美分区间，内外价差预计维持，并给出24/25年度美棉产量预估335万吨。",
+        "file_name": "棉花周报20240331.pptx",
+        "file_size": "5.2 MB",
+        "file_type": "pptx",
+        "knowledge_id": "replay-comparison-report",
+        "metadata": {
+          "_content_processing_v1": {
+            "image_count": 287,
+            "source_hash": "ef10dfa2fa3a81bcbc2f57d7e2310241",
+            "text_chunk_count": 598,
+            "text_is_catalog": false
+          },
+          "pptx_media_processing_v1": {
+            "deferred_vector_previews": 0,
+            "preview_status": "ready",
+            "slides": 38,
+            "source_hash": "ef10dfa2fa3a81bcbc2f57d7e2310241",
+            "unavailable_vector_parts": 0,
+            "vector_parts": 279,
+            "vector_previews": 279
+          }
+        },
+        "parse_status": "completed",
+        "source": "File Upload",
+        "title": "棉花周报20240331.pptx",
+        "type": "file"
+      },
+      "knowledge_base_id": "replay-library",
+      "knowledge_id": "replay-comparison-report",
+      "match_count": 1,
+      "query": "中国棉花平衡表",
+      "success": true,
+      "table_candidate_scope": {
+        "navigation_only": true,
+        "offset": 0,
+        "offset_space": "document_table_candidates",
+        "scan_complete": true,
+        "status": "available",
+        "total": 1,
+        "truncated": false
+      },
+      "table_candidates": [
+        {
+          "title": "中国棉花平衡表",
+          "page": 6,
+          "object_id": "resource://NN79EDxUE4QJYWxGG60mrA",
+          "figure_id": "resource://NN79EDxUE4QJYWxGG60mrA",
+          "title_chunk_id": "39ad9903-8442-4569-afe5-4a9ea2e90203",
+          "body_chunk_id": "39ad9903-8442-4569-afe5-4a9ea2e90203",
+          "ocr_chunk_id": "a7714ab9-6848-4da3-8690-4e3751fddc50",
+          "grid_index": 0,
+          "column_headers": [
+            "目录",
+            "工商业期初库存",
+            "产量",
+            "进口",
+            "公开抛储",
+            "公开收储",
+            "工商业期末库存",
+            "非公开收储",
+            "非公开抛储",
+            "表需",
+            "实际需求",
+            "非公开库存",
+            "国储库存",
+            "合计库存",
+            "棉纱产量",
+            "棉纱进口",
+            "棉纱出口",
+            "棉纱净进口",
+            "棉纱需求",
+            "棉纱库存"
+          ],
+          "row_labels": [
+            "2023-09",
+            "2023-10",
+            "2023-11",
+            "2023-12",
+            "2024-01",
+            "2024-02",
+            "2024-03",
+            "2024-04",
+            "2024-05",
+            "2024-06",
+            "2024-07",
+            "2024-08"
+          ],
+          "row_period_labels": [
+            "2023-09",
+            "2023-10",
+            "2023-11",
+            "2023-12",
+            "2024-01",
+            "2024-02",
+            "2024-03",
+            "2024-04",
+            "2024-05",
+            "2024-06",
+            "2024-07",
+            "2024-08"
+          ],
+          "grid_complete": true,
+          "cover_date": "2024-03-31",
+          "cover_date_label": "2024.3.31",
+          "cover_date_chunk_id": "083a480e-3cd7-42ba-b3bf-ce1d17d86c95",
+          "cover_date_page": 1,
+          "read_args": {
+            "id": "replay-comparison-report",
+            "page": 6
+          }
+        }
+      ]
+    }
+  },
+  {
+    "event": 29,
+    "iteration": 2,
+    "tool": "read_document",
+    "arguments": {
+      "detail": "full",
+      "focus": "中国棉花平衡表：核对 2023-10 行的「工商业期末库存」「合计库存」「棉纱库存」等库存列的原值与表头，确认单位",
+      "id": "replay-comparison-report",
+      "image_mode": "pixels",
+      "images": [
+        "resource://NN79EDxUE4QJYWxGG60mrA"
+      ],
+      "page": 6
+    },
+    "response": {
+      "display_type": "knowledge_chunks_list",
+      "document": {
+        "chunk_count": 598,
+        "description": "这是一份2024年3月31日的棉花周报，作者吴奕昊，来自中哲集团。报告综述国内棉花、棉纱、棉布及进口棉纱市场的价格与成交情况：郑棉期现货窄幅震荡，现货交投清淡、纺企刚需采购为主，棉纱价格阴跌约200元、纺企现金流亏损近千元，坯布订单零星、外销缺乏大单，进口棉纱到货集中、销售承压。重点变化包括美棉3月意向种植面积10673千英亩、同比增长4%但增幅不及预期，以及广东张槎布厂负荷回升。策略部分判断郑棉在158-163区间震荡、美棉维持90-95美分区间，内外价差预计维持，并给出24/25年度美棉产量预估335万吨。",
+        "file_name": "棉花周报20240331.pptx",
+        "file_size": "5.2 MB",
+        "file_type": "pptx",
+        "knowledge_id": "replay-comparison-report",
+        "metadata": {
+          "_content_processing_v1": {
+            "image_count": 287,
+            "source_hash": "ef10dfa2fa3a81bcbc2f57d7e2310241",
+            "text_chunk_count": 598,
+            "text_is_catalog": false
+          },
+          "pptx_media_processing_v1": {
+            "deferred_vector_previews": 0,
+            "preview_status": "ready",
+            "slides": 38,
+            "source_hash": "ef10dfa2fa3a81bcbc2f57d7e2310241",
+            "unavailable_vector_parts": 0,
+            "vector_parts": 279,
+            "vector_previews": 279
+          }
+        },
+        "parse_status": "completed",
+        "source": "File Upload",
+        "title": "棉花周报20240331.pptx",
+        "type": "file"
+      },
+      "knowledge_base_id": "replay-library",
+      "knowledge_id": "replay-comparison-report",
+      "page": 6,
+      "page_complete": true,
+      "success": true
+    }
+  }
+]

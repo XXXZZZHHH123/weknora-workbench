@@ -333,6 +333,24 @@ for (const mode of ['ordinary', 'quick-timeline', 'agent'] as const) {
     }
     await h.flush()
   })
+
+  test(`${mode}: an incomplete source check never becomes the assistant answer`, async t => {
+    const h = setup(t, mode)
+    h.send('answer', 'Superseded draft', false, { event_id: 'draft' })
+    const notice = 'The data query returned no verified reading.'
+    const failure = { run_state: 'incomplete', success: false, error: notice, code: 'answer_evidence_missing' }
+    h.persist()
+    h.send('error', notice, true, failure)
+    h.send('complete', '', true, { ...failure, final_content: '' })
+    await h.flush()
+    assert.equal(h.message.content, notice)
+    assert.equal(h.message.run_state, 'incomplete')
+    assert.equal(h.message.is_completed, true)
+    assert.deepEqual(h.errors, [notice])
+    assert.deepEqual(h.replies, [''])
+    assert.equal(h.turns.length, 1)
+    assert.equal((h.message.agentEventStream || []).filter((e: any) => e.type === 'answer' && !e.superseded).length, 0)
+  })
 }
 
 test('a live host approval reaches the composer while the tool is still running', async t => {

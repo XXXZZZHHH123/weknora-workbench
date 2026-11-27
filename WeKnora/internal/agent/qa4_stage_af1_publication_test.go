@@ -147,13 +147,12 @@ func TestQA4Af1RecordedSameRowSQLPublication(t *testing.T) {
 					require.NoError(t, rehashCoverageSQLFixture(data))
 				}
 				r.exhaust()
-				answer := r.answer()
 				if mutation != "original" {
-					for _, cell := range []string{"B87", "C87", "G87", "A88"} {
-						require.NotContains(t, answer, cell)
-					}
+					require.Empty(t, r.state.FinalAnswer)
+					require.NotEmpty(t, r.engine.turnReview.TerminalReceipt.notice)
 					return
 				}
+				answer := r.answer()
 				for _, witness := range []string{"2023-10-31", "231.93", "110", "298.93", "棉花数据库.xlsx", "中国棉花平衡表", "A87", "B87", "C87", "G87"} {
 					require.Contains(t, answer, witness)
 				}

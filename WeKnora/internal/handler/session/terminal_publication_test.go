@@ -162,3 +162,36 @@ func TestTerminalCorrectionBeforeCompletePersistsOnlyCurrentBytes(t *testing.T) 
 	}
 	require.Equal(t, 3, answers)
 }
+
+func TestEvidenceIncompleteCompletionPersistsNonAnswer(t *testing.T) {
+	ctx := t.Context()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&types.Message{}, &types.MessageArtifactRecord{}, &types.MessageEvidenceRecord{}))
+	repo := repository.NewMessageRepository(db)
+	msg := &types.Message{SessionID: "session", Role: "assistant"}
+	_, err = repo.CreateMessage(ctx, msg)
+	require.NoError(t, err)
+	stream, bus := &completionEventRecorder{}, event.NewEventBus()
+	h := NewAgentStreamHandler(ctx, msg.SessionID, msg.ID, "run", 7, time.Time{}, msg, stream, bus, nil, nil, nil)
+	h.Subscribe()
+	const notice = "The source directory was read. The requested readings remain unverified."
+	require.NoError(t, bus.Emit(ctx, event.Event{ID: "complete", Type: event.EventAgentComplete, Data: event.AgentCompleteData{
+		MessageID: msg.ID, FinalAnswer: "superseded draft", Incomplete: &event.AgentIncompleteData{Reason: "answer_evidence_missing", Notice: notice},
+	}}))
+	require.Empty(t, stream.events)
+	require.NoError(t, repo.UpdateMessage(ctx, msg))
+	require.NoError(t, h.publishCompletion(ctx))
+	stored, err := repo.GetMessage(ctx, msg.SessionID, msg.ID)
+	require.NoError(t, err)
+	require.Equal(t, notice, stored.Content)
+	require.Equal(t, types.MessageRunStateIncomplete, stored.RunState)
+	require.True(t, stored.IsCompleted)
+	require.Len(t, stream.events, 2)
+	require.Equal(t, types.ResponseTypeError, stream.events[0].Type)
+	require.Equal(t, notice, stream.events[0].Content)
+	require.Equal(t, types.ResponseTypeComplete, stream.events[1].Type)
+	require.Empty(t, stream.events[1].Data["final_content"])
+	require.Equal(t, types.MessageRunStateIncomplete, stream.events[1].Data["run_state"])
+	require.Equal(t, false, stream.events[1].Data["success"])
+}

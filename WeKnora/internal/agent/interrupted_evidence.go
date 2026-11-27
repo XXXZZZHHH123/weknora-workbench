@@ -431,10 +431,15 @@ func RenderInterruptedEvidence(ctx context.Context, receipts []json.RawMessage, 
 		for _, id := range comparisonIDs {
 			d.addComparison(comparisons[id], true)
 		}
-		return d.renderFallback(terminalEmpty) + "\n\n" + end
 	}
 	var notes []string
 	for _, receipt := range d.readReceipts {
+		if slices.ContainsFunc(d.facts, func(fact terminalCoverageFact) bool {
+			item := fact.Evidence
+			return item.ReportedValue != "" && comparisonPhysicalSource(item) == comparisonPhysicalSource(receipt)
+		}) {
+			continue
+		}
 		title := terminalEvidenceText(receipt.SourceTitle)
 		if title == "" {
 			continue
@@ -447,6 +452,9 @@ func RenderInterruptedEvidence(ctx context.Context, receipts []json.RawMessage, 
 	}
 	slices.Sort(notes)
 	notes = slices.Compact(notes)
+	if len(d.facts) != 0 {
+		return strings.Join(append(append([]string{d.renderFallback(terminalEmpty)}, notes...), end), "\n\n")
+	}
 	if len(notes) == 0 {
 		if !progress.Known {
 			return end + " " + d.text("旧的终止事件未记录查证范围或来源观测。", "The stored terminal event lacks the verification scope and source observations.")

@@ -355,33 +355,43 @@ func (e *AgentEngine) tableReceiptReadings(target taskCoverageTarget, record cov
 		return append(facts, coverageFact{Role: "scoped_value", Evidence: item})
 	}
 	var series []coverageFact
+	var namedFields, attributedFields []coverageFact
 	for _, item := range record.Evidence {
-		if item.Kind != "cell" || (item.Operation != "query_series" &&
-			!(item.Operation == "analyze_table" && item.WorkbookBound && item.ResultJSONPointer != "")) || item.Sheet != target.Table ||
+		directSQL := item.Operation == "analyze_table" && item.WorkbookBound && item.ResultJSONPointer != ""
+		if item.Kind != "cell" || (item.Operation != "query_series" && !directSQL) || item.Sheet != target.Table ||
 			!item.Bound || !item.RangeComplete || !coverageCurrentEvidence(record, item) || !allows(item) ||
-			item.SeriesID == "" || item.Metric == "" || item.DateCell == "" || item.Cell == "" ||
+			item.SeriesID == "" || item.Metric == "" || item.DateCell == "" && !directSQL || item.Cell == "" ||
 			(item.Date != to && !comparisonNativeRowPeriod(item.Period, from, to, grain)) ||
 			(item.PeriodFrom != from || item.PeriodTo != to) && (item.PeriodFrom != to || item.PeriodTo != to) {
 			continue
 		}
 		if _, ok := coverageComparisonNumber(item); ok {
 			series = add(series, item)
+			if item.Metric == target.Metric {
+				namedFields = add(namedFields, item)
+			}
+			if draftAttributesComparisonReading(draft, item) {
+				attributedFields = add(attributedFields, item)
+			}
 		}
 	}
 	if len(series) > 1 {
-		series = slices.DeleteFunc(series, func(fact coverageFact) bool {
-			return fact.Evidence.Metric != target.Metric
-		})
+		series = namedFields
+		if len(namedFields) == 0 {
+			series = attributedFields
+		}
 	}
 	var alternateField string
 	if len(series) == 1 {
 		item := series[0].Evidence
-		for _, text := range strings.Split(draft, "\n\n") {
-			paragraph := newCoverageDraftParagraph(text)
-			if item.Metric != target.Metric && paragraph.hasLabel(item.SourceTitle) && paragraph.hasField(item) &&
-				(paragraph.hasLabel(item.Cell) || coverageTextHasDate(text, item.Date)) && paragraph.displays(item, "scoped_value", false) {
-				alternateField = item.Metric
-				break
+		if item.Metric != target.Metric {
+			for _, block := range strings.Split(draft, "\n\n") {
+				paragraph := newCoverageDraftParagraph(block)
+				if paragraph.hasLabel(item.SourceTitle) && paragraph.hasField(item) &&
+					(paragraph.hasLabel(item.Cell) || coverageTextHasDate(block, item.Date)) && paragraph.displays(item, "scoped_value", false) {
+					alternateField = item.Metric
+					break
+				}
 			}
 		}
 	}
@@ -428,13 +438,35 @@ func (e *AgentEngine) tableReceiptReadings(target taskCoverageTarget, record cov
 		item := series[0].Evidence
 		if len(readings) == 0 || readings[0].Evidence.Metric == item.Metric &&
 			comparisonPhysicalSource(readings[0].Evidence) != comparisonPhysicalSource(item) {
-			aligned = !sourceConflict && len(readings) == 1 && (len(selectedDocs) == 0 || len(selectedDocs) == 2) &&
-				(item.Grain == "" || item.GrainFromLookup || item.Grain == grain)
+			// A native singleton SQL input proves its date and value cell even
+			// when the user SQL omitted the date-cell address. It does not prove
+			// that the workbook originally labels that row as a monthly total.
+			singletonSQL := item.Operation == "analyze_table" && item.WorkbookBound && item.ResultJSONPointer != "" &&
+				item.PeriodFrom == item.Date && item.PeriodTo == item.Date
+			selectedSourcePair := len(selectedDocs) == 0 || len(selectedDocs) == 2 || len(selectedDocs) == 1 &&
+				len(readings) == 1 && selectedDocs[0] == comparisonPhysicalSource(readings[0].Evidence)[1] &&
+				draftAttributesComparisonReading(draft, item)
+			aligned = !sourceConflict && len(readings) == 1 && selectedSourcePair &&
+				(item.Grain == "" || item.GrainFromLookup || item.Grain == grain || singletonSQL)
 			item.ComparisonGrainUnverified = aligned && item.Grain != grain && !comparisonNativeRowPeriod(item.Period, from, to, grain)
 			readings = append(readings, coverageFact{Role: series[0].Role, Evidence: item})
 		}
 	}
 	return readings, aligned
+}
+
+func draftAttributesComparisonReading(draft string, item coverageEvidence) bool {
+	for _, block := range strings.Split(strings.ReplaceAll(draft, "\r\n", "\n"), "\n\n") {
+		paragraph := newCoverageDraftParagraph(block)
+		if !paragraph.hasLabel(item.SourceTitle) || !paragraph.hasField(item) ||
+			!slices.Contains(paragraph.results, item.CitationID) || !paragraph.hasLabel(item.Cell) {
+			continue
+		}
+		if paragraph.displays(item, "scoped_value", true) {
+			return true
+		}
+	}
+	return false
 }
 
 func tableComparisonSupportingFacts(target taskCoverageTarget, input coverageRecord, primary []coverageFact, from, to, grain string) []coverageFact {

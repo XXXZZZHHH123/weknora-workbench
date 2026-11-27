@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"slices"
 
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -19,9 +21,23 @@ const maxEvidenceRecoveryAttempts = 2
 func (e *AgentEngine) resumeEvidenceCollection(ctx context.Context, state *types.AgentState, messages *[]chat.Message, guards *loopGuards, sessionID string) {
 	guards.evidenceRecoveryAttempts++
 	e.beginEvidenceCompletionRecovery(ctx, state)
+	restoredOriginal := e.restoreEvidenceCollection(messages, guards, evidenceRecoveryInstructions+e.answerRepairAdvice())
+	e.emitProgress(ctx, "sources", state.CurrentRound, sessionID)
+	common.PipelineInfo(ctx, "Agent", "evidence_recovery", map[string]interface{}{
+		"iteration": state.CurrentRound, "attempt": guards.evidenceRecoveryAttempts,
+		"disposition":                  reviewCollectEvidence,
+		"phase":                        "evidence_collection",
+		"incomplete_answer_retries":    guards.incompleteAnswerRetries,
+		"original_transcript_restored": restoredOriginal,
+	})
+}
+
+func (e *AgentEngine) restoreEvidenceCollection(messages *[]chat.Message, guards *loopGuards, notice string) bool {
 	restored, restoredOriginal := restoreStructuredReviewConversation(*messages, guards)
 	*messages = restored
-	*messages = append(*messages, chat.Message{Role: "system", Content: evidenceRecoveryInstructions + e.answerRepairAdvice()})
+	if notice != "" {
+		*messages = append(*messages, chat.Message{Role: "system", Content: notice})
+	}
 	if handoff, ok := reviewEvidenceHandoffMessage(e.turnReview.ReadEvidence); ok {
 		*messages = append(*messages, handoff)
 	}
@@ -36,14 +52,260 @@ func (e *AgentEngine) resumeEvidenceCollection(ctx context.Context, state *types
 	e.contextRewrites++
 	e.lastUsage = types.TokenUsage{}
 	e.lastSentMsgCount = 0
+	return restoredOriginal
+}
+
+func (e *AgentEngine) sourceReadWindowOpen(ctx context.Context, state *types.AgentState, round int) bool {
+	return ctx.Err() == nil && state != nil && state.Suspended == nil && state.SuspendedStep == nil && !state.IsComplete &&
+		structuredTaskPlanEnabled() && e.evidenceCompletionEligible() && e.standardTextDelivery(state) && !e.holdCollaborationAnswer &&
+		e.withinIterationBudget(round) && e.executionLeaseError(ctx) == nil && !e.collaborationOwnsFailure(ctx) &&
+		standardAnswerSourceBudgetReason(state, agentExecutionStart(ctx)) == "" &&
+		e.evidenceCompletion.stopReason == ""
+}
+
+// A source decision reuses the normal execution loop and its time and round
+// limits. A reminder or another draft never records the read as attempted.
+// Existing native execution still establishes the actual source and result.
+func (e *AgentEngine) resumePendingSourceRead(ctx context.Context, query string, state *types.AgentState, messages *[]chat.Message, guards *loopGuards, sessionID string, decision candidateDecision) bool {
+	if !e.sourceReadWindowOpen(ctx, state, state.CurrentRound+1) {
+		return false
+	}
+	conversation, _ := restoreStructuredReviewConversation(*messages, guards)
+	e.refreshEvidenceCompletion(ctx, query, state, conversation)
+	if _, ready := e.nextCoverageLastValidRead(ctx, state); ready {
+		// The next iteration can execute this exact read without a model call.
+		e.restoreEvidenceCollection(messages, guards, "")
+		return true
+	}
+	var actions []map[string]any
+	turn := &e.evidenceCompletion
+	issues := e.lastValidSelectionFeedback(ctx, state)
+	for _, issue := range issues[:min(len(issues), 8)] {
+		actions = append(actions, map[string]any{"action": "bind_series_endpoint", "selection": issue})
+	}
+
+	if e.documentTablePlanningEnabled() {
+		search, read := e.toolRegistry.DocumentCoverageCapabilities()
+		for _, target := range e.evidenceCompletionTargets() {
+			record := e.coverageRecordForTarget(ctx, target, turn.record)
+			for _, gap := range evaluateTaskCoverage(target, record) {
+				if gap.State != coverageOpen {
+					continue
+				}
+				switch {
+				case plannedTableComparison(target):
+					if action := e.comparisonReadHandoff(ctx, state, target, gap, record, read, decision.Candidate); action != nil {
+						actions = append(actions, action)
+					}
+				case target.SourceMode == "named_first" && e.coverageOnlyDomain() == "" &&
+					gap.NextRead != "" && slices.Contains(gap.OpenItems, "attributed_supplement") &&
+					(read && (search || gap.NextRead == "read") || e.structuredCoverageReadAvailable(target.GoalIndex)):
+					var boundary coverageEvidence
+					for _, fact := range gap.PinnedFacts {
+						if fact.Role == "coverage_boundary" {
+							boundary = fact.Evidence
+							break
+						}
+					}
+					if boundary.SeriesID == "" || !boundary.Complete {
+						continue
+					}
+					actions = append(actions, map[string]any{"action": gap.NextRead + "_attributed_supplement", "goal_index": target.GoalIndex,
+						"primary_source": boundary.SourceTitle, "primary_field": boundary.Metric,
+						"requested_from": boundary.PeriodFrom, "requested_to": boundary.PeriodTo})
+				}
+			}
+		}
+	}
+	if len(actions) == 0 {
+		return false
+	}
+
+	encoded, _ := json.Marshal(actions)
+	notice := evidenceRecoveryInstructions +
+		"Use the normal source tools to address these outstanding reads before concluding whenever the requested source scope permits. " +
+		"Keep already verified readings. Read the specific source or original cell; another catalogue response or another draft does not perform that read. " +
+		"For a document table, use its actual table object and read the page or original chunk as text/table evidence. " +
+		"A pixel preview alone does not verify an attributed table intersection. Only select a different field with the actual source metadata and full task. " +
+		"Read any permitted supplement independently of the named primary reading and cite it separately. Pending source actions: " + string(encoded)
+	additionalFeedback := e.answerRepairAdvice()
+	e.restoreEvidenceCollection(messages, guards, "")
+	guards.pendingRuntimeNotice = notice + additionalFeedback
 	e.emitProgress(ctx, "sources", state.CurrentRound, sessionID)
-	common.PipelineInfo(ctx, "Agent", "evidence_recovery", map[string]interface{}{
-		"iteration": state.CurrentRound, "attempt": guards.evidenceRecoveryAttempts,
-		"disposition":                  reviewCollectEvidence,
-		"phase":                        "evidence_collection",
-		"incomplete_answer_retries":    guards.incompleteAnswerRetries,
-		"original_transcript_restored": restoredOriginal,
+	common.PipelineInfo(ctx, "Agent", "source_read_handoff", map[string]any{
+		"iteration": state.CurrentRound, "pending_actions": len(actions),
 	})
+	return true
+}
+
+func (e *AgentEngine) comparisonReadHandoff(ctx context.Context, state *types.AgentState, target taskCoverageTarget, gap coverageCompletion, record coverageRecord, read bool, draft string) map[string]any {
+	if gap.NextRead == "" && gap.Reason != "comparison_target_incomplete" {
+		return nil
+	}
+	readings, aligned := e.tableReceiptReadings(target, record, draft)
+	if aligned {
+		return nil
+	}
+	from, to, grain := coverageTargetDateRange(target)
+	action := map[string]any{"goal_index": target.GoalIndex, "sources": gap.OpenItems,
+		"table": target.Table, "metric": target.Metric, "requested_from": from, "requested_to": to}
+	record.Evidence = slices.DeleteFunc(slices.Clone(record.Evidence), func(item coverageEvidence) bool {
+		return !item.Bound || !coverageCurrentEvidence(record, item) || !e.coverageEvidenceAllowed(ctx, &target, item)
+	})
+	_, _, inspectAvailable := e.toolRegistry.StructuredInvocation("structured_inspect_source", json.RawMessage(`{}`))
+	if grain == "month" && inspectAvailable {
+		var cells []map[string]string
+		for _, item := range record.Evidence {
+			if item.SourceDomain != "structured" || item.Kind != "cell" || item.Sheet != target.Table || item.Date != to ||
+				item.DateCell == "" || item.Grain == grain || comparisonNativeRowPeriod(item.Period, from, to, grain) ||
+				slices.ContainsFunc(record.Evidence, func(inspected coverageEvidence) bool {
+					return inspected.Operation == "inspect_source" && inspected.Kind == "cell" && inspected.Cell == item.DateCell &&
+						inspected.Sheet == item.Sheet && comparisonPhysicalSource(inspected) == comparisonPhysicalSource(item)
+				}) {
+				continue
+			}
+			// Coordinates corroborate the model's planned period and a real row.
+			// They leave field and source choice with the model.
+			cell := map[string]string{"dataset_id": item.DatasetID, "sheet": item.Sheet, "date_cell": item.DateCell}
+			if !slices.ContainsFunc(cells, func(prior map[string]string) bool {
+				return prior["dataset_id"] == cell["dataset_id"] && prior["sheet"] == cell["sheet"] && prior["date_cell"] == cell["date_cell"]
+			}) {
+				cells = append(cells, cell)
+			}
+		}
+		if len(cells) != 0 {
+			action["workbook_date_cells"] = cells
+		}
+	}
+	if read {
+		docs, pages := e.comparisonDocumentReads(state, target, record)
+		if len(pages) != 0 {
+			action["action"], action["unread_document_pages"] = "read_comparison_table", pages
+			return action
+		}
+		if len(docs) != 0 {
+			action["action"], action["document_source_candidates"] = "locate_comparison_table", docs
+			return action
+		}
+	}
+	if action["workbook_date_cells"] != nil {
+		action["action"] = "verify_workbook_row_period"
+		return action
+	}
+	if from == "" || to == "" || target.Metric == "" || slices.ContainsFunc(readings, func(fact coverageFact) bool {
+		return fact.Evidence.SourceDomain == "structured"
+	}) || !e.toolRegistry.HasStructuredDataTools() {
+		return nil
+	}
+	var fields []comparisonWorkbookField
+	for _, item := range record.Evidence {
+		if item.Kind != "directory" || item.Operation != "list_series" || item.Sheet != target.Table || item.Metric != target.Metric ||
+			item.DatasetID == "" || item.SeriesID == "" ||
+			slices.ContainsFunc(record.Evidence, func(read coverageEvidence) bool {
+				return (read.Kind == "cell" || read.Kind == "gap") && read.DatasetID == item.DatasetID &&
+					read.SeriesID == item.SeriesID && read.PeriodTo == to && (read.PeriodFrom == from || from <= read.Date && read.Date <= to)
+			}) {
+			continue
+		}
+		field := comparisonWorkbookField{item.DatasetID, item.SeriesID}
+		if !slices.Contains(fields, field) {
+			fields = append(fields, field)
+		}
+	}
+	if len(fields) != 0 {
+		action["action"], action["workbook_field_candidates"] = "read_comparison_field", fields[:min(len(fields), 8)]
+		return action
+	}
+	return nil
+}
+
+type comparisonWorkbookField struct {
+	Dataset string `json:"dataset_id"`
+	Series  string `json:"series_id"`
+}
+
+type comparisonDocumentPage struct {
+	Source string `json:"document_id"`
+	Page   int    `json:"page"`
+}
+
+func (e *AgentEngine) comparisonDocumentReads(state *types.AgentState, target taskCoverageTarget, record coverageRecord) ([]string, []comparisonDocumentPage) {
+	var docs []string
+	for _, item := range record.Evidence {
+		if item.SourceDomain == "knowledge" && item.SourceID != "" &&
+			slices.Contains([]string{agenttools.ToolBindDocumentScope, agenttools.ToolReadDocument, agenttools.ToolSearchKnowledge, agenttools.ToolListDocuments}, item.Operation) &&
+			!slices.Contains(docs, item.SourceID) {
+			docs = append(docs, item.SourceID)
+		}
+	}
+	var pages []comparisonDocumentPage
+	located := make(map[string]bool)
+	currentSteps := state.RoundSteps[min(e.evidenceCompletion.startStep, len(state.RoundSteps)):]
+	for _, call := range e.evidenceCompletion.documentReads {
+		if call.Name != agenttools.ToolReadDocument || call.Target != nil || call.Result == nil || call.Result.Data["execution_started"] == false {
+			continue
+		}
+		data := call.Result.Data
+		id := sourceNavigationString(data, "knowledge_id")
+		if !slices.Contains(docs, id) {
+			continue
+		}
+		var candidates []struct {
+			Title string `json:"title"`
+			Page  int    `json:"page"`
+		}
+		raw, _ := json.Marshal(data["table_candidates"])
+		_ = json.Unmarshal(raw, &candidates)
+		for _, candidate := range candidates {
+			if candidate.Title != target.Table || candidate.Page < 1 {
+				continue
+			}
+			located[id] = true
+			page := comparisonDocumentPage{id, candidate.Page}
+			if !slices.Contains(pages, page) && !comparisonDocumentPageAttempted(currentSteps, page) {
+				pages = append(pages, page)
+			}
+		}
+	}
+	docs = slices.DeleteFunc(docs, func(id string) bool {
+		if located[id] {
+			return true
+		}
+		return slices.ContainsFunc(record.Evidence, func(item coverageEvidence) bool {
+			return item.SourceDomain == "knowledge" && item.SourceID == id && item.Kind == "body" && item.TableGrid != nil && item.Sheet == target.Table
+		})
+	})
+	slices.Sort(docs)
+	slices.SortFunc(pages, func(a, b comparisonDocumentPage) int {
+		if a.Source == b.Source {
+			return a.Page - b.Page
+		}
+		return slices.Compare([]string{a.Source}, []string{b.Source})
+	})
+	return docs[:min(len(docs), 8)], pages[:min(len(pages), 8)]
+}
+
+func comparisonDocumentPageAttempted(steps []types.AgentStep, page comparisonDocumentPage) bool {
+	for _, step := range steps {
+		for _, call := range step.ToolCalls {
+			if call.Name != agenttools.ToolReadDocument || call.Target != nil || call.Result == nil ||
+				call.Result.PreflightRejected || call.Result.Data["execution_started"] == false {
+				continue
+			}
+			var args agenttools.ReadDocumentInput
+			raw, err := json.Marshal(call.ExecutionArgs())
+			if err != nil || json.Unmarshal(raw, &args) != nil || args.Query != "" || args.ImageMode == "pixels" || len(args.Images) != 0 {
+				continue
+			}
+			if sourceNavigationString(call.Result.Data, "knowledge_id") != page.Source && args.ID != page.Source {
+				continue
+			}
+			if args.Page == page.Page || slices.Contains(args.Pages, page.Page) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // restoreStructuredReviewConversation removes only the exact synthetic review

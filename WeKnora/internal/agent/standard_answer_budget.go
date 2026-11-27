@@ -129,6 +129,10 @@ func (e *AgentEngine) standardAnswerBudgetReason(ctx context.Context, state *typ
 	if !e.standardAnswerBudgetEligible(ctx, state) || !e.withinIterationBudget(state.CurrentRound+1) {
 		return ""
 	}
+	return standardAnswerSourceBudgetReason(state, started)
+}
+
+func standardAnswerSourceBudgetReason(state *types.AgentState, started time.Time) string {
 	rounds, toolBarrier := 0, false
 	for _, step := range state.RoundSteps {
 		if step.Iteration < 0 || len(step.ToolCalls) == 0 {

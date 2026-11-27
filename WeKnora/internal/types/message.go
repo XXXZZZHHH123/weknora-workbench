@@ -691,6 +691,9 @@ const MessageRunStateAwaitingInput = "awaiting_input"
 // MessageRunStateInterrupted marks a closed transcript with partial evidence.
 const MessageRunStateInterrupted = "interrupted"
 
+// MessageRunStateIncomplete marks a closed run that did not produce an answer.
+const MessageRunStateIncomplete = "incomplete"
+
 var ErrMessageRunInterrupted = fmt.Errorf("assistant message was finalized as interrupted")
 
 // MessageSearchMode represents the search mode for message search

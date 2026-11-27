@@ -549,16 +549,22 @@ func TestQA4Af1EndpointCitationCheckedCache(t *testing.T) {
 					draft += "\n\n棉花周报20240310.pptx 第18页披露郑棉仓单合计60.6万吨。<kb doc=\"棉花周报20240310.pptx\" chunk_id=\"replay-0310-slide-18\" kb_id=\"replay-library\" />"
 				}
 				decision := r.engine.checkCandidate(r.ctx, trace.Question, draft, "", &r.state, nil, false)
-				require.Equal(t, candidateAccepted, decision.Disposition)
+				valid := omit == "" || omit == "B3340"
+				if valid {
+					require.Equal(t, candidateAccepted, decision.Disposition)
+				} else {
+					require.Equal(t, candidateRevise, decision.Disposition)
+					require.Equal(t, string(terminalEndpointEvidence), decision.ReasonCode)
+				}
 				model := r.engine.chatModel.(*qa4Stage2CModel)
-				if editor {
+				if editor && valid {
 					require.Equal(t, 1, model.reviewCalls)
 					require.Equal(t, "kept", decision.StructuredResultReviewStatus)
 				} else {
 					require.Zero(t, model.reviewCalls)
 				}
 				got, cached := r.engine.currentCoverageDraft(r.ctx, &r.state)
-				if omit == "" || omit == "B3340" {
+				if valid {
 					if omit == "" {
 						require.True(t, cached)
 						require.Equal(t, draft, got)

@@ -29,6 +29,7 @@ func TestTerminalPublicationRejectsEveryPlaceholder(t *testing.T) {
 					for _, held := range []bool{false, true} {
 						for _, hasReceipt := range []bool{false, true} {
 							e := newTestEngine(t, &mockChat{})
+							e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
 							e.toolRegistry = qa4ReplayRegistry()
 							e.holdCollaborationAnswer = held
 							e.turnReview.Query = "Which observations were verified?"
@@ -53,19 +54,23 @@ func TestTerminalPublicationRejectsEveryPlaceholder(t *testing.T) {
 							require.Empty(t, stream.contents)
 							e.emitCompletionEvent(t.Context(), state, "run", "message", time.Now())
 							done, visible := stream.snapshot()
-							require.Equal(t, 1, done)
-							require.Equal(t, []string{visible}, stream.contents)
 							if hasReceipt {
+								require.Equal(t, 1, done)
+								require.Equal(t, []string{visible}, stream.contents)
+								require.Nil(t, complete.Incomplete)
+								require.False(t, terminalCandidateFallback(visible))
 								for _, fact := range []string{"Equipment.xlsx", "Operating hours", "Elapsed time", "47.25", "2021-06-03", "B15"} {
 									require.Contains(t, visible, fact)
 								}
 								require.NotContains(t, visible, e.turnReview.Query)
 								require.NotContains(t, visible, "No verifiable source receipt")
 							} else {
-								requireTerminalEvidenceGap(t, visible)
-								require.Contains(t, visible, e.turnReview.Query)
+								require.Zero(t, done)
+								require.Empty(t, stream.contents)
+								require.Empty(t, visible)
+								require.NotNil(t, complete.Incomplete)
+								require.Contains(t, complete.Incomplete.Notice, e.turnReview.Query)
 							}
-							require.False(t, terminalCandidateFallback(visible))
 							require.Equal(t, visible, complete.FinalAnswer)
 							require.Equal(t, visible, state.FinalAnswer)
 						}
@@ -82,6 +87,7 @@ func TestTerminalPublicationRevalidatesCurrentSourceBeforeFirstEmission(t *testi
 			t.Run(fmt.Sprintf("%t/%s", enabled, change), func(t *testing.T) {
 				t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", fmt.Sprint(enabled))
 				e := newTestEngine(t, &mockChat{})
+				e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
 				e.toolRegistry = qa4ReplayRegistry()
 				e.turnReview.TerminalSensitive, e.turnReview.DeferTerminalClose = true, true
 				e.turnReview.Query = "What reading was observed?"
@@ -111,14 +117,19 @@ func TestTerminalPublicationRevalidatesCurrentSourceBeforeFirstEmission(t *testi
 				}
 				e.emitCompletionEvent(t.Context(), state, "run", "message", time.Now())
 				done, visible := stream.snapshot()
-				require.Equal(t, 1, done)
-				require.Equal(t, []string{visible}, stream.contents)
 				require.Equal(t, visible, state.FinalAnswer)
 				require.Equal(t, visible, complete.FinalAnswer)
 				if change == "new unrelated receipt" {
+					require.Equal(t, 1, done)
+					require.Equal(t, []string{visible}, stream.contents)
+					require.Nil(t, complete.Incomplete)
 					require.Equal(t, candidate, visible)
 					return
 				}
+				require.Zero(t, done)
+				require.Empty(t, stream.contents)
+				require.NotNil(t, complete.Incomplete)
+				require.Equal(t, string(terminalSourceChanged), complete.Incomplete.Reason)
 				require.NotContains(t, visible, "Equipment.xlsx")
 				require.NotContains(t, visible, "47.25")
 				stored, err := json.Marshal(complete.AgentSteps)
@@ -143,13 +154,15 @@ func TestLegacyProviderNeverStreamsAPlaceholderPrefix(t *testing.T) {
 				{Content: string(pieces[mid:]) + "  \n", ResponseType: types.ResponseTypeAnswer, Done: true, FinishReason: "stop"},
 			}}}}
 			e := newTestEngine(t, model)
+			e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
+			e.toolRegistry = qa4ReplayRegistry()
 			stream := &terminalAnswerRecorder{}
 			stream.attach(e.eventBus)
 			state, err := e.executeLoop(t.Context(), &types.AgentState{}, "Explain the verified outcome.", emptyMessages(), emptyTools(), "run", "message")
 			require.NoError(t, err)
 			done, visible := stream.snapshot()
-			require.Equal(t, 1, done)
-			requireTerminalEvidenceGap(t, visible)
+			require.Zero(t, done)
+			require.Empty(t, visible)
 			require.NotContains(t, visible, fallback)
 			require.Equal(t, state.FinalAnswer, visible)
 		})
@@ -168,6 +181,8 @@ func TestCompletionRevalidatesAnUncommittedOrSuspendedAnswer(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newTestEngine(t, &mockChat{})
+			e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
+			e.toolRegistry = qa4ReplayRegistry()
 			e.turnReview.Query = "What did the source report?"
 			state := &types.AgentState{
 				IsComplete: tc.complete, FinalAnswer: answerReviewUnavailableFallback, Suspended: tc.suspended,
@@ -180,10 +195,12 @@ func TestCompletionRevalidatesAnUncommittedOrSuspendedAnswer(t *testing.T) {
 			e.emitCompletionEvent(t.Context(), state, "run", "message", time.Now())
 			require.Equal(t, state.FinalAnswer, complete.FinalAnswer)
 			if tc.complete {
-				requireTerminalEvidenceGap(t, complete.FinalAnswer)
-				require.Contains(t, complete.FinalAnswer, "What did the source report?")
+				require.Empty(t, complete.FinalAnswer)
+				require.NotNil(t, complete.Incomplete)
+				require.Contains(t, complete.Incomplete.Notice, "What did the source report?")
 			} else {
 				require.Empty(t, complete.FinalAnswer)
+				require.Nil(t, complete.Incomplete)
 			}
 		})
 	}

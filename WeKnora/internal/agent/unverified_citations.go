@@ -211,7 +211,7 @@ func (e *AgentEngine) publishUnverifiedCitationReferences(ctx context.Context, s
 		// navigation binding. Presentation changes can retain the warning.
 		binding := e.turnReview.UnverifiedCitationDelivery
 		if binding.EvidenceHash != reviewDigest(e.sourceConsistencyMessages(state, e.turnReview.Conversation)) {
-			state.FinalAnswer = e.terminalCoverageFailure(ctx, state, terminalSourceChanged)
+			state.FinalAnswer = ""
 		} else {
 			state.FinalAnswer = filterFallbackCitationTags(firstNonEmptyAgent(binding.OriginalFinalText, binding.FinalText), nil, nil)
 		}

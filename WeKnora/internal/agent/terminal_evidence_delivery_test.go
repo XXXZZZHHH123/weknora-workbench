@@ -18,18 +18,21 @@ func TestTerminalEvidenceCompletionFallback(t *testing.T) {
 		name       string
 		alter      func(*AgentEngine, *types.AgentState)
 		submission string
+		preserves  bool
 		want       []string
 		omit       []string
 	}{
 		{name: "native facts without declarations", want: []string{
 			"Elapsed time 在 2021-07-02 无有效记录", "Equipment.xlsx", "Operating hours", "2021-06-03", "47.25", "A15", "B15", "单位未确认",
 		}, omit: []string{"2021-01-01", "Unrelated field", "其余要求"}},
-		{name: "normal delivery does not attach an unlinked field", submission: "Readings in scope were reviewed.", want: []string{"Readings in scope were reviewed."}, omit: []string{"2021-01-01", "Unrelated field", "47.25"}},
-		{name: "normal delivery preserves a checked field", submission: "Equipment.xlsx, Operating hours. Elapsed time had no valid records on 2021-07-02.\n\nThe requested day remains uncovered.",
-			want: []string{"\n\nThe requested day remains uncovered."}, omit: []string{"2021-06-03", "47.25", "B15", "Unrelated field"}},
-		{name: "legacy switch preserves the normal candidate", submission: "Equipment.xlsx, Operating hours. Elapsed time had no valid records on 2021-07-02.\n\nThe requested day remains uncovered.",
-			alter: func(e *AgentEngine, _ *types.AgentState) { e.evidenceCompletion.enabled = false },
-			want:  []string{"\n\nThe requested day remains uncovered."}, omit: []string{"2021-06-03", "47.25", "B15"}},
+		{name: "normal delivery replaces a status-only candidate", submission: "Readings in scope were reviewed.", want: []string{"47.25", "2021-06-03", "无有效记录"}, omit: []string{"2021-01-01", "Unrelated field", "Readings in scope were reviewed."}},
+		{name: "normal delivery preserves a checked field", preserves: true,
+			submission: "Equipment.xlsx, Operating hours. Elapsed time had no valid records on 2021-07-02.\n\nThe latest elapsed time was 47.25 on 2021-06-03 at B15.",
+			want:       []string{"47.25", "2021-06-03", "B15"}, omit: []string{"Unrelated field"}},
+		{name: "legacy switch preserves the normal candidate", preserves: true,
+			submission: "Equipment.xlsx, Operating hours. Elapsed time had no valid records on 2021-07-02.\n\nThe latest elapsed time was 47.25 on 2021-06-03 at B15.",
+			alter:      func(e *AgentEngine, _ *types.AgentState) { e.evidenceCompletion.enabled = false },
+			want:       []string{"47.25", "2021-06-03", "B15"}},
 		{name: "scope narrowed", alter: func(e *AgentEngine, _ *types.AgentState) {
 			e.config.SearchTargets = types.SearchTargets{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "different-library"}}
 		}, want: []string{"当前范围内没有可用于所问结果的已核实记录"}, omit: []string{"Equipment.xlsx", "47.25"}},
@@ -52,7 +55,7 @@ func TestTerminalEvidenceCompletionFallback(t *testing.T) {
 		}, want: []string{"当前范围内没有可用于所问结果的已核实记录"}, omit: []string{"Equipment.xlsx", "47.25"}},
 		{name: "current directory only", alter: func(e *AgentEngine, state *types.AgentState) {
 			state.RoundSteps[0].ToolCalls = state.RoundSteps[0].ToolCalls[:1]
-		}, want: []string{"Equipment.xlsx", "Operating hours", "目录条目", "尚无所问范围的读数"}, omit: []string{"B15", "47.25", "没有有效观测值"}},
+		}, want: []string{"来源目录查询已执行"}, omit: []string{"Equipment.xlsx", "Operating hours", "B15", "47.25", "没有有效观测值"}},
 		{name: "verified gap ignores an incomplete earlier period", alter: func(_ *AgentEngine, state *types.AgentState) {
 			call := state.RoundSteps[0].ToolCalls[1]
 			call.Args["operation"], call.Args["start_date"], call.Args["end_date"] = "rows", "2021-06-01", "2021-06-30"
@@ -65,7 +68,7 @@ func TestTerminalEvidenceCompletionFallback(t *testing.T) {
 				rows = append(rows, map[string]any{"date": "2021-06-03", "date_cell": "A" + cell, "source_cell": "B" + cell, "value": i, "value_status": "valid"})
 			}
 			call.Result.Data["rows"] = rows
-		}, want: []string{"无有效记录", "2021-07-02", "最后有效日为 2021-06-03", "尚缺该日原值"}, omit: []string{"2021-01-01", "Unrelated field", "47.25", "B19", "B20"}},
+		}, want: []string{"无有效记录", "2021-07-02"}, omit: []string{"2021-01-01", "2021-06-03", "尚缺该日原值", "Unrelated field", "47.25", "B19", "B20"}},
 		{name: "only rejected source calls", alter: func(e *AgentEngine, state *types.AgentState) {
 			state.RoundSteps[0].ToolCalls = state.RoundSteps[0].ToolCalls[1:2]
 			state.RoundSteps[0].ToolCalls[0].Result = &types.ToolResult{PreflightRejected: true, Error: "ineligible optional selection", Data: map[string]any{"execution_started": false}}
@@ -133,16 +136,23 @@ func TestTerminalEvidenceCompletionFallback(t *testing.T) {
 			e.commitTerminalResult(ctx, state, "terminal", "Duplicate candidate", "", "answer", false)
 			require.True(t, state.IsComplete)
 			done, streamed := recorder.snapshot()
-			require.Equal(t, 1, done)
 			require.Equal(t, state.FinalAnswer, streamed)
-			if test.submission != "" {
+			text := state.FinalAnswer
+			if notice := e.turnReview.TerminalReceipt.notice; notice != "" {
+				require.Zero(t, done)
+				require.Empty(t, text)
+				text = notice
+			} else {
+				require.Equal(t, 1, done)
+			}
+			if test.preserves {
 				require.Equal(t, test.submission, state.FinalAnswer)
 			}
 			for _, value := range test.want {
-				require.Contains(t, state.FinalAnswer, value)
+				require.Contains(t, text, value)
 			}
 			for _, value := range test.omit {
-				require.NotContains(t, state.FinalAnswer, value)
+				require.NotContains(t, text, value)
 			}
 		})
 	}
@@ -230,10 +240,12 @@ func TestTerminalEvidenceCompletionDocumentReadStatus(t *testing.T) {
 				require.Contains(t, state.FinalAnswer, "第 4 页")
 				require.Contains(t, state.FinalAnswer, "实际该页的图例：类型甲、类型乙。")
 			} else {
-				require.Contains(t, state.FinalAnswer, "Quarterly inspection第 4 页")
-				require.Contains(t, state.FinalAnswer, "返回的正文片段")
-				require.Contains(t, state.FinalAnswer, "尚缺与所问范围对应的读数")
-				require.NotContains(t, state.FinalAnswer, "课件未载的 OCR 文本")
+				require.Empty(t, state.FinalAnswer)
+				notice := e.turnReview.TerminalReceipt.notice
+				require.Contains(t, notice, "Quarterly inspection第 4 页")
+				require.Contains(t, notice, "返回的正文片段")
+				require.Contains(t, notice, "尚缺与所问范围对应的读数")
+				require.NotContains(t, notice, "课件未载的 OCR 文本")
 			}
 		})
 	}
@@ -285,14 +297,15 @@ func TestTerminalSourceFailuresPublishVerifiedScopeOnce(t *testing.T) {
 			e.commitTerminalResult(ctx, state, "terminal", test.candidate, id, "failed", true)
 			e.commitTerminalResult(ctx, state, "terminal", "second candidate", "", "answer", false)
 			count, streamed := recorder.snapshot()
-			require.Equal(t, 1, count)
+			require.Zero(t, count)
 			require.Equal(t, state.FinalAnswer, streamed)
 			require.True(t, state.IsComplete)
-			require.False(t, terminalCandidateFallback(state.FinalAnswer))
-			require.Contains(t, state.FinalAnswer, "Pressure 2021-07-02")
-			require.Contains(t, state.FinalAnswer, test.want)
-			require.NotContains(t, state.FinalAnswer, "private service detail")
-			require.NotContains(t, state.FinalAnswer, "没有有效观测值")
+			require.Empty(t, state.FinalAnswer)
+			notice := e.turnReview.TerminalReceipt.notice
+			require.Contains(t, notice, "Pressure 2021-07-02")
+			require.Contains(t, notice, test.want)
+			require.NotContains(t, notice, "private service detail")
+			require.NotContains(t, notice, "没有有效观测值")
 		})
 	}
 }
@@ -453,17 +466,18 @@ func TestTerminalWithoutPlanOrReadCarriesHumanRequest(t *testing.T) {
 			recorder.attach(e.eventBus)
 			ctx := context.WithValue(t.Context(), types.LanguageContextKey, "en-US")
 			e.commitTerminalResult(ctx, state, "terminal", answerReviewUnavailableFallback, "", "failed", false)
-			require.Contains(t, state.FinalAnswer, e.turnReview.Query)
-			require.Contains(t, state.FinalAnswer, "No verifiable source receipt was obtained")
-			require.NotContains(t, state.FinalAnswer, answerReviewUnavailableFallback)
+			notice := e.turnReview.TerminalReceipt.notice
+			require.Contains(t, notice, e.turnReview.Query)
+			require.Contains(t, notice, "No verifiable source receipt was obtained")
+			require.NotContains(t, notice, answerReviewUnavailableFallback)
 			count, streamed := recorder.snapshot()
-			require.Equal(t, 1, count)
+			require.Zero(t, count)
 			require.Equal(t, streamed, state.FinalAnswer)
 		})
 	}
 }
 
-func TestTerminalWarningsDoNotAppendUnrelatedFacts(t *testing.T) {
+func TestTerminalWarningsDoNotDiscardTheRequiredReading(t *testing.T) {
 	for _, citation := range []bool{false, true} {
 		t.Run(strconv.FormatBool(citation), func(t *testing.T) {
 			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
@@ -520,17 +534,13 @@ func TestTerminalWarningsDoNotAppendUnrelatedFacts(t *testing.T) {
 			recorder := &terminalAnswerRecorder{}
 			recorder.attach(e.eventBus)
 			e.commitTerminalResult(ctx, state, "terminal", failure, "", "failed", false)
-			require.NotContains(t, state.FinalAnswer, "Equipment.xlsx")
-			require.NotContains(t, state.FinalAnswer, "47.25")
-			require.NotContains(t, state.FinalAnswer, "B15")
-			if citation {
-				require.Contains(t, state.FinalAnswer, "〔引用待核对〕")
-				require.NotContains(t, state.FinalAnswer, "view-shared")
-			} else {
-				require.Contains(t, state.FinalAnswer, "〔数字待核对〕")
-			}
+			require.Contains(t, state.FinalAnswer, "Equipment.xlsx")
+			require.Contains(t, state.FinalAnswer, "47.25")
+			require.Contains(t, state.FinalAnswer, "B15")
+			require.NotContains(t, state.FinalAnswer, "999.25")
+			require.NotContains(t, state.FinalAnswer, "view-shared")
 			emitted := state.FinalAnswer
-			require.True(t, e.publishUnverifiedCitationReferences(ctx, state))
+			require.False(t, e.publishUnverifiedCitationReferences(ctx, state))
 			require.Equal(t, emitted, state.FinalAnswer)
 			count, streamed := recorder.snapshot()
 			require.Equal(t, 1, count)

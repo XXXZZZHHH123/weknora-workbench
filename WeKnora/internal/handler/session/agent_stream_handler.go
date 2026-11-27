@@ -43,6 +43,7 @@ type AgentStreamHandler struct {
 	assistantMessage   *types.Message
 	streamManager      interfaces.StreamManager
 	completionEvent    *interfaces.StreamEvent // Published only after the final message is persisted.
+	completionError    *interfaces.StreamEvent
 	// suspension is set when the run ended waiting on a user prompt. The
 	// message then stays incomplete and the run is resumed later.
 	suspension *types.PromptSuspension
@@ -903,6 +904,7 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 	defer h.mu.Unlock()
 
 	suspended, _ := data.Suspended.(*types.PromptSuspension)
+	incomplete := data.Incomplete
 	h.suspension = suspended
 	if suspended != nil && suspended.Detached {
 		return nil
@@ -915,6 +917,9 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 			h.assistantMessage.RunState = types.MessageRunStateAwaitingInput
 		} else {
 			h.assistantMessage.RunState = ""
+			if incomplete != nil {
+				h.assistantMessage.RunState = types.MessageRunStateIncomplete
+			}
 			h.assistantMessage.IsCompleted = true
 		}
 		h.assistantMessage.AgentDurationMs = data.TotalDurationMs
@@ -942,7 +947,11 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 			h.assistantMessage.EvidenceReferences = refs
 		}
 
-		h.assistantMessage.Content += data.FinalAnswer
+		if incomplete != nil {
+			h.assistantMessage.Content = incomplete.Notice
+		} else {
+			h.assistantMessage.Content += data.FinalAnswer
+		}
 		// Typed references bind the engine-approved candidate byte for byte.
 		// Artifact collection may attach files and delivery metadata, but must
 		// not rewrite its links or append unreviewed version/status prose.
@@ -1087,7 +1096,7 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 	// Fallback: if no answer events were streamed but we have a final answer,
 	// emit it as answer events so the frontend can render it properly.
 	// This guards against edge cases where the LLM stops without calling final_answer.
-	if suspended == nil && h.finalAnswer == "" && data.FinalAnswer != "" {
+	if suspended == nil && incomplete == nil && h.finalAnswer == "" && data.FinalAnswer != "" {
 		logger.GetLogger(h.ctx).Warnf(
 			"No answer events were streamed, emitting fallback answer (len=%d). "+
 				"This typically happens when: (1) model stopped naturally and content was sent as thought events, "+
@@ -1131,6 +1140,17 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 		"total_steps":       data.TotalSteps,
 		"total_duration_ms": data.TotalDurationMs,
 		"final_content":     h.assistantMessage.Content,
+	}
+	if incomplete != nil {
+		completeData["final_content"] = ""
+		completeData["run_state"], completeData["success"] = types.MessageRunStateIncomplete, false
+		completeData["error"], completeData["code"] = incomplete.Notice, incomplete.Reason
+		h.completionError = &interfaces.StreamEvent{
+			ID: evt.ID + "-incomplete", Type: types.ResponseTypeError, Content: incomplete.Notice, Done: true, Timestamp: time.Now(),
+			Data: map[string]interface{}{
+				"run_state": types.MessageRunStateIncomplete, "success": false, "error": incomplete.Notice, "code": incomplete.Reason,
+			},
+		}
 	}
 	// Attach the freshly-collected artifacts so the frontend can render the
 	// download button without waiting for a page refresh. We strip the
@@ -1184,6 +1204,12 @@ func (h *AgentStreamHandler) publishCompletion(ctx context.Context) error {
 	defer h.mu.Unlock()
 	if h.completionEvent == nil {
 		return nil
+	}
+	if h.completionError != nil {
+		if err := h.streamManager.AppendEvent(ctx, h.sessionID, h.assistantMessageID, *h.completionError); err != nil {
+			return err
+		}
+		h.completionError = nil
 	}
 	if s := h.suspension; s != nil {
 		if err := h.streamManager.AppendEvent(ctx, h.sessionID, h.assistantMessageID, interfaces.StreamEvent{

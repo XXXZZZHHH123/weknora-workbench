@@ -172,10 +172,24 @@ func imQAFailureReply(err error) string {
 	if err == nil {
 		return imNoAnswerFallback
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	var status *imQAStatus
+	if errors.As(err, &status) && strings.TrimSpace(status.notice) != "" {
+		return status.notice
+	}
+	if imQAInterrupted(err) {
 		return imCancelledFallback
 	}
 	return imErrorFallback
+}
+
+type imQAStatus struct {
+	notice string
+}
+
+func (s *imQAStatus) Error() string { return s.notice }
+
+func imQAInterrupted(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, types.ErrMessageRunInterrupted)
 }
 
 // cleanIMContent applies all IM-specific content transformations:
@@ -753,14 +767,17 @@ func sanitizeIMAgentSteps(raw interface{}) types.AgentSteps {
 	}
 }
 
-func applyIMCompleteDataToMessage(msg *types.Message, data event.AgentCompleteData) {
+func applyIMCompleteDataToMessage(msg *types.Message, data event.AgentCompleteData) bool {
 	if msg == nil {
-		return
+		return false
 	}
 	if data.MessageID != "" && data.MessageID != msg.ID {
-		return
+		return false
 	}
 	msg.IsCompleted = true
+	if data.Incomplete != nil {
+		msg.RunState = types.MessageRunStateIncomplete
+	}
 	msg.AgentDurationMs = data.TotalDurationMs
 	if usage, ok := data.Usage.(*types.TokenUsage); ok && usage != nil {
 		msg.Usage = usage
@@ -775,6 +792,27 @@ func applyIMCompleteDataToMessage(msg *types.Message, data event.AgentCompleteDa
 	if steps := sanitizeIMAgentSteps(data.AgentSteps); len(steps) > 0 {
 		msg.AgentSteps = steps
 	}
+	return true
+}
+
+func saveIMQAOutcome(ctx context.Context, service interfaces.MessageService, message *types.Message, answer, runState string) {
+	message.Content, message.RunState, message.IsCompleted = answer, runState, true
+	if err := service.UpdateMessage(ctx, message); err != nil {
+		logger.Warnf(ctx, "[IM] Failed to update assistant message: %v", err)
+	}
+}
+
+// Collaboration can finalize an interrupted message before AgentQA returns.
+// Preserve the verified receipts already written by that owner.
+func (s *Service) persistedIMInterruption(ctx context.Context, request *types.Message, err error) *types.Message {
+	if !errors.Is(err, types.ErrMessageRunInterrupted) {
+		return nil
+	}
+	message, err := s.messageService.GetMessage(ctx, request.SessionID, request.ID)
+	if err == nil && message != nil && message.IsCompleted && message.RunState == types.MessageRunStateInterrupted {
+		return message
+	}
+	return nil
 }
 
 // waitForIMAgentComplete blocks until EventAgentComplete, ctx cancellation, or timeout.
@@ -2550,6 +2588,7 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 		pipelineToolSteps []IMToolStep
 
 		agentCompleteFinalAnswer string
+		terminalStatus           *imQAStatus
 		streamedAny              bool
 
 		// mcpAuthServices collects OAuth services that need out-of-band
@@ -2611,6 +2650,10 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 		}
 
 		bufMu.Lock()
+		if terminalStatus != nil {
+			bufMu.Unlock()
+			return nil
+		}
 		if useAgent && !agentDone {
 			if data.Content != "" {
 				agentLiveAnswer.WriteString(data.Content)
@@ -2638,8 +2681,10 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 		bufMu.Lock()
 		qaErr = fmt.Errorf("QA pipeline error: %s", data.Error)
 		bufMu.Unlock()
-		closeDone()
-		closeComplete()
+		if !useAgent {
+			closeDone()
+			closeComplete()
+		}
 		return nil
 	})
 
@@ -2664,10 +2709,20 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 			return nil
 		}
 		bufMu.Lock()
+		if terminalStatus != nil || !applyIMCompleteDataToMessage(assistantMsg, data) {
+			bufMu.Unlock()
+			return nil
+		}
 		agentDone = true
-		agentCompleteFinalAnswer = data.FinalAnswer
-		applyIMCompleteDataToMessage(assistantMsg, data)
-		mergeIMAgentAnswerBuffers(&answerBuilder, &answerOuter, &agentLiveAnswer, data.FinalAnswer)
+		if data.Incomplete != nil {
+			terminalStatus = &imQAStatus{notice: data.Incomplete.Notice}
+			answerBuilder.Reset()
+			answerOuter.Reset()
+			agentLiveAnswer.Reset()
+		} else {
+			agentCompleteFinalAnswer = data.FinalAnswer
+			mergeIMAgentAnswerBuffers(&answerBuilder, &answerOuter, &agentLiveAnswer, data.FinalAnswer)
+		}
 		bufMu.Unlock()
 		closeComplete()
 		// Execute can emit EventError after Complete. The AgentQA return path
@@ -2903,25 +2958,50 @@ loop:
 	}
 	answer := resolvedAnswer
 	finalErr := qaErr
+	status := terminalStatus
+	completed := agentDone
 	noVisibleContent := !streamedAny && strings.TrimSpace(resolvedAnswer) == ""
 	authServices := append([]imMCPAuthService(nil), mcpAuthServices...)
 	bufMu.Unlock()
 
 	outCtx := imOutboundContext(ctx)
 	finalDisplay := cleanIMContent(outCtx, FormatIMFinalFromParts(parts), fileResolver)
-	if noVisibleContent || finalDisplay == "" {
+	runState := ""
+	interrupted := s.persistedIMInterruption(outCtx, assistantMsg, finalErr)
+	switch {
+	case interrupted != nil:
+		runState = types.MessageRunStateInterrupted
+		answer = interrupted.Content
+		notice := answer
+		if strings.TrimSpace(notice) == "" {
+			notice = imQAFailureReply(finalErr)
+		}
+		finalDisplay = formatIMOutboundAnswerOrFallback(outCtx, notice, fileResolver)
+	case status != nil:
+		runState = types.MessageRunStateIncomplete
+		answer = status.notice
+		finalDisplay = formatIMOutboundAnswerOrFallback(outCtx, imQAFailureReply(status), fileResolver)
+	case errors.Is(finalErr, types.ErrMessageRunInterrupted) || !completed && (qaCtx.Err() != nil || imQAInterrupted(finalErr)):
+		runState = types.MessageRunStateInterrupted
+		answer, finalDisplay = "", imCancelledFallback
+	case noVisibleContent || finalDisplay == "":
 		fallback := imNoAnswerFallback
 		if finalErr != nil {
 			fallback = imQAFailureReply(finalErr)
 		}
 		finalDisplay = fallback
-		if answer == "" {
-			answer = fallback
+	}
+	if runState == "" && strings.TrimSpace(answer) == "" {
+		runState = types.MessageRunStateIncomplete
+		if finalErr != nil {
+			finalDisplay = imQAFailureReply(finalErr)
 		}
 	}
 	if notice := s.buildIMMCPAuthNotice(ctx, authServices); notice != "" {
 		finalDisplay = appendIMAuthNotice(finalDisplay, notice)
-		answer = appendIMAuthNotice(answer, notice)
+		if runState == "" {
+			answer = appendIMAuthNotice(answer, notice)
+		}
 	}
 
 	finalizeErr := streamer.FinalizeStream(outCtx, msg, streamID, finalDisplay)
@@ -2945,14 +3025,10 @@ loop:
 		}
 	}
 
-	if answer == "" {
-		answer = imNoAnswerFallback
-	}
-
-	assistantMsg.Content = answer
-	assistantMsg.IsCompleted = true
-	if err := s.messageService.UpdateMessage(outCtx, assistantMsg); err != nil {
-		logger.Warnf(ctx, "[IM] Failed to update assistant message: %v", err)
+	if interrupted == nil {
+		bufMu.Lock()
+		saveIMQAOutcome(outCtx, s.messageService, assistantMsg, answer, runState)
+		bufMu.Unlock()
 	}
 
 	if finalizeErr != nil && fallbackErr != nil {
@@ -2986,11 +3062,13 @@ func (s *Service) runQA(ctx context.Context, session *types.Session, query strin
 	defer cancel()
 
 	eventBus := event.NewEventBus()
+	useAgent := customAgent != nil && customAgent.IsAgentMode()
 
 	// Thread-safe answer collection
 	var answerMu sync.Mutex
 	var answerBuilder strings.Builder
 	var qaErr error
+	var terminalStatus *imQAStatus
 	var mcpAuthServices []imMCPAuthService
 	mcpAuthSeen := make(map[string]bool)
 	done := make(chan struct{})
@@ -3006,7 +3084,9 @@ func (s *Service) runQA(ctx context.Context, session *types.Session, query strin
 			return nil
 		}
 		answerMu.Lock()
-		answerBuilder.WriteString(data.Content)
+		if terminalStatus == nil {
+			answerBuilder.WriteString(data.Content)
+		}
 		answerMu.Unlock()
 		if data.Done {
 			closeDone()
@@ -3023,8 +3103,10 @@ func (s *Service) runQA(ctx context.Context, session *types.Session, query strin
 		answerMu.Lock()
 		qaErr = fmt.Errorf("QA pipeline error: %s", data.Error)
 		answerMu.Unlock()
-		closeDone()
-		closeComplete()
+		if !useAgent {
+			closeDone()
+			closeComplete()
+		}
 		return nil
 	})
 
@@ -3043,9 +3125,6 @@ func (s *Service) runQA(ctx context.Context, session *types.Session, query strin
 		answerMu.Unlock()
 		return nil
 	})
-
-	// Determine whether to use agent mode
-	useAgent := customAgent != nil && customAgent.IsAgentMode()
 
 	// Generate a shared RequestID to pair user and assistant messages for history
 	requestID := uuid.New().String()
@@ -3081,8 +3160,14 @@ func (s *Service) runQA(ctx context.Context, session *types.Session, query strin
 			return nil
 		}
 		answerMu.Lock()
-		applyIMCompleteDataToMessage(assistantMsg, data)
-		if answerBuilder.Len() == 0 && strings.TrimSpace(data.FinalAnswer) != "" {
+		if terminalStatus != nil || !applyIMCompleteDataToMessage(assistantMsg, data) {
+			answerMu.Unlock()
+			return nil
+		}
+		if data.Incomplete != nil {
+			terminalStatus = &imQAStatus{notice: data.Incomplete.Notice}
+			answerBuilder.Reset()
+		} else if answerBuilder.Len() == 0 && strings.TrimSpace(data.FinalAnswer) != "" {
 			answerBuilder.WriteString(data.FinalAnswer)
 		}
 		answerMu.Unlock()
@@ -3138,38 +3223,59 @@ func (s *Service) runQA(ctx context.Context, session *types.Session, query strin
 			waitForIMAgentComplete(ctx, completeDone, session.ID)
 		}
 	case <-ctx.Done():
-		// Mark assistant message as completed to avoid dangling incomplete records
-		assistantMsg.Content = imCancelledFallback
-		assistantMsg.IsCompleted = true
-		// Use a fresh context since the original is cancelled
-		if updateErr := s.messageService.UpdateMessage(context.WithoutCancel(ctx), assistantMsg); updateErr != nil {
-			logger.Warnf(ctx, "[IM] Failed to update cancelled assistant message: %v", updateErr)
+		answerMu.Lock()
+		if terminalStatus != nil {
+			status := terminalStatus
+			saveIMQAOutcome(imOutboundContext(ctx), s.messageService, assistantMsg, status.notice, types.MessageRunStateIncomplete)
+			answerMu.Unlock()
+			return "", status
 		}
+		saveIMQAOutcome(imOutboundContext(ctx), s.messageService, assistantMsg, "", types.MessageRunStateInterrupted)
+		answerMu.Unlock()
 		return "", fmt.Errorf("QA cancelled: %w", ctx.Err())
 	}
 
 	answerMu.Lock()
+	defer answerMu.Unlock()
 	answer := answerBuilder.String()
 	qaError := qaErr
-	authServices := append([]imMCPAuthService(nil), mcpAuthServices...)
-	answerMu.Unlock()
-
-	if answer == "" && qaError != nil {
+	status := terminalStatus
+	completed := assistantMsg.IsCompleted
+	if interrupted := s.persistedIMInterruption(imOutboundContext(ctx), assistantMsg, qaError); interrupted != nil {
+		if strings.TrimSpace(interrupted.Content) != "" {
+			return "", &imQAStatus{notice: interrupted.Content}
+		}
 		return "", qaError
 	}
-	if answer == "" {
-		answer = imNoAnswerFallback
+
+	if status != nil {
+		saveIMQAOutcome(imOutboundContext(ctx), s.messageService, assistantMsg, status.notice, types.MessageRunStateIncomplete)
+		if notice := s.buildIMMCPAuthNotice(ctx, mcpAuthServices); notice != "" {
+			return "", &imQAStatus{notice: appendIMAuthNotice(status.notice, notice)}
+		}
+		return "", status
 	}
-	if notice := s.buildIMMCPAuthNotice(ctx, authServices); notice != "" {
+	if errors.Is(qaError, types.ErrMessageRunInterrupted) || !completed && imQAInterrupted(qaError) {
+		saveIMQAOutcome(imOutboundContext(ctx), s.messageService, assistantMsg, "", types.MessageRunStateInterrupted)
+		return "", qaError
+	}
+	if strings.TrimSpace(answer) == "" {
+		runState := types.MessageRunStateIncomplete
+		if imQAInterrupted(qaError) {
+			runState = types.MessageRunStateInterrupted
+		}
+		saveIMQAOutcome(imOutboundContext(ctx), s.messageService, assistantMsg, "", runState)
+		if qaError != nil {
+			return "", qaError
+		}
+		return appendIMAuthNotice(imNoAnswerFallback, s.buildIMMCPAuthNotice(ctx, mcpAuthServices)), nil
+	}
+	if notice := s.buildIMMCPAuthNotice(ctx, mcpAuthServices); notice != "" {
 		answer = appendIMAuthNotice(answer, notice)
 	}
 
 	// Update assistant message with the full answer (including citation tags for web rendering).
-	assistantMsg.Content = answer
-	assistantMsg.IsCompleted = true
-	if err := s.messageService.UpdateMessage(ctx, assistantMsg); err != nil {
-		logger.Warnf(ctx, "[IM] Failed to update assistant message: %v", err)
-	}
+	saveIMQAOutcome(ctx, s.messageService, assistantMsg, answer, "")
 
 	// Return raw answer — callers apply cleanIMContent with the appropriate FileService.
 	return answer, nil

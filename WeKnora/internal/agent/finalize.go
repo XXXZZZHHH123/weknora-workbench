@@ -228,6 +228,12 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		if chartAnswer != nil {
 			break
 		}
+		if checked.ReasonCode == string(terminalAnswerEvidence) && e.currentCoverageDraftReview(ctx, state).directory {
+			// The available native receipts are directories. A text-only
+			// revision cannot obtain the missing underlying observations.
+			fullAnswer, failure, truncated = "", terminalAnswerEvidence, false
+			break
+		}
 
 		if attempt == 2 || !e.spendCandidateRepair() {
 			fullAnswer, failure = "", terminalIncomplete
@@ -433,6 +439,10 @@ func (e *AgentEngine) emitCompletionEvent(
 	if state.Suspended != nil {
 		data.Suspended = state.Suspended
 	}
+	if state.IsComplete && state.Suspended == nil && e.turnReview.TerminalReceipt.notice != "" {
+		receipt := e.turnReview.TerminalReceipt
+		data.Incomplete = &event.AgentIncompleteData{Reason: string(receipt.failure), Notice: receipt.notice}
+	}
 	e.eventBus.Emit(ctx, event.Event{
 		ID:        generateEventID("complete"),
 		Type:      event.EventAgentComplete,
@@ -451,14 +461,14 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 	failure := terminalNoFailure
 	if !receipt.evidence.current(revision) {
 		failure = terminalSourceChanged
-	} else if terminalCandidateFallback(state.FinalAnswer) {
+	} else if receipt.notice == "" && terminalCandidateFallback(state.FinalAnswer) {
 		failure = legacyTerminalFailure(state.FinalAnswer)
 	} else if receipt.answerHash != "" && receipt.answerHash != candidateTextDigest(state.FinalAnswer) && e.turnReview.UnverifiedCitationDelivery == nil {
 		failure = terminalReview
 	} else if receipt.failure != terminalNoFailure && len(revision.calls) > len(receipt.evidence.calls) {
 		// Add newly completed receipts to a fallback without rewriting a model draft.
 		failure = receipt.failure
-	} else if receipt.failure == terminalNoFailure {
+	} else if receipt.failure == terminalNoFailure && receipt.answerHash == "" {
 		failure = e.terminalCandidateEvidenceFailure(ctx, state, state.FinalAnswer)
 	}
 	if failure == terminalNoFailure && receipt.failure == terminalNoFailure {
@@ -479,13 +489,17 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 		stale[id] = true
 	}
 	if failure != terminalNoFailure {
-		state.FinalAnswer = e.terminalCoverageFailure(ctx, terminalCurrentState(state, stale), failure)
+		result := e.terminalCoveragePublication(ctx, terminalCurrentState(state, stale), failure)
+		state.FinalAnswer, receipt.notice = result.answer, result.notice
 		state.EvidenceRefs, state.KnowledgeRefs = nil, nil
 		e.turnReview.TerminalTruncated = false
 		receipt.failure = failure
 	}
+	if receipt.failure != terminalNoFailure && state.FinalAnswer != "" && e.evidenceCompletionEligible() {
+		state.KnowledgeRefs = e.currentCandidateKnowledgeReferences(state.FinalAnswer, state, e.turnReview.Conversation)
+	}
 	if len(stale) != 0 {
-		withholdStaleTerminalTrace(state, stale, priorAnswer, e.turnReview.Last.Candidate)
+		withholdStaleTerminalTrace(state, stale, priorAnswer, firstNonEmptyAgent(e.turnReview.Last.Candidate, receipt.submitted))
 		for id := range stale {
 			delete(revision.calls, id)
 		}
