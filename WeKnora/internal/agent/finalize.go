@@ -455,6 +455,8 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 	} else if receipt.failure != terminalNoFailure && len(revision.calls) > len(receipt.evidence.calls) {
 		// Add newly completed receipts to a fallback without rewriting a model draft.
 		failure = receipt.failure
+	} else if receipt.failure == terminalNoFailure {
+		failure = e.terminalCandidateEvidenceFailure(ctx, state, state.FinalAnswer)
 	}
 	if failure == terminalNoFailure && receipt.failure == terminalNoFailure {
 		e.publishFinalKnowledgeReferences(ctx, state, sessionID)

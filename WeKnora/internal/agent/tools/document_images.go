@@ -153,6 +153,9 @@ func (t *ReadDocumentTool) finishImageRead(ctx context.Context, knowledge *types
 	if err != nil || result == nil || !result.Success || result.Data == nil {
 		return result, err
 	}
+	if DocumentTableEvidenceEnabled() && strings.TrimSpace(input.Query) == "" {
+		annotateDocumentTablePages(knowledge, result)
+	}
 	catalog := documentImageCatalog(result, knowledge.ID, knowledge.FileHash)
 	catalog = t.appendOriginalImageCatalog(ctx, knowledge, input, result, catalog)
 	if len(input.Images) == 0 {

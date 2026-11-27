@@ -343,6 +343,9 @@ func coverageSeriesIdentity(base coverageEvidence, series map[string]any) covera
 	base.SeriesID = sourceNavigationString(series, "series_id")
 	base.Metric = sourceNavigationString(series, "metric")
 	base.Subject = sourceNavigationString(series, "subject")
+	if agenttools.DocumentTableEvidenceEnabled() {
+		base.Dimensions = coverageObject(series["dimensions"])
+	}
 	base.DateMode = sourceNavigationString(series, "date_mode")
 	base.LastValidDate, base.LastObservedDate = sourceNavigationString(series, "last_valid_date"), sourceNavigationString(series, "last_date")
 	base.Grain = sourceNavigationString(series, "grain", "frequency")
@@ -891,6 +894,9 @@ func coverageInspectionEvidence(base coverageEvidence, args, data map[string]any
 			}
 			item := coverageCell(base, row, "/data"+path+cellPath)
 			item.Sheet = sourceNavigationString(row, "sheet")
+			if agenttools.DocumentTableEvidenceEnabled() {
+				item.OriginalNumberFormat = sourceNavigationString(row, "number_format")
+			}
 			if item.Sheet != "" && item.Cell != "" && item.Raw != nil {
 				result = append(result, item)
 			}

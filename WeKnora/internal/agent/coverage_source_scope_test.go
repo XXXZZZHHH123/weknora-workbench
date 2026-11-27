@@ -37,13 +37,15 @@ func (s *coverageScopeDocuments) ListPagedKnowledgeByKnowledgeBaseID(_ context.C
 
 type coverageScopeChunks struct {
 	interfaces.ChunkRepository
-	reads []string
+	reads  []string
+	bodies map[string]string
 }
 
 func (r *coverageScopeChunks) ListPagedChunksByKnowledgeID(_ context.Context, _ uint64, document string, _ *types.Pagination, _ []types.ChunkType, _ []string, _ string, _ string, _ string, _ string, _ *bool) ([]*types.Chunk, int64, error) {
 	r.reads = append(r.reads, document)
+	content := firstNonEmptyAgent(r.bodies[document], "The maintenance record shows a completed inspection.")
 	return []*types.Chunk{{ID: document + "-chunk", KnowledgeID: document, KnowledgeBaseID: "scope-library", TenantID: 7,
-		ChunkType: types.ChunkTypeText, IsEnabled: true, Content: "The maintenance record shows a completed inspection."}}, 1, nil
+		ChunkType: types.ChunkTypeText, IsEnabled: true, Content: content}}, 1, nil
 }
 
 func (*coverageScopeChunks) ListChunksByParentIDs(context.Context, uint64, []string) ([]*types.Chunk, error) {

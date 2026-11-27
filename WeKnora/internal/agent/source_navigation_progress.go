@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -257,7 +258,16 @@ func (e *AgentEngine) coverageDocumentEvidence(call types.ToolCall, base coverag
 	}
 	bodies := e.coverageDocumentBodies(call, base, data, search)
 	evidence = append(evidence, bodies...)
-	if !search && e.evidenceCompletionEnabled() {
+	if !search && agenttools.DocumentTableEvidenceEnabled() {
+		images := coverageImageTableBodies(data, bodies)
+		tables := coverageReadTableBodies(data, append(slices.Clone(bodies), images...))
+		evidence = append(evidence, tables...)
+		for _, image := range images {
+			if !slices.ContainsFunc(tables, func(table coverageEvidence) bool { return table.JSONPointer == image.JSONPointer }) {
+				evidence = append(evidence, image)
+			}
+		}
+	} else if !search && e.evidenceCompletionEnabled() {
 		evidence = append(evidence, coverageImageTableBodies(data, bodies)...)
 	}
 	return evidence

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
+	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -29,17 +30,25 @@ type coverageDraftFact struct {
 }
 
 type coverageDraftAssessment struct {
-	anchors          []string
-	roles            []string
-	missing          []coverageDraftFact
-	versionDisplayed bool
+	anchors           []string
+	roles             []string
+	missing           []coverageDraftFact
+	versionDisplayed  bool
+	versionBlocked    bool
+	comparisonBlocked bool
+	partialComparison bool
+	unattributedTable []unattributedTableValue
+	tableScopeReview  bool
 }
 
 type coverageDraftFeedback struct {
-	Missing        []coverageDraftFactView   `json:"undisplayed_verified_facts,omitempty"`
-	Comparisons    []coverageComparisonCheck `json:"checked_same_table_comparisons,omitempty"`
-	Version        *terminalVersionChoice    `json:"checked_provisional_version_choice,omitempty"`
-	VersionMissing bool                      `json:"version_basis_undisplayed,omitempty"`
+	Missing           []coverageDraftFactView   `json:"undisplayed_verified_facts,omitempty"`
+	Comparisons       []coverageComparisonCheck `json:"checked_same_table_comparisons,omitempty"`
+	Version           *terminalVersionChoice    `json:"checked_provisional_version_choice,omitempty"`
+	VersionMissing    bool                      `json:"version_basis_undisplayed,omitempty"`
+	UnverifiedVersion bool                      `json:"unverified_version_claim,omitempty"`
+	TableAttribution  []unattributedTableValue  `json:"unattributed_cited_table_values,omitempty"`
+	CheckTableScope   bool                      `json:"check_independent_table_scope,omitempty"`
 }
 
 func (e *AgentEngine) currentCoverageDraftReview(ctx context.Context, state *types.AgentState) coverageDraftReview {
@@ -62,7 +71,7 @@ func (e *AgentEngine) currentCoverageDraftReview(ctx context.Context, state *typ
 	for _, target := range review.targets {
 		scoped := e.coverageRecordForTarget(ctx, target, record)
 		for _, result := range evaluateTaskCoverage(target, scoped) {
-			if tableComparison(target) && len(result.PinnedFacts) > 0 {
+			if tableComparison(target) && (agenttools.DocumentTableEvidenceEnabled() || len(result.PinnedFacts) > 0) {
 				checked := checkedTableComparison(target, result)
 				for _, fact := range result.PinnedFacts {
 					if fact.Role == "scoped_value" {
@@ -91,16 +100,29 @@ func (e *AgentEngine) currentCoverageDraftReview(ctx context.Context, state *typ
 	return review
 }
 
+func (review coverageDraftReview) blockedComparison() bool {
+	return agenttools.DocumentTableEvidenceEnabled() && slices.ContainsFunc(review.comparisons, func(comparison coverageComparisonCheck) bool {
+		return comparison.State != coverageSatisfied
+	})
+}
+
 // Facts may be returned by several calls, but a role in the answer belongs
 // to a physical field, source version and period. Matching one value cannot
 // discharge another field with the same number.
 func (fact coverageDraftFact) roleID() string {
 	item := fact.Evidence
+	if agenttools.DocumentTableEvidenceEnabled() {
+		return reviewDigest([]any{fact.goal, fact.slot, fact.Role, item.ComparisonSourceRef, comparisonPhysicalSource(item),
+			item.SnapshotHash, item.Sheet, item.SeriesID, item.Subject, item.Metric, item.Column, item.Object, item.TableGrid})
+	}
 	return reviewDigest([]any{fact.goal, fact.slot, fact.Role, comparisonPhysicalSource(item), item.SnapshotHash,
 		item.Sheet, item.SeriesID, item.Subject, item.Metric, item.Column, item.Object, item.Page})
 }
 
 func coverageDraftFactIdentity(item coverageEvidence) string {
+	if agenttools.DocumentTableEvidenceEnabled() {
+		return coverageEvidenceFactKey(item)
+	}
 	return reviewDigest([]any{coverageFactRef(item), comparisonPhysicalSource(item), item.SnapshotHash, item.ContentHash,
 		item.Sheet, item.SeriesID, item.Subject, item.Metric, item.Column, item.Object, item.Page, item.Cell,
 		item.Period, item.PeriodFrom, item.PeriodTo, item.Date, item.Raw, item.ReportedValue, item.Unit, item.UnitBasis})
@@ -134,7 +156,9 @@ func moreCompleteCoverageDraft(a candidateDecision, assessment coverageDraftAsse
 }
 
 func (e *AgentEngine) rememberCoverageDraft(ctx context.Context, decision candidateDecision, assessment coverageDraftAssessment, review coverageDraftReview, state *types.AgentState) {
-	if decision.Err != nil || len(decision.Unsupported) != 0 || len(assessment.anchors) == 0 {
+	if decision.Err != nil || len(decision.Unsupported) != 0 || len(assessment.anchors) == 0 ||
+		assessment.versionBlocked || len(assessment.unattributedTable) != 0 || assessment.comparisonBlocked &&
+		(!assessment.partialComparison || decision.ReasonCode != checkedPartialComparisonReason) {
 		return
 	}
 	if prior, current := e.currentCheckedCoverageDraft(ctx, state, review); current &&
@@ -144,6 +168,12 @@ func (e *AgentEngine) rememberCoverageDraft(ctx context.Context, decision candid
 	e.turnReview.CoverageDraft = decision
 	e.turnReview.CoverageDraftFacts = assessment.anchors
 	e.turnReview.CoverageDraftRoles = assessment.roles
+	if agenttools.DocumentTableEvidenceEnabled() {
+		common.PipelineInfo(ctx, "Agent", "coverage_draft_checked", map[string]any{
+			"candidate_hash": decision.CandidateHash, "verified_fact_ids": assessment.anchors, "displayed_role_ids": assessment.roles,
+			"reason": "candidate_contains_current_verified_facts", "adopted_version_basis_displayed": assessment.versionDisplayed,
+		})
+	}
 }
 
 func (e *AgentEngine) currentCheckedCoverageDraft(ctx context.Context, state *types.AgentState, review coverageDraftReview) (candidateDecision, bool) {
@@ -153,11 +183,14 @@ func (e *AgentEngine) currentCheckedCoverageDraft(ctx context.Context, state *ty
 		draft.SourceScopeHash != e.unverifiedSourceScopeDigest(ctx) ||
 		draft.CandidateHash != candidateTextDigest(draft.Candidate) ||
 		draft.StandardReview != e.standardAnswerReview() ||
-		draft.StructuredResultReview != e.structuredResultReviewEnabled() {
+		draft.StructuredResultReview != e.structuredResultReviewEnabled() ||
+		agenttools.DocumentTableEvidenceEnabled() && !draft.PublicationEvidence.current(e.terminalEvidenceRevision(ctx, state)) {
 		return candidateDecision{}, false
 	}
 	current := e.assessCoverageDraft(ctx, review, draft.Candidate, state)
-	if len(current.anchors) == 0 || !containsCoverageDraftRoles(current.anchors, e.turnReview.CoverageDraftFacts) ||
+	if current.versionBlocked || len(current.unattributedTable) != 0 || current.comparisonBlocked &&
+		(!current.partialComparison || draft.ReasonCode != checkedPartialComparisonReason) ||
+		len(current.anchors) == 0 || !containsCoverageDraftRoles(current.anchors, e.turnReview.CoverageDraftFacts) ||
 		!containsCoverageDraftRoles(current.roles, e.turnReview.CoverageDraftRoles) {
 		return candidateDecision{}, false
 	}
@@ -192,7 +225,8 @@ func (e *AgentEngine) coverageDraftAnchors(ctx context.Context, candidate string
 }
 
 func (e *AgentEngine) assessCoverageDraft(ctx context.Context, review coverageDraftReview, candidate string, state *types.AgentState) coverageDraftAssessment {
-	var assessment coverageDraftAssessment
+	versionClaims := e.evidenceCompletion.versionClaims[candidateTextDigest(strings.TrimSpace(candidate))]
+	assessment := coverageDraftAssessment{comparisonBlocked: review.blockedComparison(), versionBlocked: len(versionClaims) > 0}
 	if state == nil || terminalCandidateFallback(candidate) || !e.candidateEvidenceBudgetFits(candidate, state, ctx) ||
 		e.candidateCitationsInvalid(candidate, state, e.turnReview.Conversation, ctx) {
 		return assessment
@@ -216,22 +250,42 @@ func (e *AgentEngine) assessCoverageDraft(ctx context.Context, review coverageDr
 	}
 	for _, fact := range review.facts {
 		item := fact.Evidence
-		if slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool { return paragraph.displaysVerifiedRole(fact, review.facts) }) {
+		if slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool {
+			if paragraph.displaysVerifiedRole(fact, review.facts) {
+				return true
+			}
+			return agenttools.DocumentTableEvidenceEnabled() && slices.ContainsFunc(item.Receipts, func(receipt coverageFactReceipt) bool {
+				copy := fact
+				copy.Evidence.CitationID, copy.Evidence.ChunkID = receipt.Citation, receipt.Chunk
+				return (receipt.Citation != "" || receipt.Chunk != "") && paragraph.displaysVerifiedRole(copy, review.facts)
+			})
+		}) {
 			add(item)
 			assessment.roles = appendCoverageDraftID(assessment.roles, fact.roleID())
 		} else {
 			assessment.missing = append(assessment.missing, fact)
 		}
 	}
-	if review.version.SelectedSource != "" && slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool {
-		selected := strings.ToLower(review.version.SelectedSource)
-		alternative := strings.ToLower(review.version.AlternativeSource)
-		return strings.Contains(strings.ReplaceAll(paragraph.lower, alternative, ""), selected) &&
-			strings.Contains(paragraph.lower, alternative) &&
-			strings.Contains(strings.ReplaceAll(strings.ReplaceAll(paragraph.lower, alternative, ""), selected, ""), strings.ToLower(review.version.Basis))
-	}) && containsCoverageDraftRoles(assessment.anchors, []string{review.version.selectedRef, review.version.alternativeRef}) {
-		assessment.roles = appendCoverageDraftID(assessment.roles, reviewDigest(review.version))
-		assessment.versionDisplayed = true
+	assessment.unattributedTable, assessment.tableScopeReview = multiSourceTableAttribution(review, candidate)
+	if assessment.comparisonBlocked {
+		assessment.partialComparison = verifiedOneSidedComparison(review, assessment, candidate)
+	}
+	if review.version.SelectedSource != "" && containsCoverageDraftRoles(assessment.anchors, []string{review.version.selectedRef, review.version.alternativeRef}) {
+		if agenttools.DocumentTableEvidenceEnabled() {
+			assessment.versionDisplayed = versionChoiceCited(candidate, review.version, review.facts)
+		} else {
+			selected := strings.ToLower(review.version.SelectedSource)
+			alternative := strings.ToLower(review.version.AlternativeSource)
+			assessment.versionDisplayed = slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool {
+				return strings.Contains(strings.ReplaceAll(paragraph.lower, alternative, ""), selected) &&
+					strings.Contains(paragraph.lower, alternative) &&
+					strings.Contains(strings.ReplaceAll(strings.ReplaceAll(paragraph.lower, alternative, ""), selected, ""), strings.ToLower(review.version.Basis))
+			})
+		}
+		if assessment.versionDisplayed {
+			assessment.roles = appendCoverageDraftID(assessment.roles, reviewDigest(review.version))
+			assessment.versionBlocked = slices.ContainsFunc(versionClaims, func(claim coverageVersionClaim) bool { return claim != review.version.claim })
+		}
 	}
 	// When there are no bound target facts, an actual displayed and cited
 	// source field still contributes to ranking a usable draft. These roles
@@ -273,6 +327,7 @@ func (e *AgentEngine) assessCoverageDraft(ctx context.Context, review coverageDr
 		assessment.anchors = nil
 		assessment.roles = nil
 		assessment.versionDisplayed = false
+		assessment.versionBlocked = len(versionClaims) > 0
 	}
 	return assessment
 }
@@ -413,27 +468,41 @@ func (paragraph coverageDraftParagraph) displaysVerifiedRole(fact coverageDraftF
 }
 
 type coverageDraftFactView struct {
-	Goal       int    `json:"goal_index"`
-	Role       string `json:"role"`
-	Ref        string `json:"ref"`
-	Citation   string `json:"citation_handle,omitempty"`
-	Source     string `json:"source,omitempty"`
-	Sheet      string `json:"sheet,omitempty"`
-	Metric     string `json:"metric,omitempty"`
-	Subject    string `json:"subject,omitempty"`
-	Page       int    `json:"page,omitempty"`
-	Cell       string `json:"cell,omitempty"`
-	Row        string `json:"row,omitempty"`
-	Column     string `json:"column,omitempty"`
-	Date       string `json:"date,omitempty"`
-	Period     string `json:"period,omitempty"`
-	PeriodFrom string `json:"period_from,omitempty"`
-	PeriodTo   string `json:"period_to,omitempty"`
-	SourceDate string `json:"source_date,omitempty"`
-	Value      string `json:"raw,omitempty"`
-	Unit       string `json:"unit,omitempty"`
-	UnitBasis  string `json:"unit_basis,omitempty"`
-	Status     string `json:"source_status,omitempty"`
+	Goal            int                    `json:"goal_index"`
+	Role            string                 `json:"role"`
+	Ref             string                 `json:"ref"`
+	Citation        string                 `json:"citation_handle,omitempty"`
+	Source          string                 `json:"source,omitempty"`
+	Sheet           string                 `json:"sheet,omitempty"`
+	Metric          string                 `json:"metric,omitempty"`
+	Subject         string                 `json:"subject,omitempty"`
+	Page            int                    `json:"page,omitempty"`
+	Cell            string                 `json:"cell,omitempty"`
+	Row             string                 `json:"row,omitempty"`
+	Column          string                 `json:"column,omitempty"`
+	Date            string                 `json:"date,omitempty"`
+	Period          string                 `json:"period,omitempty"`
+	PeriodFrom      string                 `json:"period_from,omitempty"`
+	PeriodTo        string                 `json:"period_to,omitempty"`
+	SourceDate      string                 `json:"source_date,omitempty"`
+	Value           string                 `json:"raw,omitempty"`
+	Unit            string                 `json:"unit,omitempty"`
+	UnitBasis       string                 `json:"unit_basis,omitempty"`
+	Status          string                 `json:"source_status,omitempty"`
+	SourceRef       string                 `json:"selected_source_ref,omitempty"`
+	Object          string                 `json:"object,omitempty"`
+	TitleChunk      string                 `json:"table_title_chunk_id,omitempty"`
+	DateChunk       string                 `json:"disclosure_chunk_id,omitempty"`
+	Grain           string                 `json:"verified_source_grain,omitempty"`
+	GrainUnverified bool                   `json:"comparison_grain_unverified,omitempty"`
+	PeriodBasis     string                 `json:"original_period_label_receipt,omitempty"`
+	FactID          string                 `json:"fact_id,omitempty"`
+	Receipts        []coverageDraftReceipt `json:"receipts,omitempty"`
+}
+
+type coverageDraftReceipt struct {
+	Ref      string `json:"ref"`
+	Citation string `json:"citation_handle,omitempty"`
 }
 
 func (e *AgentEngine) coverageDraftFactView(fact coverageDraftFact) coverageDraftFactView {
@@ -446,19 +515,36 @@ func (e *AgentEngine) coverageDraftFactView(fact coverageDraftFact) coverageDraf
 	if e.modelContext != nil {
 		citation = firstNonEmptyAgent(e.modelContext.CitableEvidenceHandle(item.CitationID), e.modelContext.CitableChunkHandle(item.ChunkID))
 	}
-	return coverageDraftFactView{
+	view := coverageDraftFactView{
 		Goal: fact.goal, Role: fact.Role, Ref: coverageFactRef(item), Citation: citation, Source: item.SourceTitle,
 		Sheet: item.Sheet, Metric: item.Metric, Subject: item.Subject, Page: item.Page, Cell: item.Cell, Row: item.RowLabel,
 		Column: item.Column, Date: item.Date, Period: item.Period, PeriodFrom: item.PeriodFrom, PeriodTo: item.PeriodTo,
 		SourceDate: item.SourceDate, Value: value, Unit: item.Unit, UnitBasis: item.UnitBasis, Status: item.Status,
 	}
+	if agenttools.DocumentTableEvidenceEnabled() {
+		view.SourceRef, view.Object, view.FactID = item.ComparisonSourceRef, item.Object, coverageEvidenceFactKey(item)
+		view.TitleChunk, view.DateChunk = item.TableTitleChunkID, item.TableDisclosureChunkID
+		view.Grain, view.GrainUnverified, view.PeriodBasis = item.Grain, item.ComparisonGrainUnverified, item.TablePeriodBasisRef
+		if item.GrainFromLookup && item.ComparisonGrainUnverified {
+			view.Grain = ""
+		}
+		for _, receipt := range item.Receipts {
+			var handle string
+			if e.modelContext != nil {
+				handle = firstNonEmptyAgent(e.modelContext.CitableEvidenceHandle(receipt.Citation), e.modelContext.CitableChunkHandle(receipt.Chunk))
+			}
+			view.Receipts = append(view.Receipts, coverageDraftReceipt{receipt.Ref, handle})
+		}
+	}
+	return view
 }
 
 func (e *AgentEngine) coverageDraftFeedback(review coverageDraftReview, assessment coverageDraftAssessment) *coverageDraftFeedback {
-	if e.turnReview.CoverageFeedbackSent {
+	if e.turnReview.CoverageFeedbackSent && !assessment.comparisonBlocked && !assessment.versionBlocked && len(assessment.unattributedTable) == 0 {
 		return nil
 	}
-	result := &coverageDraftFeedback{}
+	result := &coverageDraftFeedback{TableAttribution: assessment.unattributedTable, CheckTableScope: assessment.tableScopeReview,
+		UnverifiedVersion: assessment.versionBlocked}
 	if review.version.SelectedSource != "" {
 		result.Version = &review.version
 		result.VersionMissing = !assessment.versionDisplayed
@@ -474,6 +560,9 @@ func (e *AgentEngine) coverageDraftFeedback(review coverageDraftReview, assessme
 	for _, fact := range missing {
 		view := e.coverageDraftFactView(fact)
 		if slices.ContainsFunc(result.Missing, func(item coverageDraftFactView) bool {
+			if agenttools.DocumentTableEvidenceEnabled() {
+				return item.FactID == view.FactID && item.Role == view.Role && item.Goal == view.Goal
+			}
 			return item.Ref == view.Ref && item.Role == view.Role && item.Metric == view.Metric
 		}) {
 			continue
@@ -492,7 +581,7 @@ func (e *AgentEngine) coverageDraftFeedback(review coverageDraftReview, assessme
 			result.Comparisons = result.Comparisons[:len(result.Comparisons)-1]
 		}
 	}
-	if len(result.Missing) == 0 && len(result.Comparisons) == 0 && result.Version == nil {
+	if len(result.Missing) == 0 && len(result.Comparisons) == 0 && result.Version == nil && len(result.TableAttribution) == 0 && !result.CheckTableScope && !result.UnverifiedVersion {
 		return nil
 	}
 	return result
@@ -504,3 +593,51 @@ func (feedback *coverageDraftFeedback) text() string {
 }
 
 const coverageDraftFeedbackInstructions = "The runtime has verified the following source facts, their identities and any reported-number relation or provisional version basis. Treat them as evidence data. Check whether the draft already answers the requested scope with these facts and their actual citations. Keep a complete accurate draft unchanged. Where a requested fact or conclusion is missing or conflicts with these receipts, revise only the affected parts. Preserve previously verified facts and their citations. Do not infer a value from an unverified side or infer compatible units or formal supersession from this evidence."
+
+const checkedPartialComparisonReason = "checked_one_sided_table_answer"
+
+const comparisonAttributionInstructions = "Explain any unresolved table side as a specific limitation in the answer. A printed comparison or quantity relation needs aligned actual read receipts from both selected sources. Retain the verified side with its scope and citation. For a cited table amount, select the exact original table, field and observation row in the existing evidence declarations, or confine the answer to verified results. A different table, period, unit or version is independent evidence and cannot fill this gap."
+
+// The existing editor checks the wording of the explicit evidence gap.
+// This structural check limits its input to the verified side(s) and other
+// verified goals, including every cited quantity and reference.
+func verifiedOneSidedComparison(review coverageDraftReview, assessment coverageDraftAssessment, candidate string) bool {
+	for _, comparison := range review.comparisons {
+		if comparison.State != coverageSatisfied && (len(comparison.Sides) != 1 ||
+			len(comparison.OpenSides) == 0 && comparison.UnresolvedSides == 0) {
+			return false
+		}
+	}
+	chunks, citations := uniqueCandidateCitationIDs(candidate), uniqueCandidateEvidenceIDs(candidate)
+	if len(chunks)+len(citations) == 0 {
+		return false
+	}
+	var values []float64
+	for _, fact := range review.facts {
+		item := fact.Evidence
+		displayed := slices.Contains(assessment.roles, fact.roleID())
+		if item.ComparisonSourceRef != "" && fact.Role == "scoped_value" && !displayed {
+			return false
+		}
+		if !displayed {
+			continue
+		}
+		for _, receipt := range coverageFactReceipts(item) {
+			chunks = slices.DeleteFunc(chunks, func(id string) bool { return id == receipt.Chunk })
+			citations = slices.DeleteFunc(citations, func(id string) bool { return id == receipt.Citation })
+		}
+		if raw, ok := coverageDraftRaw(item); ok {
+			if value, err := strconv.ParseFloat(raw, 64); err == nil {
+				values = append(values, value)
+			}
+		}
+		if item.Page > 0 {
+			values = append(values, float64(item.Page))
+		}
+	}
+	if len(chunks)+len(citations) != 0 || len(values) == 0 {
+		return false
+	}
+	proof := []chat.Message{{Role: "tool", NumericObservations: &chat.NumericObservations{Values: values}}}
+	return len(ungroundedStructuredNumberOccurrencesWithEmptyEvidence(candidate, proof, true, nil)) == 0
+}

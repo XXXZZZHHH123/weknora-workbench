@@ -8,6 +8,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -22,6 +23,8 @@ type taskCoverageTarget struct {
 	Criteria     string `json:"criteria,omitempty"`
 	SourceScope  string `json:"source_scope,omitempty"`
 	*StructuredTaskGoal
+	UnresolvedComparisonSources int      `json:"-"`
+	PlanIssues                  []string `json:"-"`
 }
 
 // StructuredTaskGoal is embedded so the decoder can distinguish old targets
@@ -76,6 +79,95 @@ const structuredTaskCoverageSchema = structuredTaskCoverageBeforeUnit + `  "requ
   "comparison_sources":{"type":"array","minItems":2,"maxItems":2,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128,"pattern":"\\S"}},
 ` + structuredTaskCoverageAfterUnit
 
+var documentTableCoverageSchema = strings.Replace(structuredTaskCoverageSchema, `"minItems":2,"maxItems":2`, `"maxItems":2`, 1)
+
+var taskCoverageFieldValidators = sync.OnceValues(func() (map[string]*jsonschema.Resolved, error) {
+	var schema jsonschema.Schema
+	if err := json.Unmarshal([]byte(structuredTaskCoverageSchema), &schema); err != nil {
+		return nil, err
+	}
+	fields := make(map[string]*jsonschema.Resolved, len(schema.Properties))
+	for name, property := range schema.Properties {
+		if name == "comparison_sources" {
+			property = property.Items
+		}
+		validator, err := property.Resolve(nil)
+		if err != nil {
+			return nil, err
+		}
+		fields[name] = validator
+	}
+	return fields, nil
+})
+
+// Decode independently so an invalid optional field cannot erase an explicit
+// source restriction or another goal. The model's source claims still need
+// provenance validation before entering the scope machinery.
+func decodePartialTaskCoverage(raw json.RawMessage, goalCount int) (taskCoverageTarget, error) {
+	var values map[string]any
+	if err := json.Unmarshal(raw, &values); err != nil || values == nil {
+		return taskCoverageTarget{}, fmt.Errorf("coverage target must be an object")
+	}
+	fields, err := taskCoverageFieldValidators()
+	if err != nil {
+		return taskCoverageTarget{}, err
+	}
+	var issues []string
+	valid := make(map[string]any, len(values))
+	for name, value := range values {
+		field, known := fields[name]
+		switch {
+		case !known:
+			issues = append(issues, "unsupported_coverage_field")
+		case name == "comparison_sources":
+			items, ok := value.([]any)
+			if !ok || len(items) > 2 {
+				issues = append(issues, "invalid_comparison_sources")
+				continue
+			}
+			var refs []string
+			for _, item := range items {
+				if field.Validate(item) != nil || slices.Contains(refs, item.(string)) {
+					issues = append(issues, "invalid_comparison_sources")
+					continue
+				}
+				refs = append(refs, item.(string))
+			}
+			valid[name] = refs
+		case field.Validate(value) != nil:
+			issues = append(issues, "invalid_"+name)
+		default:
+			valid[name] = value
+		}
+	}
+	if valid["goal_index"] == nil {
+		return taskCoverageTarget{}, fmt.Errorf("coverage target requires an existing goal index")
+	}
+	if valid["source_mode"] == nil {
+		return taskCoverageTarget{}, fmt.Errorf("structured coverage target requires a valid source mode")
+	}
+	content, err := json.Marshal(valid)
+	if err != nil {
+		return taskCoverageTarget{}, err
+	}
+	var target taskCoverageTarget
+	if err := json.Unmarshal(content, &target); err != nil || target.GoalIndex >= goalCount {
+		return taskCoverageTarget{}, fmt.Errorf("coverage target requires an existing goal index")
+	}
+	if target.SourceMode == "only" {
+		if slices.Contains(target.OnVerifiedGap, "attributed_supplement") {
+			issues = append(issues, "supplement_outside_restriction")
+		}
+		target.OnVerifiedGap = slices.DeleteFunc(target.OnVerifiedGap, func(action string) bool { return action == "attributed_supplement" })
+	} else if target.RestrictionBasis != "" {
+		target.RestrictionBasis = ""
+		issues = append(issues, "unexpected_restriction_basis")
+	}
+	slices.Sort(issues)
+	target.PlanIssues = slices.Compact(issues)
+	return target, nil
+}
+
 var structuredTaskCoverageValidator = sync.OnceValues(func() (*jsonschema.Resolved, error) {
 	var schema jsonschema.Schema
 	if err := json.Unmarshal([]byte(structuredTaskCoverageSchema), &schema); err != nil {
@@ -119,10 +211,23 @@ func validateTaskCoverageTargets(plan *taskEvidencePlan, raw []map[string]any, s
 }
 
 // Literal quotation validates provenance only. The model interprets intent.
-func validateTaskCoverageBasis(plan *taskEvidencePlan, query string, messages []chat.Message, turns []string, pinned func(string) bool) error {
-	quoted := func(quote string, texts []string) bool {
-		return strings.TrimSpace(quote) != "" && slices.ContainsFunc(texts, func(text string) bool { return strings.Contains(text, quote) })
+func validateTaskCoverageBasis(plan *taskEvidencePlan, query string, messages []chat.Message, turns []string, pinned func(string) bool, partial ...bool) error {
+	modern := agenttools.DocumentTableEvidenceEnabled()
+	if len(partial) > 0 {
+		modern = partial[0]
 	}
+	if modern && slices.ContainsFunc(plan.CoverageTargets, func(target taskCoverageTarget) bool { return target.StructuredTaskGoal != nil }) {
+		plan.validatePartialCoverageBasis(query, messages, turns, pinned)
+		return nil
+	}
+	return validateLegacyTaskCoverageBasis(plan, query, messages, turns, pinned)
+}
+
+func coverageQuotesHuman(quote string, texts []string) bool {
+	return strings.TrimSpace(quote) != "" && slices.ContainsFunc(texts, func(text string) bool { return strings.Contains(text, quote) })
+}
+
+func validateLegacyTaskCoverageBasis(plan *taskEvidencePlan, query string, messages []chat.Message, turns []string, pinned func(string) bool) error {
 	legacyTurns := documentScopeUserTexts(query, messages)
 	for _, target := range plan.CoverageTargets {
 		basis := turns
@@ -136,7 +241,7 @@ func validateTaskCoverageBasis(plan *taskEvidencePlan, query string, messages []
 			}
 			basis = turns[index : index+1]
 		}
-		if !quoted(target.RequestBasis, basis) {
+		if !coverageQuotesHuman(target.RequestBasis, basis) {
 			return fmt.Errorf("coverage request basis must quote an actual human request")
 		}
 		if target.StructuredTaskGoal == nil {
@@ -152,12 +257,12 @@ func validateTaskCoverageBasis(plan *taskEvidencePlan, query string, messages []
 			return fmt.Errorf("table comparison requires two named sources")
 		}
 		for _, ref := range target.ComparisonSources {
-			if !(pinned != nil && pinned(ref)) && (taskCoverageSourceHandle(ref) || !quoted(ref, turns)) {
+			if !(pinned != nil && pinned(ref)) && (taskCoverageSourceHandle(ref) || !coverageQuotesHuman(ref, turns)) {
 				return fmt.Errorf("comparison source references need a user quotation or verified source selection")
 			}
 		}
 		for _, ref := range []string{target.PrimaryRef, target.RestrictionBasis} {
-			if ref != "" && !(pinned != nil && pinned(ref)) && (taskCoverageSourceHandle(ref) || !quoted(ref, turns)) {
+			if ref != "" && !(pinned != nil && pinned(ref)) && (taskCoverageSourceHandle(ref) || !coverageQuotesHuman(ref, turns)) {
 				return fmt.Errorf("coverage source references need a user quotation or verified source selection")
 			}
 		}
@@ -166,6 +271,96 @@ func validateTaskCoverageBasis(plan *taskEvidencePlan, query string, messages []
 		}
 	}
 	return nil
+}
+
+func validatePartialTaskCoverageBasis(target taskCoverageTarget, turns []string, pinned func(string) bool) (taskCoverageTarget, bool) {
+	goal := *target.StructuredTaskGoal
+	target.StructuredTaskGoal = &goal
+	sourceRef := func(ref string) bool {
+		return pinned != nil && pinned(ref) || !taskCoverageSourceHandle(ref) && coverageQuotesHuman(ref, turns)
+	}
+	target.PlanIssues = slices.Clone(target.PlanIssues)
+	issue := func(reason string) {
+		if !slices.Contains(target.PlanIssues, reason) {
+			target.PlanIssues = append(target.PlanIssues, reason)
+		}
+	}
+	basis := turns
+	if slices.Contains(target.PlanIssues, "invalid_basis_turn") {
+		basis = nil
+	} else if target.BasisTurn != nil {
+		index := *target.BasisTurn
+		if index < 0 || index >= len(turns) {
+			basis = nil
+			issue("unavailable_basis_turn")
+		} else {
+			basis = turns[index : index+1]
+		}
+	}
+	if !coverageQuotesHuman(target.RequestBasis, basis) {
+		target.RequestBasis = ""
+		target.BasisTurn = nil
+		issue("unverified_request_basis")
+	}
+	if target.RequestedUnit != "" && !strings.Contains(target.RequestBasis, target.RequestedUnit) {
+		target.RequestedUnit = ""
+		issue("unverified_requested_unit")
+	}
+	if target.PrimaryRef != "" && !sourceRef(target.PrimaryRef) {
+		target.PrimaryRef = ""
+		issue("unverified_primary_ref")
+	}
+	if target.SourceMode == "only" && !sourceRef(target.RestrictionBasis) {
+		target.RestrictionBasis = ""
+		issue("unverified_restriction_basis")
+	}
+	if target.RestrictionBasis != target.PrimaryRef && pinned != nil && pinned(target.RestrictionBasis) && pinned(target.PrimaryRef) {
+		target.PrimaryRef = ""
+		issue("conflicting_primary_ref")
+	}
+	target.ComparisonSources = slices.DeleteFunc(slices.Clone(target.ComparisonSources), func(ref string) bool {
+		if !sourceRef(ref) {
+			issue("unverified_comparison_source")
+			return true
+		}
+		return false
+	})
+	if target.SourceMode == "only" && pinned != nil && len(target.ComparisonSources) > 0 &&
+		(target.VersionTask == "compare_sources" || target.VersionTask == "adopt_if_conflict") {
+		var anchor string
+		switch {
+		case pinned(target.RestrictionBasis):
+			anchor = target.RestrictionBasis
+		case pinned(target.PrimaryRef):
+			anchor = target.PrimaryRef
+		}
+		if anchor != "" && !slices.Contains(target.ComparisonSources, anchor) {
+			target.ComparisonSources = []string{anchor}
+			issue("comparison_sources_conflict_with_pinned_scope")
+		}
+	}
+	// A single-table target can use table to identify its object. Only the
+	// explicitly declared comparison opens the two independent source roles.
+	if plannedTableComparison(target) ||
+		target.VersionTask == "adopt_if_conflict" && (len(target.ComparisonSources) > 0 ||
+			slices.Contains(target.PlanIssues, "invalid_comparison_sources") || slices.Contains(target.PlanIssues, "unverified_comparison_source")) {
+		target.UnresolvedComparisonSources = 2 - len(target.ComparisonSources)
+		if target.UnresolvedComparisonSources > 0 {
+			issue("comparison_sources_unresolved")
+		}
+		if plannedTableComparison(target) && (target.Table == "" || target.Metric == "") {
+			issue("comparison_table_or_metric_unresolved")
+		}
+	} else if target.VersionTask != "compare_sources" && target.VersionTask != "adopt_if_conflict" && len(target.ComparisonSources) > 0 {
+		target.ComparisonSources = nil
+		issue("unrelated_comparison_sources")
+	}
+	return target, target.RequestBasis != "" || target.SourceMode == "only" && target.RestrictionBasis != ""
+}
+
+func plannedTableComparison(target taskCoverageTarget) bool {
+	return target.StructuredTaskGoal != nil && target.VersionTask == "compare_sources" &&
+		(target.Table != "" || target.UnresolvedComparisonSources > 0 || slices.Contains(target.PlanIssues, "invalid_table"))
 }
 
 func taskCoverageSourceHandle(text string) bool {

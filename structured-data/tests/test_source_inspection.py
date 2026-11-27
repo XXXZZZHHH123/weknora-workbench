@@ -1,3 +1,4 @@
+from datetime import date
 import hashlib
 import json
 import threading
@@ -5,7 +6,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 from fastapi.testclient import TestClient
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 import pytest
 
 from structured_data import source_inspection
@@ -82,6 +83,44 @@ def test_exact_ranges_and_decimal_calculation_keep_conflicting_source_values(ori
     assert monthly['calculations'][0]['value'] == '777.0080629647059'
 
 
+@pytest.mark.parametrize(('flag', 'include_format'), [(None, True), ('true', True), ('false', False)])
+def test_exact_date_cells_preserve_native_number_format(original, monkeypatch, flag, include_format):
+    if flag is None:
+        monkeypatch.delenv('WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE', raising=False)
+    else:
+        monkeypatch.setenv('WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE', flag)
+    store, dataset, path = original
+    source = path / 'source.xlsx'
+    book = load_workbook(source)
+    book.iso_dates = True
+    sheet = book['月度']
+    for address, value, number_format in [
+        ('A3', date(2024, 2, 29), r'yyyy\-mm;@'),
+        ('A4', date(2024, 2, 29), 'yyyy-mm-dd'),
+        ('A5', date(2024, 2, 29), 'General'),
+        ('A6', '2024-02', r'yyyy\-mm;@'),
+        ('A7', date(2024, 3, 31), r'yyyy\-mm;@'),
+    ]:
+        sheet[address] = value
+        sheet[address].number_format = number_format
+    book.save(source)
+    book.close()
+    manifest_path = path / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    manifest['sha256'] = hashlib.sha256(source.read_bytes()).hexdigest()
+    dump(manifest_path, manifest)
+
+    result = inspect_source(store, dataset, sheet='月度', ranges=['A3:B6'])
+    assert result['hash_verified'] and result['sha256'] == manifest['sha256']
+    cells = {cell['cell']: cell for cell in result['ranges'][0]['cells']}
+    assert set(cells) == {f'{col}{row}' for col in 'AB' for row in range(3, 7)}
+    assert cells['A3']['value'] == cells['A4']['value'] == cells['A5']['value'] == '2024-02-29'
+    assert cells['A6']['value'] == '2024-02'
+    formats = {address: cell['number_format'] for address, cell in cells.items() if 'number_format' in cell}
+    expected = {'A3': r'yyyy\-mm;@', 'A4': 'yyyy-mm-dd', 'A5': 'General'} if include_format else {}
+    assert formats == expected
+
+
 def _observe_workbook_readers(monkeypatch):
     opened = []
     original_load = source_inspection.load_workbook
@@ -124,7 +163,6 @@ def test_literal_source_ranges_search_and_sums_do_not_load_formula_cache(origina
 
 def test_mixed_ranges_open_one_cached_reader_and_preserve_formula_states(original, monkeypatch):
     store, dataset, path = original
-    from openpyxl import load_workbook
     source = path / 'source.xlsx'
     book = load_workbook(source)
     sheet = book['月度']

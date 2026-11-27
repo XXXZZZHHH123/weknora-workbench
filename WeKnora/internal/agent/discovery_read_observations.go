@@ -224,6 +224,9 @@ func (e *AgentEngine) coverageDocumentBodies(call types.ToolCall, base coverageE
 		pageRead := !search && item.Page > 0
 		if !pageRead {
 			item.Page = coverageLocatorPage(row)
+			if !search && item.Page == 0 && agenttools.DocumentTableEvidenceEnabled() {
+				item.Page = citationInt(row["table_source_page"])
+			}
 		}
 		if next := coverageOffset(row["next_content_offset"]); next != nil {
 			item.NextOffset = next

@@ -116,11 +116,14 @@ func TestSourceTimeGuidanceKeepsCandidateDatesThroughPlanningAndFallback(t *test
 	for _, tc := range []struct {
 		name, question string
 		invalidPlan    bool
+		documentTables string
 	}{
 		{name: "relative time", question: scope + "，今年设备开工好没好？跟上周比呢？"},
 		{name: "explicit current year with invalid plan", question: fmt.Sprintf("%s，请给出%d年截至今天的实时设备开工情况。", scope, now.Year()), invalidPlan: true},
+		{name: "explicit current year with invalid plan and table evidence off", question: fmt.Sprintf("%s，请给出%d年截至今天的实时设备开工情况。", scope, now.Year()), invalidPlan: true, documentTables: "false"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE", tc.documentTables)
 			sources := []struct{ id, filename, date, excerpt string }{
 				{"fixture-doc-a", "older-week.pdf", "2021-06-07", "设备开工观测期为6月初"},
 				{"fixture-doc-b", "previous-week.pdf", "2021-06-14", "设备开工观测期为6月上旬"},

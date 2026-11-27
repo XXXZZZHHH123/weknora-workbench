@@ -42,6 +42,7 @@ type candidateDecision struct {
 	StandardReview               bool   // Approval cannot survive a change to the runtime review policy.
 	StructuredResultReview       bool
 	StructuredResultReviewStatus string // Empty/skipped/unavailable never means semantically checked.
+	StructuredComparisonReview   bool
 	// Set only after the numeric guards and immediately before source review.
 	SourceReviewAttempted bool
 	Unsupported           []string
@@ -260,6 +261,33 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 			coverage = e.currentCoverageDraftReview(ctx, state)
 		}
 		assessment := e.assessCoverageDraft(ctx, coverage, decision.Candidate, state)
+		if assessment.versionBlocked {
+			decision.Disposition, decision.ReasonCode = candidateRevise, incompleteVersionEvidence
+			decision.CoverageFeedback = e.coverageDraftFeedback(coverage, assessment)
+			e.answerReviewAction = reviewReviseAnswer
+			e.answerReviewFeedback = "Keep the available reported values with their own actual citations. A version preference must match the cited original rationale or explicit human selection. If the preference is not verified, report what the observed version actually discloses.\n" + decision.CoverageFeedback.text()
+			return decision
+		}
+		if assessment.comparisonBlocked || len(assessment.unattributedTable) != 0 {
+			decision.CoverageFeedback = e.coverageDraftFeedback(coverage, assessment)
+			if assessment.partialComparison && (decision.Disposition == candidateAccepted || decision.Disposition == candidateEvidencePartial) {
+				checked := e.checkStructuredResultDelivery(ctx, query, decision, state, conversation)
+				checkedAssessment := e.assessCoverageDraft(ctx, coverage, checked.Candidate, state)
+				if checked.StructuredComparisonReview && (checked.StructuredResultReviewStatus == "kept" ||
+					checked.StructuredResultReviewStatus == "corrected") && checkedAssessment.partialComparison {
+					checked.Disposition, checked.ReasonCode = candidateEvidencePartial, checkedPartialComparisonReason
+					e.rememberCoverageDraft(ctx, checked, checkedAssessment, coverage, state)
+					return checked
+				}
+			}
+			decision.Disposition, decision.ReasonCode = candidateRevise, "table_evidence_attribution_incomplete"
+			e.answerReviewAction = reviewReviseAnswer
+			e.answerReviewFeedback = comparisonAttributionInstructions
+			if decision.CoverageFeedback != nil {
+				e.answerReviewFeedback += "\n" + decision.CoverageFeedback.text()
+			}
+			return decision
+		}
 		if decision.ReasonCode == "evidence_completion_exhausted" && len(assessment.anchors) > 0 {
 			decision.Disposition = candidateEvidencePartial
 		}
@@ -281,7 +309,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		}
 		if decision.Candidate != candidate {
 			corrected := e.assessCoverageDraft(ctx, coverage, decision.Candidate, state)
-			if !containsCoverageDraftRoles(corrected.roles, assessment.roles) {
+			if !containsCoverageDraftRoles(corrected.roles, assessment.roles) || corrected.versionBlocked || len(corrected.unattributedTable) != 0 {
 				decision.Candidate, decision.CandidateHash = candidate, candidateTextDigest(candidate)
 				decision.StructuredResultReviewStatus = "not_checked_correction_dropped_verified_roles"
 			} else {

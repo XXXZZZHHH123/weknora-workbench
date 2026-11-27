@@ -19,7 +19,7 @@ type physicalPageEvidence struct {
 
 // Collect all requested physical pages in one ordered scan. It does not infer
 // source pages from chunk positions or invent a total physical-page count.
-func (t *ReadDocumentTool) collectPhysicalPages(ctx context.Context, knowledge *types.Knowledge, requested []int) (map[int]*physicalPageEvidence, int64, error) {
+func (t *ReadDocumentTool) collectPhysicalPages(ctx context.Context, knowledge *types.Knowledge, requested []int, tableInventory documentTableInventory) (map[int]*physicalPageEvidence, int64, error) {
 	pages := map[int]*physicalPageEvidence{}
 	for _, number := range requested {
 		pages[number] = &physicalPageEvidence{views: map[string]*types.ChunkContentView{}}
@@ -34,6 +34,7 @@ func (t *ReadDocumentTool) collectPhysicalPages(ctx context.Context, knowledge *
 		if scanPage > 1 && count != total {
 			return nil, 0, fmt.Errorf("document chunk inventory changed during physical-page scan; retry against a stable document version")
 		}
+		tableInventory.remember(scanPage, chunks, count)
 		total = count
 		expected := min(int64(readDocumentScanPageSize), max(int64(0), total-int64((scanPage-1)*readDocumentScanPageSize)))
 		if int64(len(chunks)) != expected {
@@ -71,7 +72,7 @@ func (t *ReadDocumentTool) collectPhysicalPages(ctx context.Context, knowledge *
 	return pages, total, nil
 }
 
-func (t *ReadDocumentTool) readPhysicalPages(ctx context.Context, knowledge *types.Knowledge, requested []int, offset, limit int, segment *chunkContentSegment, query string, matchers []*regexp.Regexp, regexMode bool) (*types.ToolResult, error) {
+func (t *ReadDocumentTool) readPhysicalPages(ctx context.Context, knowledge *types.Knowledge, requested []int, offset, limit int, segment *chunkContentSegment, query string, matchers []*regexp.Regexp, regexMode bool, tableInventory documentTableInventory) (*types.ToolResult, error) {
 	if err := validateDocumentPages(requested, readDocumentMaxPages); err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error()}, nil
 	}
@@ -80,7 +81,7 @@ func (t *ReadDocumentTool) readPhysicalPages(ctx context.Context, knowledge *typ
 	if len(requested) > 1 && OutputBudget(ctx) < len(requested)*700 {
 		return &types.ToolResult{Success: false, Error: "output budget is too small for this page batch; request fewer physical pages"}, nil
 	}
-	pages, total, err := t.collectPhysicalPages(ctx, knowledge, requested)
+	pages, total, err := t.collectPhysicalPages(ctx, knowledge, requested, tableInventory)
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error()}, err
 	}

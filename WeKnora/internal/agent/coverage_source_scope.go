@@ -28,9 +28,21 @@ func coverageSourceOf(item coverageEvidence) coverageSourceIdentity {
 }
 
 type verifiedCoverageScope struct {
-	domain  string
-	pinned  bool
-	sources []coverageSourceIdentity
+	domain     string
+	pinned     bool
+	discover   bool
+	sources    []coverageSourceIdentity
+	selections []coverageSourceIdentity
+}
+
+func (s *verifiedCoverageScope) addSelection(item coverageEvidence, authorized bool) {
+	source := coverageSourceOf(item)
+	if !slices.Contains(s.selections, source) {
+		s.selections = append(s.selections, source)
+	}
+	if authorized && !slices.Contains(s.sources, source) {
+		s.sources = append(s.sources, source)
+	}
 }
 
 func (s verifiedCoverageScope) contains(item coverageEvidence) bool {
@@ -75,9 +87,13 @@ func (e *AgentEngine) verifiedCoverageScopePins(ctx context.Context, target task
 		return scope
 	}
 	scope.domain = e.coveragePlanPrimaryDomain()
-	compare := target.VersionTask == "compare_sources" || target.VersionTask == "compare_versions"
+	restrictedPair := e.restrictedComparisonSelection(target)
+	compare := target.VersionTask == "compare_sources" || target.VersionTask == "compare_versions" || restrictedPair
 	if compare {
 		scope.domain = ""
+	}
+	if restrictedPair {
+		scope.discover = true
 	}
 	if e.modelContext == nil {
 		return scope
@@ -89,12 +105,12 @@ func (e *AgentEngine) verifiedCoverageScopePins(ctx context.Context, target task
 			continue
 		}
 		ref := e.modelContext.RegisterDocument(doc.KnowledgeID)
-		if (ref == target.PrimaryRef || ref == target.RestrictionBasis) && (!compare || len(target.ComparisonSources) == 0) {
+		if (ref == target.PrimaryRef || ref == target.RestrictionBasis) && (!compare || !restrictedPair && len(target.ComparisonSources) == 0) {
 			chosen = []*SelectedDocumentInfo{doc}
 			single = true
 			break
 		}
-		if slices.Contains(target.ComparisonSources, ref) || compare && len(target.ComparisonSources) == 0 {
+		if slices.Contains(target.ComparisonSources, ref) || compare && !restrictedPair && len(target.ComparisonSources) == 0 {
 			chosen = append(chosen, doc)
 		}
 	}
@@ -104,16 +120,22 @@ func (e *AgentEngine) verifiedCoverageScopePins(ctx context.Context, target task
 	// Explicit handles retain their restriction even when access is revoked.
 	// In a mixed-domain comparison, consider each independently named side.
 	scope.pinned = single || !compare || len(target.ComparisonSources) == 0 || len(chosen) == len(target.ComparisonSources)
+	if restrictedPair {
+		scope.pinned = true
+	}
 	if !compare {
 		scope.domain = "knowledge"
 	}
 	for _, doc := range chosen {
 		item := coverageEvidence{SourceDomain: "knowledge", SourceID: doc.KnowledgeID, KnowledgeBaseID: doc.KnowledgeBaseID}
-		if e.restrictedCoverageSourceAuthorized(ctx, item) {
-			scope.sources = append(scope.sources, coverageSourceOf(item))
-		}
+		scope.addSelection(item, e.restrictedCoverageSourceAuthorized(ctx, item))
 	}
 	return scope
+}
+
+func (e *AgentEngine) restrictedComparisonSelection(target taskCoverageTarget) bool {
+	return e.documentTablePlanningEnabled() && (plannedTableComparison(target) ||
+		target.VersionTask == "adopt_if_conflict" && (len(target.ComparisonSources) > 0 || target.UnresolvedComparisonSources > 0))
 }
 
 func (e *AgentEngine) verifiedCoverageSourceScope(ctx context.Context, target taskCoverageTarget, record coverageRecord) verifiedCoverageScope {
@@ -124,9 +146,7 @@ func (e *AgentEngine) verifiedCoverageSourceScope(ctx context.Context, target ta
 	if chosen := e.evidenceCompletion.nativeSelections[target.GoalIndex]; len(chosen) > 0 {
 		scope.pinned = true
 		for _, item := range chosen {
-			if e.restrictedCoverageSourceAuthorized(ctx, item) {
-				scope.sources = append(scope.sources, coverageSourceOf(item))
-			}
+			scope.addSelection(item, e.restrictedCoverageSourceAuthorized(ctx, item))
 		}
 	}
 	for _, binding := range record.Bindings {
@@ -143,11 +163,11 @@ func (e *AgentEngine) verifiedCoverageSourceScope(ctx context.Context, target ta
 				scope.pinned && !scope.contains(observed) {
 				continue
 			}
-			source := coverageSourceOf(observed)
-			if !slices.Contains(scope.sources, source) {
-				scope.sources = append(scope.sources, source)
-			}
+			scope.addSelection(observed, true)
 		}
+	}
+	if scope.discover && len(scope.selections) >= 2 {
+		scope.discover = false
 	}
 	return scope
 }
@@ -159,7 +179,10 @@ func (e *AgentEngine) recordNativeCoverageSelections(step types.AgentStep, obser
 			continue
 		}
 		goal := *call.CoverageSelectionGoal
-		if len(turn.nativeSelections[goal]) != 0 || slices.ContainsFunc(slices.Concat(step.ToolCalls[:index], step.ToolCalls[index+1:]), func(other types.ToolCall) bool {
+		splitComparison := slices.ContainsFunc(e.evidenceCompletionTargets(), func(target taskCoverageTarget) bool {
+			return target.GoalIndex == goal && e.restrictedComparisonSelection(target)
+		})
+		if len(turn.nativeSelections[goal]) != 0 && !splitComparison || slices.ContainsFunc(slices.Concat(step.ToolCalls[:index], step.ToolCalls[index+1:]), func(other types.ToolCall) bool {
 			return other.CoverageSelectionGoal != nil && *other.CoverageSelectionGoal == goal &&
 				other.Result != nil && other.Result.Success
 		}) {
@@ -236,6 +259,13 @@ func (e *AgentEngine) coverageCallTargets(call types.LLMToolCall) []taskCoverage
 			return targets[index : index+1]
 		}
 	}
+	isDegradedRestriction := func(goal taskCoverageTarget) bool { return goal.SourceMode == "only" && len(goal.PlanIssues) > 0 }
+	if e.documentTablePlanningEnabled() && (slices.ContainsFunc(targets, isDegradedRestriction) ||
+		e.taskPlan != nil && slices.ContainsFunc(e.taskPlan.CoverageTargets, isDegradedRestriction)) {
+		// A separate open goal must be associated explicitly while a restricted
+		// goal is degraded. Otherwise it could bypass the retained restriction.
+		return slices.DeleteFunc(slices.Clone(targets), func(goal taskCoverageTarget) bool { return goal.SourceMode != "only" })
+	}
 	return targets
 }
 
@@ -267,6 +297,15 @@ func (e *AgentEngine) coverageDocumentExecutionContext(ctx context.Context, call
 				add(item.SourceID, item.KnowledgeBaseID)
 			}
 		}
+		if e.documentTablePlanningEnabled() {
+			for _, target := range targets {
+				for _, source := range e.verifiedCoverageSourceScope(ctx, target, record).sources {
+					if source.domain == "knowledge" {
+						add(source.id, source.library)
+					}
+				}
+			}
+		}
 	} else {
 		for _, target := range targets {
 			for _, source := range e.verifiedCoverageSourceScope(ctx, target, record).sources {
@@ -289,7 +328,15 @@ func (e *AgentEngine) coverageNativeSelectionGoal(ctx context.Context, call type
 	goal := targets[0]
 	record := e.currentCoverageScopeRecord(ctx)
 	scope := e.verifiedCoverageSourceScope(ctx, goal, record)
-	if scope.pinned || len(scope.sources) != 0 || slices.ContainsFunc(record.Bindings, func(binding coverageBinding) bool {
+	restrictedPair := e.restrictedComparisonSelection(goal)
+	if e.documentTablePlanningEnabled() && len(goal.PlanIssues) > 0 && goal.RestrictionBasis == "" {
+		return nil
+	}
+	if restrictedPair {
+		if len(scope.selections) >= len(goal.ComparisonSources) {
+			return nil
+		}
+	} else if scope.pinned || len(scope.sources) != 0 || slices.ContainsFunc(record.Bindings, func(binding coverageBinding) bool {
 		return binding.GoalIndex == goal.GoalIndex && binding.Role == "primary"
 	}) {
 		return nil
@@ -313,10 +360,29 @@ func (e *AgentEngine) coverageNativeSelectionGoal(ctx context.Context, call type
 		if goal.VersionTask == "compare_sources" || goal.VersionTask == "compare_versions" {
 			limit = 2
 		}
-		if len(plan.Sources) != limit {
+		if restrictedPair {
+			var alreadyDocuments int
+			for _, chosen := range scope.sources {
+				if chosen.domain != "knowledge" {
+					continue
+				}
+				alreadyDocuments++
+				if !slices.ContainsFunc(plan.Sources, func(source agenttools.DocumentSourceSelection) bool { return source.KnowledgeID == chosen.id }) {
+					return nil
+				}
+			}
+			if len(plan.Sources) <= alreadyDocuments || len(plan.Sources)-alreadyDocuments+len(scope.selections) > len(goal.ComparisonSources) {
+				return nil
+			}
+		} else if len(plan.Sources) != limit {
 			return nil
 		}
 		for _, source := range plan.Sources {
+			if restrictedPair && slices.ContainsFunc(scope.sources, func(chosen coverageSourceIdentity) bool {
+				return chosen.domain == "knowledge" && chosen.id == source.KnowledgeID
+			}) {
+				continue
+			}
 			if !known(func(item coverageEvidence) bool {
 				metadata := coverageObject(item.Raw)
 				return source.KnowledgeID == item.SourceID &&
@@ -327,7 +393,7 @@ func (e *AgentEngine) coverageNativeSelectionGoal(ctx context.Context, call type
 		}
 		return &goal.GoalIndex
 	}
-	if domain == "structured" && goal.VersionTask != "compare_sources" && goal.VersionTask != "compare_versions" {
+	if domain == "structured" && (restrictedPair || goal.VersionTask != "compare_sources" && goal.VersionTask != "compare_versions") {
 		op, inner, ok := e.toolRegistry.StructuredInvocation(call.Function.Name, json.RawMessage(call.Function.Arguments))
 		library, dataset := e.coverageStructuredInvocationLibrary(args), sourceNavigationString(inner, "dataset_id")
 		if ok && op.Operation == "list_series" && library != "" && dataset != "" && known(func(item coverageEvidence) bool {
@@ -407,7 +473,7 @@ func (e *AgentEngine) coverageScopePermitsInvocation(ctx context.Context, scope 
 		// Its entries are metadata and cannot satisfy a read or confer scope.
 		library := firstNonEmptyAgent(structuredLibrary, sourceNavigationString(args, "knowledge_base_id"))
 		return library == "" || types.AuthorizeTenantAPIKeyKnowledgeBases(ctx, library) == nil &&
-			(!scope.pinned || slices.ContainsFunc(scope.sources, func(source coverageSourceIdentity) bool { return source.library == library }))
+			(!scope.pinned || scope.discover || slices.ContainsFunc(scope.sources, func(source coverageSourceIdentity) bool { return source.library == library }))
 	}
 	if domain == "structured" {
 		if structuredLibrary == "" || !e.coverageScopeAllows(structuredLibrary, "") ||

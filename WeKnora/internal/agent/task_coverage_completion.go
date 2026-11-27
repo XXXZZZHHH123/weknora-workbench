@@ -8,6 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -25,10 +26,16 @@ type coverageEvidence struct {
 	ResultJSONPointer, CellJSONPointer, WorkbookSnapshotHash                         string
 	ManifestHash, WorkbookManifestHash, LastValidStatus, LastValidDirection          string
 	FormulaCacheStatus, LastValidFilterHash                                          string
+	ComparisonSourceRef, TableTitleChunkID, TableDisclosureChunkID                   string
+	OriginalNumberFormat, TablePeriodBasisRef                                        string
+	TableGrid                                                                        *int
+	Receipts                                                                         []coverageFactReceipt
+	Dimensions                                                                       map[string]any
 	Page                                                                             int
 	SpanStart, SpanEnd, NextOffset                                                   *int
 	Raw                                                                              any
 	Complete, Bound, RangeComplete, LatestInScope, WorkbookBound, GrainFromLookup    bool
+	ComparisonGrainUnverified                                                        bool
 }
 
 type coverageAttempt struct {
@@ -44,15 +51,16 @@ type coverageEvidenceBatch struct {
 }
 
 type coverageBinding struct {
-	GoalIndex, Page                                                   int
-	Role, Kind, SourceID, KnowledgeBaseID, SnapshotHash               string
-	Sheet, SeriesID, Column, ChunkID, Object                          string
-	EvidenceID, JSONPointer, CitationID, Subject, Metric, TargetField string
-	Period, PeriodFrom, PeriodTo, Grain, GrainBasis, Date             string
-	Unit, Span, RawClaim                                              string
-	SourceRef                                                         string
-	VersionBasisRef, VersionBasis                                     string
-	RequireUnit, Provisional                                          bool
+	GoalIndex, Page                                                        int
+	Role, Kind, SourceID, KnowledgeBaseID, SnapshotHash                    string
+	Sheet, SeriesID, Column, ChunkID, Object                               string
+	EvidenceID, JSONPointer, CitationID, Subject, Metric, TargetField      string
+	Period, PeriodFrom, PeriodTo, Grain, GrainBasis, Date                  string
+	Unit, Span, RawClaim                                                   string
+	SourceRef                                                              string
+	PhysicalSourceID, VersionAlternativeRef, VersionBasisRef, VersionBasis string
+	TableObjectGrid                                                        string
+	RequireUnit, Provisional, VersionUserSelection                         bool
 }
 
 type coverageRecord struct {
@@ -77,6 +85,13 @@ type coverageFact struct {
 	Evidence coverageEvidence `json:"evidence"`
 }
 
+type coverageFactReceipt struct {
+	Ref      string `json:"ref"`
+	CallID   string `json:"call_id"`
+	Citation string `json:"citation_id,omitempty"`
+	Chunk    string `json:"chunk_id,omitempty"`
+}
+
 type coverageCompletion struct {
 	GoalIndex       int                      `json:"goal_index"`
 	State           string                   `json:"state"`
@@ -85,6 +100,7 @@ type coverageCompletion struct {
 	NextRead        string                   `json:"next_read,omitempty"`
 	SatisfiedRefs   []string                 `json:"satisfied_refs,omitempty"`
 	OpenItems       []string                 `json:"open_items,omitempty"`
+	UnresolvedSides int                      `json:"unresolved_comparison_sides,omitempty"`
 	PinnedFacts     []coverageFact           `json:"pinned_facts,omitempty"`
 	AttemptReceipt  *coverageRecoveryReceipt `json:"attempt_receipt,omitempty"`
 	BudgetRemaining int                      `json:"budget_remaining"`
@@ -293,7 +309,21 @@ func coverageValueRole(kind string) string {
 
 func (result *coverageCompletion) pin(role string, evidence coverageEvidence) {
 	ref := coverageFactRef(evidence)
-	if slices.ContainsFunc(result.PinnedFacts, func(fact coverageFact) bool {
+	if agenttools.DocumentTableEvidenceEnabled() {
+		if index := slices.IndexFunc(result.PinnedFacts, func(fact coverageFact) bool {
+			return fact.Role == role && coverageEvidenceFactKey(fact.Evidence) == coverageEvidenceFactKey(evidence)
+		}); index >= 0 {
+			prior := &result.PinnedFacts[index].Evidence
+			receipts := mergeCoverageFactReceipts(coverageFactReceipts(*prior), coverageFactReceipts(evidence))
+			if len(receipts) > 1 {
+				prior.Receipts = receipts
+			}
+			for _, receipt := range receipts {
+				result.SatisfiedRefs = appendCoverageDraftID(result.SatisfiedRefs, receipt.Ref)
+			}
+			return
+		}
+	} else if slices.ContainsFunc(result.PinnedFacts, func(fact coverageFact) bool {
 		prior := fact.Evidence
 		return fact.Role == role && coverageFactRef(prior) == ref && prior.SourceID == evidence.SourceID &&
 			prior.KnowledgeBaseID == evidence.KnowledgeBaseID && prior.Period == evidence.Period &&
@@ -305,6 +335,67 @@ func (result *coverageCompletion) pin(role string, evidence coverageEvidence) {
 	if !slices.Contains(result.SatisfiedRefs, ref) {
 		result.SatisfiedRefs = append(result.SatisfiedRefs, ref)
 	}
+	for _, receipt := range evidence.Receipts {
+		result.SatisfiedRefs = appendCoverageDraftID(result.SatisfiedRefs, receipt.Ref)
+	}
+}
+
+func coverageFactReceipts(item coverageEvidence) []coverageFactReceipt {
+	return mergeCoverageFactReceipts(item.Receipts, []coverageFactReceipt{{coverageFactRef(item), item.ToolCallID, item.CitationID, item.ChunkID}})
+}
+
+func mergeCoverageFactReceipts(existing, more []coverageFactReceipt) []coverageFactReceipt {
+	result := slices.Clone(existing)
+	for _, receipt := range more {
+		if !slices.Contains(result, receipt) {
+			result = append(result, receipt)
+		}
+	}
+	return result
+}
+
+// Access IDs and result pointers describe receipts, not the reported fact.
+// Use the workbook snapshot for SQL input cells when the original address has
+// been verified against that workbook.
+func coverageEvidenceFactKey(item coverageEvidence) string {
+	snapshot := item.SnapshotHash
+	if item.WorkbookBound && item.WorkbookSnapshotHash != "" && item.Cell != "" {
+		snapshot = item.WorkbookSnapshotHash
+	}
+	object := item.Object
+	if object == "" && item.Kind == "body" {
+		object = item.ChunkID
+	}
+	locator := item.Cell
+	kind := ""
+	if locator == "" {
+		kind = item.Kind
+	}
+	if locator == "" && item.Kind == "body" && item.TableGrid == nil {
+		locator = item.ReportedValue
+		if locator == "" {
+			locator = item.ContentHash
+		}
+	}
+	raw := item.Raw
+	if item.Kind == "body" && item.ReportedValue != "" {
+		raw = item.ReportedValue
+	}
+	if number, ok := coverageComparisonNumber(item); ok {
+		raw = number.RatString()
+	}
+	periodFrom, periodTo := item.PeriodFrom, item.PeriodTo
+	if item.Cell != "" && (item.Date != "" || item.Period != "") {
+		// Result filter bounds do not change the observation recorded in a cell.
+		periodFrom, periodTo = "", ""
+	}
+	var series string
+	if item.Cell == "" {
+		series = item.SeriesID
+	}
+	return reviewDigest([]any{kind, comparisonPhysicalSource(item), snapshot, object, item.TableGrid, item.Sheet, series,
+		item.Subject, item.Dimensions, item.Metric, item.Column, item.RowLabel, locator, item.DateCell, item.Grain, item.Date, item.Period,
+		periodFrom, periodTo, strings.TrimSpace(item.Unit), terminalUnitFromSource(item), raw})
 }
 
 func coverageFactRef(evidence coverageEvidence) string {
@@ -365,6 +456,13 @@ func resolveCoverageSupplement(target taskCoverageTarget, input coverageRecord, 
 		}
 	}
 	var matched, navigable, related bool
+	strict := agenttools.DocumentTableEvidenceEnabled()
+	samePrimaryMaterial := func(observation coverageEvidence) bool {
+		return strict && slices.ContainsFunc(result.PinnedFacts, func(fact coverageFact) bool {
+			return fact.Role == "coverage_boundary" &&
+				comparisonPhysicalSource(fact.Evidence) == comparisonPhysicalSource(observation)
+		})
+	}
 	for _, binding := range input.Bindings {
 		if binding.GoalIndex != target.GoalIndex || binding.Role != "supplement" || binding.SourceID == "" ||
 			binding.TargetField != field {
@@ -373,7 +471,7 @@ func resolveCoverageSupplement(target taskCoverageTarget, input coverageRecord, 
 		exact := coverageEqual(from, binding.PeriodFrom) && coverageEqual(to, binding.PeriodTo) &&
 			coverageEqual(period, binding.Period) && coverageGrain(grain, binding.Grain)
 		for _, evidence := range input.Evidence {
-			if !coverageSameSource(binding, evidence) || !coverageCurrentEvidence(input, evidence) {
+			if !coverageSameSource(binding, evidence) || !coverageCurrentEvidence(input, evidence) || samePrimaryMaterial(evidence) {
 				continue
 			}
 			if !exact {
@@ -407,7 +505,7 @@ func resolveCoverageSupplement(target taskCoverageTarget, input coverageRecord, 
 		return result.withStop(input.StopReason)
 	}
 	navigable = navigable || discover != nil && slices.ContainsFunc(input.Evidence, func(observation coverageEvidence) bool {
-		return coverageSupplementNavigation(input, discover.ToolCallID, observation)
+		return !samePrimaryMaterial(observation) && coverageSupplementNavigation(input, discover.ToolCallID, observation)
 	})
 	if read != nil || discover != nil && !navigable {
 		return result.withStop(coverageReceiptReason(result.AttemptReceipt))

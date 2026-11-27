@@ -87,6 +87,7 @@ const (
 	terminalStalled       terminalFailure = "stalled"
 	terminalTruncated     terminalFailure = "truncated"
 	terminalBudget        terminalFailure = "budget_exhausted"
+	terminalTableEvidence terminalFailure = "table_evidence_unverified"
 	terminalSourceStalled terminalFailure = "source_stalled"
 	terminalSourceChanged terminalFailure = "source_changed"
 	terminalFieldInput    terminalFailure = "field_confirmation_input"
@@ -160,6 +161,10 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 		})
 		failure = terminalSourceChanged
 	}
+	evidenceFailure := e.terminalCandidateEvidenceFailure(ctx, state, answer)
+	if evidenceFailure != terminalNoFailure && failure != terminalSourceChanged && !terminalCandidateFallback(answer) {
+		failure = evidenceFailure
+	}
 	markedNumbers, markedCitations := 0, 0
 	if failure == terminalNoFailure {
 		if delivery, ok := e.numericWarningDelivery(answer, state); ok {
@@ -189,6 +194,12 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 			answer, outcome, truncated = stripCoverageAnswer(draft), "evidence_partial", false
 			e.bindCoverageDraftDelivery(draft, answer)
 			failure = terminalNoFailure
+		} else if evidenceFailure != terminalNoFailure {
+			failure = evidenceFailure
+		} else if e.turnReview.Last.ReasonCode == "table_evidence_attribution_incomplete" {
+			failure = terminalTableEvidence
+		} else if e.turnReview.Last.ReasonCode == incompleteVersionEvidence {
+			failure = terminalReview
 		} else if delivery, citations, numbers, ok := e.currentCitationUnverifiedDelivery(ctx, state); ok {
 			answer, outcome, markedCitations, markedNumbers = delivery, "citation_unverified", citations, numbers
 			if numbers > 0 {
@@ -208,6 +219,9 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	}
 
 	answer = stripCoverageAnswer(answer)
+	if failure == terminalNoFailure {
+		failure = e.terminalCandidateEvidenceFailure(ctx, state, answer)
+	}
 	if failure == terminalNoFailure && terminalCandidateFallback(answer) {
 		failure = legacyTerminalFailure(answer)
 	}
@@ -239,6 +253,31 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 		e.closeAnswerStream(ctx, sessionID, e.turnReview.TerminalStreamID, truncated)
 	}
 	common.PipelineInfo(ctx, "Agent", "terminal_commit", map[string]interface{}{"outcome": outcome, "failure": failure, "candidate_hash": candidateTextDigest(answer), "repairs": e.turnReview.Repairs, "checks": e.turnReview.Checks, "marked_numeric_count": markedNumbers, "marked_citation_count": markedCitations})
+}
+
+func (e *AgentEngine) terminalCandidateEvidenceFailure(ctx context.Context, state *types.AgentState, answer string) terminalFailure {
+	if !agenttools.DocumentTableEvidenceEnabled() || !e.evidenceCompletionEligible() || state == nil || !e.standardTextDelivery(state) {
+		return terminalNoFailure
+	}
+	review := e.currentCoverageDraftReview(ctx, state)
+	if len(e.evidenceCompletion.versionClaims[candidateTextDigest(strings.TrimSpace(answer))]) > 0 &&
+		e.assessCoverageDraft(ctx, review, answer, state).versionBlocked {
+		return terminalReview
+	}
+	if len(unattributedMultiSourceTableValues(review, answer)) > 0 {
+		return terminalTableEvidence
+	}
+	if !review.blockedComparison() {
+		return terminalNoFailure
+	}
+	for _, decision := range []candidateDecision{e.turnReview.Last, e.turnReview.CoverageDraft} {
+		if decision.ReasonCode == checkedPartialComparisonReason && decision.CandidateHash == candidateTextDigest(answer) &&
+			decision.PublicationEvidence.current(e.terminalEvidenceRevision(ctx, state)) &&
+			e.assessCoverageDraft(ctx, review, answer, state).partialComparison {
+			return terminalNoFailure
+		}
+	}
+	return terminalTableEvidence
 }
 
 func (e *AgentEngine) publishTerminalStream(ctx context.Context, state *types.AgentState, sessionID string) {

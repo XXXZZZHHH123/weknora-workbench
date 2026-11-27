@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -57,6 +58,7 @@ type structuredResultReviewTurn struct {
 	EvidenceHash       string
 	Candidate          string
 	Status             string
+	ComparisonReviewed bool
 }
 
 func isStructuredResultReviewFormat(format json.RawMessage) bool {
@@ -140,6 +142,7 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 		if budget.TaskHash == decision.TaskHash && budget.EvidenceHash == decision.EvidenceHash &&
 			(decision.CandidateHash == budget.InputCandidateHash || decision.CandidateHash == candidateTextDigest(budget.Candidate)) {
 			decision.StructuredResultReviewStatus = budget.Status
+			decision.StructuredComparisonReview = budget.ComparisonReviewed
 			decision.Candidate, decision.CandidateHash = budget.Candidate, candidateTextDigest(budget.Candidate)
 		}
 		return decision
@@ -199,7 +202,9 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 		}
 	}
 	feedback := decision.CoverageFeedback
-	if feedback != nil && !e.turnReview.CoverageFeedbackSent {
+	if feedback != nil && (!e.turnReview.CoverageFeedbackSent || slices.ContainsFunc(feedback.Comparisons, func(check coverageComparisonCheck) bool {
+		return check.State == coverageOpen || check.State == coverageExhausted
+	})) {
 		inputView["verified_draft_feedback"] = feedback
 	}
 	input, err := json.Marshal(inputView)
@@ -250,6 +255,7 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 	budget.InputCandidateHash, budget.TaskHash, budget.EvidenceHash = decision.CandidateHash, decision.TaskHash, decision.EvidenceHash
 	defer func() {
 		budget.Candidate, budget.Status = decision.Candidate, decision.StructuredResultReviewStatus
+		budget.ComparisonReviewed = decision.StructuredComparisonReview
 	}()
 	checkCtx, cancel := context.WithDeadline(ctx, budget.Deadline)
 	defer cancel()
@@ -268,6 +274,15 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 	}
 	if feedback != nil {
 		instructions += "\n" + coverageDraftFeedbackInstructions
+		if feedback.CheckTableScope {
+			instructions += "\nFor adjacent table facts with distinct citations, verify that each reported period, field and table answers the corresponding part of the human request. Individually sourced values can be reported independently. Keep a relational finding about a table only when the runtime comparison receipts actually align its scopes. Remove a conclusion spanning independently read tables or fields when the selected operands do not establish alignment."
+		}
+		if slices.ContainsFunc(feedback.Comparisons, func(check coverageComparisonCheck) bool {
+			return check.State == coverageOpen || check.State == coverageExhausted
+		}) {
+			decision.StructuredComparisonReview = true
+			instructions += "\n" + comparisonAttributionInstructions + " Keep a one-sided answer only when it explicitly names the unavailable match and makes no cross-source finding."
+		}
 	}
 	reviewMessages := []chat.Message{
 		{Role: "system", Content: instructions + string(structuredResultReviewSchema)},

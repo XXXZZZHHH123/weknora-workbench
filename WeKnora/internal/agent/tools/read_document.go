@@ -135,22 +135,23 @@ var readDocumentTool = BaseTool{
 
 // ReadDocumentInput defines the input parameters for read_document.
 type ReadDocumentInput struct {
-	ID            string             `json:"id"`
-	Offset        int                `json:"offset,omitempty"`
-	ContentOffset int                `json:"content_offset,omitempty"`
-	ContentLimit  int                `json:"content_limit,omitempty"`
-	Limit         int                `json:"limit,omitempty"`
-	Query         string             `json:"query,omitempty"`
-	Regex         bool               `json:"regex,omitempty"`
-	Context       int                `json:"context,omitempty"`
-	Page          int                `json:"page,omitempty"`
-	Pages         []int              `json:"pages,omitempty"`
-	SourceScope   *DocumentScopePlan `json:"source_scope,omitempty"`
-	Images        []string           `json:"images,omitempty"`
-	ImageMode     string             `json:"image_mode,omitempty"`
-	ImageSeries   []string           `json:"image_series,omitempty"`
-	Detail        string             `json:"detail,omitempty"`
-	Focus         string             `json:"focus,omitempty"`
+	ID                   string             `json:"id"`
+	Offset               int                `json:"offset,omitempty"`
+	TableCandidateOffset int                `json:"table_candidate_offset,omitempty"`
+	ContentOffset        int                `json:"content_offset,omitempty"`
+	ContentLimit         int                `json:"content_limit,omitempty"`
+	Limit                int                `json:"limit,omitempty"`
+	Query                string             `json:"query,omitempty"`
+	Regex                bool               `json:"regex,omitempty"`
+	Context              int                `json:"context,omitempty"`
+	Page                 int                `json:"page,omitempty"`
+	Pages                []int              `json:"pages,omitempty"`
+	SourceScope          *DocumentScopePlan `json:"source_scope,omitempty"`
+	Images               []string           `json:"images,omitempty"`
+	ImageMode            string             `json:"image_mode,omitempty"`
+	ImageSeries          []string           `json:"image_series,omitempty"`
+	Detail               string             `json:"detail,omitempty"`
+	Focus                string             `json:"focus,omitempty"`
 }
 
 // ReadDocumentTool reads document metadata and chunks by page, by chunk
@@ -198,7 +199,7 @@ func NewReadDocumentTool(
 	searchTargets types.SearchTargets,
 ) *ReadDocumentTool {
 	return &ReadDocumentTool{
-		BaseTool:         withDocumentScopeParameter(readDocumentTool),
+		BaseTool:         withDocumentTableParameter(withDocumentScopeParameter(readDocumentTool)),
 		knowledgeService: knowledgeService,
 		chunkService:     chunkService,
 		searchTargets:    searchTargets,
@@ -267,6 +268,11 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (f
 		contextChunks = readDocumentMaxContext
 	}
 	query := strings.TrimSpace(input.Query)
+	tableEvidenceEnabled := DocumentTableEvidenceEnabled()
+	if tableEvidenceEnabled && input.TableCandidateOffset != 0 &&
+		(input.TableCandidateOffset < 0 || query == "" || len(input.Images) > 0 || input.ContentOffset > 0 || input.ContentLimit > 0) {
+		return &types.ToolResult{Success: false, PreflightRejected: true, Error: "table_candidate_offset requires the same candidate query and page scope"}, nil
+	}
 	if input.ContentOffset < 0 || input.ContentLimit < 0 {
 		return &types.ToolResult{Success: false, PreflightRejected: true, Error: "content_offset and content_limit must not be negative"}, nil
 	}
@@ -309,11 +315,22 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (f
 	if err != nil {
 		return &types.ToolResult{Success: false, PreflightRejected: true, Error: err.Error()}, err
 	}
+	var tableInventory documentTableInventory
+	if tableEvidenceEnabled && len(matchers) > 0 {
+		tableInventory = make(documentTableInventory)
+	}
 	defer func() {
 		if finalErr == nil {
 			annotatePDFLocationRecovery(knowledge, finalResult)
+			if tableEvidenceEnabled {
+				t.appendDocumentTableEvidence(ctx, knowledge, input, pages, matchers, limit, tableInventory, finalResult)
+			}
 		}
 	}()
+	if tableEvidenceEnabled && input.TableCandidateOffset > 0 {
+		data := t.buildData(knowledge, t.countChunks(ctx, knowledge), nil)
+		return &types.ToolResult{Success: true, Data: data}, nil
+	}
 	if len(pages) > 0 {
 		if query != "" && (input.ContentLimit > 0 || input.ContentOffset > 0) {
 			return &types.ToolResult{Success: false, PreflightRejected: true, Error: "query and chunk content segmentation are separate read modes"}, nil
@@ -326,7 +343,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (f
 		} else if input.ContentLimit > 0 || input.ContentOffset > 0 {
 			return &types.ToolResult{Success: false, PreflightRejected: true, Error: "content segmentation requires a real chunk handle (chunk://N)"}, nil
 		}
-		result, readErr := t.readPhysicalPages(ctx, knowledge, pages, offset, limit, segment, query, matchers, input.Regex)
+		result, readErr := t.readPhysicalPages(ctx, knowledge, pages, offset, limit, segment, query, matchers, input.Regex, tableInventory)
 		if result != nil && result.Success && selection.UserPages != nil && result.Data != nil {
 			if scope, ok := result.Data["document_scope"].(map[string]interface{}); ok {
 				scope["user_page_constraint"] = cloneDocumentPageConstraint(selection.UserPages)
@@ -348,7 +365,7 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (f
 	var result *types.ToolResult
 	switch {
 	case len(matchers) > 0:
-		result, err = t.readByQuery(ctx, knowledge, query, matchers, offset, input.Regex)
+		result, err = t.readByQuery(ctx, knowledge, query, matchers, offset, input.Regex, tableInventory)
 	case chunk != nil:
 		result, err = t.readAroundChunk(ctx, knowledge, chunk, contextChunks)
 	default:
@@ -749,7 +766,7 @@ func (t *ReadDocumentTool) readChunkContent(
 // without it matches past the cap could only be reached by paging the whole
 // document.
 func (t *ReadDocumentTool) readByQuery(
-	ctx context.Context, knowledge *types.Knowledge, query string, matchers []*regexp.Regexp, offset int, regexMode bool,
+	ctx context.Context, knowledge *types.Knowledge, query string, matchers []*regexp.Regexp, offset int, regexMode bool, tableInventory documentTableInventory,
 ) (*types.ToolResult, error) {
 	var rows []readChunkRow
 	emitted := make(map[string]bool)
@@ -779,6 +796,7 @@ scan:
 		if err != nil {
 			return &types.ToolResult{Success: false, Error: err.Error()}, err
 		}
+		tableInventory.remember(page, chunks, pageTotal)
 		total = pageTotal
 		if len(chunks) == 0 {
 			break
@@ -919,6 +937,11 @@ func (t *ReadDocumentTool) buildData(
 		}
 		row := chunkDataMap(i+1, r.chunk)
 		row["content_revision"] = r.chunk.ContentRevision
+		if DocumentTableEvidenceEnabled() {
+			if page := chunkMetadataPage(r.chunk); page > 0 {
+				row["table_source_page_metadata"] = page
+			}
+		}
 		if r.contentView != nil && !identityChunkContentView(r.chunk, r.contentView) {
 			row["content_source_view"] = r.contentView
 		}

@@ -127,7 +127,7 @@ func pageImages(info, content string, page int, clipped bool) string {
 }
 
 func (t *ReadDocumentTool) readPhysicalPage(ctx context.Context, knowledge *types.Knowledge, requested, offset, limit int, segment *chunkContentSegment) (*types.ToolResult, error) {
-	return t.readPhysicalPages(ctx, knowledge, []int{requested}, offset, limit, segment, "", nil, false)
+	return t.readPhysicalPages(ctx, knowledge, []int{requested}, offset, limit, segment, "", nil, false, nil)
 }
 
 func (t *ReadDocumentTool) renderPhysicalPage(ctx context.Context, knowledge *types.Knowledge, requested, offset, limit int, segment *chunkContentSegment, selected []*types.Chunk, views map[string]*types.ChunkContentView, total int64) (*types.ToolResult, error) {

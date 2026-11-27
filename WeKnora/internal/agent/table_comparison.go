@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,13 +14,20 @@ import (
 )
 
 func tableComparison(target taskCoverageTarget) bool {
-	if target.StructuredTaskGoal == nil || target.VersionTask != "compare_sources" ||
-		target.Table == "" || len(target.ComparisonSources) != 2 {
+	if target.StructuredTaskGoal == nil || target.VersionTask != "compare_sources" {
 		return false
 	}
+	if agenttools.DocumentTableEvidenceEnabled() {
+		aggregation, _ := target.Delivery["aggregation"].(string)
+		return plannedTableComparison(target) && (aggregation == "" || aggregation == "as_reported")
+	}
+	return comparisonTableScopeValid(target) && len(target.ComparisonSources) == 2
+}
+
+func comparisonTableScopeValid(target taskCoverageTarget) bool {
 	aggregation, _ := target.Delivery["aggregation"].(string)
 	_, _, grain := coverageTargetDateRange(target)
-	return (aggregation == "" || aggregation == "as_reported") && slices.Contains([]string{"day", "month", "year"}, grain)
+	return target.Table != "" && (aggregation == "" || aggregation == "as_reported") && slices.Contains([]string{"day", "month", "year"}, grain)
 }
 
 func (e *AgentEngine) coverageComparisonSourceMatches(goal int, ref string, selected coverageEvidence) bool {
@@ -37,7 +45,11 @@ func (e *AgentEngine) coverageComparisonSourceMatches(goal int, ref string, sele
 		if prior.GoalIndex != goal || prior.SourceRef == "" {
 			return false
 		}
-		sameSource := prior.KnowledgeBaseID == selected.KnowledgeBaseID && prior.SourceID == selected.SourceID
+		priorID, selectedID := prior.SourceID, selected.SourceID
+		if agenttools.DocumentTableEvidenceEnabled() {
+			priorID, selectedID = firstNonEmptyAgent(prior.PhysicalSourceID, priorID), id
+		}
+		sameSource := prior.KnowledgeBaseID == selected.KnowledgeBaseID && priorID == selectedID
 		return (prior.SourceRef == ref) != sameSource
 	})
 }
@@ -48,6 +60,7 @@ func coverageImageTableBodies(data map[string]any, bodies []coverageEvidence) []
 	var observations []coverageEvidence
 	coverageRows(data, types.DocumentImageTextEvidenceKey, func(row map[string]any, path string) {
 		if row["kind"] != string(types.ChunkTypeImageOCR) || row["truncated"] == true ||
+			agenttools.DocumentTableEvidenceEnabled() && row["text_truncated"] == true ||
 			!reviewImageTextBoundToSource(data, row) {
 			return
 		}
@@ -70,7 +83,75 @@ func coverageImageTableBodies(data map[string]any, bodies []coverageEvidence) []
 	return observations
 }
 
+// Only the read tool's actual table objects become selectable evidence.
+// The contributing chunks must independently pass native read provenance.
+func coverageReadTableBodies(data map[string]any, bodies []coverageEvidence) []coverageEvidence {
+	var tables []coverageEvidence
+	coverageRows(data, "table_reads", func(row map[string]any, _ string) {
+		page := citationInt(row["page"])
+		grid := coverageOffset(row["grid_index"])
+		title, object := sourceNavigationString(row, "title"), sourceNavigationString(row, "object_id")
+		bodyChunk, titleChunk := sourceNavigationString(row, "body_chunk_id"), sourceNavigationString(row, "title_chunk_id")
+		bodyPointer, titlePointer := sourceNavigationString(row, "body_pointer"), sourceNavigationString(row, "title_pointer")
+		if page <= 0 || grid == nil || row["grid_complete"] != true || title == "" || object == "" || bodyChunk == "" || titleChunk == "" {
+			return
+		}
+		find := func(chunk, pointer string, actualPage int) int {
+			return slices.IndexFunc(bodies, func(item coverageEvidence) bool {
+				return item.Kind == "body" && item.Operation == agenttools.ToolReadDocument && item.Bound && item.Complete &&
+					item.ChunkID == chunk && item.JSONPointer == pointer && (actualPage == 0 || item.Page == actualPage)
+			})
+		}
+		index, section := find(bodyChunk, bodyPointer, page), find(titleChunk, titlePointer, page)
+		if index < 0 || section < 0 {
+			return
+		}
+		body, heading := bodies[index], bodies[section]
+		headingText, _ := heading.Raw.(string)
+		if body.SourceID != heading.SourceID || body.KnowledgeBaseID != heading.KnowledgeBaseID || !strings.Contains(headingText, title) ||
+			body.ToolCallID != heading.ToolCallID || (body.Object != "" && body.Object != sourceNavigationString(row, "figure_id")) {
+			return
+		}
+		body.Sheet, body.Object, body.TableGrid, body.TableTitleChunkID = title, object, grid, titleChunk
+		body.SourceDate = ""
+		sourceDate := coverageDay(sourceNavigationString(row, "disclosure_date"))
+		disclosureChunk, disclosurePointer := sourceNavigationString(row, "disclosure_chunk_id"), sourceNavigationString(row, "disclosure_pointer")
+		if sourceDate != "" && disclosurePointer != "" {
+			if dateIndex := find(disclosureChunk, disclosurePointer, 0); dateIndex >= 0 {
+				disclosureText, _ := bodies[dateIndex].Raw.(string)
+				label := firstNonEmptyAgent(sourceNavigationString(row, "disclosure_label"), sourceNavigationString(row, "disclosure_date"))
+				if strings.Contains(disclosureText, label) {
+					body.SourceDate, body.TableDisclosureChunkID = sourceDate, disclosureChunk
+				}
+			} else if strings.HasPrefix(disclosurePointer, "/data/document/metadata/") {
+				value, _ := reviewPointerValue(map[string]any{"data": data}, disclosurePointer)
+				if raw, ok := value.(string); ok {
+					date := coverageDay(raw)
+					if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+						date = parsed.Format(time.DateOnly)
+					}
+					if date == sourceDate {
+						body.SourceDate = sourceDate
+					}
+				}
+			}
+		}
+		if unit := sourceNavigationString(row, "unit"); unit != "" {
+			pointer := sourceNavigationString(row, "unit_pointer")
+			if pointer != "" && (pointer == bodyPointer && strings.Contains(body.Raw.(string), unit) ||
+				pointer == titlePointer && strings.Contains(headingText, unit)) {
+				body.Unit, body.UnitBasis = unit, body.EvidenceID+"#"+pointer
+			}
+		}
+		tables = append(tables, body)
+	})
+	return tables
+}
+
 func evaluateTableComparison(target taskCoverageTarget, input coverageRecord) coverageCompletion {
+	if agenttools.DocumentTableEvidenceEnabled() {
+		return evaluateReadTableComparison(target, input)
+	}
 	from, to, grain := coverageTargetDateRange(target)
 	result := coverageCompletion{GoalIndex: target.GoalIndex, State: coverageOpen, Reason: "comparison_source_unverified", NextRead: "read",
 		GapID:           reviewDigest([]any{input.Revision, input.AuthScope, target.GoalIndex, target.Table, target.Metric, target.Period, target.ComparisonSources}),
@@ -115,15 +196,85 @@ func evaluateTableComparison(target taskCoverageTarget, input coverageRecord) co
 	return result.withStop(input.StopReason)
 }
 
+func evaluateReadTableComparison(target taskCoverageTarget, input coverageRecord) coverageCompletion {
+	from, to, grain := coverageTargetDateRange(target)
+	result := coverageCompletion{GoalIndex: target.GoalIndex, State: coverageOpen, Reason: "comparison_source_unverified", NextRead: "read",
+		GapID:           reviewDigest([]any{input.Revision, input.AuthScope, target.GoalIndex, target.Table, target.Metric, target.Period}),
+		BudgetRemaining: 1, UnresolvedSides: max(target.UnresolvedComparisonSources, 2-len(target.ComparisonSources))}
+	if !comparisonTableScopeValid(target) || target.Metric == "" || coverageDay(from) == "" || coverageDay(to) == "" {
+		result.OpenItems = slices.Clone(target.ComparisonSources)
+		result.Reason, result.NextRead, result.BudgetRemaining = "comparison_target_incomplete", "", 0
+		return result.withStop(input.StopReason)
+	}
+	for _, side := range target.ComparisonSources {
+		var sideResult coverageCompletion
+		for _, binding := range input.Bindings {
+			if binding.GoalIndex != target.GoalIndex || binding.Role != "primary" || binding.SourceRef != side || binding.Provisional {
+				continue
+			}
+			for _, item := range input.Evidence {
+				if !tableComparisonBindingMatches(input, binding, item) {
+					continue
+				}
+				if fact, ok := tableComparisonFact(target, input, binding, item, from, to, grain); ok {
+					fact.ComparisonSourceRef = side
+					sideResult.pin("scoped_value", fact)
+				}
+			}
+		}
+		if len(sideResult.PinnedFacts) == 1 {
+			fact := sideResult.PinnedFacts[0].Evidence
+			result.pin("scoped_value", fact)
+			if fact.ComparisonGrainUnverified {
+				result.OpenItems = append(result.OpenItems, side)
+			}
+		} else {
+			result.OpenItems = append(result.OpenItems, side)
+		}
+	}
+	if len(result.PinnedFacts) != 2 || result.UnresolvedSides != 0 {
+		if result.UnresolvedSides != 0 {
+			result.Reason = "comparison_source_unresolved"
+		}
+		return result.withStop(input.StopReason)
+	}
+	if len(result.OpenItems) != 0 {
+		result.Reason = "comparison_grain_unverified"
+		return result.withStop(input.StopReason)
+	}
+	first, second := result.PinnedFacts[0].Evidence, result.PinnedFacts[1].Evidence
+	if first.Metric != second.Metric || first.Subject != second.Subject ||
+		comparisonPhysicalSource(first) == comparisonPhysicalSource(second) {
+		result.Reason, result.NextRead, result.BudgetRemaining = "comparison_scope_conflict", "", 0
+		return result.withStop(input.StopReason)
+	}
+	if comparisonUnitStatus(first, second) == "incompatible" || target.RequestedUnit != "" &&
+		(terminalUnitFromSource(first) && first.Unit != target.RequestedUnit || terminalUnitFromSource(second) && second.Unit != target.RequestedUnit) {
+		result.Reason, result.NextRead, result.BudgetRemaining = "comparison_units_incompatible", "", 0
+		return result.withStop(input.StopReason)
+	}
+	for _, fact := range tableComparisonSupportingFacts(target, input, result.PinnedFacts, from, to, grain) {
+		result.pin(fact.Role, fact.Evidence)
+	}
+	return result.satisfied("matching_primary")
+}
+
 func tableComparisonBindingMatches(record coverageRecord, binding coverageBinding, item coverageEvidence) bool {
+	if agenttools.DocumentTableEvidenceEnabled() && item.TableGrid != nil &&
+		binding.TableObjectGrid != strconv.Itoa(*item.TableGrid) {
+		return false
+	}
 	return item.Bound && coverageCurrentEvidence(record, item) && coverageSameSource(binding, item) &&
-		coverageLocation(binding, item) && binding.EvidenceID == item.EvidenceID && binding.JSONPointer == item.JSONPointer
+		coverageLocation(binding, item) && binding.EvidenceID == item.EvidenceID && binding.JSONPointer == item.JSONPointer &&
+		(!agenttools.DocumentTableEvidenceEnabled() ||
+			coverageEqual(binding.PhysicalSourceID, comparisonPhysicalSource(item)[1]))
 }
 
 func tableComparisonSupportingFacts(target taskCoverageTarget, input coverageRecord, primary []coverageFact, from, to, grain string) []coverageFact {
-	var supporting []coverageFact
+	var supporting coverageCompletion
+	strict := agenttools.DocumentTableEvidenceEnabled()
 	for _, binding := range input.Bindings {
-		if len(supporting) >= 8 {
+		if !strict && len(supporting.PinnedFacts) >= 8 {
 			break
 		}
 		if binding.GoalIndex != target.GoalIndex || binding.Role != "supporting" || binding.Provisional || binding.Metric == "" {
@@ -138,24 +289,41 @@ func tableComparisonSupportingFacts(target taskCoverageTarget, input coverageRec
 			}
 			fact := item
 			var verified bool
-			if item.Kind == "cell" && item.RangeComplete && item.Metric == binding.Metric {
+			if item.Kind == "cell" && item.RangeComplete && item.Metric == binding.Metric &&
+				(!strict || item.Operation == "analyze_table" && item.WorkbookBound) {
 				_, verified = coverageComparisonNumber(item)
+				if strict {
+					fact.PeriodFrom, fact.PeriodTo, fact.Grain = from, to, grain
+					verified = verified && (binding.Unit == "" || terminalUnitFromSource(item) && item.Unit == binding.Unit)
+				}
 			} else {
 				fact, verified = tableComparisonFact(otherField, input, binding, item, from, to, grain)
 			}
 			if !verified || !slices.ContainsFunc(primary, func(peer coverageFact) bool {
-				return peer.Evidence.Metric != fact.Metric && sameTableComparisonRow(peer.Evidence, fact)
-			}) || slices.ContainsFunc(supporting, func(prior coverageFact) bool {
+				return peer.Evidence.Metric != fact.Metric && sameTableComparisonRow(peer.Evidence, fact) &&
+					(!strict || peer.Evidence.ComparisonSourceRef == binding.SourceRef && coverageEqual(grain, fact.Grain))
+			}) {
+				continue
+			}
+			if strict {
+				fact.ComparisonSourceRef = binding.SourceRef
+				if len(supporting.PinnedFacts) < 8 || slices.ContainsFunc(supporting.PinnedFacts, func(prior coverageFact) bool {
+					return coverageEvidenceFactKey(prior.Evidence) == coverageEvidenceFactKey(fact)
+				}) {
+					supporting.pin("supporting", fact)
+				}
+				continue
+			}
+			if !slices.ContainsFunc(supporting.PinnedFacts, func(prior coverageFact) bool {
 				return prior.Evidence.Metric == fact.Metric && prior.Evidence.SourceID == fact.SourceID &&
 					prior.Evidence.KnowledgeBaseID == fact.KnowledgeBaseID && prior.Evidence.Sheet == fact.Sheet &&
 					prior.Evidence.Date == fact.Date
 			}) {
-				continue
+				supporting.PinnedFacts = append(supporting.PinnedFacts, coverageFact{Role: "supporting", Evidence: fact})
 			}
-			supporting = append(supporting, coverageFact{Role: "supporting", Evidence: fact})
 		}
 	}
-	return supporting
+	return supporting.PinnedFacts
 }
 
 func sameTableComparisonRow(first, second coverageEvidence) bool {
@@ -165,6 +333,11 @@ func sameTableComparisonRow(first, second coverageEvidence) bool {
 		return false
 	}
 	if first.Kind == "body" {
+		if agenttools.DocumentTableEvidenceEnabled() {
+			return first.SnapshotHash == second.SnapshotHash && first.ChunkID == second.ChunkID &&
+				first.Object == second.Object && first.Page == second.Page && first.RowLabel == second.RowLabel &&
+				first.TableGrid != nil && second.TableGrid != nil && *first.TableGrid == *second.TableGrid
+		}
 		return first.SnapshotHash == second.SnapshotHash && first.EvidenceID == second.EvidenceID && first.JSONPointer == second.JSONPointer &&
 			first.ChunkID == second.ChunkID && first.Object == second.Object && first.Page == second.Page
 	}
@@ -196,18 +369,44 @@ func tableComparisonFact(target taskCoverageTarget, input coverageRecord, bindin
 		exactMonthEnd := item.GrainFromLookup && grain == "month" && binding.Grain == grain &&
 			binding.PeriodFrom == from && binding.PeriodTo == to && item.Operation == "query_series" &&
 			item.PeriodFrom == item.Date && item.PeriodTo == item.Date && item.Date == to
+		strict := agenttools.DocumentTableEvidenceEnabled()
+		if strict && !exactMonthEnd && item.Grain == "" && grain == "month" &&
+			binding.Grain == grain && binding.PeriodFrom == from && binding.PeriodTo == to && item.Operation == "query_series" &&
+			item.RangeComplete && item.PeriodFrom == from && item.PeriodTo == to && item.Date == to {
+			exactMonthEnd = true
+		}
 		nativePeriod := firstNonEmptyAgent(item.Period, item.Date)
+		explicitNativePeriod := strict && item.DateMode == "period" && item.Period != "" &&
+			comparisonNativeRowPeriod(item.Period, from, to, grain)
+		if strict && grain == "month" && (item.Grain == "" || item.GrainFromLookup) && !explicitNativePeriod &&
+			binding.Grain == grain && binding.PeriodFrom == from && binding.PeriodTo == to {
+			if basis := workbookMonthLabelReceipt(input, item, from, to); basis != "" {
+				item.Period, item.TablePeriodBasisRef = from[:7], basis
+				nativePeriod, explicitNativePeriod = item.Period, true
+			}
+		}
 		if item.Grain == "month" && item.Period == "" && item.Date >= from && item.Date <= to {
 			nativePeriod = from[:7]
 		}
 		if item.Sheet != target.Table || item.Metric == "" || item.Cell == "" || item.DateCell == "" && item.RowLabel == "" ||
-			!comparisonPeriodMatches(nativePeriod, from, to, grain) || item.Grain != grain && !exactMonthEnd {
+			!comparisonPeriodMatches(nativePeriod, from, to, grain) || item.Grain != grain && !exactMonthEnd && !explicitNativePeriod {
 			return item, false
 		}
 		if binding.TargetField != "" && binding.TargetField != item.Metric {
 			return item, false
 		}
+		// The original date and value are worth retaining. The model's choice
+		// of that date as a candidate cannot turn a lookup into workbook grain.
+		item.ComparisonGrainUnverified = strict && exactMonthEnd && !explicitNativePeriod && item.Grain != grain
 	case "body":
+		if agenttools.DocumentTableEvidenceEnabled() {
+			fact, ok := selectedReadTableCell(target, binding, item, from, to, grain)
+			if !ok {
+				return item, false
+			}
+			item = fact
+			break
+		}
 		if binding.Metric == "" || !comparisonPeriodMatches(binding.Date, from, to, grain) || item.Page == 0 || !item.Complete {
 			return item, false
 		}
@@ -240,14 +439,116 @@ func tableComparisonFact(target taskCoverageTarget, input coverageRecord, bindin
 	default:
 		return item, false
 	}
-	item.PeriodFrom, item.PeriodTo, item.Grain = from, to, grain
+	if !item.ComparisonGrainUnverified {
+		item.PeriodFrom, item.PeriodTo, item.Grain = from, to, grain
+	}
 	// A more specific native field requires an explicit source association
 	// to the verified header, never a different field with the same value.
-	if item.Metric != target.Metric && (binding.TargetField != item.Metric || !strings.Contains(item.Metric, target.Metric)) {
+	if item.Metric != target.Metric && (binding.TargetField != item.Metric ||
+		!agenttools.DocumentTableEvidenceEnabled() && !strings.Contains(item.Metric, target.Metric)) {
+		return item, false
+	}
+	if agenttools.DocumentTableEvidenceEnabled() && binding.RequireUnit && !terminalUnitFromSource(item) {
 		return item, false
 	}
 	_, numeric := coverageComparisonNumber(item)
 	return item, numeric
+}
+
+// Excel stores dates with day precision even when the original date cell is
+// formatted as a month label. Use that formatting only from the verified
+// original date cell associated with this selected workbook value.
+func workbookMonthLabelReceipt(record coverageRecord, value coverageEvidence, from, to string) string {
+	dateCol, dateRow := coverageCellPosition(value.DateCell)
+	col, row := coverageCellPosition(value.Cell)
+	if dateCol == "" || col == "" || dateCol == col || dateRow != row || value.Date < from || value.Date > to ||
+		value.SnapshotHash == "" || value.SourceDomain != "structured" {
+		return ""
+	}
+	var basis string
+	for _, item := range record.Evidence {
+		if item.Kind != "cell" || item.Operation != "inspect_source" || !item.Bound || !coverageCurrentEvidence(record, item) ||
+			item.SourceID != value.SourceID || item.KnowledgeBaseID != value.KnowledgeBaseID || item.SnapshotHash != value.SnapshotHash ||
+			item.Sheet != value.Sheet || item.Cell != value.DateCell {
+			continue
+		}
+		raw, ok := item.Raw.(string)
+		if !ok || coverageDay(strings.TrimSuffix(raw, "T00:00:00")) != value.Date {
+			continue
+		}
+		if !workbookMonthNumberFormat(item.OriginalNumberFormat) {
+			return ""
+		}
+		pointer := strings.TrimSuffix(strings.TrimSuffix(item.JSONPointer, "/raw_value"), "/value")
+		basis = item.EvidenceID + "#" + pointer + "/number_format"
+	}
+	return basis
+}
+
+var workbookMonthFormat = regexp.MustCompile(`^(?:yyyy[-/ .]m{1,2}|m{1,2}[-/ .]yyyy|yyyy年m{1,2}月)$`)
+
+func workbookMonthNumberFormat(format string) bool {
+	if format == "" || len(format) > 128 {
+		return false
+	}
+	positive, _, _ := strings.Cut(format, ";")
+	positive = strings.ToLower(strings.TrimSpace(positive))
+	positive = strings.NewReplacer("\\-", "-", "\\/", "/", "\\.", ".", `"-"`, "-", `"/"`, "/", `"."`, ".",
+		`"年"`, "年", `"月"`, "月").Replace(positive)
+	return workbookMonthFormat.MatchString(positive)
+}
+
+func selectedReadTableCell(target taskCoverageTarget, binding coverageBinding, item coverageEvidence, from, to, grain string) (coverageEvidence, bool) {
+	if binding.Metric == "" || item.Page == 0 || item.TableGrid == nil || item.TableTitleChunkID == "" ||
+		item.Object == "" || item.Operation != agenttools.ToolReadDocument || !item.Complete || item.Sheet != target.Table ||
+		!comparisonNativeRowPeriod(binding.Date, from, to, grain) {
+		return item, false
+	}
+	body, ok := item.Raw.(string)
+	if !ok || item.ContentHash != candidateTextDigest(body) {
+		return item, false
+	}
+	grids := agenttools.ParseDocumentTableGrids(body)
+	if *item.TableGrid < 0 || *item.TableGrid >= len(grids) {
+		return item, false
+	}
+	grid := grids[*item.TableGrid]
+	if !grid.ParseComplete {
+		return item, false
+	}
+	rows := grid.Rows
+	if len(rows) < 2 {
+		return item, false
+	}
+	header := rows[0]
+	column := slices.Index(header, binding.Metric)
+	if column < 1 || slices.Contains(header[column+1:], binding.Metric) {
+		return item, false
+	}
+	rowIndex, value := -1, ""
+	for index, row := range rows[1:] {
+		if len(row) == 0 || row[0] != binding.Date {
+			continue
+		}
+		if len(row) != len(header) || rowIndex >= 0 || !documentTableNumber.MatchString(row[column]) {
+			return item, false
+		}
+		rowIndex, value = index+1, row[column]
+	}
+	if rowIndex < 0 || binding.RawClaim != "" && binding.RawClaim != value ||
+		binding.Unit != "" && (!terminalUnitFromSource(item) || item.Unit != binding.Unit) {
+		return item, false
+	}
+	item.Metric, item.Column, item.Date, item.RowLabel, item.Period = binding.Metric, header[column], binding.Date, binding.Date, binding.Date
+	item.Cell, item.ReportedValue, item.Raw = strconv.Itoa(rowIndex)+":"+strconv.Itoa(column), value, value
+	return item, true
+}
+
+func comparisonNativeRowPeriod(label, from, to, grain string) bool {
+	if grain == "month" && coverageDay(label) != "" {
+		return false // A daily label does not establish a monthly observation.
+	}
+	return comparisonPeriodMatches(label, from, to, grain)
 }
 
 func comparisonPeriodMatches(label, from, to, grain string) bool {
@@ -260,7 +561,7 @@ func comparisonPeriodMatches(label, from, to, grain string) bool {
 			return false
 		}
 		label = strings.TrimSpace(label)
-		for _, layout := range []string{"2006-01", "2006年1月", "2006/1"} {
+		for _, layout := range []string{"2006-01", "2006-1", "2006年1月", "2006/1", "2006.1"} {
 			if month, err := time.Parse(layout, label); err == nil {
 				return month.Equal(start)
 			}
@@ -268,7 +569,8 @@ func comparisonPeriodMatches(label, from, to, grain string) bool {
 		return coverageDay(label) == to
 	case "year":
 		start, err := time.Parse(time.DateOnly, from)
-		return err == nil && start.YearDay() == 1 && start.AddDate(1, 0, -1).Format(time.DateOnly) == to && label == start.Format("2006")
+		return err == nil && start.YearDay() == 1 && start.AddDate(1, 0, -1).Format(time.DateOnly) == to &&
+			strings.TrimSuffix(strings.TrimSpace(label), "年") == start.Format("2006")
 	default:
 		return false
 	}

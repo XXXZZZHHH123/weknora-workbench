@@ -93,6 +93,9 @@ func qa4Stage2EAssertHistoricalKB31(r *qa4Stage2CReplay) {
 }
 
 func TestQA4Stage2EKB31AuthorizedRecovery(t *testing.T) {
+	// The historical variant supplies a filename as the version reason.
+	// The current path requires an explicit user selection or an actual body.
+	t.Setenv("WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE", "false")
 	for _, mode := range []string{"normal", "rewrite", "ignored", "budget"} {
 		t.Run(mode, func(t *testing.T) { qa4Stage2EKB31AuthorizedRecovery(t, mode) })
 	}

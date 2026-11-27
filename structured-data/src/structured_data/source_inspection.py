@@ -439,6 +439,8 @@ def _inspect_source_validated(store, dataset_id, request):
     max_cells = request['max_cells']
     padding_rows = request['padding_rows']
     padding_cols = request['padding_cols']
+    include_date_format = os.environ.get('WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE', '').strip() not in (
+        '0', 'f', 'F', 'false', 'FALSE', 'False')
 
     # _path is resolved through the current workspace proxy, never a caller path.
     try:
@@ -560,11 +562,16 @@ def _inspect_source_validated(store, dataset_id, request):
         def cell_doc(fc, cc, row, col, name):
             formula = fc.value if fc.data_type == 'f' else None
             value = cc.value if formula else fc.value
-            return {'sheet': name, 'cell': f'{get_column_letter(col)}{row}',
+            cell = {'sheet': name, 'cell': f'{get_column_letter(col)}{row}',
                     'value': _json_value(value), 'raw_value': _json_value(fc.value),
                     'formula': formula, 'cached_value': _json_value(cc.value) if formula else None,
                     'value_status': 'missing_formula_cache' if formula and cc.value is None
                                     else 'error' if fc.data_type == 'e' or cc.data_type == 'e' else 'original'}
+            # The original display format can establish a period label
+            # without changing the date or inferring an observation frequency.
+            if include_date_format and isinstance(value, dt.date) and fc.number_format:
+                cell['number_format'] = fc.number_format
+            return cell
 
         def read_range(name, bounds):
             left, top, right, bottom = bounds

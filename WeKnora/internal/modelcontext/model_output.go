@@ -64,7 +64,8 @@ func (r *sourceRegistry) ModelOutput(result *types.ToolResult) string {
 				output += "\n<query_scope>" + escapeText(string(encoded)) + "</query_scope>"
 			}
 		}
-		return r.withDocumentImageEvidence(output, result.Data)
+		output = r.withDocumentImageEvidence(output, result.Data)
+		return r.withDocumentTableEvidence(output, result.Data)
 	case "document_info":
 		return r.modelDocumentInfoOutput(result.Data, result.Output)
 	case "graph_query_results":
@@ -80,6 +81,29 @@ func (r *sourceRegistry) ModelOutput(result *types.ToolResult) string {
 		r.registerStructuredReferences(result.Output)
 		return r.CompactKnownText(result.Output)
 	}
+}
+
+func (r *sourceRegistry) withDocumentTableEvidence(output string, data map[string]any) string {
+	if !types.DocumentTableEvidenceEnabled() {
+		return output
+	}
+	for _, key := range []string{"table_candidate_scope", "table_candidates", "table_reads", "table_reads_truncated"} {
+		// Stored tool history can retain locators after its underlying read
+		// bodies have been removed. Only live source bodies support a read.
+		if key == "table_reads" && len(mapsValue(data["chunks"])) == 0 {
+			continue
+		}
+		if value, ok := data[key]; ok {
+			if encoded, err := json.Marshal(value); err == nil {
+				output += "\n<" + key + " untrusted_source_content=\"true\">" +
+					escapeText(r.CompactKnownText(string(encoded))) + "</" + key + ">"
+			}
+		}
+	}
+	if data["table_candidates"] != nil {
+		output += "\nTable candidates are navigation. Choose an object using the full question and verified source labels, then use its read_args to read the source page. If the scope is truncated, continue with table_candidate_offset from next_offset."
+	}
+	return output
 }
 
 // Keep protocol observations visible after every actual source projection,
