@@ -88,7 +88,7 @@ func (s *Server) handleAsk(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	answer, refs, err := s.runQA(ctx, session, agent, question, kbIDs)
+	answer, refs, details, err := s.runQA(ctx, session, agent, question, kbIDs)
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("failed to answer", err), nil
 	}
@@ -97,6 +97,12 @@ func (s *Server) handleAsk(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		"session_id": session.ID,
 		"agent_id":   agent.ID,
 		"references": refs,
+	}
+	if details.partialReason != "" {
+		structured["run_state"], structured["run_reason"] = types.MessageRunStateEvidencePartial, details.partialReason
+	}
+	if len(details.evidence) > 0 {
+		structured["evidence_references"] = details.evidence.PublicSummaries()
 	}
 	var text string
 	if len(refs) > 0 {
@@ -216,9 +222,14 @@ func (s *Server) resolveAskSession(
 
 // runQA executes one turn synchronously and returns the final answer and
 // the references it cited. It mirrors the IM channel's non-streaming path.
+type askRunDetails struct {
+	partialReason string
+	evidence      types.EvidenceReferences
+}
+
 func (s *Server) runQA(
 	ctx context.Context, session *types.Session, agent *types.CustomAgent, question string, kbIDs []string,
-) (string, []askReference, error) {
+) (string, []askReference, askRunDetails, error) {
 	ctx, cancel := context.WithTimeout(ctx, askTimeout)
 	defer cancel()
 
@@ -233,7 +244,7 @@ func (s *Server) runQA(
 		Channel:     askChannel,
 	})
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to create user message: %w", err)
+		return "", nil, askRunDetails{}, fmt.Errorf("failed to create user message: %w", err)
 	}
 	assistantMsg, err := s.messageService.CreateMessage(ctx, &types.Message{
 		SessionID:   session.ID,
@@ -244,7 +255,7 @@ func (s *Server) runQA(
 		Channel:     askChannel,
 	})
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to create assistant message: %w", err)
+		return "", nil, askRunDetails{}, fmt.Errorf("failed to create assistant message: %w", err)
 	}
 
 	var (
@@ -254,6 +265,7 @@ func (s *Server) runQA(
 		refs       []*types.SearchResult
 		qaErr      error
 		incomplete *event.AgentIncompleteData
+		details    askRunDetails
 		answerDone bool
 		done       = make(chan struct{})
 		complete   = make(chan struct{})
@@ -297,9 +309,14 @@ func (s *Server) runQA(
 			return nil
 		}
 		mu.Lock()
-		if data.Incomplete != nil {
+		if types.VerifiedPublicationEnabled() && data.HasPartialAnswer() {
+			details.partialReason = data.Incomplete.Reason
+		} else if data.Incomplete != nil {
 			incomplete = data.Incomplete
 			answer.Reset()
+		}
+		if types.VerifiedPublicationEnabled() && incomplete == nil {
+			details.evidence = types.EvidenceReferencesFromInternal(data.EvidenceRefs)
 		}
 		if data.FinalAnswer != "" {
 			final = data.FinalAnswer
@@ -417,24 +434,29 @@ func (s *Server) runQA(
 				if strings.TrimSpace(prior.Content) != "" {
 					failure = errors.New(prior.Content)
 				}
-				return "", nil, failure
+				return "", nil, askRunDetails{}, failure
 			}
 		}
 		assistantMsg.Content, assistantMsg.RunState, assistantMsg.IsCompleted = failure.Error(), runState, true
 		if saveErr := s.messageService.UpdateMessage(persistCtx, assistantMsg); saveErr != nil {
 			logger.Warnf(ctx, "[mcpserver] failed to persist answer status: %v", saveErr)
 		}
-		return "", nil, failure
+		return "", nil, askRunDetails{}, failure
 	}
 	assistantMsg.Content = text
 	assistantMsg.IsCompleted = true
+	if details.partialReason != "" {
+		assistantMsg.SetEvidencePartialReason(details.partialReason)
+	}
+	assistantMsg.EvidenceReferences = details.evidence
 	if len(collected) > 0 {
 		assistantMsg.KnowledgeReferences = types.References(collected)
 	}
 	if err := s.messageService.UpdateMessage(persistCtx, assistantMsg); err != nil {
 		logger.Warnf(ctx, "[mcpserver] failed to persist assistant message: %v", err)
+		details.evidence = nil
 	}
-	return text, summarizeReferences(collected), nil
+	return text, summarizeReferences(collected), details, nil
 }
 
 func collectReferences(dst *[]*types.SearchResult, raw interface{}) {

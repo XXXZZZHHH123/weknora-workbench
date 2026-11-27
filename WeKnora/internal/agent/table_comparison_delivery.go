@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
+	"github.com/Tencent/WeKnora/internal/types"
 )
 
 type unattributedTableValue struct {
@@ -65,6 +66,8 @@ func comparisonUnitStatus(left, right coverageEvidence) string {
 	return "same"
 }
 
+var comparisonScientificNumber = regexp.MustCompile(`^[+-]?[0-9]+(?:\.[0-9]+)?[eE][+-]?[0-9]{1,2}$`)
+
 func coverageComparisonNumber(item coverageEvidence) (*big.Rat, bool) {
 	value := item.ReportedValue
 	if item.Kind != "body" {
@@ -76,6 +79,9 @@ func coverageComparisonNumber(item coverageEvidence) (*big.Rat, bool) {
 		}
 	}
 	if token := proseNumber.FindString(value); token == "" || token != value {
+		if types.VerifiedPublicationEnabled() && item.Kind != "body" && len(value) <= 128 && comparisonScientificNumber.MatchString(value) {
+			return new(big.Rat).SetString(value)
+		}
 		return nil, false
 	}
 	if agenttools.DocumentTableEvidenceEnabled() && documentTableNumber.MatchString(value) {

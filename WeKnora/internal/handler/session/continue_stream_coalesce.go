@@ -3,6 +3,7 @@ package session
 import (
 	"strings"
 
+	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 )
 
@@ -34,11 +35,13 @@ func coalesceReplayEvents(events []interfaces.StreamEvent) []interfaces.StreamEv
 			open = false
 		}
 	}
+	verifiedPublication := types.VerifiedPublicationEnabled()
 	for _, evt := range events {
 		mergeable := deltaResponseTypes[evt.Type] && !evt.Done
 		if open {
 			last := &out[len(out)-1]
-			if mergeable && last.Type == evt.Type && last.ID == evt.ID {
+			replaceAnswer := verifiedPublication && evt.Type == types.ResponseTypeAnswer && evt.Data["replace"] == true
+			if mergeable && !replaceAnswer && last.Type == evt.Type && last.ID == evt.ID {
 				run.WriteString(evt.Content)
 				last.Timestamp = evt.Timestamp
 				if len(evt.Data) > 0 {

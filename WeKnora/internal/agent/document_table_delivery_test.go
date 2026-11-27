@@ -192,6 +192,7 @@ func documentTableFinalDeliveryFixture(t *testing.T, model *mockChat, selectedRo
 }
 
 func TestDocumentTableViewDeliveryUsesExpandedBodyAcrossOrdinaryAndExceptionalPaths(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false")
 	for _, path := range []string{"ordinary", "stalled", "final"} {
 		t.Run(path, func(t *testing.T) {
 			model := &mockChat{}

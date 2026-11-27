@@ -104,11 +104,25 @@ func TestQA4Af1RecordedTablePublication(t *testing.T) {
 							r.engine.commitTerminalResult(r.ctx, r.state, "s2c", draft, "", "partial", false)
 						}
 						r.exhaust()
+						r.engine.emitCompletionEvent(r.ctx, r.state, "s2c", "turn", time.Now())
 						answer := r.answer()
 						if variant == "bounded edit" {
-							require.Equal(t, draft, answer)
+							want := draft
+							if types.VerifiedPublicationEnabled() {
+								want = strings.NewReplacer(
+									`<kb doc="棉花周报20240331.pptx" chunk_id="replay-comparison-page" kb_id="replay-library" />`, "〔棉花周报20240331.pptx〕",
+									`<evidence evidence_id="`+citation+`" />`, "〔棉花数据库.xlsx〕",
+								).Replace(want)
+							}
+							require.Equal(t, want, answer)
 						} else {
-							require.Contains(t, answer, "原报数值不同")
+							if types.VerifiedPublicationEnabled() {
+								require.Contains(t, answer, "给出的数字不同")
+								require.Contains(t, answer, "32.27")
+								require.NotContains(t, answer, "298.93291576470585")
+							} else {
+								require.Contains(t, answer, "原报数值不同")
+							}
 							require.Equal(t, 1, strings.Count(answer, "331.2"))
 						}
 						for _, witness := range []string{"331.2", "298.93", "2023-10-31", "A87", "G87", "棉花周报", "棉花数据库"} {
@@ -117,7 +131,6 @@ func TestQA4Af1RecordedTablePublication(t *testing.T) {
 						require.NotContains(t, answer, "万吨")
 						require.NotContains(t, answer, "217.2")
 						require.Zero(t, r.model.reviewCalls)
-						r.engine.emitCompletionEvent(r.ctx, r.state, "s2c", "turn", time.Now())
 						require.Equal(t, answer, completion.FinalAnswer)
 					})
 				}
@@ -223,7 +236,13 @@ func TestQA4Af1ReceiptPairKeepsScopeAndUnits(t *testing.T) {
 				require.True(t, aligned, "original readings can be compared as printed numerals")
 				d := terminalCoverageDelivery{chinese: true}
 				d.addComparison(readings, true)
-				require.Equal(t, []string{"两处来源的原报数值不同。原单位不同，无法直接比较量值。"}, d.conclusions)
+				if types.VerifiedPublicationEnabled() {
+					require.Len(t, d.conclusions, 1)
+					require.Contains(t, d.conclusions[0], "高于")
+					require.Contains(t, d.conclusions[0], "数字之差不能作为实物量之差")
+				} else {
+					require.Equal(t, []string{"两处来源的原报数值不同。原单位不同，无法直接比较量值。"}, d.conclusions)
+				}
 				return
 			}
 			require.False(t, aligned)

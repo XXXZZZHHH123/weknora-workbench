@@ -239,7 +239,7 @@ func (h *MessageHandler) LoadMessages(c *gin.Context) {
 		h.attachPendingPrompts(ctx, sessionID, messages)
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
-			"data":    rewriter.RewriteMessagesResponse(ctx, messages),
+			"data":    rewriter.RewriteMessagesResponse(ctx, types.PublicAgentMessages(messages)),
 		})
 		return
 	}
@@ -280,7 +280,7 @@ func (h *MessageHandler) LoadMessages(c *gin.Context) {
 	h.attachPendingPrompts(ctx, sessionID, messages)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    rewriter.RewriteMessagesResponse(ctx, messages),
+		"data":    rewriter.RewriteMessagesResponse(ctx, types.PublicAgentMessages(messages)),
 	})
 }
 

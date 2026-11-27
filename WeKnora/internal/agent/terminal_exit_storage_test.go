@@ -18,6 +18,7 @@ import (
 )
 
 func TestTerminalEngineExitsKeepVisibleCompletionAndStoredAnswerTogether(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	const sourceDraft = "Equipment.xlsx reports 47.25 on 2021-06-03, from B15."
 	for _, flag := range []string{"true", "false"} {
 		for _, outlet := range []string{"collaboration parent", "parent citation", "iteration budget", "verification failure", "authorization revoked"} {
@@ -70,7 +71,9 @@ func TestTerminalEngineExitsKeepVisibleCompletionAndStoredAnswerTogether(t *test
 				switch outlet {
 				case "collaboration parent", "parent citation":
 					runtime, seed := engineCollaboration(t)
-					binding, err := runtime.AcquireParent(ctx, seed.Scope)
+					scope := seed.Scope
+					scope.ID = message.ID
+					binding, err := runtime.AcquireParent(ctx, scope)
 					require.NoError(t, err)
 					engine.SetCollaboration(binding)
 					if outlet == "parent citation" {
@@ -148,8 +151,8 @@ func TestTerminalEngineExitsKeepVisibleCompletionAndStoredAnswerTogether(t *test
 					require.NotContains(t, first, "47.25")
 					require.NotContains(t, first, "Equipment.xlsx")
 				case "parent citation":
-					require.Equal(t, "The indicator measures covered area.", documentAnswerCitation.ReplaceAllString(first, ""))
-					require.Equal(t, []string{"contract-supporting"}, uniqueCandidateCitationIDs(first))
+					require.Equal(t, "The indicator measures covered area.〔Indicator handbook〕", first)
+					require.False(t, types.HasAgentAnswerMarkup(first))
 				default:
 					for _, fact := range []string{"Equipment.xlsx", "47.25", "2021-06-03", "B15"} {
 						require.Contains(t, first, fact)

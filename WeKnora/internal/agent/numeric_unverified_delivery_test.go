@@ -95,6 +95,7 @@ func TestNumericUnverifiedStalledStopHasNoRepairRoundLeft(t *testing.T) {
 }
 
 func TestNumericUnverifiedPreservesOnlyUnmatchedOccurrencesAndReferences(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	for _, envelope := range []bool{false, true} {
 		t.Run(map[bool]string{false: "prose", true: "envelope"}[envelope], func(t *testing.T) {
 			e, state := citationDeliveryFixture(t, &mockChat{}, true)
@@ -122,7 +123,8 @@ func TestNumericUnverifiedPreservesOnlyUnmatchedOccurrencesAndReferences(t *test
 			e.emitCompletionEvent(t.Context(), state, "numeric", "message", time.Now())
 			require.Len(t, state.KnowledgeRefs, 1)
 			require.Equal(t, "current-b", state.KnowledgeRefs[0].ID)
-			require.Contains(t, state.FinalAnswer, citation)
+			require.Contains(t, state.FinalAnswer, "〔Actual source〕")
+			require.False(t, types.HasAgentAnswerMarkup(state.FinalAnswer))
 		})
 	}
 }

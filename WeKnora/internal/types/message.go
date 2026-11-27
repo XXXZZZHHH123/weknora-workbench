@@ -521,7 +521,8 @@ type Message struct {
 	// RunState refines an incomplete message: MessageRunStateAwaitingInput
 	// means the run ended suspended on a prompt instead of still generating.
 	// Empty means IsCompleted alone describes the message.
-	RunState string `json:"run_state,omitempty" gorm:"type:varchar(32);not null;default:''"`
+	RunState  string `json:"run_state,omitempty" gorm:"type:varchar(32);not null;default:''"`
+	RunReason string `json:"run_reason,omitempty" gorm:"-"`
 	// Whether this response is a fallback (no knowledge base match found)
 	IsFallback bool `json:"is_fallback,omitempty"`
 	// Agent total execution duration in milliseconds (from query start to answer start)
@@ -598,7 +599,8 @@ type MessageExecutionContext struct {
 	LangfuseTraceparent string `json:"langfuse_traceparent,omitempty"`
 	// Written only after a real artifact collector error; never a model claim or
 	// a request capability. Kept in existing JSON storage for durable UI replay.
-	ArtifactDeliveryIncomplete bool `json:"artifact_delivery_incomplete,omitempty"`
+	ArtifactDeliveryIncomplete bool   `json:"artifact_delivery_incomplete,omitempty"`
+	EvidencePartialReason      string `json:"evidence_partial_reason,omitempty"`
 }
 
 func (c MessageExecutionContext) Value() (driver.Value, error) {
@@ -693,6 +695,15 @@ const MessageRunStateInterrupted = "interrupted"
 
 // MessageRunStateIncomplete marks a closed run that did not produce an answer.
 const MessageRunStateIncomplete = "incomplete"
+
+// MessageRunStateEvidencePartial marks closed runs with a supported answer
+// that could not settle the complete request.
+const MessageRunStateEvidencePartial = "evidence_partial"
+
+func (m *Message) SetEvidencePartialReason(reason string) {
+	m.RunState, m.RunReason = MessageRunStateEvidencePartial, reason
+	m.ExecutionContext.EvidencePartialReason = reason
+}
 
 var ErrMessageRunInterrupted = fmt.Errorf("assistant message was finalized as interrupted")
 

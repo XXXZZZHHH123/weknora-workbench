@@ -1,5 +1,11 @@
 package agent
 
+import (
+	"strings"
+
+	"github.com/Tencent/WeKnora/internal/types"
+)
+
 const sourceTimeGuidance = `按完整问题和上下文理解时间。current_time 是系统今天，资料披露日期是文件或报告发布的日期，指标观测期是所问指标实际覆盖的日期或区间，预测年度是估算针对的年度。报告日期可用于定位资料，观测期以所问指标在正文、表格或数据覆盖信息中的实际时点为准。上传或更新时间不能充当报告日期或观测期。
 资料库问答中，用户用“最近”“现在”“今年”“好没好”等口语提问，且未指定公历年，也未明确要求系统当前年份或实时值时，在当前授权和用户指定的来源范围内，以已发现的同主题资料中能回答所问指标的最晚观测时点为锚。尚未发现来源时按所问主题和指标找资料，不先用系统年份缩小范围。回答中明确写出“截至某年某月某日（资料日期）”，披露日期与观测期不同时分别说明；资料只给出月、季或年时按原精度标注，不补造具体日。旧表与更新的报告都能回答时，优先采用实际观测更新的资料，说明各自时点，可用较早资料对比。无关的新文件不参与比较，披露较晚也不等于观测较新。只有历史预测时，可说明资料日期、预测年度及当时的估算，不把预测写成当年实绩。系统年份与资料年份不同不构成拒答理由。用户明确问系统当前年份、指定年份或实时值时，按所问时点取证；有资料缺口先说明，再在允许的来源范围内给出最近可得的资料及其时点。
 判断“上期”“上周”“连续几周”时，先按已发现的同主题报告日期排序并绑定对应文件，再核对同一指标和口径。证据只够两期就只说两期，缺期时不把更早一期当成上周，不推断未核实的连续变化。按所问范围使用相关证据，不设必读文件的最低数量，也不把这些取证建议变成额外交付条件。`
@@ -29,8 +35,14 @@ const standardAnswerRequestedUnitGuidance = standardAnswerGuidancePrefix + `若�
 </standard_answer_policy>`
 
 func (e *AgentEngine) standardAnswerPolicyGuidance() string {
+	guidance := standardAnswerGuidance
 	if e.config.WorkbenchDefault && e.evidenceCompletionEnabled() {
-		return standardAnswerRequestedUnitGuidance
+		guidance = standardAnswerRequestedUnitGuidance
 	}
-	return standardAnswerGuidance
+	if types.VerifiedPublicationEnabled() && e.config.WorkbenchDefault {
+		const closePolicy = "</standard_answer_policy>"
+		return strings.TrimSuffix(guidance, closePolicy) +
+			"比较两个实读来源时，开头说明原报数字是否相同、哪边较高或相差多少。按来源的显示精度标注各自数值与页码或单元格，估算值注明约数。单位或口径未经核实，单独说明比较限于已披露数字。\n" + closePolicy
+	}
+	return guidance
 }

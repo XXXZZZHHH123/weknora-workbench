@@ -121,6 +121,32 @@ def test_exact_date_cells_preserve_native_number_format(original, monkeypatch, f
     assert formats == expected
 
 
+@pytest.mark.parametrize(('flag', 'include_format'), [(None, True), ('true', True), ('false', False)])
+def test_original_numeric_receipt_separates_value_and_display_format(original, monkeypatch, flag, include_format):
+    if flag is None:
+        monkeypatch.delenv('WEKNORA_AGENT_VERIFIED_PUBLICATION', raising=False)
+    else:
+        monkeypatch.setenv('WEKNORA_AGENT_VERIFIED_PUBLICATION', flag)
+    store, dataset, path = original
+    source = path / 'source.xlsx'
+    workbook = load_workbook(source)
+    cell = workbook['月度']['B2']
+    cell.value = 44.236
+    cell.number_format = '0.0'
+    workbook.save(source)
+    workbook.close()
+    manifest_path = path / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    manifest['sha256'] = hashlib.sha256(source.read_bytes()).hexdigest()
+    dump(manifest_path, manifest)
+
+    result = inspect_source(store, dataset, sheet='月度', ranges=['B2'])
+    assert result['hash_verified'] and result['sha256'] == manifest['sha256']
+    observed = result['ranges'][0]['cells'][0]
+    assert observed['cell'] == 'B2' and observed['value'] == 44.236
+    assert observed.get('number_format') == ('0.0' if include_format else None)
+
+
 def _observe_workbook_readers(monkeypatch):
     opened = []
     original_load = source_inspection.load_workbook

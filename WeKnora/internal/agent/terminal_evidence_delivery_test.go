@@ -138,6 +138,15 @@ func TestTerminalEvidenceCompletionFallback(t *testing.T) {
 			done, streamed := recorder.snapshot()
 			require.Equal(t, state.FinalAnswer, streamed)
 			text := state.FinalAnswer
+			if test.name == "current directory only" && types.VerifiedPublicationEnabled() {
+				require.Equal(t, 1, done)
+				require.Equal(t, e.turnReview.TerminalReceipt.notice, text)
+				require.Contains(t, text, "Equipment.xlsx")
+				require.Contains(t, text, "未核实所问的原值")
+				require.NotContains(t, text, "47.25")
+				require.NotContains(t, text, "没有有效观测值")
+				return
+			}
 			if notice := e.turnReview.TerminalReceipt.notice; notice != "" {
 				require.Zero(t, done)
 				require.Empty(t, text)

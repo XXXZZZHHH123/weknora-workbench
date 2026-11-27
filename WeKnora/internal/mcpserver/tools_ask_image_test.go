@@ -102,18 +102,29 @@ func (s *completionAskMessageService) UpdateMessage(_ context.Context, message *
 }
 
 func TestAskPublishesFailureStatusWithoutUncheckedAnswer(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	const notice = "The selected period remains unverified."
 	const verified = "Verified source reading."
 	const interruptedNotice = "The original value was verified. The report check was interrupted."
+	const privateReceipt = "private-mcp-source-receipt"
+	partial := &event.AgentCompleteData{FinalAnswer: verified, Incomplete: &event.AgentIncompleteData{
+		Reason: "endpoint_evidence_unverified", Notice: "Internal notice", PartialAnswer: true,
+	}, EvidenceRefs: []interface{}{
+		types.EvidenceReference{ID: "mcp-reading", Title: "Register.xlsx", Kind: types.EvidenceKindRawCell,
+			CandidateHash: types.EvidenceCandidateHash(verified), Manifest: json.RawMessage(`{"private":"` + privateReceipt + `"}`),
+			Sources: []types.EvidenceSourceSnapshot{{KnowledgeID: privateReceipt}}},
+		map[string]any{"id": "untyped-navigation", "manifest": privateReceipt},
+	}}
 	for _, scenario := range []struct {
 		name, state, content string
 		completion           *event.AgentCompleteData
 		upstreamError        error
 		errorEvent           string
 		persisted            bool
+		legacy               bool
 	}{
 		{name: "typed_incomplete", state: types.MessageRunStateIncomplete, content: notice,
-			completion: &event.AgentCompleteData{Incomplete: &event.AgentIncompleteData{Reason: "endpoint_evidence_unverified", Notice: notice}},
+			completion: &event.AgentCompleteData{FinalAnswer: "Unchecked draft.", Incomplete: &event.AgentIncompleteData{Reason: "endpoint_evidence_unverified", Notice: notice}},
 			errorEvent: "Earlier retry failed."},
 		{name: "no_events", state: types.MessageRunStateIncomplete, content: "the run ended without completed answer content"},
 		{name: "empty_complete", state: types.MessageRunStateIncomplete, content: "the run ended without completed answer content", completion: &event.AgentCompleteData{}},
@@ -123,8 +134,15 @@ func TestAskPublishesFailureStatusWithoutUncheckedAnswer(t *testing.T) {
 		{name: "persisted_interruption", state: types.MessageRunStateInterrupted, content: interruptedNotice,
 			upstreamError: types.ErrMessageRunInterrupted, persisted: true},
 		{name: "complete", content: verified, completion: &event.AgentCompleteData{FinalAnswer: verified}},
+		{name: "partial_with_answer", state: types.MessageRunStateEvidencePartial, content: verified,
+			completion: partial},
+		{name: "partial_flag_off", state: types.MessageRunStateIncomplete, content: partial.Incomplete.Notice,
+			completion: partial, legacy: true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
+			if scenario.legacy {
+				t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false")
+			}
 			f := newResourceURLFixture(t)
 			sessions := &completionAskSessionService{run: func(ctx context.Context, req *types.QARequest, bus *event.EventBus) error {
 				if scenario.name != "no_events" {
@@ -161,15 +179,32 @@ func TestAskPublishesFailureStatusWithoutUncheckedAnswer(t *testing.T) {
 				Arguments: map[string]any{"question": "What did the selected source report?"},
 			}})
 			require.NoError(t, err)
-			if scenario.state == "" {
+			if scenario.state == "" || scenario.state == types.MessageRunStateEvidencePartial {
 				require.False(t, result.IsError)
-				require.Equal(t, verified, result.StructuredContent.(map[string]any)["answer"])
+				structured := result.StructuredContent.(map[string]any)
+				require.Equal(t, verified, structured["answer"])
+				if scenario.state == types.MessageRunStateEvidencePartial {
+					require.Equal(t, scenario.state, structured["run_state"])
+					require.Equal(t, scenario.completion.Incomplete.Reason, structured["run_reason"])
+					refs := structured["evidence_references"].(types.EvidenceReferences)
+					require.Len(t, refs, 1)
+					require.Equal(t, "mcp-reading", refs[0].ID)
+					require.Equal(t, "Register.xlsx", refs[0].Title)
+					require.Empty(t, refs[0].Sources)
+					require.Empty(t, refs[0].Manifest)
+					require.NotContains(t, result.Content[0].(mcp.TextContent).Text, "Internal notice")
+					require.NotContains(t, result.Content[0].(mcp.TextContent).Text, "Unchecked draft.")
+				}
 			} else {
 				require.True(t, result.IsError)
 				require.Empty(t, result.StructuredContent)
 				require.Contains(t, result.Content[0].(mcp.TextContent).Text, scenario.content)
 				require.NotContains(t, result.Content[0].(mcp.TextContent).Text, "Unchecked draft.")
 			}
+			public, err := json.Marshal(result)
+			require.NoError(t, err)
+			require.NotContains(t, string(public), privateReceipt)
+			require.NotContains(t, string(public), "untyped-navigation")
 			if scenario.persisted {
 				require.Empty(t, messages.saved)
 				require.Equal(t, interruptedNotice, messages.interrupted.Content)
@@ -179,6 +214,14 @@ func TestAskPublishesFailureStatusWithoutUncheckedAnswer(t *testing.T) {
 			require.True(t, messages.saved[0].IsCompleted)
 			require.Equal(t, scenario.state, messages.saved[0].RunState)
 			require.Equal(t, scenario.content, messages.saved[0].Content)
+			if scenario.state == types.MessageRunStateEvidencePartial {
+				require.Equal(t, scenario.completion.Incomplete.Reason, messages.saved[0].ExecutionContext.EvidencePartialReason)
+				require.Len(t, messages.saved[0].EvidenceReferences, 1)
+				require.Contains(t, string(messages.saved[0].EvidenceReferences[0].Manifest), privateReceipt)
+			} else {
+				require.Empty(t, messages.saved[0].ExecutionContext.EvidencePartialReason)
+				require.Empty(t, messages.saved[0].EvidenceReferences)
+			}
 		})
 	}
 }

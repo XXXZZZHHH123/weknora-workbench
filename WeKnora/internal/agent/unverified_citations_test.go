@@ -33,6 +33,7 @@ func unverifiedRawCitationFixture(t *testing.T) (*AgentEngine, *types.AgentState
 }
 
 func TestUnverifiedCitationStrictCriticFailureRetainsNavigationWithoutApproval(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	e, state, id := unverifiedRawCitationFixture(t)
 	model := &mockChat{responses: []mockResponse{
 		sourceConsistencyVerdict(`{'complete': true}`),
@@ -54,10 +55,12 @@ func TestUnverifiedCitationStrictCriticFailureRetainsNavigationWithoutApproval(t
 	e.commitTerminalResult(t.Context(), state, "session", answerReviewUnavailableFallback, "", "failed", false)
 	e.emitCompletionEvent(t.Context(), state, "session", "message", time.Now())
 	require.Contains(t, completed.FinalAnswer, "未能完成自动核验")
-	require.Contains(t, completed.FinalAnswer, `evidence_id="`+id+`"`)
+	require.Contains(t, completed.FinalAnswer, "〔Synthetic.pdf〕")
+	require.False(t, types.HasAgentAnswerMarkup(completed.FinalAnswer))
 	require.Equal(t, state.FinalAnswer, completed.FinalAnswer)
 	refs := types.EvidenceReferencesFromInternal(completed.EvidenceRefs)
 	require.Len(t, refs, 1)
+	require.Equal(t, id, refs[0].ID)
 	require.Equal(t, "unverified", refs[0].ReviewStatus)
 	require.Equal(t, candidateTextDigest(completed.FinalAnswer), refs[0].CandidateHash)
 	require.NoError(t, refs[0].ValidateStored())

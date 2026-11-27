@@ -119,8 +119,8 @@ func TestQA4Af2SourceHandoffAfterNaturalStop(t *testing.T) {
 					r.engine.modelContext.CitableEvidenceHandle(citation) + `"/>`
 				r.run(chatAnswer(draft))
 				require.NotContains(t, r.guards.pendingRuntimeNotice, "unread_document_pages")
-				answer := r.answer()
 				af2ReplayComplete(t, r.engine, r.ctx, r.state, "s2c")
+				answer := r.answer()
 				require.Contains(t, answer, "两处原报数值不一致")
 				require.Contains(t, answer, "棉花周报20240331.pptx 第6页“中国棉花平衡表”的 2023-10 行，“工商业期末库存”为 331.2")
 				require.Contains(t, answer, "棉花数据库.xlsx 中国棉花平衡表在 2023-10-31（A87）记录的“工商业期末库存”为 298.93（G87）")
@@ -237,10 +237,10 @@ func TestQA4Af2UnboundClosingFieldReturnsToOrdinaryRead(t *testing.T) {
 				outcome = run()
 			}
 			require.Equal(t, iterOutcomeBreak, outcome)
+			af2ReplayComplete(t, r.engine, r.ctx, &r.state, "session")
 			done, answer := visible.snapshot()
 			require.Equal(t, 1, done)
 			require.Equal(t, r.state.FinalAnswer, answer)
-			af2ReplayComplete(t, r.engine, r.ctx, &r.state, "session")
 			require.Contains(t, answer, "2024年3月取不到")
 			require.Contains(t, answer, "2023-09-22 收盘价 17110（工作表“郑棉期货”，B4705单元格，对应日期在A4705）")
 		})
@@ -345,8 +345,8 @@ func TestQA4Af2WarehouseSupplementUsesExistingSourceRound(t *testing.T) {
 				require.Empty(t, r.guards.pendingRuntimeNotice, "neither of the successfully read sources needs another read")
 				r.run(chatAnswer(draft))
 			}
-			answer := r.answer()
 			af2ReplayComplete(t, r.engine, r.ctx, r.state, "s2c")
+			answer := r.answer()
 			require.Contains(t, answer, "2024-03-10 没有有效记录")
 			require.Contains(t, answer, "2023-09-21，B3340 原值 5160")
 			require.Contains(t, answer, "独立来源《棉花周报20240310.pptx》第18页披露郑棉仓单合计60.6万吨")

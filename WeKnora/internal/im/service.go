@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -775,7 +776,9 @@ func applyIMCompleteDataToMessage(msg *types.Message, data event.AgentCompleteDa
 		return false
 	}
 	msg.IsCompleted = true
-	if data.Incomplete != nil {
+	if types.VerifiedPublicationEnabled() && data.HasPartialAnswer() {
+		msg.SetEvidencePartialReason(data.Incomplete.Reason)
+	} else if data.Incomplete != nil {
 		msg.RunState = types.MessageRunStateIncomplete
 	}
 	msg.AgentDurationMs = data.TotalDurationMs
@@ -789,6 +792,9 @@ func applyIMCompleteDataToMessage(msg *types.Message, data event.AgentCompleteDa
 			msg.KnowledgeReferences = types.References(refs)
 		}
 	}
+	if types.VerifiedPublicationEnabled() && (data.Incomplete == nil || data.HasPartialAnswer()) {
+		msg.EvidenceReferences = types.EvidenceReferencesFromInternal(data.EvidenceRefs)
+	}
 	if steps := sanitizeIMAgentSteps(data.AgentSteps); len(steps) > 0 {
 		msg.AgentSteps = steps
 	}
@@ -797,6 +803,12 @@ func applyIMCompleteDataToMessage(msg *types.Message, data event.AgentCompleteDa
 
 func saveIMQAOutcome(ctx context.Context, service interfaces.MessageService, message *types.Message, answer, runState string) {
 	message.Content, message.RunState, message.IsCompleted = answer, runState, true
+	if types.VerifiedPublicationEnabled() && len(message.EvidenceReferences) > 0 {
+		hash := types.EvidenceCandidateHash(answer)
+		message.EvidenceReferences = slices.DeleteFunc(message.EvidenceReferences, func(ref types.EvidenceReference) bool {
+			return ref.CandidateHash != hash
+		})
+	}
 	if err := service.UpdateMessage(ctx, message); err != nil {
 		logger.Warnf(ctx, "[IM] Failed to update assistant message: %v", err)
 	}
@@ -2714,13 +2726,18 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 			return nil
 		}
 		agentDone = true
-		if data.Incomplete != nil {
+		if data.Incomplete != nil && assistantMsg.RunState != types.MessageRunStateEvidencePartial {
 			terminalStatus = &imQAStatus{notice: data.Incomplete.Notice}
 			answerBuilder.Reset()
 			answerOuter.Reset()
 			agentLiveAnswer.Reset()
 		} else {
 			agentCompleteFinalAnswer = data.FinalAnswer
+			if useAgent && types.VerifiedPublicationEnabled() && data.FinalAnswer != "" {
+				answerBuilder.Reset()
+				answerOuter.Reset()
+				agentLiveAnswer.Reset()
+			}
 			mergeIMAgentAnswerBuffers(&answerBuilder, &answerOuter, &agentLiveAnswer, data.FinalAnswer)
 		}
 		bufMu.Unlock()
@@ -2960,13 +2977,13 @@ loop:
 	finalErr := qaErr
 	status := terminalStatus
 	completed := agentDone
+	runState := assistantMsg.RunState
 	noVisibleContent := !streamedAny && strings.TrimSpace(resolvedAnswer) == ""
 	authServices := append([]imMCPAuthService(nil), mcpAuthServices...)
 	bufMu.Unlock()
 
 	outCtx := imOutboundContext(ctx)
 	finalDisplay := cleanIMContent(outCtx, FormatIMFinalFromParts(parts), fileResolver)
-	runState := ""
 	interrupted := s.persistedIMInterruption(outCtx, assistantMsg, finalErr)
 	switch {
 	case interrupted != nil:
@@ -2999,7 +3016,7 @@ loop:
 	}
 	if notice := s.buildIMMCPAuthNotice(ctx, authServices); notice != "" {
 		finalDisplay = appendIMAuthNotice(finalDisplay, notice)
-		if runState == "" {
+		if runState == "" && len(assistantMsg.EvidenceReferences) == 0 {
 			answer = appendIMAuthNotice(answer, notice)
 		}
 	}
@@ -3164,10 +3181,11 @@ func (s *Service) runQA(ctx context.Context, session *types.Session, query strin
 			answerMu.Unlock()
 			return nil
 		}
-		if data.Incomplete != nil {
+		if data.Incomplete != nil && assistantMsg.RunState != types.MessageRunStateEvidencePartial {
 			terminalStatus = &imQAStatus{notice: data.Incomplete.Notice}
 			answerBuilder.Reset()
-		} else if answerBuilder.Len() == 0 && strings.TrimSpace(data.FinalAnswer) != "" {
+		} else if strings.TrimSpace(data.FinalAnswer) != "" && (answerBuilder.Len() == 0 || useAgent && types.VerifiedPublicationEnabled()) {
+			answerBuilder.Reset()
 			answerBuilder.WriteString(data.FinalAnswer)
 		}
 		answerMu.Unlock()
@@ -3270,15 +3288,15 @@ func (s *Service) runQA(ctx context.Context, session *types.Session, query strin
 		}
 		return appendIMAuthNotice(imNoAnswerFallback, s.buildIMMCPAuthNotice(ctx, mcpAuthServices)), nil
 	}
-	if notice := s.buildIMMCPAuthNotice(ctx, mcpAuthServices); notice != "" {
-		answer = appendIMAuthNotice(answer, notice)
+	outbound := appendIMAuthNotice(answer, s.buildIMMCPAuthNotice(ctx, mcpAuthServices))
+	if len(assistantMsg.EvidenceReferences) == 0 {
+		answer = outbound
 	}
 
-	// Update assistant message with the full answer (including citation tags for web rendering).
-	saveIMQAOutcome(ctx, s.messageService, assistantMsg, answer, "")
+	saveIMQAOutcome(ctx, s.messageService, assistantMsg, answer, assistantMsg.RunState)
 
 	// Return raw answer — callers apply cleanIMContent with the appropriate FileService.
-	return answer, nil
+	return outbound, nil
 }
 
 // ── CRUD operations for IM channels ──

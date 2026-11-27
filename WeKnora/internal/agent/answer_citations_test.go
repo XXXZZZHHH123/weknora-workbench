@@ -45,6 +45,20 @@ func approveCitationCandidate(e *AgentEngine, state *types.AgentState, candidate
 }
 
 func TestCitationDeliveryNormalFinishNormalizesAndPublishesPersistableReferences(t *testing.T) {
+	for _, publication := range []string{"false", ""} {
+		name := "legacy"
+		if publication == "" {
+			name = "verified_default"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", publication)
+			testCitationDeliveryNormalFinish(t, publication == "")
+		})
+	}
+}
+
+func testCitationDeliveryNormalFinish(t *testing.T, verified bool) {
+	t.Helper()
 	model := &mockChat{}
 	e, state := citationDeliveryFixture(t, model, true)
 	handle := e.modelContext.CitableChunkHandle("current-b")
@@ -56,6 +70,8 @@ func TestCitationDeliveryNormalFinishNormalizesAndPublishesPersistableReferences
 	var streamed []*types.SearchResult
 	var completed []*types.SearchResult
 	var approvedAtCompletion bool
+	recorder := &terminalAnswerRecorder{}
+	recorder.attach(e.eventBus)
 	e.eventBus.On(event.EventAgentReferences, func(_ context.Context, evt event.Event) error {
 		require.NotEmpty(t, evt.ID)
 		order = append(order, "references")
@@ -64,7 +80,7 @@ func TestCitationDeliveryNormalFinishNormalizesAndPublishesPersistableReferences
 	})
 	e.eventBus.On(event.EventAgentComplete, func(_ context.Context, evt event.Event) error {
 		order = append(order, "complete")
-		approvedAtCompletion = e.candidateApprovalCurrent(state.FinalAnswer, state)
+		approvedAtCompletion = e.candidateApprovalCurrent(e.turnReview.Last.Candidate, state)
 		for _, raw := range evt.Data.(event.AgentCompleteData).KnowledgeRefs {
 			completed = append(completed, raw.(*types.SearchResult))
 		}
@@ -74,7 +90,15 @@ func TestCitationDeliveryNormalFinishNormalizesAndPublishesPersistableReferences
 	_, err := e.executeLoop(t.Context(), state, "Explain the requested indicator.", messages, nil, "session", "reply")
 	require.NoError(t, err)
 	require.True(t, state.IsComplete)
-	require.Contains(t, state.FinalAnswer, `chunk_id="current-b"`)
+	if verified {
+		require.Equal(t, "The indicator measures covered area.〔Actual source〕", state.FinalAnswer)
+		require.False(t, types.HasAgentAnswerMarkup(state.FinalAnswer))
+	} else {
+		require.Contains(t, state.FinalAnswer, `chunk_id="current-b"`)
+	}
+	done, streamedAnswer := recorder.snapshot()
+	require.Equal(t, 1, done)
+	require.Equal(t, state.FinalAnswer, streamedAnswer)
 	require.NotContains(t, state.FinalAnswer, "<ref")
 	require.True(t, approvedAtCompletion, "normalization, commit and completion must preserve the approved candidate/evidence binding before turn-local review context is released")
 	require.Equal(t, []string{"references", "complete"}, order)

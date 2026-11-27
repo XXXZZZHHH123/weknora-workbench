@@ -16,6 +16,8 @@ import (
 )
 
 func TestQA4Stage2ETableComparisonHistory(t *testing.T) {
+	// Replay the archived terminal body and citation protocol byte for byte.
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false")
 	t.Setenv("WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE", "false")
 	t.Run("s2-1 actual same-table reads", func(t *testing.T) {
 		r := newQA4Stage2CReplay(t, "s2-1-kb28", true, false)

@@ -266,6 +266,7 @@ func (s *sourceTimeDocumentStore) GetKnowledgeByIDOnly(_ context.Context, id str
 }
 
 func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	const queryTool = "structured_analyze_table"
 	const lastTool = "structured_query_series"
 	const tableResult = `{"kind":"structured_analysis","status":"ok","rows":[],"requested_range":{"start_date":"2021-06-10","end_date":"2021-06-10"},"source":{"file":"设备台账.xlsx"},"source_semantics":{"published_series_dates":[{"series_id":"hours","metric":"运行时长","sheet":"设备","last_valid_date":"2021-06-07","last_date":"2021-06-09"}]}}`
@@ -404,7 +405,9 @@ func TestMissingDatabaseDateGuidanceAndSupplementalSource(t *testing.T) {
 				require.Contains(t, repair.Content, "按各来源原口径分别交付，不要求用户选择口径")
 				require.True(t, strings.HasPrefix(state.FinalAnswer, dbConclusion+supplement))
 				require.NotContains(t, state.FinalAnswer, "17小时")
-				require.Equal(t, []string{reportChunk}, uniqueCandidateCitationIDs(state.FinalAnswer))
+				require.False(t, types.HasAgentAnswerMarkup(state.FinalAnswer))
+				require.Len(t, state.KnowledgeRefs, 1)
+				require.Equal(t, reportChunk, state.KnowledgeRefs[0].ID)
 			}
 		})
 	}

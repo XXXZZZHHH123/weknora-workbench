@@ -39,19 +39,37 @@ type AgentStep struct {
 	Timestamp time.Time  `json:"timestamp"`  // When this step occurred
 }
 
+// EvidenceReference is the public summary of a message-bound source receipt.
+// Access to the original source is checked separately by the server.
+type EvidenceReference struct {
+	ID            string   `json:"id"`
+	Kind          string   `json:"kind"`
+	Title         string   `json:"title,omitempty"`
+	Summary       string   `json:"summary,omitempty"`
+	ResultID      string   `json:"result_id"`
+	ResultHash    string   `json:"result_hash"`
+	CandidateHash string   `json:"candidate_hash,omitempty"`
+	VersionStatus string   `json:"version_status,omitempty"`
+	ReviewStatus  string   `json:"review_status,omitempty"`
+	ArtifactIDs   []string `json:"artifact_ids,omitempty"`
+}
+
 // Message message information
 type Message struct {
-	ID                  string          `json:"id"`
-	SessionID           string          `json:"session_id"`
-	RequestID           string          `json:"request_id"`
-	Content             string          `json:"content"`
-	Role                string          `json:"role"`
-	KnowledgeReferences []*SearchResult `json:"knowledge_references"`
-	AgentSteps          []AgentStep     `json:"agent_steps,omitempty"` // Agent execution steps (only for assistant messages)
-	IsCompleted         bool            `json:"is_completed"`
-	Channel             string          `json:"channel,omitempty"` // Source channel: "web", "api", "im", etc.
-	CreatedAt           time.Time       `json:"created_at"`
-	UpdatedAt           time.Time       `json:"updated_at"`
+	ID                  string              `json:"id"`
+	SessionID           string              `json:"session_id"`
+	RequestID           string              `json:"request_id"`
+	Content             string              `json:"content"`
+	Role                string              `json:"role"`
+	KnowledgeReferences []*SearchResult     `json:"knowledge_references"`
+	EvidenceReferences  []EvidenceReference `json:"evidence_references,omitempty"`
+	AgentSteps          []AgentStep         `json:"agent_steps,omitempty"` // Agent execution steps (only for assistant messages)
+	IsCompleted         bool                `json:"is_completed"`
+	RunState            string              `json:"run_state,omitempty"`
+	RunReason           string              `json:"run_reason,omitempty"`
+	Channel             string              `json:"channel,omitempty"` // Source channel: "web", "api", "im", etc.
+	CreatedAt           time.Time           `json:"created_at"`
+	UpdatedAt           time.Time           `json:"updated_at"`
 }
 
 // MessageListResponse message list response

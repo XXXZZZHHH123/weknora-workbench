@@ -327,12 +327,12 @@ func currentCitationReferenceRows(state *types.AgentState) (map[string]*types.Se
 	return rows, conflicts
 }
 
-func (e *AgentEngine) publishFinalKnowledgeReferences(ctx context.Context, state *types.AgentState, sessionID string) {
+func (e *AgentEngine) publishFinalKnowledgeReferences(ctx context.Context, state *types.AgentState, sessionID string) bool {
 	// Completion is also the checkpoint/stop event. Only replace collected
 	// durable state after this run actually committed its checked answer; an
 	// interrupted, suspended or failed run must retain its resumable references.
 	if state == nil || !state.IsComplete || state.Suspended != nil || !e.turnReview.Committed {
-		return
+		return false
 	}
 	approved := e.candidateApprovalCurrent(state.FinalAnswer, state)
 	if !approved {
@@ -345,13 +345,20 @@ func (e *AgentEngine) publishFinalKnowledgeReferences(ctx context.Context, state
 		state.KnowledgeRefs = e.currentCandidateKnowledgeReferences(state.FinalAnswer, state, e.turnReview.Conversation)
 		state.EvidenceRefs = e.currentCandidateEvidenceReferences(state.FinalAnswer, state, ctx)
 	} else if !e.publishUnverifiedCitationReferences(ctx, state) {
-		return
+		return false
 	}
 	common.PipelineInfo(ctx, "Agent", "final_citation_delivery", map[string]interface{}{
 		"enabled": e.config.CitationsEnabled(), "canonical_citation_count": len(uniqueCandidateCitationIDs(state.FinalAnswer)),
 		"published_reference_count": len(state.KnowledgeRefs),
 		"published_evidence_count":  len(state.EvidenceRefs),
 	})
+	if !types.VerifiedPublicationEnabled() {
+		e.emitFinalAnswerReferences(ctx, state, sessionID)
+	}
+	return true
+}
+
+func (e *AgentEngine) emitFinalAnswerReferences(ctx context.Context, state *types.AgentState, sessionID string) {
 	if len(state.KnowledgeRefs)+len(state.EvidenceRefs) == 0 || e.eventBus == nil {
 		return
 	}

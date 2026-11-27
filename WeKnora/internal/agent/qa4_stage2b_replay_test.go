@@ -69,6 +69,8 @@ func (m *qa4Stage2Model) ChatStream(ctx context.Context, messages []chat.Message
 }
 
 func TestQA4Stage2BHistoricalReplay(t *testing.T) {
+	// Replay the archived terminal body and citation protocol byte for byte.
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false")
 	for _, tc := range []struct {
 		name, file string
 		enabled    bool

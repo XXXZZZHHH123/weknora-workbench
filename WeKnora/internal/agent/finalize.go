@@ -21,6 +21,9 @@ type finalAnswerOptions struct {
 	stopReason         string
 	assistantMessageID string
 	chartAnswer        *boundedChartAnswer
+	// Recovered budget delivery still needs the durable parent fence. The
+	// callback checks the parent context rather than the model's deadline.
+	recoveredPublicationFence func() (bool, error)
 }
 
 // streamFinalAnswerToEventBus streams the final answer generation through EventBus
@@ -38,6 +41,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	e.turnReview.Query, e.turnReview.Conversation = query, append([]chat.Message(nil), conversation...)
 	e.turnReview.TerminalInput = e.terminalEvidenceRevision(ctx, state)
 	e.turnReview.TerminalInput.task = "" // The checked task is captured separately.
+	publicationCtx := ctx
 	ctx, cancelFinalBudget := e.standardAnswerFinalContext(ctx, state)
 	defer cancelFinalBudget()
 	if hasWorkspaceExecution(state) {
@@ -103,12 +107,29 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	failure := terminalNoFailure
 	truncated := false
 	overflowRetried := false
+	recoveryActivated := false
+	recoveryOverflow := false
 	// Synthesis is an exceptional final path (iteration exhaustion or API
 	// recovery). Buffer it until verified, so malformed/unsupported drafts do
 	// not become the visible terminal answer while a repair is still running.
 	for attempt := 0; attempt < 3; attempt++ {
 		e.emitProgress(ctx, "generation", state.CurrentRound, sessionID)
-		inputTokens := e.finalAnswerInputTokens(messages, runtimeNotice)
+		slotNotice := runtimeNotice
+		inputTokens := e.finalAnswerInputTokens(messages, slotNotice)
+		var recovery finalSourceRecovery
+		if preliminary && !recoveryOverflow {
+			recovery = e.finalSourceRecovery(ctx, state, attempt)
+			if len(recovery.tools) != 0 {
+				recoveryNotice := recovery.notice + "\n" + e.evidenceCompletionFinalNotice()
+				recoveryTokens := e.finalAnswerInputTokens(messages, recoveryNotice) + e.tokenEstimator.EstimateTools(recovery.tools)
+				reserved := min(e.getCompletionTokenBudget(), 4096) + contextSafetyTokens
+				if e.config.MaxContextTokens > 0 && recoveryTokens+reserved > e.config.MaxContextTokens {
+					recovery = finalSourceRecovery{}
+				} else {
+					inputTokens, slotNotice, recoveryActivated = recoveryTokens, recoveryNotice, true
+				}
+			}
+		}
 		budget := e.clampCompletionBudgetToContext(inputTokens)
 		if budget > 4096 {
 			budget = 4096
@@ -122,12 +143,16 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			reasoning = chat.ReasoningEffort(e.config.ReviewReasoningEffort)
 		}
 		opts := &chat.ChatOptions{
-			RuntimeNotice: runtimeNotice,
+			RuntimeNotice: slotNotice,
 			Temperature:   e.config.Temperature, MaxCompletionTokens: budget,
 			PromptCacheKey: sessionID, ToolChoice: "none", Thinking: &disabled,
 			ReasoningEffort: reasoning, ThinkingBudgetTokens: 0,
 		}
-		if reviewedDelivery {
+		if len(recovery.tools) != 0 {
+			parallel := true
+			opts.Tools, opts.ToolChoice, opts.ParallelToolCalls = recovery.tools, "auto", &parallel
+		}
+		if reviewedDelivery && len(recovery.tools) == 0 {
 			// Iteration exhaustion and API recovery retain the same explicit
 			// delivery contract as ordinary review rounds. Otherwise escaped
 			// citations would be decoded inside still-serialized JSON, or the
@@ -154,6 +179,13 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			overflow = true
 			err = fmt.Errorf("final answer synthesis reached the context window")
 		}
+		if overflow && recoveryActivated {
+			// The recovery slot is spent. The original remaining prose
+			// attempts can use their own window without a new compaction call.
+			recoveryOverflow = true
+			fullAnswer, failure, truncated = "", terminalBudget, false
+			continue
+		}
 		if overflow && !overflowRetried && chartAnswer == nil {
 			overflowRetried = true
 			compacted, changed := e.compactFinalAnswerContext(ctx, messages, state.CurrentRound+1, runtimeNotice, compaction.ReasonOverflow)
@@ -168,6 +200,20 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		}
 		if err != nil {
 			return err
+		}
+		if len(recovery.tools) != 0 && llmResult != nil && len(llmResult.ToolCalls) != 0 {
+			step, recoveryErr := e.runFinalSourceRecovery(ctx, recovery, llmResult, state, sessionID, options[0].assistantMessageID, query, messages)
+			if recoveryErr != nil {
+				return recoveryErr
+			}
+			if step != nil {
+				messages = e.appendToolResults(messages, *step)
+				conversation = e.appendToolResults(conversation, *step)
+				e.refreshEvidenceCompletion(ctx, query, state, conversation)
+			}
+			// An invalid batch supplies no observations and still spends
+			// this attempt. The last attempt always remains prose-only.
+			continue
 		}
 		fullAnswer = agenttools.StripThinkBlocks(llmResult.Content)
 		if isReviewedAnswerFormat(opts.Format) {
@@ -192,7 +238,11 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			if attempt == 2 {
 				e.turnReview.NumericWarningAllowed = true
 			}
-			decision := e.checkCandidate(ctx, query, fullAnswer, llmResult.ReasoningContent, state, conversation, true)
+			checkCtx := ctx
+			if recoveryActivated {
+				checkCtx = context.WithValue(ctx, finalSourceRecoveryKey{}, true)
+			}
+			decision := e.checkCandidate(checkCtx, query, fullAnswer, llmResult.ReasoningContent, state, conversation, true)
 			checked = decision
 			fullAnswer = decision.Candidate
 			if ctx.Err() != nil {
@@ -228,7 +278,8 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		if chartAnswer != nil {
 			break
 		}
-		if checked.ReasonCode == string(terminalAnswerEvidence) && e.currentCoverageDraftReview(ctx, state).directory {
+		if checked.ReasonCode == string(terminalAnswerEvidence) && e.currentCoverageDraftReview(ctx, state).directory &&
+			(!types.VerifiedPublicationEnabled() || len(recovery.tools) == 0) {
 			// The available native receipts are directories. A text-only
 			// revision cannot obtain the missing underlying observations.
 			fullAnswer, failure, truncated = "", terminalAnswerEvidence, false
@@ -261,7 +312,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 				"delivery":          "reviewed_answer",
 			})
 		}
-		if preliminary {
+		if preliminary && !recoveryActivated {
 			var readStep *types.AgentStep
 			readStep, err = e.finalCoverageRead(ctx, query, state, sessionID, options[0].assistantMessageID, messages, checked)
 			if err != nil {
@@ -288,6 +339,17 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	}
 	if outcome != "answer" && e.collaboration != nil && e.collaboration.Child != nil {
 		return fmt.Errorf("delegated final answer could not be verified")
+	}
+	if len(options) > 0 && options[0].recoveredPublicationFence != nil {
+		recovered, err := options[0].recoveredPublicationFence()
+		if err != nil {
+			return err
+		}
+		if (recovered || failure != terminalNoFailure || terminalCandidateFallback(fullAnswer)) &&
+			e.evidenceCompletionEligible() && e.standardTextDelivery(state) {
+			failure = terminalCollaborationContention
+		}
+		ctx = publicationCtx // Only model work is subject to the synthesis deadline.
 	}
 	e.commitTerminalResult(ctx, state, sessionID, fullAnswer, "", outcome, truncated, failure)
 	logger.Infof(ctx, "[Agent][FinalAnswer] Final answer generated: %d characters", len(fullAnswer))
@@ -399,6 +461,9 @@ func (e *AgentEngine) emitCompletionEvent(
 	}
 	if !state.IsComplete || state.Suspended != nil {
 		state.FinalAnswer = stripCoverageAnswer(state.FinalAnswer)
+		if types.VerifiedPublicationEnabled() {
+			state.FinalAnswer = types.StripAgentAnswerMarkup(state.FinalAnswer)
+		}
 		if terminalCandidateFallback(state.FinalAnswer) {
 			state.FinalAnswer = ""
 		}
@@ -442,6 +507,11 @@ func (e *AgentEngine) emitCompletionEvent(
 	if state.IsComplete && state.Suspended == nil && e.turnReview.TerminalReceipt.notice != "" {
 		receipt := e.turnReview.TerminalReceipt
 		data.Incomplete = &event.AgentIncompleteData{Reason: string(receipt.failure), Notice: receipt.notice}
+		if types.VerifiedPublicationEnabled() && receipt.partial && state.FinalAnswer != "" {
+			data.Incomplete.PartialAnswer, data.Incomplete.Notice = true, state.FinalAnswer
+		} else if types.VerifiedPublicationEnabled() {
+			data.Incomplete.Notice = types.StripAgentAnswerMarkup(receipt.notice)
+		}
 	}
 	e.eventBus.Emit(ctx, event.Event{
 		ID:        generateEventID("complete"),
@@ -471,8 +541,9 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 	} else if receipt.failure == terminalNoFailure && receipt.answerHash == "" {
 		failure = e.terminalCandidateEvidenceFailure(ctx, state, state.FinalAnswer)
 	}
+	qualifiedReferences := false
 	if failure == terminalNoFailure && receipt.failure == terminalNoFailure {
-		e.publishFinalKnowledgeReferences(ctx, state, sessionID)
+		qualifiedReferences = e.publishFinalKnowledgeReferences(ctx, state, sessionID)
 		state.FinalAnswer = stripCoverageAnswer(state.FinalAnswer)
 		if revision.scope != e.sourceScopeDigest(ctx, false) {
 			revision = e.terminalEvidenceRevision(ctx, state)
@@ -491,12 +562,21 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 	if failure != terminalNoFailure {
 		result := e.terminalCoveragePublication(ctx, terminalCurrentState(state, stale), failure)
 		state.FinalAnswer, receipt.notice = result.answer, result.notice
+		receipt.partial = result.partial
 		state.EvidenceRefs, state.KnowledgeRefs = nil, nil
 		e.turnReview.TerminalTruncated = false
 		receipt.failure = failure
+		qualifiedReferences = false
 	}
 	if receipt.failure != terminalNoFailure && state.FinalAnswer != "" && e.evidenceCompletionEligible() {
-		state.KnowledgeRefs = e.currentCandidateKnowledgeReferences(state.FinalAnswer, state, e.turnReview.Conversation)
+		if types.VerifiedPublicationEnabled() {
+			current := terminalCurrentState(state, stale)
+			state.KnowledgeRefs = e.currentCandidateKnowledgeReferences(state.FinalAnswer, current, e.turnReview.Conversation)
+			state.EvidenceRefs = e.currentCandidateEvidenceReferences(state.FinalAnswer, current, ctx)
+		} else {
+			state.KnowledgeRefs = e.currentCandidateKnowledgeReferences(state.FinalAnswer, state, e.turnReview.Conversation)
+		}
+		qualifiedReferences = true
 	}
 	if len(stale) != 0 {
 		withholdStaleTerminalTrace(state, stale, priorAnswer, firstNonEmptyAgent(e.turnReview.Last.Candidate, receipt.submitted))
@@ -504,6 +584,16 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 			delete(revision.calls, id)
 		}
 		receipt.staleCalls = nil
+	}
+	if types.VerifiedPublicationEnabled() {
+		if qualifiedReferences {
+			state.FinalAnswer, state.EvidenceRefs = types.ProjectAgentAnswer(state.FinalAnswer, state.KnowledgeRefs, state.EvidenceRefs, e.modelContext.CitableWebTitle)
+		} else {
+			state.FinalAnswer = types.StripAgentAnswerMarkup(state.FinalAnswer)
+		}
+		if qualifiedReferences {
+			e.emitFinalAnswerReferences(ctx, state, sessionID)
+		}
 	}
 	receipt.answerHash, receipt.evidence = candidateTextDigest(state.FinalAnswer), revision
 	if e.turnReview.Committed {

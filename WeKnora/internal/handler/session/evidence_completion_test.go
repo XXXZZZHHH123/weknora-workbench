@@ -66,43 +66,56 @@ func TestEvidenceCompletionPreservesApprovedCandidateWithArtifactsAndHistory(t *
 		{name: "partial_delivery", candidate: "![Figure](sandbox:figure.png)", attached: types.MessageArtifacts{next}, wantFiles: 1, incomplete: true,
 			collector: service.NewArtifactCollector(unavailableArtifactSource{}, &fakeArtifactFileService{}, nil, nil, service.ArtifactCollectorConfig{OutputDir: "/workspace/output"})},
 	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-			require.NoError(t, err)
-			require.NoError(t, db.AutoMigrate(&types.Message{}, &types.MessageArtifactRecord{}, &types.MessageEvidenceRecord{}))
-			repo := repository.NewMessageRepository(db)
-			message := &types.Message{SessionID: "session", Role: "assistant"}
-			_, err = repo.CreateMessage(t.Context(), message)
-			require.NoError(t, err)
-			message.Artifacts = scenario.attached
-			candidate := scenario.candidate + " <evidence evidence_id=\"ev_artifact_fact\" />"
-			ref := types.EvidenceReference{ID: "ev_artifact_fact", Kind: types.EvidenceKindRawCell, ResultID: "result", ResultHash: strings.Repeat("c", 64),
-				CandidateHash: types.EvidenceCandidateHash(candidate), ArtifactIDs: []string{next.URL}, Sources: []types.EvidenceSourceSnapshot{{KnowledgeBaseID: "kb", KnowledgeID: "doc", SourceSHA256: strings.Repeat("d", 64)}},
-				Manifest: json.RawMessage(`{"result":{"columns":["value"],"rows":[[27]]}}`)}
-			stream := &completionEventRecorder{}
-			h := NewAgentStreamHandler(context.Background(), message.SessionID, message.ID, "request", 7, time.Time{}, message, stream, nil, scenario.collector, nil, nil)
-			require.NoError(t, h.handleComplete(t.Context(), event.Event{Data: event.AgentCompleteData{MessageID: message.ID, FinalAnswer: candidate, EvidenceRefs: []interface{}{ref}}}))
-			require.Equal(t, candidate, message.Content, "service delivery cannot amend a reviewed evidence candidate")
-			require.Equal(t, ref.CandidateHash, types.EvidenceCandidateHash(message.Content))
-			require.Len(t, message.Artifacts, scenario.wantFiles)
-			require.Equal(t, scenario.incomplete, message.ArtifactDeliveryIncomplete)
-			require.NoError(t, repo.UpdateMessage(t.Context(), message), "actual message/evidence/artifact transaction must commit")
-			require.NoError(t, h.publishCompletion(t.Context()))
-			last := stream.events[len(stream.events)-1]
-			require.Equal(t, candidate, last.Data["final_content"])
-			require.Equal(t, publicArtifactViews(message.Artifacts), last.Data["artifacts"])
-			if scenario.incomplete {
-				require.Equal(t, true, last.Data["artifact_delivery_incomplete"])
-			} else {
-				require.NotContains(t, last.Data, "artifact_delivery_incomplete")
-			}
-			reloaded, err := repo.GetMessagesBySession(t.Context(), message.SessionID, 1, 10)
-			require.NoError(t, err)
-			require.Len(t, reloaded, 1)
-			require.Equal(t, candidate, reloaded[0].Content)
-			require.Equal(t, message.EvidenceReferences, reloaded[0].EvidenceReferences)
-			require.Len(t, reloaded[0].Artifacts, scenario.wantFiles)
-			require.Equal(t, scenario.incomplete, reloaded[0].ArtifactDeliveryIncomplete, "delivery warning survives history refresh independently of the approved content")
-		})
+		// Both sides of WEKNORA_AGENT_VERIFIED_PUBLICATION: the legacy path keeps the
+		// reviewed candidate byte-for-byte; verified publication projects it (internal
+		// tags removed, receipt rebound) and must otherwise preserve artifacts and history.
+		for _, publication := range []string{"false", "true"} {
+			t.Run(scenario.name+"/publication="+publication, func(t *testing.T) {
+				t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", publication)
+				db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+				require.NoError(t, err)
+				require.NoError(t, db.AutoMigrate(&types.Message{}, &types.MessageArtifactRecord{}, &types.MessageEvidenceRecord{}))
+				repo := repository.NewMessageRepository(db)
+				message := &types.Message{SessionID: "session", Role: "assistant"}
+				_, err = repo.CreateMessage(t.Context(), message)
+				require.NoError(t, err)
+				message.Artifacts = scenario.attached
+				candidate := scenario.candidate + " <evidence evidence_id=\"ev_artifact_fact\" />"
+				ref := types.EvidenceReference{ID: "ev_artifact_fact", Kind: types.EvidenceKindRawCell, ResultID: "result", ResultHash: strings.Repeat("c", 64),
+					CandidateHash: types.EvidenceCandidateHash(candidate), ArtifactIDs: []string{next.URL}, Sources: []types.EvidenceSourceSnapshot{{KnowledgeBaseID: "kb", KnowledgeID: "doc", SourceSHA256: strings.Repeat("d", 64)}},
+					Manifest: json.RawMessage(`{"result":{"columns":["value"],"rows":[[27]]}}`)}
+				stream := &completionEventRecorder{}
+				h := NewAgentStreamHandler(context.Background(), message.SessionID, message.ID, "request", 7, time.Time{}, message, stream, nil, scenario.collector, nil, nil)
+				require.NoError(t, h.handleComplete(t.Context(), event.Event{Data: event.AgentCompleteData{MessageID: message.ID, FinalAnswer: candidate, EvidenceRefs: []interface{}{ref}}}))
+				want, wantHash := candidate, ref.CandidateHash
+				if publication == "true" {
+					projected, refs := types.PublicAgentAnswer(candidate, nil, types.EvidenceReferences{ref})
+					require.NotContains(t, projected, "<evidence")
+					require.Len(t, refs, 1)
+					want, wantHash = projected, refs[0].CandidateHash
+				}
+				require.Equal(t, want, message.Content, "service delivery cannot amend a reviewed evidence candidate beyond its verified projection")
+				require.Equal(t, wantHash, types.EvidenceCandidateHash(message.Content))
+				require.Len(t, message.Artifacts, scenario.wantFiles)
+				require.Equal(t, scenario.incomplete, message.ArtifactDeliveryIncomplete)
+				require.NoError(t, repo.UpdateMessage(t.Context(), message), "actual message/evidence/artifact transaction must commit")
+				require.NoError(t, h.publishCompletion(t.Context()))
+				last := stream.events[len(stream.events)-1]
+				require.Equal(t, want, last.Data["final_content"])
+				require.Equal(t, publicArtifactViews(message.Artifacts), last.Data["artifacts"])
+				if scenario.incomplete {
+					require.Equal(t, true, last.Data["artifact_delivery_incomplete"])
+				} else {
+					require.NotContains(t, last.Data, "artifact_delivery_incomplete")
+				}
+				reloaded, err := repo.GetMessagesBySession(t.Context(), message.SessionID, 1, 10)
+				require.NoError(t, err)
+				require.Len(t, reloaded, 1)
+				require.Equal(t, want, reloaded[0].Content)
+				require.Equal(t, message.EvidenceReferences, reloaded[0].EvidenceReferences)
+				require.Len(t, reloaded[0].Artifacts, scenario.wantFiles)
+				require.Equal(t, scenario.incomplete, reloaded[0].ArtifactDeliveryIncomplete, "delivery warning survives history refresh independently of the approved content")
+			})
+		}
 	}
 }

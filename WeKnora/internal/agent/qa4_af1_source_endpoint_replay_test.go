@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -498,7 +499,12 @@ func TestQA4Af1EndpointNormalAndBudgetDelivery(t *testing.T) {
 				decision := r.engine.checkCandidate(ctx, trace.Question, draft, "", &r.state, nil, false)
 				require.Equal(t, candidateAccepted, decision.Disposition)
 				r.engine.commitTerminalResult(ctx, &r.state, "session", decision.Candidate, "", "answer", false)
-				require.Equal(t, draft, r.state.FinalAnswer)
+				want := draft
+				if types.VerifiedPublicationEnabled() {
+					r.engine.emitCompletionEvent(ctx, &r.state, "session", "turn", time.Now())
+					want = strings.ReplaceAll(want, `<kb doc="棉花周报20240310.pptx" chunk_id="replay-0310-slide-18" kb_id="replay-library" />`, "〔棉花周报20240310.pptx〕")
+				}
+				require.Equal(t, want, r.state.FinalAnswer)
 				require.Contains(t, r.state.FinalAnswer, "60.6万吨")
 				if hasEndpoint {
 					require.Equal(t, 1, strings.Count(r.state.FinalAnswer, "5160"))
@@ -571,7 +577,15 @@ func TestQA4Af1EndpointCitationCheckedCache(t *testing.T) {
 					}
 					require.Equal(t, terminalNoFailure, r.engine.terminalCandidateEvidenceFailure(r.ctx, &r.state, draft))
 					r.engine.commitTerminalResult(r.ctx, &r.state, "session", draft, "", "answer", false)
-					require.Equal(t, draft, r.state.FinalAnswer)
+					want := draft
+					if types.VerifiedPublicationEnabled() {
+						r.engine.emitCompletionEvent(r.ctx, &r.state, "session", "turn", time.Now())
+						want = strings.NewReplacer(
+							`<evidence evidence_id="`+endpointID+`" />`, "〔棉花数据库.xlsx〕",
+							`<kb doc="棉花周报20240310.pptx" chunk_id="replay-0310-slide-18" kb_id="replay-library" />`, "〔棉花周报20240310.pptx〕",
+						).Replace(want)
+					}
+					require.Equal(t, want, r.state.FinalAnswer)
 					return
 				}
 				require.False(t, cached)

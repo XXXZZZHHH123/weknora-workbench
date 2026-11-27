@@ -1541,6 +1541,10 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
           applyFinalArtifactContent(message, (dataPayload as any)?.final_content)
         }
         if (dataPayload?.run_state === 'interrupted') message.run_state = 'interrupted'
+        if (dataPayload?.run_state === 'evidence_partial') {
+          message.run_state = 'evidence_partial'
+          message.run_reason = dataPayload.code
+        }
         if (Array.isArray((dataPayload as any)?.knowledge_references)) message.knowledge_references = (dataPayload as any).knowledge_references.slice()
         if (Array.isArray((dataPayload as any)?.evidence_references)) message.evidence_references = (dataPayload as any).evidence_references
         message.artifact_delivery_incomplete = (dataPayload as any)?.artifact_delivery_incomplete === true
@@ -1827,6 +1831,10 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
         applyFinalArtifactContent(existingMessage, metadata?.final_content)
       }
       if (metadata?.run_state === 'interrupted') existingMessage.run_state = 'interrupted'
+      if (metadata?.run_state === 'evidence_partial') {
+        existingMessage.run_state = 'evidence_partial'
+        existingMessage.run_reason = metadata.code
+      }
       if (Array.isArray(metadata?.knowledge_references)) existingMessage.knowledge_references = metadata.knowledge_references.slice()
       if (Array.isArray(metadata?.evidence_references)) existingMessage.evidence_references = metadata.evidence_references
       existingMessage.artifact_delivery_incomplete = metadata?.artifact_delivery_incomplete === true

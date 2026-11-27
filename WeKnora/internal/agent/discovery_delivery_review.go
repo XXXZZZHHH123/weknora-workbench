@@ -196,6 +196,9 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 	if local, handled := e.checkEvidenceCompletion(ctx, decision, state, phase); handled {
 		return local
 	}
+	if bounded, _ := ctx.Value(finalSourceRecoveryKey{}).(bool); bounded {
+		return decision // Candidate and receipt checks still run in the existing final attempt.
+	}
 	previous := e.turnReview.DiscoveryReview
 	sourceObservations := e.discoverySourceObservations(state)
 	var sharedBudget *discoveryDeliveryReviewBudget

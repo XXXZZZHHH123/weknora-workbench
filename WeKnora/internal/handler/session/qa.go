@@ -2192,7 +2192,7 @@ func (h *Handler) completeAssistantMessage(
 		return err
 	}
 	h.ackBackgroundNotices(ctx, assistantMessage)
-	if assistantMessage.RunState == types.MessageRunStateIncomplete {
+	if assistantMessage.RunState == types.MessageRunStateIncomplete || assistantMessage.RunState == types.MessageRunStateEvidencePartial {
 		return nil
 	}
 

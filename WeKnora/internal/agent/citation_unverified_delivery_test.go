@@ -30,6 +30,7 @@ func citationWarningFixture(t *testing.T, model *mockChat) (*AgentEngine, *types
 }
 
 func TestCitationUnverifiedAfterRepairsKeepsLastDraftAndOnlyValidReferences(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	model := &mockChat{}
 	e, state := citationWarningFixture(t, model)
 	modelDraft := `面积描述。<ref id="` + e.modelContext.CitableChunkHandle("view-shared") + `" /> 另段说明。<ref id="` + e.modelContext.CitableChunkHandle("other-current") + `" />`
@@ -43,6 +44,7 @@ func TestCitationUnverifiedAfterRepairsKeepsLastDraftAndOnlyValidReferences(t *t
 	require.NotContains(t, state.FinalAnswer, `chunk_id="view-shared"`)
 	require.False(t, e.candidateApprovalCurrent(state.FinalAnswer, state))
 	e.emitCompletionEvent(t.Context(), state, "citation", "message", time.Now())
+	require.False(t, types.HasAgentAnswerMarkup(state.FinalAnswer))
 	require.Len(t, state.KnowledgeRefs, 1)
 	require.Equal(t, "other-current", state.KnowledgeRefs[0].ID)
 	require.Empty(t, state.EvidenceRefs)

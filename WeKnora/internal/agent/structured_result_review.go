@@ -99,6 +99,9 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 	if !e.structuredResultReviewEnabled() {
 		return decision
 	}
+	if bounded, _ := ctx.Value(finalSourceRecoveryKey{}).(bool); bounded {
+		return decision
+	}
 	started := time.Now()
 	selected := e.lastValidSourceReviewState(ctx, currentStructuredResultReviewState(state), 0)
 	geometry, geometryComplete := e.currentOriginalGeometryReviewEvidence(state)

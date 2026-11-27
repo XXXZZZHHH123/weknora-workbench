@@ -67,13 +67,7 @@ func (e *AgentEngine) unverifiedBaseCurrent(ctx context.Context, state *types.Ag
 }
 
 func unverifiedInlineBindings(candidate, id string) json.RawMessage {
-	encoded, _ := json.Marshal(map[string]any{
-		"protocol": "unverified_navigation_v1", "candidate_sha256": candidateTextDigest(candidate),
-		"navigation_only": true, "review_status": "unverified",
-		"inline": json.RawMessage(structuredInlineBindings(candidate, id)),
-		"notice": "Current execution observations for user checking. The answer has not completed semantic review; an inline position is not proof of its adjacent claim.",
-	})
-	return encoded
+	return types.UnverifiedEvidenceInlineBindings(candidateTextDigest(candidate), structuredInlineBindings(candidate, id))
 }
 
 func (e *AgentEngine) unverifiedNavigationReferences(ctx context.Context, candidate string, state *types.AgentState) (types.EvidenceReferences, []*types.SearchResult) {

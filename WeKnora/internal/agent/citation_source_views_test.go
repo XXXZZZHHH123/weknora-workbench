@@ -54,6 +54,7 @@ func citationViewState(results ...*types.ToolResult) *types.AgentState {
 }
 
 func TestCitationRealPageViewsUseFullCurrentCanonicalBodyThroughNormalFinish(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	for _, pageFirst := range []bool{false, true} {
 		t.Run(map[bool]string{false: "full_then_page", true: "page_then_full"}[pageFirst], func(t *testing.T) {
 			full, page, _ := realCitationViewResults(t)
@@ -93,7 +94,7 @@ func TestCitationRealPageViewsUseFullCurrentCanonicalBodyThroughNormalFinish(t *
 			approved := false
 			e.eventBus.On(event.EventAgentComplete, func(_ context.Context, evt event.Event) error {
 				completed = evt.Data.(event.AgentCompleteData)
-				approved = e.candidateApprovalCurrent(state.FinalAnswer, state)
+				approved = e.candidateApprovalCurrent(e.turnReview.Last.Candidate, state)
 				return nil
 			})
 			_, err := e.executeLoop(t.Context(), state, "Explain the measurement on the requested page.", messages, emptyTools(), "session", "message")
@@ -102,7 +103,8 @@ func TestCitationRealPageViewsUseFullCurrentCanonicalBodyThroughNormalFinish(t *
 			// executeLoop releases its semantic conversation after Complete.
 			// Check approval at that actual delivery boundary, and separately
 			// prove neither the normalized answer nor source snapshot drifted.
-			require.Equal(t, e.turnReview.Last.CandidateHash, candidateTextDigest(state.FinalAnswer))
+			require.Equal(t, e.turnReview.Last.CandidateHash, candidateTextDigest(e.turnReview.Last.Candidate))
+			require.False(t, types.HasAgentAnswerMarkup(state.FinalAnswer))
 			require.Equal(t, e.turnReview.Last.EvidenceHash, reviewDigest(e.sourceConsistencyMessages(state, e.turnReview.Conversation)))
 			require.Len(t, model.calls, 2, "the existing semantic critic still judges the adjacent claim")
 			require.Len(t, state.KnowledgeRefs, 1)
@@ -332,6 +334,7 @@ func TestCitationRealSearchPageProjectionUsesExactSourceIdentity(t *testing.T) {
 }
 
 func TestCitationRealSearchThenUncutReadKeepsCanonicalReference(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	for _, mode := range []string{"full_offset", "full_physical_page"} {
 		t.Run(mode, func(t *testing.T) {
 			document := &types.Knowledge{ID: "contract-document", KnowledgeBaseID: "contract-library", TenantID: 7,
@@ -385,7 +388,8 @@ func TestCitationRealSearchThenUncutReadKeepsCanonicalReference(t *testing.T) {
 			var complete event.AgentCompleteData
 			e.eventBus.On(event.EventAgentComplete, func(_ context.Context, evt event.Event) error {
 				complete = evt.Data.(event.AgentCompleteData)
-				require.True(t, e.candidateApprovalCurrent(state.FinalAnswer, state))
+				require.True(t, e.candidateApprovalCurrent(candidate, state))
+				require.False(t, types.HasAgentAnswerMarkup(complete.FinalAnswer))
 				return nil
 			})
 			_, err = e.executeLoop(ctx, state, "Explain the measurement.", messages, emptyTools(), "session", "message")

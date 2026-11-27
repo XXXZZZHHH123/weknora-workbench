@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/modelcontext"
 	"github.com/Tencent/WeKnora/internal/models/chat"
@@ -491,19 +490,13 @@ func (e *AgentEngine) currentCandidateEvidenceReferences(candidate string, state
 }
 
 func structuredInlineBindings(candidate, id string) json.RawMessage {
-	occurrences := []any{}
+	var spans [][2]int
 	for _, match := range answerEvidenceCitation.FindAllStringSubmatchIndex(candidate, -1) {
-		if candidate[match[2]:match[3]] != id {
-			continue
+		if candidate[match[2]:match[3]] == id {
+			spans = append(spans, [2]int{match[0], match[1]})
 		}
-		start := utf8.RuneCountInString(candidate[:match[0]])
-		end := start + utf8.RuneCountInString(candidate[match[0]:match[1]])
-		prefix := []rune(candidate[:match[0]])
-		from := max(0, len(prefix)-240)
-		occurrences = append(occurrences, map[string]any{"start_rune": start, "end_rune": end, "context_start_rune": from, "adjacent_context": string(prefix[from:])})
 	}
-	encoded, _ := json.Marshal(map[string]any{"protocol": "inline_evidence_v1", "candidate_sha256": candidateTextDigest(candidate), "occurrences": occurrences, "notice": "The model chose the inline citation. These positions bind the exact final text; adjacent context is navigation, not automatic semantic proof."})
-	return encoded
+	return types.InlineEvidenceBindings(candidate, candidateTextDigest(candidate), spans)
 }
 
 func (e *AgentEngine) structuredCitationReviewDirectory(ctx context.Context, candidate string, state *types.AgentState) map[string]any {

@@ -11,6 +11,7 @@ import (
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/event"
+	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -68,6 +69,7 @@ func TestA3TableComparisonPublicationUsesCheckedSide(t *testing.T) {
 				require.Equal(t, "table_evidence_attribution_incomplete", r.engine.turnReview.Last.ReasonCode)
 			}
 			r.exhaust()
+			r.engine.emitCompletionEvent(r.ctx, r.state, "s2c", "turn", time.Now())
 			answer := r.answer()
 			require.Contains(t, answer, "298.93")
 			require.NotContains(t, documentNumericProse(answer), "876")
@@ -76,8 +78,15 @@ func TestA3TableComparisonPublicationUsesCheckedSide(t *testing.T) {
 			for _, published := range r.finals {
 				require.NotContains(t, documentNumericProse(published.Content), "876")
 			}
-			r.engine.emitCompletionEvent(r.ctx, r.state, "s2c", "turn", time.Now())
 			require.Equal(t, answer, completed.FinalAnswer)
+			if mode == "model-written partial" && types.VerifiedPublicationEnabled() {
+				require.Contains(t, answer, "〔棉花数据库.xlsx〕")
+				require.NotContains(t, answer, "<evidence")
+				refs := types.EvidenceReferencesFromInternal(completed.EvidenceRefs)
+				require.Len(t, refs, 1)
+				require.NotEmpty(t, refs[0].ResultHash)
+				require.NotEmpty(t, refs[0].Locators)
+			}
 		})
 	}
 }

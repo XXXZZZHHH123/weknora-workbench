@@ -1303,6 +1303,8 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	deferAnswerReview := boundedDecision || e.answerReviewPending || e.structuredReviewMode || hasStructuredHistoryEvidence(messages) || e.config.SandboxConfigID != "" || e.turnReview.TerminalSensitive || e.terminalEvidenceCompletionPending()
 	var documentViewStream documentTableStreamGuard
 	var coverageStream coverageAnswerStream
+	var publicationStream types.AgentAnswerStream
+	verifiedPublication := types.VerifiedPublicationEnabled()
 
 	emitThought := func(content string, done bool) {
 		if content == "" && !done {
@@ -1366,6 +1368,9 @@ func (e *AgentEngine) streamThinkingToEventBus(
 	emitAnswerBody := func(content string) {
 		if deferAnswerReview {
 			return
+		}
+		if verifiedPublication {
+			content = publicationStream.Feed(content)
 		}
 		if answerStreamed {
 			emitAnswerText(content)
@@ -1500,7 +1505,11 @@ func (e *AgentEngine) streamThinkingToEventBus(
 			// to the thought area instead.
 			if chunk.Content != "" {
 				thinkPart, answerPart := splitter.Feed(chunk.Content)
-				if splitter.TakeAnswerReset() && answerStreamed {
+				resetAnswer := splitter.TakeAnswerReset()
+				if resetAnswer {
+					publicationStream = types.AgentAnswerStream{}
+				}
+				if resetAnswer && answerStreamed {
 					_ = e.eventBus.Emit(
 						ctx,
 						event.Event{

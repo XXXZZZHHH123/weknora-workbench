@@ -1725,6 +1725,7 @@ func (e *AgentEngine) runReActIteration(
 				}
 			}
 		}
+		var collaborationRecovered bool
 		if e.collaboration != nil && response.FinishReason != "content_filter" {
 			if e.suspendable && e.collaboration.Child == nil {
 				checkpoint := RunSnapshot{
@@ -1754,7 +1755,13 @@ func (e *AgentEngine) runReActIteration(
 					return iterOutcomeBreak, err
 				}
 			}
-			events, err := e.collaboration.BeforeFinish(ctx)
+			var events []collaboration.Event
+			var err error
+			if types.VerifiedPublicationEnabled() {
+				events, collaborationRecovered, err = e.collaboration.BeforeVerifiedFinish(ctx, assistantMessageID)
+			} else {
+				events, err = e.collaboration.BeforeFinish(ctx)
+			}
 			inputReady := errors.Is(err, collaboration.ErrInput)
 			if err != nil && !inputReady {
 				return iterOutcomeBreak, err
@@ -1790,6 +1797,9 @@ func (e *AgentEngine) runReActIteration(
 			outcome = "failed"
 		} else if verdict.truncated || e.turnReview.Last.Disposition == candidateEvidencePartial {
 			outcome = "partial"
+		}
+		if collaborationRecovered && e.evidenceCompletionEligible() && e.standardTextDelivery(state) {
+			failure = terminalCollaborationContention
 		}
 		e.commitTerminalResult(ctx, state, sessionID, verdict.finalAnswer, firstNonEmptyAgent(liveAnswerID, verdict.answerID), outcome, verdict.truncated, failure)
 		return iterOutcomeBreak, nil

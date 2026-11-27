@@ -136,6 +136,7 @@ func TestStandardAnswerNoSourcePlanKeepsOrdinaryStreamingAndCompletionBudget(t *
 }
 
 func TestStandardAnswerModelTimeoutHandsOffOnceWithoutExecutingPartialCalls(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	model := &standardStageChat{blockDecision: true, decisionUsage: &types.TokenUsage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18}}
 	e, state, candidate := directCitationReadFixture(t, &model.mockChat, true)
 	e.chatModel = model
@@ -156,9 +157,9 @@ func TestStandardAnswerModelTimeoutHandsOffOnceWithoutExecutingPartialCalls(t *t
 	require.Equal(t, 1, model.decisionCalls, "a stage timeout cannot become a generic transient retry")
 	require.Equal(t, 1, model.finalCalls)
 	require.Zero(t, reader.calls, "an unfinished model call must not execute")
-	require.Equal(t, candidate, state.FinalAnswer)
-	require.True(t, e.candidateApprovalCurrent(state.FinalAnswer, state))
-	require.Len(t, e.finalAnswerKnowledgeReferences(state), 1)
+	require.Equal(t, "The indicator measures covered area.〔Indicator handbook〕", state.FinalAnswer)
+	require.True(t, e.candidateApprovalCurrent(candidate, state))
+	require.Len(t, state.KnowledgeRefs, 1)
 	require.Greater(t, model.deadlines[1].Sub(model.deadlines[0]), 30*time.Second, "final synthesis has its own reserved budget after decision time expires")
 	done, visible := recorder.snapshot()
 	require.Equal(t, 1, done)

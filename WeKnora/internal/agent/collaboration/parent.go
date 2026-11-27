@@ -12,6 +12,8 @@ import (
 
 type parentOwnerKey struct{}
 
+const publicationRefreshAttempts = 3
+
 type parentHeartbeatKey struct {
 	scope Scope
 	owner string
@@ -254,6 +256,59 @@ func (r *Runtime) CheckParent(ctx context.Context, scope Scope, owner string) er
 // ParentCanExecute checks an already loaded parent lease without another read.
 func (r *Runtime) ParentCanExecute(g *Group, owner string) bool {
 	return g.Status == "active" && g.ParentOwner == owner && r.Store.parentLeaseCurrent(g)
+}
+
+// CheckPublicationLease re-reads a same-owner lease that may have been
+// renewed while the older revision was being checked. A retry cannot adopt a
+// different turn or revive an expired lease. The boolean records recovery so
+// the caller can use the scoped completion fence when it reaches publication.
+func (b *Binding) CheckPublicationLease(ctx context.Context, messageID string) (bool, error) {
+	for attempt := 0; attempt < publicationRefreshAttempts; attempt++ {
+		g, err := b.readPublicationGroup(ctx, messageID)
+		if err != nil {
+			return false, err
+		}
+		if g.Status != "active" {
+			return false, ErrConflict
+		}
+		if b.Runtime.Store.parentLeaseCurrent(g) {
+			return attempt != 0, nil
+		}
+		if attempt+1 < publicationRefreshAttempts {
+			if err := waitPublicationRefresh(ctx, attempt); err != nil {
+				return false, err
+			}
+		}
+	}
+	return false, ErrConflict
+}
+
+func (b *Binding) readPublicationGroup(ctx context.Context, messageID string) (*Group, error) {
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
+	if b.Child != nil || b.Closing || b.ParentOwner == "" || messageID == "" {
+		return nil, ErrConflict
+	}
+	g, err := b.Runtime.Store.Read(ctx, b.Scope)
+	if err != nil {
+		return nil, err
+	}
+	if g.ParentOwner != b.ParentOwner || g.ParentMessageID != messageID || g.ParentClosePending {
+		return nil, ErrConflict
+	}
+	return g, context.Cause(ctx)
+}
+
+func waitPublicationRefresh(ctx context.Context, attempt int) error {
+	timer := time.NewTimer(time.Duration(attempt+1) * 10 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-timer.C:
+		return nil
+	}
 }
 
 // A new human turn may continue a completed child's conversation. Copy only

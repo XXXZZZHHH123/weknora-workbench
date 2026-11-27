@@ -340,31 +340,53 @@ func settle(g *Group) {
 // Finish uses the last sequence actually observed by the parent, not a cursor
 // advanced by a background delivery worker. A racing result prevents completion.
 func (r *Runtime) Finish(ctx context.Context, s Scope, observed int64) (bool, error) {
+	return r.finish(ctx, s, observed, "")
+}
+
+func (r *Runtime) finish(ctx context.Context, s Scope, observed int64, messageID string) (bool, error) {
 	finished := false
-	err := r.Store.Change(ctx, s, func(g *Group) error {
-		finished = false
-		if g.Status != "active" {
-			return ErrClosed
-		}
-		if g.NextSequence != observed {
-			return nil
-		}
-		for _, m := range g.Members {
-			if active(current(m)) {
-				return nil
-			}
-			for _, v := range m.Runs {
-				if v.CancelRequested && v.PromptID != "" {
-					return nil
-				}
-			}
-		}
-		g.Status = "completed"
-		g.ParentWait = nil
-		finished = true
-		return nil
+	attempts := storeChangeAttempts
+	if messageID != "" {
+		// Scoped publication rechecks external user input on every CAS attempt.
+		attempts = 1
+	}
+	err := r.Store.change(ctx, s, attempts, func(g *Group) error {
+		var err error
+		finished, err = finishGroup(g, observed, messageID)
+		return err
 	})
 	return finished, err
+}
+
+func finishGroup(g *Group, observed int64, messageID string) (bool, error) {
+	if messageID != "" {
+		if g.ParentMessageID != messageID || g.ParentClosePending {
+			return false, ErrConflict
+		}
+		// Both writers check the bound owner and live lease before entering.
+		if g.Status == "completed" && g.NextSequence == observed {
+			return true, nil
+		}
+	}
+	if g.Status != "active" {
+		return false, ErrClosed
+	}
+	if g.NextSequence != observed {
+		return false, nil
+	}
+	for _, m := range g.Members {
+		if active(current(m)) {
+			return false, nil
+		}
+		for _, v := range m.Runs {
+			if v.CancelRequested && v.PromptID != "" {
+				return false, nil
+			}
+		}
+	}
+	g.Status = "completed"
+	g.ParentWait = nil
+	return true, nil
 }
 
 // Wait waits for an event newer than the supplied mailbox sequence.

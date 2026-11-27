@@ -30,6 +30,7 @@ func (t *documentPhraseTool) Execute(context.Context, json.RawMessage) (*types.T
 }
 
 func TestDocumentAnswerAfterHistoricalTableDoesNotInheritTableNumericReview(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	answer := `唯一识别短语：原件蓝桥 8427。验收文档(2026).txt 全文仅1个片段，原件大小213 B；这是合成验收样例。<ref id="c1" />`
 	model := &mockChat{responses: []mockResponse{
 		{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, ToolCalls: []types.LLMToolCall{{ID: "read", Type: "function", Function: types.FunctionCall{Name: "read_document", Arguments: `{"id":"doc-phrase"}`}}}, Done: true, FinishReason: "tool_calls"}}},
@@ -48,7 +49,7 @@ func TestDocumentAnswerAfterHistoricalTableDoesNotInheritTableNumericReview(t *t
 	require.NoError(t, err)
 	require.True(t, state.IsComplete)
 	require.Contains(t, state.FinalAnswer, "原件蓝桥 8427")
-	require.Contains(t, state.FinalAnswer, `chunk_id="chunk-phrase"`)
+	require.False(t, types.HasAgentAnswerMarkup(state.FinalAnswer))
 	require.Len(t, model.calls, 3, "the current document gets semantic review without inheriting table numeric repair")
 	_, reviewMessages, reviewUser, reviewInput := uniqueJSONUserInput(t, model.calls, "unverified_draft")
 	var reviewSystem strings.Builder
@@ -67,7 +68,7 @@ func TestDocumentAnswerAfterHistoricalTableDoesNotInheritTableNumericReview(t *t
 	require.NotContains(t, review.Unmatched, "8427", "the fetched document body remains provenance independently of the historical table")
 	require.True(t, hasCurrentDocumentEvidence(state.RoundSteps))
 	require.False(t, hasStructuredEvidence(state.RoundSteps))
-	require.False(t, needsStructuredAnswerReviewForQuery("刚上传文档的唯一识别短语是什么？请引用文件。", state.RoundSteps, history, state.FinalAnswer))
+	require.False(t, needsStructuredAnswerReviewForQuery("刚上传文档的唯一识别短语是什么？请引用文件。", state.RoundSteps, history, e.turnReview.Last.Candidate))
 }
 
 func TestDocumentMetadataAndCitationDoNotApproveUnsupportedProseNumbers(t *testing.T) {

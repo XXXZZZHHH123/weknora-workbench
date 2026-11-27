@@ -55,6 +55,7 @@ func TestNumericUnverifiedImagesAcceptsActualReviewedRenderWithPendingProse(t *t
 }
 
 func TestNumericUnverifiedTerminalDeliveryKeepsRealChartAndCitation(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	e, state, _, _ := numericUnverifiedChartFixture(t, true)
 	_, cited := citationDeliveryFixture(t, &mockChat{}, true)
 	state.RoundSteps = append(state.RoundSteps, cited.RoundSteps...)
@@ -79,7 +80,8 @@ func TestNumericUnverifiedTerminalDeliveryKeepsRealChartAndCitation(t *testing.T
 	before := state.FinalAnswer
 	e.reviewConversationReady, e.reviewConversation = false, nil
 	e.emitCompletionEvent(t.Context(), state, "session", "message", time.Now())
-	require.Equal(t, before, state.FinalAnswer, "completion retains the exact numeric-warning binding")
+	require.Equal(t, strings.Replace(before, citation, "〔Actual source〕", 1), state.FinalAnswer)
+	require.False(t, types.HasAgentAnswerMarkup(state.FinalAnswer))
 	require.Len(t, state.KnowledgeRefs, 1)
 	require.Equal(t, "current-b", state.KnowledgeRefs[0].ID)
 }

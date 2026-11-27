@@ -33,6 +33,8 @@ type qa4Stage2DCitationSelector struct {
 }
 
 func TestQA4Stage2DHistoricalReplay(t *testing.T) {
+	// Replay the archived terminal body and citation protocol byte for byte.
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false")
 	for _, tc := range []struct {
 		name      string
 		fixture   string

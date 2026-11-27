@@ -68,12 +68,14 @@ const (
 
 // AgentStreamResponse agent streaming response
 type AgentStreamResponse struct {
-	ID                  string                 `json:"id"`                   // Unique identifier
-	ResponseType        AgentResponseType      `json:"response_type"`        // Response type
-	Content             string                 `json:"content,omitempty"`    // Current content fragment
-	Done                bool                   `json:"done"`                 // Whether completed
-	KnowledgeReferences []*SearchResult        `json:"knowledge_references"` // Knowledge references
-	Data                map[string]interface{} `json:"data,omitempty"`       // Additional event data
+	ID                  string            `json:"id"`                   // Unique identifier
+	ResponseType        AgentResponseType `json:"response_type"`        // Response type
+	Content             string            `json:"content,omitempty"`    // Current content fragment
+	Done                bool              `json:"done"`                 // Whether completed
+	KnowledgeReferences []*SearchResult   `json:"knowledge_references"` // Knowledge references
+	// Complete data carries the authoritative final_content, run_state and
+	// message-bound references. Answer deltas may include replace=true.
+	Data map[string]interface{} `json:"data,omitempty"`
 }
 
 // AgentEventCallback is called for each streaming event

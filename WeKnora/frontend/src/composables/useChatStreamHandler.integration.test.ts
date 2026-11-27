@@ -351,6 +351,40 @@ for (const mode of ['ordinary', 'quick-timeline', 'agent'] as const) {
     assert.equal(h.turns.length, 1)
     assert.equal((h.message.agentEventStream || []).filter((e: any) => e.type === 'answer' && !e.superseded).length, 0)
   })
+
+  test(`${mode}: verified partial completion retains its answer, reason and sources after reload`, async t => {
+    const h = setup(t, mode)
+    const final = 'The workbook records 42.〔Observed data.xlsx〕 The report has quarterly totals only.'
+    const reason = 'answer_evidence_missing'
+    const evidence = [{ id: 'checked-ref', kind: 'raw_cell', title: 'Observed data.xlsx' }]
+    h.send('answer', 'The workbook records 42.', false, { event_id: 'answer' })
+    h.send('answer', final, true, { event_id: 'answer', replace: true })
+    h.persist()
+    h.send('complete', '', true, { run_state: 'evidence_partial', code: reason, final_content: final, evidence_references: evidence })
+    await h.flush()
+    assert.equal(h.message.content, final)
+    assert.equal(h.message.run_state, 'evidence_partial')
+    assert.equal(h.message.run_reason, reason)
+    assert.equal(h.message.is_completed, true)
+    assert.deepEqual(h.message.evidence_references, evidence)
+    assert.deepEqual(h.replies, [final])
+    assert.deepEqual(h.errors, [])
+
+    const restored = vue.reactive<Record<string, any>[]>([])
+    const handler = useChatStreamHandler({
+      messagesList: restored, loading: vue.ref(false), isReplying: vue.ref(false),
+      currentAssistantMessageId: vue.ref(''), fullContent: vue.ref(''),
+      isAgentStreamSession: () => mode === 'agent', scrollToBottom() {},
+    })
+    await handler.handleMsgList([{
+      id: 'assistant', request_id: 'request', role: 'assistant', content: final, is_completed: true,
+      run_state: 'evidence_partial', run_reason: reason, evidence_references: evidence,
+    }])
+    assert.equal(restored[0].content, final)
+    assert.equal(restored[0].run_state, 'evidence_partial')
+    assert.equal(restored[0].run_reason, reason)
+    assert.deepEqual(restored[0].evidence_references, evidence)
+  })
 }
 
 test('a live host approval reaches the composer while the tool is still running', async t => {

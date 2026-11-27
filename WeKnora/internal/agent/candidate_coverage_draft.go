@@ -80,6 +80,15 @@ func (e *AgentEngine) currentCoverageDraftReview(ctx context.Context, state *typ
 	}
 	review.directory = slices.ContainsFunc(attempts, func(attempt coverageAttempt) bool { return attempt.Success && directoryOperation(attempt) }) &&
 		!slices.ContainsFunc(attempts, func(attempt coverageAttempt) bool { return attempt.Success && !directoryOperation(attempt) })
+	if types.VerifiedPublicationEnabled() && !review.directory {
+		// A successful broad search may return only navigation results. It
+		// must not make a directory-only transcript look like a source read.
+		review.directory = slices.ContainsFunc(attempts, func(attempt coverageAttempt) bool {
+			return attempt.Success && directoryOperation(attempt)
+		}) && !slices.ContainsFunc(record.Evidence, func(item coverageEvidence) bool {
+			return item.Bound && coverageCurrentEvidence(record, item) && slices.Contains([]string{"body", "cell", "derived", "last_valid", "gap"}, item.Kind)
+		})
+	}
 	inspected := inspectedPublishedLastValid(record)
 	review.targets = e.evidenceCompletionTargets()
 	candidate := ""

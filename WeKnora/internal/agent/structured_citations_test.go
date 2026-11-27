@@ -135,6 +135,7 @@ func TestStructuredCitationInlineIdentityCannotWaiveClaimSemantics(t *testing.T)
 }
 
 func TestStructuredCitationNormalFinishPublishesOnlySelectedApprovedEvidence(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	e, state := rawCitationFixture(t)
 	e.currentStructuredCitationView(state.RoundSteps[0].ToolCalls[0])
 	id, _ := selectRawCitation(t, e, 1, 1)
@@ -150,8 +151,10 @@ func TestStructuredCitationNormalFinishPublishesOnlySelectedApprovedEvidence(t *
 	_, err := e.executeLoop(t.Context(), state, "Report this actual selected observation with its source.", messages, nil, "session", "message")
 	require.NoError(t, err)
 	require.True(t, state.IsComplete)
-	require.Contains(t, state.FinalAnswer, `evidence_id="`+id+`"`)
+	require.Equal(t, "The selected observation is 12.500 kg.〔Synthetic.pdf〕", state.FinalAnswer)
+	require.False(t, types.HasAgentAnswerMarkup(state.FinalAnswer))
 	require.Len(t, state.EvidenceRefs, 1)
+	require.Equal(t, id, state.EvidenceRefs[0].ID)
 	require.Empty(t, state.KnowledgeRefs, "no arbitrary index chunk is required for an actual cell citation")
 	require.Len(t, completed.EvidenceRefs, 1)
 	require.Equal(t, candidateTextDigest(state.FinalAnswer), state.EvidenceRefs[0].CandidateHash)

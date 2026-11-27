@@ -365,6 +365,9 @@ func (e *AgentEngine) tableReceiptReadings(target taskCoverageTarget, record cov
 			(item.PeriodFrom != from || item.PeriodTo != to) && (item.PeriodFrom != to || item.PeriodTo != to) {
 			continue
 		}
+		if types.VerifiedPublicationEnabled() && !comparisonDateCellMatches(item) {
+			continue
+		}
 		if _, ok := coverageComparisonNumber(item); ok {
 			series = add(series, item)
 			if item.Metric == target.Metric {
@@ -562,6 +565,9 @@ func tableComparisonFact(target taskCoverageTarget, input coverageRecord, bindin
 	}
 	switch item.Kind {
 	case "cell":
+		if types.VerifiedPublicationEnabled() && !comparisonDateCellMatches(item) {
+			return item, false
+		}
 		// A month-end source can carry an ISO day for the original monthly
 		// row. The explicit model association is to the as-reported row,
 		// and a genuinely daily series cannot stand in for a monthly value.
@@ -652,6 +658,15 @@ func tableComparisonFact(target taskCoverageTarget, input coverageRecord, bindin
 	}
 	_, numeric := coverageComparisonNumber(item)
 	return item, numeric
+}
+
+func comparisonDateCellMatches(item coverageEvidence) bool {
+	if item.Date == "" || item.DateCell == "" {
+		return true // A period or checked direct SQL may have no date-cell address.
+	}
+	dateColumn, dateRow := coverageCellPosition(item.DateCell)
+	column, row := coverageCellPosition(item.Cell)
+	return dateRow != "" && dateRow == row && dateColumn != column
 }
 
 // Excel stores dates with day precision even when the original date cell is

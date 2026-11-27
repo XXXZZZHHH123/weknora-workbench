@@ -742,7 +742,7 @@ func (e *AgentEngine) runToolCallAnswered(
 			json.RawMessage(tc.Function.Arguments),
 		)
 		toolCancel()
-		if err == nil {
+		if _, finalSourceRecovery := toolCtx.Value(finalSourceRecoveryKey{}).(bool); err == nil && !finalSourceRecovery {
 			e.describeToolImages(toolCtx, result)
 		}
 	}

@@ -20,6 +20,8 @@ import (
 // fixtures. The stage 2d run regressed after a different native selection:
 // SQL bounded two fields but the last-value query selected AF alone.
 func TestQA4Stage2EKB31HistoricalFallback(t *testing.T) {
+	// Replay the archived terminal body and citation protocol byte for byte.
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false")
 	for _, enabled := range []bool{true, false} {
 		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
 			r := newQA4Stage2CReplay(t, "s2-4-kb31", enabled, false)
@@ -93,6 +95,8 @@ func qa4Stage2EAssertHistoricalKB31(r *qa4Stage2CReplay) {
 }
 
 func TestQA4Stage2EKB31AuthorizedRecovery(t *testing.T) {
+	// Replay the archived terminal body and citation protocol byte for byte.
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false")
 	// The historical variant supplies a filename as the version reason.
 	// The current path requires an explicit user selection or an actual body.
 	t.Setenv("WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE", "false")

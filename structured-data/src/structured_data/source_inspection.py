@@ -441,6 +441,8 @@ def _inspect_source_validated(store, dataset_id, request):
     padding_cols = request['padding_cols']
     include_date_format = os.environ.get('WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE', '').strip() not in (
         '0', 'f', 'F', 'false', 'FALSE', 'False')
+    include_numeric_format = os.environ.get('WEKNORA_AGENT_VERIFIED_PUBLICATION', '').strip() not in (
+        '0', 'f', 'F', 'false', 'FALSE', 'False')
 
     # _path is resolved through the current workspace proxy, never a caller path.
     try:
@@ -570,6 +572,9 @@ def _inspect_source_validated(store, dataset_id, request):
             # The original display format can establish a period label
             # without changing the date or inferring an observation frequency.
             if include_date_format and isinstance(value, dt.date) and fc.number_format:
+                cell['number_format'] = fc.number_format
+            if (include_numeric_format and type(value) in (int, float)
+                    and cell['value_status'] == 'original' and fc.number_format not in (None, '', 'General')):
                 cell['number_format'] = fc.number_format
             return cell
 

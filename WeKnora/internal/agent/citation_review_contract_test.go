@@ -66,6 +66,7 @@ func realCitationReadResult(t *testing.T) *types.ToolResult {
 }
 
 func TestCitationRequiredRealReadResultRevisesAcceptedUncitedDraftAndPublishes(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	result := realCitationReadResult(t)
 	model := &mockChat{}
 	e := sourceConsistencyEngine(t, model)
@@ -105,7 +106,7 @@ func TestCitationRequiredRealReadResultRevisesAcceptedUncitedDraftAndPublishes(t
 	})
 	e.eventBus.On(event.EventAgentComplete, func(_ context.Context, evt event.Event) error {
 		completed = evt.Data.(event.AgentCompleteData)
-		approved = e.candidateApprovalCurrent(state.FinalAnswer, state)
+		approved = e.candidateApprovalCurrent(e.turnReview.Last.Candidate, state)
 		return nil
 	})
 	_, err = e.executeLoop(t.Context(), state, "Explain the indicator.", messages, emptyTools(), "session", "message")
@@ -114,7 +115,8 @@ func TestCitationRequiredRealReadResultRevisesAcceptedUncitedDraftAndPublishes(t
 	require.True(t, state.IsComplete)
 	require.Len(t, model.calls, 4, "one required revision through the existing generator/critic, without another model stage")
 	require.Equal(t, 1, e.turnReview.Repairs)
-	require.Contains(t, state.FinalAnswer, `chunk_id="contract-supporting"`)
+	require.Contains(t, state.FinalAnswer, "〔Indicator handbook〕")
+	require.False(t, types.HasAgentAnswerMarkup(state.FinalAnswer))
 	require.NotContains(t, state.FinalAnswer, "<ref")
 	require.Len(t, delivered, 1)
 	require.Equal(t, "contract-supporting", delivered[0].ID)

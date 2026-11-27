@@ -57,6 +57,7 @@ func (*plannedDocumentRepo) ListChunksByParentIDs(context.Context, uint64, []str
 }
 
 func TestWorkbenchQAUsesFullContextToSubmitAndVerifySourcePlan(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	const filename = "季度资料20250402.pptx"
 	document := &types.Knowledge{ID: "actual-document", TenantID: 7, KnowledgeBaseID: "granted-base", Title: "实际季度资料", FileName: filename, FileType: "pptx", ParseStatus: types.ParseStatusCompleted}
 	knowledge := &plannedDocumentKnowledge{document: document}
@@ -100,7 +101,10 @@ func TestWorkbenchQAUsesFullContextToSubmitAndVerifySourcePlan(t *testing.T) {
 	require.True(t, foundContext)
 	require.True(t, foundMetadata)
 	require.Contains(t, state.FinalAnswer, "类型甲和类型乙")
-	require.Contains(t, state.FinalAnswer, `chunk_id="actual-page-chunk"`)
+	require.Contains(t, state.FinalAnswer, "〔实际季度资料〕")
+	require.False(t, types.HasAgentAnswerMarkup(state.FinalAnswer))
+	require.Len(t, state.KnowledgeRefs, 1)
+	require.Equal(t, "actual-page-chunk", state.KnowledgeRefs[0].ID)
 	_, reviewMessages, reviewUser, reviewInput := uniqueJSONUserInput(t, model.calls, "unverified_draft")
 	var reviewSystem strings.Builder
 	for _, message := range reviewMessages {

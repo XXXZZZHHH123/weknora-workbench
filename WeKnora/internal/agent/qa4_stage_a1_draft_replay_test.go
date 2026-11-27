@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -114,7 +117,19 @@ func TestQA4StageA1RanksCitedNativeFieldsWithoutDeclaration(t *testing.T) {
 			}
 			require.Len(t, r.engine.turnReview.CoverageDraftRoles, 2)
 			r.exhaust()
-			require.Equal(t, two, r.answer())
+			if types.VerifiedPublicationEnabled() {
+				r.engine.emitCompletionEvent(r.ctx, r.state, "s2c", "turn", time.Now())
+			}
+			answer := r.answer()
+			if types.VerifiedPublicationEnabled() {
+				require.Contains(t, answer, "产量 在 2023-10-31 原值为 110（C87）")
+				require.Contains(t, answer, "工商业期末库存 在 2023-10-31 原值为 298.93（G87）")
+				require.Equal(t, 2, strings.Count(answer, "〔棉花数据库.xlsx〕"))
+				require.NotContains(t, answer, "<evidence")
+				require.NotContains(t, answer, "B87")
+			} else {
+				require.Equal(t, two, answer)
+			}
 		})
 	}
 }

@@ -32,6 +32,8 @@ var (
 // maxAggregateBytes bounds one serialized collaboration aggregate.
 var maxAggregateBytes = 32 << 20
 
+const storeChangeAttempts = 60
+
 // isFenceError reports a durable ownership or admission decision, as opposed
 // to a transient store failure that may be retried.
 func isFenceError(err error) bool {
@@ -223,15 +225,17 @@ func (s *Store) ensure(ctx context.Context, scope Scope, members []*Member) erro
 }
 
 func (s *Store) read(ctx context.Context, scope Scope) (Record, *Group, error) {
+	return readScopedGroup(s.db.WithContext(ctx), scope)
+}
+
+func collaborationScopeQuery(db *gorm.DB, scope Scope) *gorm.DB {
+	return db.Where("id = ? AND tenant_id = ? AND user_id = ? AND session_id = ?",
+		scope.ID, scope.TenantID, scope.UserID, scope.SessionID)
+}
+
+func readScopedGroup(db *gorm.DB, scope Scope) (Record, *Group, error) {
 	var row Record
-	err := s.db.WithContext(ctx).
-		Where("id = ? AND tenant_id = ? AND user_id = ? AND session_id = ?",
-			scope.ID,
-			scope.TenantID,
-			scope.UserID,
-			scope.SessionID).
-		First(&row).
-		Error
+	err := collaborationScopeQuery(db, scope).First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return row, nil, ErrScope
 	}
@@ -257,8 +261,12 @@ func (s *Store) Read(ctx context.Context, scope Scope) (*Group, error) {
 // rejecting every later mutation, including the cancellation that would end it.
 // The caller's mutation is discarded and ErrHistoryLimit is returned.
 func (s *Store) Change(ctx context.Context, scope Scope, fn func(*Group) error) error {
+	return s.change(ctx, scope, storeChangeAttempts, fn)
+}
+
+func (s *Store) change(ctx context.Context, scope Scope, attempts int, fn func(*Group) error) error {
 	forceClose := false
-	for attempt := 0; attempt < 60; attempt++ {
+	for attempt := 0; attempt < attempts; attempt++ {
 		row, g, err := s.read(ctx, scope)
 		if err == nil {
 			before := g.StatusView()
@@ -266,9 +274,8 @@ func (s *Store) Change(ctx context.Context, scope Scope, fn func(*Group) error) 
 			if forceClose {
 				closeForHistoryLimit(g)
 			} else {
-				if owner, ok := ctx.Value(parentOwnerKey{}).(string); ok &&
-					(g.ParentOwner != owner || !s.parentLeaseCurrent(g)) {
-					return ErrConflict
+				if err := s.checkWriteOwner(ctx, g); err != nil {
+					return err
 				}
 				if err = fn(g); err != nil {
 					return err
@@ -296,21 +303,11 @@ func (s *Store) Change(ctx context.Context, scope Scope, fn func(*Group) error) 
 				q := s.db.WithContext(ctx).
 					Model(&Record{}).
 					Where("id = ? AND version = ?", row.ID, row.Version).
-					Updates(map[string]any{
-						"data":       string(b),
-						"status":     g.Status,
-						"version":    row.Version + 1,
-						"updated_at": time.Now().UTC(),
-					})
+					Updates(groupMutationValues(row, g, b))
 				err = q.Error
 				if err == nil && q.RowsAffected == 1 {
 					g.Revision = row.Version + 1
-					after := g.StatusView()
-					after.Revision = before.Revision
-					if s.OnStatus != nil &&
-						(parentMessageID != g.ParentMessageID || !reflect.DeepEqual(before, after)) {
-						s.OnStatus(context.WithoutCancel(ctx), g)
-					}
+					s.notifyGroupMutation(ctx, g, before, parentMessageID)
 					if forceClose {
 						return ErrHistoryLimit
 					}
@@ -321,6 +318,9 @@ func (s *Store) Change(ctx context.Context, scope Scope, fn func(*Group) error) 
 		if err != nil && !strings.Contains(err.Error(), "locked") && !strings.Contains(err.Error(), "busy") {
 			return err
 		}
+		if attempts == 1 {
+			break
+		}
 		t := time.NewTimer(time.Duration(min(attempt+1, 20)) * time.Millisecond)
 		select {
 		case <-ctx.Done():
@@ -330,6 +330,103 @@ func (s *Store) Change(ctx context.Context, scope Scope, fn func(*Group) error) 
 		}
 	}
 	return ErrConflict
+}
+
+func (s *Store) checkWriteOwner(ctx context.Context, g *Group) error {
+	if owner, ok := ctx.Value(parentOwnerKey{}).(string); ok &&
+		(g.ParentOwner != owner || !s.parentLeaseCurrent(g)) {
+		return ErrConflict
+	}
+	return nil
+}
+
+func groupMutationValues(row Record, g *Group, body []byte) map[string]any {
+	return map[string]any{
+		"data": string(body), "status": g.Status, "version": row.Version + 1, "updated_at": time.Now().UTC(),
+	}
+}
+
+func (s *Store) notifyGroupMutation(ctx context.Context, g *Group, before StatusSnapshot, parentMessageID string) {
+	after := g.StatusView()
+	after.Revision = before.Revision
+	if s.OnStatus != nil && (parentMessageID != g.ParentMessageID || !reflect.DeepEqual(before, after)) {
+		s.OnStatus(context.WithoutCancel(ctx), g)
+	}
+}
+
+// changeForPublication holds the writer lock while checking and completing an
+// owned turn after optimistic retries ran out. Use the same scoped row and
+// revision sequence, and notify only after the transaction commits.
+func (s *Store) changeForPublication(ctx context.Context, scope Scope, fn func(context.Context, *Group) error) error {
+	lockCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	var updated *Group
+	var before StatusSnapshot
+	var parentMessageID string
+	err := s.db.WithContext(lockCtx).Transaction(func(tx *gorm.DB) error {
+		query := tx
+		switch tx.Name() {
+		case "sqlite":
+			// SQLite has no row-level FOR UPDATE. The first write reserves its
+			// writer lock before the authoritative read, like BEGIN IMMEDIATE.
+			locked := collaborationScopeQuery(tx.Model(&Record{}), scope).UpdateColumn("version", gorm.Expr("version"))
+			if locked.Error != nil {
+				return locked.Error
+			}
+			if locked.RowsAffected != 1 {
+				return ErrScope
+			}
+		case "postgres":
+			query = tx.Clauses(clause.Locking{Strength: "UPDATE"})
+		default:
+			return ErrConflict
+		}
+		row, g, err := readScopedGroup(query, scope)
+		if err != nil {
+			return err
+		}
+		if err := s.checkWriteOwner(lockCtx, g); err != nil {
+			return err
+		}
+		before, parentMessageID = g.StatusView(), g.ParentMessageID
+		if err := fn(lockCtx, g); err != nil {
+			return err
+		}
+		if err := context.Cause(lockCtx); err != nil {
+			return err
+		}
+		if err := s.checkWriteOwner(lockCtx, g); err != nil {
+			return err
+		}
+		body, err := json.Marshal(g)
+		if err == nil && len(body) > maxAggregateBytes && g.Status == "completed" {
+			compactClosed(g)
+			body, err = json.Marshal(g)
+		}
+		if err != nil {
+			return err
+		}
+		if string(body) == row.Data && g.Status == row.Status {
+			return nil
+		}
+		if len(body) > maxAggregateBytes {
+			return ErrHistoryLimit
+		}
+		write := collaborationScopeQuery(tx.Model(&Record{}), scope).Updates(groupMutationValues(row, g, body))
+		if write.Error != nil {
+			return write.Error
+		}
+		if write.RowsAffected != 1 {
+			return ErrConflict
+		}
+		g.Revision = row.Version + 1
+		updated = g
+		return nil
+	})
+	if err == nil && updated != nil {
+		s.notifyGroupMutation(ctx, updated, before, parentMessageID)
+	}
+	return err
 }
 
 // Pending lists groups that require scheduling, recovery or cancellation.

@@ -2,6 +2,7 @@ package event
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -165,8 +166,13 @@ type AgentCompleteData struct {
 // AgentIncompleteData reports the outcome of a turn with no checked answer.
 // Notice describes the actual execution and is separate from the answer stream.
 type AgentIncompleteData struct {
-	Reason string `json:"reason"`
-	Notice string `json:"notice"`
+	Reason        string `json:"reason"`
+	Notice        string `json:"notice"`
+	PartialAnswer bool   `json:"partial_answer,omitempty"`
+}
+
+func (data AgentCompleteData) HasPartialAnswer() bool {
+	return data.Incomplete != nil && data.Incomplete.PartialAnswer && strings.TrimSpace(data.FinalAnswer) != ""
 }
 
 // === Streaming Event Data Structures ===

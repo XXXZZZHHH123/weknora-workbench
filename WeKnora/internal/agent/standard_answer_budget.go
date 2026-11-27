@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/agent/collaboration"
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/event"
@@ -216,8 +217,18 @@ func (e *AgentEngine) finishStandardAnswerBudget(
 	if err := ctx.Err(); err != nil {
 		return true, err
 	}
+	var refreshed bool
+	checkLease := func() error {
+		b := e.collaboration
+		if types.VerifiedPublicationEnabled() && b != nil && b.Child == nil && b.ParentOwner != "" && messageID != "" {
+			renewed, err := b.CheckPublicationLease(ctx, messageID)
+			refreshed = refreshed || renewed
+			return err
+		}
+		return e.executionLeaseError(ctx)
+	}
 	if len(forcedReason) > 0 {
-		if err := e.executionLeaseError(ctx); err != nil {
+		if err := checkLease(); err != nil {
 			return true, err
 		}
 	}
@@ -230,15 +241,21 @@ func (e *AgentEngine) finishStandardAnswerBudget(
 	}
 	// A late human correction or background notice belongs to the next model
 	// boundary; it cannot be completed under the old advisory plan's budget.
-	injected := e.drainSteerMessages(ctx, state, messages, sessionID, messageID)
-	injected += e.injectBackground(ctx, state, messages, true)
-	if injected > 0 {
+	applyPendingInput := func() bool {
+		injected := e.drainSteerMessages(ctx, state, messages, sessionID, messageID)
+		injected += e.injectBackground(ctx, state, messages, true)
+		if injected == 0 {
+			return false
+		}
 		e.clearTaskToolProjection(messages)
 		e.taskPlan = nil
 		e.resetDocumentTurnProgress(guards, query, state)
+		return true
+	}
+	if applyPendingInput() {
 		return false, nil
 	}
-	if err := e.executionLeaseError(ctx); err != nil {
+	if err := checkLease(); err != nil {
 		return true, err
 	}
 	common.PipelineInfo(ctx, "Agent", "standard_answer_budget", map[string]any{
@@ -249,7 +266,33 @@ func (e *AgentEngine) finishStandardAnswerBudget(
 			Data: event.AgentProgressData{Content: standardAnswerBudgetProgress(ctx), Iteration: state.CurrentRound}})
 	}
 	e.stopEvidenceCompletion(ctx, query, state, *messages, reason)
-	err := e.streamFinalAnswerToEventBus(ctx, query, state, sessionID, restoreForFinalAnswer(*messages, guards), finalAnswerOptions{preliminary: true, assistantMessageID: messageID})
+	conversation := restoreForFinalAnswer(*messages, guards)
+	options := finalAnswerOptions{preliminary: true, assistantMessageID: messageID}
+	var fenceErr error
+	if refreshed {
+		options.recoveredPublicationFence = func() (bool, error) {
+			finished, recovered, err := e.collaboration.FinishPublication(ctx, messageID)
+			if err == nil && !finished {
+				err = collaboration.ErrConflict // New collaboration work needs its own delivery barrier.
+			}
+			fenceErr = err
+			return recovered, err
+		}
+	}
+	err := e.streamFinalAnswerToEventBus(ctx, query, state, sessionID, conversation, options)
+	if refreshed && err != nil {
+		if fenceErr == nil {
+			_, fenceErr = options.recoveredPublicationFence()
+			if fenceErr == nil {
+				e.commitTerminalResult(ctx, state, sessionID, "", "", "failed", false, terminalCollaborationContention)
+				return true, nil
+			}
+		}
+		if errors.Is(fenceErr, collaboration.ErrInput) && applyPendingInput() {
+			return false, nil
+		}
+		return true, fenceErr
+	}
 	if err != nil && ctx.Err() == nil && e.executionLeaseError(ctx) == nil && !e.collaborationOwnsFailure(ctx) {
 		e.commitTerminalResult(ctx, state, sessionID, "", "", "failed", false, terminalBudget)
 	}

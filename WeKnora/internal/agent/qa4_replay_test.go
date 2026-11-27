@@ -131,6 +131,8 @@ func qa4ReplayRegistry(steps ...types.AgentStep) *agenttools.ToolRegistry {
 }
 
 func TestQA4HistoricalReplay(t *testing.T) {
+	// Replay the archived terminal body and citation protocol byte for byte.
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false")
 	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "false")
 	t.Setenv("COMMODITY_RESEARCH_TOKEN_FILE", "")
 	t.Setenv("STRUCTURED_DATA_URL", "")
@@ -222,9 +224,7 @@ func runQA4HistoricalReplay(t *testing.T, id, future string) {
 						require.True(t, state.IsComplete)
 						require.NotEmpty(t, e.evidenceCompletion.record.Attempts, "unrelated directory attempts remain visible")
 						require.Equal(t, countTotalToolCalls(trace.Steps), countTotalToolCalls(state.RoundSteps))
-						require.Empty(t, e.turnReview.ClosedStreams)
-						require.Empty(t, state.FinalAnswer)
-						require.NotEmpty(t, e.turnReview.TerminalReceipt.notice)
+						assertQA4ReplayUnresolvedPublication(t, e, state)
 						return
 					}
 					require.False(t, state.IsComplete)
@@ -248,9 +248,7 @@ func runQA4HistoricalReplay(t *testing.T, id, future string) {
 					require.Zero(t, exhausted.BudgetRemaining)
 					require.Equal(t, "recovery_budget_exhausted", exhausted.Reason)
 					require.True(t, state.IsComplete)
-					require.Empty(t, e.turnReview.ClosedStreams)
-					require.Empty(t, state.FinalAnswer)
-					require.NotEmpty(t, e.turnReview.TerminalReceipt.notice)
+					assertQA4ReplayUnresolvedPublication(t, e, state)
 					return
 				}
 				state.CurrentRound++
@@ -282,9 +280,7 @@ func runQA4HistoricalReplay(t *testing.T, id, future string) {
 	require.True(t, e.turnReview.Committed)
 	require.True(t, state.IsComplete)
 	if id == "r5-1-kb07" {
-		require.Empty(t, state.FinalAnswer)
-		require.Empty(t, e.turnReview.ClosedStreams)
-		require.NotEmpty(t, e.turnReview.TerminalReceipt.notice)
+		assertQA4ReplayUnresolvedPublication(t, e, state)
 		return
 	}
 	require.Len(t, e.turnReview.ClosedStreams, 1)
@@ -357,10 +353,12 @@ func TestQA4ReplayPendingCoverage(t *testing.T) {
 		require.Contains(t, string(encoded), `"source_mode":"named_first"`)
 	})
 	t.Run("stage_2_zero_read_gap", func(t *testing.T) {
+		t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false") // The archived stop emitted no partial body.
 		t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
 		synctest.Test(t, func(t *testing.T) { runQA4HistoricalReplay(t, "r6-2-kb31", "gap") })
 	})
 	t.Run("stage_2_unrelated_directory_keeps_gap", func(t *testing.T) {
+		t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false") // The archived stop emitted no partial body.
 		t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
 		synctest.Test(t, func(t *testing.T) { runQA4HistoricalReplay(t, "r7-1-kb31", "irrelevant") })
 	})
@@ -473,5 +471,18 @@ func assertQA4OriginalFactHandoff(t *testing.T, ctx context.Context, legacy *Age
 			require.NotContains(t, handoff, "17110", "an equal value at a different source cell is not the selected original")
 			require.NotContains(t, handoff, "C4705")
 		}
+	}
+}
+
+func assertQA4ReplayUnresolvedPublication(t *testing.T, e *AgentEngine, state *types.AgentState) {
+	t.Helper()
+	require.NotEmpty(t, e.turnReview.TerminalReceipt.notice)
+	if types.VerifiedPublicationEnabled() {
+		require.Equal(t, e.turnReview.TerminalReceipt.notice, state.FinalAnswer)
+		require.Len(t, e.turnReview.ClosedStreams, 1)
+		require.NotContains(t, state.FinalAnswer, "已生成的草稿")
+	} else {
+		require.Empty(t, state.FinalAnswer)
+		require.Empty(t, e.turnReview.ClosedStreams)
 	}
 }

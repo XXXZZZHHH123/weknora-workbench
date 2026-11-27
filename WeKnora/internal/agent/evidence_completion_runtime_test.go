@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/event"
@@ -59,6 +60,7 @@ func (index *coverageRuntimeIndex) HybridSearch(_ context.Context, _ string, par
 }
 
 func TestEvidenceCompletionNamedFirstDiscoveryAndRead(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "true")
 	t.Run("available", func(t *testing.T) { runEvidenceCompletionNamedFirst(t, true, true) })
 	t.Run("available_without_read_metadata", func(t *testing.T) { runEvidenceCompletionNamedFirst(t, true, false) })
@@ -267,8 +269,11 @@ func runEvidenceCompletionNamedFirst(t *testing.T, documentRoute, readMetadata b
 	require.NotEmpty(t, citation)
 	run(draft(answer+`<ref id="`+citation+`"/>`, bodyClaim(subject, metric)))
 	require.True(t, state.IsComplete)
-	require.Equal(t, answer, documentAnswerCitation.ReplaceAllString(state.FinalAnswer, ""))
-	require.Equal(t, []string{"contract-supporting"}, uniqueCandidateCitationIDs(state.FinalAnswer))
+	engine.emitCompletionEvent(ctx, state, "s", "m", time.Now())
+	require.Equal(t, answer+"〔Inspection report〕", state.FinalAnswer)
+	require.False(t, types.HasAgentAnswerMarkup(state.FinalAnswer))
+	require.Len(t, state.KnowledgeRefs, 1)
+	require.Equal(t, "contract-supporting", state.KnowledgeRefs[0].ID)
 	require.Equal(t, candidateAccepted, engine.turnReview.Last.Disposition)
 	require.Len(t, engine.evidenceCompletion.record.Attempts, 2)
 	require.Equal(t, []string{"discover", "read"}, []string{engine.evidenceCompletion.record.Attempts[0].Action, engine.evidenceCompletion.record.Attempts[1].Action})

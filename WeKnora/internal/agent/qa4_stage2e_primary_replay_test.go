@@ -17,6 +17,8 @@ import (
 // The missing native value read and its on-wire association are the tested
 // recovery variant, using an offline original-cell result for the same snapshot.
 func TestQA4Stage2EKB16PrimaryReplay(t *testing.T) {
+	// Replay the archived terminal body and citation protocol byte for byte.
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false")
 	for _, mode := range []string{"default", "unrepaired", "planned", "only", "false"} {
 		t.Run(mode, func(t *testing.T) {
 			enabled := mode != "false" && mode != "default"

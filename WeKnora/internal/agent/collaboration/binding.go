@@ -84,38 +84,117 @@ func (b *Binding) Poll(ctx context.Context) ([]Event, error) {
 // so the engine must call the model again. Polling always checks durable state
 // first; events committed before waiting are not lost.
 func (b *Binding) BeforeFinish(ctx context.Context) ([]Event, error) {
+	events, _, err := b.beforeFinish(ctx, "")
+	return events, err
+}
+
+// BeforeVerifiedFinish uses the same delivery barrier as BeforeFinish and
+// scopes the final write to the assistant message being completed.
+func (b *Binding) BeforeVerifiedFinish(ctx context.Context, messageID string) ([]Event, bool, error) {
+	return b.beforeFinish(ctx, messageID)
+}
+
+func (b *Binding) beforeFinish(ctx context.Context, messageID string) ([]Event, bool, error) {
 	if b.Child != nil {
-		return b.Poll(ctx)
+		events, err := b.Poll(ctx)
+		return events, false, err
 	}
 	for {
-		if b.HasInput != nil {
-			ready, err := b.HasInput(ctx)
-			if err != nil {
-				return nil, err
-			}
-			if ready {
-				return nil, ErrInput
-			}
+		var done, recovered bool
+		var err error
+		if messageID != "" && b.ParentOwner != "" {
+			done, recovered, err = b.FinishPublication(ctx, messageID)
+		} else {
+			done, err = b.finishWithInputCheck(ctx, "")
 		}
-		done, err := b.Runtime.Finish(b.Context(ctx), b.Scope, b.Seen)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if done {
-			return nil, nil
+			return nil, recovered, nil
 		}
 		events, err := b.Poll(ctx)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if len(events) > 0 {
-			return events, nil
+			return events, false, nil
 		}
 		_, err = b.Wait(ctx, b.Seen, time.Second)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
+}
+
+func (b *Binding) publicationInputError(ctx context.Context) error {
+	if b.HasInput != nil {
+		ready, err := b.HasInput(ctx)
+		if err != nil {
+			return err
+		}
+		if ready {
+			return ErrInput
+		}
+	}
+	return nil
+}
+
+func (b *Binding) finishWithInputCheck(ctx context.Context, messageID string) (bool, error) {
+	if err := b.publicationInputError(ctx); err != nil {
+		return false, err
+	}
+	return b.Runtime.finish(b.Context(ctx), b.Scope, b.Seen, messageID)
+}
+
+// FinishPublication closes the current owned turn at its delivery cursor.
+// Refresh retries only the deterministic write. A child result or human steer
+// is still handled by the engine, and a closed or replaced owner cannot finish.
+func (b *Binding) FinishPublication(ctx context.Context, messageID string) (finished, recovered bool, err error) {
+	if b.Child != nil || b.Closing || b.ParentOwner == "" || messageID == "" {
+		return false, false, ErrConflict
+	}
+	for attempt := 0; attempt < publicationRefreshAttempts; attempt++ {
+		if err := context.Cause(ctx); err != nil {
+			return false, false, err
+		}
+		done, err := b.finishWithInputCheck(ctx, messageID)
+		if !errors.Is(err, ErrConflict) {
+			return done && err == nil, false, err
+		}
+		g, err := b.readPublicationGroup(ctx, messageID)
+		if err != nil {
+			return false, false, err
+		}
+		if g.Status == "completed" && g.NextSequence == b.Seen && b.Runtime.Store.parentLeaseCurrent(g) {
+			// The write can succeed even when its acknowledgment is lost.
+			if err := b.publicationInputError(ctx); err != nil {
+				return false, false, err
+			}
+			return true, true, context.Cause(ctx)
+		}
+		if g.Status != "active" {
+			return false, false, ErrConflict
+		}
+		if attempt+1 == publicationRefreshAttempts {
+			if !b.Runtime.Store.parentLeaseCurrent(g) {
+				return false, false, ErrConflict
+			}
+			err := b.Runtime.Store.changeForPublication(b.Context(ctx), b.Scope, func(lockCtx context.Context, g *Group) error {
+				if err := b.publicationInputError(lockCtx); err != nil {
+					return err
+				}
+				var err error
+				done, err = finishGroup(g, b.Seen, messageID)
+				return err
+			})
+			return done && err == nil, done && err == nil, err
+		}
+		if err := waitPublicationRefresh(ctx, attempt); err != nil {
+			return false, false, err
+		}
+	}
+	return false, false, ErrConflict
 }
 
 // StopDelegation asks unfinished children to stop while the parent retains

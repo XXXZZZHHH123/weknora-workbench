@@ -296,6 +296,23 @@ func (r *Registry) CitableChunkHandle(id string) string {
 	return handle
 }
 
+// CitableWebTitle accepts only the original URL visible in this run's web
+// evidence. History and navigation handles do not qualify.
+func (r *Registry) CitableWebTitle(rawURL string) (string, bool) {
+	if r == nil || r.sources == nil || !r.sources.citationsEnabled {
+		return "", false
+	}
+	handle, ok := r.sources.webs.handleForKey(canonicalWebURL(rawURL))
+	if !ok {
+		return "", false
+	}
+	if _, citable := r.sources.citable.Load(handle); !citable {
+		return "", false
+	}
+	original, meta, ok := r.sources.webs.resolve(handle)
+	return meta.title, ok && rawURL == original
+}
+
 // CompactKnownText replaces only previously registered durable source IDs.
 func (r *Registry) CompactKnownText(text string) string {
 	if r == nil || r.sources == nil {

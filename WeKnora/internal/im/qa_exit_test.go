@@ -2,6 +2,7 @@ package im
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"testing/synctest"
@@ -47,23 +48,40 @@ func (s *imOutcomeMessageService) UpdateMessage(_ context.Context, message *type
 }
 
 func TestIMTerminalStatusPersistsAndReachesAdapter(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	const notice = "The named source was checked. Its original value remains unverified."
 	const draft = "Unchecked draft."
 	const verified = "The checked value is 42."
 	const savedInterruption = "The checked value is 42. Verification of the second source was interrupted."
+	const privateReceipt = "private-im-source-receipt"
+	partial := event.AgentCompleteData{FinalAnswer: verified, Incomplete: &event.AgentIncompleteData{
+		Reason: "endpoint_evidence_unverified", Notice: "Internal notice", PartialAnswer: true,
+	}, EvidenceRefs: []interface{}{
+		types.EvidenceReference{ID: "im-reading", Kind: types.EvidenceKindRawCell,
+			CandidateHash: types.EvidenceCandidateHash(verified), Manifest: json.RawMessage(`{"private":"` + privateReceipt + `"}`)},
+		map[string]any{"id": "untyped-navigation", "manifest": privateReceipt},
+	}}
 	for _, mode := range []string{"stream", "full_output", "plain"} {
 		for _, scenario := range []struct {
 			name, reply, saved, state string
 			complete                  event.AgentCompleteData
 			err                       error
+			legacy                    bool
 		}{
 			{name: "incomplete", reply: notice, saved: notice, state: types.MessageRunStateIncomplete,
 				complete: event.AgentCompleteData{Incomplete: &event.AgentIncompleteData{Reason: "endpoint_evidence_unverified", Notice: notice}}},
 			{name: "interrupted", reply: imCancelledFallback, state: types.MessageRunStateInterrupted, err: context.Canceled},
 			{name: "persisted_interruption", reply: savedInterruption, state: types.MessageRunStateInterrupted, err: types.ErrMessageRunInterrupted},
 			{name: "success", reply: verified, saved: verified, complete: event.AgentCompleteData{FinalAnswer: verified}},
+			{name: "partial_with_answer", reply: verified, saved: verified, state: types.MessageRunStateEvidencePartial,
+				complete: partial},
+			{name: "partial_flag_off", reply: partial.Incomplete.Notice, saved: partial.Incomplete.Notice,
+				state: types.MessageRunStateIncomplete, complete: partial, legacy: true},
 		} {
 			t.Run(mode+"/"+scenario.name, func(t *testing.T) {
+				if scenario.legacy {
+					t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false")
+				}
 				messageService := &imOutcomeMessageService{}
 				if scenario.name == "persisted_interruption" {
 					messageService.interrupted = &types.Message{ID: "assistant-message", SessionID: "session",
@@ -117,6 +135,21 @@ func TestIMTerminalStatusPersistsAndReachesAdapter(t *testing.T) {
 				require.True(t, messageService.saved[0].IsCompleted)
 				require.Equal(t, scenario.state, messageService.saved[0].RunState)
 				require.Equal(t, scenario.saved, messageService.saved[0].Content)
+				if scenario.state == types.MessageRunStateEvidencePartial {
+					message := messageService.saved[0]
+					require.Equal(t, scenario.complete.Incomplete.Reason, message.RunReason)
+					require.Equal(t, scenario.complete.Incomplete.Reason, message.ExecutionContext.EvidencePartialReason)
+					require.Len(t, message.EvidenceReferences, 1)
+					require.Equal(t, "im-reading", message.EvidenceReferences[0].ID)
+					require.Equal(t, types.EvidenceCandidateHash(message.Content), message.EvidenceReferences[0].CandidateHash)
+					public, err := json.Marshal(message)
+					require.NoError(t, err)
+					require.NotContains(t, string(public), privateReceipt)
+					require.NotContains(t, string(public), "untyped-navigation")
+				} else {
+					require.Empty(t, messageService.saved[0].ExecutionContext.EvidencePartialReason)
+					require.Empty(t, messageService.saved[0].EvidenceReferences)
+				}
 			})
 		}
 	}

@@ -905,6 +905,8 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 
 	suspended, _ := data.Suspended.(*types.PromptSuspension)
 	incomplete := data.Incomplete
+	verifiedPublication := types.VerifiedPublicationEnabled()
+	partialAnswer := verifiedPublication && data.HasPartialAnswer()
 	h.suspension = suspended
 	if suspended != nil && suspended.Detached {
 		return nil
@@ -917,7 +919,11 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 			h.assistantMessage.RunState = types.MessageRunStateAwaitingInput
 		} else {
 			h.assistantMessage.RunState = ""
-			if incomplete != nil {
+			h.assistantMessage.RunReason = ""
+			h.assistantMessage.ExecutionContext.EvidencePartialReason = ""
+			if partialAnswer {
+				h.assistantMessage.SetEvidencePartialReason(incomplete.Reason)
+			} else if incomplete != nil {
 				h.assistantMessage.RunState = types.MessageRunStateIncomplete
 			}
 			h.assistantMessage.IsCompleted = true
@@ -939,15 +945,25 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 				h.knowledgeRefs = knowledgeRefs
 			}
 		}
+		var evidenceRefs types.EvidenceReferences
 		if suspended == nil && data.EvidenceRefs != nil {
-			refs := types.EvidenceReferencesFromInternal(data.EvidenceRefs)
-			if len(refs) != len(data.EvidenceRefs) {
+			evidenceRefs = types.EvidenceReferencesFromInternal(data.EvidenceRefs)
+			if len(evidenceRefs) != len(data.EvidenceRefs) {
 				return fmt.Errorf("invalid internal completion evidence")
 			}
-			h.assistantMessage.EvidenceReferences = refs
+		}
+		if verifiedPublication {
+			var checkedKnowledge types.References
+			if data.KnowledgeRefs != nil {
+				checkedKnowledge = h.assistantMessage.KnowledgeReferences
+			}
+			data.FinalAnswer, evidenceRefs = types.PublicAgentAnswer(data.FinalAnswer, checkedKnowledge, evidenceRefs)
+		}
+		if suspended == nil && data.EvidenceRefs != nil {
+			h.assistantMessage.EvidenceReferences = evidenceRefs
 		}
 
-		if incomplete != nil {
+		if incomplete != nil && !partialAnswer {
 			h.assistantMessage.Content = incomplete.Notice
 		} else {
 			h.assistantMessage.Content += data.FinalAnswer
@@ -1096,7 +1112,7 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 	// Fallback: if no answer events were streamed but we have a final answer,
 	// emit it as answer events so the frontend can render it properly.
 	// This guards against edge cases where the LLM stops without calling final_answer.
-	if suspended == nil && incomplete == nil && h.finalAnswer == "" && data.FinalAnswer != "" {
+	if suspended == nil && (incomplete == nil || partialAnswer) && h.finalAnswer == "" && data.FinalAnswer != "" {
 		logger.GetLogger(h.ctx).Warnf(
 			"No answer events were streamed, emitting fallback answer (len=%d). "+
 				"This typically happens when: (1) model stopped naturally and content was sent as thought events, "+
@@ -1141,7 +1157,9 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 		"total_duration_ms": data.TotalDurationMs,
 		"final_content":     h.assistantMessage.Content,
 	}
-	if incomplete != nil {
+	if partialAnswer {
+		completeData["run_state"], completeData["code"] = types.MessageRunStateEvidencePartial, incomplete.Reason
+	} else if incomplete != nil {
 		completeData["final_content"] = ""
 		completeData["run_state"], completeData["success"] = types.MessageRunStateIncomplete, false
 		completeData["error"], completeData["code"] = incomplete.Notice, incomplete.Reason

@@ -12,6 +12,7 @@ import (
 )
 
 func TestFinalReviewSynthesisParsesAnswerJSONBeforeDecodingEscapedCitations(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false")
 	const image = "resource://AbCdEfGhIjKlMnOpQrStUv"
 	for _, payload := range []string{
 		`{"answer":"原文结果30。<ref id=\"c1\"/> ![图](res://0001) <ref id=\"c999\"/>"}`,

@@ -642,9 +642,16 @@ func (s *AgentCollaboration) run(ctx context.Context, w collaboration.Work) (col
 			answer.RunState = types.MessageRunStateAwaitingInput
 		}
 		if data.Incomplete != nil {
-			runErr = fmt.Errorf("%s", data.Incomplete.Notice)
-			if finishStream == nil {
-				answer.RunState, answer.Content = types.MessageRunStateIncomplete, data.Incomplete.Notice
+			if types.VerifiedPublicationEnabled() && data.HasPartialAnswer() {
+				runErr = errors.New(data.Incomplete.Reason)
+				if finishStream == nil {
+					answer.SetEvidencePartialReason(data.Incomplete.Reason)
+				}
+			} else {
+				runErr = errors.New(data.Incomplete.Notice)
+				if finishStream == nil {
+					answer.RunState, answer.Content = types.MessageRunStateIncomplete, data.Incomplete.Notice
+				}
 			}
 		}
 		return nil

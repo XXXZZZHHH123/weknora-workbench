@@ -20,20 +20,23 @@ type terminalCoverageFact struct {
 }
 
 type terminalCoverageDelivery struct {
-	facts        []terminalCoverageFact
-	notes        []string
-	missing      []string
-	conclusions  []string
-	hasDirectory bool
-	subject      string
-	record       coverageRecord
-	readReceipts []coverageEvidence
-	chinese      bool
+	facts            []terminalCoverageFact
+	notes            []string
+	missing          []string
+	conclusions      []string
+	hasDirectory     bool
+	subject          string
+	record           coverageRecord
+	readReceipts     []coverageEvidence
+	comparisonValues map[string]string
+	requested        []taskCoverageTarget
+	chinese          bool
 }
 
 type terminalCoveragePublication struct {
-	answer string
-	notice string
+	answer  string
+	notice  string
+	partial bool
 }
 
 type terminalEvidenceSnapshot struct {
@@ -134,6 +137,7 @@ func (e *AgentEngine) terminalCoverageFailure(ctx context.Context, state *types.
 
 func (e *AgentEngine) terminalCoveragePublication(ctx context.Context, state *types.AgentState, failure terminalFailure) terminalCoveragePublication {
 	delivery := e.terminalCoverageDelivery(ctx, state)
+
 	steps := []types.AgentStep(nil)
 	if state != nil {
 		steps = state.RoundSteps[min(e.turnReview.TerminalStartStep, len(state.RoundSteps)):]
@@ -159,6 +163,12 @@ func (e *AgentEngine) terminalCoveragePublication(ctx context.Context, state *ty
 		delivery.retainSelectedUnplannedReadings(steps, e.turnReview.Last.Candidate)
 	}
 	result := delivery.renderPublication(failure)
+	if result.answer == "" && types.VerifiedPublicationEnabled() && e.evidenceCompletionEligible() &&
+		e.standardTextDelivery(state) && failure != terminalInterrupted && failure != terminalSourceChanged {
+		if answer := delivery.verifiedSourceStatus(); answer != "" {
+			result = terminalCoveragePublication{answer: answer, notice: answer, partial: true}
+		}
+	}
 	if result.answer != "" && failure != terminalTableEvidence && failure != terminalSourceChanged && state != nil {
 		result.answer = e.retainCheckedDocumentParagraphs(ctx, state, delivery, result.answer)
 	}
@@ -378,6 +388,7 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 	targets := slices.DeleteFunc(slices.Clone(e.evidenceCompletionTargets()), func(target taskCoverageTarget) bool {
 		return target.SourceTime == "general_concept" || slices.Equal(target.Required, []string{"optional"})
 	})
+	d.requested = targets
 	add := func(role string, item coverageEvidence, required bool) {
 		for i, prior := range d.facts {
 			p := prior.Evidence
@@ -411,6 +422,7 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 	if turn.revision == record.Revision && turn.scope == record.AuthScope {
 		record.Evidence = append(record.Evidence, terminalInspectedChoiceFacts(record, turn.record.Evidence)...)
 	}
+	d.record = record
 	for _, target := range targets {
 		scoped := e.coverageRecordForTarget(ctx, target, record)
 		readings, reportedPair := e.tableReceiptReadings(target, scoped, e.turnReview.Last.Candidate)
@@ -776,7 +788,7 @@ func (d terminalCoverageDelivery) renderPublication(failure terminalFailure) ter
 			if item.Kind == "last_valid_receipt" || item.Kind == "body" && item.ReportedValue == "" && !fact.required {
 				status = append(status, sentence)
 			} else {
-				lines = append(lines, sentence)
+				lines = append(lines, d.appendComparisonCitation(sentence, item))
 			}
 			used[terminalCoverageFactKey(item)] = true
 		}
@@ -789,6 +801,9 @@ func (d terminalCoverageDelivery) renderPublication(failure terminalFailure) ter
 		sentence := ""
 		if len(group) == 1 {
 			sentence = d.receiptFinding(group[0].Evidence, false)
+			if sentence != "" {
+				sentence = d.appendComparisonCitation(sentence, group[0].Evidence)
+			}
 		} else {
 			sentence = d.groupedValues(group)
 		}
@@ -942,6 +957,10 @@ func (d *terminalCoverageDelivery) addComparison(facts []coverageFact, checkedTa
 	left, leftOK := coverageComparisonNumber(a)
 	right, rightOK := coverageComparisonNumber(b)
 	if !leftOK || !rightOK {
+		return
+	}
+	if checkedTable && types.VerifiedPublicationEnabled() {
+		d.addVerifiedComparison(a, b, left, right)
 		return
 	}
 	comparable := terminalUnitFromSource(a) && terminalUnitFromSource(b) && a.Unit == b.Unit
@@ -1242,6 +1261,12 @@ func terminalReceiptValue(item coverageEvidence) string {
 
 func (d terminalCoverageDelivery) observedValue(item coverageEvidence) string {
 	value := terminalReceiptValue(item)
+	if compared := d.comparisonValues[terminalCoverageFactKey(item)]; compared != "" {
+		value = compared
+		if terminalUnitFromSource(item) {
+			value += " " + terminalEvidenceText(item.Unit)
+		}
+	}
 	if value == "" {
 		return ""
 	}

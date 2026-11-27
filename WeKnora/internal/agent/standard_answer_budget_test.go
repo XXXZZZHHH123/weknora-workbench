@@ -50,6 +50,7 @@ func standardBudgetFixture(t *testing.T) (*AgentEngine, *types.AgentState) {
 }
 
 func TestStandardAnswerBudgetEightSourceRoundsUseOneCheckedFinalSynthesis(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	model := &mockChat{}
 	e, state, candidate := directCitationReadFixture(t, model, true)
 	e.config.AnswerReviewMode, e.config.MaxIterations = "standard", 20
@@ -76,12 +77,12 @@ func TestStandardAnswerBudgetEightSourceRoundsUseOneCheckedFinalSynthesis(t *tes
 	require.NoError(t, err)
 	require.Equal(t, standardAnswerToolRounds, reader.calls)
 	require.Len(t, model.calls, standardAnswerToolRounds+1, "only one synthesis follows the eight real tool barriers")
-	require.Equal(t, candidate+" "+gap, state.FinalAnswer)
+	require.Equal(t, "The indicator measures covered area.〔Indicator handbook〕 "+gap, state.FinalAnswer)
 	require.Contains(t, model.calls[len(model.calls)-1][0].Content, e.standardAnswerPolicyGuidance())
 	require.Contains(t, model.opts[len(model.opts)-1].RuntimeNotice, standardAnswerBudgetNotice)
 	require.Equal(t, "none", model.opts[len(model.opts)-1].ToolChoice)
-	require.True(t, e.candidateApprovalCurrent(state.FinalAnswer, state))
-	require.Len(t, e.finalAnswerKnowledgeReferences(state), 1)
+	require.True(t, e.candidateApprovalCurrent(candidate+" "+gap, state))
+	require.Len(t, state.KnowledgeRefs, 1)
 	done, visible := recorder.snapshot()
 	require.Equal(t, 1, done)
 	require.Equal(t, state.FinalAnswer, visible)

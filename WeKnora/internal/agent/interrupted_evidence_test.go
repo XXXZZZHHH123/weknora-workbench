@@ -74,9 +74,17 @@ func TestAf1KB28InterruptedPairUsesActualReadTableAndWorkbook(t *testing.T) {
 			}, false, InterruptedProgress{Known: true})
 			require.True(t, reportAuthorized, "a checked table value must carry its exact OCR snapshot")
 			require.Contains(t, answer, "331.2")
-			require.Contains(t, answer, "298.93291576470585")
 			require.Contains(t, answer, "G87")
-			require.Contains(t, answer, "原报数值不同")
+			if types.VerifiedPublicationEnabled() {
+				require.Contains(t, answer, "298.93")
+				require.Contains(t, answer, "32.27")
+				require.NotContains(t, answer, "298.93291576470585")
+				require.Contains(t, answer, "给出的数字不同")
+				require.Contains(t, answer, "本轮执行中断")
+			} else {
+				require.Contains(t, answer, "298.93291576470585")
+				require.Contains(t, answer, "原报数值不同")
+			}
 			require.NotContains(t, answer, "876")
 			require.NotContains(t, answer, "516.2")
 			filtered := RenderInterruptedEvidence(r.ctx, persisted.ParentEvidence, func(source InterruptedSource) bool {
@@ -85,6 +93,7 @@ func TestAf1KB28InterruptedPairUsesActualReadTableAndWorkbook(t *testing.T) {
 			require.Contains(t, filtered, "G87")
 			require.NotContains(t, filtered, "331.2")
 			require.NotContains(t, filtered, "原报数值不同")
+			require.NotContains(t, filtered, "给出的数字不同")
 			require.NotContains(t, filtered, types.MessageRunStateAwaitingInput)
 		})
 	}

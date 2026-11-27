@@ -5,6 +5,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/agent"
@@ -117,12 +118,31 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 
 	// Get initial events from stream (offset 0)
 	events, currentOffset, err := h.streamManager.GetEvents(ctx, sessionID, messageID, 0)
+	publicMessage := types.PublicAgentMessage(message)
+	publication := agentReplayPublication{message: message, public: publicMessage}
 	if message.IsCompleted && message.RunState == types.MessageRunStateIncomplete {
 		if err != nil {
 			logger.Warnf(ctx, "Replaying saved incomplete status without stream cache: %v", err)
 		}
 		setSSEHeaders(c)
 		for _, evt := range incompleteReplayEvents(events, message) {
+			emitStreamEvent(ctx, c, evt, message.RequestID, resourceRewriter)
+		}
+		return
+	}
+	if message.IsCompleted && message.RunState == types.MessageRunStateEvidencePartial && (err != nil ||
+		!slices.ContainsFunc(events, func(evt interfaces.StreamEvent) bool {
+			return evt.Type == types.ResponseTypeComplete && evt.Data["run_state"] == types.MessageRunStateEvidencePartial
+		})) {
+		setSSEHeaders(c)
+		for _, evt := range coalesceReplayEvents(events) {
+			switch evt.Type {
+			case types.ResponseTypeAnswer, types.ResponseTypeError, types.ResponseTypeComplete:
+				continue
+			}
+			emitStreamEvent(ctx, c, evt, message.RequestID, resourceRewriter)
+		}
+		for _, evt := range savedPartialAnswerEvents(publicMessage) {
 			emitStreamEvent(ctx, c, evt, message.RequestID, resourceRewriter)
 		}
 		return
@@ -179,11 +199,26 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 	// Replay existing events, a segment's worth of chunks per frame
 	replay := coalesceReplayEvents(events)
 	logger.Debugf(ctx, "Replaying %d existing events as %d frames", len(events), len(replay))
+	emitReplay := func(evt interfaces.StreamEvent) {
+		evt = interruptedReplayEvent(ctx, evt, message)
+		if publication.savedLegacyAnswer() {
+			if evt.Type == types.ResponseTypeAnswer {
+				return
+			}
+			if evt.Type == types.ResponseTypeComplete && evt.Data["suspended"] == nil && message.RunState != types.MessageRunStateInterrupted {
+				answerID := message.ID + "-saved-answer"
+				emitStreamEvent(ctx, c, interfaces.StreamEvent{ID: answerID, Type: types.ResponseTypeAnswer,
+					Content: publicMessage.Content, Done: true, Timestamp: message.UpdatedAt,
+					Data: map[string]any{"event_id": answerID}}, message.RequestID, resourceRewriter)
+			}
+		}
+		emitStreamEvent(ctx, c, publication.project(evt), message.RequestID, resourceRewriter)
+	}
 	for _, evt := range replay {
 		if evt.Type == types.ResponseTypeAnswer && (message.RunState == types.MessageRunStateInterrupted || message.RunState == types.MessageRunStateIncomplete) {
 			continue // Replay the saved verified response instead of an abandoned draft.
 		}
-		emitStreamEvent(ctx, c, interruptedReplayEvent(ctx, evt, message), message.RequestID, resourceRewriter)
+		emitReplay(evt)
 	}
 
 	// If stream is already completed, send final event and return
@@ -226,7 +261,7 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 					streamCompletedNow = true
 				}
 
-				emitStreamEvent(ctx, c, interruptedReplayEvent(ctx, evt, message), message.RequestID, resourceRewriter)
+				emitReplay(evt)
 			}
 
 			// Update offset
@@ -239,6 +274,81 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 				return
 			}
 		}
+	}
+}
+
+type agentReplayPublication struct {
+	message, public *types.Message
+	streams         map[string]*types.AgentAnswerStream
+	agent           bool
+}
+
+func (p *agentReplayPublication) savedLegacyAnswer() bool {
+	return p.message.IsCompleted && p.message.Content != p.public.Content
+}
+
+func (p *agentReplayPublication) project(evt interfaces.StreamEvent) interfaces.StreamEvent {
+	message, publicMessage := p.message, p.public
+	p.agent = p.agent || evt.Type == types.ResponseTypeAgentQuery
+	if !types.VerifiedPublicationEnabled() || (!p.agent && message.AgentID == "" && len(message.AgentSteps) == 0 && len(message.EvidenceReferences) == 0) {
+		return evt
+	}
+	switch evt.Type {
+	case types.ResponseTypeAnswer:
+		if evt.Content != "" && evt.Content == message.Content {
+			evt.Content = publicMessage.Content
+			break
+		}
+		if p.streams == nil {
+			p.streams = make(map[string]*types.AgentAnswerStream)
+		}
+		stream := p.streams[evt.ID]
+		if stream == nil || evt.Data["replace"] == true {
+			stream = &types.AgentAnswerStream{}
+			p.streams[evt.ID] = stream
+		}
+		evt.Content = stream.Feed(evt.Content)
+		if evt.Done {
+			evt.Content += stream.Finish()
+			delete(p.streams, evt.ID)
+		}
+	case types.ResponseTypeComplete:
+		if types.HasAgentAnswerMarkup(evt.Content) {
+			evt.Content = types.StripAgentAnswerMarkup(evt.Content)
+		}
+		if content, _ := evt.Data["final_content"].(string); (p.savedLegacyAnswer() && evt.Data["suspended"] == nil) || types.HasAgentAnswerMarkup(content) {
+			evt.Data = copyEventData(evt.Data, 0)
+			if p.savedLegacyAnswer() && evt.Data["suspended"] == nil || content == message.Content {
+				evt.Data["final_content"] = publicMessage.Content
+				if publicMessage.EvidenceReferences != nil {
+					evt.Data["evidence_references"] = publicEventEvidenceReferences(publicMessage.EvidenceReferences)
+				}
+			} else {
+				evt.Data["final_content"] = types.StripAgentAnswerMarkup(content)
+			}
+		}
+		if content, _ := evt.Data["final_answer"].(string); types.HasAgentAnswerMarkup(content) {
+			evt.Data = copyEventData(evt.Data, 0)
+			evt.Data["final_answer"] = types.StripAgentAnswerMarkup(content)
+		}
+	}
+	return evt
+}
+
+func savedPartialAnswerEvents(message *types.Message) []interfaces.StreamEvent {
+	answerID := message.ID + "-partial-answer"
+	completeData := map[string]any{
+		"run_state": message.RunState, "code": message.RunReason, "final_content": message.Content,
+		"knowledge_references": message.KnowledgeReferences,
+		"evidence_references":  publicEventEvidenceReferences(message.EvidenceReferences),
+	}
+	if len(message.Artifacts) > 0 {
+		completeData["artifacts"] = publicArtifactViews(message.Artifacts)
+	}
+	return []interfaces.StreamEvent{
+		{ID: answerID, Type: types.ResponseTypeAnswer, Content: message.Content, Done: true, Timestamp: message.UpdatedAt,
+			Data: map[string]any{"event_id": answerID}},
+		{ID: message.ID + "-partial-complete", Type: types.ResponseTypeComplete, Done: true, Data: completeData, Timestamp: message.UpdatedAt, Usage: message.Usage},
 	}
 }
 

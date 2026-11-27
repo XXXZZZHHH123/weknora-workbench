@@ -461,7 +461,8 @@ func (e *AgentEngine) acceptCoverageDeclaration(ctx context.Context, query strin
 	if len(request.Goal) > 0 {
 		index := slices.IndexFunc(targets, findTarget)
 		modern := e.documentTablePlanningEnabled()
-		if index >= 0 && (!modern || len(targets[index].PlanIssues) == 0) {
+		boundedRecovery, _ := ctx.Value(finalSourceRecoveryKey{}).(bool)
+		if index >= 0 && (!modern || len(targets[index].PlanIssues) == 0 && !boundedRecovery) {
 			return request, false
 		}
 		semantic := e.semanticReviewConversation(messages)
@@ -487,7 +488,11 @@ func (e *AgentEngine) acceptCoverageDeclaration(ctx context.Context, query strin
 				logger.Infof(ctx, "[Agent][TaskPlan] Rejected malformed coverage goal declaration for goal %d", goalIndex)
 				return request, false
 			}
-			if index >= 0 {
+			refining := index >= 0 && boundedRecovery && recoveryRefinesUnboundGoal(targets[index], target, turn.record)
+			if index >= 0 && len(targets[index].PlanIssues) == 0 && !refining {
+				return request, false
+			}
+			if index >= 0 && !refining {
 				target, err = mergeCoverageGoal(targets[index], target)
 				if err != nil {
 					logger.Infof(ctx, "[Agent][TaskPlan] Rejected coverage goal repair for goal %d: %v", goalIndex, err)
@@ -501,6 +506,9 @@ func (e *AgentEngine) acceptCoverageDeclaration(ctx context.Context, query strin
 				return request, false
 			}
 			target = plan.CoverageTargets[0]
+			if refining && !recoveryRefinesUnboundGoal(targets[index], target, turn.record) {
+				return request, false
+			}
 			if index >= 0 && len(target.ComparisonSources) <= len(targets[index].ComparisonSources) && len(target.PlanIssues) > 0 {
 				logger.Infof(ctx, "[Agent][TaskPlan] Rejected unverified coverage declaration for goal %d: %+v", goalIndex, target.PlanIssues)
 				return request, false
@@ -528,6 +536,7 @@ func (e *AgentEngine) acceptCoverageDeclaration(ctx context.Context, query strin
 		if !modern && target.SourceMode == "only" && request.Selection == "" && len(e.verifiedCoverageScopePins(ctx, target).sources) == 0 {
 			return request, false
 		}
+
 		declaredGoal = &target
 		if index >= 0 {
 			targets[index] = target

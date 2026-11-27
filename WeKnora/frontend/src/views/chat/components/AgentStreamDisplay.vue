@@ -532,6 +532,10 @@
                   :title="$t('agent.addToKnowledgeBase')">
                   <ChatActionIcon name="bookmark-add" />
                 </t-button>
+                <t-button v-if="referencesDrawer && session.knowledge_references?.length && event.content.search(KB_WEB_TAG_RE) < 0" size="small" variant="outline" shape="round"
+                  @click.stop="openReferencesDrawer()" :title="$t('chat.referencesDrawerTitle')">
+                  {{ $t('chat.referencesDrawerTitle') }}
+                </t-button>
                 <!-- Includes files delivered by child agents. Embedded assistants
                      use the same entry and open the artifact drawer. -->
                 <span v-if="hasArtifacts || artifactsCollecting" class="answer-toolbar__artifact"
@@ -816,7 +820,7 @@ import { getAttachmentParsingSummaryHtml } from '@/utils/attachmentParsingDispla
 import { useChatCitationPopover } from '@/composables/useChatCitationPopover';
 import { useChatReferencesDrawer } from '@/composables/useChatReferencesDrawer';
 import { mergeDocumentReferences, type KnowledgeReferenceLike, type ReferenceHighlightTarget } from '@/utils/referenceSources';
-import { resolveCitationChunkId } from '@/utils/citationMarkdown';
+import { KB_WEB_TAG_RE, resolveCitationChunkId } from '@/utils/citationMarkdown';
 import { citationAnchorText } from '@/utils/citationAnchor';
 import { getWikiPage, type WikiPage } from '@/api/wiki';
 import { MessagePlugin } from 'tdesign-vue-next';

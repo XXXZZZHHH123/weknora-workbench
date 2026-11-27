@@ -23,6 +23,9 @@ func (e *AgentEngine) publishAnswer(ctx context.Context, sessionID, answer, exis
 	if existingID != "" {
 		return existingID
 	}
+	if types.VerifiedPublicationEnabled() && types.HasAgentAnswerMarkup(answer) {
+		return ""
+	}
 	id := generateEventID("answer")
 	e.turnReview.TerminalStreamID, e.turnReview.TerminalReceipt.streamed = id, answer
 	if e.eventBus != nil {
@@ -82,24 +85,25 @@ func terminalFallbackPrefix(prefix string) bool {
 type terminalFailure string
 
 const (
-	terminalNoFailure        terminalFailure = ""
-	terminalEmpty            terminalFailure = "empty"
-	terminalReview           terminalFailure = "review_failed"
-	terminalNumeric          terminalFailure = "numeric_failed"
-	terminalIncomplete       terminalFailure = "incomplete"
-	terminalStalled          terminalFailure = "stalled"
-	terminalTruncated        terminalFailure = "truncated"
-	terminalBudget           terminalFailure = "budget_exhausted"
-	terminalInterrupted      terminalFailure = "interrupted"
-	terminalTableEvidence    terminalFailure = "table_evidence_unverified"
-	terminalEndpointEvidence terminalFailure = "endpoint_evidence_unverified"
-	terminalAnswerEvidence   terminalFailure = "answer_evidence_missing"
-	terminalSourceStalled    terminalFailure = "source_stalled"
-	terminalSourceChanged    terminalFailure = "source_changed"
-	terminalFieldInput       terminalFailure = "field_confirmation_input"
-	terminalFieldService     terminalFailure = "field_confirmation_service"
-	terminalFieldBlocked     terminalFailure = "field_confirmation_preflight"
-	terminalFieldResult      terminalFailure = "field_confirmation_result"
+	terminalNoFailure               terminalFailure = ""
+	terminalEmpty                   terminalFailure = "empty"
+	terminalReview                  terminalFailure = "review_failed"
+	terminalNumeric                 terminalFailure = "numeric_failed"
+	terminalIncomplete              terminalFailure = "incomplete"
+	terminalStalled                 terminalFailure = "stalled"
+	terminalTruncated               terminalFailure = "truncated"
+	terminalBudget                  terminalFailure = "budget_exhausted"
+	terminalInterrupted             terminalFailure = "interrupted"
+	terminalTableEvidence           terminalFailure = "table_evidence_unverified"
+	terminalEndpointEvidence        terminalFailure = "endpoint_evidence_unverified"
+	terminalAnswerEvidence          terminalFailure = "answer_evidence_missing"
+	terminalSourceStalled           terminalFailure = "source_stalled"
+	terminalSourceChanged           terminalFailure = "source_changed"
+	terminalCollaborationContention terminalFailure = "collaboration_contention"
+	terminalFieldInput              terminalFailure = "field_confirmation_input"
+	terminalFieldService            terminalFailure = "field_confirmation_service"
+	terminalFieldBlocked            terminalFailure = "field_confirmation_preflight"
+	terminalFieldResult             terminalFailure = "field_confirmation_result"
 )
 
 type terminalPublicationReceipt struct {
@@ -108,6 +112,7 @@ type terminalPublicationReceipt struct {
 	staleCalls map[string]bool
 	failure    terminalFailure
 	notice     string
+	partial    bool
 	streamed   string
 	submitted  string
 }
@@ -212,6 +217,9 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 			answer, outcome, truncated = stripCoverageAnswer(draft), "evidence_partial", false
 			e.bindCoverageDraftDelivery(draft, answer)
 			failure = terminalNoFailure
+		} else if failure == terminalCollaborationContention {
+			// Durable finalization recovered without an approved draft.
+			// Render from current receipts below.
 		} else if evidenceFailure != terminalNoFailure && evidenceFailure != terminalAnswerEvidence {
 			failure = evidenceFailure
 		} else if e.turnReview.Last.ReasonCode == "table_evidence_attribution_incomplete" {
@@ -255,6 +263,7 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 			outcome = "evidence_incomplete"
 		}
 		e.turnReview.TerminalReceipt.notice = result.notice
+		e.turnReview.TerminalReceipt.partial = result.partial
 		state.EvidenceRefs, state.KnowledgeRefs = nil, nil
 	}
 
@@ -269,18 +278,22 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 		answerHash: candidateTextDigest(answer), evidence: evidenceRevision, failure: failure,
 		staleCalls: staleCalls,
 		notice:     e.turnReview.TerminalReceipt.notice,
+		partial:    e.turnReview.TerminalReceipt.partial,
 		streamed:   original,
 		submitted:  submitted,
 	}
 	if existingID == "" {
 		e.turnReview.TerminalReceipt.streamed = ""
 	}
-	deferPublication := e.turnReview.DeferTerminalClose && (e.turnReview.TerminalSensitive || e.terminalCoverageContextKnown() || failure != terminalNoFailure)
-	if !deferPublication {
-		e.publishTerminalStream(ctx, state, sessionID)
-	}
-	if !e.turnReview.DeferTerminalClose {
-		e.closeAnswerStream(ctx, sessionID, e.turnReview.TerminalStreamID, truncated)
+	checkedPublication := types.VerifiedPublicationEnabled() && types.HasAgentAnswerMarkup(answer)
+	if !checkedPublication {
+		deferPublication := e.turnReview.DeferTerminalClose && (e.turnReview.TerminalSensitive || e.terminalCoverageContextKnown() || failure != terminalNoFailure)
+		if !deferPublication {
+			e.publishTerminalStream(ctx, state, sessionID)
+		}
+		if !e.turnReview.DeferTerminalClose {
+			e.closeAnswerStream(ctx, sessionID, e.turnReview.TerminalStreamID, truncated)
+		}
 	}
 	common.PipelineInfo(ctx, "Agent", "terminal_commit", map[string]interface{}{"outcome": outcome, "failure": failure, "candidate_hash": candidateTextDigest(answer), "repairs": e.turnReview.Repairs, "checks": e.turnReview.Checks, "marked_numeric_count": markedNumbers, "marked_citation_count": markedCitations})
 }

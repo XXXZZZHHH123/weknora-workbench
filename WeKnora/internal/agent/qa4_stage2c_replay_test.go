@@ -475,6 +475,8 @@ func (r *qa4Stage2CReplay) exhaust() {
 }
 
 func TestQA4Stage2CHistoricalReplay(t *testing.T) {
+	// Replay the archived terminal body and citation protocol byte for byte.
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false")
 	t.Run("KB07_SQL_and_unit", func(t *testing.T) {
 		for _, variant := range []struct {
 			name          string

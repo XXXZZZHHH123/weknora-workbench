@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -150,6 +151,7 @@ func TestStandardAnswerReviewPreservesActualArtifactDeliveryChecks(t *testing.T)
 }
 
 func TestStandardAnswerReviewNormalAndExceptionalDeliveryPublishCheckedContent(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "")
 	for _, exceptional := range []bool{false, true} {
 		t.Run(map[bool]string{false: "normal", true: "stalled"}[exceptional], func(t *testing.T) {
 			model := &mockChat{}
@@ -162,6 +164,7 @@ func TestStandardAnswerReviewNormalAndExceptionalDeliveryPublishCheckedContent(t
 			if exceptional {
 				engine.finishStalledTurn(t.Context(), state, "standard-session", &types.ChatResponse{Content: candidate}, false, query, messages)
 				require.Empty(t, model.calls)
+				engine.emitCompletionEvent(t.Context(), state, "standard-session", "standard-message", time.Now())
 			} else {
 				wireCandidate := `The indicator measures covered area.<ref id="` + engine.modelContext.CitableChunkHandle("contract-supporting") + `"/>`
 				model.responses = []mockResponse{chatAnswer(wireCandidate)}
@@ -170,12 +173,14 @@ func TestStandardAnswerReviewNormalAndExceptionalDeliveryPublishCheckedContent(t
 				require.Len(t, model.calls, 1, "only the main answer generation is needed")
 			}
 			require.True(t, state.IsComplete)
-			require.Equal(t, candidate, state.FinalAnswer)
+			require.Equal(t, "The indicator measures covered area.〔Indicator handbook〕", state.FinalAnswer)
+			require.False(t, types.HasAgentAnswerMarkup(state.FinalAnswer))
 			done, visible := recorder.snapshot()
 			require.Equal(t, 1, done)
 			require.Equal(t, state.FinalAnswer, visible)
 			require.True(t, engine.candidateApprovalCurrent(candidate, state))
-			require.Len(t, engine.finalAnswerKnowledgeReferences(state), 1)
+			require.Len(t, state.KnowledgeRefs, 1)
+			require.Equal(t, "contract-supporting", state.KnowledgeRefs[0].ID)
 		})
 	}
 }
