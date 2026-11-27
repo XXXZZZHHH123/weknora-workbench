@@ -11,8 +11,12 @@ import (
 
 const (
 	structuredLastValidArgument     = "include_last_valid"
-	structuredLastValidInstructions = " 需要已选字段的最近有效观测时设置 include_last_valid=true；区间行和统计仍只覆盖请求窗口。用 end_date 指定端点上界，SQL 的 WHERE 不限定端点。检查 coverage.last_valid（SQL 为 inputs[series_id].coverage.last_valid）的状态、实际观测日和原格。before_range 表示窗前；conflict 或 truncated 时说明同日冲突或截断，缺少端点表示本次未取得。"
+	structuredLastValidInstructions = " 对点名来源的日期取值，若原问题允许用同源最近有效值说明缺期，选定与原问题同口径的字段后，在同次读取中设置 include_last_valid=true。先核对实际表头、指标、维度和单位，避免把包含其他分项的合计当作单项。区间行和统计仍只覆盖请求窗口。用 end_date 指定端点上界，SQL 的 WHERE 不限定端点。最近有效观测只按同一字段的 coverage.last_valid（SQL 为 inputs[series_id].coverage.last_valid）交付原值、日期和原格；字段目录日期、最后记录、样例行窗及其他字段均不能证明它。before_range 表示窗前；conflict 或 truncated 时说明同日冲突或截断。若明确只允许窗口内观测，设置 include_last_valid=false。"
 )
+
+func (d StructuredOperationDescriptor) SupportsLastValid() bool {
+	return d.lastValid && structuredresult.LastValidEnabled()
+}
 
 func structuredLastValidOperation(operation string) bool {
 	return operation == "query_series" || operation == "analyze_table"

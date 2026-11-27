@@ -87,8 +87,13 @@ func coverageComparisonNumber(item coverageEvidence) (*big.Rat, bool) {
 // Candidate citations identify each claimed operand's actual source. Calls
 // present in the turn alone cannot open this check or supply an attribution.
 func multiSourceTableAttribution(review coverageDraftReview, candidate string) ([]unattributedTableValue, bool) {
-	if !agenttools.DocumentTableEvidenceEnabled() {
-		return nil, false
+	missing, scope, _ := citedMultiSourceTableValues(review, candidate)
+	return missing, scope
+}
+
+func citedMultiSourceTableValues(review coverageDraftReview, candidate string) ([]unattributedTableValue, bool, []float64) {
+	if !agenttools.DocumentTableEvidenceEnabled() && len(review.readings) == 0 {
+		return nil, false, nil
 	}
 	var visible []coverageDraftParagraph
 	for _, paragraph := range strings.Split(strings.ReplaceAll(candidate, "\r\n", "\n"), "\n\n") {
@@ -99,6 +104,7 @@ func multiSourceTableAttribution(review coverageDraftReview, candidate string) (
 	}
 	sources := make(map[[2]string]bool)
 	var missing []unattributedTableValue
+	var verified []float64
 	anyTable := false
 	for _, item := range review.record.Evidence {
 		source := comparisonPhysicalSource(item)
@@ -121,15 +127,23 @@ func multiSourceTableAttribution(review coverageDraftReview, candidate string) (
 					continue
 				}
 				sources[source], anyTable = true, true
+				if item.Page > 0 && item.TableGrid != nil {
+					verified = append(verified, float64(item.Page))
+				}
 				for _, assertion := range coverageDraftAssertionBoundary.Split(paragraph.text, -1) {
 					local := coverageDraftParagraph{assertion, strings.ToLower(assertion), paragraph.chunks, paragraph.results}
 					for _, amount := range amounts {
 						count := coverageDraftAmountOccurrences(maskCitedPageLocator(local.text, item.Page), amount)
-						if count > 0 && count > nativeTableAttributions(local, paragraph, item, review, amount) {
+						if count == 0 {
+							continue
+						}
+						if count > nativeTableAttributions(local, paragraph, item, review, amount) {
 							page := unattributedTableValue{item.SourceTitle, item.Page}
 							if !slices.Contains(missing, page) {
 								missing = append(missing, page)
 							}
+						} else {
+							verified = append(verified, amount)
 						}
 					}
 				}
@@ -137,9 +151,9 @@ func multiSourceTableAttribution(review coverageDraftReview, candidate string) (
 		}
 	}
 	if len(sources) < 2 || !anyTable {
-		return nil, false
+		return nil, false, nil
 	}
-	return missing, true
+	return missing, true, verified
 }
 
 func unattributedMultiSourceTableValues(review coverageDraftReview, candidate string) []unattributedTableValue {

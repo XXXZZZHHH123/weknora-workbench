@@ -78,30 +78,31 @@ type coverageDeclaration struct {
 }
 
 type evidenceCompletionTurn struct {
-	initialized, enabled     bool
-	startStep, observedSteps int
-	observedTailCalls        int
-	seenObservations         map[string]bool
-	lastAttempts             []coverageAttempt
-	documentReads            map[string]types.ToolCall
-	nativeSelections         map[int][]coverageEvidence
-	revision, scope          string
-	restrictionRevision      string
-	declared                 []taskCoverageTarget
-	versionClaims            map[string][]coverageVersionClaim
-	record                   coverageRecord
-	result                   []coverageCompletion
-	refs                     map[string]coverageEvidence
-	legacyGap                string
-	legacyGoal               *int
-	legacyBaseline           map[string]bool
-	pending                  *coverageCompletion
-	pendingStep              int
-	recoveryDecisions        int
-	stopReason               string
-	recoveryCalls            map[string]bool
-	latestAttempts           map[string]bool
-	directedSearches         map[string]bool
+	initialized, enabled      bool
+	startStep, observedSteps  int
+	observedTailCalls         int
+	seenObservations          map[string]bool
+	lastAttempts              []coverageAttempt
+	documentReads             map[string]types.ToolCall
+	nativeSelections          map[int][]coverageEvidence
+	revision, scope           string
+	restrictionRevision       string
+	interruptionReceiptDigest string
+	declared                  []taskCoverageTarget
+	versionClaims             map[string][]coverageVersionClaim
+	record                    coverageRecord
+	result                    []coverageCompletion
+	refs                      map[string]coverageEvidence
+	legacyGap                 string
+	legacyGoal                *int
+	legacyBaseline            map[string]bool
+	pending                   *coverageCompletion
+	pendingStep               int
+	recoveryDecisions         int
+	stopReason                string
+	recoveryCalls             map[string]bool
+	latestAttempts            map[string]bool
+	directedSearches          map[string]bool
 }
 
 func newEvidenceCompletionTurn(startStep int) evidenceCompletionTurn {
@@ -231,6 +232,7 @@ func (e *AgentEngine) refreshEvidenceCompletion(ctx context.Context, query strin
 	}) {
 		turn.result = append(turn.result, turn.legacyCoverageCompletion())
 	}
+	e.checkpointPinnedInterruptedDocuments(ctx)
 }
 
 func (e *AgentEngine) coverageRecordForTarget(ctx context.Context, target taskCoverageTarget, record coverageRecord) coverageRecord {

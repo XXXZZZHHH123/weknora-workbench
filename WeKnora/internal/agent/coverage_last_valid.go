@@ -9,9 +9,128 @@ import (
 	"strconv"
 	"strings"
 
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/structuredresult"
 	"github.com/Tencent/WeKnora/internal/types"
 )
+
+// The workbench may request the endpoint alongside an already selected read.
+// Keep the tool's public default and respect an explicit option from the model.
+func (e *AgentEngine) defaultCoverageLastValid(ctx context.Context, call types.LLMToolCall, descriptor agenttools.StructuredOperationDescriptor, args, selection map[string]any) bool {
+	dataset := sourceNavigationString(selection, "dataset_id")
+	if !descriptor.SupportsLastValid() || !e.workbenchEvidenceTask() || dataset == "" {
+		return false
+	}
+	if _, explicit := selection["include_last_valid"]; explicit {
+		return false
+	}
+	library := e.coverageStructuredInvocationLibrary(args)
+	if library == "" || !e.coverageScopeAllows(library, "") || types.AuthorizeTenantAPIKeyKnowledgeBases(ctx, library) != nil {
+		return false
+	}
+	var field string
+	switch descriptor.Operation {
+	case "query_series":
+		operation := firstNonEmptyAgent(sourceNavigationString(selection, "operation"), "rows")
+		field = sourceNavigationString(selection, "series_id")
+		if operation != "rows" && operation != "latest" ||
+			citationInt(selection["offset"]) != 0 || coverageEndpointFilterHash(selection) != "" {
+			return false
+		}
+	case "analyze_table":
+		ids, _ := selection["series_ids"].([]any)
+		if len(ids) != 1 || sourceNavigationString(selection, "sql") == "" {
+			return false
+		}
+		field, _ = ids[0].(string)
+	default:
+		return false
+	}
+	start, end := sourceNavigationString(selection, "start_date"), sourceNavigationString(selection, "end_date")
+	targets := e.coverageCallTargets(call)
+	if field == "" || !coverageAnalysisDay(start) || !coverageAnalysisDay(end) || len(targets) != 1 {
+		return false
+	}
+	target := targets[0]
+	from, to, _ := coverageTargetDateRange(target)
+	if target.RequestBasis == "" || target.SourceMode != "only" && target.SourceMode != "named_first" ||
+		!slices.Contains(target.OnVerifiedGap, "last_valid_same_field") || start != from || end != to {
+		return false
+	}
+	record := e.currentCoverageScopeRecord(ctx)
+	return slices.ContainsFunc(record.Bindings, func(binding coverageBinding) bool {
+		if binding.GoalIndex != target.GoalIndex || binding.Role != "primary" ||
+			binding.KnowledgeBaseID != library || binding.SourceID != dataset || binding.SeriesID != field ||
+			binding.PeriodFrom != start || binding.PeriodTo != end {
+			return false
+		}
+		return slices.ContainsFunc(record.Evidence, func(item coverageEvidence) bool {
+			return item.Bound && item.SourceDomain == "structured" && item.KnowledgeBaseID == library &&
+				item.DatasetID == dataset && item.SeriesID == field && item.EvidenceID == binding.EvidenceID &&
+				item.JSONPointer == binding.JSONPointer && coverageCurrentEvidence(record, item)
+		})
+	})
+}
+
+type coverageLastValidFeedback struct {
+	Source        string `json:"source"`
+	Dataset       string `json:"dataset_id"`
+	Sheet         string `json:"sheet"`
+	Series        string `json:"series_id"`
+	Field         string `json:"field"`
+	RequestedFrom string `json:"requested_from,omitempty"`
+	RequestedTo   string `json:"requested_to,omitempty"`
+	Period        string `json:"period,omitempty"`
+	Endpoint      string `json:"endpoint_status"`
+	Date          string `json:"observed_date,omitempty"`
+	Raw           any    `json:"original_value,omitempty"`
+	Cell          string `json:"source_cell,omitempty"`
+	DateCell      string `json:"date_cell,omitempty"`
+	Unit          string `json:"unit,omitempty"`
+}
+
+const coverageLastValidFeedbackInstructions = "The verified gaps and endpoint receipts below apply only to their named field, source and scope. Use the full user question and actual field metadata to check whether each queried field is the requested measure. Use the existing field directory to correct a field that includes other measures or uses a different definition. When the original task calls for an endpoint and permits earlier data, request include_last_valid=true on the same scoped read if the correct field lacks a verified endpoint. Do not substitute a directory date, row window, another field, or a supplement for the original value. For a verified endpoint report the source, date, original value and cell together. If the requested field or its endpoint remains unverified, describe that specific missing evidence."
+
+func (e *AgentEngine) lastValidCoverageFeedback(ctx context.Context) []coverageLastValidFeedback {
+	if !structuredresult.LastValidEnabled() || e.toolRegistry == nil {
+		return nil
+	}
+	record := e.currentCoverageScopeRecord(ctx)
+	supported := make(map[string]bool)
+	var feedback []coverageLastValidFeedback
+	for _, gap := range slices.Backward(record.Evidence) {
+		if gap.Kind != "gap" || !gap.Bound || !gap.Complete || gap.SeriesID == "" ||
+			!coverageCurrentEvidence(record, gap) || !e.coverageEvidenceAllowed(ctx, nil, gap) {
+			continue
+		}
+		if _, known := supported[gap.Operation]; !known {
+			operation, _, _ := e.toolRegistry.StructuredInvocation("structured_"+gap.Operation, json.RawMessage(`{}`))
+			supported[gap.Operation] = operation.SupportsLastValid()
+		}
+		if !supported[gap.Operation] {
+			continue
+		}
+		item := coverageLastValidFeedback{
+			Source: gap.SourceTitle, Dataset: gap.DatasetID, Sheet: gap.Sheet, Series: gap.SeriesID, Field: gap.Metric,
+			RequestedFrom: gap.PeriodFrom, RequestedTo: gap.PeriodTo, Period: gap.Period,
+			Endpoint: "unavailable",
+		}
+		endpoint, present := coverageEndpointForGap(record, gap)
+		if present && e.coverageEvidenceAllowed(ctx, nil, endpoint) {
+			item.Endpoint = endpoint.LastValidStatus
+			if coverageProtocolLastValid(endpoint) && sameCoverageLastValid(record, gap, endpoint) {
+				item.Date, item.Raw, item.Cell, item.DateCell, item.Unit = endpoint.Date, endpoint.Raw, endpoint.Cell, endpoint.DateCell, endpoint.Unit
+			}
+		}
+		if !slices.Contains(feedback, item) {
+			feedback = append(feedback, item)
+			if len(feedback) == 8 {
+				break
+			}
+		}
+	}
+	return feedback
+}
 
 // Only a requested endpoint in a validated native contract can replace the
 // legacy inference. A malformed endpoint never supplies a value or a date.

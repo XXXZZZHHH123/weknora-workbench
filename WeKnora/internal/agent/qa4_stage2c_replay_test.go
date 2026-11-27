@@ -746,7 +746,7 @@ func TestQA4Stage2CHistoricalReplay(t *testing.T) {
 				for _, want := range []string{"2024-03-10", "2023-09-21", "5160", "B3340", "棉花数据库.xlsx"} {
 					require.Contains(t, answer, want)
 				}
-				for _, unrelated := range []string{"A3338", "B3338", "C3338", "D3338", "E3338", "5467", "341", "5160 张"} {
+				for _, unrelated := range []string{"A3338", "B3338", "C3338", "D3338", "E3338", "5467", "341", "5160 张", "S0049502"} {
 					require.NotContains(t, answer, unrelated)
 				}
 				if searchReport {

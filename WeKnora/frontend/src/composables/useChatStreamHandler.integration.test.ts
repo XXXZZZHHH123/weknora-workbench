@@ -180,7 +180,7 @@ function setup(t: TestContext, mode: 'ordinary' | 'quick-timeline' | 'agent') {
     handler.processStreamChunk({ id: 'request', response_type, content, done, data })
   }
   return {
-    message, loading, isReplying, currentAssistantMessageId, replies, turns, errors, img, requests, answer, send, revealed,
+    message, messagesList, loading, isReplying, currentAssistantMessageId, replies, turns, errors, img, requests, answer, send, revealed,
     persist: () => { persisted = true },
     render: () => hydrateProtectedFileImages(root, access()),
     flush: async () => {
@@ -291,6 +291,47 @@ for (const mode of ['ordinary', 'quick-timeline', 'agent'] as const) {
     assert.deepEqual(h.errors, ['Failed to save assistant message'])
     assert.equal(h.turns.length, 0, 'unsaved output must not start follow-up requests')
     assert.equal(h.requests.length, 0, 'a persistence error must not trigger a completion retry')
+  })
+
+  test(`${mode}: interruption replaces the draft and completes the verified partial answer once`, async t => {
+    const h = setup(t, mode)
+    h.send('answer', 'Superseded draft', false, { event_id: 'draft' })
+    assert.equal(h.message.content, 'Superseded draft')
+    const content = 'Workbook read on 2023-10-31, G87 = 298.93. Verification was interrupted.'
+    const interrupted = {
+      assistant_message_id: 'assistant', session_id: 'session', code: 'agent_run_interrupted',
+      run_state: 'interrupted', success: false, error: content, final_content: content,
+    }
+
+    h.persist()
+    h.send('error', content, true, interrupted)
+    h.send('error', content, true, interrupted)
+    assert.equal(h.message.content, content)
+    assert.equal(h.message.run_state, 'interrupted')
+    assert.equal(h.message.is_completed, false)
+    assert.deepEqual(h.replies, [])
+    assert.equal(h.turns.length, 0)
+    assert.deepEqual(h.errors, [content])
+
+    h.send('complete', content, true, interrupted)
+    h.send('error', content, true, interrupted)
+    h.send('complete', content, true, interrupted)
+    assert.equal(h.message.content, content)
+    assert.equal(h.message.run_state, 'interrupted')
+    assert.equal(h.message.is_completed, true)
+    assert.equal(h.loading.value, false)
+    assert.equal(h.isReplying.value, false)
+    assert.deepEqual(h.replies, [content])
+    assert.equal(h.turns.length, 1)
+    assert.deepEqual(h.errors, [content])
+    assert.equal(h.messagesList.length, 1)
+    if (h.message.agentEventStream) {
+      const answers = h.message.agentEventStream.filter((e: any) => e.type === 'answer' && !e.superseded)
+      assert.equal(answers.length, 1)
+      assert.equal(answers[0].content, content)
+      assert.equal(h.message.agentEventStream.filter((e: any) => e.type === 'agent_complete').length, 1)
+    }
+    await h.flush()
   })
 }
 

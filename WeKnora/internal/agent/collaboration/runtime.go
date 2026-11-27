@@ -296,6 +296,8 @@ const compactedResult = `{"result":{"error":"collaboration history limit reached
 // turns. Child conversations retain the complete transcripts.
 func compactClosed(g *Group) {
 	g.ParentWait = nil
+	g.ParentEvidence = nil
+	g.ParentEvidenceCurrent = false
 	for _, m := range g.Members {
 		m.Mail = nil
 		for _, v := range m.Runs {
@@ -331,6 +333,8 @@ func settle(g *Group) {
 		}
 	}
 	g.Status = "cancelled"
+	g.ParentEvidence = nil
+	g.ParentEvidenceCurrent = false
 }
 
 // Finish uses the last sequence actually observed by the parent, not a cursor

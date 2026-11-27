@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/agent"
 	"github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/logger"
@@ -169,7 +170,10 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 	replay := coalesceReplayEvents(events)
 	logger.Debugf(ctx, "Replaying %d existing events as %d frames", len(events), len(replay))
 	for _, evt := range replay {
-		emitStreamEvent(ctx, c, evt, message.RequestID, resourceRewriter)
+		if message.RunState == types.MessageRunStateInterrupted && evt.Type == types.ResponseTypeAnswer {
+			continue // Replay the saved verified response instead of an abandoned draft.
+		}
+		emitStreamEvent(ctx, c, interruptedReplayEvent(ctx, evt, message), message.RequestID, resourceRewriter)
 	}
 
 	// If stream is already completed, send final event and return
@@ -212,7 +216,7 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 					streamCompletedNow = true
 				}
 
-				emitStreamEvent(ctx, c, evt, message.RequestID, resourceRewriter)
+				emitStreamEvent(ctx, c, interruptedReplayEvent(ctx, evt, message), message.RequestID, resourceRewriter)
 			}
 
 			// Update offset
@@ -226,6 +230,42 @@ func (h *Handler) ContinueStream(c *gin.Context) {
 			}
 		}
 	}
+}
+
+func interruptedReplayEvent(ctx context.Context, evt interfaces.StreamEvent, message *types.Message) interfaces.StreamEvent {
+	if evt.Type != types.ResponseTypeError && evt.Type != types.ResponseTypeComplete {
+		return evt
+	}
+	deadline, legacy := agent.LegacyInterruptedAnswer(evt.Content)
+	if !legacy {
+		if content, _ := evt.Data["final_content"].(string); content != "" {
+			deadline, legacy = agent.LegacyInterruptedAnswer(content)
+		}
+	}
+	if !legacy {
+		return evt
+	}
+	content := ""
+	if message != nil && message.RunState == types.MessageRunStateInterrupted {
+		if _, old := agent.LegacyInterruptedAnswer(message.Content); !old {
+			content = message.Content
+		}
+	}
+	if content == "" {
+		content = agent.RenderInterruptedEvidence(ctx, nil, nil, deadline, agent.InterruptedProgressFromMessage(message))
+	}
+	code := "agent_run_interrupted"
+	if deadline {
+		code = "agent_run_deadline_exceeded"
+	}
+	data := make(map[string]any, len(evt.Data)+4)
+	for key, value := range evt.Data {
+		data[key] = value
+	}
+	data["error"], data["final_content"], data["code"] = content, content, code
+	data["run_state"], data["success"] = types.MessageRunStateInterrupted, false
+	evt.Content, evt.Data = content, data
+	return evt
 }
 
 // StopSession godoc

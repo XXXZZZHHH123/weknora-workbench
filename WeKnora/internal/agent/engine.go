@@ -581,6 +581,10 @@ func (e *AgentEngine) Execute(
 	loopEntered = true
 	_, err := e.executeLoop(ctx, state, query, messages, tools, sessionID, messageID)
 	if err != nil {
+		if e.ParentPublicationInterrupted(ctx) {
+			finishAgentSpan(agentSpan, state, types.ErrMessageRunInterrupted)
+			return state, types.ErrMessageRunInterrupted
+		}
 		logger.Errorf(ctx, "[Agent] Execution failed: %v", err)
 		e.eventBus.Emit(ctx, event.Event{
 			ID:        generateEventID("error"),
@@ -1221,6 +1225,10 @@ func (e *AgentEngine) runReActIteration(
 		e.refreshEvidenceCompletion(ctx, query, state, *messagesPtr)
 		if coverageNotice := e.evidenceCompletionNotice(); coverageNotice != "" {
 			runtimeNotice = strings.TrimSpace(runtimeNotice + "\n" + coverageNotice)
+		}
+		if endpointFeedback := e.lastValidCoverageFeedback(ctx); len(endpointFeedback) != 0 {
+			encoded, _ := json.Marshal(endpointFeedback)
+			runtimeNotice = strings.TrimSpace(runtimeNotice + "\n" + coverageLastValidFeedbackInstructions + "\n" + string(encoded))
 		}
 		tools = e.evidenceCompletionTools(tools)
 	}

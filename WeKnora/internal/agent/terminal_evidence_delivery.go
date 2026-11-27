@@ -134,6 +134,14 @@ func (e *AgentEngine) terminalCoverageFailure(ctx context.Context, state *types.
 		}
 		common.PipelineInfo(ctx, "Agent", "terminal_table_evidence", map[string]any{"reason": reason, "verified_facts": len(delivery.facts)})
 	}
+	if failure == terminalEndpointEvidence {
+		cited := uniqueCandidateCitationIDs(e.turnReview.Last.Candidate)
+		for i, fact := range delivery.facts {
+			if fact.Role == "source_passage" && slices.Contains(cited, fact.Evidence.ChunkID) {
+				delivery.facts[i].Role, delivery.facts[i].required = "cited_source_passage", true
+			}
+		}
+	}
 	return delivery.renderFallback(failure)
 }
 
@@ -179,7 +187,7 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 	add := func(role string, item coverageEvidence, required bool) {
 		for i, prior := range d.facts {
 			p := prior.Evidence
-			if agenttools.DocumentTableEvidenceEnabled() && coverageEvidenceFactKey(item) == coverageEvidenceFactKey(p) {
+			if agenttools.DocumentTableEvidenceEnabled() && terminalCoverageFactKey(item) == terminalCoverageFactKey(p) {
 				receipts := mergeCoverageFactReceipts(coverageFactReceipts(p), coverageFactReceipts(item))
 				if required && !prior.required || item.LastValidStatus != "" && p.LastValidStatus == "" {
 					d.facts[i] = terminalCoverageFact{coverageFact{role, item}, required || prior.required}
@@ -189,11 +197,11 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 				}
 				return
 			}
-			sameEndpoint := (coverageProtocolLastValid(item) || coverageProtocolLastValid(p)) && prior.Role == role &&
+			sameEndpoint := (coverageProtocolLastValid(item) || coverageProtocolLastValid(p)) && prior.Role == role && item.Extremum == p.Extremum &&
 				coverageSameOriginalCell(item, p) && reviewJSONValuesEqual(item.Raw, p.Raw)
 			if sameEndpoint || terminalSameFieldGap(record, item, p) || !agenttools.DocumentTableEvidenceEnabled() && item.Kind == p.Kind && item.SourceID == p.SourceID &&
 				item.KnowledgeBaseID == p.KnowledgeBaseID && item.SnapshotHash == p.SnapshotHash && item.Sheet == p.Sheet &&
-				item.SeriesID == p.SeriesID && item.Column == p.Column && item.Date == p.Date && item.Cell == p.Cell &&
+				item.SeriesID == p.SeriesID && item.Column == p.Column && item.Date == p.Date && item.Cell == p.Cell && item.Extremum == p.Extremum &&
 				item.SourceDate == p.SourceDate && item.PeriodFrom == p.PeriodFrom && item.PeriodTo == p.PeriodTo &&
 				item.Period == p.Period && item.ReportedValue == p.ReportedValue && reviewDigest(item.Raw) == reviewDigest(p.Raw) {
 				if required && !prior.required || item.LastValidStatus != "" && p.LastValidStatus == "" {
@@ -211,9 +219,26 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 	}
 	for _, target := range targets {
 		scoped := e.coverageRecordForTarget(ctx, target, record)
+		readings, reportedPair := e.tableReceiptReadings(target, scoped, e.turnReview.Last.Candidate)
+		if plannedTableComparison(target) && !reportedPair && len(readings) < 2 && state != nil {
+			for _, step := range slices.Backward(state.RoundSteps[min(e.turnReview.TerminalStartStep, len(state.RoundSteps)):]) {
+				if len(step.ToolCalls) == 0 && step.Thought != "" {
+					if prior, aligned := e.tableReceiptReadings(target, scoped, step.Thought); aligned {
+						readings, reportedPair = prior, aligned
+						break
+					}
+				}
+			}
+		}
 		for _, result := range evaluateTaskCoverage(target, scoped) {
+			if reportedPair && result.State != coverageSatisfied {
+				continue
+			}
 			if (target.VersionTask == "compare_sources" || target.VersionTask == "compare_versions") && result.State == coverageSatisfied {
 				d.addComparison(result.PinnedFacts, agenttools.DocumentTableEvidenceEnabled() && tableComparison(target))
+				if tableComparison(target) {
+					readings, reportedPair = nil, false
+				}
 			}
 			for _, missing := range result.OpenItems {
 				d.addMissing(target, missing)
@@ -227,6 +252,12 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 				}
 				add(fact.Role, fact.Evidence, true)
 			}
+		}
+		if reportedPair {
+			d.addComparison(readings, true)
+		}
+		for _, fact := range readings {
+			add(fact.Role, fact.Evidence, true)
 		}
 	}
 	if len(targets) == 0 {
@@ -243,10 +274,17 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 			}
 		}
 	}
+	record.Evidence = append(record.Evidence, inspectedPublishedLastValid(record)...)
 	d.record = record
 	exactMissingLookup := len(targets) == 0 && slices.ContainsFunc(record.Evidence, func(item coverageEvidence) bool {
 		return item.Kind == "gap" && item.Complete && item.PeriodFrom != "" && item.PeriodFrom == item.PeriodTo
 	})
+	extrema := make(map[string]bool)
+	for _, item := range record.Evidence {
+		if item.Extremum != "" {
+			extrema[item.EvidenceID] = true
+		}
+	}
 
 	for _, item := range record.Evidence {
 		target, relevant := terminalCoverageTarget(record, targets, item)
@@ -272,9 +310,15 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 					add("last_valid_value", observed, false)
 				}
 			}
-		case item.Kind == "derived" && item.Complete && coverageExactRange(item):
+		case item.Extremum != "":
+			add("scoped_value", item, false)
+		case item.Kind == "derived" && item.Complete && coverageExactRange(item) && !extrema[item.EvidenceID]:
 			add("scoped_value", item, false)
 		case coverageProtocolLastValid(item) && item.Kind == "last_valid" && item.LatestInScope && item.PeriodTo != "":
+			add("scoped_value", item, false)
+		case item.Kind == "last_valid" && item.Operation == "inspect_source" && item.PeriodFrom == "" && item.PeriodTo == "":
+			// The original cell has been paired with the catalog's published
+			// date. Record its field and date without inferring a requested gap.
 			add("scoped_value", item, false)
 		case item.Kind == "last_valid_receipt":
 			if !slices.ContainsFunc(record.Evidence, func(gap coverageEvidence) bool {
@@ -364,6 +408,11 @@ func terminalCoverageTarget(record coverageRecord, targets []taskCoverageTarget,
 			case "cell":
 				if item.Date != "" && (item.Date < from || item.Date > to) ||
 					item.PeriodFrom != "" && item.PeriodFrom < from || item.PeriodTo != "" && item.PeriodTo > to {
+					continue
+				}
+			case "last_valid":
+				if item.Operation == "inspect_source" && target.SourceMode == "only" &&
+					(item.Date < from || item.Date > to) && !slices.Contains(target.OnVerifiedGap, "last_valid_same_field") {
 					continue
 				}
 			}
@@ -502,6 +551,13 @@ func (d terminalCoverageDelivery) renderFallback(failure terminalFailure) string
 		if item.Kind == "body" && !fact.required && (len(lines) != 0 || len(groups) != 0 || item.ReportedValue == "" && d.hasDirectory) {
 			continue
 		}
+		if item.Extremum != "" {
+			if sentence := d.receiptFinding(item, false); sentence != "" && !slices.Contains(lines, sentence) {
+				lines = append(lines, sentence)
+			}
+			used[terminalCoverageFactKey(item)] = true
+			continue
+		}
 		if item.Kind == "cell" || item.Kind == "derived" {
 			field := strings.Join([]string{item.KnowledgeBaseID, item.SourceID, item.SnapshotHash, item.Sheet,
 				item.SeriesID, item.Column, item.Metric, item.PeriodFrom, item.PeriodTo, item.Period}, "\x00")
@@ -518,7 +574,7 @@ func (d terminalCoverageDelivery) renderFallback(failure terminalFailure) string
 			groups[key] = append(groups[key], fact)
 			continue
 		}
-		if sentence := d.receiptFinding(item); sentence != "" && (agenttools.DocumentTableEvidenceEnabled() || !slices.Contains(lines, sentence)) {
+		if sentence := d.receiptFinding(item, fact.Role == "cited_source_passage"); sentence != "" && (agenttools.DocumentTableEvidenceEnabled() || !slices.Contains(lines, sentence)) {
 			lines = append(lines, sentence)
 			used[terminalCoverageFactKey(item)] = true
 		}
@@ -530,7 +586,7 @@ func (d terminalCoverageDelivery) renderFallback(failure terminalFailure) string
 		}
 		sentence := ""
 		if len(group) == 1 {
-			sentence = d.receiptFinding(group[0].Evidence)
+			sentence = d.receiptFinding(group[0].Evidence, false)
 		} else {
 			sentence = d.groupedValues(group)
 		}
@@ -655,6 +711,13 @@ func (d terminalCoverageDelivery) groupedValues(group []terminalCoverageFact) st
 	if period == "" || first.SourceTitle == "" {
 		return ""
 	}
+	sameOriginalRow := first.Operation == "analyze_table" && first.DateCell != "" && !slices.ContainsFunc(group, func(fact terminalCoverageFact) bool {
+		item := fact.Evidence
+		return !item.WorkbookBound || item.ResultJSONPointer == "" || item.DateCell != first.DateCell || item.Cell == ""
+	})
+	if sameOriginalRow {
+		period += " (" + d.text("日期格 ", "date cell ") + terminalEvidenceText(first.DateCell) + ")"
+	}
 	label := terminalCoverageLabel(coverageEvidence{SourceTitle: d.fallbackSourceTitle(first), Sheet: first.Sheet})
 	fieldLabel := func(item coverageEvidence) string {
 		return terminalCoverageLabel(coverageEvidence{Subject: item.Subject, Metric: item.Metric})
@@ -692,8 +755,11 @@ func (d terminalCoverageDelivery) groupedValues(group []terminalCoverageFact) st
 		value := terminalReceiptValue(item)
 		if fact.required || multiple || agenttools.DocumentTableEvidenceEnabled() && counts[fieldLabel(item)] > 1 {
 			value = d.observedValue(item)
-		} else if item.Kind != "derived" && !terminalUnitFromSource(item) {
-			unconfirmed = true
+		} else {
+			if sameOriginalRow && value != "" {
+				value += " (" + d.text("取值格 ", "value cell ") + terminalEvidenceText(item.Cell) + ")"
+			}
+			unconfirmed = unconfirmed || item.Kind != "derived" && !terminalUnitFromSource(item)
 		}
 		if field != "" && value != "" {
 			observation := field + " " + value
@@ -733,7 +799,7 @@ func (d *terminalCoverageDelivery) addComparison(facts []coverageFact, checkedTa
 	}
 	comparable := terminalUnitFromSource(a) && terminalUnitFromSource(b) && a.Unit == b.Unit
 	var note string
-	if comparable {
+	if comparable && !a.ComparisonGrainUnverified && !b.ComparisonGrainUnverified {
 		note = d.text("两处来源在核查范围内的数值不同。", "The two sources report different values for the checked scope.")
 		if left.Cmp(right) == 0 {
 			note = d.text("两处来源在核查范围内的数值相同。", "The two sources report the same value for the checked scope.")
@@ -741,9 +807,15 @@ func (d *terminalCoverageDelivery) addComparison(facts []coverageFact, checkedTa
 	} else {
 		note = d.text("两处来源的单位无法直接比较。", "The sources' units cannot be compared directly.")
 		if checkedTable {
-			note = d.text("两处来源的原报数值不同。单位尚未核实为可直接比较。", "The two sources print different numbers. Direct unit comparability remains unverified.")
+			note = d.text("两处来源的原报数值不同。", "The two sources print different numbers.")
 			if left.Cmp(right) == 0 {
-				note = d.text("两处来源的原报数值相同。单位尚未核实为可直接比较。", "The two sources print the same numbers. Direct unit comparability remains unverified.")
+				note = d.text("两处来源的原报数值相同。", "The two sources print the same numbers.")
+			}
+			switch comparisonUnitStatus(a, b) {
+			case "unknown":
+				note += d.text("单位尚未核实为可直接比较。", " Direct unit comparability remains unverified.")
+			case "incompatible":
+				note += d.text("原单位不同，无法直接比较量值。", " The source units differ, so the quantities cannot be compared directly.")
 			}
 		}
 	}
@@ -818,6 +890,8 @@ func (d terminalCoverageDelivery) failureNote(failure terminalFailure) string {
 		stage = d.text("已返回的表格片段尚未核到所需的原行和列。", "The returned table passages still need matching original rows and columns.")
 	case terminalBudget, terminalTruncated:
 		stage = d.text("生成完整答复前达到了运行上限。", "The run reached its limit before completing the answer.")
+	case terminalInterrupted:
+		stage = d.text("答复完成前执行已中断。", "Execution was interrupted before the answer was complete.")
 	case terminalSourceStalled:
 		stage = d.text("重复的来源请求已停止。", "Repeated source requests stopped.")
 	case terminalStalled:
@@ -835,7 +909,11 @@ func (d terminalCoverageDelivery) failureNote(failure terminalFailure) string {
 
 func terminalCoverageFactKey(item coverageEvidence) string {
 	if agenttools.DocumentTableEvidenceEnabled() {
-		return coverageEvidenceFactKey(item)
+		key := coverageEvidenceFactKey(item)
+		if item.Extremum != "" {
+			return key + "\x00" + item.Extremum + "\x00" + item.PeriodFrom + "\x00" + item.PeriodTo
+		}
+		return key
 	}
 	return strings.Join([]string{item.KnowledgeBaseID, item.SourceID, item.SnapshotHash, item.Sheet,
 		item.SeriesID, item.Column, item.PeriodFrom, item.PeriodTo, item.Period, item.Date, item.Cell,
@@ -898,7 +976,7 @@ func (d terminalCoverageDelivery) lastValidStatusNote(item coverageEvidence) str
 
 var terminalDocumentComment = regexp.MustCompile(`(?s)<!--.*?-->`)
 
-func (d terminalCoverageDelivery) receiptFinding(item coverageEvidence) string {
+func (d terminalCoverageDelivery) receiptFinding(item coverageEvidence, citedPassage bool) string {
 	item.SourceTitle = d.fallbackSourceTitle(item)
 	label := terminalCoverageLabel(item)
 	if label == "" {
@@ -930,6 +1008,9 @@ func (d terminalCoverageDelivery) receiptFinding(item coverageEvidence) string {
 			if excerpt == "" {
 				return ""
 			}
+			if citedPassage {
+				return fmt.Sprintf(d.text("%s记载：“%s”。", "%s records: “%s”."), location, excerpt)
+			}
 			return fmt.Sprintf(d.text("%s返回的正文片段为“%s”。尚缺与所问范围对应的读数。", "%s returned this passage: “%s”. A reading matched to the requested scope is still needed."), location, excerpt)
 		}
 		return ""
@@ -937,6 +1018,17 @@ func (d terminalCoverageDelivery) receiptFinding(item coverageEvidence) string {
 	value := d.observedValue(item)
 	if value == "" || period == "" {
 		return ""
+	}
+	if item.Extremum != "" {
+		kind := d.text("最高值", "maximum")
+		if item.Extremum == "min" {
+			kind = d.text("最低值", "minimum")
+		}
+		interval := terminalEvidenceText(terminalCoveragePeriod(item.PeriodFrom, item.PeriodTo, item.Period))
+		if interval != "" {
+			label += " (" + interval + ")"
+		}
+		return fmt.Sprintf(d.text("%s 的%s为 %s，出现在 %s。", "The %s reports a %s of %s on %s."), label, kind, value, period)
 	}
 	if item.LatestInScope || item.Kind == "last_valid" {
 		if d.chinese {
@@ -1009,7 +1101,7 @@ func (d terminalCoverageDelivery) observedValue(item coverageEvidence) string {
 	if item.DateCell != "" {
 		location = append(location, d.text("日期格 ", "date cell ")+terminalEvidenceText(item.DateCell))
 	}
-	if item.Cell != "" {
+	if item.Cell != "" && item.Kind != "body" {
 		location = append(location, d.text("取值格 ", "value cell ")+terminalEvidenceText(item.Cell))
 	}
 	if !terminalUnitFromSource(item) && item.Kind != "derived" && item.Kind != "body" {

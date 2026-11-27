@@ -178,7 +178,7 @@ func TestTaskSourceContinuationUsesCurrentManifestAndDefinitions(t *testing.T) {
 		manifest["manifest_sha256"] = strings.Repeat("d", 64)
 		_, err := engine.toolRegistry.InstallStructuredManifest(manifest)
 		require.NoError(t, err)
-		engine.appendToolOutcomes(ctx, &types.AgentStep{}, []types.ToolCall{call}, 0, "s")
+		engine.appendToolOutcomes(ctx, &types.AgentStep{}, []types.ToolCall{call}, 0, "s", "m")
 		require.NotContains(t, listToolNames(engine.buildToolsForLLM()), "structured_query_pdf_table")
 		require.Equal(t, int64(1), calls.Load())
 	})

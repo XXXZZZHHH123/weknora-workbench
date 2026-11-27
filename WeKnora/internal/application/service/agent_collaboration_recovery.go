@@ -217,11 +217,11 @@ func (s *AgentCollaboration) resumeParent(ctx context.Context, b *collaboration.
 	}
 	snap, err := agent.DecodeRunSnapshot(data)
 	if err != nil {
-		return err
+		return errors.Join(err, s.closeResumedParent(ctx, b))
 	}
 	var saved types.ResumableAgentRequest
 	if err = json.Unmarshal(snap.Request, &saved); err != nil {
-		return err
+		return errors.Join(err, s.closeResumedParent(ctx, b))
 	}
 	if saved.ActingVia != "" {
 		// Automation leases, cancellation and duration belong to their own
@@ -342,11 +342,7 @@ func (s *AgentCollaboration) resumeParent(ctx context.Context, b *collaboration.
 		if err == nil {
 			err = errors.New("parent executor returned without completion")
 		}
-		if emitErr := bus.Emit(persistCtx, event.Event{Type: event.EventAgentComplete, Data: event.AgentCompleteData{
-			MessageID: answer.ID, FinalAnswer: err.Error(), AgentSteps: snap.DisplaySteps(),
-		}}); emitErr != nil {
-			return emitErr
-		}
+		return errors.Join(err, s.closeResumedParent(persistCtx, b))
 	}
 	if saveErr := s.messages.UpdateMessage(persistCtx, answer); saveErr != nil {
 		return saveErr
@@ -357,6 +353,17 @@ func (s *AgentCollaboration) resumeParent(ctx context.Context, b *collaboration.
 		}
 	}
 	return err
+}
+
+func (s *AgentCollaboration) closeResumedParent(ctx context.Context, b *collaboration.Binding) error {
+	closing, err := b.BeginParentFinalization(ctx)
+	if err != nil {
+		return err
+	}
+	if err := s.finishInterruptedParent(ctx, closing); err != nil {
+		return err
+	}
+	return closing.AcknowledgeParentFinalization(ctx)
 }
 
 func (s *AgentCollaboration) forwardPrompts(_ context.Context, b *collaboration.Binding, bus *event.EventBus) {
@@ -637,56 +644,102 @@ func (s *AgentCollaboration) finishInterruptedParent(ctx context.Context, b *col
 	if err != nil {
 		return err
 	}
-	answer, err := s.messages.GetMessage(ctx, b.Scope.SessionID, g.ParentMessageID)
+	if s.sessions != nil {
+		session, err := s.sessions.GetSession(ctx, b.Scope.SessionID)
+		if err != nil {
+			return err
+		}
+		if session == nil || session.UserID != b.Scope.UserID || session.TenantID != b.Scope.TenantID || session.ID != b.Scope.SessionID {
+			return collaboration.ErrScope
+		}
+	}
+	// The public read can project a legacy row in memory. Finalization must
+	// compare with the stored row to make sure the repaired state is written.
+	var answer *types.Message
+	if messages, ok := s.messages.(*messageService); ok && s.sessions != nil {
+		answer, err = messages.messageRepo.GetMessage(ctx, b.Scope.SessionID, g.ParentMessageID)
+	} else {
+		answer, err = s.messages.GetMessage(ctx, b.Scope.SessionID, g.ParentMessageID)
+	}
 	if err != nil {
 		return err
 	}
+	if answer == nil || answer.SessionID != b.Scope.SessionID || answer.ID != g.ParentMessageID {
+		return collaboration.ErrScope
+	}
+	deadline, legacy := agent.LegacyInterruptedAnswer(answer.Content)
+	if answer.IsCompleted && answer.RunState != types.MessageRunStateInterrupted && !legacy {
+		return nil // A separately completed transcript already has its own delivery.
+	}
+	deadline = deadline || !time.Now().Before(g.Deadline)
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	defer func() {
-		if err := s.streams.ClearLiveRun(persistCtx, b.Scope.SessionID, answer.ID); err != nil {
-			logger.Warnf(ctx, "Failed to clear collaboration live stream: %v", err)
-		}
-	}()
-	reason := "任务执行期间服务中断，当前步骤没有可安全恢复的检查点，已停止本轮及未完成的子任务，避免重复执行。请重新发起任务。"
-	if !time.Now().Before(g.Deadline) {
-		reason = "任务已超过执行时限，已停止本轮及未完成的子任务，避免重复执行。已保存的执行记录和子任务结果仍可查看。"
+	if locale := answer.ExecutionContext.Locale; locale != "" {
+		persistCtx = context.WithValue(persistCtx, types.LanguageContextKey, locale)
 	}
-	wasCompleted := answer.IsCompleted
-	if !wasCompleted {
+	// New runs retain compact native observations before tool events. Legacy
+	// rows can recover only from the current assistant turn's native receipts.
+	receipts := g.ParentEvidence
+	durable := g.ParentEvidenceCurrent || len(receipts) != 0
+	if !durable {
+		receipts = agent.InterruptedEvidenceFromSteps(answer.AgentSteps)
+	}
+	var authorize func(agent.InterruptedSource) bool
+	if source, ok := s.sessions.(interface {
+		InterruptedSourceAuthorization(context.Context, *types.Message, bool) func(agent.InterruptedSource) bool
+	}); ok {
+		authorize = source.InterruptedSourceAuthorization(persistCtx, answer, durable)
+	}
+	content := agent.RenderInterruptedEvidence(persistCtx, receipts, authorize, deadline, agent.InterruptedProgressFromMessage(answer))
+	if err = s.Runtime.CheckParentFinalization(persistCtx, b.Scope, b.ParentOwner); err != nil {
+		return err
+	}
+	if !answer.IsCompleted || answer.RunState != types.MessageRunStateInterrupted || content != answer.Content {
 		answer.IsCompleted = true
-		answer.RunState = ""
-		if answer.Content == "" {
-			answer.Content = reason
-		} else {
-			answer.Content += "\n\n" + reason
-		}
+		answer.RunState = types.MessageRunStateInterrupted
+		answer.Content = content
+		answer.KnowledgeReferences = types.References{}
+		answer.EvidenceReferences = types.EvidenceReferences{}
 		if err = s.messages.UpdateMessage(persistCtx, answer); err != nil {
 			return err
 		}
 	}
-	// Retry terminal delivery even when persistence succeeded on an earlier
-	// attempt. Stable event IDs prevent a retry from creating another turn.
-
-	kinds := []types.ResponseType{"complete"}
-	if !wasCompleted {
-		kinds = []types.ResponseType{"error", "complete"}
+	// The outbox can retry either event after a partial delivery. Include the
+	// content version in the stable IDs if fresh source authorization changed.
+	version := types.EvidenceCandidateHash(content)
+	events, _, err := s.streams.GetEvents(persistCtx, b.Scope.SessionID, answer.ID, 0)
+	if err != nil {
+		return err
 	}
-	for _, kind := range kinds {
+	seen := make(map[string]bool)
+	for _, evt := range events {
+		seen[evt.ID] = true
+	}
+	code := "agent_run_interrupted"
+	if deadline {
+		code = "agent_run_deadline_exceeded"
+	}
+	for _, kind := range []types.ResponseType{types.ResponseTypeError, types.ResponseTypeComplete} {
+		id := "interrupted-parent-" + answer.ID + "-" + version + "-" + string(kind)
+		if seen[id] {
+			continue
+		}
+		if err = s.Runtime.CheckParentFinalization(persistCtx, b.Scope, b.ParentOwner); err != nil {
+			return err
+		}
 		if err = s.streams.AppendEvent(persistCtx, b.Scope.SessionID, answer.ID, interfaces.StreamEvent{
-			ID:        "interrupted-parent-" + answer.ID + "-" + string(kind),
-			Type:      kind,
-			Timestamp: time.Now(),
-			Content:   reason,
-			Done:      true,
-
+			ID: id, Type: kind,
+			Timestamp: time.Now(), Content: content, Done: true,
 			Data: map[string]interface{}{
-				"error": reason, "final_content": answer.Content,
-				"session_id": b.Scope.SessionID, "assistant_message_id": answer.ID,
+				"error": content, "code": code, "run_state": types.MessageRunStateInterrupted, "success": false,
+				"final_content": content, "session_id": b.Scope.SessionID, "assistant_message_id": answer.ID,
 			},
 		}); err != nil {
 			return err
 		}
+	}
+	if err := s.streams.ClearLiveRun(persistCtx, b.Scope.SessionID, answer.ID); err != nil {
+		logger.Warnf(ctx, "Failed to clear collaboration live stream: %v", err)
 	}
 	return nil
 }

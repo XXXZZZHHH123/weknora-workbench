@@ -243,6 +243,9 @@ func (*collaborationStreams) ClearLiveRun(context.Context, string, string) error
 func (*collaborationStreams) AppendEvent(context.Context, string, string, interfaces.StreamEvent) error {
 	return nil
 }
+func (*collaborationStreams) GetEvents(context.Context, string, string, int) ([]interfaces.StreamEvent, int, error) {
+	return nil, 0, nil
+}
 
 func TestCollaborationParentAutomaticallyResumesOriginalMessage(t *testing.T) {
 	for _, id := range []string{types.BuiltinWeKnoraAssistantID, "ordinary-agent"} {
@@ -423,11 +426,13 @@ func TestCollaborationParentSetupFailureStillCompletesMessage(t *testing.T) {
 		return errors.New("model unavailable before engine starts")
 	}})
 	require.ErrorContains(t, s.resumeParent(ctx, b, snapshot), "model unavailable")
-	require.Equal(t, 1, completions)
+	require.Zero(t, completions, "the interruption outbox publishes its own failure explicitly")
 	msg, err := messages.GetMessage(ctx, scope.SessionID, scope.ID)
 	require.NoError(t, err)
 	require.True(t, msg.IsCompleted)
-	require.Contains(t, msg.Content, "model unavailable")
+	require.Equal(t, types.MessageRunStateInterrupted, msg.RunState)
+	require.Contains(t, msg.Content, "查证未完成")
+	require.NotContains(t, msg.Content, "model unavailable")
 }
 
 type cancellationEventStreams struct {
@@ -562,8 +567,9 @@ func TestCollaborationAbandonedParentClosesTranscriptWithoutModelReplay(t *testi
 		select {
 		case e := <-streams.events:
 			require.Equal(t, want, e.Type)
-			require.Contains(t, e.Content, "没有可安全恢复的检查点")
+			require.Contains(t, e.Content, "查证未完成")
 			require.Equal(t, e.Content, e.Data["final_content"])
+			require.Equal(t, false, e.Data["success"])
 			require.True(t, e.Done)
 		case <-time.After(3 * time.Second):
 			t.Fatal("missing terminal event", want)
@@ -572,7 +578,8 @@ func TestCollaborationAbandonedParentClosesTranscriptWithoutModelReplay(t *testi
 	m, err := messages.GetMessage(ctx, scope.SessionID, scope.ID)
 	require.NoError(t, err)
 	require.True(t, m.IsCompleted)
-	require.Contains(t, m.Content, "没有可安全恢复的检查点")
+	require.Equal(t, types.MessageRunStateInterrupted, m.RunState)
+	require.Contains(t, m.Content, "查证未完成")
 	require.Zero(t, calls.Load())
 	// Terminal stream delivery precedes the durable acknowledgement.
 	require.Eventually(t, func() bool {

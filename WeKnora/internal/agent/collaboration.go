@@ -17,6 +17,17 @@ func (e *AgentEngine) SetCollaboration(b *collaboration.Binding) { e.collaborati
 // HasCollaboration reports whether this execution belongs to a collaboration.
 func (e *AgentEngine) HasCollaboration() bool { return e.collaboration != nil }
 
+// ParentPublicationInterrupted reports an ownership transfer to interruption
+// recovery, so the former executor cannot publish another terminal event.
+func (e *AgentEngine) ParentPublicationInterrupted(ctx context.Context) bool {
+	b := e.collaboration
+	if b == nil || b.Child != nil || b.Closing || b.ParentOwner == "" {
+		return false
+	}
+	g, err := b.Runtime.Store.Read(context.WithoutCancel(ctx), b.Scope)
+	return err == nil && (g.ParentClosePending || g.ParentOwner != "" && g.ParentOwner != b.ParentOwner)
+}
+
 // Preparation may block before executeLoop. Check the same durable authority
 // before and after it; cancellation or a replacement owner cannot publish a
 // prepared answer merely because its next heartbeat has not fired yet.

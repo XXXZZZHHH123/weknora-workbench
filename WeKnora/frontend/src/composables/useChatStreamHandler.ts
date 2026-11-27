@@ -1527,6 +1527,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
         if (dataId) replaySegments.delete(dataId)
         log('[Agent] Complete event received')
         applyFinalArtifactContent(message, (dataPayload as any)?.final_content)
+        if (dataPayload?.run_state === 'interrupted') message.run_state = 'interrupted'
         if (Array.isArray((dataPayload as any)?.knowledge_references)) message.knowledge_references = (dataPayload as any).knowledge_references.slice()
         if (Array.isArray((dataPayload as any)?.evidence_references)) message.evidence_references = (dataPayload as any).evidence_references
         message.artifact_delivery_incomplete = (dataPayload as any)?.artifact_delivery_incomplete === true
@@ -1596,9 +1597,28 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
       assistant_message_id: data.assistant_message_id,
     })
 
+    const metadata = data.data as ChatMessage | undefined
+    if (metadata?.run_state === 'interrupted' && (data.response_type === 'error' || data.response_type === 'complete')) {
+      const message = resolveActiveAssistantMessage(data)
+      if (!data.id || !message || (message.request_id !== data.id && message.id !== data.id) || message.is_completed) return
+      if (data.response_type === 'error') {
+        const firstInterruption = message.run_state !== 'interrupted'
+        const content = metadata.final_content ?? data.content
+        applyFinalArtifactContent(message, content)
+        message.run_state = 'interrupted'
+        message.thinking = false
+        // The error carries the partial answer. Complete closes the turn and
+        // notifies callers once, even when either frame is replayed.
+        emitMessageUpdated(message, data)
+        if (firstInterruption) reportError(String(content || t('chat.processError')))
+        scrollToBottom()
+        return
+      }
+    }
+
     // Persistence can fail after the entire answer has streamed. Surface the
     // failure separately; the generic error path replaces the answer content.
-    if (data.response_type === 'error' && (data.data as ChatMessage | undefined)?.stage === 'message_persistence') {
+    if (data.response_type === 'error' && metadata?.stage === 'message_persistence') {
       const message = resolveActiveAssistantMessage(data)
       const errorMsg = String(data.content || t('chat.processError'))
       if (message) {
@@ -1783,8 +1803,8 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
     })
     if (data.response_type === 'complete' && existingMessage) {
       if (existingMessage.is_completed) return
-      const metadata = data.data as ChatMessage | undefined
       applyFinalArtifactContent(existingMessage, metadata?.final_content)
+      if (metadata?.run_state === 'interrupted') existingMessage.run_state = 'interrupted'
       if (Array.isArray(metadata?.knowledge_references)) existingMessage.knowledge_references = metadata.knowledge_references.slice()
       if (Array.isArray(metadata?.evidence_references)) existingMessage.evidence_references = metadata.evidence_references
       existingMessage.artifact_delivery_incomplete = metadata?.artifact_delivery_incomplete === true

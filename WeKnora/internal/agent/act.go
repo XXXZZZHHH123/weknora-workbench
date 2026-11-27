@@ -317,7 +317,7 @@ func (e *AgentEngine) executeToolCallsParallel(
 			results[i] = e.runToolCall(ctx, tc, i, iteration, round, sessionID, assistantMessageID)
 			if s := suspensionOf(results[i]); s != nil {
 				// Everything before the barrier has finished; keep it.
-				e.appendToolOutcomes(ctx, step, results[:i], iteration, sessionID)
+				e.appendToolOutcomes(ctx, step, results[:i], iteration, sessionID, assistantMessageID)
 				return s
 			}
 			e.recordCall(i, results[i])
@@ -353,15 +353,16 @@ func (e *AgentEngine) executeToolCallsParallel(
 
 	// Complete the step in model order before source progress can interpret
 	// this batch. The observe phase receives the same shape after serial reads.
-	e.appendToolOutcomes(ctx, step, results, iteration, sessionID)
+	e.appendToolOutcomes(ctx, step, results, iteration, sessionID, assistantMessageID)
 	return nil
 }
 
 // appendToolOutcomes appends finished calls to step and emits their events
 // in original order.
 func (e *AgentEngine) appendToolOutcomes(
-	ctx context.Context, step *types.AgentStep, calls []types.ToolCall, iteration int, sessionID string,
+	ctx context.Context, step *types.AgentStep, calls []types.ToolCall, iteration int, sessionID, assistantMessageID string,
 ) {
+	e.checkpointInterruptedEvidence(ctx, calls, assistantMessageID)
 	for _, toolCall := range calls {
 		e.retainTaskSourceProtocol(toolCall)
 		step.ToolCalls = append(step.ToolCalls, toolCall)
@@ -439,7 +440,7 @@ func (e *AgentEngine) executeSingleToolCall(
 		return s
 	}
 	e.recordCall(i, toolCall)
-	e.appendToolOutcomes(ctx, step, []types.ToolCall{toolCall}, iteration, sessionID)
+	e.appendToolOutcomes(ctx, step, []types.ToolCall{toolCall}, iteration, sessionID, assistantMessageID)
 	return nil
 }
 
@@ -624,6 +625,17 @@ func (e *AgentEngine) runToolCallAnswered(
 		}
 	}
 	ctx = e.coverageDocumentExecutionContext(ctx, tc, selectionGoal)
+	if nativeStructured && len(tc.UnresolvedHandles) == 0 && e.defaultCoverageLastValid(ctx, tc, structuredDescriptor, args, executionArgs) {
+		executionArgs["include_last_valid"] = true
+		if tc.Function.Name == agenttools.ToolStructuredData {
+			args["arguments"] = executionArgs
+		} else {
+			args = executionArgs
+		}
+		target.Args = args
+		normalized, _ := json.Marshal(args)
+		tc.Function.Arguments = string(normalized)
+	}
 
 	logger.Debugf(ctx, "%s Args: %s", toolTag, tc.Function.Arguments)
 

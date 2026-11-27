@@ -60,6 +60,12 @@ func (e *AgentEngine) drainSteerMessages(
 		if content == "" {
 			continue
 		}
+		if injected == 0 && e.collaboration != nil {
+			if err := e.collaboration.ClearParentEvidence(ctx, messageID); err != nil {
+				logger.Warnf(ctx, "Could not reset parent source receipts before accepting steer: %v", err)
+				break
+			}
+		}
 		steerID := getString(evt, "id")
 		userMessageID := e.steerSink.PersistSteerMessage(ctx, sessionID, messageID, steerID, content,
 			types.MentionedItemsFromRaw(evt["mentioned_items"]), getString(evt, "channel"))

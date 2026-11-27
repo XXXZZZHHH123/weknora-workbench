@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
@@ -71,6 +72,9 @@ type Group struct {
 	ParentOwner     string
 	ParentLease     time.Time
 	ParentWait      *ParentWait
+	ParentEvidence  []json.RawMessage `json:",omitempty"`
+	// An accepted steer intentionally removes older current-message receipts.
+	ParentEvidenceCurrent bool `json:",omitempty"`
 	// ParentClosePending keeps interrupted/expired parents recoverable until their transcript and stream are closed.
 	ParentClosePending bool
 	RootQuery          string
@@ -175,7 +179,8 @@ type Event struct {
 
 // Store persists collaboration aggregates using optimistic concurrency.
 type Store struct {
-	db *gorm.DB
+	db               *gorm.DB
+	parentHeartbeats sync.Map // parentHeartbeatKey -> *parentHeartbeat
 	// OnStatus runs after a successful commit, never inside a retried mutation.
 	// Consumers must tolerate duplicate and out-of-order snapshots by revision.
 	OnStatus func(context.Context, *Group)
@@ -262,7 +267,7 @@ func (s *Store) Change(ctx context.Context, scope Scope, fn func(*Group) error) 
 				closeForHistoryLimit(g)
 			} else {
 				if owner, ok := ctx.Value(parentOwnerKey{}).(string); ok &&
-					(g.ParentOwner != owner || time.Now().After(g.ParentLease)) {
+					(g.ParentOwner != owner || !s.parentLeaseCurrent(g)) {
 					return ErrConflict
 				}
 				if err = fn(g); err != nil {

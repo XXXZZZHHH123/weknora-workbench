@@ -2,10 +2,60 @@ package collaboration
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// RecordParentEvidence persists small verified observations before their tool
+// events are emitted. The parent owner and current message fence every write.
+func (b *Binding) RecordParentEvidence(ctx context.Context, messageID string, receipts []json.RawMessage) error {
+	if b == nil || b.Child != nil || b.Closing || b.ParentOwner == "" || len(receipts) == 0 {
+		return nil
+	}
+	return b.Runtime.Store.Change(b.Context(ctx), b.Scope, func(g *Group) error {
+		if g.Status != "active" || messageID != "" && g.ParentMessageID != messageID {
+			return ErrConflict
+		}
+		g.ParentEvidenceCurrent = true
+		keyOf := func(receipt json.RawMessage) string {
+			var fields struct{ Key string }
+			if json.Unmarshal(receipt, &fields) != nil {
+				return ""
+			}
+			return fields.Key
+		}
+		seen := make(map[string]bool, len(g.ParentEvidence))
+		for _, previous := range g.ParentEvidence {
+			seen[keyOf(previous)] = true
+		}
+		for _, receipt := range receipts {
+			key := keyOf(receipt)
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			g.ParentEvidence = append(g.ParentEvidence, receipt)
+		}
+		return nil
+	})
+}
+
+// ClearParentEvidence begins a new evidence scope after an accepted user steer.
+func (b *Binding) ClearParentEvidence(ctx context.Context, messageID string) error {
+	if b == nil || b.Child != nil || b.Closing || b.ParentOwner == "" {
+		return nil
+	}
+	return b.Runtime.Store.Change(b.Context(ctx), b.Scope, func(g *Group) error {
+		if g.Status != "active" || g.ParentMessageID != messageID {
+			return ErrConflict
+		}
+		g.ParentEvidence = nil
+		g.ParentEvidenceCurrent = true
+		return nil
+	})
+}
 
 // ParentWait is a replay-safe checkpoint. It exists only while the engine is
 // waiting, never while a model request or side-effecting tool is in flight.
@@ -56,7 +106,7 @@ func (r *Runtime) wakeParent(ctx context.Context, scope Scope) {
 		if err != nil {
 			return
 		}
-		if g.Status == "active" && g.ParentWait != nil && (g.ParentOwner == "" || time.Now().After(g.ParentLease)) {
+		if g.Status == "active" && g.ParentWait != nil && !r.Store.parentLeaseCurrent(g) {
 			inputMessage = g.ParentMessageID
 			inputReady, err = r.ParentInput(ctx, scope, inputMessage)
 			if err != nil {
@@ -71,7 +121,7 @@ func (r *Runtime) wakeParent(ctx context.Context, scope Scope) {
 		wait = nil
 		closing = false
 		now := time.Now()
-		if (g.Status != "active" && !g.ParentClosePending) || (g.ParentOwner != "" && now.Before(g.ParentLease)) {
+		if (g.Status != "active" && !g.ParentClosePending) || r.Store.parentLeaseCurrent(g) {
 			return nil
 		}
 		if g.ParentClosePending || !now.Before(g.Deadline) || g.ParentWait == nil {
@@ -125,11 +175,7 @@ func (r *Runtime) wakeParent(ctx context.Context, scope Scope) {
 			if err == nil {
 				// A failed acknowledgement is safe to retry: only transcript/stream
 				// finalization can run for ParentClosePending, never the saved execution.
-				_ = r.Store.Change(b.Context(context.WithoutCancel(ctx)), scope, func(g *Group) error {
-					g.ParentClosePending = false
-					settle(g)
-					return nil
-				})
+				_ = b.AcknowledgeParentFinalization(context.WithoutCancel(ctx))
 			}
 			return
 		}
@@ -137,6 +183,40 @@ func (r *Runtime) wakeParent(ctx context.Context, scope Scope) {
 			_ = r.Cancel(b.Context(context.WithoutCancel(ctx)), scope)
 		}
 	}()
+}
+
+// BeginParentFinalization moves a resumed parent with no completion onto the
+// same durable outbox as an expired owner. Its old checkpoint cannot run again.
+func (b *Binding) BeginParentFinalization(ctx context.Context) (*Binding, error) {
+	if b.Child != nil || b.Closing || b.ParentOwner == "" {
+		return nil, ErrConflict
+	}
+	err := b.Runtime.Store.Change(b.Context(ctx), b.Scope, func(g *Group) error {
+		g.ParentClosePending = true
+		cancelGroup(g)
+		g.ParentLease = time.Now().Add(b.Runtime.Lease)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	closing := *b
+	closing.Closing = true
+	return &closing, nil
+}
+
+// AcknowledgeParentFinalization clears a delivered interruption outbox entry.
+func (b *Binding) AcknowledgeParentFinalization(ctx context.Context) error {
+	if !b.Closing || b.ParentOwner == "" {
+		return ErrConflict
+	}
+	return b.Runtime.Store.Change(b.Context(ctx), b.Scope, func(g *Group) error {
+		g.ParentClosePending = false
+		g.ParentEvidence = nil
+		g.ParentEvidenceCurrent = false
+		settle(g)
+		return nil
+	})
 }
 
 // SetRunMessages and AwaitPrompt are fenced by the same child execution lease
@@ -303,7 +383,7 @@ func (r *Runtime) CheckParentFinalization(ctx context.Context, scope Scope, owne
 		return err
 	}
 	if !g.ParentClosePending || g.Status != "cancelling" || g.ParentOwner != owner ||
-		!time.Now().Before(g.ParentLease) {
+		!r.Store.parentLeaseCurrent(g) {
 		return ErrConflict
 	}
 	return nil

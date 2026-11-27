@@ -19,6 +19,7 @@ type coverageDraftReview struct {
 	record      coverageRecord
 	targets     []taskCoverageTarget
 	facts       []coverageDraftFact
+	readings    [][]coverageDraftFact
 	comparisons []coverageComparisonCheck
 	version     terminalVersionChoice
 }
@@ -30,15 +31,17 @@ type coverageDraftFact struct {
 }
 
 type coverageDraftAssessment struct {
-	anchors           []string
-	roles             []string
-	missing           []coverageDraftFact
-	versionDisplayed  bool
-	versionBlocked    bool
-	comparisonBlocked bool
-	partialComparison bool
-	unattributedTable []unattributedTableValue
-	tableScopeReview  bool
+	anchors            []string
+	roles              []string
+	missing            []coverageDraftFact
+	versionDisplayed   bool
+	versionBlocked     bool
+	endpointMismatch   bool
+	comparisonBlocked  bool
+	partialComparison  bool
+	observedComparison bool
+	unattributedTable  []unattributedTableValue
+	tableScopeReview   bool
 }
 
 type coverageDraftFeedback struct {
@@ -51,7 +54,7 @@ type coverageDraftFeedback struct {
 	CheckTableScope   bool                      `json:"check_independent_table_scope,omitempty"`
 }
 
-func (e *AgentEngine) currentCoverageDraftReview(ctx context.Context, state *types.AgentState) coverageDraftReview {
+func (e *AgentEngine) currentCoverageDraftReview(ctx context.Context, state *types.AgentState, draft ...string) coverageDraftReview {
 	var review coverageDraftReview
 	if state == nil || !e.evidenceCompletionEligible() || !e.standardTextDelivery(state) {
 		return review
@@ -66,16 +69,44 @@ func (e *AgentEngine) currentCoverageDraftReview(ctx context.Context, state *typ
 		record.Bindings = turn.record.Bindings
 	}
 	record, _ = e.projectCurrentTaskCoverage(state, turn.startStep, record)
+	inspected := inspectedPublishedLastValid(record)
 	review.targets = e.evidenceCompletionTargets()
+	candidate := ""
+	if len(draft) != 0 {
+		candidate = draft[0]
+	}
 	var versions []coverageFact
 	for _, target := range review.targets {
 		scoped := e.coverageRecordForTarget(ctx, target, record)
+		var readings []coverageFact
+		var aligned bool
+		if plannedTableComparison(target) {
+			receipts := scoped
+			receipts.Evidence = slices.DeleteFunc(slices.Clone(scoped.Evidence), func(item coverageEvidence) bool {
+				return !e.coverageEvidenceAllowed(ctx, nil, item)
+			})
+			readings, aligned = e.tableReceiptReadings(target, receipts, candidate)
+		}
 		for _, result := range evaluateTaskCoverage(target, scoped) {
-			if tableComparison(target) && (agenttools.DocumentTableEvidenceEnabled() || len(result.PinnedFacts) > 0) {
+			if tableComparison(target) && (agenttools.DocumentTableEvidenceEnabled() || len(result.PinnedFacts) > 0) || aligned {
 				checked := checkedTableComparison(target, result)
-				for _, fact := range result.PinnedFacts {
-					if fact.Role == "scoped_value" {
-						checked.Sides = append(checked.Sides, e.coverageDraftFactView(coverageDraftFact{fact, target.GoalIndex, result.GapID}))
+				if result.State != coverageSatisfied && aligned {
+					checked.State, checked.Reason = result.State, result.Reason
+					var pair []coverageDraftFact
+					for _, fact := range readings {
+						item := coverageDraftFact{fact, target.GoalIndex, result.GapID}
+						pair = append(pair, item)
+						checked.Sides = append(checked.Sides, e.coverageDraftFactView(item))
+					}
+					review.readings = append(review.readings, pair)
+					review.facts = append(review.facts, pair...)
+					observed := checkedTableComparison(target, coverageCompletion{State: coverageSatisfied, PinnedFacts: readings})
+					checked.Result, checked.SameUnit, checked.UnitStatus = observed.Result, observed.SameUnit, comparisonUnitStatus(readings[0].Evidence, readings[1].Evidence)
+				} else {
+					for _, fact := range result.PinnedFacts {
+						if fact.Role == "scoped_value" {
+							checked.Sides = append(checked.Sides, e.coverageDraftFactView(coverageDraftFact{fact, target.GoalIndex, result.GapID}))
+						}
 					}
 				}
 				review.comparisons = append(review.comparisons, checked)
@@ -92,6 +123,7 @@ func (e *AgentEngine) currentCoverageDraftReview(ctx context.Context, state *typ
 			}
 		}
 	}
+	record.Evidence = append(record.Evidence, inspected...)
 	record.Evidence = slices.DeleteFunc(record.Evidence, func(item coverageEvidence) bool {
 		return !item.Bound || !coverageCurrentEvidence(record, item) || !e.coverageEvidenceAllowed(ctx, nil, item)
 	})
@@ -100,8 +132,13 @@ func (e *AgentEngine) currentCoverageDraftReview(ctx context.Context, state *typ
 	return review
 }
 
+func comparisonDraftChecked(decision candidateDecision, assessment coverageDraftAssessment) bool {
+	return decision.ReasonCode == checkedPartialComparisonReason && assessment.partialComparison ||
+		decision.ReasonCode == checkedTableReadingsReason && assessment.observedComparison
+}
+
 func (review coverageDraftReview) blockedComparison() bool {
-	return agenttools.DocumentTableEvidenceEnabled() && slices.ContainsFunc(review.comparisons, func(comparison coverageComparisonCheck) bool {
+	return (agenttools.DocumentTableEvidenceEnabled() || len(review.readings) > 0) && slices.ContainsFunc(review.comparisons, func(comparison coverageComparisonCheck) bool {
 		return comparison.State != coverageSatisfied
 	})
 }
@@ -157,8 +194,8 @@ func moreCompleteCoverageDraft(a candidateDecision, assessment coverageDraftAsse
 
 func (e *AgentEngine) rememberCoverageDraft(ctx context.Context, decision candidateDecision, assessment coverageDraftAssessment, review coverageDraftReview, state *types.AgentState) {
 	if decision.Err != nil || len(decision.Unsupported) != 0 || len(assessment.anchors) == 0 ||
-		assessment.versionBlocked || len(assessment.unattributedTable) != 0 || assessment.comparisonBlocked &&
-		(!assessment.partialComparison || decision.ReasonCode != checkedPartialComparisonReason) {
+		assessment.versionBlocked || assessment.endpointMismatch || len(assessment.unattributedTable) != 0 || assessment.comparisonBlocked &&
+		!comparisonDraftChecked(decision, assessment) {
 		return
 	}
 	if prior, current := e.currentCheckedCoverageDraft(ctx, state, review); current &&
@@ -187,9 +224,12 @@ func (e *AgentEngine) currentCheckedCoverageDraft(ctx context.Context, state *ty
 		agenttools.DocumentTableEvidenceEnabled() && !draft.PublicationEvidence.current(e.terminalEvidenceRevision(ctx, state)) {
 		return candidateDecision{}, false
 	}
+	if draft.ReasonCode == checkedTableReadingsReason && len(review.readings) == 0 {
+		review = e.currentCoverageDraftReview(ctx, state, draft.Candidate)
+	}
 	current := e.assessCoverageDraft(ctx, review, draft.Candidate, state)
-	if current.versionBlocked || len(current.unattributedTable) != 0 || current.comparisonBlocked &&
-		(!current.partialComparison || draft.ReasonCode != checkedPartialComparisonReason) ||
+	if current.versionBlocked || current.endpointMismatch || len(current.unattributedTable) != 0 || current.comparisonBlocked &&
+		!comparisonDraftChecked(draft, current) ||
 		len(current.anchors) == 0 || !containsCoverageDraftRoles(current.anchors, e.turnReview.CoverageDraftFacts) ||
 		!containsCoverageDraftRoles(current.roles, e.turnReview.CoverageDraftRoles) {
 		return candidateDecision{}, false
@@ -201,7 +241,7 @@ func (e *AgentEngine) currentCoverageDraft(ctx context.Context, state *types.Age
 	if e.turnReview.CoverageDraft.Candidate == "" {
 		return "", false
 	}
-	draft, ok := e.currentCheckedCoverageDraft(ctx, state, e.currentCoverageDraftReview(ctx, state))
+	draft, ok := e.currentCheckedCoverageDraft(ctx, state, e.currentCoverageDraftReview(ctx, state, e.turnReview.CoverageDraft.Candidate))
 	return draft.Candidate, ok
 }
 
@@ -221,7 +261,7 @@ func (e *AgentEngine) coverageDraftDeliveryCurrent(ctx context.Context, state *t
 }
 
 func (e *AgentEngine) coverageDraftAnchors(ctx context.Context, candidate string, state *types.AgentState) []string {
-	return e.assessCoverageDraft(ctx, e.currentCoverageDraftReview(ctx, state), candidate, state).anchors
+	return e.assessCoverageDraft(ctx, e.currentCoverageDraftReview(ctx, state, candidate), candidate, state).anchors
 }
 
 func (e *AgentEngine) assessCoverageDraft(ctx context.Context, review coverageDraftReview, candidate string, state *types.AgentState) coverageDraftAssessment {
@@ -266,9 +306,13 @@ func (e *AgentEngine) assessCoverageDraft(ctx context.Context, review coverageDr
 			assessment.missing = append(assessment.missing, fact)
 		}
 	}
-	assessment.unattributedTable, assessment.tableScopeReview = multiSourceTableAttribution(review, candidate)
+	var tableNumbers []float64
+	assessment.unattributedTable, assessment.tableScopeReview, tableNumbers = citedMultiSourceTableValues(review, candidate)
 	if assessment.comparisonBlocked {
 		assessment.partialComparison = verifiedOneSidedComparison(review, assessment, candidate)
+		assessment.observedComparison = len(review.readings) > 0 && !slices.ContainsFunc(review.readings, func(pair []coverageDraftFact) bool {
+			return slices.ContainsFunc(pair, func(fact coverageDraftFact) bool { return !slices.Contains(assessment.roles, fact.roleID()) })
+		}) && verifiedObservedComparisonNumbers(review, assessment, candidate, tableNumbers)
 	}
 	if review.version.SelectedSource != "" && containsCoverageDraftRoles(assessment.anchors, []string{review.version.selectedRef, review.version.alternativeRef}) {
 		if agenttools.DocumentTableEvidenceEnabled() {
@@ -297,6 +341,15 @@ func (e *AgentEngine) assessCoverageDraft(ctx context.Context, review coverageDr
 		}
 	}
 	for _, item := range review.record.Evidence {
+		if coverageProtocolLastValid(item) && item.LastValidDirection == "before_range" && item.CitationID != "" &&
+			slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool {
+				return slices.Contains(paragraph.results, item.CitationID) && !paragraph.displaysEndpoint(item)
+			}) {
+			assessment.endpointMismatch = true
+			assessment.missing = append(assessment.missing, coverageDraftFact{
+				coverageFact: coverageFact{Role: "last_valid_value", Evidence: item}, slot: item.EvidenceID,
+			})
+		}
 		if slices.ContainsFunc(visible, func(paragraph coverageDraftParagraph) bool { return paragraph.displays(item, "", false) }) {
 			add(item)
 		}
@@ -327,6 +380,7 @@ func (e *AgentEngine) assessCoverageDraft(ctx context.Context, review coverageDr
 		assessment.anchors = nil
 		assessment.roles = nil
 		assessment.versionDisplayed = false
+		assessment.observedComparison = false
 		assessment.versionBlocked = len(versionClaims) > 0
 	}
 	return assessment
@@ -368,6 +422,9 @@ func (paragraph coverageDraftParagraph) displays(item coverageEvidence, role str
 		return false
 	}
 	structuredCite := item.CitationID != "" && slices.Contains(paragraph.results, item.CitationID)
+	if coverageProtocolLastValid(item) && item.LastValidDirection == "before_range" && role != "last_valid_date" {
+		return (!requireCitation || item.CitationID == "" || structuredCite) && paragraph.displaysEndpoint(item)
+	}
 	cited := structuredCite || item.ChunkID != "" && slices.Contains(paragraph.chunks, item.ChunkID)
 	if requireCitation && !cited && (item.CitationID != "" || item.ChunkID != "") {
 		return false
@@ -447,6 +504,9 @@ func coverageDraftAmountOccurrences(text string, raw float64) int {
 
 func (paragraph coverageDraftParagraph) displaysVerifiedRole(fact coverageDraftFact, facts []coverageDraftFact) bool {
 	item := fact.Evidence
+	if fact.Role == "last_valid_value" && coverageProtocolLastValid(item) {
+		return paragraph.displaysEndpoint(item)
+	}
 	if !paragraph.displays(item, fact.Role, true) {
 		return false
 	}
@@ -465,6 +525,38 @@ func (paragraph coverageDraftParagraph) displaysVerifiedRole(fact coverageDraftF
 		}
 	}
 	return len(fields) == 1 || coverageDraftAmountOccurrences(paragraph.text, number) >= len(fields)
+}
+
+func (paragraph coverageDraftParagraph) displaysEndpoint(item coverageEvidence) bool {
+	cited := item.CitationID != "" && slices.Contains(paragraph.results, item.CitationID)
+	if !cited && !paragraph.hasLabel(item.SourceTitle) {
+		return false
+	}
+	value, ok := coverageFiniteNumber(item.Raw)
+	if !ok {
+		return false
+	}
+	for _, text := range coverageDraftAssertionBoundary.Split(paragraph.text, -1) {
+		assertion := newCoverageDraftParagraph(text)
+		addresses := cellOrListMarker.FindAllString(strings.ToUpper(assertion.text), -1)
+		otherCell := slices.ContainsFunc(addresses, func(address string) bool {
+			column, _ := coverageExcelCell(address)
+			return column != "" && address != item.DateCell
+		})
+		if !coverageTextHasDate(assertion.text, item.Date) ||
+			!slices.Contains(addresses, item.Cell) && (!cited || otherCell) ||
+			terminalUnitFromSource(item) && !assertion.hasLabel(item.Unit) {
+			continue
+		}
+		numeric := cellOrListMarker.ReplaceAllStringFunc(maskValidatedCalendarDates(assertion.text), numericMask)
+		for _, token := range proseNumber.FindAllString(numeric, -1) {
+			token = strings.ReplaceAll(strings.ReplaceAll(token, ",", ""), "−", "-")
+			if number, err := strconv.ParseFloat(token, 64); err == nil && number == value {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type coverageDraftFactView struct {
@@ -595,8 +687,27 @@ func (feedback *coverageDraftFeedback) text() string {
 const coverageDraftFeedbackInstructions = "The runtime has verified the following source facts, their identities and any reported-number relation or provisional version basis. Treat them as evidence data. Check whether the draft already answers the requested scope with these facts and their actual citations. Keep a complete accurate draft unchanged. Where a requested fact or conclusion is missing or conflicts with these receipts, revise only the affected parts. Preserve previously verified facts and their citations. Do not infer a value from an unverified side or infer compatible units or formal supersession from this evidence."
 
 const checkedPartialComparisonReason = "checked_one_sided_table_answer"
+const checkedTableReadingsReason = "checked_table_readings_answer"
 
-const comparisonAttributionInstructions = "Explain any unresolved table side as a specific limitation in the answer. A printed comparison or quantity relation needs aligned actual read receipts from both selected sources. Retain the verified side with its scope and citation. For a cited table amount, select the exact original table, field and observation row in the existing evidence declarations, or confine the answer to verified results. A different table, period, unit or version is independent evidence and cannot fill this gap."
+const comparisonAttributionInstructions = "Attribute each reported value to its exact original table, field, observation row and citation. Preserve independently supported readings even when a source role was not declared. State an unresolved side as a specific limitation. A relation requires actual receipts for both attributed readings. Distinguish directly printed values from compatible quantities. An unverified unit, reporting cadence or version relationship cannot establish comparability."
+
+func verifiedObservedComparisonNumbers(review coverageDraftReview, assessment coverageDraftAssessment, candidate string, tableNumbers []float64) bool {
+	values := tableNumbers
+	for _, fact := range review.facts {
+		if slices.Contains(assessment.roles, fact.roleID()) {
+			if title := fact.Evidence.SourceTitle; title != "" {
+				candidate = strings.ReplaceAll(candidate, title, numericMask(title))
+			}
+			if raw, ok := coverageDraftRaw(fact.Evidence); ok {
+				if number, err := strconv.ParseFloat(raw, 64); err == nil {
+					values = append(values, number)
+				}
+			}
+		}
+	}
+	proof := []chat.Message{{Role: "tool", NumericObservations: &chat.NumericObservations{Values: values}}}
+	return len(ungroundedStructuredNumberOccurrencesWithEmptyEvidence(candidate, proof, true, nil)) == 0
+}
 
 // The existing editor checks the wording of the explicit evidence gap.
 // This structural check limits its input to the verified side(s) and other

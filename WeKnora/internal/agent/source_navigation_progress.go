@@ -258,7 +258,7 @@ func (e *AgentEngine) coverageDocumentEvidence(call types.ToolCall, base coverag
 	}
 	bodies := e.coverageDocumentBodies(call, base, data, search)
 	evidence = append(evidence, bodies...)
-	if !search && agenttools.DocumentTableEvidenceEnabled() {
+	if !search && (agenttools.DocumentTableEvidenceEnabled() || data["table_reads"] != nil) {
 		images := coverageImageTableBodies(data, bodies)
 		tables := coverageReadTableBodies(data, append(slices.Clone(bodies), images...))
 		evidence = append(evidence, tables...)

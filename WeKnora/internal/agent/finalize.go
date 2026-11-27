@@ -370,6 +370,9 @@ func (e *AgentEngine) handleMaxIterations(
 func (e *AgentEngine) emitCompletionEvent(
 	ctx context.Context, state *types.AgentState, sessionID, messageID string, startTime time.Time,
 ) {
+	if e.ParentPublicationInterrupted(ctx) {
+		return
+	}
 	if state.IsComplete && state.Suspended == nil {
 		e.finalizeTerminalPublication(ctx, state, sessionID)
 	}

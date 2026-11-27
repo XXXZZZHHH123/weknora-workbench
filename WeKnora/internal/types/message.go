@@ -688,6 +688,11 @@ func (m *Message) BeforeCreate(tx *gorm.DB) (err error) {
 // suspended on an agent prompt and will resume once the user answers.
 const MessageRunStateAwaitingInput = "awaiting_input"
 
+// MessageRunStateInterrupted marks a closed transcript with partial evidence.
+const MessageRunStateInterrupted = "interrupted"
+
+var ErrMessageRunInterrupted = fmt.Errorf("assistant message was finalized as interrupted")
+
 // MessageSearchMode represents the search mode for message search
 type MessageSearchMode string
 

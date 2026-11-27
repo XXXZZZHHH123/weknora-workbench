@@ -3,6 +3,7 @@ package collaboration
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,6 +11,51 @@ import (
 )
 
 type parentOwnerKey struct{}
+
+type parentHeartbeatKey struct {
+	scope Scope
+	owner string
+}
+
+type parentHeartbeat struct {
+	ctx   context.Context
+	lease atomic.Pointer[parentHeartbeatLease]
+}
+
+type parentHeartbeatLease struct {
+	durable time.Time
+	expires time.Time // retains Go's monotonic clock reading
+}
+
+// The durable lease fences ownership across instances. A heartbeat owned by
+// this store can also prove the very same lease is still live after a wall
+// clock jump, until it renews the durable lease against the new wall time.
+func (s *Store) parentLeaseCurrent(g *Group) bool {
+	if g.ParentOwner == "" {
+		return false
+	}
+	entry, ok := s.parentHeartbeats.Load(parentHeartbeatKey{g.Scope, g.ParentOwner})
+	if ok {
+		heartbeat := entry.(*parentHeartbeat)
+		lease := heartbeat.lease.Load()
+		if heartbeat.ctx.Err() == nil && lease != nil && g.ParentLease.Equal(lease.durable) {
+			return time.Now().Before(lease.expires)
+		}
+	}
+	return time.Now().Before(g.ParentLease)
+}
+
+func (s *Store) parentRenewalDue(g *Group, now time.Time, interval time.Duration) bool {
+	if g.ParentLease.Sub(now) < interval {
+		return true
+	}
+	entry, ok := s.parentHeartbeats.Load(parentHeartbeatKey{g.Scope, g.ParentOwner})
+	if !ok {
+		return false
+	}
+	lease := entry.(*parentHeartbeat).lease.Load()
+	return lease != nil && g.ParentLease.Equal(lease.durable) && lease.expires.Sub(now) < interval
+}
 
 // AcquireParent attaches a new engine to an unfinished task after its prior
 // engine lease expires. Completed groups never revive. Automatic recovery uses
@@ -47,10 +93,14 @@ func (r *Runtime) AcquireParent(ctx context.Context, requested Scope) (*Binding,
 		if g.Status != "active" {
 			return ErrClosed
 		}
-		if g.ParentOwner != "" && time.Now().Before(g.ParentLease) {
+		if r.Store.parentLeaseCurrent(g) {
 			return errors.New("the parent task is already running")
 		}
 		g.ParentWait = nil
+		if g.ParentMessageID != messageID {
+			g.ParentEvidence = nil
+			g.ParentEvidenceCurrent = false
+		}
 		g.ParentMessageID = messageID
 		g.ParentOwner = owner
 		g.ParentLease = time.Now().Add(r.Lease)
@@ -85,23 +135,26 @@ func (b *Binding) Start(ctx context.Context) (context.Context, func()) {
 		return canceledLeaseContext(ctx, err)
 	}
 	closing := b.Closing && g.ParentClosePending && g.Status == "cancelling"
-	if (g.Status != "active" && !closing) || g.ParentOwner != b.ParentOwner || time.Now().After(g.ParentLease) {
+	if (g.Status != "active" && !closing) || g.ParentOwner != b.ParentOwner || !b.Runtime.Store.parentLeaseCurrent(g) {
 		return canceledLeaseContext(ctx, ErrConflict)
 	}
-	if b.Runtime.renewalDue(g.ParentLease, time.Now()) {
+	if b.Runtime.Store.parentRenewalDue(g, time.Now(), b.Runtime.Lease*2/3) {
 		// A valid owner may have less time left than the first heartbeat tick.
 		// Renew before returning execution authority, while the store fence
 		// rechecks the current owner/lease and the callback rechecks its state.
 		lease := g.ParentLease
+		renewed := false
 		err = b.Runtime.Store.Change(b.Context(ctx), b.Scope, func(current *Group) error {
+			renewed = false
 			closing := b.Closing && current.ParentClosePending && current.Status == "cancelling"
 			now := time.Now()
-			if (current.Status != "active" && !closing) || current.ParentOwner != b.ParentOwner || now.After(current.ParentLease) {
+			if (current.Status != "active" && !closing) || current.ParentOwner != b.ParentOwner || !b.Runtime.Store.parentLeaseCurrent(current) {
 				return ErrConflict
 			}
-			if b.Runtime.renewalDue(current.ParentLease, now) {
+			if b.Runtime.Store.parentRenewalDue(current, now, b.Runtime.Lease*2/3) {
 				current.ParentLease = now.Add(b.Runtime.Lease)
 				touchDeadline(current, now)
+				renewed = true
 			}
 			lease = current.ParentLease
 			return nil
@@ -110,6 +163,10 @@ func (b *Binding) Start(ctx context.Context) (context.Context, func()) {
 			return canceledLeaseContext(ctx, err)
 		}
 		g.ParentLease = lease
+		if entry, ok := b.Runtime.Store.parentHeartbeats.Load(parentHeartbeatKey{b.Scope, b.ParentOwner}); ok && renewed {
+			heartbeat := entry.(*parentHeartbeat)
+			heartbeat.lease.Store(&parentHeartbeatLease{durable: lease, expires: lease})
+		}
 	}
 	id := b.leaseIdentity()
 	if existing, ok := ctx.Value(parentLeaseKey{}).(parentLeaseIdentity); ok && existing == id {
@@ -125,18 +182,27 @@ func (b *Binding) startHeartbeat(ctx context.Context, initialLease time.Time) (c
 	ctx = context.WithValue(ctx, parentLeaseKey{}, b.leaseIdentity())
 	ctx, cancel := context.WithCancel(b.Context(ctx))
 	done := make(chan struct{})
+	store := b.Runtime.Store
+	key := parentHeartbeatKey{b.Scope, b.ParentOwner}
+	initialTime := time.Now()
+	lease := initialTime.Add(initialLease.Sub(initialTime))
+	heartbeat := &parentHeartbeat{ctx: ctx}
+	heartbeat.lease.Store(&parentHeartbeatLease{durable: initialLease, expires: lease})
+	store.parentHeartbeats.Store(key, heartbeat)
 	go func() {
 		defer close(done)
+		defer store.parentHeartbeats.CompareAndDelete(key, heartbeat)
 		tick := time.NewTicker(b.Runtime.heartbeatInterval())
 		defer tick.Stop()
-		lease := initialLease
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
 				completed := false
-				err := b.Runtime.Store.Change(ctx, b.Scope, func(g *Group) error {
+				var renewed time.Time
+				err := store.Change(ctx, b.Scope, func(g *Group) error {
+					renewed = time.Time{}
 					completed = g.Status == "completed"
 					if completed {
 						return nil
@@ -146,11 +212,11 @@ func (b *Binding) startHeartbeat(ctx context.Context, initialLease time.Time) (c
 						return ErrClosed
 					}
 					now := time.Now()
-					if b.Runtime.renewalDue(g.ParentLease, now) {
+					if store.parentRenewalDue(g, now, b.Runtime.Lease*2/3) {
 						g.ParentLease = now.Add(b.Runtime.Lease)
+						renewed = g.ParentLease
 						touchDeadline(g, now)
 					}
-					lease = g.ParentLease
 					return nil
 				})
 				if err == nil && completed {
@@ -162,6 +228,10 @@ func (b *Binding) startHeartbeat(ctx context.Context, initialLease time.Time) (c
 				if err != nil {
 					cancel()
 					return
+				}
+				if !renewed.IsZero() {
+					lease = renewed
+					heartbeat.lease.Store(&parentHeartbeatLease{durable: renewed, expires: renewed})
 				}
 			}
 		}
@@ -175,10 +245,15 @@ func (r *Runtime) CheckParent(ctx context.Context, scope Scope, owner string) er
 	if err != nil {
 		return err
 	}
-	if g.Status != "active" || g.ParentOwner != owner || time.Now().After(g.ParentLease) {
+	if !r.ParentCanExecute(g, owner) {
 		return ErrConflict
 	}
 	return nil
+}
+
+// ParentCanExecute checks an already loaded parent lease without another read.
+func (r *Runtime) ParentCanExecute(g *Group, owner string) bool {
+	return g.Status == "active" && g.ParentOwner == owner && r.Store.parentLeaseCurrent(g)
 }
 
 // A new human turn may continue a completed child's conversation. Copy only

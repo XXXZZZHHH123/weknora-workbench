@@ -54,7 +54,7 @@ func (b *Binding) Poll(ctx context.Context) ([]Event, error) {
 	if g.Status != "active" {
 		return nil, ErrClosed
 	}
-	if b.ParentOwner != "" && (g.ParentOwner != b.ParentOwner || time.Now().After(g.ParentLease)) {
+	if b.ParentOwner != "" && (g.ParentOwner != b.ParentOwner || !b.Runtime.Store.parentLeaseCurrent(g)) {
 		return nil, ErrConflict
 	}
 	var out []Event

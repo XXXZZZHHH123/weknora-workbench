@@ -207,7 +207,16 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 	})) {
 		inputView["verified_draft_feedback"] = feedback
 	}
+	endpoints := e.lastValidCoverageFeedback(ctx)
+	if len(endpoints) != 0 {
+		inputView["verified_field_gap_receipts"] = endpoints
+	}
 	input, err := json.Marshal(inputView)
+	if len(endpoints) != 0 && len(input) > structuredResultReviewInputBytes {
+		delete(inputView, "verified_field_gap_receipts")
+		endpoints = nil
+		input, err = json.Marshal(inputView)
+	}
 	// Keep the existing reviewer available when its actual evidence fills the
 	// budget. The ordinary revision path can carry the feedback in that case.
 	if feedback != nil && len(input) > structuredResultReviewInputBytes {
@@ -271,6 +280,9 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 	instructions := structuredResultReviewInstructions
 	if e.evidenceCompletionEligible() && rows != nil {
 		instructions = structuredResultRequestedUnitInstructions + "\n" + instructions
+	}
+	if len(endpoints) != 0 {
+		instructions += "\nVerified field gap receipts name the queried field, requested period and endpoint status. Check a claimed recent value against the same source, field, exact date, original value and cell in its observed endpoint. Do not accept a generic directory date, an example/window row, or an endpoint belonging to another measure as proof of the claimed latest observation. If no observed endpoint verifies a claimed latest value for that field, preserve individually supported dated values as dated observations and remove the unsupported latest assertion. When the queried field differs from the requested measure, preserve truthful findings about that field and remove inferences transferring its gap, endpoint or unit to the requested measure."
 	}
 	if feedback != nil {
 		instructions += "\n" + coverageDraftFeedbackInstructions

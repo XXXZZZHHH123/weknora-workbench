@@ -23,13 +23,23 @@ var regThinkIndex = regexp.MustCompile(`(?s)<think>.*?</think>`)
 // It reads the chat history knowledge base configuration from the tenant's ChatHistoryConfig,
 // which is managed via the settings UI.
 type messageService struct {
-	messageRepo    interfaces.MessageRepository    // Repository for message storage operations
-	sessionRepo    interfaces.SessionRepository    // Repository for session validation
-	tenantService  interfaces.TenantService        // Service for tenant operations (read ChatHistoryConfig)
-	kbService      interfaces.KnowledgeBaseService // Service for knowledge base operations (search chat history KB)
-	knowService    interfaces.KnowledgeService     // Service for knowledge operations (index/delete passages)
-	modelService   interfaces.ModelService         // Service for model operations (rerank model)
-	suggestionRepo interfaces.MessageSuggestionRepository
+	messageRepo              interfaces.MessageRepository    // Repository for message storage operations
+	sessionRepo              interfaces.SessionRepository    // Repository for session validation
+	tenantService            interfaces.TenantService        // Service for tenant operations (read ChatHistoryConfig)
+	kbService                interfaces.KnowledgeBaseService // Service for knowledge base operations (search chat history KB)
+	knowService              interfaces.KnowledgeService     // Service for knowledge operations (index/delete passages)
+	modelService             interfaces.ModelService         // Service for model operations (rerank model)
+	suggestionRepo           interfaces.MessageSuggestionRepository
+	legacyInterruptedMessage func(context.Context, *types.Message) *types.Message
+}
+
+func (s *messageService) publicReadMessages(ctx context.Context, sessionID string, messages []*types.Message) []*types.Message {
+	if s.legacyInterruptedMessage != nil {
+		for i, message := range messages {
+			messages[i] = s.legacyInterruptedMessage(ctx, message)
+		}
+	}
+	return s.clarifyReadArtifactVersions(ctx, sessionID, messages)
 }
 
 // NewMessageService creates a new message service instance with the required repositories
@@ -126,7 +136,7 @@ func (s *messageService) GetMessage(ctx context.Context, sessionID string, messa
 	}
 
 	logger.Info(ctx, "Message retrieved successfully")
-	return s.clarifyReadArtifactVersions(ctx, sessionID, []*types.Message{message})[0], nil
+	return s.publicReadMessages(ctx, sessionID, []*types.Message{message})[0], nil
 }
 
 // GetMessagesBySession retrieves paginated messages for a specific session
@@ -156,7 +166,7 @@ func (s *messageService) GetMessagesBySession(ctx context.Context,
 	}
 
 	logger.Infof(ctx, "Retrieved %d messages successfully", len(messages))
-	return s.clarifyReadArtifactVersions(ctx, sessionID, messages), nil
+	return s.publicReadMessages(ctx, sessionID, messages), nil
 }
 
 // GetRecentMessagesBySession retrieves the most recent messages from a session
@@ -189,7 +199,7 @@ func (s *messageService) GetRecentMessagesBySession(ctx context.Context,
 	}
 
 	logger.Infof(ctx, "Retrieved %d recent messages successfully", len(messages))
-	return s.clarifyReadArtifactVersions(ctx, sessionID, messages), nil
+	return s.publicReadMessages(ctx, sessionID, messages), nil
 }
 
 // GetMessagesBySessionBeforeTime retrieves messages sent before a specific time
@@ -223,7 +233,7 @@ func (s *messageService) GetMessagesBySessionBeforeTime(ctx context.Context,
 	}
 
 	logger.Infof(ctx, "Retrieved %d messages before time successfully", len(messages))
-	return s.clarifyReadArtifactVersions(ctx, sessionID, messages), nil
+	return s.publicReadMessages(ctx, sessionID, messages), nil
 }
 
 // UpdateMessage updates an existing message's content or metadata

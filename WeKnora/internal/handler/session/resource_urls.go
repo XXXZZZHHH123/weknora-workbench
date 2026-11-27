@@ -116,6 +116,7 @@ func buildStreamResponseFor(
 	requestID string,
 	rewriter *storageurl.StreamRewriter,
 ) *types.StreamResponse {
+	evt = interruptedReplayEvent(ctx, evt, nil)
 	response := buildStreamResponse(evt, requestID)
 	if !rewriter.Enabled() {
 		return response

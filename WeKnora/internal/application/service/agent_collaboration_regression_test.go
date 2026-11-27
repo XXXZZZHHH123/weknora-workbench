@@ -227,6 +227,10 @@ func (s *parentClosureStreams) AppendEvent(
 	return s.childTestStreams.AppendEvent(ctx, session, message, e)
 }
 
+func (s *parentClosureStreams) GetEvents(context.Context, string, string, int) ([]interfaces.StreamEvent, int, error) {
+	return s.events, len(s.events), nil
+}
+
 type parentClosureMessages struct {
 	*collaborationMessages
 	fail bool
@@ -266,15 +270,21 @@ func TestExpiredParentClosurePreservesTranscriptAndRetriesStream(t *testing.T) {
 	msg, err := messages.GetMessage(ctx, scope.SessionID, scope.ID)
 	require.NoError(t, err)
 	require.True(t, msg.IsCompleted)
-	require.Contains(t, msg.Content, "saved progress")
+	require.NotContains(t, msg.Content, "saved progress")
 	require.Contains(t, msg.Content, "超过执行时限")
+	require.Equal(t, types.MessageRunStateInterrupted, msg.RunState)
 	require.Len(t, msg.AgentSteps, 1)
 	streams.fail = false
 	require.NoError(t, s.finishInterruptedParent(ctx, b))
 	require.Len(t, messages.saved, 2, "retry must not overwrite or duplicate the saved answer")
-	require.Len(t, streams.events, 1)
-	require.Equal(t, types.ResponseType("complete"), streams.events[0].Type)
-	require.Equal(t, msg.Content, streams.events[0].Data["final_content"])
+	require.Len(t, streams.events, 2)
+	for i, kind := range []types.ResponseType{types.ResponseTypeError, types.ResponseTypeComplete} {
+		require.Equal(t, kind, streams.events[i].Type)
+		require.Equal(t, msg.Content, streams.events[i].Data["final_content"])
+		require.Equal(t, false, streams.events[i].Data["success"])
+	}
+	require.NoError(t, s.finishInterruptedParent(ctx, b))
+	require.Len(t, streams.events, 2, "stable terminal events are not appended twice")
 }
 
 func TestChildPanicAfterDeliveredFollowupPersistsFailureWithoutReplay(t *testing.T) {

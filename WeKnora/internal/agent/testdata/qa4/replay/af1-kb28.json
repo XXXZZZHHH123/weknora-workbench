@@ -1,0 +1,1302 @@
+{
+  "calls": [
+    {
+      "event": 6,
+      "iteration": 0,
+      "tool": "bind_document_scope",
+      "arguments": {
+        "selection_reason": "用户点名比较“3月31日周报”和“棉花数据库”两份来源中中国棉花平衡表2023年10月的期末库存，故同时绑定棉花周报20240331.pptx与棉花数据库.xlsx。",
+        "sources": [
+          {
+            "expected_title": "棉花周报20240331.pptx",
+            "knowledge_id": "replay-comparison-report"
+          },
+          {
+            "expected_file_name": "棉花数据库.xlsx",
+            "knowledge_id": "replay-book"
+          }
+        ]
+      }
+    },
+    {
+      "event": 17,
+      "iteration": 2,
+      "tool": "read_document",
+      "arguments": {
+        "id": "replay-comparison-report",
+        "page": 6
+      }
+    },
+    {
+      "event": 32,
+      "iteration": 5,
+      "tool": "structured_query_series",
+      "arguments": {
+        "dataset_id": "replay-cotton-dataset",
+        "end_date": "2023-10-31",
+        "operation": "rows",
+        "series_id": "balance.primary.G",
+        "start_date": "2023-10-31"
+      },
+      "response": {
+        "actual_first_date": "2023-10-31",
+        "actual_last_date": "2023-10-31",
+        "aggregate": null,
+        "chart_label_notice": " SQL输入关系若实际提供metric、unit等字段，可直接SELECT这些真实字段作为业务标签和单位；绘图用series_column选择真实metric或其他维度列，unit_column选择真实单位列，单个value按标签拆系列（最多6条）。先核对实际schema，不猜字段；不得用CASE series_id或手写常量替代真实业务标签，技术来源ID保护不变。",
+        "dataset_id": "replay-cotton-dataset",
+        "extremum_count": null,
+        "extremum_rows": null,
+        "filters": {
+          "end_date": "2023-10-31",
+          "last_n": null,
+          "operation": "rows",
+          "order": "desc",
+          "period": null,
+          "series_id": "balance.primary.G",
+          "start_date": "2023-10-31",
+          "top_n": null,
+          "value_filters": []
+        },
+        "formula_count": 1,
+        "missing_count": 0,
+        "observation_coverage": {
+          "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。",
+          "max_segments": 64,
+          "scope_end_date": "2023-10-31",
+          "scope_record_count": 1,
+          "scope_start_date": "2023-10-31",
+          "scope_valid_count": 1,
+          "segments": [
+            {
+              "duplicate_date_boundary": false,
+              "end_date": "2023-10-31",
+              "first_cell": "G87",
+              "has_value": true,
+              "last_cell": "G87",
+              "record_count": 1,
+              "start_date": "2023-10-31",
+              "undated_boundary": false,
+              "valid_count": 1,
+              "value_status": "valid"
+            }
+          ],
+          "total_segment_count": 1,
+          "truncated": false,
+          "value_changes": {
+            "adjacent_comparison_count": 0,
+            "decrease_count": 0,
+            "excluded_boundary_records": {
+              "duplicate_date_record_count": 0,
+              "missing_value_count": 0,
+              "null_date_count": 0
+            },
+            "first": {
+              "date": "2023-10-31",
+              "value": 298.93291576470585
+            },
+            "increase_count": 0,
+            "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。",
+            "last": {
+              "date": "2023-10-31",
+              "value": 298.93291576470585
+            },
+            "maximum": {
+              "date": "2023-10-31",
+              "value": 298.93291576470585
+            },
+            "minimum": {
+              "date": "2023-10-31",
+              "value": 298.93291576470585
+            },
+            "scope": {
+              "complete_filtered_input": true,
+              "eligible_end_date": "2023-10-31",
+              "eligible_record_count": 1,
+              "eligible_start_date": "2023-10-31",
+              "record_count": 1,
+              "valid_value_count": 1
+            },
+            "unchanged_count": 0
+          }
+        },
+        "record_count": 1,
+        "result_contract": {
+          "column_metadata": [
+            {
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": [
+                  "category_cell"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "display_name": "category_cell",
+              "index": 0,
+              "logical_type": "source_value",
+              "name": "category_cell",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": [
+                  "date"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "display_name": "date",
+              "index": 1,
+              "logical_type": "source_value",
+              "name": "date",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": [
+                  "date_cell"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "display_name": "date_cell",
+              "index": 2,
+              "logical_type": "source_value",
+              "name": "date_cell",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": [
+                  "formula"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "display_name": "formula",
+              "index": 3,
+              "logical_type": "source_value",
+              "name": "formula",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": [
+                  "metric_cell"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "display_name": "metric_cell",
+              "index": 4,
+              "logical_type": "source_value",
+              "name": "metric_cell",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": [
+                  "period"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "display_name": "period",
+              "index": 5,
+              "logical_type": "source_value",
+              "name": "period",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": [
+                  "period_cell"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "display_name": "period_cell",
+              "index": 6,
+              "logical_type": "source_value",
+              "name": "period_cell",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": [
+                  "raw_value"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "display_name": "raw_value",
+              "index": 7,
+              "logical_type": "source_value",
+              "name": "raw_value",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": [
+                  "source_cell"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "display_name": "source_cell",
+              "index": 8,
+              "logical_type": "source_value",
+              "name": "source_cell",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": [
+                  "value"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "display_name": "工商业期末库存",
+              "index": 9,
+              "logical_type": "DOUBLE",
+              "name": "value",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "At least one loaded series has no unit declaration",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": [
+                  "value_status"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "display_name": "value_status",
+              "index": 10,
+              "logical_type": "source_value",
+              "name": "value_status",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            }
+          ],
+          "evidence_capabilities": {
+            "aggregate_membership_verified": false,
+            "cell_lineage_verified": false,
+            "column_dependencies_verified": true,
+            "level": "source_cells",
+            "source_cells_available": true
+          },
+          "execution": {
+            "cell_lineage_verified": false,
+            "column_metadata_scope": "returned_rows_not_aggregate",
+            "engine": "duckdb",
+            "engine_version": "1.5.5",
+            "input_scope": "returned_source_rows",
+            "kind": "series_query",
+            "numeric_semantics": "saved DOUBLE values; Excel formulas are not recalculated",
+            "operation": "rows"
+          },
+          "hash_algorithm": "sha256-typed-json-v1",
+          "hash_input_keys": [
+            "actual_first_date",
+            "actual_last_date",
+            "aggregate",
+            "dataset_id",
+            "extremum_count",
+            "extremum_rows",
+            "filters",
+            "missing_count",
+            "observation_coverage",
+            "record_count",
+            "rows",
+            "rows_are",
+            "scope_record_count",
+            "series",
+            "source",
+            "source_evidence",
+            "source_semantics",
+            "truncated",
+            "valid_count",
+            "valid_first_date",
+            "valid_last_date",
+            "warnings"
+          ],
+          "result_id": "2cc6f9a6fdb291d65698c621",
+          "schema_version": 2,
+          "source_snapshot": {
+            "dataset_id": "replay-cotton-dataset",
+            "file": "棉花数据库.xlsx",
+            "input_digest_sha256": "66b6204444757490ec5c9518b5a0381ad78e5c3a25849989d5c2024205eafd69",
+            "kind": "excel_observations",
+            "knowledge_base_id": "replay-library",
+            "knowledge_id": "replay-book",
+            "scope": "returned_source_rows",
+            "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "versions": {
+              "manifest_sha256": "4949ec1b4b1a2e3efaf80e6b5b7649a836f43083a9ec6eb0309ee11662abf416"
+            }
+          },
+          "result_hash": "d7037251c4a70b9eeddf497ce45265362b1940b327f71123bef86c117b246da3"
+        },
+        "rows": [
+          {
+            "category_cell": null,
+            "date": "2023-10-31",
+            "date_cell": "A87",
+            "formula": "=B87+C87+D87-K87+E87",
+            "metric_cell": null,
+            "period": null,
+            "period_cell": null,
+            "raw_value": "298.93291576470585",
+            "source_cell": "G87",
+            "value": 298.93291576470585,
+            "value_status": "valid"
+          }
+        ],
+        "rows_are": "observations",
+        "scope_record_count": 1,
+        "series": {
+          "description": "中国棉花平衡表 / 工商业期末库存；日期取A列；源表未明确单位，尚待确认",
+          "dimensions": {
+            "block": "primary"
+          },
+          "first_date": "2016-09-30",
+          "first_valid_date": "2016-09-30",
+          "header_cells": [
+            "G1"
+          ],
+          "last_date": "2023-10-31",
+          "last_valid_date": "2023-10-31",
+          "metric": "工商业期末库存",
+          "record_count": 86,
+          "series_id": "balance.primary.G",
+          "sheet": "中国棉花平衡表",
+          "unit": null,
+          "unit_status": "needs_review",
+          "valid_count": 86
+        },
+        "source": {
+          "file": "棉花数据库.xlsx",
+          "file_hash": "e6beb36ce153ab62a3efd43c3a6d4521",
+          "header_cells": [
+            "G1"
+          ],
+          "knowledge_base_id": "replay-library",
+          "knowledge_base_tenant_id": 1,
+          "knowledge_id": "replay-book",
+          "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+          "sheet": "中国棉花平衡表",
+          "workbook_declared_last_saved_at": "2023-09-28T02:27:37Z"
+        },
+        "source_context": {
+          "knowledge_base_id": "replay-library",
+          "knowledge_base_tenant_id": 1
+        },
+        "source_evidence": {
+          "cells": [
+            {
+              "cached_value": 298.93291576470585,
+              "cell": "G87",
+              "formula": "=B87+C87+D87-K87+E87",
+              "raw_value": "=B87+C87+D87-K87+E87",
+              "sheet": "中国棉花平衡表",
+              "value": 298.93291576470585,
+              "value_status": "original"
+            }
+          ],
+          "chart_references": [
+            {
+              "axes": [
+                {
+                  "cross_ax": "973799231",
+                  "display_units": null,
+                  "id": "917094783",
+                  "position": "b",
+                  "title": "",
+                  "type": "dateAx"
+                },
+                {
+                  "cross_ax": "917094783",
+                  "display_units": null,
+                  "id": "973799231",
+                  "position": "l",
+                  "title": "(万吨)",
+                  "type": "valAx"
+                }
+              ],
+              "axis_ids": [
+                "917094783",
+                "973799231"
+              ],
+              "axis_titles": [
+                "(万吨)"
+              ],
+              "category_ref": null,
+              "chart_id": "9c85089ce25585a3d001",
+              "chart_sheet": "中国棉花平衡表",
+              "curve_label": "23/24",
+              "evidence_note": "原生图表的原始文本与真实引用；程序未确认字段单位或业务含义，须结合系列范围、轴对应及来源上下文判断适用性。",
+              "intersecting_references": {
+                "value": {
+                  "range": {
+                    "column": "G",
+                    "end_row": 97,
+                    "sheet": "中国棉花平衡表",
+                    "start_row": 86
+                  },
+                  "reference": "中国棉花平衡表!$G$86:$G$97"
+                }
+              },
+              "intersections": [
+                {
+                  "requested_range": "G87",
+                  "role": "value"
+                }
+              ],
+              "part": "xl/charts/chart385.xml",
+              "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+              "source_file": "棉花数据库.xlsx",
+              "source_references": {
+                "value": {
+                  "range": {
+                    "column": "G",
+                    "end_row": 97,
+                    "sheet": "中国棉花平衡表",
+                    "start_row": 86
+                  },
+                  "reference": "中国棉花平衡表!$G$86:$G$97"
+                }
+              },
+              "title": "中国棉花社会库存",
+              "value_ref": "中国棉花平衡表!$G$86:$G$97"
+            }
+          ],
+          "kind": "structured_query_source_evidence",
+          "notice": "原件证据仅补充来源文字、单元格和相交图表原始引用；不自动认定单位或业务含义。chart_scope_complete=false、空图表列表或截断结果不能证明原件其他区域/未返回图表中不存在相关证据。",
+          "scope": {
+            "chart_references_truncated": false,
+            "chart_scope": "仅列出原生图表系列引用与这些实际返回值单元格直接相交的证据",
+            "chart_scope_complete": false,
+            "chart_scope_reasons": [
+              "candidate_index_source_sha_unbound",
+              "candidate_index_has_unresolved_references"
+            ],
+            "invalid_source_cell_count": 0,
+            "original_inspection_truncated": true,
+            "query_filters": {
+              "end_date": "2023-10-31",
+              "last_n": null,
+              "operation": "rows",
+              "order": "desc",
+              "period": null,
+              "series_id": "balance.primary.G",
+              "start_date": "2023-10-31",
+              "top_n": null,
+              "value_filters": []
+            },
+            "query_notice": "仅对应query_series返回的行；聚合操作的这些行可能是来源示例，不代表全部聚合输入。",
+            "query_record_count": 1,
+            "query_rows_are": "observations",
+            "query_rows_returned_count": 1,
+            "query_rows_truncated": false,
+            "requested_value_cell_count": 1,
+            "requested_value_cells": [
+              "G87"
+            ],
+            "truncated": true,
+            "value_cells_truncated": false
+          },
+          "source": {
+            "file": "棉花数据库.xlsx",
+            "hash_verified": true,
+            "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "sheet": "中国棉花平衡表"
+          },
+          "status": "ok"
+        },
+        "source_semantics": {
+          "aggregation_rule": null,
+          "date_representation": "date",
+          "notice": "未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。",
+          "statistical_calendar": null
+        },
+        "status": "ok",
+        "truncated": false,
+        "valid_count": 1,
+        "valid_first_date": "2023-10-31",
+        "valid_formula_count": 1,
+        "valid_last_date": "2023-10-31",
+        "valid_non_formula_count": 0,
+        "warnings": [
+          "当前字段目录尚未确认单位，不表示原件其他位置没有单位证据；可检查实际表头、脚注或与该字段范围对应的图表，并判断适用范围。没有实际依据前不补充或换算单位。",
+          "查询范围内有 1 条公式记录，其中 1 条有有效缓存数值；有效数值中另有 0 条是非公式记录。仅公式结果来自原文件保存的缓存，本服务未重新计算 Excel 公式，不把普通数值称为公式缓存。",
+          "missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。"
+        ]
+      }
+    },
+    {
+      "event": 6,
+      "iteration": 0,
+      "tool": "bind_document_scope",
+      "arguments": {
+        "selection_reason": "用户点名比较两处来源：3月31日周报（weknora://doc/replay-comparison-report《棉花周报20240331》）与棉花数据库.xlsx（weknora://doc/replay-book），指标为中国棉花平衡表的2023年10月期末库存。",
+        "sources": [
+          {
+            "expected_title": "棉花周报20240331",
+            "knowledge_id": "replay-comparison-report"
+          },
+          {
+            "expected_file_name": "棉花数据库.xlsx",
+            "knowledge_id": "replay-book"
+          }
+        ]
+      },
+      "historical_error": "来源计划文件名或标题与实际文档不一致；请重新核对真实目录"
+    },
+    {
+      "event": 19,
+      "iteration": 3,
+      "tool": "read_document",
+      "arguments": {
+        "id": "replay-comparison-report",
+        "page": 6
+      }
+    },
+    {
+      "event": 32,
+      "iteration": 6,
+      "tool": "structured_query_series",
+      "arguments": {
+        "dataset_id": "replay-cotton-dataset",
+        "end_date": "2023-10-31",
+        "knowledge_base_id": "replay-library",
+        "operation": "rows",
+        "series_id": "balance.primary.G",
+        "source_question": "中国棉花平衡表里2023年10月的期末库存，3月31日周报和棉花数据库给的数一样吗？",
+        "start_date": "2023-10-01"
+      },
+      "response": {
+        "actual_first_date": "2023-10-31",
+        "actual_last_date": "2023-10-31",
+        "aggregate": null,
+        "chart_label_notice": " SQL输入关系若实际提供metric、unit等字段，可直接SELECT这些真实字段作为业务标签和单位；绘图用series_column选择真实metric或其他维度列，unit_column选择真实单位列，单个value按标签拆系列（最多6条）。先核对实际schema，不猜字段；不得用CASE series_id或手写常量替代真实业务标签，技术来源ID保护不变。",
+        "dataset_id": "replay-cotton-dataset",
+        "extremum_count": null,
+        "extremum_rows": null,
+        "filters": {
+          "end_date": "2023-10-31",
+          "last_n": null,
+          "operation": "rows",
+          "order": "desc",
+          "period": null,
+          "series_id": "balance.primary.G",
+          "start_date": "2023-10-01",
+          "top_n": null,
+          "value_filters": []
+        },
+        "formula_count": 1,
+        "missing_count": 0,
+        "observation_coverage": {
+          "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。",
+          "max_segments": 64,
+          "scope_end_date": "2023-10-31",
+          "scope_record_count": 1,
+          "scope_start_date": "2023-10-31",
+          "scope_valid_count": 1,
+          "segments": [
+            {
+              "duplicate_date_boundary": false,
+              "end_date": "2023-10-31",
+              "first_cell": "G87",
+              "has_value": true,
+              "last_cell": "G87",
+              "record_count": 1,
+              "start_date": "2023-10-31",
+              "undated_boundary": false,
+              "valid_count": 1,
+              "value_status": "valid"
+            }
+          ],
+          "total_segment_count": 1,
+          "truncated": false,
+          "value_changes": {
+            "adjacent_comparison_count": 0,
+            "decrease_count": 0,
+            "excluded_boundary_records": {
+              "duplicate_date_record_count": 0,
+              "missing_value_count": 0,
+              "null_date_count": 0
+            },
+            "first": {
+              "date": "2023-10-31",
+              "value": 298.93291576470585
+            },
+            "increase_count": 0,
+            "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。",
+            "last": {
+              "date": "2023-10-31",
+              "value": 298.93291576470585
+            },
+            "maximum": {
+              "date": "2023-10-31",
+              "value": 298.93291576470585
+            },
+            "minimum": {
+              "date": "2023-10-31",
+              "value": 298.93291576470585
+            },
+            "scope": {
+              "complete_filtered_input": true,
+              "eligible_end_date": "2023-10-31",
+              "eligible_record_count": 1,
+              "eligible_start_date": "2023-10-31",
+              "record_count": 1,
+              "valid_value_count": 1
+            },
+            "unchanged_count": 0
+          }
+        },
+        "record_count": 1,
+        "result_contract": {
+          "column_metadata": [
+            {
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": [
+                  "category_cell"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "display_name": "category_cell",
+              "index": 0,
+              "logical_type": "source_value",
+              "name": "category_cell",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": [
+                  "date"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "display_name": "date",
+              "index": 1,
+              "logical_type": "source_value",
+              "name": "date",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": [
+                  "date_cell"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "display_name": "date_cell",
+              "index": 2,
+              "logical_type": "source_value",
+              "name": "date_cell",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": [
+                  "formula"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "display_name": "formula",
+              "index": 3,
+              "logical_type": "source_value",
+              "name": "formula",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": [
+                  "metric_cell"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "display_name": "metric_cell",
+              "index": 4,
+              "logical_type": "source_value",
+              "name": "metric_cell",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": [
+                  "period"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "display_name": "period",
+              "index": 5,
+              "logical_type": "source_value",
+              "name": "period",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": [
+                  "period_cell"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "display_name": "period_cell",
+              "index": 6,
+              "logical_type": "source_value",
+              "name": "period_cell",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": [
+                  "raw_value"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "display_name": "raw_value",
+              "index": 7,
+              "logical_type": "source_value",
+              "name": "raw_value",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_metadata",
+                "source_columns": [
+                  "source_cell"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": true
+              },
+              "display_name": "source_cell",
+              "index": 8,
+              "logical_type": "source_value",
+              "name": "source_cell",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": [
+                  "value"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "display_name": "工商业期末库存",
+              "index": 9,
+              "logical_type": "DOUBLE",
+              "name": "value",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "At least one loaded series has no unit declaration",
+                "status": "unknown"
+              }
+            },
+            {
+              "dependency": {
+                "kind": "source_value",
+                "source_columns": [
+                  "value_status"
+                ],
+                "source_row_dependency": false,
+                "technical_metadata": false
+              },
+              "display_name": "value_status",
+              "index": 10,
+              "logical_type": "source_value",
+              "name": "value_status",
+              "unit": {
+                "binding_scope": "result_column",
+                "evidence": [],
+                "evidence_level": "none",
+                "reason": "No bound unit declaration for this expression",
+                "status": "unknown"
+              }
+            }
+          ],
+          "evidence_capabilities": {
+            "aggregate_membership_verified": false,
+            "cell_lineage_verified": false,
+            "column_dependencies_verified": true,
+            "level": "source_cells",
+            "source_cells_available": true
+          },
+          "execution": {
+            "cell_lineage_verified": false,
+            "column_metadata_scope": "returned_rows_not_aggregate",
+            "engine": "duckdb",
+            "engine_version": "1.5.5",
+            "input_scope": "returned_source_rows",
+            "kind": "series_query",
+            "numeric_semantics": "saved DOUBLE values; Excel formulas are not recalculated",
+            "operation": "rows"
+          },
+          "hash_algorithm": "sha256-typed-json-v1",
+          "hash_input_keys": [
+            "actual_first_date",
+            "actual_last_date",
+            "aggregate",
+            "dataset_id",
+            "extremum_count",
+            "extremum_rows",
+            "filters",
+            "missing_count",
+            "observation_coverage",
+            "record_count",
+            "rows",
+            "rows_are",
+            "scope_record_count",
+            "series",
+            "source",
+            "source_evidence",
+            "source_semantics",
+            "truncated",
+            "valid_count",
+            "valid_first_date",
+            "valid_last_date",
+            "warnings"
+          ],
+          "result_id": "5ccbb23359a804489dd1b7e3",
+          "schema_version": 2,
+          "source_snapshot": {
+            "dataset_id": "replay-cotton-dataset",
+            "file": "棉花数据库.xlsx",
+            "input_digest_sha256": "66b6204444757490ec5c9518b5a0381ad78e5c3a25849989d5c2024205eafd69",
+            "kind": "excel_observations",
+            "knowledge_base_id": "replay-library",
+            "knowledge_id": "replay-book",
+            "scope": "returned_source_rows",
+            "source_sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "versions": {
+              "manifest_sha256": "4949ec1b4b1a2e3efaf80e6b5b7649a836f43083a9ec6eb0309ee11662abf416"
+            }
+          },
+          "result_hash": "abeb10a64d8b85614a8a7444cdfef9ec6a54018d08528ae20d60a7bd64748c41"
+        },
+        "rows": [
+          {
+            "category_cell": null,
+            "date": "2023-10-31",
+            "date_cell": "A87",
+            "formula": "=B87+C87+D87-K87+E87",
+            "metric_cell": null,
+            "period": null,
+            "period_cell": null,
+            "raw_value": "298.93291576470585",
+            "source_cell": "G87",
+            "value": 298.93291576470585,
+            "value_status": "valid"
+          }
+        ],
+        "rows_are": "observations",
+        "scope_record_count": 1,
+        "series": {
+          "description": "中国棉花平衡表 / 工商业期末库存；日期取A列；源表未明确单位，尚待确认",
+          "dimensions": {
+            "block": "primary"
+          },
+          "first_date": "2016-09-30",
+          "first_valid_date": "2016-09-30",
+          "header_cells": [
+            "G1"
+          ],
+          "last_date": "2023-10-31",
+          "last_valid_date": "2023-10-31",
+          "metric": "工商业期末库存",
+          "record_count": 86,
+          "series_id": "balance.primary.G",
+          "sheet": "中国棉花平衡表",
+          "unit": null,
+          "unit_status": "needs_review",
+          "valid_count": 86
+        },
+        "source": {
+          "file": "棉花数据库.xlsx",
+          "file_hash": "e6beb36ce153ab62a3efd43c3a6d4521",
+          "header_cells": [
+            "G1"
+          ],
+          "knowledge_base_id": "replay-library",
+          "knowledge_base_tenant_id": 1,
+          "knowledge_id": "replay-book",
+          "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+          "sheet": "中国棉花平衡表",
+          "workbook_declared_last_saved_at": "2023-09-28T02:27:37Z"
+        },
+        "source_context": {
+          "knowledge_base_id": "replay-library",
+          "knowledge_base_tenant_id": 1
+        },
+        "source_evidence": {
+          "cells": [
+            {
+              "cached_value": 298.93291576470585,
+              "cell": "G87",
+              "formula": "=B87+C87+D87-K87+E87",
+              "raw_value": "=B87+C87+D87-K87+E87",
+              "sheet": "中国棉花平衡表",
+              "value": 298.93291576470585,
+              "value_status": "original"
+            }
+          ],
+          "chart_references": [
+            {
+              "axes": [
+                {
+                  "cross_ax": "973799231",
+                  "display_units": null,
+                  "id": "917094783",
+                  "position": "b",
+                  "title": "",
+                  "type": "dateAx"
+                },
+                {
+                  "cross_ax": "917094783",
+                  "display_units": null,
+                  "id": "973799231",
+                  "position": "l",
+                  "title": "(万吨)",
+                  "type": "valAx"
+                }
+              ],
+              "axis_ids": [
+                "917094783",
+                "973799231"
+              ],
+              "axis_titles": [
+                "(万吨)"
+              ],
+              "category_ref": null,
+              "chart_id": "9c85089ce25585a3d001",
+              "chart_sheet": "中国棉花平衡表",
+              "curve_label": "23/24",
+              "evidence_note": "原生图表的原始文本与真实引用；程序未确认字段单位或业务含义，须结合系列范围、轴对应及来源上下文判断适用性。",
+              "intersecting_references": {
+                "value": {
+                  "range": {
+                    "column": "G",
+                    "end_row": 97,
+                    "sheet": "中国棉花平衡表",
+                    "start_row": 86
+                  },
+                  "reference": "中国棉花平衡表!$G$86:$G$97"
+                }
+              },
+              "intersections": [
+                {
+                  "requested_range": "G87",
+                  "role": "value"
+                }
+              ],
+              "part": "xl/charts/chart385.xml",
+              "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+              "source_file": "棉花数据库.xlsx",
+              "source_references": {
+                "value": {
+                  "range": {
+                    "column": "G",
+                    "end_row": 97,
+                    "sheet": "中国棉花平衡表",
+                    "start_row": 86
+                  },
+                  "reference": "中国棉花平衡表!$G$86:$G$97"
+                }
+              },
+              "title": "中国棉花社会库存",
+              "value_ref": "中国棉花平衡表!$G$86:$G$97"
+            }
+          ],
+          "kind": "structured_query_source_evidence",
+          "notice": "原件证据仅补充来源文字、单元格和相交图表原始引用；不自动认定单位或业务含义。chart_scope_complete=false、空图表列表或截断结果不能证明原件其他区域/未返回图表中不存在相关证据。",
+          "scope": {
+            "chart_references_truncated": false,
+            "chart_scope": "仅列出原生图表系列引用与这些实际返回值单元格直接相交的证据",
+            "chart_scope_complete": false,
+            "chart_scope_reasons": [
+              "candidate_index_source_sha_unbound",
+              "candidate_index_has_unresolved_references"
+            ],
+            "invalid_source_cell_count": 0,
+            "original_inspection_truncated": true,
+            "query_filters": {
+              "end_date": "2023-10-31",
+              "last_n": null,
+              "operation": "rows",
+              "order": "desc",
+              "period": null,
+              "series_id": "balance.primary.G",
+              "start_date": "2023-10-01",
+              "top_n": null,
+              "value_filters": []
+            },
+            "query_notice": "仅对应query_series返回的行；聚合操作的这些行可能是来源示例，不代表全部聚合输入。",
+            "query_record_count": 1,
+            "query_rows_are": "observations",
+            "query_rows_returned_count": 1,
+            "query_rows_truncated": false,
+            "requested_value_cell_count": 1,
+            "requested_value_cells": [
+              "G87"
+            ],
+            "truncated": true,
+            "value_cells_truncated": false
+          },
+          "source": {
+            "file": "棉花数据库.xlsx",
+            "hash_verified": true,
+            "sha256": "108b08e3f40b1f2cb081ca406fdc4bd02415dce5ffd2c7426d078c79573bd1fe",
+            "sheet": "中国棉花平衡表"
+          },
+          "status": "ok"
+        },
+        "source_semantics": {
+          "aggregation_rule": null,
+          "date_representation": "date",
+          "notice": "未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。",
+          "statistical_calendar": null
+        },
+        "status": "ok",
+        "truncated": false,
+        "valid_count": 1,
+        "valid_first_date": "2023-10-31",
+        "valid_formula_count": 1,
+        "valid_last_date": "2023-10-31",
+        "valid_non_formula_count": 0,
+        "warnings": [
+          "当前字段目录尚未确认单位，不表示原件其他位置没有单位证据；可检查实际表头、脚注或与该字段范围对应的图表，并判断适用范围。没有实际依据前不补充或换算单位。",
+          "查询范围内有 1 条公式记录，其中 1 条有有效缓存数值；有效数值中另有 0 条是非公式记录。仅公式结果来自原文件保存的缓存，本服务未重新计算 Excel 公式，不把普通数值称为公式缓存。",
+          "missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。"
+        ]
+      }
+    }
+  ],
+  "drafts": [
+    "**两处数字不一样。** 2023年10月的“期末库存”在“3月31日周报”中为 217.2 万吨，在“棉花数据库”中为 298.9 万吨；在“棉花数据库”中，这个值出现在“工商业期末库存”这一列。\n\n| 来源 | 2023年10月取值 | 位置 |\n|---|---|---|\n| 棉花周报20240331.pptx（“中国棉花平衡表”页） | 217.2 万吨（工商业期末库存） | 第6页表格，“2023-10”行 |\n| 棉花数据库.xlsx（工作表“中国棉花平衡表”） | 298.9329…（工商业期末库存） | G87 单元格，日期在 A87（2023-10-31） |\n\n说明：\n- 在周报第6页原表中，“2023-10”行的“工商业期初库存”为 217.2，与“2023-09”行的期末库存 217.2 一致；在数据库 G87 中，期末库存按“期初+产量+进口−表需+公开抛储”的公式计算，结果为 298.93。可见两个来源对该月记录的口径或填报并不相同，因此不能把这两者当作同一数值的两种写法。\n- 两个来源还各自有另一类库存列：周报中“2023-10”的“合计库存”为 516.2，数据库中该月的“合计库存”为 516.2。这两项恰好一致，但用户所问的“期末库存”一项并不一致。\n- 周报表中未在单元格内标出单位，单位是在整张表的表头层级表明为万吨；数据库该字段（工商业期末库存）的原表未标注单位，因此这里按数值原样给出，未作换算。",
+    "比较两处来源后得到以下结果：两者并不一致，但所列数字也并非同一指标。\n\n**3月31日周报（《棉花周报20240331》，第6页“中国棉花平衡表”月度表）**\n表中“2023-10”行（单位万吨，月度）：工商业期末库存 **331.2**，非公开库存 175.0，国储库存 185.0，**合计库存 516.2**<kb doc=\"棉花周报20240331.pptx\" chunk_id=\"replay-comparison-page\" kb_id=\"replay-library\" />。周报中并没有单独标为“期末库存”的栏目，与此最接近的是“合计库存”。\n\n**棉花数据库.xlsx（工作表“中国棉花平衡表”月度表）**\n2023-10-31（A87行）的“工商业期末库存”为 **298.9329…**（G87单元格，公式 =B87+C87+D87-K87+E87，原表未标注单位，单位仍待确认）<evidence evidence_id=\"replay-executed-structured-citation\" />。\n\n这两处的差异既涉及数值，也涉及口径：周报所列的是“工商业期末库存 331.2 / 合计库存 516.2”这一组数，而数据库中该行在 G 列的“工商业期末库存”为 298.93，与周报的 331.2 也不相同；两个文件中对应行的其他分项（非公开库存、国储库存分别为 175/185 和 170.2/185.0）也有差别，可见这是数据版本更新或调整后的不同，不能理解成同一数字的简单重复。此外，周报中没有单独的“期末库存”列，因此“期末库存”具体指哪一列，需要另行确认。",
+    "不一致。\n\n《棉花周报20240331》第6页「中国棉花平衡表」的月度表按行标签取 2023-10：其中「工商业期末库存」为 331.2 万吨，「合计库存」为 516.2 万吨，单位为万吨（与同页该表 2023-09 至 2024-08 行数据同属这一月度区块）<kb doc=\"棉花周报20240331.pptx\" chunk_id=\"replay-comparison-page\" kb_id=\"replay-library\" />。\n\n《棉花数据库.xlsx》工作表「中国棉花平衡表」的「工商业期末库存」字段，2023-10-31（原表 A87 行）取值为 298.93291576470585（G87 单元格，原表未标注单位，单位尚待确认）<evidence evidence_id=\"replay-executed-structured-citation\" />。\n\n因此，两处同名的「工商业期末库存」在 2023 年 10 月的数值也不相同：周报为 331.2 万吨，数据库为 298.93（单位未确认）。「合计库存」在数据库中对应的字段本轮未读取，因此两处「合计库存」也无法对齐比较。两表同期数值不同的原因（例如版本更新或口径调整）没有证据说明，暂不做判断。",
+    "两边数不一样。\n\n《棉花周报20240331》第6页的「中国棉花平衡表」中，月度表 2023-10 行的「工商业期末库存」为 331.2，「合计库存」为 516.2，全表标注单位为万吨；但《棉花数据库.xlsx》同表同期数值明显偏低，单位方面也没有可核的同类标注<kb doc=\"棉花周报20240331.pptx\" chunk_id=\"replay-comparison-page\" kb_id=\"replay-library\" />。\n\n《棉花数据库.xlsx》工作表「中国棉花平衡表」的「工商业期末库存」字段（G 列，B1 表头）在 2023-10-31（A87 行）为 298.93291576470585（G87 单元格，公式对 B87+C87+D87-K87+E87 的缓存结果）；该字段目录中单位状态为未确认，原表该处未见单位标注<evidence evidence_id=\"replay-executed-structured-citation\" />。\n\n因此，「工商业期末库存」这一项在 2023 年 10 月并不一致：周报为 331.2 万吨，数据库为 298.93（单位未确认，保留原值精度）。周报的「合计库存」516.2 万吨在数据库中对应的字段本轮没有读取到同期原值，因此这一项的具体差额和是否一致本轮无法给出；两表同期差异是否来自版本更新或口径调整，已读材料没有说明，不作判断。"
+  ],
+  "question": "中国棉花平衡表里2023年10月的期末库存，3月31日周报和棉花数据库给的数一样吗？",
+  "answer_event": 52,
+  "complete_event": 54,
+  "historical_final": "关于“中国棉花平衡表里2023年10月的期末库存，3月31日周报和棉花数据库给的数一样吗？”，已返回的表格片段尚未核到所需的原行和列。 已定位 棉花数据库.xlsx 的目录条目，尚无所问范围的读数。 已读取 棉花数据库.xlsx / 中国棉花平衡表 / 工商业期末库存 的 2023-10-01 – 2023-10-31 范围，尚未核实它与所问结果的对应关系。 尚未核到 3月31日周报、棉花数据库 的 中国棉花平衡表 期末库存 2023-10-01 – 2023-10-31 同表、同期读数。",
+  "documents": [
+    {
+      "id": "replay-book",
+      "title": "棉花数据库.xlsx",
+      "file_name": "棉花数据库.xlsx",
+      "file_type": "xlsx",
+      "file_hash": "e6beb36ce153ab62a3efd43c3a6d4521"
+    },
+    {
+      "id": "replay-comparison-report",
+      "title": "棉花周报20240331.pptx",
+      "file_name": "棉花周报20240331.pptx",
+      "file_type": "pptx",
+      "file_hash": "ef10dfa2fa3a81bcbc2f57d7e2310241"
+    }
+  ],
+  "chunks": [
+    {
+      "id": "replay-comparison-page",
+      "knowledge_id": "replay-comparison-report",
+      "chunk_type": "text",
+      "content": "# 第6页\n\n中国棉花平衡表\n\n![第6页 · 微信图片_20170323173030](resource://N_FB92a4W6IYincTmxX22A)\n\n来源：第6页 · ppt/media/image4.png（原文件中的图像或缓存预览，未刷新外部链接）。\n\n![第6页 · 图片 8](resource://NN79EDxUE4QJYWxGG60mrA)\n\n来源：第6页 · ppt/media/image22.png（原文件中的图像或缓存预览，未刷新外部链接）。\n\n![第6页 · 对象 9](resource://5jEAGH-tTXA_bfAuk4ldJQ)\n\n来源：第6页 · ppt/media/image23.emf（原文件中的图像或缓存预览，未刷新外部链接）。\n\n",
+      "chunk_index": 40,
+      "image_info": "[{\"url\":\"resource://N_FB92a4W6IYincTmxX22A\",\"original_url\":\"resource://N_FB92a4W6IYincTmxX22A\",\"start_pos\":45,\"end_pos\":78,\"caption\":\"原文件图片\",\"ocr_text\":\"\",\"attrs\":{\"schema\":\"\",\"source\":{\"schema\":\"\",\"prompt\":\"\"}}},{\"url\":\"resource://NN79EDxUE4QJYWxGG60mrA\",\"original_url\":\"resource://NN79EDxUE4QJYWxGG60mrA\",\"start_pos\":149,\"end_pos\":182,\"caption\":\"原文件图片\",\"ocr_text\":\"\",\"attrs\":{\"schema\":\"\",\"source\":{\"schema\":\"\",\"prompt\":\"\"}}},{\"url\":\"resource://5jEAGH-tTXA_bfAuk4ldJQ\",\"original_url\":\"resource://5jEAGH-tTXA_bfAuk4ldJQ\",\"start_pos\":254,\"end_pos\":287,\"caption\":\"原文件图片\",\"ocr_text\":\"\",\"attrs\":{\"schema\":\"\",\"source\":{\"schema\":\"\",\"prompt\":\"\"}}}]",
+      "metadata": {
+        "document_image_sources_v1": [
+          {
+            "reference": "resource://N_FB92a4W6IYincTmxX22A",
+            "page": 6,
+            "source_part": "ppt/media/image4.png",
+            "source_hash": "ef10dfa2fa3a81bcbc2f57d7e2310241"
+          },
+          {
+            "reference": "resource://NN79EDxUE4QJYWxGG60mrA",
+            "page": 6,
+            "source_part": "ppt/media/image22.png",
+            "source_hash": "ef10dfa2fa3a81bcbc2f57d7e2310241"
+          },
+          {
+            "reference": "resource://5jEAGH-tTXA_bfAuk4ldJQ",
+            "page": 6,
+            "source_part": "ppt/media/image23.emf",
+            "source_hash": "ef10dfa2fa3a81bcbc2f57d7e2310241"
+          }
+        ]
+      },
+      "source_locators": [
+        {
+          "type": "slide",
+          "mapping": "exact",
+          "partial": true,
+          "source_hash": "ef10dfa2fa3a81bcbc2f57d7e2310241",
+          "slide": 6,
+          "quote": "中国棉花平衡表"
+        }
+      ]
+    },
+    {
+      "id": "replay-comparison-ocr",
+      "knowledge_id": "replay-comparison-report",
+      "chunk_type": "image_ocr",
+      "content": "目录\t工商业期初库存\t产量\t进口\t公开抛储\t公开收储\t工商业期末库存\t非公开收储\t非公开抛储\t表需\t实际需求\t非公开库存\t国储库存\t合计库存\t棉纱产量\t棉纱进口\t棉纱出口\t棉纱净进口\t棉纱需求\t棉纱库存\n2023-09\t241.9\t0.0\t23.6\t32.9\t0.0\t217.2\t6.0\t0.0\t81.2\t75.2\t207.2\t200.1\t417.3\t47.2\t17.5\t1.1\t16.4\t60.4\t125.2\n2023-10\t217.2\t116.0\t28.7\t25.1\t0.0\t331.2\t10.0\t0.0\t55.8\t45.8\t175.0\t185.0\t516.2\t46.3\t15.9\t0.9\t15.0\t58.8\t127.7\n2023-11\t331.2\t206.0\t30.7\t4.8\t0.0\t543.8\t10.0\t0.0\t29.0\t19.0\t170.2\t190.2\t733.9\t41.7\t14.1\t1.0\t13.1\t51.0\t131.5\n2023-12\t543.8\t156.0\t26.3\t0.0\t0.0\t641.7\t10.0\t0.0\t84.4\t74.4\t170.2\t200.2\t841.8\t40.2\t14.1\t1.0\t13.1\t58.2\t126.6\n2024-01\t641.7\t86.0\t34.5\t0.0\t0.0\t646.4\t14.0\t0.0\t115.7\t101.7\t170.2\t214.2\t860.6\t43.6\t13.6\t0.9\t12.7\t60.7\t122.2\n2024-02\t646.4\t16.0\t29.5\t0.0\t0.0\t625.5\t12.0\t0.0\t55.0\t43.0\t170.2\t226.2\t851.7\t27.2\t12.0\t0.7\t11.3\t37.4\t123.3\n2024-03\t625.5\t0.0\t31.6\t0.0\t0.0\t572.1\t8.0\t0.0\t85.0\t77.0\t170.2\t234.2\t806.3\t45.0\t13.0\t1.0\t12.0\t65.0\t115.3\n2024-04\t572.1\t0.0\t34.0\t0.0\t0.0\t531.1\t4.0\t0.0\t75.0\t71.0\t170.2\t238.2\t769.3\t46.0\t13.0\t1.0\t12.0\t62.0\t111.3\n2024-05\t531.1\t0.0\t8.0\t0.0\t0.0\t464.1\t4.0\t0.0\t75.0\t71.0\t170.2\t242.2\t706.3\t45.0\t13.0\t1.0\t12.0\t56.0\t112.3\n2024-06\t464.1\t0.0\t8.0\t0.0\t0.0\t397.1\t4.0\t0.0\t75.0\t71.0\t170.2\t246.2\t643.3\t45.0\t13.0\t1.0\t12.0\t55.0\t114.3\n2024-07\t397.1\t0.0\t8.0\t0.0\t0.0\t330.1\t4.0\t0.0\t75.0\t71.0\t170.2\t250.2\t580.3\t45.0\t11.0\t1.0\t10.0\t52.9\t116.4\n2024-08\t330.1\t0.0\t8.0\t0.0\t0.0\t263.1\t4.0\t0.0\t75.0\t71.0\t170.2\t254.2\t517.3\t45.0\t10.7\t1.0\t9.7\t50.0\t121.1",
+      "chunk_index": 0,
+      "parent_chunk_id": "replay-comparison-page",
+      "image_info": "[{\"sha256\":\"2be5c621c8f2a3080b8b53aa7f1fd7f0e52f5b717d4eb3e2b63cf40d80366b69\",\"url\":\"resource://NN79EDxUE4QJYWxGG60mrA\",\"original_url\":\"resource://NN79EDxUE4QJYWxGG60mrA\",\"start_pos\":0,\"end_pos\":0,\"caption\":\"该表格展示了2023年9月至2024年8月期间的棉花供应链相关数据，包括：工业期初库存、产量、进口、公开收储与抛储、非公开收储与抛储、表观消费、实际需求、各类库存（非公开、国储、合计）、棉纱产量、进出口及净进口量、棉纱净进口、棉纱需求和棉纱库存等指标，单位为万吨或万吨/月。其中2024年3–8月数据以黄色高亮显示。\",\"ocr_text\":\"目录\\t工商业期初库存\\t产量\\t进口\\t公开抛储\\t公开收储\\t工商业期末库存\\t非公开收储\\t非公开抛储\\t表需\\t实际需求\\t非公开库存\\t国储库存\\t合计库存\\t棉纱产量\\t棉纱进口\\t棉纱出口\\t棉纱净进口\\t棉纱需求\\t棉纱库存\\n2023-09\\t241.9\\t0.0\\t23.6\\t32.9\\t0.0\\t217.2\\t6.0\\t0.0\\t81.2\\t75.2\\t207.2\\t200.1\\t417.3\\t47.2\\t17.5\\t1.1\\t16.4\\t60.4\\t125.2\\n2023-10\\t217.2\\t116.0\\t28.7\\t25.1\\t0.0\\t331.2\\t10.0\\t0.0\\t55.8\\t45.8\\t175.0\\t185.0\\t516.2\\t46.3\\t15.9\\t0.9\\t15.0\\t58.8\\t127.7\\n2023-11\\t331.2\\t206.0\\t30.7\\t4.8\\t0.0\\t543.8\\t10.0\\t0.0\\t29.0\\t19.0\\t170.2\\t190.2\\t733.9\\t41.7\\t14.1\\t1.0\\t13.1\\t51.0\\t131.5\\n2023-12\\t543.8\\t156.0\\t26.3\\t0.0\\t0.0\\t641.7\\t10.0\\t0.0\\t84.4\\t74.4\\t170.2\\t200.2\\t841.8\\t40.2\\t14.1\\t1.0\\t13.1\\t58.2\\t126.6\\n2024-01\\t641.7\\t86.0\\t34.5\\t0.0\\t0.0\\t646.4\\t14.0\\t0.0\\t115.7\\t101.7\\t170.2\\t214.2\\t860.6\\t43.6\\t13.6\\t0.9\\t12.7\\t60.7\\t122.2\\n2024-02\\t646.4\\t16.0\\t29.5\\t0.0\\t0.0\\t625.5\\t12.0\\t0.0\\t55.0\\t43.0\\t170.2\\t226.2\\t851.7\\t27.2\\t12.0\\t0.7\\t11.3\\t37.4\\t123.3\\n2024-03\\t625.5\\t0.0\\t31.6\\t0.0\\t0.0\\t572.1\\t8.0\\t0.0\\t85.0\\t77.0\\t170.2\\t234.2\\t806.3\\t45.0\\t13.0\\t1.0\\t12.0\\t65.0\\t115.3\\n2024-04\\t572.1\\t0.0\\t34.0\\t0.0\\t0.0\\t531.1\\t4.0\\t0.0\\t75.0\\t71.0\\t170.2\\t238.2\\t769.3\\t46.0\\t13.0\\t1.0\\t12.0\\t62.0\\t111.3\\n2024-05\\t531.1\\t0.0\\t8.0\\t0.0\\t0.0\\t464.1\\t4.0\\t0.0\\t75.0\\t71.0\\t170.2\\t242.2\\t706.3\\t45.0\\t13.0\\t1.0\\t12.0\\t56.0\\t112.3\\n2024-06\\t464.1\\t0.0\\t8.0\\t0.0\\t0.0\\t397.1\\t4.0\\t0.0\\t75.0\\t71.0\\t170.2\\t246.2\\t643.3\\t45.0\\t13.0\\t1.0\\t12.0\\t55.0\\t114.3\\n2024-07\\t397.1\\t0.0\\t8.0\\t0.0\\t0.0\\t330.1\\t4.0\\t0.0\\t75.0\\t71.0\\t170.2\\t250.2\\t580.3\\t45.0\\t11.0\\t1.0\\t10.0\\t52.9\\t116.4\\n2024-08\\t330.1\\t0.0\\t8.0\\t0.0\\t0.0\\t263.1\\t4.0\\t0.0\\t75.0\\t71.0\\t170.2\\t254.2\\t517.3\\t45.0\\t10.7\\t1.0\\t9.7\\t50.0\\t121.1\",\"attrs\":{\"schema\":\"\",\"source\":{\"schema\":\"\",\"prompt\":\"\"}}}]"
+    }
+  ]
+}

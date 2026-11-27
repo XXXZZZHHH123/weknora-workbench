@@ -269,8 +269,11 @@ func (r *messageRepository) UpdateMessage(ctx context.Context, message *types.Me
 		// Serialize with API-generated artifact delivery, which appends under
 		// the same message lock. A stop/finalization snapshot may predate it.
 		var locked types.Message
-		if err := tx.Select("id").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND session_id = ?", message.ID, message.SessionID).First(&locked).Error; err != nil {
+		if err := tx.Select("id", "run_state").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND session_id = ?", message.ID, message.SessionID).First(&locked).Error; err != nil {
 			return err
+		}
+		if locked.RunState == types.MessageRunStateInterrupted && message.RunState != types.MessageRunStateInterrupted {
+			return types.ErrMessageRunInterrupted
 		}
 		if err := tx.Model(&types.Message{}).Where(
 			"id = ? AND session_id = ?", message.ID, message.SessionID,

@@ -193,3 +193,52 @@ func TestParentLeaseStartRejectsExpiredReplacedClosedAndPreservesClosingFence(t 
 		})
 	}
 }
+
+func TestLiveParentClockDiscontinuityCannotBecomeOrphan(t *testing.T) {
+	store, scope := testStore(t)
+	r := New(store, nil)
+	closed := make(chan string, 1)
+	r.WakeParent = func(_ context.Context, binding *Binding, _ []byte) error {
+		closed <- binding.ParentOwner
+		return nil
+	}
+	b, err := r.AcquireParent(t.Context(), scope)
+	require.NoError(t, err)
+	runCtx, stop := b.Start(t.Context())
+	defer stop()
+	expiredWall := time.Now().Add(-161 * time.Second).Round(0)
+	require.NoError(t, store.Change(t.Context(), scope, func(g *Group) error {
+		g.ParentLease = expiredWall
+		return nil
+	}))
+	entry, ok := store.parentHeartbeats.Load(parentHeartbeatKey{scope, b.ParentOwner})
+	require.True(t, ok)
+	entry.(*parentHeartbeat).lease.Store(&parentHeartbeatLease{durable: expiredWall, expires: time.Now().Add(24 * time.Second)})
+	r.Tick(t.Context())
+	require.NoError(t, r.CheckParent(runCtx, scope, b.ParentOwner))
+	require.Equal(t, "active", read(t, store, scope).Status)
+	select {
+	case <-closed:
+		t.Fatal("the same live parent was sent to recovery")
+	default:
+	}
+	require.Eventually(t, func() bool {
+		g, err := store.Read(runCtx, scope)
+		return err == nil && time.Now().Before(g.ParentLease)
+	}, 2*time.Second, 20*time.Millisecond, "live heartbeat should repair the wall lease")
+	// A replacement durable owner must still fence the old local heartbeat.
+	require.NoError(t, store.Change(t.Context(), scope, func(g *Group) error {
+		g.ParentOwner = "replacement"
+		g.ParentLease = expiredWall
+		return nil
+	}))
+	require.ErrorIs(t, r.CheckParent(runCtx, scope, b.ParentOwner), ErrConflict)
+	r.Tick(t.Context())
+	select {
+	case owner := <-closed:
+		require.NotEqual(t, "replacement", owner)
+	case <-time.After(time.Second):
+		t.Fatal("the actual orphan was not recovered")
+	}
+	r.workers.Wait()
+}

@@ -219,6 +219,7 @@ func (e *AgentEngine) finishPendingRound(
 		}
 		e.recordCall(i, toolCall)
 		step.ToolCalls = append(step.ToolCalls, toolCall)
+		e.checkpointInterruptedEvidence(ctx, []types.ToolCall{toolCall}, messageID)
 		e.emitToolOutcome(ctx, toolCall, iteration, sessionID)
 	}
 	return step, nil

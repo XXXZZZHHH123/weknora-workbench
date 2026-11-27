@@ -1464,6 +1464,7 @@ func (h *Handler) executeQA(reqCtx *qaRequestContext, mode qaMode, generateTitle
 	// Execute QA asynchronously
 	asyncDone := make(chan struct{})
 	go func() {
+		recoveryOwnsTurn := false
 		defer close(asyncDone)
 		defer func() {
 			if r := recover(); r != nil {
@@ -1484,6 +1485,9 @@ func (h *Handler) executeQA(reqCtx *qaRequestContext, mode qaMode, generateTitle
 			if mode == qaModeAgent {
 				if streamCtx.releaseTurn != nil {
 					streamCtx.releaseTurn()
+				}
+				if recoveryOwnsTurn {
+					return
 				}
 				if streamCtx.streamHandler != nil {
 					if suspension := streamCtx.streamHandler.Suspension(); suspension != nil && suspension.Detached {
@@ -1565,6 +1569,10 @@ func (h *Handler) executeQA(reqCtx *qaRequestContext, mode qaMode, generateTitle
 		} else {
 			stageName = "agent_execution"
 			serviceErr = h.sessionService.AgentQA(streamCtx.asyncCtx, qaReq, streamCtx.eventBus)
+		}
+		if stderrors.Is(serviceErr, types.ErrMessageRunInterrupted) {
+			recoveryOwnsTurn = true
+			return
 		}
 
 		if serviceErr != nil {
@@ -2154,6 +2162,9 @@ func (h *Handler) completeStreamAssistantMessage(
 		}
 	}
 	if err := persist(); err != nil {
+		if stderrors.Is(err, types.ErrMessageRunInterrupted) {
+			return // The recovery outbox owns terminal publication.
+		}
 		if streamCtx.streamHandler != nil {
 			_ = streamCtx.streamHandler.handleError(ctx, event.Event{
 				ID: uuid.New().String(), Type: event.EventError, SessionID: streamCtx.assistantMessage.SessionID,

@@ -446,6 +446,9 @@ func (s *sessionService) AgentQA(
 	} else {
 		_, err = engine.Execute(ctx, sessionID, req.AssistantMessageID, agentQuery, llmContext, agentImageURLs)
 	}
+	if parent, ok := engine.(interface{ ParentPublicationInterrupted(context.Context) bool }); ok && parent.ParentPublicationInterrupted(ctx) {
+		return types.ErrMessageRunInterrupted
+	}
 	if err != nil {
 		logger.Errorf(ctx, "Agent execution failed: %v", err)
 		// Emit error event to the EventBus used by this agent

@@ -8,7 +8,6 @@ import (
 	"math/big"
 	"reflect"
 	"strings"
-	"time"
 
 	"github.com/Tencent/WeKnora/internal/agent/collaboration"
 	"github.com/Tencent/WeKnora/internal/agent/tools"
@@ -74,8 +73,7 @@ func (s *AgentCollaboration) guardDelegatedMCPCall(
 		if latest.Status != "active" {
 			return nil, collaboration.ErrClosed
 		}
-		if latest.ParentOwner != b.ParentOwner || latest.ParentMessageID != g.ParentMessageID ||
-			time.Now().After(latest.ParentLease) {
+		if !b.Runtime.ParentCanExecute(latest, b.ParentOwner) || latest.ParentMessageID != g.ParentMessageID {
 			return nil, collaboration.ErrConflict
 		}
 		stillActive := false

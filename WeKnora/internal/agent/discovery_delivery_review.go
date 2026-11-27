@@ -247,7 +247,7 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 		}
 	}
 	humanConversation, omitted := reviewConversationView(e.semanticReviewConversation(conversation), 4096, 8)
-	input, err := json.Marshal(map[string]any{
+	view := map[string]any{
 		"phase": phase, "actual_execution_progress": progress,
 		"question": query, "conversation": humanConversation, "omitted_conversation_messages": omitted,
 		"candidate_answer": decision.Candidate, "actual_discovery_or_binding_observations": observations,
@@ -255,7 +255,13 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 		"other_successful_source_evidence_omitted": true,
 		"runtime_scope":                            runtimeScope, "advisory_plan": e.taskPlan,
 		"available_source_protocol_tools": capabilities, "other_registered_tools_omitted": true,
-	})
+	}
+	instructions := discoveryDeliveryReviewInstructions
+	if endpoints := e.lastValidCoverageFeedback(ctx); len(endpoints) != 0 {
+		view["verified_field_gap_receipts"] = endpoints
+		instructions += "\n" + coverageLastValidFeedbackInstructions + " Report a concrete measure mismatch, missing endpoint, or incorrect latest assertion as feedback to the existing execution round when the correct authorized read remains available. For a correct returned endpoint that the candidate omits or misattributes, ask to revise from that receipt without reading it again."
+	}
+	input, err := json.Marshal(view)
 	if err != nil || len(input) > discoveryReviewInputBytes || len(decision.Candidate) > 8192 || ctx.Err() != nil {
 		common.PipelineInfo(ctx, "Agent", "discovery_delivery_review", map[string]any{
 			"phase": phase, "status": "not_checked_input_budget_or_cancelled", "candidate_hash": decision.CandidateHash, "input_bytes": len(input),
@@ -283,7 +289,6 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 	generationBudget := &sharedBudget.generation
 	checkCtx = context.WithValue(checkCtx, reviewGenerationBudgetKey{}, generationBudget)
 	disabled := false
-	instructions := discoveryDeliveryReviewInstructions
 	if phase == "progress" {
 		instructions += "\nPROGRESS PHASE: there is no candidate answer yet. Review whether the current investigation is making useful progress toward the ORIGINAL human task. The runtime cadence is not proof of failure or a requirement to change tools. Keep an appropriate structured-only investigation, including exact statistics actually requested, even if it needs several calls. Recover only a concrete observed scope/representation obstacle, repeated unproductive source discovery, or a planner-added precision requirement when a meaningful authorized alternative is available. Consider current execution diagnostics and all actually available source capabilities; successful directory/status calls do not by themselves prove task progress. Do not demand a draft merely because several batches elapsed, terminate the task, force another channel, select a file, or supply source values. Feedback is a plan-reassessment suggestion to the executing model, not a mandatory tool sequence. A keep here approves neither a future candidate nor source facts; ordinary numeric, citation and answer checks remain mandatory."
 	}

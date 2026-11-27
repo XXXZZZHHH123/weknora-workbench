@@ -72,6 +72,11 @@ func NewAgentCollaboration(
 // Bind attaches the session executor used by child runs.
 func (s *AgentCollaboration) Bind(sessions interfaces.SessionService) {
 	s.sessions = sessions
+	if session, ok := sessions.(*sessionService); ok {
+		if messages, ok := s.messages.(*messageService); ok {
+			messages.legacyInterruptedMessage = session.legacyInterruptedMessage
+		}
+	}
 	if owner, ok := sessions.(interface {
 		SetDeletedSessionsHook(func(context.Context, uint64, string, []string))
 	}); ok {

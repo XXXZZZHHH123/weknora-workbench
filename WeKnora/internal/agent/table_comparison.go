@@ -60,7 +60,7 @@ func coverageImageTableBodies(data map[string]any, bodies []coverageEvidence) []
 	var observations []coverageEvidence
 	coverageRows(data, types.DocumentImageTextEvidenceKey, func(row map[string]any, path string) {
 		if row["kind"] != string(types.ChunkTypeImageOCR) || row["truncated"] == true ||
-			agenttools.DocumentTableEvidenceEnabled() && row["text_truncated"] == true ||
+			(agenttools.DocumentTableEvidenceEnabled() || data["table_reads"] != nil) && row["text_truncated"] == true ||
 			!reviewImageTextBoundToSource(data, row) {
 			return
 		}
@@ -268,6 +268,173 @@ func tableComparisonBindingMatches(record coverageRecord, binding coverageBindin
 		coverageLocation(binding, item) && binding.EvidenceID == item.EvidenceID && binding.JSONPointer == item.JSONPointer &&
 		(!agenttools.DocumentTableEvidenceEnabled() ||
 			coverageEqual(binding.PhysicalSourceID, comparisonPhysicalSource(item)[1]))
+}
+
+// The model's actual series query identifies the native field. Match that
+// exact field in the read table and use the plan's period and table identity.
+// These are observed operands, even when the optional declaration did not
+// resolve both handles. They cannot authorize a source or establish cadence.
+func (e *AgentEngine) tableReceiptReadings(target taskCoverageTarget, record coverageRecord, draft string) ([]coverageFact, bool) {
+	if !plannedTableComparison(target) || !comparisonTableScopeValid(target) || target.Metric == "" {
+		return nil, false
+	}
+	from, to, grain := coverageTargetDateRange(target)
+	if from == "" || to == "" {
+		return nil, false
+	}
+	var activeDocs, selectedDocs []string
+	if e.toolRegistry != nil {
+		activeDocs = agenttools.CurrentDocumentScopeIDs(e.toolRegistry)
+	}
+	libraries := make(map[string]string)
+	for _, item := range record.Evidence {
+		if item.Operation == agenttools.ToolBindDocumentScope && item.Kind == "directory" && item.Bound && slices.Contains(activeDocs, item.SourceID) {
+			if !slices.Contains(selectedDocs, item.SourceID) {
+				selectedDocs = append(selectedDocs, item.SourceID)
+			}
+			libraries[item.SourceID] = item.KnowledgeBaseID
+		}
+	}
+	var plannedDocs []string
+	plannedLibraries := make(map[string]string)
+	if e.modelContext != nil {
+		for _, ref := range target.ComparisonSources {
+			if taskCoverageSourceHandle(ref) {
+				for _, doc := range e.selectedDocs {
+					if doc != nil && doc.KnowledgeID != "" && e.modelContext.RegisterDocument(doc.KnowledgeID) == ref &&
+						!slices.Contains(plannedDocs, doc.KnowledgeID) {
+						plannedDocs = append(plannedDocs, doc.KnowledgeID)
+						plannedLibraries[doc.KnowledgeID] = doc.KnowledgeBaseID
+					}
+				}
+			}
+		}
+	}
+	if len(plannedDocs) == 2 || len(plannedDocs) == 1 && !slices.Contains(selectedDocs, plannedDocs[0]) {
+		selectedDocs, libraries = plannedDocs, plannedLibraries
+	}
+	sourceConflict := false
+	for _, binding := range record.Bindings {
+		id := binding.PhysicalSourceID
+		if id != "" && binding.GoalIndex == target.GoalIndex && binding.Role == "primary" && binding.SourceRef != "" && !binding.Provisional {
+			if library := libraries[id]; library != "" && binding.KnowledgeBaseID != library {
+				sourceConflict = true
+				continue
+			}
+			if !slices.Contains(selectedDocs, id) {
+				selectedDocs = append(selectedDocs, id)
+			}
+			libraries[id] = binding.KnowledgeBaseID
+		}
+	}
+	allows := func(item coverageEvidence) bool {
+		library, id := item.KnowledgeBaseID, comparisonPhysicalSource(item)[1]
+		if len(selectedDocs) >= 2 && !slices.Contains(selectedDocs, id) || libraries[id] != "" && libraries[id] != library {
+			return false
+		}
+		for _, binding := range record.Bindings {
+			if binding.GoalIndex != target.GoalIndex || binding.Role != "primary" || binding.Provisional ||
+				!coverageSameSource(binding, item) {
+				continue
+			}
+			if !coverageLocation(binding, item) || binding.Metric != "" && item.Metric != "" && binding.Metric != item.Metric {
+				return false
+			}
+		}
+		return true
+	}
+	// The same physical observation may be returned by repeated reads.
+	add := func(facts []coverageFact, item coverageEvidence) []coverageFact {
+		key := coverageEvidenceFactKey(item)
+		for i := range facts {
+			if coverageEvidenceFactKey(facts[i].Evidence) == key {
+				facts[i].Evidence.Receipts = mergeCoverageFactReceipts(coverageFactReceipts(facts[i].Evidence), coverageFactReceipts(item))
+				return facts
+			}
+		}
+		return append(facts, coverageFact{Role: "scoped_value", Evidence: item})
+	}
+	var series []coverageFact
+	for _, item := range record.Evidence {
+		if item.Kind != "cell" || (item.Operation != "query_series" &&
+			!(item.Operation == "analyze_table" && item.WorkbookBound && item.ResultJSONPointer != "")) || item.Sheet != target.Table ||
+			!item.Bound || !item.RangeComplete || !coverageCurrentEvidence(record, item) || !allows(item) ||
+			item.SeriesID == "" || item.Metric == "" || item.DateCell == "" || item.Cell == "" ||
+			(item.Date != to && !comparisonNativeRowPeriod(item.Period, from, to, grain)) ||
+			(item.PeriodFrom != from || item.PeriodTo != to) && (item.PeriodFrom != to || item.PeriodTo != to) {
+			continue
+		}
+		if _, ok := coverageComparisonNumber(item); ok {
+			series = add(series, item)
+		}
+	}
+	if len(series) > 1 {
+		series = slices.DeleteFunc(series, func(fact coverageFact) bool {
+			return fact.Evidence.Metric != target.Metric
+		})
+	}
+	var alternateField string
+	if len(series) == 1 {
+		item := series[0].Evidence
+		for _, text := range strings.Split(draft, "\n\n") {
+			paragraph := newCoverageDraftParagraph(text)
+			if item.Metric != target.Metric && paragraph.hasLabel(item.SourceTitle) && paragraph.hasField(item) &&
+				(paragraph.hasLabel(item.Cell) || coverageTextHasDate(text, item.Date)) && paragraph.displays(item, "scoped_value", false) {
+				alternateField = item.Metric
+				break
+			}
+		}
+	}
+	var report, alternate []coverageFact
+	var exactFieldInRead bool
+	for _, item := range record.Evidence {
+		if item.Kind != "body" || item.TableGrid == nil || item.Sheet != target.Table || !item.Bound ||
+			!coverageCurrentEvidence(record, item) || !allows(item) {
+			continue
+		}
+		body, _ := item.Raw.(string)
+		grids := agenttools.ParseDocumentTableGrids(body)
+		if *item.TableGrid < 0 || *item.TableGrid >= len(grids) || !grids[*item.TableGrid].ParseComplete {
+			continue
+		}
+		rows := grids[*item.TableGrid].Rows
+		if len(rows) < 2 || len(rows[0]) < 2 {
+			continue
+		}
+		exactFieldInRead = exactFieldInRead || slices.Contains(rows[0][1:], target.Metric)
+		for _, row := range rows[1:] {
+			if len(row) == 0 || !comparisonNativeRowPeriod(row[0], from, to, grain) {
+				continue
+			}
+			if fact, ok := selectedReadTableCell(target, coverageBinding{Metric: target.Metric, Date: row[0]}, item, from, to, grain); ok && allows(fact) {
+				report = add(report, fact)
+			}
+			if alternateField != "" {
+				if fact, ok := selectedReadTableCell(target, coverageBinding{Metric: alternateField, Date: row[0]}, item, from, to, grain); ok && allows(fact) {
+					alternate = add(alternate, fact)
+				}
+			}
+		}
+	}
+	if !exactFieldInRead {
+		report = alternate
+	}
+	var readings []coverageFact
+	if len(report) == 1 {
+		readings = report
+	}
+	aligned := false
+	if len(series) == 1 {
+		item := series[0].Evidence
+		if len(readings) == 0 || readings[0].Evidence.Metric == item.Metric &&
+			comparisonPhysicalSource(readings[0].Evidence) != comparisonPhysicalSource(item) {
+			aligned = !sourceConflict && len(readings) == 1 && (len(selectedDocs) == 0 || len(selectedDocs) == 2) &&
+				(item.Grain == "" || item.GrainFromLookup || item.Grain == grain)
+			item.ComparisonGrainUnverified = aligned && item.Grain != grain && !comparisonNativeRowPeriod(item.Period, from, to, grain)
+			readings = append(readings, coverageFact{Role: series[0].Role, Evidence: item})
+		}
+	}
+	return readings, aligned
 }
 
 func tableComparisonSupportingFacts(target taskCoverageTarget, input coverageRecord, primary []coverageFact, from, to, grain string) []coverageFact {

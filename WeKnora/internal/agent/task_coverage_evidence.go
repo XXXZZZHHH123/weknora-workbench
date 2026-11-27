@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"maps"
 	"math"
 	"slices"
 	"strconv"
@@ -563,6 +564,11 @@ func coverageSeriesEvidence(base coverageEvidence, args, data map[string]any, co
 	var result []coverageEvidence
 	valueFilters, filtersKnown := filters["value_filters"].([]any)
 	filtered := !filtersKnown || len(valueFilters) != 0 || filters["last_n"] != nil || filters["top_n"] != nil || citationInt(args["offset"]) != 0
+	operation := sourceNavigationString(filters, "operation")
+	extrema := sourceNavigationRows(data["extremum_rows"])
+	verifiedExtrema := !filtered && contract != nil && contract.Execution.Kind == "series_query" &&
+		contract.Execution.Operation == operation && (operation == "min" || operation == "max") &&
+		data["rows_are"] == "extremum_observations" && len(extrema) > 0
 	if endpoint.LastValidStatus != "" && (!filtersKnown || base.LastValidFilterHash != coverageEndpointFilterHash(args) ||
 		!filtered && coverageZero(data["valid_count"]) && coverageProtocolLastValid(endpoint) && endpoint.LastValidDirection == "in_range") {
 		endpoint = coverageRejectLastValid(base, "/data/coverage")
@@ -591,6 +597,11 @@ func coverageSeriesEvidence(base coverageEvidence, args, data map[string]any, co
 			base.PeriodFrom != "" && item.Date < base.PeriodFrom ||
 			base.PeriodTo != "" && (item.Date == "" || item.Date > base.PeriodTo) {
 			return
+		}
+		if verifiedExtrema && coverageAnalysisDay(item.Date) && coverageEndpointCells(base, item.Cell, item.DateCell) &&
+			coverageSameOriginalValue(item.Raw, data["aggregate"]) &&
+			slices.ContainsFunc(extrema, func(candidate map[string]any) bool { return reviewJSONValuesEqual(row, candidate) }) {
+			item.Extremum = operation
 		}
 		item.LatestInScope = !filtered && base.Complete && data["rows_are"] == "latest_valid_observation" &&
 			item.Date != "" && item.Date == data["valid_last_date"] && endpoint.LastValidStatus == ""
@@ -622,6 +633,7 @@ func coverageSeriesEvidence(base coverageEvidence, args, data map[string]any, co
 		}); i >= 0 {
 			if coverageSameOriginalValue(result[i].Raw, endpoint.Raw) {
 				endpoint.Kind, endpoint.RangeComplete = "cell", result[i].RangeComplete
+				endpoint.Extremum = result[i].Extremum
 				endpoint.ResultJSONPointer = strings.TrimSuffix(result[i].JSONPointer, "/raw_value")
 				if endpoint.ResultJSONPointer != result[i].JSONPointer {
 					endpoint.ResultJSONPointer += "/value"
@@ -674,6 +686,7 @@ func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, 
 		contract.SourceSnapshot.KnowledgeBaseID == base.KnowledgeBaseID && contract.SourceSnapshot.KnowledgeID == base.KnowledgeID &&
 		args["sql"] == data["sql"]
 	var result []coverageEvidence
+	var boundedReadings []coverageEvidence
 	var inputSeries coverageEvidence
 	directEndpoints := make(map[string]bool)
 	ids, _ := args["series_ids"].([]any)
@@ -734,18 +747,27 @@ func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, 
 			segment := sourceNavigationRows(coverage["segments"])[0]
 			observed := item
 			observed.Kind, observed.Complete, observed.RangeComplete = "cell", true, true
-			observed.Date, observed.Cell, observed.Raw = item.PeriodFrom, sourceNavigationString(segment, "first_cell"), first["value"]
+			observed.Date, observed.Cell, observed.Raw = sourceNavigationString(first, "date"), sourceNavigationString(segment, "first_cell"), first["value"]
 			observed.JSONPointer = path + "/observation_coverage/value_changes/first/value"
 			observed.ResultJSONPointer = coverageDirectAnalysisResultPointer(observed, data, contract)
-			if coverageProtocolLastValid(endpoint) && coverageSameOriginalCell(endpoint, observed) {
-				if coverageSameOriginalValue(observed.Raw, endpoint.Raw) {
-					endpoint.Kind, endpoint.RangeComplete = "cell", true
+			observed.DateCell = coverageDirectAnalysisDateCell(observed, data, contract)
+			// A single-date read still proves that day's input. In a wider
+			// query, require the complete SQL result to independently return
+			// the same original value and both same-row cell addresses.
+			if item.PeriodFrom != item.PeriodTo && observed.WorkbookBound && base.Complete && observed.DateCell != "" {
+				boundedReadings = append(boundedReadings, observed)
+			}
+			if item.PeriodFrom == item.PeriodTo {
+				if coverageProtocolLastValid(endpoint) && coverageSameOriginalCell(endpoint, observed) {
+					if coverageSameOriginalValue(observed.Raw, endpoint.Raw) {
+						endpoint.Kind, endpoint.RangeComplete = "cell", true
+					} else {
+						endpoint = coverageRejectLastValid(item, path+"/coverage")
+						result = append(result, observed)
+					}
 				} else {
-					endpoint = coverageRejectLastValid(item, path+"/coverage")
 					result = append(result, observed)
 				}
-			} else {
-				result = append(result, observed)
 			}
 		}
 		if endpoint.LastValidStatus != "" {
@@ -767,6 +789,14 @@ func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, 
 				item.Subject = coverageAnalysisSubject(coverageObject(series["dimensions"]))
 			}
 			result = append(result, coverageGapWithEndpoint(item, endpoint))
+		}
+	}
+	if len(boundedReadings) > 0 && len(boundedReadings) == len(ids) {
+		first := boundedReadings[0]
+		if !slices.ContainsFunc(boundedReadings, func(item coverageEvidence) bool {
+			return item.Sheet != first.Sheet || item.Date != first.Date || item.DateCell != first.DateCell
+		}) {
+			result = append(result, boundedReadings...)
 		}
 	}
 	if len(ids) == 1 && inputSeries.SeriesID != "" {
@@ -823,10 +853,37 @@ func coverageDirectAnalysisResultPointer(item coverageEvidence, data map[string]
 	return pointer
 }
 
+func coverageDirectAnalysisDateCell(item coverageEvidence, data map[string]any, contract *structuredresult.Contract) string {
+	if item.ResultJSONPointer == "" {
+		return ""
+	}
+	rowPointer := item.ResultJSONPointer[:strings.LastIndexByte(item.ResultJSONPointer, '/')]
+	var pointer string
+	for _, column := range contract.Columns {
+		if column.Operation["kind"] == "column_reference" && slices.Equal(column.Dependency.SourceColumns, []string{"date_cell"}) {
+			if pointer != "" {
+				return ""
+			}
+			pointer = rowPointer + "/" + strconv.Itoa(column.Index)
+		}
+	}
+	if pointer == "" {
+		return ""
+	}
+	raw, _ := reviewPointerValue(map[string]any{"data": data}, pointer)
+	dateCell, _ := raw.(string)
+	dateColumn, dateRow := coverageCellPosition(dateCell)
+	valueColumn, valueRow := coverageCellPosition(item.Cell)
+	if dateColumn == "" || valueColumn == "" || dateColumn == valueColumn || dateRow != valueRow {
+		return ""
+	}
+	return dateCell
+}
+
 // The pre-SQL input receipt is independent of aliases, filters and literals in
 // the model's SQL. A singleton observation has a unique date, value and cell.
 func coveragePinSingleAnalysisInput(item coverageEvidence, input map[string]any) bool {
-	if item.PeriodFrom == "" || item.PeriodFrom != item.PeriodTo || input["input_count"] != json.Number("1") ||
+	if !coverageAnalysisDay(item.PeriodFrom) || !coverageAnalysisDay(item.PeriodTo) || input["input_count"] != json.Number("1") ||
 		input["valid_count"] != json.Number("1") || input["observation_coverage_scope"] != "loaded_analysis_inputs_before_user_sql" {
 		return false
 	}
@@ -840,9 +897,12 @@ func coveragePinSingleAnalysisInput(item coverageEvidence, input map[string]any)
 	column, _ := coverageCellPosition(cell)
 	changes := coverageObject(coverage["value_changes"])
 	first := coverageObject(changes["first"])
+	date := sourceNavigationString(first, "date")
 	_, numeric := first["value"].(json.Number)
 	return column != "" && column == item.Column && numeric && coverageObject(changes["scope"])["complete_filtered_input"] == true &&
-		first["date"] == item.PeriodFrom && segment["start_date"] == item.PeriodFrom && segment["end_date"] == item.PeriodTo &&
+		coverageAnalysisDay(date) && date >= item.PeriodFrom && date <= item.PeriodTo && segment["start_date"] == date && segment["end_date"] == date &&
+		(item.PeriodFrom == item.PeriodTo || input["actual_first_date"] == date && input["actual_last_date"] == date &&
+			input["valid_first_date"] == date && input["valid_last_date"] == date && segment["value_status"] == "valid") &&
 		segment["last_cell"] == cell && segment["record_count"] == json.Number("1") && segment["valid_count"] == json.Number("1")
 }
 
@@ -1019,30 +1079,95 @@ func nativeCoverageGapFacts(target taskCoverageTarget, record coverageRecord) []
 				}
 			}
 		}
-		dateColumn, _ := coverageCellPosition(sourceNavigationString(coverageObject(context["formula_source"]), "date_cell"))
-		if dateColumn == "" {
-			continue
-		}
-		for _, date := range record.Evidence {
-			raw, dated := date.Raw.(string)
-			column, row := coverageCellPosition(date.Cell)
-			if date.Kind != "cell" || date.Operation != "inspect_source" || column != dateColumn || !dated ||
-				!coverageOriginalDate(raw, field.LastValidDate) || !coverageCurrentEvidence(record, date) {
-				continue
-			}
-			for _, value := range record.Evidence {
-				if value.Cell != field.Column+row || !coverageCurrentEvidence(record, value) {
-					continue
-				}
-				if last, ok := coveragePinInspectedLastValid(field, date, value); ok {
-					if gap, ok := coverageInspectedBoundary(field, last, start, end, frequency); ok {
-						result = append(result, gap, last)
-					}
-				}
+		for _, last := range inspectedFieldLastValid(record, field) {
+			if gap, ok := coverageInspectedBoundary(field, last, start, end, frequency); ok {
+				result = append(result, gap, last)
 			}
 		}
 	}
 	return result
+}
+
+// Pair a declared field's published last date with the numeric observation
+// from that same physical row in a current, hash-verified original read.
+// No requested period or field choice is inferred from the row window.
+func inspectedFieldLastValid(record coverageRecord, field coverageEvidence) []coverageEvidence {
+	if field.Kind != "directory" || field.Operation != "list_series" || field.SourceDomain != "structured" ||
+		!field.Bound || field.SnapshotHash == "" || field.Metric == "" || !coverageCurrentEvidence(record, field) {
+		return nil
+	}
+	metadata := coverageObject(field.Raw)
+	context := coverageObject(metadata["source_context"])
+	dateColumn, _ := coverageCellPosition(sourceNavigationString(coverageObject(context["formula_source"]), "date_cell"))
+	if dateColumn == "" {
+		return nil
+	}
+	var found []coverageEvidence
+	for _, date := range record.Evidence {
+		raw, dated := date.Raw.(string)
+		column, row := coverageCellPosition(date.Cell)
+		if date.Kind != "cell" || date.Operation != "inspect_source" || column != dateColumn || !dated ||
+			!coverageOriginalDate(raw, field.LastValidDate) || !coverageCurrentEvidence(record, date) {
+			continue
+		}
+		for _, value := range record.Evidence {
+			if value.Cell != field.Column+row || !coverageCurrentEvidence(record, value) {
+				continue
+			}
+			last, ok := coveragePinInspectedLastValid(field, date, value)
+			if !ok {
+				continue
+			}
+			if !slices.ContainsFunc(found, func(prior coverageEvidence) bool {
+				return coverageSameOriginalCell(prior, last) && reviewJSONValuesEqual(prior.Raw, last.Raw)
+			}) {
+				found = append(found, last)
+			}
+		}
+	}
+	if len(found) != 1 {
+		return nil // Conflicting or distinct original rows do not identify one endpoint.
+	}
+	return found
+}
+
+func inspectedPublishedLastValid(record coverageRecord) []coverageEvidence {
+	var readings []coverageEvidence
+	var fields []coverageEvidence
+	for _, field := range record.Evidence {
+		if field.Kind != "directory" || field.Operation != "list_series" {
+			continue
+		}
+		if coverageObject(coverageObject(field.Raw)["source_context"])["source_sha256"] != field.SnapshotHash {
+			continue
+		}
+		for _, observation := range inspectedFieldLastValid(record, field) {
+			if !slices.ContainsFunc(record.Evidence, func(item coverageEvidence) bool {
+				return item.LastValidStatus != "" && coverageCurrentEvidence(record, item) &&
+					item.KnowledgeBaseID == observation.KnowledgeBaseID && item.DatasetID == observation.DatasetID &&
+					item.Sheet == observation.Sheet && item.SeriesID == observation.SeriesID && coverageSameEndpointSnapshot(item, observation)
+			}) {
+				readings = append(readings, observation)
+				fields = append(fields, field)
+			}
+		}
+	}
+	for i, field := range fields {
+		if readings[i].Subject != "" || slices.ContainsFunc(record.Bindings, func(binding coverageBinding) bool {
+			return binding.Role == "primary" && binding.SeriesID == field.SeriesID && coverageSameSource(binding, field)
+		}) {
+			continue
+		}
+		if slices.ContainsFunc(fields, func(other coverageEvidence) bool {
+			return other.SeriesID != field.SeriesID && other.KnowledgeBaseID == field.KnowledgeBaseID && other.DatasetID == field.DatasetID &&
+				other.SnapshotHash == field.SnapshotHash && other.Sheet == field.Sheet && other.Metric == field.Metric
+		}) {
+			dimensions := maps.Clone(coverageObject(coverageObject(field.Raw)["dimensions"]))
+			delete(dimensions, "source_series_code")
+			readings[i].Subject = coverageAnalysisSubject(dimensions)
+		}
+	}
+	return readings
 }
 
 func coveragePDFEvidence(base coverageEvidence, args, data map[string]any, contract *structuredresult.Contract) []coverageEvidence {

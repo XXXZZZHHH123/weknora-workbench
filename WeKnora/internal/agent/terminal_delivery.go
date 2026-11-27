@@ -57,11 +57,14 @@ func (e *AgentEngine) terminalCoverageContextKnown() bool {
 const (
 	numericFailureFallback      = "已经取得原表依据，但完整回答的部分数字未通过来源核验，暂不提供未经核验的统计结论。请查看取数依据。"
 	finalNumericFailureFallback = "已有取数依据，但完整回答的部分数字未通过来源核验。此次暂不提供未经核验的统计结论，请查看来源或重试。"
+	interruptedAnswerFallback   = "任务执行期间服务中断，当前步骤没有可安全恢复的检查点，已停止本轮及未完成的子任务，避免重复执行。请重新发起任务。"
+	timedOutAnswerFallback      = "任务已超过执行时限，已停止本轮及未完成的子任务，避免重复执行。已保存的执行记录和子任务结果仍可查看。"
 )
 
 var terminalFallbacks = [...]string{
 	answerReviewUnavailableFallback, incompleteAnswerFallback, stalledAnswerFallback, sourceProgressStalledFallback,
 	truncatedAnswerFallback, numericFailureFallback, finalNumericFailureFallback,
+	interruptedAnswerFallback, timedOutAnswerFallback,
 }
 
 func terminalCandidateFallback(answer string) bool {
@@ -79,21 +82,23 @@ func terminalFallbackPrefix(prefix string) bool {
 type terminalFailure string
 
 const (
-	terminalNoFailure     terminalFailure = ""
-	terminalEmpty         terminalFailure = "empty"
-	terminalReview        terminalFailure = "review_failed"
-	terminalNumeric       terminalFailure = "numeric_failed"
-	terminalIncomplete    terminalFailure = "incomplete"
-	terminalStalled       terminalFailure = "stalled"
-	terminalTruncated     terminalFailure = "truncated"
-	terminalBudget        terminalFailure = "budget_exhausted"
-	terminalTableEvidence terminalFailure = "table_evidence_unverified"
-	terminalSourceStalled terminalFailure = "source_stalled"
-	terminalSourceChanged terminalFailure = "source_changed"
-	terminalFieldInput    terminalFailure = "field_confirmation_input"
-	terminalFieldService  terminalFailure = "field_confirmation_service"
-	terminalFieldBlocked  terminalFailure = "field_confirmation_preflight"
-	terminalFieldResult   terminalFailure = "field_confirmation_result"
+	terminalNoFailure        terminalFailure = ""
+	terminalEmpty            terminalFailure = "empty"
+	terminalReview           terminalFailure = "review_failed"
+	terminalNumeric          terminalFailure = "numeric_failed"
+	terminalIncomplete       terminalFailure = "incomplete"
+	terminalStalled          terminalFailure = "stalled"
+	terminalTruncated        terminalFailure = "truncated"
+	terminalBudget           terminalFailure = "budget_exhausted"
+	terminalInterrupted      terminalFailure = "interrupted"
+	terminalTableEvidence    terminalFailure = "table_evidence_unverified"
+	terminalEndpointEvidence terminalFailure = "endpoint_evidence_unverified"
+	terminalSourceStalled    terminalFailure = "source_stalled"
+	terminalSourceChanged    terminalFailure = "source_changed"
+	terminalFieldInput       terminalFailure = "field_confirmation_input"
+	terminalFieldService     terminalFailure = "field_confirmation_service"
+	terminalFieldBlocked     terminalFailure = "field_confirmation_preflight"
+	terminalFieldResult      terminalFailure = "field_confirmation_result"
 )
 
 type terminalPublicationReceipt struct {
@@ -119,6 +124,10 @@ func legacyTerminalFailure(answer string) terminalFailure {
 		return terminalSourceStalled
 	case truncatedAnswerFallback:
 		return terminalTruncated
+	case interruptedAnswerFallback:
+		return terminalInterrupted
+	case timedOutAnswerFallback:
+		return terminalBudget
 	default:
 		return terminalEmpty
 	}
@@ -256,10 +265,23 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 }
 
 func (e *AgentEngine) terminalCandidateEvidenceFailure(ctx context.Context, state *types.AgentState, answer string) terminalFailure {
-	if !agenttools.DocumentTableEvidenceEnabled() || !e.evidenceCompletionEligible() || state == nil || !e.standardTextDelivery(state) {
+	if !e.evidenceCompletionEligible() || state == nil || !e.standardTextDelivery(state) {
 		return terminalNoFailure
 	}
-	review := e.currentCoverageDraftReview(ctx, state)
+	tables := agenttools.DocumentTableEvidenceEnabled()
+	evidenceIDs := uniqueCandidateEvidenceIDs(answer)
+	if !tables && len(evidenceIDs) == 0 {
+		return terminalNoFailure
+	}
+	review := e.currentCoverageDraftReview(ctx, state, answer)
+	if len(evidenceIDs) != 0 && slices.ContainsFunc(review.record.Evidence, func(item coverageEvidence) bool {
+		return coverageProtocolLastValid(item) && item.LastValidDirection == "before_range" && slices.Contains(evidenceIDs, item.CitationID)
+	}) && e.assessCoverageDraft(ctx, review, answer, state).endpointMismatch {
+		return terminalEndpointEvidence
+	}
+	if !tables {
+		return terminalNoFailure
+	}
 	if len(e.evidenceCompletion.versionClaims[candidateTextDigest(strings.TrimSpace(answer))]) > 0 &&
 		e.assessCoverageDraft(ctx, review, answer, state).versionBlocked {
 		return terminalReview
@@ -271,9 +293,9 @@ func (e *AgentEngine) terminalCandidateEvidenceFailure(ctx context.Context, stat
 		return terminalNoFailure
 	}
 	for _, decision := range []candidateDecision{e.turnReview.Last, e.turnReview.CoverageDraft} {
-		if decision.ReasonCode == checkedPartialComparisonReason && decision.CandidateHash == candidateTextDigest(answer) &&
+		if decision.CandidateHash == candidateTextDigest(answer) &&
 			decision.PublicationEvidence.current(e.terminalEvidenceRevision(ctx, state)) &&
-			e.assessCoverageDraft(ctx, review, answer, state).partialComparison {
+			comparisonDraftChecked(decision, e.assessCoverageDraft(ctx, review, answer, state)) {
 			return terminalNoFailure
 		}
 	}

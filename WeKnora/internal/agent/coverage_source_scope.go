@@ -329,7 +329,12 @@ func (e *AgentEngine) coverageNativeSelectionGoal(ctx context.Context, call type
 	record := e.currentCoverageScopeRecord(ctx)
 	scope := e.verifiedCoverageSourceScope(ctx, goal, record)
 	restrictedPair := e.restrictedComparisonSelection(goal)
-	if e.documentTablePlanningEnabled() && len(goal.PlanIssues) > 0 && goal.RestrictionBasis == "" {
+	domain := e.coverageToolDomain(call.Function.Name, args)
+	if scope.domain != "" && scope.domain != domain {
+		return nil
+	}
+	if e.documentTablePlanningEnabled() && len(goal.PlanIssues) > 0 && goal.RestrictionBasis == "" &&
+		(domain != "structured" || restrictedPair || goal.UnresolvedComparisonSources > 0) {
 		return nil
 	}
 	if restrictedPair {
@@ -339,10 +344,6 @@ func (e *AgentEngine) coverageNativeSelectionGoal(ctx context.Context, call type
 	} else if scope.pinned || len(scope.sources) != 0 || slices.ContainsFunc(record.Bindings, func(binding coverageBinding) bool {
 		return binding.GoalIndex == goal.GoalIndex && binding.Role == "primary"
 	}) {
-		return nil
-	}
-	domain := e.coverageToolDomain(call.Function.Name, args)
-	if scope.domain != "" && scope.domain != domain {
 		return nil
 	}
 	known := func(match func(coverageEvidence) bool) bool {
@@ -394,6 +395,9 @@ func (e *AgentEngine) coverageNativeSelectionGoal(ctx context.Context, call type
 		return &goal.GoalIndex
 	}
 	if domain == "structured" && (restrictedPair || goal.VersionTask != "compare_sources" && goal.VersionTask != "compare_versions") {
+		// A missing restriction quotation cannot make an already verified
+		// catalog entry unreadable. The metadata call selects that exact dataset
+		// in its current library and pins all later content reads to it.
 		op, inner, ok := e.toolRegistry.StructuredInvocation(call.Function.Name, json.RawMessage(call.Function.Arguments))
 		library, dataset := e.coverageStructuredInvocationLibrary(args), sourceNavigationString(inner, "dataset_id")
 		if ok && op.Operation == "list_series" && library != "" && dataset != "" && known(func(item coverageEvidence) bool {

@@ -26,6 +26,7 @@ type coverageEvidence struct {
 	ResultJSONPointer, CellJSONPointer, WorkbookSnapshotHash                         string
 	ManifestHash, WorkbookManifestHash, LastValidStatus, LastValidDirection          string
 	FormulaCacheStatus, LastValidFilterHash                                          string
+	Extremum                                                                         string
 	ComparisonSourceRef, TableTitleChunkID, TableDisclosureChunkID                   string
 	OriginalNumberFormat, TablePeriodBasisRef                                        string
 	TableGrid                                                                        *int
