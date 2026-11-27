@@ -1,0 +1,2257 @@
+{
+  "missing": {
+    "operation": "query_series",
+    "args": {
+      "dataset_id": "11e1ee67661a87c5068af5fb",
+      "start_date": "2025-02-02",
+      "end_date": "2025-02-04",
+      "include_last_valid": true,
+      "knowledge_base_id": "fixture-library",
+      "series_id": "first",
+      "operation": "rows"
+    },
+    "data": {
+      "dataset_id": "11e1ee67661a87c5068af5fb",
+      "status": "no_data",
+      "series": {
+        "series_id": "first",
+        "sheet": "Data",
+        "metric": "measurement",
+        "unit": "kg",
+        "dimensions": {
+          "group": "X"
+        },
+        "header_cells": [
+          "B1"
+        ],
+        "record_count": 3,
+        "valid_count": 2,
+        "first_date": "2025-02-01",
+        "last_date": "2025-02-05",
+        "first_valid_date": "2025-02-01",
+        "last_valid_date": "2025-02-05"
+      },
+      "filters": {
+        "series_id": "first",
+        "start_date": "2025-02-02",
+        "end_date": "2025-02-04",
+        "operation": "rows",
+        "period": null,
+        "value_filters": [],
+        "last_n": null,
+        "top_n": null,
+        "order": "desc"
+      },
+      "scope_record_count": 1,
+      "record_count": 1,
+      "valid_count": 0,
+      "formula_count": 1,
+      "valid_formula_count": 0,
+      "valid_non_formula_count": 0,
+      "missing_count": 1,
+      "actual_first_date": "2025-02-02",
+      "actual_last_date": "2025-02-02",
+      "valid_first_date": null,
+      "valid_last_date": null,
+      "aggregate": null,
+      "rows": [
+        {
+          "date": "2025-02-02",
+          "period": null,
+          "period_cell": null,
+          "metric_cell": null,
+          "value": null,
+          "source_cell": "B3",
+          "value_status": "formula_no_cache",
+          "formula": "=1",
+          "date_cell": "A3",
+          "raw_value": null,
+          "category_cell": null,
+          "formula_cache_status": "missing"
+        }
+      ],
+      "extremum_rows": null,
+      "extremum_count": null,
+      "rows_are": "observations",
+      "truncated": false,
+      "source_semantics": {
+        "date_representation": "date",
+        "statistical_calendar": null,
+        "aggregation_rule": null,
+        "notice": "未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"
+      },
+      "source": {
+        "file": "example.xlsx",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "knowledge_id": "native-document",
+        "knowledge_base_id": "fixture-library",
+        "file_hash": "cccccccccccccccccccccccccccccccc",
+        "sheet": "Data",
+        "header_cells": [
+          "B1"
+        ]
+      },
+      "warnings": [
+        "范围内 1 条记录没有有效数值；统计排除这些记录。",
+        "查询范围没有有效数据，不能用其他日期或模型记忆补齐。",
+        "查询范围内有 1 条公式记录，其中 0 条有有效缓存数值；有效数值中另有 0 条是非公式记录。仅公式结果来自原文件保存的缓存，本服务未重新计算 Excel 公式，不把普通数值称为公式缓存。",
+        "missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。"
+      ],
+      "observation_coverage": {
+        "scope_record_count": 1,
+        "scope_valid_count": 0,
+        "scope_start_date": "2025-02-02",
+        "scope_end_date": "2025-02-02",
+        "segments": [
+          {
+            "start_date": "2025-02-02",
+            "end_date": "2025-02-02",
+            "record_count": 1,
+            "valid_count": 0,
+            "value_status": "formula_no_cache",
+            "has_value": false,
+            "first_cell": "B3",
+            "last_cell": "B3",
+            "duplicate_date_boundary": false,
+            "undated_boundary": false
+          }
+        ],
+        "total_segment_count": 1,
+        "truncated": false,
+        "max_segments": 64,
+        "value_changes": {
+          "scope": {
+            "record_count": 1,
+            "valid_value_count": 0,
+            "eligible_record_count": 0,
+            "eligible_start_date": null,
+            "eligible_end_date": null,
+            "complete_filtered_input": true
+          },
+          "first": {
+            "date": null,
+            "value": null
+          },
+          "last": {
+            "date": null,
+            "value": null
+          },
+          "minimum": {
+            "date": null,
+            "value": null
+          },
+          "maximum": {
+            "date": null,
+            "value": null
+          },
+          "adjacent_comparison_count": 0,
+          "increase_count": 0,
+          "decrease_count": 0,
+          "unchanged_count": 0,
+          "excluded_boundary_records": {
+            "null_date_count": 0,
+            "missing_value_count": 1,
+            "duplicate_date_record_count": 0
+          },
+          "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+        },
+        "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+      },
+      "requested_range": {
+        "start_date": "2025-02-02",
+        "end_date": "2025-02-04",
+        "period": null
+      },
+      "coverage": {
+        "scope": "through_requested_end",
+        "as_of_date": "2025-02-04",
+        "period": null,
+        "record_first_date": "2025-02-01",
+        "record_last_date": "2025-02-02",
+        "valid_first_date": "2025-02-01",
+        "valid_last_date": "2025-02-01",
+        "complete": true,
+        "last_record": {
+          "status": "observed",
+          "date": "2025-02-02",
+          "rows": [
+            {
+              "date": "2025-02-02",
+              "value": null,
+              "raw_value": null,
+              "source_cell": "B3",
+              "date_cell": "A3",
+              "value_status": "formula_no_cache",
+              "period": null,
+              "period_cell": null,
+              "metric_cell": null,
+              "formula_cache_status": "missing",
+              "category_cell": null
+            }
+          ],
+          "row_count": 1
+        },
+        "last_valid": {
+          "status": "observed",
+          "direction": "before_range",
+          "date": "2025-02-01",
+          "rows": [
+            {
+              "date": "2025-02-01",
+              "value": 137.25,
+              "raw_value": "137.25",
+              "source_cell": "B2",
+              "date_cell": "A2",
+              "value_status": "valid",
+              "period": null,
+              "period_cell": null,
+              "metric_cell": null,
+              "formula_cache_status": "cached_numeric",
+              "category_cell": null
+            }
+          ],
+          "row_count": 1,
+          "conflict": false,
+          "series_id": "first",
+          "sheet": "Data",
+          "dimensions": {
+            "group": "X"
+          },
+          "unit": {
+            "status": "declared",
+            "symbol": "kg",
+            "evidence_level": "imported_series_metadata",
+            "binding_scope": "result_column",
+            "evidence": [
+              {
+                "series_id": "first",
+                "declared_unit": "kg",
+                "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "sheet": "Data",
+                "header_cells": [
+                  "B1"
+                ],
+                "binding_scope": "imported_series_declaration",
+                "original_annotation_verified": false
+              }
+            ]
+          },
+          "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956",
+          "source_dataset_id": "11e1ee67661a87c5068af5fb",
+          "source_manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+        },
+        "source": {
+          "dataset_id": "11e1ee67661a87c5068af5fb",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+        },
+        "requested_range_status_counts": {
+          "formula_no_cache": 1
+        }
+      },
+      "result_contract": {
+        "schema_version": 2,
+        "hash_algorithm": "sha256-typed-json-v1",
+        "result_id": "f599ecb6dd021e3b510ddf74",
+        "hash_input_keys": [
+          "actual_first_date",
+          "actual_last_date",
+          "aggregate",
+          "coverage",
+          "dataset_id",
+          "extremum_count",
+          "extremum_rows",
+          "filters",
+          "missing_count",
+          "observation_coverage",
+          "record_count",
+          "requested_range",
+          "rows",
+          "rows_are",
+          "scope_record_count",
+          "series",
+          "source",
+          "source_semantics",
+          "truncated",
+          "valid_count",
+          "valid_first_date",
+          "valid_last_date",
+          "warnings"
+        ],
+        "source_snapshot": {
+          "kind": "excel_observations",
+          "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "file": "example.xlsx",
+          "versions": {
+            "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+          },
+          "input_digest_sha256": "182193fde0d878e031a2bad241461b29cf962007fb306ed65812aed913a787ef",
+          "knowledge_base_id": "fixture-library",
+          "knowledge_id": "native-document",
+          "dataset_id": "11e1ee67661a87c5068af5fb",
+          "scope": "returned_source_rows"
+        },
+        "execution": {
+          "kind": "series_query",
+          "engine": "duckdb",
+          "engine_version": "1.5.5",
+          "numeric_semantics": "saved DOUBLE values; Excel formulas are not recalculated",
+          "input_scope": "returned_source_rows",
+          "cell_lineage_verified": false,
+          "operation": "rows",
+          "column_metadata_scope": "returned_rows_not_aggregate"
+        },
+        "column_metadata": [
+          {
+            "index": 0,
+            "name": "category_cell",
+            "display_name": "category_cell",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_metadata",
+              "source_columns": [
+                "category_cell"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 1,
+            "name": "date",
+            "display_name": "date",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "date"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 2,
+            "name": "date_cell",
+            "display_name": "date_cell",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_metadata",
+              "source_columns": [
+                "date_cell"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 3,
+            "name": "formula",
+            "display_name": "formula",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_metadata",
+              "source_columns": [
+                "formula"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 4,
+            "name": "formula_cache_status",
+            "display_name": "formula_cache_status",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_metadata",
+              "source_columns": [
+                "formula_cache_status"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 5,
+            "name": "metric_cell",
+            "display_name": "metric_cell",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_metadata",
+              "source_columns": [
+                "metric_cell"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 6,
+            "name": "period",
+            "display_name": "period",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "period"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 7,
+            "name": "period_cell",
+            "display_name": "period_cell",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_metadata",
+              "source_columns": [
+                "period_cell"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 8,
+            "name": "raw_value",
+            "display_name": "raw_value",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "raw_value"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 9,
+            "name": "source_cell",
+            "display_name": "source_cell",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_metadata",
+              "source_columns": [
+                "source_cell"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 10,
+            "name": "value",
+            "display_name": "measurement",
+            "logical_type": "DOUBLE",
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "value"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "declared",
+              "symbol": "kg",
+              "evidence_level": "imported_series_metadata",
+              "binding_scope": "result_column",
+              "evidence": [
+                {
+                  "series_id": "first",
+                  "declared_unit": "kg",
+                  "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sheet": "Data",
+                  "header_cells": [
+                    "B1"
+                  ],
+                  "binding_scope": "imported_series_declaration",
+                  "original_annotation_verified": false
+                }
+              ]
+            }
+          },
+          {
+            "index": 11,
+            "name": "value_status",
+            "display_name": "value_status",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "value_status"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          }
+        ],
+        "evidence_capabilities": {
+          "level": "source_cells",
+          "column_dependencies_verified": true,
+          "cell_lineage_verified": false,
+          "source_cells_available": true,
+          "aggregate_membership_verified": false
+        },
+        "result_hash": "a7333e269bda1f1360157253f49e5ecd082d7073ca300650af566588791d56c3"
+      },
+      "source_context": {
+        "knowledge_base_id": "fixture-library"
+      }
+    }
+  },
+  "rows": {
+    "operation": "query_series",
+    "args": {
+      "dataset_id": "11e1ee67661a87c5068af5fb",
+      "start_date": "2025-02-01",
+      "end_date": "2025-02-01",
+      "include_last_valid": true,
+      "knowledge_base_id": "fixture-library",
+      "series_id": "first",
+      "operation": "rows"
+    },
+    "data": {
+      "dataset_id": "11e1ee67661a87c5068af5fb",
+      "status": "ok",
+      "series": {
+        "series_id": "first",
+        "sheet": "Data",
+        "metric": "measurement",
+        "unit": "kg",
+        "dimensions": {
+          "group": "X"
+        },
+        "header_cells": [
+          "B1"
+        ],
+        "record_count": 3,
+        "valid_count": 2,
+        "first_date": "2025-02-01",
+        "last_date": "2025-02-05",
+        "first_valid_date": "2025-02-01",
+        "last_valid_date": "2025-02-05"
+      },
+      "filters": {
+        "series_id": "first",
+        "start_date": "2025-02-01",
+        "end_date": "2025-02-01",
+        "operation": "rows",
+        "period": null,
+        "value_filters": [],
+        "last_n": null,
+        "top_n": null,
+        "order": "desc"
+      },
+      "scope_record_count": 1,
+      "record_count": 1,
+      "valid_count": 1,
+      "formula_count": 1,
+      "valid_formula_count": 1,
+      "valid_non_formula_count": 0,
+      "missing_count": 0,
+      "actual_first_date": "2025-02-01",
+      "actual_last_date": "2025-02-01",
+      "valid_first_date": "2025-02-01",
+      "valid_last_date": "2025-02-01",
+      "aggregate": null,
+      "rows": [
+        {
+          "date": "2025-02-01",
+          "period": null,
+          "period_cell": null,
+          "metric_cell": null,
+          "value": 137.25,
+          "source_cell": "B2",
+          "value_status": "valid",
+          "formula": "=549/4",
+          "date_cell": "A2",
+          "raw_value": "137.25",
+          "category_cell": null,
+          "formula_cache_status": "cached_numeric"
+        }
+      ],
+      "extremum_rows": null,
+      "extremum_count": null,
+      "rows_are": "observations",
+      "truncated": false,
+      "source_semantics": {
+        "date_representation": "date",
+        "statistical_calendar": null,
+        "aggregation_rule": null,
+        "notice": "未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"
+      },
+      "source": {
+        "file": "example.xlsx",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "knowledge_id": "native-document",
+        "knowledge_base_id": "fixture-library",
+        "file_hash": "cccccccccccccccccccccccccccccccc",
+        "sheet": "Data",
+        "header_cells": [
+          "B1"
+        ]
+      },
+      "warnings": [
+        "查询范围内有 1 条公式记录，其中 1 条有有效缓存数值；有效数值中另有 0 条是非公式记录。仅公式结果来自原文件保存的缓存，本服务未重新计算 Excel 公式，不把普通数值称为公式缓存。",
+        "missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。"
+      ],
+      "observation_coverage": {
+        "scope_record_count": 1,
+        "scope_valid_count": 1,
+        "scope_start_date": "2025-02-01",
+        "scope_end_date": "2025-02-01",
+        "segments": [
+          {
+            "start_date": "2025-02-01",
+            "end_date": "2025-02-01",
+            "record_count": 1,
+            "valid_count": 1,
+            "value_status": "valid",
+            "has_value": true,
+            "first_cell": "B2",
+            "last_cell": "B2",
+            "duplicate_date_boundary": false,
+            "undated_boundary": false
+          }
+        ],
+        "total_segment_count": 1,
+        "truncated": false,
+        "max_segments": 64,
+        "value_changes": {
+          "scope": {
+            "record_count": 1,
+            "valid_value_count": 1,
+            "eligible_record_count": 1,
+            "eligible_start_date": "2025-02-01",
+            "eligible_end_date": "2025-02-01",
+            "complete_filtered_input": true
+          },
+          "first": {
+            "date": "2025-02-01",
+            "value": 137.25
+          },
+          "last": {
+            "date": "2025-02-01",
+            "value": 137.25
+          },
+          "minimum": {
+            "date": "2025-02-01",
+            "value": 137.25
+          },
+          "maximum": {
+            "date": "2025-02-01",
+            "value": 137.25
+          },
+          "adjacent_comparison_count": 0,
+          "increase_count": 0,
+          "decrease_count": 0,
+          "unchanged_count": 0,
+          "excluded_boundary_records": {
+            "null_date_count": 0,
+            "missing_value_count": 0,
+            "duplicate_date_record_count": 0
+          },
+          "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+        },
+        "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+      },
+      "requested_range": {
+        "start_date": "2025-02-01",
+        "end_date": "2025-02-01",
+        "period": null
+      },
+      "coverage": {
+        "scope": "through_requested_end",
+        "as_of_date": "2025-02-01",
+        "period": null,
+        "record_first_date": "2025-02-01",
+        "record_last_date": "2025-02-01",
+        "valid_first_date": "2025-02-01",
+        "valid_last_date": "2025-02-01",
+        "complete": true,
+        "last_record": {
+          "status": "observed",
+          "date": "2025-02-01",
+          "rows": [
+            {
+              "date": "2025-02-01",
+              "value": 137.25,
+              "raw_value": "137.25",
+              "source_cell": "B2",
+              "date_cell": "A2",
+              "value_status": "valid",
+              "period": null,
+              "period_cell": null,
+              "metric_cell": null,
+              "formula_cache_status": "cached_numeric",
+              "category_cell": null
+            }
+          ],
+          "row_count": 1
+        },
+        "last_valid": {
+          "status": "observed",
+          "direction": "in_range",
+          "date": "2025-02-01",
+          "rows": [
+            {
+              "date": "2025-02-01",
+              "value": 137.25,
+              "raw_value": "137.25",
+              "source_cell": "B2",
+              "date_cell": "A2",
+              "value_status": "valid",
+              "period": null,
+              "period_cell": null,
+              "metric_cell": null,
+              "formula_cache_status": "cached_numeric",
+              "category_cell": null
+            }
+          ],
+          "row_count": 1,
+          "conflict": false,
+          "series_id": "first",
+          "sheet": "Data",
+          "dimensions": {
+            "group": "X"
+          },
+          "unit": {
+            "status": "declared",
+            "symbol": "kg",
+            "evidence_level": "imported_series_metadata",
+            "binding_scope": "result_column",
+            "evidence": [
+              {
+                "series_id": "first",
+                "declared_unit": "kg",
+                "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "sheet": "Data",
+                "header_cells": [
+                  "B1"
+                ],
+                "binding_scope": "imported_series_declaration",
+                "original_annotation_verified": false
+              }
+            ]
+          },
+          "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956",
+          "source_dataset_id": "11e1ee67661a87c5068af5fb",
+          "source_manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+        },
+        "source": {
+          "dataset_id": "11e1ee67661a87c5068af5fb",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+        },
+        "requested_range_status_counts": {
+          "valid": 1
+        }
+      },
+      "result_contract": {
+        "schema_version": 2,
+        "hash_algorithm": "sha256-typed-json-v1",
+        "result_id": "6aa57c3a01f7338d54c60f6a",
+        "hash_input_keys": [
+          "actual_first_date",
+          "actual_last_date",
+          "aggregate",
+          "coverage",
+          "dataset_id",
+          "extremum_count",
+          "extremum_rows",
+          "filters",
+          "missing_count",
+          "observation_coverage",
+          "record_count",
+          "requested_range",
+          "rows",
+          "rows_are",
+          "scope_record_count",
+          "series",
+          "source",
+          "source_semantics",
+          "truncated",
+          "valid_count",
+          "valid_first_date",
+          "valid_last_date",
+          "warnings"
+        ],
+        "source_snapshot": {
+          "kind": "excel_observations",
+          "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "file": "example.xlsx",
+          "versions": {
+            "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+          },
+          "input_digest_sha256": "ba3953d679f16453fba4f9a4d485cdf288b847d7f972d35338fe7974e305f003",
+          "knowledge_base_id": "fixture-library",
+          "knowledge_id": "native-document",
+          "dataset_id": "11e1ee67661a87c5068af5fb",
+          "scope": "returned_source_rows"
+        },
+        "execution": {
+          "kind": "series_query",
+          "engine": "duckdb",
+          "engine_version": "1.5.5",
+          "numeric_semantics": "saved DOUBLE values; Excel formulas are not recalculated",
+          "input_scope": "returned_source_rows",
+          "cell_lineage_verified": false,
+          "operation": "rows",
+          "column_metadata_scope": "returned_rows_not_aggregate"
+        },
+        "column_metadata": [
+          {
+            "index": 0,
+            "name": "category_cell",
+            "display_name": "category_cell",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_metadata",
+              "source_columns": [
+                "category_cell"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 1,
+            "name": "date",
+            "display_name": "date",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "date"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 2,
+            "name": "date_cell",
+            "display_name": "date_cell",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_metadata",
+              "source_columns": [
+                "date_cell"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 3,
+            "name": "formula",
+            "display_name": "formula",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_metadata",
+              "source_columns": [
+                "formula"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 4,
+            "name": "formula_cache_status",
+            "display_name": "formula_cache_status",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_metadata",
+              "source_columns": [
+                "formula_cache_status"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 5,
+            "name": "metric_cell",
+            "display_name": "metric_cell",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_metadata",
+              "source_columns": [
+                "metric_cell"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 6,
+            "name": "period",
+            "display_name": "period",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "period"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 7,
+            "name": "period_cell",
+            "display_name": "period_cell",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_metadata",
+              "source_columns": [
+                "period_cell"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 8,
+            "name": "raw_value",
+            "display_name": "raw_value",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "raw_value"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 9,
+            "name": "source_cell",
+            "display_name": "source_cell",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_metadata",
+              "source_columns": [
+                "source_cell"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 10,
+            "name": "value",
+            "display_name": "measurement",
+            "logical_type": "DOUBLE",
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "value"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "declared",
+              "symbol": "kg",
+              "evidence_level": "imported_series_metadata",
+              "binding_scope": "result_column",
+              "evidence": [
+                {
+                  "series_id": "first",
+                  "declared_unit": "kg",
+                  "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sheet": "Data",
+                  "header_cells": [
+                    "B1"
+                  ],
+                  "binding_scope": "imported_series_declaration",
+                  "original_annotation_verified": false
+                }
+              ]
+            }
+          },
+          {
+            "index": 11,
+            "name": "value_status",
+            "display_name": "value_status",
+            "logical_type": "source_value",
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "value_status"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          }
+        ],
+        "evidence_capabilities": {
+          "level": "source_cells",
+          "column_dependencies_verified": true,
+          "cell_lineage_verified": false,
+          "source_cells_available": true,
+          "aggregate_membership_verified": false
+        },
+        "result_hash": "39b73ee34c3f24cf137ddb8c0a6e7ee55b2018018b2f64c5281b63335a7c91f0"
+      },
+      "source_context": {
+        "knowledge_base_id": "fixture-library"
+      }
+    }
+  },
+  "sql_missing": {
+    "operation": "analyze_table",
+    "args": {
+      "dataset_id": "11e1ee67661a87c5068af5fb",
+      "start_date": "2025-02-02",
+      "end_date": "2025-02-04",
+      "include_last_valid": true,
+      "knowledge_base_id": "fixture-library",
+      "sql": "SELECT series_id, date, value, source_cell, date_cell FROM data WHERE value IS NOT NULL",
+      "series_ids": [
+        "first",
+        "second"
+      ]
+    },
+    "data": {
+      "kind": "structured_analysis",
+      "status": "ok",
+      "dataset_id": "11e1ee67661a87c5068af5fb",
+      "sql": "SELECT series_id, date, value, source_cell, date_cell FROM data WHERE value IS NOT NULL",
+      "columns": [
+        "series_id",
+        "date",
+        "value",
+        "source_cell",
+        "date_cell"
+      ],
+      "rows": [],
+      "output_truncated": false,
+      "returned_row_count": 0,
+      "input_complete": true,
+      "input_count": 1,
+      "requested_range": {
+        "start_date": "2025-02-02",
+        "end_date": "2025-02-04"
+      },
+      "source_semantics": {
+        "published_series_dates": [
+          {
+            "series_id": "first",
+            "metric": "measurement",
+            "sheet": "Data",
+            "last_valid_date": "2025-02-05",
+            "last_date": "2025-02-05"
+          },
+          {
+            "series_id": "second",
+            "metric": "measurement",
+            "sheet": "Data",
+            "last_valid_date": "2025-02-01",
+            "last_date": "2025-02-01"
+          }
+        ]
+      },
+      "inputs": {
+        "first": {
+          "series": {
+            "series_id": "first",
+            "sheet": "Data",
+            "metric": "measurement",
+            "unit": "kg",
+            "dimensions": {
+              "group": "X"
+            },
+            "header_cells": [
+              "B1"
+            ],
+            "record_count": 3,
+            "valid_count": 2,
+            "first_date": "2025-02-01",
+            "last_date": "2025-02-05",
+            "first_valid_date": "2025-02-01",
+            "last_valid_date": "2025-02-05"
+          },
+          "input_count": 1,
+          "valid_count": 0,
+          "actual_first_date": "2025-02-02",
+          "actual_last_date": "2025-02-02",
+          "valid_first_date": null,
+          "valid_last_date": null,
+          "example_cells": [
+            "B3"
+          ],
+          "coverage": {
+            "scope": "through_requested_end",
+            "as_of_date": "2025-02-04",
+            "period": null,
+            "record_first_date": "2025-02-01",
+            "record_last_date": "2025-02-02",
+            "valid_first_date": "2025-02-01",
+            "valid_last_date": "2025-02-01",
+            "complete": true,
+            "last_record": {
+              "status": "observed",
+              "date": "2025-02-02",
+              "rows": [
+                {
+                  "date": "2025-02-02",
+                  "value": null,
+                  "raw_value": null,
+                  "source_cell": "B3",
+                  "date_cell": "A3",
+                  "value_status": "formula_no_cache",
+                  "period": null,
+                  "period_cell": null,
+                  "metric_cell": null,
+                  "formula_cache_status": "missing",
+                  "category_cell": null
+                }
+              ],
+              "row_count": 1
+            },
+            "last_valid": {
+              "status": "observed",
+              "direction": "before_range",
+              "date": "2025-02-01",
+              "rows": [
+                {
+                  "date": "2025-02-01",
+                  "value": 137.25,
+                  "raw_value": "137.25",
+                  "source_cell": "B2",
+                  "date_cell": "A2",
+                  "value_status": "valid",
+                  "period": null,
+                  "period_cell": null,
+                  "metric_cell": null,
+                  "formula_cache_status": "cached_numeric",
+                  "category_cell": null
+                }
+              ],
+              "row_count": 1,
+              "conflict": false,
+              "series_id": "first",
+              "sheet": "Data",
+              "dimensions": {
+                "group": "X"
+              },
+              "unit": {
+                "status": "declared",
+                "symbol": "kg",
+                "evidence_level": "imported_series_metadata",
+                "binding_scope": "result_column",
+                "evidence": [
+                  {
+                    "series_id": "first",
+                    "declared_unit": "kg",
+                    "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "sheet": "Data",
+                    "header_cells": [
+                      "B1"
+                    ],
+                    "binding_scope": "imported_series_declaration",
+                    "original_annotation_verified": false
+                  }
+                ]
+              },
+              "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956",
+              "source_dataset_id": "11e1ee67661a87c5068af5fb",
+              "source_manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+            },
+            "requested_range_status_counts": {
+              "formula_no_cache": 1
+            },
+            "source": {
+              "dataset_id": "11e1ee67661a87c5068af5fb",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+            }
+          },
+          "source": {
+            "dataset_id": "11e1ee67661a87c5068af5fb",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+          },
+          "observation_coverage": {
+            "scope_record_count": 1,
+            "scope_valid_count": 0,
+            "scope_start_date": "2025-02-02",
+            "scope_end_date": "2025-02-02",
+            "segments": [
+              {
+                "start_date": "2025-02-02",
+                "end_date": "2025-02-02",
+                "record_count": 1,
+                "valid_count": 0,
+                "value_status": "formula_no_cache",
+                "has_value": false,
+                "first_cell": "B3",
+                "last_cell": "B3",
+                "duplicate_date_boundary": false,
+                "undated_boundary": false
+              }
+            ],
+            "total_segment_count": 1,
+            "truncated": false,
+            "max_segments": 64,
+            "value_changes": {
+              "scope": {
+                "record_count": 1,
+                "valid_value_count": 0,
+                "eligible_record_count": 0,
+                "eligible_start_date": null,
+                "eligible_end_date": null,
+                "complete_filtered_input": true
+              },
+              "first": {
+                "date": null,
+                "value": null
+              },
+              "last": {
+                "date": null,
+                "value": null
+              },
+              "minimum": {
+                "date": null,
+                "value": null
+              },
+              "maximum": {
+                "date": null,
+                "value": null
+              },
+              "adjacent_comparison_count": 0,
+              "increase_count": 0,
+              "decrease_count": 0,
+              "unchanged_count": 0,
+              "excluded_boundary_records": {
+                "null_date_count": 0,
+                "missing_value_count": 1,
+                "duplicate_date_record_count": 0
+              },
+              "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+            },
+            "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+          },
+          "observation_coverage_scope": "loaded_analysis_inputs_before_user_sql"
+        },
+        "second": {
+          "series": {
+            "series_id": "second",
+            "sheet": "Data",
+            "metric": "measurement",
+            "unit": "kg",
+            "dimensions": {
+              "group": "Y"
+            },
+            "header_cells": [
+              "C1"
+            ],
+            "record_count": 1,
+            "valid_count": 1,
+            "first_date": "2025-02-01",
+            "last_date": "2025-02-01",
+            "first_valid_date": "2025-02-01",
+            "last_valid_date": "2025-02-01"
+          },
+          "input_count": 0,
+          "valid_count": 0,
+          "actual_first_date": null,
+          "actual_last_date": null,
+          "valid_first_date": null,
+          "valid_last_date": null,
+          "example_cells": [],
+          "coverage": {
+            "scope": "through_requested_end",
+            "as_of_date": "2025-02-04",
+            "period": null,
+            "record_first_date": "2025-02-01",
+            "record_last_date": "2025-02-01",
+            "valid_first_date": "2025-02-01",
+            "valid_last_date": "2025-02-01",
+            "complete": true,
+            "last_record": {
+              "status": "observed",
+              "date": "2025-02-01",
+              "rows": [
+                {
+                  "date": "2025-02-01",
+                  "value": 0.0,
+                  "raw_value": "0",
+                  "source_cell": "C2",
+                  "date_cell": "A2",
+                  "value_status": "valid",
+                  "period": null,
+                  "period_cell": null,
+                  "metric_cell": null,
+                  "formula_cache_status": "not_formula",
+                  "category_cell": null
+                }
+              ],
+              "row_count": 1
+            },
+            "last_valid": {
+              "status": "observed",
+              "direction": "before_range",
+              "date": "2025-02-01",
+              "rows": [
+                {
+                  "date": "2025-02-01",
+                  "value": 0.0,
+                  "raw_value": "0",
+                  "source_cell": "C2",
+                  "date_cell": "A2",
+                  "value_status": "valid",
+                  "period": null,
+                  "period_cell": null,
+                  "metric_cell": null,
+                  "formula_cache_status": "not_formula",
+                  "category_cell": null
+                }
+              ],
+              "row_count": 1,
+              "conflict": false,
+              "series_id": "second",
+              "sheet": "Data",
+              "dimensions": {
+                "group": "Y"
+              },
+              "unit": {
+                "status": "declared",
+                "symbol": "kg",
+                "evidence_level": "imported_series_metadata",
+                "binding_scope": "result_column",
+                "evidence": [
+                  {
+                    "series_id": "second",
+                    "declared_unit": "kg",
+                    "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "sheet": "Data",
+                    "header_cells": [
+                      "C1"
+                    ],
+                    "binding_scope": "imported_series_declaration",
+                    "original_annotation_verified": false
+                  }
+                ]
+              },
+              "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956",
+              "source_dataset_id": "11e1ee67661a87c5068af5fb",
+              "source_manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+            },
+            "requested_range_status_counts": {},
+            "source": {
+              "dataset_id": "11e1ee67661a87c5068af5fb",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+            }
+          },
+          "source": {
+            "dataset_id": "11e1ee67661a87c5068af5fb",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+          },
+          "observation_coverage": {
+            "scope_record_count": 0,
+            "scope_valid_count": 0,
+            "scope_start_date": null,
+            "scope_end_date": null,
+            "segments": [],
+            "total_segment_count": 0,
+            "truncated": false,
+            "max_segments": 64,
+            "value_changes": {
+              "scope": {
+                "record_count": 0,
+                "valid_value_count": 0,
+                "eligible_record_count": 0,
+                "eligible_start_date": null,
+                "eligible_end_date": null,
+                "complete_filtered_input": true
+              },
+              "first": {
+                "date": null,
+                "value": null
+              },
+              "last": {
+                "date": null,
+                "value": null
+              },
+              "minimum": {
+                "date": null,
+                "value": null
+              },
+              "maximum": {
+                "date": null,
+                "value": null
+              },
+              "adjacent_comparison_count": 0,
+              "increase_count": 0,
+              "decrease_count": 0,
+              "unchanged_count": 0,
+              "excluded_boundary_records": {
+                "null_date_count": 0,
+                "missing_value_count": 0,
+                "duplicate_date_record_count": 0
+              },
+              "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+            },
+            "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+          },
+          "observation_coverage_scope": "loaded_analysis_inputs_before_user_sql"
+        }
+      },
+      "source": {
+        "file": "example.xlsx",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "knowledge_id": "native-document",
+        "knowledge_base_id": "fixture-library",
+        "file_hash": "cccccccccccccccccccccccccccccccc"
+      },
+      "notice": "inputs是装载到隔离表的范围，series.first_date/last_date是原列可用范围，不等于SQL筛选后实际统计范围。时间限制请优先用start_date/end_date传入；聚合需在SQL中返回used_first_date、used_last_date、used_count，以供核对实际使用记录。原文件没有声明指标可加性和统计年度定义，不能假定这些业务规则。SQL在上述全部输入上执行；输出行截断不等于计算输入截断。inputs日期是输入覆盖范围，极值日期必须来自SQL返回记录。单位与业务口径按原字段，不自动换算。data.metric和data.unit来自真实系列元数据，可直接选择或分组以保留业务名称和单位；CASE改写series_id不能证明业务标签。混合单位需要重新选择同单位真实字段分别查询；SQL条件本身不证明单位归属。",
+      "result_id": "118ead24cc72d0278c19439b",
+      "result_contract": {
+        "schema_version": 2,
+        "hash_algorithm": "sha256-typed-json-v1",
+        "result_id": "118ead24cc72d0278c19439b",
+        "hash_input_keys": [
+          "columns",
+          "dataset_id",
+          "input_complete",
+          "input_count",
+          "inputs",
+          "notice",
+          "output_truncated",
+          "requested_range",
+          "returned_row_count",
+          "rows",
+          "source",
+          "source_semantics",
+          "sql"
+        ],
+        "source_snapshot": {
+          "kind": "excel_observations",
+          "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "file": "example.xlsx",
+          "versions": {
+            "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+          },
+          "input_digest_sha256": "2385ac581918a1df05de8d72cb354061b9c4bcadcd403656a41528cbafa5de14",
+          "knowledge_base_id": "fixture-library",
+          "knowledge_id": "native-document",
+          "dataset_id": "11e1ee67661a87c5068af5fb",
+          "scope": "loaded_inputs_before_user_sql"
+        },
+        "execution": {
+          "kind": "sql",
+          "engine": "duckdb",
+          "engine_version": "1.5.5",
+          "numeric_semantics": "DuckDB DOUBLE source values; DECIMAL result values encoded as strings",
+          "sql_sha256": "b94ff5cdae6e871ac6ec1c2561232389aaf0d90c1cec1f843b23d50c97f8638d",
+          "input_scope": "loaded_inputs_before_user_sql",
+          "cell_lineage_verified": false
+        },
+        "column_metadata": [
+          {
+            "index": 0,
+            "name": "series_id",
+            "display_name": "series_id",
+            "logical_type": "VARCHAR",
+            "operation": {
+              "kind": "column_reference",
+              "names": [
+                "series_id"
+              ],
+              "scope": "sql_relation_not_original_cell",
+              "direct_source_column": "series_id"
+            },
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "series_id"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 1,
+            "name": "date",
+            "display_name": "date",
+            "logical_type": "DATE",
+            "operation": {
+              "kind": "column_reference",
+              "names": [
+                "date"
+              ],
+              "scope": "sql_relation_not_original_cell"
+            },
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "date"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 2,
+            "name": "value",
+            "display_name": "value",
+            "logical_type": "DOUBLE",
+            "operation": {
+              "kind": "column_reference",
+              "names": [
+                "value"
+              ],
+              "scope": "sql_relation_not_original_cell"
+            },
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "value"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "declared",
+              "symbol": "kg",
+              "evidence_level": "imported_series_metadata",
+              "binding_scope": "result_column",
+              "evidence": [
+                {
+                  "series_id": "first",
+                  "declared_unit": "kg",
+                  "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sheet": "Data",
+                  "header_cells": [
+                    "B1"
+                  ],
+                  "binding_scope": "imported_series_declaration",
+                  "original_annotation_verified": false
+                },
+                {
+                  "series_id": "second",
+                  "declared_unit": "kg",
+                  "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sheet": "Data",
+                  "header_cells": [
+                    "C1"
+                  ],
+                  "binding_scope": "imported_series_declaration",
+                  "original_annotation_verified": false
+                }
+              ]
+            }
+          },
+          {
+            "index": 3,
+            "name": "source_cell",
+            "display_name": "source_cell",
+            "logical_type": "VARCHAR",
+            "operation": {
+              "kind": "column_reference",
+              "names": [
+                "source_cell"
+              ],
+              "scope": "sql_relation_not_original_cell"
+            },
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "source_cell"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 4,
+            "name": "date_cell",
+            "display_name": "date_cell",
+            "logical_type": "VARCHAR",
+            "operation": {
+              "kind": "column_reference",
+              "names": [
+                "date_cell"
+              ],
+              "scope": "sql_relation_not_original_cell"
+            },
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "date_cell"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          }
+        ],
+        "evidence_capabilities": {
+          "level": "dependency_only",
+          "column_dependencies_verified": true,
+          "cell_lineage_verified": false,
+          "source_cells_available": false,
+          "aggregate_membership_verified": false
+        },
+        "result_hash": "9ec69115e7479a6e30f2e684ca85126c2614cfd0ed083d505fb84563c7cd5a39"
+      },
+      "source_context": {
+        "knowledge_base_id": "fixture-library"
+      }
+    }
+  },
+  "sql_direct": {
+    "operation": "analyze_table",
+    "args": {
+      "dataset_id": "11e1ee67661a87c5068af5fb",
+      "start_date": "2025-02-01",
+      "end_date": "2025-02-01",
+      "include_last_valid": true,
+      "knowledge_base_id": "fixture-library",
+      "sql": "SELECT series_id, date, value, source_cell, date_cell FROM data WHERE value IS NOT NULL",
+      "series_ids": [
+        "first"
+      ]
+    },
+    "data": {
+      "kind": "structured_analysis",
+      "status": "ok",
+      "dataset_id": "11e1ee67661a87c5068af5fb",
+      "sql": "SELECT series_id, date, value, source_cell, date_cell FROM data WHERE value IS NOT NULL",
+      "columns": [
+        "series_id",
+        "date",
+        "value",
+        "source_cell",
+        "date_cell"
+      ],
+      "rows": [
+        [
+          "first",
+          "2025-02-01",
+          137.25,
+          "B2",
+          "A2"
+        ]
+      ],
+      "output_truncated": false,
+      "returned_row_count": 1,
+      "input_complete": true,
+      "input_count": 1,
+      "requested_range": {
+        "start_date": "2025-02-01",
+        "end_date": "2025-02-01"
+      },
+      "source_semantics": {
+        "published_series_dates": [
+          {
+            "series_id": "first",
+            "metric": "measurement",
+            "sheet": "Data",
+            "last_valid_date": "2025-02-05",
+            "last_date": "2025-02-05"
+          }
+        ]
+      },
+      "inputs": {
+        "first": {
+          "series": {
+            "series_id": "first",
+            "sheet": "Data",
+            "metric": "measurement",
+            "unit": "kg",
+            "dimensions": {
+              "group": "X"
+            },
+            "header_cells": [
+              "B1"
+            ],
+            "record_count": 3,
+            "valid_count": 2,
+            "first_date": "2025-02-01",
+            "last_date": "2025-02-05",
+            "first_valid_date": "2025-02-01",
+            "last_valid_date": "2025-02-05"
+          },
+          "input_count": 1,
+          "valid_count": 1,
+          "actual_first_date": "2025-02-01",
+          "actual_last_date": "2025-02-01",
+          "valid_first_date": "2025-02-01",
+          "valid_last_date": "2025-02-01",
+          "example_cells": [
+            "B2"
+          ],
+          "coverage": {
+            "scope": "through_requested_end",
+            "as_of_date": "2025-02-01",
+            "period": null,
+            "record_first_date": "2025-02-01",
+            "record_last_date": "2025-02-01",
+            "valid_first_date": "2025-02-01",
+            "valid_last_date": "2025-02-01",
+            "complete": true,
+            "last_record": {
+              "status": "observed",
+              "date": "2025-02-01",
+              "rows": [
+                {
+                  "date": "2025-02-01",
+                  "value": 137.25,
+                  "raw_value": "137.25",
+                  "source_cell": "B2",
+                  "date_cell": "A2",
+                  "value_status": "valid",
+                  "period": null,
+                  "period_cell": null,
+                  "metric_cell": null,
+                  "formula_cache_status": "cached_numeric",
+                  "category_cell": null
+                }
+              ],
+              "row_count": 1
+            },
+            "last_valid": {
+              "status": "observed",
+              "direction": "in_range",
+              "date": "2025-02-01",
+              "rows": [
+                {
+                  "date": "2025-02-01",
+                  "value": 137.25,
+                  "raw_value": "137.25",
+                  "source_cell": "B2",
+                  "date_cell": "A2",
+                  "value_status": "valid",
+                  "period": null,
+                  "period_cell": null,
+                  "metric_cell": null,
+                  "formula_cache_status": "cached_numeric",
+                  "category_cell": null
+                }
+              ],
+              "row_count": 1,
+              "conflict": false,
+              "series_id": "first",
+              "sheet": "Data",
+              "dimensions": {
+                "group": "X"
+              },
+              "unit": {
+                "status": "declared",
+                "symbol": "kg",
+                "evidence_level": "imported_series_metadata",
+                "binding_scope": "result_column",
+                "evidence": [
+                  {
+                    "series_id": "first",
+                    "declared_unit": "kg",
+                    "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "sheet": "Data",
+                    "header_cells": [
+                      "B1"
+                    ],
+                    "binding_scope": "imported_series_declaration",
+                    "original_annotation_verified": false
+                  }
+                ]
+              },
+              "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956",
+              "source_dataset_id": "11e1ee67661a87c5068af5fb",
+              "source_manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+            },
+            "requested_range_status_counts": {
+              "valid": 1
+            },
+            "source": {
+              "dataset_id": "11e1ee67661a87c5068af5fb",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+            }
+          },
+          "source": {
+            "dataset_id": "11e1ee67661a87c5068af5fb",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+          },
+          "observation_coverage": {
+            "scope_record_count": 1,
+            "scope_valid_count": 1,
+            "scope_start_date": "2025-02-01",
+            "scope_end_date": "2025-02-01",
+            "segments": [
+              {
+                "start_date": "2025-02-01",
+                "end_date": "2025-02-01",
+                "record_count": 1,
+                "valid_count": 1,
+                "value_status": "valid",
+                "has_value": true,
+                "first_cell": "B2",
+                "last_cell": "B2",
+                "duplicate_date_boundary": false,
+                "undated_boundary": false
+              }
+            ],
+            "total_segment_count": 1,
+            "truncated": false,
+            "max_segments": 64,
+            "value_changes": {
+              "scope": {
+                "record_count": 1,
+                "valid_value_count": 1,
+                "eligible_record_count": 1,
+                "eligible_start_date": "2025-02-01",
+                "eligible_end_date": "2025-02-01",
+                "complete_filtered_input": true
+              },
+              "first": {
+                "date": "2025-02-01",
+                "value": 137.25
+              },
+              "last": {
+                "date": "2025-02-01",
+                "value": 137.25
+              },
+              "minimum": {
+                "date": "2025-02-01",
+                "value": 137.25
+              },
+              "maximum": {
+                "date": "2025-02-01",
+                "value": 137.25
+              },
+              "adjacent_comparison_count": 0,
+              "increase_count": 0,
+              "decrease_count": 0,
+              "unchanged_count": 0,
+              "excluded_boundary_records": {
+                "null_date_count": 0,
+                "missing_value_count": 0,
+                "duplicate_date_record_count": 0
+              },
+              "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+            },
+            "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+          },
+          "observation_coverage_scope": "loaded_analysis_inputs_before_user_sql"
+        }
+      },
+      "source": {
+        "file": "example.xlsx",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "knowledge_id": "native-document",
+        "knowledge_base_id": "fixture-library",
+        "file_hash": "cccccccccccccccccccccccccccccccc"
+      },
+      "notice": "inputs是装载到隔离表的范围，series.first_date/last_date是原列可用范围，不等于SQL筛选后实际统计范围。时间限制请优先用start_date/end_date传入；聚合需在SQL中返回used_first_date、used_last_date、used_count，以供核对实际使用记录。原文件没有声明指标可加性和统计年度定义，不能假定这些业务规则。SQL在上述全部输入上执行；输出行截断不等于计算输入截断。inputs日期是输入覆盖范围，极值日期必须来自SQL返回记录。单位与业务口径按原字段，不自动换算。data.metric和data.unit来自真实系列元数据，可直接选择或分组以保留业务名称和单位；CASE改写series_id不能证明业务标签。混合单位需要重新选择同单位真实字段分别查询；SQL条件本身不证明单位归属。",
+      "result_id": "6c6d337df782ed82365902e3",
+      "result_contract": {
+        "schema_version": 2,
+        "hash_algorithm": "sha256-typed-json-v1",
+        "result_id": "6c6d337df782ed82365902e3",
+        "hash_input_keys": [
+          "columns",
+          "dataset_id",
+          "input_complete",
+          "input_count",
+          "inputs",
+          "notice",
+          "output_truncated",
+          "requested_range",
+          "returned_row_count",
+          "rows",
+          "source",
+          "source_semantics",
+          "sql"
+        ],
+        "source_snapshot": {
+          "kind": "excel_observations",
+          "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "file": "example.xlsx",
+          "versions": {
+            "manifest_sha256": "ec02e6050de08069db85e890d29811e404952c1c83ff08a59a148197fabe3956"
+          },
+          "input_digest_sha256": "69f5e6831dcd7cd998bbb51b3cf2a5203fc06b8cc5c1e68eb47f55432746c4f2",
+          "knowledge_base_id": "fixture-library",
+          "knowledge_id": "native-document",
+          "dataset_id": "11e1ee67661a87c5068af5fb",
+          "scope": "loaded_inputs_before_user_sql"
+        },
+        "execution": {
+          "kind": "sql",
+          "engine": "duckdb",
+          "engine_version": "1.5.5",
+          "numeric_semantics": "DuckDB DOUBLE source values; DECIMAL result values encoded as strings",
+          "sql_sha256": "b94ff5cdae6e871ac6ec1c2561232389aaf0d90c1cec1f843b23d50c97f8638d",
+          "input_scope": "loaded_inputs_before_user_sql",
+          "cell_lineage_verified": false
+        },
+        "column_metadata": [
+          {
+            "index": 0,
+            "name": "series_id",
+            "display_name": "series_id",
+            "logical_type": "VARCHAR",
+            "operation": {
+              "kind": "column_reference",
+              "names": [
+                "series_id"
+              ],
+              "scope": "sql_relation_not_original_cell",
+              "direct_source_column": "series_id"
+            },
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "series_id"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 1,
+            "name": "date",
+            "display_name": "date",
+            "logical_type": "DATE",
+            "operation": {
+              "kind": "column_reference",
+              "names": [
+                "date"
+              ],
+              "scope": "sql_relation_not_original_cell"
+            },
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "date"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 2,
+            "name": "value",
+            "display_name": "value",
+            "logical_type": "DOUBLE",
+            "operation": {
+              "kind": "column_reference",
+              "names": [
+                "value"
+              ],
+              "scope": "sql_relation_not_original_cell"
+            },
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "value"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "declared",
+              "symbol": "kg",
+              "evidence_level": "imported_series_metadata",
+              "binding_scope": "result_column",
+              "evidence": [
+                {
+                  "series_id": "first",
+                  "declared_unit": "kg",
+                  "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sheet": "Data",
+                  "header_cells": [
+                    "B1"
+                  ],
+                  "binding_scope": "imported_series_declaration",
+                  "original_annotation_verified": false
+                }
+              ]
+            }
+          },
+          {
+            "index": 3,
+            "name": "source_cell",
+            "display_name": "source_cell",
+            "logical_type": "VARCHAR",
+            "operation": {
+              "kind": "column_reference",
+              "names": [
+                "source_cell"
+              ],
+              "scope": "sql_relation_not_original_cell"
+            },
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "source_cell"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          },
+          {
+            "index": 4,
+            "name": "date_cell",
+            "display_name": "date_cell",
+            "logical_type": "VARCHAR",
+            "operation": {
+              "kind": "column_reference",
+              "names": [
+                "date_cell"
+              ],
+              "scope": "sql_relation_not_original_cell"
+            },
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "date_cell"
+              ],
+              "source_row_dependency": false,
+              "technical_metadata": true
+            },
+            "unit": {
+              "status": "unknown",
+              "evidence_level": "none",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "reason": "No bound unit declaration for this expression"
+            }
+          }
+        ],
+        "evidence_capabilities": {
+          "level": "dependency_only",
+          "column_dependencies_verified": true,
+          "cell_lineage_verified": false,
+          "source_cells_available": false,
+          "aggregate_membership_verified": false
+        },
+        "result_hash": "37a3af9b4cedaaa74caea6494e6c2adb296d50222abcd209fe71111f069c02d3"
+      },
+      "source_context": {
+        "knowledge_base_id": "fixture-library"
+      }
+    }
+  }
+}

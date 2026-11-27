@@ -18,9 +18,9 @@ type citationUnverifiedDeliveryBinding struct {
 	MarkedCitations, MarkedNumbers int
 }
 
-func (e *AgentEngine) candidateCitationsInvalid(candidate string, state *types.AgentState, conversation []chat.Message) bool {
+func (e *AgentEngine) candidateCitationsInvalid(candidate string, state *types.AgentState, conversation []chat.Message, contexts ...context.Context) bool {
 	if len(uniqueCandidateCitationIDs(candidate)) != len(e.currentCandidateKnowledgeReferences(candidate, state, conversation)) ||
-		len(uniqueCandidateEvidenceIDs(candidate)) != len(e.currentCandidateEvidenceReferences(candidate, state)) ||
+		len(uniqueCandidateEvidenceIDs(candidate)) != len(e.currentCandidateEvidenceReferences(candidate, state, contexts...)) ||
 		(!e.config.CitationsEnabled() && len(uniqueCandidateCitationIDs(candidate))+len(uniqueCandidateEvidenceIDs(candidate)) > 0) {
 		return true
 	}
@@ -33,9 +33,9 @@ func (e *AgentEngine) candidateCitationsInvalid(candidate string, state *types.A
 	return false
 }
 
-func (e *AgentEngine) citationIdentityFailure(d candidateDecision, state *types.AgentState, conversation []chat.Message) candidateDecision {
+func (e *AgentEngine) citationIdentityFailure(ctx context.Context, d candidateDecision, state *types.AgentState, conversation []chat.Message) candidateDecision {
 	d.ReasonCode = "citation_identity_invalid"
-	feedback, counts, needsRead := e.candidateCitationRecovery(d.Candidate, state, conversation)
+	feedback, counts, needsRead := e.candidateCitationRecovery(ctx, d.Candidate, state, conversation)
 	d.CitationIssueCounts = counts
 	e.answerReviewFeedback, e.answerReviewAction = feedback, reviewReviseAnswer
 	d.Disposition = candidateRevise
@@ -200,7 +200,7 @@ func (e *AgentEngine) citationUnverifiedPresentation(ctx context.Context, state 
 	if decoded, ok := decodeReviewedAnswerEnvelope(base); ok {
 		base = decoded
 	}
-	if !e.numericUnverifiedImagesCurrent(base, state) || !e.candidateEvidenceBudgetFits(base, state) {
+	if !e.numericUnverifiedImagesCurrent(base, state) || !e.candidateEvidenceBudgetFits(base, state, ctx) {
 		return "", 0, 0, nil, nil, false
 	}
 	valid := map[string]bool{}
@@ -209,7 +209,7 @@ func (e *AgentEngine) citationUnverifiedPresentation(ctx context.Context, state 
 	}
 	// Structured evidence IDs have an execution binding. An invalid binding is
 	// never downgraded; it may be a forged ID or expired result.
-	if len(uniqueCandidateEvidenceIDs(base)) != len(e.currentCandidateEvidenceReferences(base, state)) {
+	if len(uniqueCandidateEvidenceIDs(base)) != len(e.currentCandidateEvidenceReferences(base, state, ctx)) {
 		return "", 0, 0, nil, nil, false
 	}
 	views := currentCitationSourceViews(state)
@@ -265,7 +265,7 @@ func (e *AgentEngine) citationUnverifiedPresentation(ctx context.Context, state 
 	}
 	// Identity repair precedes numeric review in standard mode. Run the same
 	// numeric matcher before delivery so this route cannot bypass it.
-	evidence := e.answerNumericEvidence(base, state.RoundSteps, e.turnReview.Conversation)
+	evidence := e.answerNumericEvidenceInScope(ctx, base, state.RoundSteps, e.turnReview.Conversation)
 	occurrences := ungroundedStructuredNumberOccurrences(marked, evidence, state.RoundSteps)
 	markedNumbers := 0
 	if len(occurrences) > 0 {
@@ -280,7 +280,7 @@ func (e *AgentEngine) citationUnverifiedPresentation(ctx context.Context, state 
 		notice += unverifiedNumberNotice
 	}
 	delivery := marked + "\n\n> 提示：" + notice
-	refs, legacy := e.unverifiedNavigationReferences(delivery, state)
+	refs, legacy := e.unverifiedNavigationReferences(ctx, delivery, state)
 	if len(refs) != len(uniqueCandidateEvidenceIDs(delivery)) || len(legacy) != len(uniqueCandidateCitationIDs(delivery)) || !numericUnverifiedReferenceBudgetFits(refs, legacy) {
 		return "", 0, 0, nil, nil, false
 	}

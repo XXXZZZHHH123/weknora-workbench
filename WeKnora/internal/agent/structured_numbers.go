@@ -16,6 +16,7 @@ import (
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/structuredresult"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -184,7 +185,7 @@ func analyzedSourceRows(call types.ToolCall, rows map[string]bool) {
 		return
 	}
 	for _, item := range coverageStructuredEvidence(coverageEvidence{Operation: "analyze_table", Status: sourceNavigationString(data, "status")}, args, data, false) {
-		if item.Kind == "cell" && item.Bound && item.RangeComplete {
+		if item.Kind == "cell" && item.Bound && item.RangeComplete && !coverageProtocolLastValid(item) {
 			if match := sourceCellRow.FindStringSubmatch(item.Cell); len(match) == 2 {
 				if number, err := strconv.Atoi(match[1]); err == nil && number <= 1048576 {
 					rows[match[1]] = true
@@ -366,6 +367,7 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 	canonicalDocumentTools := map[string]string{}
 	canonicalTableAnalyses := map[string]types.ToolCall{}
 	canonicalPDFResults := map[string]types.ToolCall{}
+	canonicalLastValidCalls := map[string]bool{}
 	markNonEvidence := func(id, name, operation string) {
 		if id != "" {
 			if _, exists := toolNames[id]; !exists {
@@ -390,6 +392,9 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 					}
 				}
 				markNonEvidence(call.ID, name, operation)
+				if call.ID != "" && (coverageRequestedLastValid(call) || call.Result != nil && coverageHasLastValid(call.Result.Data)) {
+					canonicalLastValidCalls[call.ID] = true
+				}
 				if call.ID != "" && call.Name == documentTableAnalysisToolName {
 					canonicalTableAnalyses[call.ID] = call
 				}
@@ -467,6 +472,9 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 				return
 			}
 			for key, item := range x {
+				if key == "last_valid" || key == "coverage" && coverageHasLastValid(x) {
+					continue // Bounded endpoints enter only through current native evidence.
+				}
 				if key == "pdf_tables" {
 					if tables, ok := item.([]any); ok && len(tables) > 0 {
 						hasPDFEvidence = true
@@ -560,6 +568,17 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 				} else if json.Unmarshal([]byte(executed.Result.Output), &data) != nil {
 					continue
 				}
+				if endpoint := coverageHasLastValid(data); endpoint || coverageRequestedLastValid(executed) {
+					contract, err := structuredresult.ValidatePayload(executed.Result.Data)
+					if err != nil || endpoint && contract == nil || executed.Result.PreflightRejected || executed.ExecutionName() != executed.Name {
+						continue
+					}
+					if endpoint && structuredresult.LastValidEnabled() && data["rows_are"] == "latest_valid_observation" {
+						delete(data, "rows")
+						delete(data, "source_evidence")
+						delete(data, "observation_coverage")
+					}
+				}
 				// A source-binding clarification can carry real, authorized field
 				// identities without authorizing a calculation. Retain those exact
 				// labels for describing the candidates; do not promote any numeric
@@ -597,7 +616,7 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 			} else if name == "" {
 				name = toolNames[msg.ToolCallID]
 			}
-			if name == expandTaskToolsName || nonEvidenceToolCalls[msg.ToolCallID] {
+			if name == expandTaskToolsName || nonEvidenceToolCalls[msg.ToolCallID] || canonicalLastValidCalls[msg.ToolCallID] {
 				continue
 			}
 			if _, exists := canonicalPDFResults[msg.ToolCallID]; exists {
@@ -625,6 +644,9 @@ func ungroundedStructuredNumberOccurrencesWithEmptyEvidence(answer string, messa
 			}
 			var data map[string]any
 			if json.NewDecoder(strings.NewReader(msg.Content[start:])).Decode(&data) == nil {
+				if coverageHasLastValid(data) {
+					continue // The authenticated runtime Data, not copied output, supplies these values.
+				}
 				if name == documentTableAnalysisToolName || data["kind"] == "document_table_analysis" {
 					for _, result := range documentTableAnalysisExecutions(name, data) {
 						collect(result)

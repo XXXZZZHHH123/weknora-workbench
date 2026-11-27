@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/Tencent/WeKnora/internal/chart"
@@ -9,7 +10,7 @@ import (
 
 // A graph association follows the renderer's exact sealed source identity.
 // Matching a filename, a table name or equal numeric values is insufficient.
-func (e *AgentEngine) finalChartEvidenceReferences(state *types.AgentState, existing types.EvidenceReferences) types.EvidenceReferences {
+func (e *AgentEngine) finalChartEvidenceReferences(state *types.AgentState, existing types.EvidenceReferences, contexts ...context.Context) types.EvidenceReferences {
 	if state == nil {
 		return nil
 	}
@@ -59,7 +60,7 @@ func (e *AgentEngine) finalChartEvidenceReferences(state *types.AgentState, exis
 			}
 			var base *types.EvidenceReference
 			for _, id := range e.sortedCurrentStructuredCitationIDs() {
-				observation, current := e.currentStructuredObservation(id, state)
+				observation, current := e.currentStructuredObservation(id, state, contexts...)
 				if current && observation.CallID == parent.ID {
 					copy := observation.Reference
 					base = &copy
@@ -89,10 +90,14 @@ func (e *AgentEngine) finalChartEvidenceReferences(state *types.AgentState, exis
 			for i := range sources {
 				sources[i].Locators = locators
 			}
+			parentData := parent.Result.Data
+			if coverageHasLastValid(parentData) {
+				parentData = lastValidIntervalData(parentData)
+			}
 			manifest := map[string]any{"schema_version": 1, "tool": renderChartToolName, "tool_call_id": call.ID,
 				"result": map[string]any{"columns": selectedColumns, "rows": data["selected_rows"]}, "column_metadata": data["selected_columns"],
 				"source_cells": cells, "source_cells_scope": "available_original_spans_for_selected_cells", "source_mapping": data["source_mapping"], "chart_spec": data["chart_spec"], "source_result_id": base.ResultID, "source_result_hash": base.ResultHash,
-				"computation": map[string]any{"sql": parent.Result.Data["sql"], "input_count": parent.Result.Data["input_count"], "input_complete": parent.Result.Data["input_complete"], "coverage": parent.Result.Data["coverage"], "provenance": parent.Result.Data["provenance"], "mapping_provenance": data["provenance"], "source_truncated": data["source_truncated"]}, "artifact_handle": delivery.Handle}
+				"computation": map[string]any{"sql": parentData["sql"], "input_count": parentData["input_count"], "input_complete": parentData["input_complete"], "coverage": parentData["coverage"], "provenance": parentData["provenance"], "mapping_provenance": data["provenance"], "source_truncated": data["source_truncated"]}, "artifact_handle": delivery.Handle}
 			if contract, ok := parent.Result.Data["result_contract"].(map[string]any); ok {
 				computation := manifest["computation"].(map[string]any)
 				computation["execution"] = contract["execution"]

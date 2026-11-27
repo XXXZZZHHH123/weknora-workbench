@@ -677,28 +677,43 @@ def _validate_source_review(review, groups):
         raise ValueError('业务澄清必须由模型描述实际来源区别')
 
 
-def _binding_key(store, dataset, request, model_fn):
-    from .model_settings import read_model
+def _binding_scope(store, dataset, *, bind_grant):
     from .workspaces import current_identity
     identity = current_identity.get()
-    # Credentials are only included in a non-exported digest, never a key
-    # printed in logs. Rotating a credential must invalidate prior reuse.
-    config = read_model(store.root)
-    model_stamp = sha256(json.dumps(config, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     scope = None if identity is None else [identity.user_id, identity.tenant_id,
                                           identity.knowledge_base_id, identity.knowledge_base_tenant_id]
-    payload = {"root": str(store.root.resolve()), "scope": scope,
-               "manifest": store.manifest(dataset), "model": model_stamp,
+    binding = {"root": str(store.root.resolve()), "manifest": store.manifest(dataset), "scope": scope}
+    if bind_grant and identity is not None:
+        from .model_gateway import current_authorization
+        scope.extend([identity.role, identity.knowledge_base_can_write, identity.workbench_id,
+                      identity.scope_version, identity.sources_revision, identity.summary_model_id,
+                      identity.knowledge_base_permission])
+        if identity.api_key_scope_sha256:
+            binding['api_key_scope_sha256'] = identity.api_key_scope_sha256
+        else:
+            binding['authorization'] = sha256(current_authorization.get().encode()).hexdigest()
+    return binding
+
+
+def _binding_digest(payload):
+    return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+
+def _binding_key(store, dataset, request, model_fn, *, bind_grant):
+    from .model_settings import read_model
+    # Credentials are only included in a non-exported digest, never a key
+    # printed in logs. Rotating a credential must invalidate prior reuse.
+    payload = {"binding": _binding_scope(store, dataset, bind_grant=bind_grant),
+               "model": _binding_digest(read_model(store.root)),
                "prompt": SOURCE_BINDING_PROMPT,
                "request": {k: v for k, v in request.items() if k != "_source_binding_deadline"}}
-    digest = sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-    return CallableIdentity(model_fn), digest
+    return CallableIdentity(model_fn), _binding_digest(payload)
 
 
 _binding_reuse = SourceBindingReuse()
 
 
-def verify_selection(store, dataset, series_ids, question, model_fn=None, source_binding=None):
+def verify_selection(store, dataset, series_ids, question, model_fn=None, source_binding=None, *, reuse_explicit=False):
     """Validate requested IDs against a model plan over all real siblings.
 
     source_binding is the calling model's own explicit plan for each touched
@@ -707,13 +722,13 @@ def verify_selection(store, dataset, series_ids, question, model_fn=None, source
     plan the model already made is executed without a second model call.
     """
     import httpx
-    catalog = store.catalog(dataset)
+    catalog = store.catalog(dataset, include_quality=False) if reuse_explicit else store.catalog(dataset)
     requested = set(series_ids)
     actual_ids = {source['series_id'] for source in catalog}
     if requested - actual_ids:
         raise ValueError('来源计划包含当前数据集不存在的字段 ID')
     groups = [group for group in duplicate_source_groups(catalog) if requested & {source['series_id'] for source in group}]
-    if not groups:
+    if not groups and (not reuse_explicit or source_binding is None or source_binding == []):
         return None
     if not isinstance(question, str) or not question.strip() or len(question) > 16000:
         return {'kind': 'structured_source_binding', 'status': 'error', 'retryable': True,
@@ -721,6 +736,20 @@ def verify_selection(store, dataset, series_ids, question, model_fn=None, source
     evidence = [[{k: source.get(k) for k in ('series_id', 'sheet', 'metric', 'unit', 'dimensions', 'header_cells', 'source_context', 'exchange_rate')}
                  for source in group] for group in groups]
     required = requested & {source['series_id'] for group in groups for source in group}
+    explicit_keys = []
+    cache_allowed = True
+    if reuse_explicit:
+        from .model_gateway import current_authorization
+        from .workspaces import current_identity
+        identity = current_identity.get()
+        # Earlier signed envelopes can share a mapped user across API keys.
+        # Only a verified grant or the fixed legacy MCP principal can reuse.
+        cache_allowed = identity is not None and bool(identity.legacy_mcp or identity.api_key_scope_sha256
+                                                      or current_authorization.get())
+        if cache_allowed:
+            scope = _binding_scope(store, dataset, bind_grant=True)
+            explicit_keys = [('explicit', _binding_digest([scope, dataset, question, sorted(group, key=lambda source: source['series_id'])]))
+                             for group in evidence]
     if source_binding is not None:
         try:
             plan = {'decision': 'resolved', 'bindings': source_binding}
@@ -732,7 +761,17 @@ def verify_selection(store, dataset, series_ids, question, model_fn=None, source
             return {'kind': 'structured_source_binding', 'status': 'plan_mismatch', 'retryable': True,
                     'code': 'source_binding_invalid', 'error': str(error), 'fields': evidence,
                     'notice': '提交的来源绑定计划未通过校验；未查询数值。依据完整问题和 fields 中的实际同名来源修正计划，不自动替换字段。'}
+        if explicit_keys:
+            by_ids = {frozenset(binding['considered_ids']): binding for binding in source_binding}
+            for key, group in zip(explicit_keys, groups):
+                _binding_reuse.remember(key, by_ids[frozenset(source['series_id'] for source in group)])
         return None
+    if explicit_keys:
+        stored = [_binding_reuse.get(key) for key in explicit_keys]
+        if all(stored):
+            _validate_source_review({'decision': 'resolved', 'bindings': stored}, groups)
+            if required.issubset(sid for binding in stored for sid in binding['selected_ids']):
+                return None
     model_identity = model_fn
     if model_fn is None:
         from .field_resolver import ask_model
@@ -762,11 +801,15 @@ def verify_selection(store, dataset, series_ids, question, model_fn=None, source
                 review = None
 
     try:
-        original_request = deepcopy(request)
-        key = _binding_key(store, dataset, original_request, model_identity)
-        def reusable(review):
-            return accepted(review) and key == _binding_key(store, dataset, original_request, model_identity)
-        review = _binding_reuse.run(key, compute, reusable, request['_source_binding_deadline'])
+        if cache_allowed:
+            original_request = deepcopy(request)
+            key = _binding_key(store, dataset, original_request, model_identity, bind_grant=reuse_explicit)
+            def reusable(review):
+                return accepted(review) and key == _binding_key(store, dataset, original_request, model_identity,
+                                                                bind_grant=reuse_explicit)
+            review = _binding_reuse.run(key, compute, reusable, request['_source_binding_deadline'])
+        else:
+            review = compute()
         # Reuse cannot authorize a query: every caller rechecks the same group
         # coverage and real selected IDs against its current catalogue.
         _validate_source_review(review, groups)

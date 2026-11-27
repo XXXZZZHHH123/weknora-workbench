@@ -1,4 +1,5 @@
 """Composable SQL analysis on bounded, isolated copies of authorized inputs."""
+from collections import Counter
 import datetime as dt
 from decimal import Decimal
 import threading
@@ -9,6 +10,9 @@ import tempfile
 import re
 import duckdb
 
+from .result_contract import typed_sha256
+from .series_endpoint import (bind_coverage_sources, last_valid_enabled, observation_date_bounds,
+                              read_endpoint_coverage)
 from .store import published_series_dates
 
 MAX_INPUT_ROWS = 50000
@@ -34,7 +38,11 @@ class AnalysisSQLError(ValueError):
                                  'columns': [{'name': name, 'type': dtype} for name, dtype in ANALYSIS_INPUT_COLUMNS]}}
 
 
-def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=None, limit=200):
+def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=None, limit=200,
+                  *, include_last_valid: bool = False):
+    if type(include_last_valid) is not bool:
+        raise ValueError('include_last_valid 必须为布尔值')
+    use_endpoint = include_last_valid and last_valid_enabled()
     if not isinstance(series_ids,list) or not 1 <= len(series_ids) <= 16 or any(not isinstance(s,str) for s in series_ids):
         raise ValueError('series_ids需要1至16个真实字段ID')
     if not isinstance(sql,str) or not sql.strip() or len(sql)>16000:
@@ -49,12 +57,24 @@ def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=
     if start and end and start>end:raise ValueError('开始日期不能晚于结束日期')
     where='series_id IN ('+','.join('?' for _ in series_ids)+')'
     params=list(series_ids)
-    if start:where+=' AND date>=?';params.append(start)
     if end:where+=' AND date<=?';params.append(end)
+    as_of_where, as_of_params = where, list(params)
+    if start:where+=' AND date>=?';params.append(start)
     with store._connect(dataset_id) as source:
-        n=source.execute('SELECT count(*) FROM observations WHERE '+where,params).fetchone()[0]
+        date_bounds = None
+        if use_endpoint and start is None:
+            date_bounds = observation_date_bounds(source, where, params)
+            n = sum(bounds[0] for bounds in date_bounds.values())
+        else:
+            n=source.execute('SELECT count(*) FROM observations WHERE '+where,params).fetchone()[0]
         if n>MAX_INPUT_ROWS:raise ValueError('输入超过50000条；请按范围分步分析，未使用截断样本计算')
         inputs=source.execute('SELECT series_id,date,value,source_cell,date_cell,period,value_status FROM observations WHERE '+where+' ORDER BY series_id,date,source_cell',params).fetchall()
+        if use_endpoint:
+            observation_columns = {row[1] for row in source.execute("PRAGMA table_info('observations')").fetchall()}
+            endpoint_coverages = read_endpoint_coverage(
+                source, series, where=as_of_where, params=as_of_params,
+                start=start, end=end, columns=observation_columns, date_bounds=date_bounds,
+            )
     provenance={}
     data=[]
     for sid,date,value,cell,date_cell,period,status in inputs:
@@ -68,7 +88,15 @@ def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=
                          'actual_first_date':str(min(dates)) if dates else None,'actual_last_date':str(max(dates)) if dates else None,
                          'valid_first_date':str(min(valid_dates)) if valid_dates else None,'valid_last_date':str(max(valid_dates)) if valid_dates else None,
                          'example_cells':[r['source_cell'] for r in rows[:5]]}
+        if use_endpoint:
+            endpoint_coverages[sid]['requested_range_status_counts'] = dict(Counter(r['value_status'] for r in rows))
     manifest=store.manifest(dataset_id)
+    manifest_sha256 = typed_sha256(manifest)
+    if use_endpoint:
+        bind_coverage_sources(store, dataset_id, manifest, manifest_sha256, series, endpoint_coverages)
+        for sid, coverage in endpoint_coverages.items():
+            provenance[sid]['coverage'] = coverage
+            provenance[sid]['source'] = dict(coverage['source'])
     # The analysis connection has no dataset file attached. It contains only the
     # selected inputs, even if the model queries system catalogues or subqueries.
     with duckdb.connect(config={'enable_external_access':'false','threads':'2','memory_limit':'256MB'}) as con:
@@ -140,12 +168,12 @@ def analyze_table(store, dataset_id, series_ids, sql, start_date=None, end_date=
 
     # Durable bounded result facts allow retrieval after context compaction.
     result['result_id']=secrets.token_hex(12)
-    from .result_contract import attach_result_contract, snapshot, source_column, sql_execution, typed_sha256
+    from .result_contract import attach_result_contract, snapshot, source_column, sql_execution
     # Dates in the loaded input digest use exactly the ISO representation exposed
     # in the response. Scope is all loaded inputs, never aggregate membership.
     attach_result_contract(result,source_snapshot=snapshot(result['source'],kind='excel_observations',
         dataset_id=dataset_id,scope='loaded_inputs_before_user_sql',input_data=encode(data),
-        versions={'manifest_sha256':typed_sha256(manifest)}),
+        versions={'manifest_sha256':manifest_sha256}),
         execution=sql_execution(sql,duckdb.__version__,'DuckDB DOUBLE source values; DECIMAL result values encoded as strings'),
         columns=[source_column(name,i,logical_types[i],unit=units[i],dependency=dependencies[i],operation=operations[i])
                  for i,name in enumerate(columns)],dependency_verified=dependency_verified)

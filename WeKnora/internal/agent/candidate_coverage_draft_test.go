@@ -53,7 +53,7 @@ func TestCoverageDraftRanksVerifiedRolesAcrossOrders(t *testing.T) {
 			e.turnReview.Query = "What do the records establish?"
 			ctx, state := t.Context(), &types.AgentState{}
 			for _, candidate := range test.candidates {
-				assessment := e.assessCoverageDraft(review, candidate, state)
+				assessment := e.assessCoverageDraft(t.Context(), review, candidate, state)
 				require.NotEmpty(t, assessment.anchors)
 				if candidate == manyValues {
 					require.Len(t, assessment.anchors, 3)

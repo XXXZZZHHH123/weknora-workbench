@@ -30,11 +30,34 @@ class SourceBindingReuse:
         self._pending = {}
         self._lock = Lock()
 
+    def _expire(self):
+        now = self.clock()
+        for expired in [key for key, (until, _) in self._entries.items() if until <= now]:
+            del self._entries[expired]
+
+    def _remember(self, key, value):
+        self._entries[key] = (self.clock() + self.ttl, deepcopy(value))
+        self._entries.move_to_end(key)
+        while len(self._entries) > self.capacity:
+            self._entries.popitem(last=False)
+
+    def get(self, key):
+        with self._lock:
+            self._expire()
+            if key in self._entries:
+                self._entries.move_to_end(key)
+                return deepcopy(self._entries[key][1])
+        return None
+
+    def remember(self, key, value):
+        if len(json.dumps(value, ensure_ascii=False).encode()) <= 32768:
+            with self._lock:
+                self._expire()
+                self._remember(key, value)
+
     def run(self, key, compute, reusable, deadline):
         with self._lock:
-            now = self.clock()
-            for expired in [k for k, (until, _) in self._entries.items() if until <= now]:
-                del self._entries[expired]
+            self._expire()
             if key in self._entries:
                 self._entries.move_to_end(key)
                 return deepcopy(self._entries[key][1])
@@ -57,10 +80,7 @@ class SourceBindingReuse:
             cacheable = reusable(value) and len(json.dumps(value, ensure_ascii=False).encode()) <= 32768
             with self._lock:
                 if cacheable:
-                    self._entries[key] = (self.clock() + self.ttl, deepcopy(value))
-                    self._entries.move_to_end(key)
-                    while len(self._entries) > self.capacity:
-                        self._entries.popitem(last=False)
+                    self._remember(key, value)
                 self._pending.pop(key, None)
             pending.set_result(deepcopy(value))
             return value

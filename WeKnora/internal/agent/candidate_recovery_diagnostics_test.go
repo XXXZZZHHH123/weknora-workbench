@@ -112,7 +112,7 @@ func TestCitationRecoveryIdentifiesEachTagAndCurrentAvailableChunk(t *testing.T)
 	state.RoundSteps = append(state.RoundSteps, citationViewState(unknown, failed).RoundSteps...)
 	candidate := `A.<kb chunk_id="identity-unknown" /> B.<kb chunk_id="unread" /> C.<evidence evidence_id="unissued" />`
 	history := []chat.Message{{Role: "tool", Name: "read_document", Content: `{"success":true,"data":{"chunks":[{"chunk_id":"historical","knowledge_id":"contract-document","content":"A historical body."}]}}`}}
-	feedback, counts, _ := e.candidateCitationRecovery(candidate, state, history)
+	feedback, counts, _ := e.candidateCitationRecovery(t.Context(), candidate, state, history)
 	payload := citationRecoveryPayload(t, feedback)
 	issues := payload["issues"].([]any)
 	require.Len(t, issues, 3)
@@ -189,7 +189,7 @@ func TestCitationRecoveryReportsEachForgedScopeLabelAgainstRealChunk(t *testing.
 		t.Run(tag, func(t *testing.T) {
 			candidate := "说明。" + tag
 			require.Len(t, e.currentCandidateKnowledgeReferences(candidate, state, nil), 1, "the actual chunk remains real; only the explicit tag scope is forged")
-			feedback, counts, needsRead := e.candidateCitationRecovery(candidate, state, nil)
+			feedback, counts, needsRead := e.candidateCitationRecovery(t.Context(), candidate, state, nil)
 			require.False(t, needsRead, "a tag protocol failure does not require re-fetching the same body")
 			require.Equal(t, map[string]int{"citation_scope_invalid": 1}, counts)
 			payload := citationRecoveryPayload(t, feedback)
@@ -213,7 +213,7 @@ func TestCitationRecoveryKeepsRepeatedScopeFailuresSeparate(t *testing.T) {
 	first := `<kb chunk_id="view-shared" kb_id="foreign-library" />`
 	second := `<kb chunk_id="view-shared" knowledge_id="foreign-document" />`
 	candidate := `合法。<kb chunk_id="view-shared" kb_id="contract-library" />` + " 错误一。" + first + " 错误二。" + second
-	feedback, counts, _ := e.candidateCitationRecovery(candidate, state, nil)
+	feedback, counts, _ := e.candidateCitationRecovery(t.Context(), candidate, state, nil)
 	require.Equal(t, map[string]int{"citation_scope_invalid": 2}, counts)
 	issues := citationRecoveryPayload(t, feedback)["issues"].([]any)
 	require.Len(t, issues, 2)

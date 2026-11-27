@@ -14,7 +14,7 @@ WB = 'a0000000-0000-4000-8000-000000000001'
 
 
 def signed_projection(body, *, path=PATH, user='reader', kb='library-a', authorization='Bearer reader',
-                      workbench=True, machine=False):
+                      workbench=True, machine=False, api_key_scope_sha256=None):
     identity = {'user_id': user, 'email': 'reader@example.test', 'display_name': 'Reader',
                 'tenant_id': 9, 'role': 'contributor', 'knowledge_base_id': kb,
                 'knowledge_base_tenant_id': 9}
@@ -24,6 +24,8 @@ def signed_projection(body, *, path=PATH, user='reader', kb='library-a', authori
         identity['authorization_sha256'] = hashlib.sha256(authorization.encode()).hexdigest()
     if workbench:
         identity['workbench_id'] = WB
+    if api_key_scope_sha256 is not None:
+        identity['api_key_scope_sha256'] = api_key_scope_sha256
     raw = json.dumps(body, separators=(',', ':')).encode()
     encoded = base64.urlsafe_b64encode(json.dumps(identity).encode()).decode().rstrip('=')
     stamp = str(int(time.time()))

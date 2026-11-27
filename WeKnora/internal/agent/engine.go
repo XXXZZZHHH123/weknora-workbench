@@ -2109,7 +2109,7 @@ func (e *AgentEngine) beginCandidateRevision(ctx context.Context, state *types.A
 	guards.structuredReviewEvidence = append([]chat.Message(nil), (*messagesPtr)...)
 	unsupported := []string{}
 	if needsStructuredAnswerReviewForQuery(query, state.RoundSteps, *messagesPtr, candidate) {
-		unsupported = ungroundedStructuredNumbers(candidate, e.answerNumericEvidence(candidate, state.RoundSteps, *messagesPtr), state.RoundSteps)
+		unsupported = ungroundedStructuredNumbers(candidate, e.answerNumericEvidenceInScope(ctx, candidate, state.RoundSteps, *messagesPtr), state.RoundSteps)
 	}
 	common.PipelineInfo(ctx, "Agent", "candidate_revision_start", map[string]interface{}{"iteration": state.CurrentRound, "unmatched_numbers": unsupported})
 	catalogMessages := documentCatalogMessagesFromSteps(state.RoundSteps)

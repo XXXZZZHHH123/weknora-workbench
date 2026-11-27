@@ -255,6 +255,12 @@
             ],
             "default": null,
             "title": "Source Binding"
+          },
+          "include_last_valid": {
+            "default": false,
+            "description": "仅在问题需要所选字段的最近有效观测时设 true。区间 rows/统计仍只覆盖请求窗口，另见 coverage.last_valid（SQL 为 inputs[series_id].coverage.last_valid）。有请求期末时用 end_date 给出，SQL 的 WHERE 不限定该端点，省略 end_date 按快照读取。before_range 表示窗前。conflict 或 truncated 时按实际原格说明冲突或截断；缺少端点表示本次未取得。",
+            "title": "Include Last Valid",
+            "type": "boolean"
           }
         },
         "required": [
@@ -365,6 +371,12 @@
             ],
             "default": null,
             "title": "Source Binding"
+          },
+          "include_last_valid": {
+            "default": false,
+            "description": "仅在问题需要所选字段的最近有效观测时设 true。区间 rows/统计仍只覆盖请求窗口，另见 coverage.last_valid（SQL 为 inputs[series_id].coverage.last_valid）。有请求期末时用 end_date 给出，SQL 的 WHERE 不限定该端点，省略 end_date 按快照读取。before_range 表示窗前。conflict 或 truncated 时按实际原格说明冲突或截断；缺少端点表示本次未取得。",
+            "title": "Include Last Valid",
+            "type": "boolean"
           }
         },
         "required": [

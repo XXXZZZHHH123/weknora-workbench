@@ -98,7 +98,7 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 		return decision
 	}
 	started := time.Now()
-	selected := currentStructuredResultReviewState(state)
+	selected := e.lastValidSourceReviewState(ctx, currentStructuredResultReviewState(state), 0)
 	geometry, geometryComplete := e.currentOriginalGeometryReviewEvidence(state)
 	images, imagesComplete := e.currentDocumentImageObservationReviewEvidence(state)
 	documents, documentsComplete := e.currentCitedDocumentReviewEvidence(decision.Candidate, state, conversation)
@@ -353,7 +353,7 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 	// The presentation decoder intentionally removes unregistered citations.
 	// Reject those before decoding so stripping one cannot launder a correction.
 	if len(uniqueCandidateCitationIDs(answer)) != len(e.currentCandidateKnowledgeReferences(answer, state, conversation)) ||
-		len(uniqueCandidateEvidenceIDs(answer)) != len(e.currentCandidateEvidenceReferences(answer, state)) {
+		len(uniqueCandidateEvidenceIDs(answer)) != len(e.currentCandidateEvidenceReferences(answer, state, ctx)) {
 		correctionFailure = "citation_identity"
 		return decision
 	}
@@ -371,7 +371,7 @@ func (e *AgentEngine) checkStructuredResultDelivery(ctx context.Context, query s
 	}
 	// Check the correction once with the same deterministic guards. No recursive
 	// checkCandidate, extra critic, evidence collection or candidate repair loop.
-	if correctionFailure = e.structuredResultCorrectionFailure(query, presentation, state, conversation); correctionFailure != "" {
+	if correctionFailure = e.structuredResultCorrectionFailure(ctx, query, presentation, state, conversation); correctionFailure != "" {
 		return decision
 	}
 	decision.Candidate, decision.CandidateHash = presentation, candidateTextDigest(presentation)
@@ -767,11 +767,11 @@ func applyStructuredResultReplacementSpans(candidate string, replacements []stru
 	return corrected.String(), ""
 }
 
-func (e *AgentEngine) structuredResultCorrectionFailure(query, answer string, state *types.AgentState, conversation []chat.Message) string {
+func (e *AgentEngine) structuredResultCorrectionFailure(ctx context.Context, query, answer string, state *types.AgentState, conversation []chat.Message) string {
 	if strings.TrimSpace(structuredReviewCitationTag.ReplaceAllString(answer, "")) == "" || terminalCandidateFallback(answer) {
 		return "empty_or_runtime_fallback"
 	}
-	if !e.candidateEvidenceBudgetFits(answer, state) {
+	if !e.candidateEvidenceBudgetFits(answer, state, ctx) {
 		return "answer_budget"
 	}
 	expanded, _, err := e.expandDocumentTableCandidate(answer, state)
@@ -779,12 +779,12 @@ func (e *AgentEngine) structuredResultCorrectionFailure(query, answer string, st
 		return "presentation_changed" // Preserve the already expanded presentation.
 	}
 	if len(uniqueCandidateCitationIDs(answer)) != len(e.currentCandidateKnowledgeReferences(answer, state, conversation)) ||
-		len(uniqueCandidateEvidenceIDs(answer)) != len(e.currentCandidateEvidenceReferences(answer, state)) ||
+		len(uniqueCandidateEvidenceIDs(answer)) != len(e.currentCandidateEvidenceReferences(answer, state, ctx)) ||
 		(!e.config.CitationsEnabled() && len(uniqueCandidateCitationIDs(answer))+len(uniqueCandidateEvidenceIDs(answer)) > 0) {
 		return "citation_identity"
 	}
 	if needsStructuredAnswerReviewForQuery(query, state.RoundSteps, conversation, answer) {
-		evidence := e.answerNumericEvidence(answer, state.RoundSteps, conversation)
+		evidence := e.answerNumericEvidenceInScope(ctx, answer, state.RoundSteps, conversation)
 		if len(ungroundedStructuredNumbers(answer, evidence, state.RoundSteps)) > 0 {
 			return "numeric_support"
 		}

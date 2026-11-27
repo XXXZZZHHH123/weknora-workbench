@@ -76,10 +76,10 @@ func unverifiedInlineBindings(candidate, id string) json.RawMessage {
 	return encoded
 }
 
-func (e *AgentEngine) unverifiedNavigationReferences(candidate string, state *types.AgentState) (types.EvidenceReferences, []*types.SearchResult) {
+func (e *AgentEngine) unverifiedNavigationReferences(ctx context.Context, candidate string, state *types.AgentState) (types.EvidenceReferences, []*types.SearchResult) {
 	refs := types.EvidenceReferences{}
 	if e.config != nil && e.config.EvidenceReferencesEnabled {
-		for _, ref := range e.currentCandidateEvidenceReferences(candidate, state) {
+		for _, ref := range e.currentCandidateEvidenceReferences(candidate, state, ctx) {
 			ref.ReviewStatus = "unverified"
 			ref.ClaimBindings = unverifiedInlineBindings(candidate, ref.ID)
 			refs = append(refs, ref)
@@ -111,7 +111,7 @@ func (e *AgentEngine) prepareUnverifiedCitationDelivery(ctx context.Context, sta
 	evidence, chunks := map[string]bool{}, map[string]bool{}
 	eligible := e.unverifiedBaseCurrent(ctx, state)
 	if eligible {
-		refs, legacy := e.unverifiedNavigationReferences(base, state)
+		refs, legacy := e.unverifiedNavigationReferences(ctx, base, state)
 		for _, ref := range refs {
 			evidence[ref.ID] = true
 		}
@@ -134,7 +134,7 @@ func (e *AgentEngine) prepareUnverifiedCitationDelivery(ctx context.Context, sta
 			final += missingNotice
 		}
 		originalFinal = final
-		refs, legacy = e.unverifiedNavigationReferences(final, state)
+		refs, legacy = e.unverifiedNavigationReferences(ctx, final, state)
 		rejected := false
 		total, count := 0, 0
 		for _, ref := range refs {
@@ -188,7 +188,7 @@ func (e *AgentEngine) currentUnverifiedCitationReferences(ctx context.Context, s
 		binding.WarningHash != candidateTextDigest(warning) || binding.TaskHash != d.TaskHash || binding.EvidenceHash != d.EvidenceHash || binding.ScopeHash != e.unverifiedSourceScopeDigest(ctx) {
 		return nil, nil, false
 	}
-	refs, legacy := e.unverifiedNavigationReferences(state.FinalAnswer, state)
+	refs, legacy := e.unverifiedNavigationReferences(ctx, state.FinalAnswer, state)
 	if len(refs) != len(uniqueCandidateEvidenceIDs(state.FinalAnswer)) || len(legacy) != len(uniqueCandidateCitationIDs(state.FinalAnswer)) || unverifiedReferenceDigest(refs, legacy) != binding.ReferencesHash {
 		return nil, nil, false
 	}

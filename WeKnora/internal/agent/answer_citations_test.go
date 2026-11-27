@@ -180,12 +180,12 @@ func TestCitationPolicyAndCollectorUseExecutionIdentityAndRejectVersionConflicts
 	call.Name, call.Target = "provider_proxy", &types.ToolCallTarget{Name: "read_document"}
 	approveCitationCandidate(e, state, `<kb chunk_id="current-b" />`)
 	require.Len(t, e.finalAnswerKnowledgeReferences(state), 1)
-	require.Equal(t, 2, e.sourceCitationReviewPolicy(state, nil)["available_anchor_count"])
+	require.Equal(t, 2, e.sourceCitationReviewPolicy(t.Context(), state, nil)["available_anchor_count"])
 	require.Equal(t, "provider_proxy", call.Name, "source projection must not rewrite the provider/history record")
 	call.Name, call.Target = "read_document", &types.ToolCallTarget{Name: "mcp_external_read"}
 	approveCitationCandidate(e, state, `<kb chunk_id="current-b" />`)
 	require.Empty(t, e.finalAnswerKnowledgeReferences(state))
-	require.Zero(t, e.sourceCitationReviewPolicy(state, nil)["available_anchor_count"], "external chunks cannot acquire knowledge-source authority through their display shape")
+	require.Zero(t, e.sourceCitationReviewPolicy(t.Context(), state, nil)["available_anchor_count"], "external chunks cannot acquire knowledge-source authority through their display shape")
 
 	e, state = citationDeliveryFixture(t, &mockChat{}, true)
 	second := state.RoundSteps[0].ToolCalls[0]
@@ -198,7 +198,7 @@ func TestCitationPolicyAndCollectorUseExecutionIdentityAndRejectVersionConflicts
 	state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{second}})
 	approveCitationCandidate(e, state, `<kb chunk_id="current-b" />`)
 	require.Empty(t, e.finalAnswerKnowledgeReferences(state))
-	policy := e.sourceCitationReviewPolicy(state, nil)
+	policy := e.sourceCitationReviewPolicy(t.Context(), state, nil)
 	require.Equal(t, 1, policy["available_anchor_count"], "the unchanged neighbor remains available, but cannot stand in for the conflicted cited chunk")
 }
 
@@ -215,7 +215,7 @@ func citationSQLOnlyState() *types.AgentState {
 func TestCitationPolicyDistinguishesSQLNavigationFromFetchedChunkAuthority(t *testing.T) {
 	e, _ := citationDeliveryFixture(t, &mockChat{}, true)
 	state := citationSQLOnlyState()
-	policy := e.sourceCitationReviewPolicy(state, nil)
+	policy := e.sourceCitationReviewPolicy(t.Context(), state, nil)
 	require.Zero(t, policy["available_anchor_count"])
 	reads := policy["verified_document_reads"].([]any)
 	require.Len(t, reads, 1)
@@ -236,7 +236,7 @@ func TestCitationPolicyDistinguishesSQLNavigationFromFetchedChunkAuthority(t *te
 	} {
 		state = citationSQLOnlyState()
 		change(&state.RoundSteps[0].ToolCalls[0])
-		policy = e.sourceCitationReviewPolicy(state, nil)
+		policy = e.sourceCitationReviewPolicy(t.Context(), state, nil)
 		require.Zero(t, policy["verified_document_read_count"])
 		require.Empty(t, policy["available_anchors"])
 	}
@@ -288,7 +288,7 @@ func TestCitationPolicyBoundsRealAnchorDirectoryWithoutPromotingOmissions(t *tes
 	}
 	state.RoundSteps[0].ToolCalls[0].Result.Data["chunks"] = rows
 	e.modelContext.ModelToolResultForTool("read_document", state.RoundSteps[0].ToolCalls[0].Result)
-	policy := e.sourceCitationReviewPolicy(state, nil)
+	policy := e.sourceCitationReviewPolicy(t.Context(), state, nil)
 	encoded, err := json.Marshal(policy)
 	require.NoError(t, err)
 	require.LessOrEqual(t, len(encoded), sourceCitationPolicyBudget)

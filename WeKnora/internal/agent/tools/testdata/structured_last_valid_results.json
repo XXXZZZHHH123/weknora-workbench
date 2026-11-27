@@ -1,0 +1,945 @@
+{
+  "query_series": {
+    "arguments": {
+      "dataset_id": "11e1ee67661a87c5068af5fb",
+      "start_date": "2024-05-01",
+      "end_date": "2024-05-31",
+      "series_id": "measure"
+    },
+    "legacy": {
+      "dataset_id": "11e1ee67661a87c5068af5fb",
+      "status": "no_data",
+      "series": {
+        "series_id": "measure",
+        "sheet": "Sheet",
+        "metric": "Measure",
+        "unit": "kg",
+        "dimensions": {},
+        "header_cells": [
+          "B1"
+        ],
+        "record_count": 1,
+        "valid_count": 1,
+        "first_date": "2024-04-02",
+        "last_date": "2024-04-02",
+        "first_valid_date": "2024-04-02",
+        "last_valid_date": "2024-04-02"
+      },
+      "filters": {
+        "series_id": "measure",
+        "start_date": "2024-05-01",
+        "end_date": "2024-05-31",
+        "operation": "rows",
+        "period": null,
+        "value_filters": [],
+        "last_n": null,
+        "top_n": null,
+        "order": "desc"
+      },
+      "scope_record_count": 0,
+      "record_count": 0,
+      "valid_count": 0,
+      "formula_count": 0,
+      "valid_formula_count": 0,
+      "valid_non_formula_count": 0,
+      "missing_count": 0,
+      "actual_first_date": null,
+      "actual_last_date": null,
+      "valid_first_date": null,
+      "valid_last_date": null,
+      "aggregate": null,
+      "rows": [],
+      "extremum_rows": null,
+      "extremum_count": null,
+      "rows_are": "observations",
+      "truncated": false,
+      "source_semantics": {
+        "date_representation": "date",
+        "statistical_calendar": null,
+        "aggregation_rule": null,
+        "notice": "未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"
+      },
+      "source": {
+        "file": "fixture.xlsx",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sheet": "Sheet",
+        "header_cells": [
+          "B1"
+        ]
+      },
+      "warnings": [
+        "查询范围没有有效数据，不能用其他日期或模型记忆补齐。",
+        "missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。"
+      ],
+      "observation_coverage": {
+        "scope_record_count": 0,
+        "scope_valid_count": 0,
+        "scope_start_date": null,
+        "scope_end_date": null,
+        "segments": [],
+        "total_segment_count": 0,
+        "truncated": false,
+        "max_segments": 64,
+        "value_changes": {
+          "scope": {
+            "record_count": 0,
+            "valid_value_count": 0,
+            "eligible_record_count": 0,
+            "eligible_start_date": null,
+            "eligible_end_date": null,
+            "complete_filtered_input": true
+          },
+          "first": {
+            "date": null,
+            "value": null
+          },
+          "last": {
+            "date": null,
+            "value": null
+          },
+          "minimum": {
+            "date": null,
+            "value": null
+          },
+          "maximum": {
+            "date": null,
+            "value": null
+          },
+          "adjacent_comparison_count": 0,
+          "increase_count": 0,
+          "decrease_count": 0,
+          "unchanged_count": 0,
+          "excluded_boundary_records": {
+            "null_date_count": 0,
+            "missing_value_count": 0,
+            "duplicate_date_record_count": 0
+          },
+          "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+        },
+        "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+      },
+      "result_contract": {
+        "schema_version": 2,
+        "hash_algorithm": "sha256-typed-json-v1",
+        "result_id": "74d5b3c00dcfae1b53376dae",
+        "hash_input_keys": [
+          "actual_first_date",
+          "actual_last_date",
+          "aggregate",
+          "dataset_id",
+          "extremum_count",
+          "extremum_rows",
+          "filters",
+          "missing_count",
+          "observation_coverage",
+          "record_count",
+          "rows",
+          "rows_are",
+          "scope_record_count",
+          "series",
+          "source",
+          "source_semantics",
+          "truncated",
+          "valid_count",
+          "valid_first_date",
+          "valid_last_date",
+          "warnings"
+        ],
+        "source_snapshot": {
+          "kind": "excel_observations",
+          "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "file": "fixture.xlsx",
+          "versions": {
+            "manifest_sha256": "5a11a61e744960c5f7b431502348f4560fc432701f61b39322ce787a70399f3d"
+          },
+          "input_digest_sha256": "90f9a4657249941e0fac87627150d9b390f8a1b4c1516c0ae6d2364888887fa2",
+          "dataset_id": "11e1ee67661a87c5068af5fb",
+          "scope": "returned_source_rows"
+        },
+        "execution": {
+          "kind": "series_query",
+          "engine": "duckdb",
+          "engine_version": "1.5.5",
+          "numeric_semantics": "saved DOUBLE values; Excel formulas are not recalculated",
+          "input_scope": "returned_source_rows",
+          "cell_lineage_verified": false,
+          "operation": "rows",
+          "column_metadata_scope": "returned_rows_not_aggregate"
+        },
+        "column_metadata": [],
+        "evidence_capabilities": {
+          "level": "source_cells",
+          "column_dependencies_verified": true,
+          "cell_lineage_verified": false,
+          "source_cells_available": true,
+          "aggregate_membership_verified": false
+        },
+        "result_hash": "45eee2f9677810915df9bbc981b94f552f24803b011e7e73903c7d550fc833bb"
+      }
+    },
+    "with_endpoint": {
+      "dataset_id": "11e1ee67661a87c5068af5fb",
+      "status": "no_data",
+      "series": {
+        "series_id": "measure",
+        "sheet": "Sheet",
+        "metric": "Measure",
+        "unit": "kg",
+        "dimensions": {},
+        "header_cells": [
+          "B1"
+        ],
+        "record_count": 1,
+        "valid_count": 1,
+        "first_date": "2024-04-02",
+        "last_date": "2024-04-02",
+        "first_valid_date": "2024-04-02",
+        "last_valid_date": "2024-04-02"
+      },
+      "filters": {
+        "series_id": "measure",
+        "start_date": "2024-05-01",
+        "end_date": "2024-05-31",
+        "operation": "rows",
+        "period": null,
+        "value_filters": [],
+        "last_n": null,
+        "top_n": null,
+        "order": "desc"
+      },
+      "scope_record_count": 0,
+      "record_count": 0,
+      "valid_count": 0,
+      "formula_count": 0,
+      "valid_formula_count": 0,
+      "valid_non_formula_count": 0,
+      "missing_count": 0,
+      "actual_first_date": null,
+      "actual_last_date": null,
+      "valid_first_date": null,
+      "valid_last_date": null,
+      "aggregate": null,
+      "rows": [],
+      "extremum_rows": null,
+      "extremum_count": null,
+      "rows_are": "observations",
+      "truncated": false,
+      "source_semantics": {
+        "date_representation": "date",
+        "statistical_calendar": null,
+        "aggregation_rule": null,
+        "notice": "未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"
+      },
+      "source": {
+        "file": "fixture.xlsx",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sheet": "Sheet",
+        "header_cells": [
+          "B1"
+        ]
+      },
+      "warnings": [
+        "查询范围没有有效数据，不能用其他日期或模型记忆补齐。",
+        "missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。"
+      ],
+      "observation_coverage": {
+        "scope_record_count": 0,
+        "scope_valid_count": 0,
+        "scope_start_date": null,
+        "scope_end_date": null,
+        "segments": [],
+        "total_segment_count": 0,
+        "truncated": false,
+        "max_segments": 64,
+        "value_changes": {
+          "scope": {
+            "record_count": 0,
+            "valid_value_count": 0,
+            "eligible_record_count": 0,
+            "eligible_start_date": null,
+            "eligible_end_date": null,
+            "complete_filtered_input": true
+          },
+          "first": {
+            "date": null,
+            "value": null
+          },
+          "last": {
+            "date": null,
+            "value": null
+          },
+          "minimum": {
+            "date": null,
+            "value": null
+          },
+          "maximum": {
+            "date": null,
+            "value": null
+          },
+          "adjacent_comparison_count": 0,
+          "increase_count": 0,
+          "decrease_count": 0,
+          "unchanged_count": 0,
+          "excluded_boundary_records": {
+            "null_date_count": 0,
+            "missing_value_count": 0,
+            "duplicate_date_record_count": 0
+          },
+          "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+        },
+        "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+      },
+      "requested_range": {
+        "start_date": "2024-05-01",
+        "end_date": "2024-05-31",
+        "period": null
+      },
+      "coverage": {
+        "scope": "through_requested_end",
+        "as_of_date": "2024-05-31",
+        "period": null,
+        "record_first_date": "2024-04-02",
+        "record_last_date": "2024-04-02",
+        "valid_first_date": "2024-04-02",
+        "valid_last_date": "2024-04-02",
+        "complete": true,
+        "last_record": {
+          "status": "observed",
+          "date": "2024-04-02",
+          "rows": [
+            {
+              "date": "2024-04-02",
+              "value": 0.0,
+              "raw_value": "0",
+              "source_cell": "B2",
+              "date_cell": "A2",
+              "value_status": "valid",
+              "period": null,
+              "period_cell": null,
+              "metric_cell": null,
+              "formula_cache_status": "not_formula",
+              "category_cell": null
+            }
+          ],
+          "row_count": 1
+        },
+        "last_valid": {
+          "status": "observed",
+          "direction": "before_range",
+          "date": "2024-04-02",
+          "rows": [
+            {
+              "date": "2024-04-02",
+              "value": 0.0,
+              "raw_value": "0",
+              "source_cell": "B2",
+              "date_cell": "A2",
+              "value_status": "valid",
+              "period": null,
+              "period_cell": null,
+              "metric_cell": null,
+              "formula_cache_status": "not_formula",
+              "category_cell": null
+            }
+          ],
+          "row_count": 1,
+          "conflict": false,
+          "series_id": "measure",
+          "sheet": "Sheet",
+          "dimensions": {},
+          "unit": {
+            "status": "declared",
+            "symbol": "kg",
+            "evidence_level": "imported_series_metadata",
+            "binding_scope": "result_column",
+            "evidence": [
+              {
+                "series_id": "measure",
+                "declared_unit": "kg",
+                "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "sheet": "Sheet",
+                "header_cells": [
+                  "B1"
+                ],
+                "binding_scope": "imported_series_declaration",
+                "original_annotation_verified": false
+              }
+            ]
+          },
+          "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "manifest_sha256": "5a11a61e744960c5f7b431502348f4560fc432701f61b39322ce787a70399f3d",
+          "source_dataset_id": "11e1ee67661a87c5068af5fb",
+          "source_manifest_sha256": "5a11a61e744960c5f7b431502348f4560fc432701f61b39322ce787a70399f3d"
+        },
+        "source": {
+          "dataset_id": "11e1ee67661a87c5068af5fb",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "manifest_sha256": "5a11a61e744960c5f7b431502348f4560fc432701f61b39322ce787a70399f3d"
+        },
+        "requested_range_status_counts": {}
+      },
+      "result_contract": {
+        "schema_version": 2,
+        "hash_algorithm": "sha256-typed-json-v1",
+        "result_id": "8c32095b58466d294c20279d",
+        "hash_input_keys": [
+          "actual_first_date",
+          "actual_last_date",
+          "aggregate",
+          "coverage",
+          "dataset_id",
+          "extremum_count",
+          "extremum_rows",
+          "filters",
+          "missing_count",
+          "observation_coverage",
+          "record_count",
+          "requested_range",
+          "rows",
+          "rows_are",
+          "scope_record_count",
+          "series",
+          "source",
+          "source_semantics",
+          "truncated",
+          "valid_count",
+          "valid_first_date",
+          "valid_last_date",
+          "warnings"
+        ],
+        "source_snapshot": {
+          "kind": "excel_observations",
+          "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "file": "fixture.xlsx",
+          "versions": {
+            "manifest_sha256": "5a11a61e744960c5f7b431502348f4560fc432701f61b39322ce787a70399f3d"
+          },
+          "input_digest_sha256": "90f9a4657249941e0fac87627150d9b390f8a1b4c1516c0ae6d2364888887fa2",
+          "dataset_id": "11e1ee67661a87c5068af5fb",
+          "scope": "returned_source_rows"
+        },
+        "execution": {
+          "kind": "series_query",
+          "engine": "duckdb",
+          "engine_version": "1.5.5",
+          "numeric_semantics": "saved DOUBLE values; Excel formulas are not recalculated",
+          "input_scope": "returned_source_rows",
+          "cell_lineage_verified": false,
+          "operation": "rows",
+          "column_metadata_scope": "returned_rows_not_aggregate"
+        },
+        "column_metadata": [],
+        "evidence_capabilities": {
+          "level": "source_cells",
+          "column_dependencies_verified": true,
+          "cell_lineage_verified": false,
+          "source_cells_available": true,
+          "aggregate_membership_verified": false
+        },
+        "result_hash": "9b48897cd5fd4ea8f89276cf891acabb029f4203a3e22e489d74ab5a07db12d7"
+      }
+    }
+  },
+  "analyze_table": {
+    "arguments": {
+      "dataset_id": "11e1ee67661a87c5068af5fb",
+      "start_date": "2024-05-01",
+      "end_date": "2024-05-31",
+      "series_ids": [
+        "measure"
+      ],
+      "sql": "SELECT count(value) FROM data"
+    },
+    "legacy": {
+      "kind": "structured_analysis",
+      "status": "ok",
+      "dataset_id": "11e1ee67661a87c5068af5fb",
+      "sql": "SELECT count(value) FROM data",
+      "columns": [
+        "count(\"value\")"
+      ],
+      "rows": [
+        [
+          0
+        ]
+      ],
+      "output_truncated": false,
+      "returned_row_count": 1,
+      "input_complete": true,
+      "input_count": 0,
+      "requested_range": {
+        "start_date": "2024-05-01",
+        "end_date": "2024-05-31"
+      },
+      "source_semantics": {
+        "published_series_dates": [
+          {
+            "series_id": "measure",
+            "metric": "Measure",
+            "sheet": "Sheet",
+            "last_valid_date": "2024-04-02",
+            "last_date": "2024-04-02"
+          }
+        ]
+      },
+      "inputs": {
+        "measure": {
+          "series": {
+            "series_id": "measure",
+            "sheet": "Sheet",
+            "metric": "Measure",
+            "unit": "kg",
+            "dimensions": {},
+            "header_cells": [
+              "B1"
+            ],
+            "record_count": 1,
+            "valid_count": 1,
+            "first_date": "2024-04-02",
+            "last_date": "2024-04-02",
+            "first_valid_date": "2024-04-02",
+            "last_valid_date": "2024-04-02"
+          },
+          "input_count": 0,
+          "valid_count": 0,
+          "actual_first_date": null,
+          "actual_last_date": null,
+          "valid_first_date": null,
+          "valid_last_date": null,
+          "example_cells": [],
+          "observation_coverage": {
+            "scope_record_count": 0,
+            "scope_valid_count": 0,
+            "scope_start_date": null,
+            "scope_end_date": null,
+            "segments": [],
+            "total_segment_count": 0,
+            "truncated": false,
+            "max_segments": 64,
+            "value_changes": {
+              "scope": {
+                "record_count": 0,
+                "valid_value_count": 0,
+                "eligible_record_count": 0,
+                "eligible_start_date": null,
+                "eligible_end_date": null,
+                "complete_filtered_input": true
+              },
+              "first": {
+                "date": null,
+                "value": null
+              },
+              "last": {
+                "date": null,
+                "value": null
+              },
+              "minimum": {
+                "date": null,
+                "value": null
+              },
+              "maximum": {
+                "date": null,
+                "value": null
+              },
+              "adjacent_comparison_count": 0,
+              "increase_count": 0,
+              "decrease_count": 0,
+              "unchanged_count": 0,
+              "excluded_boundary_records": {
+                "null_date_count": 0,
+                "missing_value_count": 0,
+                "duplicate_date_record_count": 0
+              },
+              "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+            },
+            "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+          },
+          "observation_coverage_scope": "loaded_analysis_inputs_before_user_sql"
+        }
+      },
+      "source": {
+        "file": "fixture.xlsx",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "notice": "inputs是装载到隔离表的范围，series.first_date/last_date是原列可用范围，不等于SQL筛选后实际统计范围。时间限制请优先用start_date/end_date传入；聚合需在SQL中返回used_first_date、used_last_date、used_count，以供核对实际使用记录。原文件没有声明指标可加性和统计年度定义，不能假定这些业务规则。SQL在上述全部输入上执行；输出行截断不等于计算输入截断。inputs日期是输入覆盖范围，极值日期必须来自SQL返回记录。单位与业务口径按原字段，不自动换算。data.metric和data.unit来自真实系列元数据，可直接选择或分组以保留业务名称和单位；CASE改写series_id不能证明业务标签。混合单位需要重新选择同单位真实字段分别查询；SQL条件本身不证明单位归属。",
+      "result_id": "26a7fb71d326869fb382747b",
+      "result_contract": {
+        "schema_version": 2,
+        "hash_algorithm": "sha256-typed-json-v1",
+        "result_id": "26a7fb71d326869fb382747b",
+        "hash_input_keys": [
+          "columns",
+          "dataset_id",
+          "input_complete",
+          "input_count",
+          "inputs",
+          "notice",
+          "output_truncated",
+          "requested_range",
+          "returned_row_count",
+          "rows",
+          "source",
+          "source_semantics",
+          "sql"
+        ],
+        "source_snapshot": {
+          "kind": "excel_observations",
+          "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "file": "fixture.xlsx",
+          "versions": {
+            "manifest_sha256": "5a11a61e744960c5f7b431502348f4560fc432701f61b39322ce787a70399f3d"
+          },
+          "input_digest_sha256": "90f9a4657249941e0fac87627150d9b390f8a1b4c1516c0ae6d2364888887fa2",
+          "dataset_id": "11e1ee67661a87c5068af5fb",
+          "scope": "loaded_inputs_before_user_sql"
+        },
+        "execution": {
+          "kind": "sql",
+          "engine": "duckdb",
+          "engine_version": "1.5.5",
+          "numeric_semantics": "DuckDB DOUBLE source values; DECIMAL result values encoded as strings",
+          "sql_sha256": "ce4c5edb1f36f6cf67d288fd6320311e2dd064eed404c5b95be8d872167cf11d",
+          "input_scope": "loaded_inputs_before_user_sql",
+          "cell_lineage_verified": false
+        },
+        "column_metadata": [
+          {
+            "index": 0,
+            "name": "count(\"value\")",
+            "display_name": "count(\"value\")",
+            "logical_type": "BIGINT",
+            "operation": {
+              "kind": "function",
+              "name": "count",
+              "arguments": [
+                {
+                  "kind": "column_reference",
+                  "names": [
+                    "value"
+                  ],
+                  "scope": "sql_relation_not_original_cell"
+                }
+              ],
+              "modifiers": "consult_executed_sql"
+            },
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "value"
+              ],
+              "source_row_dependency": true,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "derived",
+              "symbol": "1",
+              "evidence_level": "deterministic_expression",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "expression": "sql_count",
+              "quantity": "record_count"
+            }
+          }
+        ],
+        "evidence_capabilities": {
+          "level": "dependency_only",
+          "column_dependencies_verified": true,
+          "cell_lineage_verified": false,
+          "source_cells_available": false,
+          "aggregate_membership_verified": false
+        },
+        "result_hash": "3fd1f8ddbf162eb52935177f1cb2a1777ad75531e4db11d578441f0dc721969b"
+      }
+    },
+    "with_endpoint": {
+      "kind": "structured_analysis",
+      "status": "ok",
+      "dataset_id": "11e1ee67661a87c5068af5fb",
+      "sql": "SELECT count(value) FROM data",
+      "columns": [
+        "count(\"value\")"
+      ],
+      "rows": [
+        [
+          0
+        ]
+      ],
+      "output_truncated": false,
+      "returned_row_count": 1,
+      "input_complete": true,
+      "input_count": 0,
+      "requested_range": {
+        "start_date": "2024-05-01",
+        "end_date": "2024-05-31"
+      },
+      "source_semantics": {
+        "published_series_dates": [
+          {
+            "series_id": "measure",
+            "metric": "Measure",
+            "sheet": "Sheet",
+            "last_valid_date": "2024-04-02",
+            "last_date": "2024-04-02"
+          }
+        ]
+      },
+      "inputs": {
+        "measure": {
+          "series": {
+            "series_id": "measure",
+            "sheet": "Sheet",
+            "metric": "Measure",
+            "unit": "kg",
+            "dimensions": {},
+            "header_cells": [
+              "B1"
+            ],
+            "record_count": 1,
+            "valid_count": 1,
+            "first_date": "2024-04-02",
+            "last_date": "2024-04-02",
+            "first_valid_date": "2024-04-02",
+            "last_valid_date": "2024-04-02"
+          },
+          "input_count": 0,
+          "valid_count": 0,
+          "actual_first_date": null,
+          "actual_last_date": null,
+          "valid_first_date": null,
+          "valid_last_date": null,
+          "example_cells": [],
+          "coverage": {
+            "scope": "through_requested_end",
+            "as_of_date": "2024-05-31",
+            "period": null,
+            "record_first_date": "2024-04-02",
+            "record_last_date": "2024-04-02",
+            "valid_first_date": "2024-04-02",
+            "valid_last_date": "2024-04-02",
+            "complete": true,
+            "last_record": {
+              "status": "observed",
+              "date": "2024-04-02",
+              "rows": [
+                {
+                  "date": "2024-04-02",
+                  "value": 0.0,
+                  "raw_value": "0",
+                  "source_cell": "B2",
+                  "date_cell": "A2",
+                  "value_status": "valid",
+                  "period": null,
+                  "period_cell": null,
+                  "metric_cell": null,
+                  "formula_cache_status": "not_formula",
+                  "category_cell": null
+                }
+              ],
+              "row_count": 1
+            },
+            "last_valid": {
+              "status": "observed",
+              "direction": "before_range",
+              "date": "2024-04-02",
+              "rows": [
+                {
+                  "date": "2024-04-02",
+                  "value": 0.0,
+                  "raw_value": "0",
+                  "source_cell": "B2",
+                  "date_cell": "A2",
+                  "value_status": "valid",
+                  "period": null,
+                  "period_cell": null,
+                  "metric_cell": null,
+                  "formula_cache_status": "not_formula",
+                  "category_cell": null
+                }
+              ],
+              "row_count": 1,
+              "conflict": false,
+              "series_id": "measure",
+              "sheet": "Sheet",
+              "dimensions": {},
+              "unit": {
+                "status": "declared",
+                "symbol": "kg",
+                "evidence_level": "imported_series_metadata",
+                "binding_scope": "result_column",
+                "evidence": [
+                  {
+                    "series_id": "measure",
+                    "declared_unit": "kg",
+                    "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "sheet": "Sheet",
+                    "header_cells": [
+                      "B1"
+                    ],
+                    "binding_scope": "imported_series_declaration",
+                    "original_annotation_verified": false
+                  }
+                ]
+              },
+              "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "manifest_sha256": "5a11a61e744960c5f7b431502348f4560fc432701f61b39322ce787a70399f3d",
+              "source_dataset_id": "11e1ee67661a87c5068af5fb",
+              "source_manifest_sha256": "5a11a61e744960c5f7b431502348f4560fc432701f61b39322ce787a70399f3d"
+            },
+            "requested_range_status_counts": {},
+            "source": {
+              "dataset_id": "11e1ee67661a87c5068af5fb",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "manifest_sha256": "5a11a61e744960c5f7b431502348f4560fc432701f61b39322ce787a70399f3d"
+            }
+          },
+          "source": {
+            "dataset_id": "11e1ee67661a87c5068af5fb",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "manifest_sha256": "5a11a61e744960c5f7b431502348f4560fc432701f61b39322ce787a70399f3d"
+          },
+          "observation_coverage": {
+            "scope_record_count": 0,
+            "scope_valid_count": 0,
+            "scope_start_date": null,
+            "scope_end_date": null,
+            "segments": [],
+            "total_segment_count": 0,
+            "truncated": false,
+            "max_segments": 64,
+            "value_changes": {
+              "scope": {
+                "record_count": 0,
+                "valid_value_count": 0,
+                "eligible_record_count": 0,
+                "eligible_start_date": null,
+                "eligible_end_date": null,
+                "complete_filtered_input": true
+              },
+              "first": {
+                "date": null,
+                "value": null
+              },
+              "last": {
+                "date": null,
+                "value": null
+              },
+              "minimum": {
+                "date": null,
+                "value": null
+              },
+              "maximum": {
+                "date": null,
+                "value": null
+              },
+              "adjacent_comparison_count": 0,
+              "increase_count": 0,
+              "decrease_count": 0,
+              "unchanged_count": 0,
+              "excluded_boundary_records": {
+                "null_date_count": 0,
+                "missing_value_count": 0,
+                "duplicate_date_record_count": 0
+              },
+              "interpretation": "比较仅覆盖筛选范围内按日期及来源单元格排序后相邻、且日期非空唯一、数值非空的记录对；空日期、重复日期和缺值记录会中断比较。first/last是符合资格的范围端点，不表示端点间没有断点。极值日期只给出符合资格记录中的首次出现，不代表极值唯一。未假定采样频率，不推断未出现在输入中的日期或记录。"
+            },
+            "interpretation": "区段只表示所选已导入记录按原日期和单元格排序后的相邻状态；不证明日/月连续，不代表缺行，也不补造原表记录。"
+          },
+          "observation_coverage_scope": "loaded_analysis_inputs_before_user_sql"
+        }
+      },
+      "source": {
+        "file": "fixture.xlsx",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "notice": "inputs是装载到隔离表的范围，series.first_date/last_date是原列可用范围，不等于SQL筛选后实际统计范围。时间限制请优先用start_date/end_date传入；聚合需在SQL中返回used_first_date、used_last_date、used_count，以供核对实际使用记录。原文件没有声明指标可加性和统计年度定义，不能假定这些业务规则。SQL在上述全部输入上执行；输出行截断不等于计算输入截断。inputs日期是输入覆盖范围，极值日期必须来自SQL返回记录。单位与业务口径按原字段，不自动换算。data.metric和data.unit来自真实系列元数据，可直接选择或分组以保留业务名称和单位；CASE改写series_id不能证明业务标签。混合单位需要重新选择同单位真实字段分别查询；SQL条件本身不证明单位归属。",
+      "result_id": "c57baec307c1046b3b7f6b0c",
+      "result_contract": {
+        "schema_version": 2,
+        "hash_algorithm": "sha256-typed-json-v1",
+        "result_id": "c57baec307c1046b3b7f6b0c",
+        "hash_input_keys": [
+          "columns",
+          "dataset_id",
+          "input_complete",
+          "input_count",
+          "inputs",
+          "notice",
+          "output_truncated",
+          "requested_range",
+          "returned_row_count",
+          "rows",
+          "source",
+          "source_semantics",
+          "sql"
+        ],
+        "source_snapshot": {
+          "kind": "excel_observations",
+          "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "file": "fixture.xlsx",
+          "versions": {
+            "manifest_sha256": "5a11a61e744960c5f7b431502348f4560fc432701f61b39322ce787a70399f3d"
+          },
+          "input_digest_sha256": "90f9a4657249941e0fac87627150d9b390f8a1b4c1516c0ae6d2364888887fa2",
+          "dataset_id": "11e1ee67661a87c5068af5fb",
+          "scope": "loaded_inputs_before_user_sql"
+        },
+        "execution": {
+          "kind": "sql",
+          "engine": "duckdb",
+          "engine_version": "1.5.5",
+          "numeric_semantics": "DuckDB DOUBLE source values; DECIMAL result values encoded as strings",
+          "sql_sha256": "ce4c5edb1f36f6cf67d288fd6320311e2dd064eed404c5b95be8d872167cf11d",
+          "input_scope": "loaded_inputs_before_user_sql",
+          "cell_lineage_verified": false
+        },
+        "column_metadata": [
+          {
+            "index": 0,
+            "name": "count(\"value\")",
+            "display_name": "count(\"value\")",
+            "logical_type": "BIGINT",
+            "operation": {
+              "kind": "function",
+              "name": "count",
+              "arguments": [
+                {
+                  "kind": "column_reference",
+                  "names": [
+                    "value"
+                  ],
+                  "scope": "sql_relation_not_original_cell"
+                }
+              ],
+              "modifiers": "consult_executed_sql"
+            },
+            "dependency": {
+              "kind": "source_value",
+              "source_columns": [
+                "value"
+              ],
+              "source_row_dependency": true,
+              "technical_metadata": false
+            },
+            "unit": {
+              "status": "derived",
+              "symbol": "1",
+              "evidence_level": "deterministic_expression",
+              "binding_scope": "result_column",
+              "evidence": [],
+              "expression": "sql_count",
+              "quantity": "record_count"
+            }
+          }
+        ],
+        "evidence_capabilities": {
+          "level": "dependency_only",
+          "column_dependencies_verified": true,
+          "cell_lineage_verified": false,
+          "source_cells_available": false,
+          "aggregate_membership_verified": false
+        },
+        "result_hash": "9a306476a8276e33f03339b3200996e3ae1da03070d5ad690b9d8b89a3bbcd50"
+      }
+    }
+  }
+}

@@ -33,6 +33,7 @@ type StructuredOperationDescriptor struct {
 	Generation      uint64 `json:"generation,omitempty"`
 	ScopeMode       string `json:"scope_mode"`
 	EffectClass     string `json:"effect_class"`
+	lastValid       bool
 }
 
 type structuredOperationContract struct{ scope, effect string }

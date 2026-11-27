@@ -1,12 +1,52 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"slices"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/types"
 )
+
+func (e *AgentEngine) answerNumericEvidenceInScope(ctx context.Context, answer string, steps []types.AgentStep, groups ...[]chat.Message) []chat.Message {
+	evidence := e.answerNumericEvidence(answer, steps, groups...)
+	if !slices.ContainsFunc(steps, func(step types.AgentStep) bool {
+		return slices.ContainsFunc(step.ToolCalls, func(call types.ToolCall) bool {
+			return call.Result != nil && call.Result.Success && coverageHasLastValid(call.Result.Data)
+		})
+	}) {
+		return evidence
+	}
+	record, _ := e.terminalCoverageRecord(ctx, &types.AgentState{RoundSteps: steps})
+	return appendCoverageLastValidNumbers(evidence, record)
+}
+
+func appendCoverageLastValidNumbers(evidence []chat.Message, record coverageRecord) []chat.Message {
+	observed := chat.NumericObservations{WorkbookRows: make(map[string]bool)}
+	for _, item := range record.Evidence {
+		if !coverageProtocolLastValid(item) || !coverageCurrentEvidence(record, item) {
+			continue
+		}
+		if receipt, ok := coverageEndpointForGap(record, item); !ok || receipt.LastValidStatus != "observed" {
+			continue
+		}
+		if value, ok := coverageFiniteNumber(item.Raw); ok {
+			observed.Values = append(observed.Values, value)
+			if item.Unit == "%" || item.Unit == "％" {
+				observed.Percents = append(observed.Percents, value)
+			}
+			_, valueRow := coverageExcelCell(item.Cell)
+			_, dateRow := coverageExcelCell(item.DateCell)
+			observed.WorkbookRows[valueRow], observed.WorkbookRows[dateRow] = true, true
+		}
+	}
+	if len(observed.Values) > 0 {
+		evidence = append(evidence, chat.Message{Role: "tool", NumericObservations: &observed})
+	}
+	return evidence
+}
 
 // Verification uses durable executed results as well as the model transcript.
 // A lossy display view must not erase provenance. Drafts are never promoted to
@@ -85,6 +125,9 @@ func answerNumericEvidenceWithDocumentReads(answer string, steps, documentSteps 
 			if call.Result != nil && call.Result.Success {
 				name := call.Name
 				toolCallID := ""
+				if coverageRequestedLastValid(call) || coverageHasLastValid(call.Result.Data) {
+					toolCallID = call.ID
+				}
 				if executed := call.ExecutionName(); executed == "read_document" || executed == "search_knowledge" {
 					// A provider alias must not turn document-embedded JSON into
 					// a generic tool's executed numeric result.

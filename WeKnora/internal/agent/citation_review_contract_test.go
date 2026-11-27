@@ -85,7 +85,7 @@ func TestCitationRequiredRealReadResultRevisesAcceptedUncitedDraftAndPublishes(t
 	messages := e.appendToolResults([]chat.Message{{Role: "system", Content: "Use the actual read result."}, {Role: "user", Content: "Explain the indicator."}}, state.RoundSteps[0])
 	handle := e.modelContext.CitableChunkHandle("contract-supporting")
 	require.NotEmpty(t, handle, "normal appendToolResults registers the real built-in read")
-	policy := e.sourceCitationReviewPolicy(state, messages)
+	policy := e.sourceCitationReviewPolicy(t.Context(), state, messages)
 	require.Equal(t, 2, policy["available_anchor_count"])
 	answer := `The indicator measures covered area.<ref id="` + handle + `"/>`
 	envelope, err := json.Marshal(map[string]string{"answer": answer})
@@ -182,7 +182,7 @@ func TestCitationReviewRespectsDisabledFormatsAndTrulyUnavailableChunks(t *testi
 	})
 	for _, reason := range []string{"The user requested pure image delivery without additional factual prose.", "The exact output schema forbids inline markup."} {
 		e, state := citationDeliveryFixture(t, &mockChat{}, true)
-		repair, err := e.validateCitationCheck(&sourceCitationCheck{Requirement: "not_required", Reason: reason}, "![chart](resource://actual-image)", state, nil, true)
+		repair, err := e.validateCitationCheck(t.Context(), &sourceCitationCheck{Requirement: "not_required", Reason: reason}, "![chart](resource://actual-image)", state, nil, true)
 		require.NoError(t, err)
 		require.False(t, repair, "read anchors cannot themselves turn a model-classified artifact/format into a factual prose task")
 	}
@@ -209,7 +209,7 @@ func TestCitationReviewUsesFullCurrentQualificationDespiteOmittedDirectoryAndOth
 	duplicate := state.RoundSteps[0].ToolCalls[0]
 	duplicate.ID = "compatible-second-read"
 	state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{duplicate}})
-	require.Equal(t, 2, e.sourceCitationReviewPolicy(state, nil)["available_anchor_count"])
+	require.Equal(t, 2, e.sourceCitationReviewPolicy(t.Context(), state, nil)["available_anchor_count"])
 	refs := e.currentCandidateKnowledgeReferences(`<kb chunk_id="current-b" />`, state, nil)
 	require.Len(t, refs, 1, "compatible repeated reads retain the exact current citation identity")
 	data, err := json.Marshal(duplicate.Result)
@@ -219,10 +219,10 @@ func TestCitationReviewUsesFullCurrentQualificationDespiteOmittedDirectoryAndOth
 	duplicate.ID = "different-neighbor-version"
 	duplicate.Result.Data["chunks"].([]any)[0].(map[string]any)["content"] = "Different actual neighbor body."
 	state.RoundSteps = append(state.RoundSteps, types.AgentStep{ToolCalls: []types.ToolCall{duplicate}})
-	policy := e.sourceCitationReviewPolicy(state, nil)
+	policy := e.sourceCitationReviewPolicy(t.Context(), state, nil)
 	require.Equal(t, 1, policy["conflicting_anchor_count"])
 	require.Equal(t, 1, policy["available_anchor_count"])
-	repair, err := e.validateCitationCheck(&sourceCitationCheck{Requirement: "required", Reason: "The supporting body is unchanged."}, `<kb chunk_id="current-b" />`, state, nil, true)
+	repair, err := e.validateCitationCheck(t.Context(), &sourceCitationCheck{Requirement: "required", Reason: "The supporting body is unchanged."}, `<kb chunk_id="current-b" />`, state, nil, true)
 	require.NoError(t, err)
 	require.False(t, repair, "a different chunk's conflict cannot erase an unchanged current supporting source")
 
@@ -233,13 +233,13 @@ func TestCitationReviewUsesFullCurrentQualificationDespiteOmittedDirectoryAndOth
 	}
 	state.RoundSteps[0].ToolCalls[0].Result.Data["chunks"] = rows
 	e.modelContext.ModelToolResultForTool(agenttools.ToolReadDocument, state.RoundSteps[0].ToolCalls[0].Result)
-	policy = e.sourceCitationReviewPolicy(state, nil)
+	policy = e.sourceCitationReviewPolicy(t.Context(), state, nil)
 	require.False(t, policy["projection_complete"].(bool))
 	lastID := rows[len(rows)-1]["chunk_id"].(string)
 	for _, anchor := range policy["available_anchors"].([]any) {
 		require.NotEqual(t, lastID, anchor.(map[string]any)["chunk_id"])
 	}
-	repair, err = e.validateCitationCheck(&sourceCitationCheck{Requirement: "required", Reason: "The cited actual body supports the claim even though the navigation directory omitted it."}, `<kb chunk_id="`+lastID+`" />`, state, nil, true)
+	repair, err = e.validateCitationCheck(t.Context(), &sourceCitationCheck{Requirement: "required", Reason: "The cited actual body supports the claim even though the navigation directory omitted it."}, `<kb chunk_id="`+lastID+`" />`, state, nil, true)
 	require.NoError(t, err)
 	require.False(t, repair, "bounded presentation cannot remove real source eligibility or force unavailable")
 }

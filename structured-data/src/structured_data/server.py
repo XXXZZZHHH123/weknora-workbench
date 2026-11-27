@@ -20,6 +20,7 @@ import inspect
 from typing import Annotated, get_type_hints
 from urllib.parse import quote, urlsplit
 
+from duckdb import Error as DuckDBError
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import decimal_encoder, jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
@@ -30,6 +31,7 @@ from pydantic import BaseModel, Field, ConfigDict, create_model, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from .store import DataStore, dump
+from .series_endpoint import last_valid_enabled
 from .imports import ImportManager, NativeSourceVersionConflict, sheet_field_count
 from .batch_ai_import import DEFAULT_BATCH_AI_REQUESTS, MAX_BATCH_AI_REQUESTS
 from .workspaces import WorkspaceRegistry, Identity, current_identity, valid_knowledge_base_id
@@ -40,6 +42,18 @@ from .progress import progress_value
 
 MAX_UPLOAD = 100 * 1024 * 1024
 logger = logging.getLogger(__name__)
+
+LastValidOption = Annotated[bool, Field(strict=True, description=(
+    '仅在问题需要所选字段的最近有效观测时设 true。区间 rows/统计仍只覆盖请求窗口，'
+    '另见 coverage.last_valid（SQL 为 inputs[series_id].coverage.last_valid）。'
+    '有请求期末时用 end_date 给出，SQL 的 WHERE 不限定该端点，省略 end_date 按快照读取。'
+    'before_range 表示窗前。conflict 或 truncated 时按实际原格说明冲突或截断；缺少端点表示本次未取得。'))]
+
+
+def _observation_read_error(kind, exc):
+    logger.warning('Structured observation read failed: %s', type(exc).__name__)
+    return {'kind': kind, 'status': 'error', 'code': 'observation_read_failed',
+            'error': '本次未能读取完整的结构化观测。', 'retryable': True, 'query_completed': False}
 
 # Tool-view semantics only; never added to immutable extraction/published
 # records, whose plan/source fingerprints must remain unchanged.
@@ -277,13 +291,33 @@ def create_app(data_dir: str | Path | None = None):
         """读取字段目录中的真实ID、原表头、维度、单位和日期覆盖，不读取业务观测值。field_quality统计真实观测的数值/文本类型与状态，不推断字段用途；文本观测不得作为数值输入，unit_status=needs_review时单位仍未确认；field_metadata.unit_source=declared表示单位为人工确认，未在原表找到对应文字，保留单位声明但不冒充原文证据。dataset_id可省略，仅有一个当前文件时自动选择；多文件必须先取得真实ID，不猜ID。模型依据完整问题、上下文和实际目录决定是否需要读取记录或计算；列举字段结构不要求额外查询时序。search空格分词AND，仅作字面召回；别名与partial_candidates也仅为候选，不决定业务口径。sheet严格过滤；context_sheet仅优先排序。catalog_summary按分页前实际匹配目录的sheet/metric精确分组计数，可作为实际字段结构列举的来源，不判断业务类别；groups_truncated表示分组展示也有截断。truncated与next_offset说明字段分页，不能将当前页当作全目录。按工作表分组的目录摘要也列出有界的待确认/未映射表状态、原因、已知范围与next_step；它们没有可查询字段，可用inspect_source读取经来源校验的原单元格。表名字面匹配只作候选召回排序。pending_scope只说明对应表未导入，不说明相关主题在其他已导入列中不存在。"""
         return store.list_series(store.select_dataset(dataset_id), search, limit, offset, sheet, context_sheet)
 
-    @mcp.tool()
-    def query_series(series_id: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, source_question: str | None = None, source_binding: list[dict] | None = None) -> dict:
-        """单字段确定性查询。同一问题需同文件多个字段在相同日期或范围的值时，优先用analyze_table一次提交series_ids和SELECT；不要拆成多次并发query_series，逐列重复来源核验会增加等待。需要原值时选择series_id,date,value,source_cell等真实列，不必聚合。source_binding可选：涉及同名来源时，由你依据完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序校验后直接执行，不再另行调用来源模型；不提供时由独立来源核验。确定性查询：dataset_id可省略，只有一个当前文件时自动选择；具体日期用YYYY-MM-DD，起止均包含。date_mode=period时用period精确匹配原标签，不可转为日期；date_mode=none不填时间。不带日期的系列不支持latest；期间统计须指定period。operation=rows/latest/mean/sum/min/max/count。min/max返回aggregate及真正取得极值的rows/extremum_rows，日期只能用其中的date，actual_first_date/actual_last_date仅是范围边界。并列极值的数量看extremum_count，超过limit会truncated。求最高/最低日期不需要用户先给日期；未限定时间则不填日期查询全范围。latest返回最新有效数值；mean为算术平均；count为有效值数。缺失不作零。mean/sum/count的rows仅示例来源，aggregate才是统计值。返回原文件、sheet/cell和公式缓存来源。"""
-        selected=store.select_dataset(dataset_id)
+    def verified_selection(dataset_id, series_ids, source_question, source_binding, include_last_valid):
         from .source_context import verify_selection
-        ambiguity=verify_selection(store,selected,[series_id],source_question,model_fn=resolver.model_fn,source_binding=source_binding)
-        return ambiguity or store.query_series(selected, series_id, start_date, end_date, operation, limit, period)
+        selected = store.select_dataset(dataset_id)
+        ambiguity = verify_selection(store, selected, series_ids, source_question,
+                                     model_fn=resolver.model_fn, source_binding=source_binding,
+                                     reuse_explicit=include_last_valid)
+        return selected, ambiguity
+
+    @mcp.tool()
+    async def query_series(series_id: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, source_question: str | None = None, source_binding: list[dict] | None = None, include_last_valid: LastValidOption = False) -> dict:
+        """单字段确定性查询。同一问题需同文件多个字段在相同日期或范围的值时，优先用analyze_table一次提交series_ids和SELECT；不要拆成多次并发query_series，逐列重复来源核验会增加等待。需要原值时选择series_id,date,value,source_cell等真实列，不必聚合。source_binding可选：涉及同名来源时，由你依据完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序校验后直接执行，不再另行调用来源模型；不提供时由独立来源核验。确定性查询：dataset_id可省略，只有一个当前文件时自动选择；具体日期用YYYY-MM-DD，起止均包含。date_mode=period时用period精确匹配原标签，不可转为日期；date_mode=none不填时间。不带日期的系列不支持latest；期间统计须指定period。operation=rows/latest/mean/sum/min/max/count。min/max返回aggregate及真正取得极值的rows/extremum_rows，日期只能用其中的date，actual_first_date/actual_last_date仅是范围边界。并列极值的数量看extremum_count，超过limit会truncated。求最高/最低日期不需要用户先给日期；未限定时间则不填日期查询全范围。latest返回最新有效数值；mean为算术平均；count为有效值数。缺失不作零。mean/sum/count的rows仅示例来源，aggregate才是统计值。返回原文件、sheet/cell和公式缓存来源。"""
+        include_last_valid = include_last_valid and last_valid_enabled()
+
+        def read():
+            selected, ambiguity = verified_selection(dataset_id, [series_id], source_question,
+                                                     source_binding, include_last_valid)
+            if ambiguity:
+                return ambiguity
+            options = {'include_last_valid': True} if include_last_valid else {}
+            return store.query_series(selected, series_id, start_date, end_date, operation, limit, period, **options)
+
+        try:
+            return await run_in_threadpool(read)
+        except (DuckDBError, OSError) as exc:
+            if not include_last_valid:
+                raise
+            return _observation_read_error('structured_series_query', exc)
 
     @mcp.tool()
     def convert_price(dataset_id: str, price_series_id: str, fx_series_id: str, date: str, target_unit: str = '元/吨', source_question: str | None = None, fx_operation: str = 'multiply', source_binding: list[dict] | None = None) -> dict:
@@ -316,15 +350,25 @@ def create_app(data_dir: str | Path | None = None):
         return await run_in_threadpool(read)
 
     @mcp.tool()
-    async def analyze_table(series_ids: list[str], sql: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, limit: int = 200, source_question: str | None = None, source_binding: list[dict] | None = None) -> dict:
+    async def analyze_table(series_ids: list[str], sql: str, dataset_id: str | None = None, start_date: str | None = None, end_date: str | None = None, limit: int = 200, source_question: str | None = None, source_binding: list[dict] | None = None, include_last_valid: LastValidOption = False) -> dict:
         """同文件多字段可一次读取原值或分析：series_ids提交1至16个真实字段，用SELECT series_id,date,value,source_cell等列读取同一日期/范围；无需逐字段并发query_series。source_binding可选：模型按完整问题和真实同名来源组给出[{considered_ids:本组全部真实ID,selected_ids:所需ID,reason:依据}]，程序逐项验证后执行；不提供时由独立来源核验，不按字段名自动选源。DuckDB单条只读SELECT/WITH；先取得真实series_id并核验口径。唯一输入表名data，列series_id VARCHAR,date DATE,value DOUBLE，其余source_cell,date_cell,period,value_status,metric,sheet,unit均VARCHAR，缺失value为NULL。SELECT混合普通聚合与非聚合列时，须在同一层用GROUP BY列出分组键（含日期表达式）；窗口聚合遵循自身OVER作用域。表一旦定义别名，只能在该作用域使用该别名；CTE后续层只看见前层实际输出列。CTE/别名避免SQL保留字，必要时使用双引号标识符。分组后再排名或跨组统计时，用CTE分开相应阶段，不把原始date或已离开作用域的别名直接混入聚合。程序不会补分组、替换别名或改写业务SQL；错误时依据真实DuckDB反馈修正。dataset_id可省略，只有一个当前文件时自动选择；多文件先取得真实ID，不猜ID。data仅含指定字段/日期范围的全部记录（最多50000条）。支持四则、GROUP BY、JOIN、窗口/滚动与多阶段分析，无需预定义问题类型。优先用原生聚合、窗口和日期函数，例如date_trunc(part,date)；不要自行拼日历算法，CAST小数到整数会舍入，向下取整用floor。输出columns和rows（按列顺序的二维数组）、SQL及输入覆盖/来源；输出截断不影响完整输入计算。所有聚合必须使用完整输入，按需WHERE value IS NOT NULL，SQL不自动排除零、换算单位或解释年度。输入过大/SQL错误时修正，不让用户选字段。每个输入最多一个文件版本，不允许文件、联网、写入或多条语句。不要混加存量、累计值与当期流量。"""
         from .table_analysis import AnalysisSQLError, analyze_table as run_analysis
+        include_last_valid = include_last_valid and last_valid_enabled()
+
+        def read():
+            selected, ambiguity = verified_selection(dataset_id, series_ids, source_question,
+                                                     source_binding, include_last_valid)
+            if ambiguity:
+                return ambiguity
+            options = {'include_last_valid': True} if include_last_valid else {}
+            return run_analysis(store, selected, series_ids, sql, start_date, end_date, limit, **options)
+
         try:
-            selected=store.select_dataset(dataset_id)
-            from .source_context import verify_selection
-            ambiguity=await run_in_threadpool(verify_selection,store,selected,series_ids,source_question,model_fn=resolver.model_fn,source_binding=source_binding)
-            if ambiguity:return ambiguity
-            return await run_in_threadpool(run_analysis,store,selected,series_ids,sql,start_date,end_date,limit)
+            return await run_in_threadpool(read)
+        except (DuckDBError, OSError) as exc:
+            if not include_last_valid:
+                raise
+            return _observation_read_error('structured_analysis', exc)
         except ValueError as exc:
             diagnostic=exc.diagnostic() if isinstance(exc,AnalysisSQLError) else {}
             return {'kind':'structured_analysis','status':'error','error':str(exc),'retryable':True,
@@ -569,7 +613,8 @@ def create_app(data_dir: str | Path | None = None):
             summary_model = data.get('summary_model_id')
             return replace(identity, knowledge_base_id=knowledge_base_id,
                            knowledge_base_tenant_id=owner, knowledge_base_can_write=writable,
-                           summary_model_id=summary_model if isinstance(summary_model, str) else '')
+                           summary_model_id=summary_model if isinstance(summary_model, str) else '',
+                           knowledge_base_permission=permission)
         except (ValueError, TypeError, AttributeError):
             raise HTTPException(403, '知识库权限信息无效') from None
 
@@ -612,7 +657,7 @@ def create_app(data_dir: str | Path | None = None):
             if not secrets.compare_digest(auth, "Bearer " + token):
                 return JSONResponse({"detail": "Unauthorized"}, status_code=401)
             # Legacy MCP registrations remain bound to their original pilot space.
-            identity = Identity('legacy-mcp', '', '', pilot, 'viewer')
+            identity = Identity('legacy-mcp', '', '', pilot, 'viewer', legacy_mcp=True)
         else:
             authorization=request.headers.get('authorization','')
             if authorization.startswith('Bearer '):

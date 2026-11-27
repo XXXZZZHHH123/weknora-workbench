@@ -1,6 +1,6 @@
 """Verified request scopes; the existing pilot directory keeps its identity."""
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import re
 import threading
@@ -24,6 +24,9 @@ class Identity:
     scope_version: int = 1
     sources_revision: int = 0
     summary_model_id: str = ''
+    knowledge_base_permission: str = ''
+    api_key_scope_sha256: str = field(default='', repr=False)
+    legacy_mcp: bool = False
 
     @property
     def can_write(self):

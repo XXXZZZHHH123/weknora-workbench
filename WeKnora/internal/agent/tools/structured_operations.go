@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Tencent/WeKnora/internal/structuredresult"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -49,26 +50,35 @@ func NewStructuredReadOperationTools(base *StructuredDataTool, data map[string]a
 		if !ok {
 			continue
 		}
+		if option, ok := properties[structuredLastValidArgument].(map[string]any); ok {
+			descriptor.lastValid = structuredLastValidOperation(name) && option["type"] == "boolean"
+		}
+		hideLastValid := descriptor.lastValid && !structuredresult.LastValidEnabled()
 		raw, err := json.Marshal(schema)
 		if err != nil || len(raw) > 64*1024 {
 			continue
 		}
-		if base.scopeConfigured {
+		if base.scopeConfigured || hideLastValid {
 			if _, exists := properties["knowledge_base_id"]; exists {
 				continue
 			}
-			// Copy the server schema before adding the client-only selector;
-			// discovery metadata and the service operation contract stay intact.
+			// Preserve the discovered server schema while projecting the model view.
 			var scopedSchema map[string]any
 			if json.Unmarshal(raw, &scopedSchema) != nil {
 				continue
 			}
-			scopedSchema["properties"].(map[string]any)["knowledge_base_id"] = map[string]any{
-				"type": "string", "description": "本轮已授权知识库ID；单库默认，多库必填且须从真实授权目录选择",
+			modelProperties := scopedSchema["properties"].(map[string]any)
+			if hideLastValid {
+				delete(modelProperties, structuredLastValidArgument)
 			}
-			if len(base.knowledgeScopes) > 1 && descriptor.ScopeMode == "knowledge_base" {
-				required, _ := scopedSchema["required"].([]any)
-				scopedSchema["required"] = append(required, "knowledge_base_id")
+			if base.scopeConfigured {
+				modelProperties["knowledge_base_id"] = map[string]any{
+					"type": "string", "description": "本轮已授权知识库ID；单库默认，多库必填且须从真实授权目录选择",
+				}
+				if len(base.knowledgeScopes) > 1 && descriptor.ScopeMode == "knowledge_base" {
+					required, _ := scopedSchema["required"].([]any)
+					scopedSchema["required"] = append(required, "knowledge_base_id")
+				}
 			}
 			raw, err = json.Marshal(scopedSchema)
 			if err != nil || len(raw) > 64*1024 {
@@ -81,6 +91,9 @@ func NewStructuredReadOperationTools(base *StructuredDataTool, data map[string]a
 		}
 		if name == "query_series" || name == "analyze_table" || name == "query_pdf_table" {
 			description += structuredChartLabelInstructions
+		}
+		if descriptor.lastValid && !hideLastValid {
+			description += structuredLastValidInstructions
 		}
 		keys := make(map[string]bool, len(properties))
 		for key := range properties {
@@ -130,6 +143,11 @@ func (t *structuredReadOperationTool) Execute(ctx context.Context, args json.Raw
 	}
 	for key := range input {
 		if key == "knowledge_base_id" && t.base.scopeConfigured {
+			continue
+		}
+		if key == structuredLastValidArgument && structuredLastValidOperation(t.operation) {
+			// This compatibility option is stripped before calling a service
+			// whose negotiated schema predates it, or when disabled locally.
 			continue
 		}
 		if !t.argumentKeys[key] {

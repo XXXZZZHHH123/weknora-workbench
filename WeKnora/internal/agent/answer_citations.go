@@ -70,7 +70,7 @@ const sourceCitationReviewInstructions = `Source citation policy is runtime-owne
 
 const sourceCitationDecisionInstructions = `Return citation_check={requirement,reason} in the SAME verdict, including a brief reason in the user's language. requirement=required means material knowledge-source claims need inline citations backed by the actual current supporting chunk or structured evidence; missing citations need complete=false and next_action=revise_answer using existing evidence. A filename/title is not a citation. requirement=not_required applies when citations are disabled or the complete task does not call for inline knowledge citations (pure artifact delivery, conversation-only text or a format prohibiting markup); explain the actual task reason. requirement=unavailable means no genuine supporting chunk OR structured-evidence citation can be supplied despite actual factual support. A current evidence:// handle is a real citation even for XLSX without document chunks. Other anchors do not establish support for a claim, and their existence alone cannot make it required. A partial directory is not proof of unavailability; use actual source pointers or a necessary authorized read. Do not use unavailable to excuse omitting an appropriate current handle. Classification remains your semantic judgment of the full task and evidence, not runtime counts. Existing binding/entailment checks apply to every citation used.`
 
-func (e *AgentEngine) sourceCitationReviewPolicy(state *types.AgentState, conversation []chat.Message) map[string]any {
+func (e *AgentEngine) sourceCitationReviewPolicy(ctx context.Context, state *types.AgentState, conversation []chat.Message) map[string]any {
 	enabled := e != nil && e.config.CitationsEnabled()
 	policy := map[string]any{
 		"enabled": enabled, "available_anchors": []any{}, "verified_document_reads": []any{},
@@ -109,7 +109,7 @@ func (e *AgentEngine) sourceCitationReviewPolicy(state *types.AgentState, conver
 	reads := e.verifiedCitationDocumentReads(state)
 	structured := []any{}
 	for _, id := range e.sortedCurrentStructuredCitationIDs() {
-		if observation, ok := e.currentStructuredObservation(id, state); ok {
+		if observation, ok := e.currentStructuredObservation(id, state, ctx); ok {
 			structured = append(structured, observation.Directory)
 		}
 	}
@@ -217,7 +217,7 @@ func (e *AgentEngine) currentCandidateKnowledgeReferences(candidate string, stat
 // The model decides whether this task needs a citation. The runtime only
 // checks that its declaration can actually be delivered with current sources.
 // Existing evidence/receipt policy and ordinary revision budgets stay intact.
-func (e *AgentEngine) validateCitationCheck(check *sourceCitationCheck, candidate string, state *types.AgentState, conversation []chat.Message, accepted bool) (bool, error) {
+func (e *AgentEngine) validateCitationCheck(ctx context.Context, check *sourceCitationCheck, candidate string, state *types.AgentState, conversation []chat.Message, accepted bool) (bool, error) {
 	if check == nil {
 		if accepted {
 			return false, fmt.Errorf("accepted source review requires citation_check")
@@ -230,13 +230,13 @@ func (e *AgentEngine) validateCitationCheck(check *sourceCitationCheck, candidat
 	ids := uniqueCandidateCitationIDs(candidate)
 	refs := e.currentCandidateKnowledgeReferences(candidate, state, conversation)
 	evidenceIDs := uniqueCandidateEvidenceIDs(candidate)
-	evidenceRefs := e.currentCandidateEvidenceReferences(candidate, state)
-	invalid := e.candidateCitationsInvalid(candidate, state, conversation)
+	evidenceRefs := e.currentCandidateEvidenceReferences(candidate, state, ctx)
+	invalid := e.candidateCitationsInvalid(candidate, state, conversation, ctx)
 	missing := check.Requirement == "required" && len(refs)+len(evidenceRefs) == 0
 	if accepted && (invalid || missing || (!e.config.CitationsEnabled() && len(ids)+len(evidenceIDs) != 0)) {
 		e.answerReviewFeedback = "请按审核判定补齐本轮事实的可点击引用：使用真实已读且支持相邻断言的chunk或evidence结果句柄。原值引用实际原格，计算引用实际结果与范围；不借同页索引片段或其他图片补证。保留原答案范围，不编造来源。"
 		if invalid {
-			diagnostic, _, _ := e.candidateCitationRecovery(candidate, state, conversation)
+			diagnostic, _, _ := e.candidateCitationRecovery(ctx, candidate, state, conversation)
 			e.answerReviewFeedback += "\n" + diagnostic
 		}
 		e.answerReviewAction = reviewReviseAnswer
@@ -340,10 +340,10 @@ func (e *AgentEngine) publishFinalKnowledgeReferences(ctx context.Context, state
 	}
 	if approved {
 		state.KnowledgeRefs = e.finalAnswerKnowledgeReferences(state)
-		state.EvidenceRefs = e.finalAnswerEvidenceReferences(state)
+		state.EvidenceRefs = e.finalAnswerEvidenceReferences(state, ctx)
 	} else if e.coverageDraftDeliveryCurrent(ctx, state) {
 		state.KnowledgeRefs = e.currentCandidateKnowledgeReferences(state.FinalAnswer, state, e.turnReview.Conversation)
-		state.EvidenceRefs = e.currentCandidateEvidenceReferences(state.FinalAnswer, state)
+		state.EvidenceRefs = e.currentCandidateEvidenceReferences(state.FinalAnswer, state, ctx)
 	} else if !e.publishUnverifiedCitationReferences(ctx, state) {
 		return
 	}

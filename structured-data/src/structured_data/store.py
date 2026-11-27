@@ -316,7 +316,7 @@ class DataStore:
         from .native_charts import index
         return index(self, dataset_id)
 
-    def catalog(self, dataset_id, sheet=None, question=''):
+    def catalog(self, dataset_id, sheet=None, question='', *, include_quality=True):
         from .native_charts import catalog
         from .source_context import enrich_catalog
         manifest = self.raw_manifest(dataset_id)
@@ -330,6 +330,8 @@ class DataStore:
             rows = [{**item, 'source_dataset_id': retained[item['sheet']],
                      'source_update_notice': reasons.get(item['sheet']) or '沿用上一版数据，待核对'}
                     if item['sheet'] in retained else item for item in rows]
+        if not include_quality:
+            return rows
         quality = self.series_quality(dataset_id, [item['series_id'] for item in rows
                                                      if item.get('series_id')])
         return [{**item, **({'field_quality': {**quality[item['series_id']], 'field_role': (item.get('field_metadata') or {}).get('role') or ('numeric' if quality[item['series_id']]['valid_numeric_count'] else 'text_dimension' if quality[item['series_id']]['observed_type'] == 'text' else None)}}
@@ -345,10 +347,14 @@ class DataStore:
         if not series_ids:
             return {}
         with self._connect(dataset_id) as con:
-            rows = con.execute(
-                'SELECT series_id,value_status,count(*) FROM observations '
-                'WHERE series_id IN (SELECT unnest(?)) GROUP BY series_id,value_status',
-                [series_ids]).fetchall()
+            return self._read_series_quality(con, series_ids)
+
+    @staticmethod
+    def _read_series_quality(con, series_ids):
+        rows = con.execute(
+            'SELECT series_id,value_status,count(*) FROM observations '
+            'WHERE series_id IN (SELECT unnest(?)) GROUP BY series_id,value_status',
+            [series_ids]).fetchall()
         counts = {}
         for series_id, status, count in rows:
             counts.setdefault(series_id, {})[status] = count
@@ -777,7 +783,15 @@ class DataStore:
             rows=con.execute('SELECT series_id,min(formula) FROM observations WHERE series_id IN ('+','.join('?' for _ in ids)+') AND formula IS NOT NULL AND length(formula) BETWEEN 1 AND 400 GROUP BY series_id',ids).fetchall()
         return dict(rows)
 
-    def query_series(self, dataset_id: str, series_id: str, start_date: str | None = None, end_date: str | None = None, operation: str = "rows", limit: int = 50, period: str | None = None, *, offset=0, value_filters=None, last_n=None, top_n=None, order='desc', _complete=False) -> dict:
+    def query_series(self, dataset_id: str, series_id: str, start_date: str | None = None,
+                     end_date: str | None = None, operation: str = "rows", limit: int = 50,
+                     period: str | None = None, *, offset=0, value_filters=None, last_n=None,
+                     top_n=None, order='desc', _complete=False, include_last_valid: bool = False) -> dict:
+        from .series_endpoint import (bind_coverage_sources, formula_cache_status, last_valid_enabled,
+                                      read_endpoint_coverage)
+        if type(include_last_valid) is not bool:
+            raise ValueError('include_last_valid 必须为布尔值')
+        use_endpoint = include_last_valid and last_valid_enabled()
         if type(offset) is not int or offset < 0 or offset > 10000000:
             raise ValueError('offset 必须为 0 至 10000000 的整数')
         if offset and (operation != 'rows' or _complete):
@@ -803,9 +817,8 @@ class DataStore:
             raise ValueError("开始日期不能晚于结束日期。")
         series = self._series(dataset_id, series_id)
         role = (series.get('field_metadata') or {}).get('role')
-        quality = self.series_quality(dataset_id, [series.get('source_series_id', series_id)]).get(series.get('source_series_id', series_id), {})
-        if operation not in ('rows', 'count') and (role in ('text_dimension', 'annotation')
-                or quality.get('observed_type') == 'text'):
+        needs_numeric = operation not in ('rows', 'count')
+        if needs_numeric and role in ('text_dimension', 'annotation'):
             raise ValueError('文本维度或说明字段只可读取/筛选，不能作为数值指标聚合。')
         mode=series.get('date_mode','date')
         if mode in ('none','period') and (start or end):raise ValueError('此指标没有具体日期，请使用期间/版本标签或不限定时间')
@@ -814,7 +827,8 @@ class DataStore:
         if period is not None and (not isinstance(period,str) or len(period)>200):raise ValueError('期间标签无效')
         manifest = self.manifest(dataset_id)
         where = "series_id = ?"
-        params = [series.get('source_series_id', series_id) if series.get('chart_id') else series_id]
+        storage_id = series.get('source_series_id', series_id) if series.get('chart_id') else series_id
+        params = [storage_id]
         if series.get('chart_id'):
             from .native_charts import _range_sql
             clauses = []
@@ -822,29 +836,55 @@ class DataStore:
                 clause, values = _range_sql(ref)
                 clauses.append('('+clause+')'); params.extend(values)
             where += ' AND ('+' OR '.join(clauses)+')'
-        if start:
-            where += " AND date >= ?"
-            params.append(start)
         if end:
             where += " AND date <= ?"
             params.append(end)
         if period:
             where += " AND period = ?";params.append(period)
+        as_of_where, as_of_params = where, list(params)
+        if start:
+            where += " AND date >= ?"
+            params.append(start)
         if mode=='period' and not period and operation not in ('rows','count'):
             raise ValueError('不同年度/版本可能不可加总，请先指定期间标签再统计')
         with self._connect(dataset_id) as con:
+            if needs_numeric and self._read_series_quality(con, [storage_id]).get(storage_id, {}).get('observed_type') == 'text':
+                raise ValueError('文本维度或说明字段只可读取/筛选，不能作为数值指标聚合。')
             if last_n:
                 if mode!='date':raise ValueError('日期窗口需要原表日期字段')
-                window_where,window_params=where,list(params)
-                where+=' AND date IN (SELECT DISTINCT date FROM observations WHERE '+window_where+' AND date IS NOT NULL ORDER BY date DESC LIMIT ?)'
-                params.extend(window_params+[last_n])
-            scope_count=con.execute(f'SELECT count(*) FROM observations WHERE {where}',params).fetchone()[0]
-            for f in filters:
-                where+=' AND value '+operators[f['op']]+' ?';params.append(f['value'])
+                # The requested range only adds a lower date. Intersecting
+                # with it preserves the last N dates in that range.
+                window_where, window_params = (as_of_where, as_of_params) if use_endpoint else (where, params)
+                window_dates = [day for day, in con.execute(f'''
+                    SELECT DISTINCT date FROM observations WHERE {window_where}
+                    AND date IS NOT NULL ORDER BY date DESC LIMIT ?
+                ''', window_params + [last_n]).fetchall()]
+                window_filter = ' AND date IN (SELECT unnest(?::DATE[]))'
+                where += window_filter
+                params.append(window_dates)
+                as_of_where += window_filter
+                as_of_params.append(window_dates)
+            if use_endpoint:
+                requested_status_counts = dict(con.execute(f'''
+                    SELECT value_status, count(*) FROM observations
+                    WHERE {where} GROUP BY value_status
+                ''', params).fetchall())
+                scope_count = sum(requested_status_counts.values())
+            else:
+                scope_count=con.execute(f'SELECT count(*) FROM observations WHERE {where}',params).fetchone()[0]
+            value_where = ''.join(' AND value '+operators[f['op']]+' ?' for f in filters)
+            value_params = [f['value'] for f in filters]
+            where += value_where
+            params += value_params
             formula_count,valid_formula_count=con.execute(f"SELECT count(*),count(value) FROM observations WHERE {where} AND formula IS NOT NULL AND trim(formula) <> ''",params).fetchone()
             columns={r[1] for r in con.execute("PRAGMA table_info('observations')").fetchall()}
             extra=",period,period_cell,metric_cell" if 'period' in columns else ",NULL,NULL,NULL"
-            count, valid, first, last, valid_first, valid_last = con.execute(f"SELECT count(*),count(value),min(date),max(date),min(date) FILTER(WHERE value IS NOT NULL),max(date) FILTER(WHERE value IS NOT NULL) FROM observations WHERE {where}", params).fetchone()
+            valid_date_value = 'value IS NOT NULL AND isfinite(value)' if use_endpoint else 'value IS NOT NULL'
+            count, valid, first, last, valid_first, valid_last = con.execute(f"""SELECT
+                count(*), count(value), min(date), max(date),
+                min(date) FILTER (WHERE {valid_date_value}), max(date) FILTER (WHERE {valid_date_value})
+                FROM observations WHERE {where}
+            """, params).fetchone()
             observation_coverage = None
             if operation == 'rows':
                 from .observation_coverage import summarize_observation_coverage
@@ -855,7 +895,24 @@ class DataStore:
             if operation not in {"rows", "latest", "top"}:
                 function = {"mean": "avg", "sum": "sum", "min": "min", "max": "max", "count": "count"}[operation]
                 aggregate = con.execute(f"SELECT {function}(value) FROM observations WHERE {where}", params).fetchone()[0]
-            if operation == "latest":
+            latest_unresolved = False
+            if use_endpoint:
+                # With no lower date, the existing aggregate already covers
+                # the complete as-of scope, regardless of output paging.
+                same_scope = start is None
+                endpoint_coverages = read_endpoint_coverage(
+                    con, {series_id: series},
+                    where=where if same_scope else as_of_where + value_where,
+                    params=params if same_scope else as_of_params + value_params,
+                    start=start, end=end, period=period or None, columns=columns,
+                    date_bounds={storage_id: (count, first, last, valid_first, valid_last)} if same_scope else None,
+                )
+                endpoint = endpoint_coverages[series_id]['last_valid']
+                latest_unresolved = (operation == 'latest' and endpoint['direction'] == 'in_range'
+                                     and endpoint['status'] in ('conflict', 'truncated'))
+            if latest_unresolved:
+                rows = []
+            elif operation == "latest":
                 rows = con.execute(f"SELECT date,value,source_cell,value_status,formula,date_cell,raw_value{extra} FROM observations WHERE {where} AND value IS NOT NULL ORDER BY date DESC LIMIT 1", params).fetchall()
             elif operation in {"min", "max"}:
                 # Return the actual extremum rows with their dates, never early
@@ -870,6 +927,10 @@ class DataStore:
         records = [{"date": str(r[0]) if r[0] else None, "period":r[7],"period_cell":r[8],"metric_cell":r[9], "value": r[1], "source_cell": r[2], "value_status": r[3], "formula": r[4], "date_cell": r[5], "raw_value": r[6]} for r in rows]
         for record in records:
             record['category_cell']=series.get('category_provenance',{}).get(record['source_cell'])
+            if use_endpoint:
+                record['formula_cache_status'] = formula_cache_status(
+                    record['value'], record['raw_value'], record['value_status'],
+                    bool((record['formula'] or '').strip()))
         warnings = []
         if series.get('chart_id'):
             warnings.append('图表：'+series['chart_sheet']+' / '+series['metric']+'；只查询已关联曲线范围，使用源表日期及保存数值，未用图表缓存补值。')
@@ -899,9 +960,16 @@ class DataStore:
         warnings.append("missing_count统计已导入记录中的空白、错误或无缓存值；不补建原表没有的记录。")
         filters = {"series_id": series_id, "start_date": start_date, "end_date": end_date, "operation": operation, "period":period, 'value_filters':value_filters or [], 'last_n':last_n,'top_n':top_n,'order':order}
         result = {"dataset_id": dataset_id, "status": "ok" if valid or (operation=='count' and scope_count) else "no_data", "series": series, "filters": filters, "scope_record_count":scope_count,"record_count": count, "valid_count": valid, "formula_count":formula_count, "valid_formula_count":valid_formula_count, "valid_non_formula_count":valid-valid_formula_count, "missing_count": count-valid, "actual_first_date": str(first) if first else None, "actual_last_date": str(last) if last else None, "valid_first_date":str(valid_first) if valid_first else None,"valid_last_date":str(valid_last) if valid_last else None, "aggregate": aggregate, "rows": records, "extremum_rows":records if operation in {'min','max'} else None, "extremum_count":extremum_count, "rows_are": "extremum_observations" if operation in {'min','max'} else "latest_valid_observation" if operation == "latest" else "observations" if operation in {'rows','top'} else "source_examples_not_all_inputs", "truncated": (extremum_count>len(records)) if extremum_count is not None else operation not in ('latest','top') and count > len(records), "source_semantics":{"date_representation":series.get('date_mode','date'),"statistical_calendar":series.get('statistical_calendar'),"aggregation_rule":series.get('aggregation_rule'),"notice":"未在源字段声明的业务年度、可加性与单位不能从名称推定为原表规则；采用背景常识时必须标为假设，并说明对范围/答案的影响。"}, "source": {"file": manifest["source_file"], "sha256": manifest["sha256"], "sheet": series["sheet"], "header_cells": series.get("header_cells", [])}, "warnings": warnings}
+        if latest_unresolved:
+            result['rows_are'] = 'unresolved_latest_valid_observation'
+            warnings.append('查询区间最后有效日期的同日证据存在冲突或超出回包上限，请参照 coverage.last_valid 核对状态和原格。')
         if start and start == end and not valid:
             if result['status'] == 'no_data':
-                warnings.append("本次单日查询在给定范围和筛选下未查到有效数值；筛选后零行不能证明原字段当天无记录。用字段日期摘要说明最后有值的日期（若有）。若已核实用户点名首查的来源当天缺所问值，用户未排除补充且有符合其范围的授权文档可查，按所问日期与指标检索并实读；确认有对应值时，另列日期、出处、原口径和原值。用户明确只用该来源时只交付限定范围的结果。")
+                endpoint_notice = ("同字段末值以 coverage.last_valid 的查询上界和状态为准。"
+                                   if use_endpoint else "用字段日期摘要说明最后有值的日期（若有）。")
+                warnings.append("本次单日查询在给定范围和筛选下未查到有效数值；筛选后零行不能证明原字段当天无记录。"
+                                + endpoint_notice +
+                                "若已核实用户点名首查的来源当天缺所问值，用户未排除补充且有符合其范围的授权文档可查，按所问日期与指标检索并实读；确认有对应值时，另列日期、出处、原口径和原值。用户明确只用该来源时只交付限定范围的结果。")
             dates = published_series_dates([series])
             if dates:
                 result['source_semantics']['published_series_dates'] = dates
@@ -921,12 +989,20 @@ class DataStore:
             warnings.append('此工作表沿用上一版已发布数据，当前原件待核对。')
         from .result_contract import (attach_result_contract, snapshot, source_column,
                                       unknown_unit, excel_value_unit, typed_sha256)
+        manifest_sha256=typed_sha256(manifest)
+        if use_endpoint:
+            bind_coverage_sources(self, dataset_id, manifest, manifest_sha256,
+                                  {series_id: series}, endpoint_coverages)
+            result['requested_range'] = {'start_date': str(start) if start else None,
+                                         'end_date': str(end) if end else None, 'period': period or None}
+            result['coverage'] = endpoint_coverages[series_id]
+            result['coverage']['requested_range_status_counts'] = requested_status_counts
         names=sorted(records[0]) if records else []
         value_unit=excel_value_unit({series_id:series},result['source']['sha256'])
-        technical={'source_cell','date_cell','category_cell','period_cell','metric_cell','formula'}
+        technical={'source_cell','date_cell','category_cell','period_cell','metric_cell','formula','formula_cache_status'}
         attach_result_contract(result,source_snapshot=snapshot(result['source'],kind='excel_observations',
             dataset_id=dataset_id,scope='returned_source_rows',input_data=records,
-            versions={'manifest_sha256':typed_sha256(manifest)}),
+            versions={'manifest_sha256':manifest_sha256}),
             execution=dict(kind='series_query',engine='duckdb',engine_version=duckdb.__version__,
                 numeric_semantics='saved DOUBLE values; Excel formulas are not recalculated',
                 input_scope='returned_source_rows',cell_lineage_verified=False,

@@ -18,7 +18,7 @@ type numericUnverifiedDeliveryBinding struct {
 	Marked                    int
 }
 
-func (e *AgentEngine) numericUnverifiedCitationsCurrent(candidate string, state *types.AgentState) bool {
+func (e *AgentEngine) numericUnverifiedCitationsCurrent(ctx context.Context, candidate string, state *types.AgentState) bool {
 	if e == nil || e.config == nil || state == nil {
 		return false
 	}
@@ -27,7 +27,7 @@ func (e *AgentEngine) numericUnverifiedCitationsCurrent(candidate string, state 
 		return false
 	}
 	refs := e.currentCandidateKnowledgeReferences(candidate, state, e.turnReview.Conversation)
-	evidenceRefs := e.currentCandidateEvidenceReferences(candidate, state)
+	evidenceRefs := e.currentCandidateEvidenceReferences(candidate, state, ctx)
 	if len(ids) != len(refs) || len(evidenceIDs) != len(evidenceRefs) {
 		return false
 	}
@@ -53,11 +53,11 @@ func (e *AgentEngine) rememberNumericUnverifiedCandidate(ctx context.Context, de
 		// Transfer escapes and JSON attributes are not the visible answer.
 		// Preserve the original checked hash while validating the exact decoded
 		// body independently; an empty diagnostic does not qualify here.
-		evidence := e.answerNumericEvidence(base, state.RoundSteps, e.turnReview.Conversation)
+		evidence := e.answerNumericEvidenceInScope(ctx, base, state.RoundSteps, e.turnReview.Conversation)
 		decision.Unsupported = ungroundedStructuredNumbers(base, evidence, state.RoundSteps)
 	}
-	if len(decision.Unsupported) == 0 || !e.candidateEvidenceBudgetFits(base, state) ||
-		!e.numericUnverifiedCitationsCurrent(base, state) || !e.numericUnverifiedImagesCurrent(base, state) {
+	if len(decision.Unsupported) == 0 || !e.candidateEvidenceBudgetFits(base, state, ctx) ||
+		!e.numericUnverifiedCitationsCurrent(ctx, base, state) || !e.numericUnverifiedImagesCurrent(base, state) {
 		return
 	}
 	e.turnReview.NumericUnverifiedDecision = decision
@@ -74,13 +74,13 @@ func (e *AgentEngine) numericUnverifiedPresentation(ctx context.Context, state *
 	if decoded, ok := decodeReviewedAnswerEnvelope(base); ok {
 		base = decoded
 	}
-	if !e.numericUnverifiedCitationsCurrent(base, state) || !e.numericUnverifiedImagesCurrent(base, state) || !e.candidateEvidenceBudgetFits(base, state) {
+	if !e.numericUnverifiedCitationsCurrent(ctx, base, state) || !e.numericUnverifiedImagesCurrent(base, state) || !e.candidateEvidenceBudgetFits(base, state, ctx) {
 		return "", 0, nil, nil, false
 	}
 	// Re-run the unchanged matcher on the decoded presentation. JSON escape
 	// offsets never become offsets in visible prose, and a changed diagnostic
 	// cannot inherit the earlier candidate's terminal warning.
-	evidence := e.answerNumericEvidence(base, state.RoundSteps, e.turnReview.Conversation)
+	evidence := e.answerNumericEvidenceInScope(ctx, base, state.RoundSteps, e.turnReview.Conversation)
 	if reviewDigest(ungroundedStructuredNumbers(base, evidence, state.RoundSteps)) != reviewDigest(d.Unsupported) {
 		return "", 0, nil, nil, false
 	}
@@ -90,7 +90,7 @@ func (e *AgentEngine) numericUnverifiedPresentation(ctx context.Context, state *
 		return "", 0, nil, nil, false
 	}
 	delivery := marked + "\n\n> 提示：" + unverifiedNumberNotice
-	refs, legacy := e.unverifiedNavigationReferences(delivery, state)
+	refs, legacy := e.unverifiedNavigationReferences(ctx, delivery, state)
 	if len(refs) != len(uniqueCandidateEvidenceIDs(delivery)) || len(legacy) != len(uniqueCandidateCitationIDs(delivery)) ||
 		!numericUnverifiedReferenceBudgetFits(refs, legacy) {
 		return "", 0, nil, nil, false

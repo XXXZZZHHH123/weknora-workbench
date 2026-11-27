@@ -6,6 +6,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/structuredresult"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -32,10 +33,12 @@ type sourceReviewSnapshot struct {
 	input         map[string]any
 	reader        *reviewEvidenceReader
 	sourceRecords *reviewEvidenceReader
+	sourceScope   string
 	hasImages     bool
 }
 
 func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content string, state *types.AgentState, messages []chat.Message) *sourceReviewSnapshot {
+	state = e.lastValidSourceReviewState(ctx, state, e.turnReview.TerminalStartStep)
 	inputData := map[string]any{}
 	if plan := e.taskReviewPlan(); plan != nil {
 		inputData["advisory_task_plan"] = plan
@@ -148,7 +151,12 @@ func (e *AgentEngine) buildSourceReviewSnapshot(ctx context.Context, content str
 		"packet_budget_target_bytes":     packetScope["budget_target_bytes"],
 		"packet_within_target":           packetScope["within_target"],
 	})
-	return &sourceReviewSnapshot{input: inputData, reader: evidenceReader, sourceRecords: sourceRecords, hasImages: hasImageObservations}
+	return &sourceReviewSnapshot{input: inputData, reader: evidenceReader, sourceRecords: sourceRecords,
+		sourceScope: e.sourceReviewSnapshotScope(ctx), hasImages: hasImageObservations}
+}
+
+func (e *AgentEngine) sourceReviewSnapshotScope(ctx context.Context) string {
+	return reviewDigest([]any{e.unverifiedSourceScopeDigest(ctx), structuredresult.LastValidEnabled()})
 }
 
 func sourceReviewCitationBudgetForBase(input map[string]any) int {

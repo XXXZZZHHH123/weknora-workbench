@@ -198,7 +198,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 			"views": views, "candidate_hash": decision.CandidateHash,
 		})
 	}
-	if !e.candidateEvidenceBudgetFits(candidate, state) {
+	if !e.candidateEvidenceBudgetFits(candidate, state, ctx) {
 		decision.ReasonCode = "evidence_storage_budget"
 		e.answerReviewFeedback = "所选证据超出单条消息存储预算。使用同一次真实返回结果的聚合引用，保留必要原格和计算依据；不能丢弃引用后把未保存证据宣布为已完成。"
 		e.answerReviewAction = reviewReviseAnswer
@@ -226,12 +226,12 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	}
 	candidate = e.selectCandidateAdditions(ctx, query, candidate, state, conversation)
 	decision.Candidate, decision.CandidateHash = candidate, candidateTextDigest(candidate)
-	if e.standardAnswerReview() && e.candidateCitationsInvalid(candidate, state, conversation) {
-		decision = e.citationIdentityFailure(decision, state, conversation)
+	if e.standardAnswerReview() && e.candidateCitationsInvalid(candidate, state, conversation, ctx) {
+		decision = e.citationIdentityFailure(ctx, decision, state, conversation)
 		return
 	}
 	if needsStructuredAnswerReviewForQuery(query, state.RoundSteps, conversation, candidate) {
-		evidence := e.answerNumericEvidence(candidate, state.RoundSteps, conversation)
+		evidence := e.answerNumericEvidenceInScope(ctx, candidate, state.RoundSteps, conversation)
 		// The exceptional chart delivery inserts the exact coverage caption
 		// from a current receipt. Its range can name months with no result
 		// rows. Keep it in the semantic review and check every model number.
@@ -259,7 +259,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		if !suspectAnswerFragment(decision.Candidate, reasoning) {
 			coverage = e.currentCoverageDraftReview(ctx, state)
 		}
-		assessment := e.assessCoverageDraft(coverage, decision.Candidate, state)
+		assessment := e.assessCoverageDraft(ctx, coverage, decision.Candidate, state)
 		if decision.ReasonCode == "evidence_completion_exhausted" && len(assessment.anchors) > 0 {
 			decision.Disposition = candidateEvidencePartial
 		}
@@ -280,7 +280,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 			common.PipelineInfo(ctx, "Agent", "source_review_skipped", map[string]interface{}{"reason": "standard_text_delivery"})
 		}
 		if decision.Candidate != candidate {
-			corrected := e.assessCoverageDraft(coverage, decision.Candidate, state)
+			corrected := e.assessCoverageDraft(ctx, coverage, decision.Candidate, state)
 			if !containsCoverageDraftRoles(corrected.roles, assessment.roles) {
 				decision.Candidate, decision.CandidateHash = candidate, candidateTextDigest(candidate)
 				decision.StructuredResultReviewStatus = "not_checked_correction_dropped_verified_roles"
@@ -296,7 +296,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 				(!containsCoverageDraftRoles(assessment.roles, priorRoles) || strictlyContainsCoverageDraftFacts(priorFacts, assessment.anchors)) &&
 					moreCompleteCoverageDraft(best, prior, decision, assessment.roles, assessment.anchors) {
 				decision.Candidate, decision.CandidateHash = best.Candidate, best.CandidateHash
-				assessment = e.assessCoverageDraft(coverage, decision.Candidate, state)
+				assessment = e.assessCoverageDraft(ctx, coverage, decision.Candidate, state)
 				decision.CoverageFeedback = e.coverageDraftFeedback(coverage, assessment)
 			}
 		}
@@ -330,7 +330,7 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 	if decision.Err != nil {
 		decision.Disposition = candidateProtocolFailure
 		decision.ReasonCode = "source_review_protocol_failure"
-		if e.needsSourceConsistencyCheck(state) && e.candidateCitationsInvalid(candidate, state, conversation) {
+		if e.needsSourceConsistencyCheck(state) && e.candidateCitationsInvalid(candidate, state, conversation, ctx) {
 			// An unavailable critic cannot convert an invalid identity into the
 			// older general semantic fallback either.
 			decision.ReasonCode = "citation_identity_invalid"
@@ -343,8 +343,8 @@ func (e *AgentEngine) checkCandidate(ctx context.Context, query, candidate, reas
 		}
 		// Preserve strict review's semantic/coverage check and its existing
 		// budget, then make an identity rejection actionable at the same outlet.
-		if e.needsSourceConsistencyCheck(state) && e.candidateCitationsInvalid(candidate, state, conversation) {
-			decision = e.citationIdentityFailure(decision, state, conversation)
+		if e.needsSourceConsistencyCheck(state) && e.candidateCitationsInvalid(candidate, state, conversation, ctx) {
+			decision = e.citationIdentityFailure(ctx, decision, state, conversation)
 		}
 	} else if warning && e.needsSourceConsistencyCheck(state) {
 		decision.Disposition = candidateNumericWarning

@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -65,6 +68,9 @@ func (e *AgentEngine) currentStructuredCitationView(call types.ToolCall) string 
 		e.turnReview.StructuredCitationNonce = uuid.NewString()
 	}
 	key := call.ID + "/" + reviewDigest(call.Result.Data)
+	if coverageHasLastValid(call.Result.Data) {
+		key += "/" + strconv.FormatBool(structuredresult.LastValidEnabled())
+	}
 	ids, existing := e.turnReview.StructuredCitationCalls[key]
 	if !existing {
 		ids = e.registerStructuredCitationResult(call)
@@ -94,7 +100,7 @@ func (e *AgentEngine) currentStructuredCitationView(call types.ToolCall) string 
 func (e *AgentEngine) registerStructuredCitationResult(call types.ToolCall) []string {
 	data := call.Result.Data
 	contract, err := structuredresult.ValidatePayload(data)
-	if err != nil || contract == nil || data["status"] != "ok" {
+	if err != nil || contract == nil || data["status"] != "ok" && (data["status"] != "no_data" || !coverageHasLastValid(data)) {
 		return nil
 	}
 	source, ok := data["source"].(map[string]any)
@@ -111,11 +117,12 @@ func (e *AgentEngine) registerStructuredCitationResult(call types.ToolCall) []st
 	if tenant := citationInt(scope["knowledge_base_tenant_id"]); tenant > 0 {
 		snapshot.TenantID = uint64(tenant)
 	}
-	rows, ok := data["rows"].([]any)
-	if !ok || len(rows) == 0 {
-		return nil
-	}
+	rows, _ := data["rows"].([]any)
 	ids := []string{}
+	intervalData := data
+	if coverageHasLastValid(data) {
+		intervalData = lastValidIntervalData(data)
+	}
 	add := func(kind string, selector map[string]any, values map[string]any, resultColumns []string, resultRows []any, unit map[string]any, cells []any) {
 		if len(e.turnReview.StructuredCitations) >= maxCurrentStructuredCitations {
 			return
@@ -126,10 +133,14 @@ func (e *AgentEngine) registerStructuredCitationResult(call types.ToolCall) []st
 		}
 		selectedSource := snapshot
 		selectedSource.Locators = locators
+		sourceData := intervalData
+		if selector["scope"] == "last_valid" {
+			sourceData = data
+		}
 		manifest := map[string]any{"schema_version": 1, "tool": call.ExecutionName(), "tool_call_id": call.ID, "result_contract": data["result_contract"],
 			"selector": selector, "result": map[string]any{"columns": resultColumns, "rows": resultRows}, "unit": unit, "source_cells": cells,
-			"quality":     map[string]any{"extraction_verified": data["extraction_verified"], "input_complete": data["input_complete"], "output_truncated": data["output_truncated"], "coverage": data["coverage"]},
-			"computation": map[string]any{"sql": data["sql"], "execution": contract.Execution, "input_count": data["input_count"], "provenance": data["provenance"], "inputs": data["inputs"]}}
+			"quality":     map[string]any{"extraction_verified": data["extraction_verified"], "input_complete": data["input_complete"], "output_truncated": data["output_truncated"], "coverage": sourceData["coverage"]},
+			"computation": map[string]any{"sql": data["sql"], "execution": contract.Execution, "input_count": data["input_count"], "provenance": data["provenance"], "inputs": sourceData["inputs"]}}
 		encoded, err := json.Marshal(manifest)
 		if err != nil || len(encoded) > types.MaxEvidenceManifestBytes {
 			return
@@ -150,6 +161,29 @@ func (e *AgentEngine) registerStructuredCitationResult(call types.ToolCall) []st
 		entry["json_pointer"] = structuredCitationResultPointer(data, selector)
 		e.turnReview.StructuredCitations[id] = structuredCitationObservation{Reference: ref, CallID: call.ID, DataHash: reviewDigest(data), Directory: entry}
 		ids = append(ids, id)
+	}
+	endpointResults := map[string]bool{}
+	if e.toolRegistry != nil && coverageHasLastValid(data) && structuredresult.LastValidEnabled() {
+		batch := e.taskCoverageBatch(types.AgentStep{ToolCalls: []types.ToolCall{call}}, nil, map[string]bool{})
+		for _, item := range batch.Evidence {
+			if !coverageProtocolLastValid(item) || item.WorkbookSnapshotHash != snapshot.SourceSHA256 {
+				continue // A public raw cell needs a matching native file locator.
+			}
+			input := data
+			if item.Operation == "analyze_table" {
+				input = coverageObject(coverageObject(data["inputs"])[item.SeriesID])
+			}
+			unit := coverageObject(coverageObject(coverageObject(input["coverage"])["last_valid"])["unit"])
+			selector := map[string]any{"scope": "last_valid", "column_name": "value", "sheet": item.Sheet,
+				"source_cell": item.Cell, "date_cell": item.DateCell, "series_id": item.SeriesID, "json_pointer": item.JSONPointer}
+			add(types.EvidenceKindRawCell, selector, map[string]any{"date": item.Date, "value": item.Raw},
+				[]string{"date", "value"}, []any{[]any{item.Date, item.Raw}}, unit, nil)
+			endpointResults[item.ResultJSONPointer] = true
+		}
+	}
+	if len(rows) == 0 || data["status"] != "ok" || coverageHasLastValid(data) && structuredresult.LastValidEnabled() &&
+		(coverageObject(data["filters"])["operation"] == "latest" || data["rows_are"] == "latest_valid_observation") {
+		return ids
 	}
 	columnMetadata, _ := data["result_contract"].(map[string]any)
 	metadataRows, _ := columnMetadata["column_metadata"].([]any)
@@ -249,6 +283,9 @@ func (e *AgentEngine) registerStructuredCitationResult(call types.ToolCall) []st
 			}
 			for ci, name := range columns {
 				selector := map[string]any{"row_index": ri, "column_index": ci, "column_name": name}
+				if endpointResults[structuredCitationResultPointer(data, selector)] {
+					continue
+				}
 				add(types.EvidenceKindStructuredResult, selector, map[string]any{name: row[ci]}, []string{name}, []any{[]any{row[ci]}}, columnUnit(ci), nil)
 			}
 		}
@@ -275,6 +312,9 @@ func (e *AgentEngine) registerStructuredCitationResult(call types.ToolCall) []st
 				}
 			}
 			selector := map[string]any{"row_index": ri, "column_name": "value", "source_cell": row["source_cell"], "date_cell": row["date_cell"], "sheet": series["sheet"]}
+			if endpointResults[structuredCitationResultPointer(data, selector)] {
+				continue
+			}
 			add(types.EvidenceKindRawCell, selector, values, []string{"date", "value"}, []any{[]any{row["date"], value}}, unit, nil)
 		}
 	}
@@ -382,7 +422,7 @@ func uniqueCandidateEvidenceIDs(candidate string) []string {
 	return ids
 }
 
-func (e *AgentEngine) currentStructuredObservation(id string, state *types.AgentState) (structuredCitationObservation, bool) {
+func (e *AgentEngine) currentStructuredObservation(id string, state *types.AgentState, contexts ...context.Context) (structuredCitationObservation, bool) {
 	if e == nil || state == nil || e.modelContext == nil || e.modelContext.CitableEvidenceHandle(id) == "" {
 		return structuredCitationObservation{}, false
 	}
@@ -391,6 +431,7 @@ func (e *AgentEngine) currentStructuredObservation(id string, state *types.Agent
 		return observation, false
 	}
 	found := false
+	var original types.ToolCall
 	for _, step := range state.RoundSteps {
 		for _, call := range step.ToolCalls {
 			if call.ID != observation.CallID {
@@ -400,15 +441,46 @@ func (e *AgentEngine) currentStructuredObservation(id string, state *types.Agent
 				return observation, false
 			}
 			found = true
+			original = call
+		}
+	}
+	if found && coverageObject(observation.Directory["selector"])["scope"] == "last_valid" {
+		if len(contexts) == 0 || contexts[0] == nil || e.toolRegistry == nil || !structuredresult.LastValidEnabled() {
+			return observation, false
+		}
+		record, _ := e.projectCurrentTaskCoverage(state, e.turnReview.TerminalStartStep, coverageRecord{})
+		found = false
+		for _, item := range record.Evidence {
+			if coverageProtocolLastValid(item) && item.ToolCallID == observation.CallID && item.JSONPointer == observation.Directory["json_pointer"] &&
+				coverageCurrentEvidence(record, item) && e.coverageEvidenceAllowed(contexts[0], nil, item) {
+				receipt, ok := coverageEndpointForGap(record, item)
+				found = ok && receipt.LastValidStatus == "observed"
+				break
+			}
+		}
+	} else if found && coverageHasLastValid(original.Result.Data) {
+		if len(contexts) == 0 || contexts[0] == nil || e.toolRegistry == nil {
+			return observation, false
+		}
+		record, attempts := e.projectCurrentTaskCoverage(state, e.turnReview.TerminalStartStep, coverageRecord{})
+		id := structuredCitationReaderID(original)
+		if !slices.ContainsFunc(attempts, func(attempt coverageAttempt) bool {
+			return attempt.EvidenceID == id && e.lastValidIntervalReviewAllowed(contexts[0], record, attempt)
+		}) {
+			return observation, false
+		}
+		if !structuredresult.LastValidEnabled() {
+			observation.Directory = maps.Clone(observation.Directory)
+			observation.Directory["evidence_id"] = structuredCitationReaderID(lastValidIntervalReviewCall(original))
 		}
 	}
 	return observation, found
 }
 
-func (e *AgentEngine) currentCandidateEvidenceReferences(candidate string, state *types.AgentState) types.EvidenceReferences {
+func (e *AgentEngine) currentCandidateEvidenceReferences(candidate string, state *types.AgentState, contexts ...context.Context) types.EvidenceReferences {
 	refs := types.EvidenceReferences{}
 	for _, id := range uniqueCandidateEvidenceIDs(candidate) {
-		if observation, ok := e.currentStructuredObservation(id, state); ok {
+		if observation, ok := e.currentStructuredObservation(id, state, contexts...); ok {
 			ref := observation.Reference
 			ref.CandidateHash = candidateTextDigest(candidate)
 			ref.ClaimBindings = structuredInlineBindings(candidate, id)
@@ -434,12 +506,12 @@ func structuredInlineBindings(candidate, id string) json.RawMessage {
 	return encoded
 }
 
-func (e *AgentEngine) structuredCitationReviewDirectory(candidate string, state *types.AgentState) map[string]any {
+func (e *AgentEngine) structuredCitationReviewDirectory(ctx context.Context, candidate string, state *types.AgentState) map[string]any {
 	items := []any{}
 	ids := uniqueCandidateEvidenceIDs(candidate)
 	omitted := 0
 	for _, id := range ids {
-		observation, ok := e.currentStructuredObservation(id, state)
+		observation, ok := e.currentStructuredObservation(id, state, ctx)
 		if !ok {
 			items = append(items, map[string]any{"id": id, "status": "unknown_or_changed"})
 			continue
@@ -469,6 +541,9 @@ func structuredCitationResultPointer(data, selector map[string]any) string {
 	if selector == nil || selector["scope"] == "returned_result" {
 		return "/data/rows"
 	}
+	if selector["scope"] == "last_valid" {
+		return citationString(selector["json_pointer"])
+	}
 	pointer := "/data/rows/" + strconv.Itoa(citationInt(selector["row_index"]))
 	if data["kind"] == "structured_analysis" {
 		return pointer + "/" + strconv.Itoa(citationInt(selector["column_index"]))
@@ -489,7 +564,7 @@ func (e *AgentEngine) sortedCurrentStructuredCitationIDs() []string {
 	return ids
 }
 
-func (e *AgentEngine) finalAnswerEvidenceReferences(state *types.AgentState) types.EvidenceReferences {
+func (e *AgentEngine) finalAnswerEvidenceReferences(state *types.AgentState, contexts ...context.Context) types.EvidenceReferences {
 	if e == nil || e.config == nil || !e.config.EvidenceReferencesEnabled || !e.config.CitationsEnabled() || state == nil {
 		return nil
 	}
@@ -500,8 +575,8 @@ func (e *AgentEngine) finalAnswerEvidenceReferences(state *types.AgentState) typ
 	if !approved {
 		return nil
 	}
-	refs := e.currentCandidateEvidenceReferences(state.FinalAnswer, state)
-	refs = append(refs, e.finalChartEvidenceReferences(state, refs)...)
+	refs := e.currentCandidateEvidenceReferences(state.FinalAnswer, state, contexts...)
+	refs = append(refs, e.finalChartEvidenceReferences(state, refs, contexts...)...)
 	if len(refs) > types.MaxMessageEvidenceReferences {
 		return nil
 	}
@@ -510,14 +585,14 @@ func (e *AgentEngine) finalAnswerEvidenceReferences(state *types.AgentState) typ
 
 // Refuse an undeliverable citation set before accepting its candidate. A
 // bounded persistent store must not silently drop live tags at completion.
-func (e *AgentEngine) candidateEvidenceBudgetFits(candidate string, state *types.AgentState) bool {
+func (e *AgentEngine) candidateEvidenceBudgetFits(candidate string, state *types.AgentState, contexts ...context.Context) bool {
 	if e == nil || e.config == nil || !e.config.EvidenceReferencesEnabled || !e.config.CitationsEnabled() || state == nil {
 		return true
 	}
-	refs := e.currentCandidateEvidenceReferences(candidate, state)
+	refs := e.currentCandidateEvidenceReferences(candidate, state, contexts...)
 	view := *state
 	view.FinalAnswer = candidate
-	refs = append(refs, e.finalChartEvidenceReferences(&view, refs)...)
+	refs = append(refs, e.finalChartEvidenceReferences(&view, refs, contexts...)...)
 	if len(refs) > types.MaxMessageEvidenceReferences {
 		return false
 	}

@@ -23,6 +23,8 @@ type coverageEvidence struct {
 	LastObservedDate, LastValidRef, DateEvidenceID, DateJSONPointer                  string
 	SourceDate, ReportedValue                                                        string
 	ResultJSONPointer, CellJSONPointer, WorkbookSnapshotHash                         string
+	ManifestHash, WorkbookManifestHash, LastValidStatus, LastValidDirection          string
+	FormulaCacheStatus, LastValidFilterHash                                          string
 	Page                                                                             int
 	SpanStart, SpanEnd, NextOffset                                                   *int
 	Raw                                                                              any
@@ -459,8 +461,13 @@ func coverageCurrentEvidence(input coverageRecord, evidence coverageEvidence) bo
 	if current == "" {
 		current = input.Snapshots[evidence.SourceID]
 	}
+	if manifest := input.Snapshots[coverageManifestKey(evidence)]; evidence.LastValidStatus != "" && evidence.ManifestHash != "" && manifest != "" && manifest != evidence.ManifestHash {
+		return false
+	}
 	return (current == "" || current == evidence.SnapshotHash) &&
-		(!(coverageAnalysisEndpoint(evidence) || coverageAnalysisMissingCell(evidence)) || coverageCurrentAnalysisWorkbook(input, evidence))
+		(!(coverageAnalysisEndpoint(evidence) || coverageAnalysisMissingCell(evidence) ||
+			evidence.Operation == "analyze_table" && evidence.LastValidStatus != "" && evidence.WorkbookManifestHash != "") ||
+			coverageCurrentAnalysisWorkbook(input, evidence))
 }
 
 func coverageSameSource(binding coverageBinding, evidence coverageEvidence) bool {
@@ -506,8 +513,12 @@ func matchCoverageEvidence(target taskCoverageTarget, input coverageRecord, bind
 			return evidence, evidence.Complete && evidence.NextOffset == nil && (binding.Period != "" || binding.PeriodFrom != "" && binding.PeriodTo != "")
 		}
 		if target.SourceTime == "latest_observation" && (evidence.Kind == "cell" || evidence.Kind == "last_valid") {
+			if endpoint, supplied := coverageEndpointForGap(input, evidence); supplied &&
+				(!coverageProtocolLastValid(endpoint) || endpoint.EvidenceID != evidence.EvidenceID || endpoint.JSONPointer != evidence.JSONPointer) {
+				return evidence, false
+			}
 			unbounded := binding.Period == "" && binding.PeriodFrom == "" && binding.PeriodTo == ""
-			if !evidence.LatestInScope && !(unbounded && evidence.Date != "" && evidence.Date == evidence.LastValidDate) {
+			if !evidence.LatestInScope && !(unbounded && evidence.LastValidStatus == "" && evidence.Date != "" && evidence.Date == evidence.LastValidDate) {
 				return evidence, false
 			}
 		} else if evidence.Kind == "last_valid" {
@@ -683,9 +694,18 @@ func coverageDay(literal string) string {
 }
 
 func sameCoverageLastValid(input coverageRecord, gap, value coverageEvidence) bool {
+	if value.Kind != "last_valid" && !coverageProtocolLastValid(value) || !value.Bound || !coverageCurrentEvidence(input, value) || value.Raw == nil || value.Date == "" {
+		return false
+	}
+	if endpoint, supplied := coverageEndpointForGap(input, gap); supplied {
+		return coverageProtocolLastValid(endpoint) && endpoint.LastValidDirection == "before_range" &&
+			value.EvidenceID == endpoint.EvidenceID && value.JSONPointer == endpoint.JSONPointer
+	}
+	if gap.LastValidStatus != "" {
+		return false
+	}
 	analysisEndpoint := coverageAnalysisEndpoint(value)
-	if value.Kind != "last_valid" || !value.Bound || !coverageCurrentEvidence(input, value) || value.Raw == nil || value.Date == "" ||
-		!analysisEndpoint && value.DateCell == "" || value.Cell == "" {
+	if !analysisEndpoint && value.DateCell == "" || value.Cell == "" {
 		return false
 	}
 	if analysisEndpoint && ((gap.Operation != "analyze_table" && gap.Operation != "query_series") ||
@@ -710,6 +730,9 @@ func sameCoverageLastValid(input coverageRecord, gap, value coverageEvidence) bo
 }
 
 func coverageAnalysisFollowUpMatches(record coverageRecord, gap, value coverageEvidence) bool {
+	if _, supplied := coverageEndpointForGap(record, gap); supplied || gap.LastValidStatus != "" {
+		return false // The bounded native receipt supersedes old original-cell inference.
+	}
 	if gap.Operation != "analyze_table" || value.Operation != "query_series" || value.Kind != "last_valid" ||
 		value.DateCell == "" || value.Cell == "" || value.Raw == nil || gap.LastValidDate == "" || value.Date != gap.LastValidDate ||
 		gap.SourceID != value.SourceID || gap.KnowledgeBaseID != value.KnowledgeBaseID || gap.Sheet != value.Sheet ||

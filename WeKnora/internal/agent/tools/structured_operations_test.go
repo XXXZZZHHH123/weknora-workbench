@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/structuredresult"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 )
@@ -61,8 +63,18 @@ func TestStructuredNamedToolsExposeRealSchemasAndRejectPublication(t *testing.T)
 	require.Len(t, reads, 5)
 	for _, entry := range data["tools"].([]any) {
 		described := entry.(map[string]any)
-		tool := operationToolByName(t, reads, "structured_"+described["name"].(string))
-		encoded, err := json.Marshal(described["inputSchema"])
+		operation := described["name"].(string)
+		tool := operationToolByName(t, reads, "structured_"+operation)
+		schema := maps.Clone(described["inputSchema"].(map[string]any))
+		if structuredLastValidOperation(operation) {
+			properties := maps.Clone(schema["properties"].(map[string]any))
+			require.Contains(t, properties, structuredLastValidArgument)
+			if !structuredresult.LastValidEnabled() {
+				delete(properties, structuredLastValidArgument)
+			}
+			schema["properties"] = properties
+		}
+		encoded, err := json.Marshal(schema)
 		require.NoError(t, err)
 		require.JSONEq(t, string(encoded), string(tool.Parameters()))
 	}

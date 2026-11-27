@@ -25,6 +25,20 @@ func coverageSnapshotKey(evidence coverageEvidence) string {
 	return evidence.KnowledgeBaseID + "\x00" + evidence.SourceID + "\x00" + part
 }
 
+func coverageManifestKey(evidence coverageEvidence) string {
+	return "manifest\x00" + evidence.KnowledgeBaseID + "\x00" + evidence.DatasetID
+}
+
+func coverageRememberSnapshot(snapshots map[string]string, item coverageEvidence) {
+	if !item.Bound || item.SourceID == "" || item.SnapshotHash == "" {
+		return
+	}
+	snapshots[coverageSnapshotKey(item)] = item.SnapshotHash
+	if item.ManifestHash != "" {
+		snapshots[coverageManifestKey(item)] = item.ManifestHash
+	}
+}
+
 // Completed steps are the batch ledger for sequential, parallel and resumed
 // execution. Provider tool text cannot enter this projection.
 func (e *AgentEngine) taskCoverageBatch(step types.AgentStep, state *types.AgentState, seen map[string]bool) coverageEvidenceBatch {
@@ -124,6 +138,9 @@ func (e *AgentEngine) taskCoverageBatch(step types.AgentStep, state *types.Agent
 			for _, item := range bases {
 				if e.coverageScopeAllows(item.KnowledgeBaseID, "") {
 					item.CitationID = citations[firstNonEmptyAgent(item.ResultJSONPointer, item.JSONPointer)]
+					if coverageProtocolLastValid(item) && citations[item.JSONPointer] != "" {
+						item.CitationID = citations[item.JSONPointer]
+					}
 					batch.Evidence = append(batch.Evidence, item)
 				}
 			}
@@ -158,9 +175,7 @@ func (e *AgentEngine) projectCurrentTaskCoverage(state *types.AgentState, startS
 		attempts = append(attempts, batch.Attempts...)
 		for _, item := range batch.Evidence {
 			item.Revision, item.AuthScope = record.Revision, record.AuthScope
-			if item.Bound && item.SnapshotHash != "" {
-				record.Snapshots[coverageSnapshotKey(item)] = item.SnapshotHash
-			}
+			coverageRememberSnapshot(record.Snapshots, item)
 			record.Evidence = append(record.Evidence, item)
 		}
 	}
@@ -213,11 +228,35 @@ func (e *AgentEngine) coverageScopeAllows(kb, source string) bool {
 }
 
 func coverageStructuredEvidence(base coverageEvidence, args, data map[string]any, includeAnalysisEndpoints bool) []coverageEvidence {
+	base, contract, ok := coverageStructuredResultIdentity(base, args, data)
+	if !ok {
+		return nil
+	}
+	switch base.Operation {
+	case "list_datasets", "list_series", "list_pdf_tables", "list_charts":
+		return coverageStructuredDirectory(base, data)
+	case "query_series":
+		return coverageSeriesEvidence(base, args, data, contract)
+	case "analyze_table":
+		return coverageAnalysisEvidence(base, args, data, contract, includeAnalysisEndpoints)
+	case "inspect_source":
+		return coverageInspectionEvidence(base, args, data)
+	case "read_pdf_table":
+		return coveragePDFEvidence(base, args, data, contract)
+	case "query_pdf_table":
+		if base.Object == args["table_id"] {
+			return coverageDerivedRows(base, data, contract)
+		}
+	}
+	return nil
+}
+
+func coverageStructuredResultIdentity(base coverageEvidence, args, data map[string]any) (coverageEvidence, *structuredresult.Contract, bool) {
 	scope, source := coverageObject(data["source_context"]), coverageObject(data["source"])
 	base.KnowledgeBaseID = sourceNavigationString(scope, "knowledge_base_id")
 	if base.KnowledgeBaseID == "" || source["knowledge_base_id"] != nil && source["knowledge_base_id"] != base.KnowledgeBaseID ||
 		args["knowledge_base_id"] != nil && args["knowledge_base_id"] != base.KnowledgeBaseID {
-		return nil
+		return base, nil, false
 	}
 	base.KnowledgeID = sourceNavigationString(source, "knowledge_id")
 	base.DatasetID = sourceNavigationString(data, "dataset_id")
@@ -237,11 +276,11 @@ func coverageStructuredEvidence(base coverageEvidence, args, data map[string]any
 		data["truncated"] != true && data["output_truncated"] != true
 	base.Complete = base.Complete && base.NextOffset == nil
 	if dataset := sourceNavigationString(args, "dataset_id"); dataset != "" && dataset != data["dataset_id"] {
-		return nil
+		return base, nil, false
 	}
 	contract, err := structuredresult.ValidatePayload(data)
 	if err != nil {
-		return nil
+		return base, nil, false
 	}
 	if contract != nil {
 		snapshot := contract.SourceSnapshot
@@ -249,29 +288,16 @@ func coverageStructuredEvidence(base coverageEvidence, args, data map[string]any
 			snapshot.KnowledgeBaseID != "" && snapshot.KnowledgeBaseID != base.KnowledgeBaseID ||
 			snapshot.KnowledgeID != "" && snapshot.KnowledgeID != base.KnowledgeID ||
 			snapshot.DatasetID != "" && snapshot.DatasetID != data["dataset_id"] {
-			return nil
+			return base, nil, false
 		}
 		if base.Object != "" {
 			base.SnapshotHash = reviewDigest([]any{snapshot.SourceSHA256, snapshot.Versions})
 		}
-	}
-	switch base.Operation {
-	case "list_datasets", "list_series", "list_pdf_tables", "list_charts":
-		return coverageStructuredDirectory(base, data)
-	case "query_series":
-		return coverageSeriesEvidence(base, args, data, contract)
-	case "analyze_table":
-		return coverageAnalysisEvidence(base, args, data, contract, includeAnalysisEndpoints)
-	case "inspect_source":
-		return coverageInspectionEvidence(base, args, data)
-	case "read_pdf_table":
-		return coveragePDFEvidence(base, args, data, contract)
-	case "query_pdf_table":
-		if base.Object == args["table_id"] {
-			return coverageDerivedRows(base, data, contract)
+		if base.Operation == "query_series" || base.Operation == "analyze_table" {
+			base.ManifestHash = snapshot.Versions["manifest_sha256"]
 		}
 	}
-	return nil
+	return base, contract, true
 }
 
 func coverageStructuredDirectory(base coverageEvidence, data map[string]any) []coverageEvidence {
@@ -473,7 +499,7 @@ func coverageInspectedBoundary(field, last coverageEvidence, from, to, grain str
 	start, startErr := time.Parse(time.DateOnly, from)
 	end, endErr := time.Parse(time.DateOnly, to)
 	previous, lastErr := time.Parse(time.DateOnly, field.LastValidDate)
-	if last.Kind != "last_valid" || field.Kind != "directory" || field.Operation != "list_series" ||
+	if last.Kind != "last_valid" && !coverageProtocolLastValid(last) || field.Kind != "directory" || field.Operation != "list_series" ||
 		field.SeriesID != last.SeriesID || field.LastValidDate != last.Date ||
 		startErr != nil || endErr != nil || lastErr != nil || start.After(end) || !start.After(previous) {
 		return coverageEvidence{}, false
@@ -526,20 +552,36 @@ func coverageSeriesEvidence(base coverageEvidence, args, data map[string]any, co
 		// lookup, not the frequency or business meaning of the series.
 		base.Grain, base.GrainFromLookup = "day", true
 	}
+	base.LastValidFilterHash = coverageEndpointFilterHash(filters)
+	endpoint := coverageLastValid(base, args, coverageObject(data["source"]), series, data, coverageObject(data["requested_range"]), "/data/coverage", contract)
+	if endpoint.LastValidStatus != "" && contract == nil {
+		return nil
+	}
 	var result []coverageEvidence
 	valueFilters, filtersKnown := filters["value_filters"].([]any)
 	filtered := !filtersKnown || len(valueFilters) != 0 || filters["last_n"] != nil || filters["top_n"] != nil || citationInt(args["offset"]) != 0
-	gap := base.Status == "no_data" && base.Complete && !filtered && coverageExactRange(base) && coverageZero(data["valid_count"])
+	if endpoint.LastValidStatus != "" && (!filtersKnown || base.LastValidFilterHash != coverageEndpointFilterHash(args) ||
+		!filtered && coverageZero(data["valid_count"]) && coverageProtocolLastValid(endpoint) && endpoint.LastValidDirection == "in_range") {
+		endpoint = coverageRejectLastValid(base, "/data/coverage")
+	}
+	_, completeCount := citationViewRevision(data["scope_record_count"])
+	completeRange := base.Complete || endpoint.LastValidStatus != "unverified" && endpoint.LastValidStatus != "" &&
+		completeCount && data["record_count"] == data["scope_record_count"]
+	gap := base.Status == "no_data" && completeRange && !filtered && coverageExactRange(base) && coverageZero(data["valid_count"])
 	if gap {
 		item := base
-		item.Kind, item.JSONPointer = "gap", "/data/valid_count"
+		item.Kind, item.JSONPointer, item.Complete, item.NextOffset = "gap", "/data/valid_count", true, nil
 		item.LastValidDate = sourceNavigationString(series, "last_valid_date")
-		result = append(result, item)
+		result = append(result, coverageGapWithEndpoint(item, endpoint))
 	}
 	validRows, returnedRows := 0, 0
 	lastIndex, lastCount := -1, 0
+	modernLatest := filters["operation"] == "latest" && endpoint.LastValidStatus != ""
 	coverageRows(data, "rows", func(row map[string]any, path string) {
 		returnedRows++
+		if modernLatest {
+			return // A scalar latest result is verified by the endpoint, including ties.
+		}
 		item := coverageCell(base, row, "/data"+path)
 		if item.Cell == "" || item.Raw == nil || row["value_status"] != "valid" ||
 			base.Period != "" && item.Period != base.Period ||
@@ -548,7 +590,7 @@ func coverageSeriesEvidence(base coverageEvidence, args, data map[string]any, co
 			return
 		}
 		item.LatestInScope = !filtered && base.Complete && data["rows_are"] == "latest_valid_observation" &&
-			item.Date != "" && item.Date == data["valid_last_date"]
+			item.Date != "" && item.Date == data["valid_last_date"] && endpoint.LastValidStatus == ""
 		if item.Date != "" && item.Date == series["last_valid_date"] {
 			lastIndex, lastCount = len(result), lastCount+1
 		}
@@ -567,10 +609,30 @@ func coverageSeriesEvidence(base coverageEvidence, args, data map[string]any, co
 			}
 		}
 	}
-	if lastCount == 1 && (result[lastIndex].LatestInScope || result[lastIndex].RangeComplete) {
+	if endpoint.LastValidStatus == "" && lastCount == 1 && (result[lastIndex].LatestInScope || result[lastIndex].RangeComplete) {
 		last := result[lastIndex]
 		last.Kind = "last_valid"
 		result = append(result, last)
+	} else if endpoint.LastValidStatus != "" {
+		if i := slices.IndexFunc(result, func(item coverageEvidence) bool {
+			return coverageProtocolLastValid(endpoint) && item.Kind == "cell" && coverageSameOriginalCell(item, endpoint)
+		}); i >= 0 {
+			if coverageSameOriginalValue(result[i].Raw, endpoint.Raw) {
+				endpoint.Kind, endpoint.RangeComplete = "cell", result[i].RangeComplete
+				endpoint.ResultJSONPointer = strings.TrimSuffix(result[i].JSONPointer, "/raw_value")
+				if endpoint.ResultJSONPointer != result[i].JSONPointer {
+					endpoint.ResultJSONPointer += "/value"
+				}
+				result[i] = endpoint
+			} else {
+				result = append(result, coverageRejectLastValid(base, "/data/coverage"))
+			}
+		} else {
+			if modernLatest && coverageProtocolLastValid(endpoint) && endpoint.LatestInScope {
+				endpoint.Kind = "cell"
+			}
+			result = append(result, endpoint)
+		}
 	}
 	if data["aggregate"] != nil && base.Status == "ok" && contract != nil && !filtered {
 		item := base
@@ -599,7 +661,7 @@ func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, 
 	// SQL verifies a published dataset view, including any retained sheets.
 	// Its transport snapshot must not be joined as original workbook evidence.
 	workbookHash := base.SnapshotHash
-	base.SnapshotHash = reviewDigest([]any{workbookHash, contract.SourceSnapshot.Versions["manifest_sha256"]})
+	base.SnapshotHash = reviewDigest([]any{workbookHash, base.ManifestHash})
 	inputs := coverageObject(data["inputs"])
 	// The service emits this verified workbook metadata only when every
 	// loaded sheet belongs to the current workbook, including on republish.
@@ -610,29 +672,41 @@ func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, 
 		args["sql"] == data["sql"]
 	var result []coverageEvidence
 	var inputSeries coverageEvidence
+	directEndpoints := make(map[string]bool)
 	ids, _ := args["series_ids"].([]any)
+	seen := make(map[string]bool, len(ids))
 	for _, candidate := range ids {
 		id, _ := candidate.(string)
 		input := coverageObject(inputs[id])
 		series := coverageObject(input["series"])
 		item := coverageSeriesIdentity(base, series)
-		if id == "" || item.SeriesID != id {
+		if id == "" || item.SeriesID != id || seen[id] {
 			continue
 		}
+		seen[id] = true
 		if item.Grain == "" && item.PeriodFrom != "" && item.PeriodFrom == item.PeriodTo {
 			item.Grain = "day"
 		}
 		if includeEndpoints {
 			item.WorkbookSnapshotHash, item.WorkbookBound = workbookHash, workbookErr == nil
 		}
+		path := "/data/inputs/" + coveragePointerKey(id)
+		endpoint := coverageLastValid(item, args, nil, series, input, scope, path+"/coverage", contract)
+		if endpoint.LastValidStatus != "" && (args["sql"] != data["sql"] ||
+			coverageZero(input["valid_count"]) && coverageProtocolLastValid(endpoint) && endpoint.LastValidDirection == "in_range") {
+			endpoint = coverageRejectLastValid(item, path+"/coverage")
+		}
+		if endpoint.WorkbookManifestHash != "" && endpoint.LastValidStatus != "unverified" {
+			item.WorkbookSnapshotHash, item.WorkbookManifestHash, item.WorkbookBound = endpoint.WorkbookSnapshotHash, endpoint.WorkbookManifestHash, true
+		}
 		inputSeries = item
 		// Keep the exact model-selected field identity for matching separately
 		// verified original-workbook observations. This receipt is not a result.
 		selection := item
-		selection.Kind, selection.Raw = "analysis_input", workbookHash
-		selection.JSONPointer = "/data/inputs/" + coveragePointerKey(id) + "/series"
+		selection.Kind, selection.Raw = "analysis_input", firstNonEmptyAgent(item.WorkbookSnapshotHash, workbookHash)
+		selection.JSONPointer = path + "/series"
 		result = append(result, selection)
-		if includeEndpoints {
+		if endpoint.LastValidStatus == "" && includeEndpoints {
 			if endpoint, ok := coverageAnalysisLastValid(item, input); ok {
 				if coverageAnalysisEndpoint(endpoint) {
 					endpoint.ResultJSONPointer = coverageDirectAnalysisResultPointer(endpoint, data, contract)
@@ -658,20 +732,38 @@ func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, 
 			observed := item
 			observed.Kind, observed.Complete, observed.RangeComplete = "cell", true, true
 			observed.Date, observed.Cell, observed.Raw = item.PeriodFrom, sourceNavigationString(segment, "first_cell"), first["value"]
-			observed.JSONPointer = "/data/inputs/" + coveragePointerKey(id) + "/observation_coverage/value_changes/first/value"
+			observed.JSONPointer = path + "/observation_coverage/value_changes/first/value"
 			observed.ResultJSONPointer = coverageDirectAnalysisResultPointer(observed, data, contract)
-			result = append(result, observed)
+			if coverageProtocolLastValid(endpoint) && coverageSameOriginalCell(endpoint, observed) {
+				if coverageSameOriginalValue(observed.Raw, endpoint.Raw) {
+					endpoint.Kind, endpoint.RangeComplete = "cell", true
+				} else {
+					endpoint = coverageRejectLastValid(item, path+"/coverage")
+					result = append(result, observed)
+				}
+			} else {
+				result = append(result, observed)
+			}
+		}
+		if endpoint.LastValidStatus != "" {
+			if coverageProtocolLastValid(endpoint) && endpoint.LastValidDirection == "in_range" {
+				endpoint.ResultJSONPointer = coverageDirectAnalysisResultPointer(endpoint, data, contract)
+				if endpoint.ResultJSONPointer != "" {
+					endpoint.Kind, directEndpoints[endpoint.ResultJSONPointer] = "cell", true
+				}
+			}
+			result = append(result, endpoint)
 		}
 		// SQL output is user-defined. Only the transport-bounded, per-field
 		// facts from all loaded inputs can prove a gap independently of SQL.
 		if coverageExactRange(item) && coverageZero(input["valid_count"]) {
 			item.Kind, item.Complete = "gap", true
 			item.LastValidDate = sourceNavigationString(series, "last_valid_date")
-			item.JSONPointer = "/data/inputs/" + coveragePointerKey(id) + "/valid_count"
+			item.JSONPointer = path + "/valid_count"
 			if includeEndpoints && item.Subject == "" {
 				item.Subject = coverageAnalysisSubject(coverageObject(series["dimensions"]))
 			}
-			result = append(result, item)
+			result = append(result, coverageGapWithEndpoint(item, endpoint))
 		}
 	}
 	if len(ids) == 1 && inputSeries.SeriesID != "" {
@@ -680,7 +772,12 @@ func coverageAnalysisEvidence(base coverageEvidence, args, data map[string]any, 
 	// The loaded transport range does not certify SQL output membership.
 	// Store dependencies and values without inheriting that period.
 	base.PeriodFrom, base.PeriodTo = "", ""
-	return append(result, coverageDerivedRows(base, data, contract)...)
+	for _, item := range coverageDerivedRows(base, data, contract) {
+		if !directEndpoints[item.JSONPointer] {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 // A SQL result citation can point to the displayed value of a verified

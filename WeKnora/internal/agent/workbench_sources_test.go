@@ -151,6 +151,9 @@ func TestWorkbenchSourceDiscoveryPrefetchesOriginalQuestionWithinExistingKnowled
 }
 
 func TestWorkbenchSourceDiscoveryExposesDescribedNativeSchemasInFirstModelCall(t *testing.T) {
+	// The fixture describes the default (last-valid enabled) schema; the disabled
+	// side is covered by coverage_last_valid_test.go.
+	t.Setenv("WEKNORA_STRUCTURED_LAST_VALID", "true")
 	fixture, err := os.ReadFile("tools/testdata/structured_read_operations.json")
 	require.NoError(t, err)
 	var directory struct {

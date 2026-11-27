@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -12,7 +13,7 @@ import (
 
 // Failure categories are safe for normal logs. Source identities and suggested
 // navigation stay in the bounded author-facing diagnostic, never public logs.
-func (e *AgentEngine) candidateCitationRecovery(candidate string, state *types.AgentState, conversation []chat.Message) (string, map[string]int, bool) {
+func (e *AgentEngine) candidateCitationRecovery(ctx context.Context, candidate string, state *types.AgentState, conversation []chat.Message) (string, map[string]int, bool) {
 	counts := map[string]int{}
 	if !e.config.CitationsEnabled() {
 		return "本轮引用显示已关闭。保留已验证的正文结果，移除引用标记，不要为此重新读取来源。", map[string]int{"citations_disabled": 1}, false
@@ -83,7 +84,7 @@ func (e *AgentEngine) candidateCitationRecovery(candidate string, state *types.A
 		counts["citation_scope_invalid"]++
 	}
 	validEvidence := map[string]bool{}
-	for _, ref := range e.currentCandidateEvidenceReferences(candidate, state) {
+	for _, ref := range e.currentCandidateEvidenceReferences(candidate, state, ctx) {
 		validEvidence[ref.ID] = true
 	}
 	for _, id := range uniqueCandidateEvidenceIDs(candidate) {

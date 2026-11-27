@@ -86,7 +86,7 @@ func TestCitationRealPageViewsUseFullCurrentCanonicalBodyThroughNormalFinish(t *
 			require.NotEmpty(t, handle)
 			answer := `面积🙂用量。<ref id="` + handle + `"/>`
 			model.responses = []mockResponse{chatAnswer(answer), acceptedCitationVerdict("required", "The current full source and its exact page presentation support this adjacent claim.")}
-			policy := e.sourceCitationReviewPolicy(state, messages)
+			policy := e.sourceCitationReviewPolicy(t.Context(), state, messages)
 			require.Equal(t, 0, policy["conflicting_anchor_count"])
 			require.Equal(t, 1, policy["available_anchor_count"])
 			var completed event.AgentCompleteData

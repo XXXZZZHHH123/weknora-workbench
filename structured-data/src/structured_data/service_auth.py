@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+import re
 import time
 from urllib.parse import quote
 from uuid import UUID
@@ -49,7 +50,8 @@ async def verify_service(request):
         data = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
         required = {"user_id", "email", "display_name", "tenant_id", "role"}
         scope_fields = {"knowledge_base_id", "knowledge_base_tenant_id"}
-        optional = scope_fields | {'workbench_id', 'authorization_sha256', 'principal_type', 'scope_version', 'sources_revision'}
+        optional = scope_fields | {'workbench_id', 'authorization_sha256', 'principal_type', 'scope_version',
+                                   'sources_revision', 'api_key_scope_sha256'}
         if not isinstance(data, dict) or not required <= set(data) or set(data) - required - optional:
             raise ValueError("invalid identity")
         if (type(data["tenant_id"]) is not int or data["tenant_id"] <= 0
@@ -79,6 +81,11 @@ async def verify_service(request):
         authorization_hash = data.pop('authorization_sha256', None)
         if principal is not None and (principal != 'api_key' or not scoped or data.get('workbench_id')):
             raise ValueError('invalid machine grant')
+        if 'api_key_scope_sha256' in data:
+            digest = data['api_key_scope_sha256']
+            if (principal != 'api_key' or request.url.path != '/api/tools/read'
+                    or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)):
+                raise ValueError('invalid machine grant digest')
         authorization = request.headers.get('authorization', '')
         if (scoped or multi) and principal != 'api_key':
             if (not authorization.startswith('Bearer ') or len(authorization) > 16391
@@ -94,6 +101,7 @@ async def verify_service(request):
             raise HTTPException(409, '此读取只支持新版来源授权，请重新打开研究台')
         if identity.workbench_id:
             await verify_research_projection(request, identity)
+            identity = replace(identity, knowledge_base_permission=getattr(request.state, 'research_knowledge_base_permission', ''))
         elif scoped and principal != 'api_key':
             identity = await verify_direct_knowledge(identity, authorization)
         if (scoped or multi) and principal != 'api_key':
@@ -123,7 +131,8 @@ async def verify_direct_knowledge(identity, authorization):
                 or kb.get('my_permission') not in {'viewer', 'editor', 'admin'}):
             raise HTTPException(403, '知识库读取权限信息无效')
         summary_model = kb.get('summary_model_id')
-        return replace(identity, summary_model_id=summary_model if isinstance(summary_model, str) else '')
+        return replace(identity, summary_model_id=summary_model if isinstance(summary_model, str) else '',
+                       knowledge_base_permission=kb['my_permission'])
     except HTTPException:
         raise
     except (ValueError, TypeError, AttributeError):
@@ -250,6 +259,7 @@ async def verify_research_projection(request, identity):
                 raise HTTPException(403, '研究台仅允许已授权页面的必要指标，不能读取全量目录或历史') from None
             request.state.research_view_module = body['view_module']
         request.state.research_source_manifest = source['knowledge']
+        request.state.research_knowledge_base_permission = source['permission']
     except HTTPException:
         raise
     except (ValueError, TypeError, KeyError, AttributeError):

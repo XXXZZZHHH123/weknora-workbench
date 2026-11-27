@@ -183,9 +183,7 @@ func (e *AgentEngine) refreshEvidenceCompletion(ctx context.Context, query strin
 		turn.lastAttempts = batch.Attempts
 		for _, observation := range batch.Evidence {
 			observation.Revision, observation.AuthScope = revision, scope
-			if observation.Bound && observation.SnapshotHash != "" && observation.SourceID != "" {
-				turn.record.Snapshots[coverageSnapshotKey(observation)] = observation.SnapshotHash
-			}
+			coverageRememberSnapshot(turn.record.Snapshots, observation)
 			turn.record.Evidence = append(turn.record.Evidence, observation)
 			if observation.SourceID != "" && observation.EvidenceID != "" {
 				ref := coverageObservationRef(observation)
@@ -1487,6 +1485,9 @@ func (e *AgentEngine) coverageLatestRead(state *types.AgentState, analysisOnly b
 			!e.coverageScopeAllows(gap.KnowledgeBaseID, gap.KnowledgeID) {
 			continue
 		}
+		if _, supplied := coverageEndpointForGap(turn.record, gap); supplied || gap.LastValidStatus != "" {
+			continue
+		}
 		if gap.Operation == "analyze_table" && len(targets) != 0 && !slices.ContainsFunc(targets, func(target taskCoverageTarget) bool {
 			_, matches := e.plannedAnalysisGap(target, turn.record, gap)
 			return matches
@@ -1659,6 +1660,9 @@ func (e *AgentEngine) clippedAnalysisGaps(state *types.AgentState, targets []tas
 }
 
 func (e *AgentEngine) coverageAnalysisGroupLatestRead(state *types.AgentState, gaps []coverageEvidence) (string, string, map[string]any) {
+	if len(gaps) == 0 {
+		return "", "", nil
+	}
 	first := gaps[0]
 	turn := &e.evidenceCompletion
 	selected := make(map[string]bool, len(gaps))
@@ -1667,6 +1671,9 @@ func (e *AgentEngine) coverageAnalysisGroupLatestRead(state *types.AgentState, g
 		if !coverageAnalysisEmptyInput(gap) || gap.ToolCallID != first.ToolCallID || gap.DatasetID != first.DatasetID ||
 			gap.KnowledgeBaseID != first.KnowledgeBaseID || gap.SnapshotHash != first.SnapshotHash || gap.LastValidDate != first.LastValidDate ||
 			gap.PeriodFrom != first.PeriodFrom || gap.PeriodTo != first.PeriodTo || selected[gap.SeriesID] {
+			return "", "", nil
+		}
+		if _, supplied := coverageEndpointForGap(turn.record, gap); supplied || gap.LastValidStatus != "" {
 			return "", "", nil
 		}
 		selected[gap.SeriesID] = true

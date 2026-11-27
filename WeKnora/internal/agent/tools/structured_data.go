@@ -22,6 +22,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/structuredresult"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -118,7 +119,7 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 			ctx = withStructuredInvocation(ctx, descriptor)
 		}
 	}
-	for _, field := range []string{"tenant_id", "user_id", "role", "token", "api_key", "url", "endpoint", "data_dir", "knowledge_base_id", "knowledge_base_tenant_id", "knowledge_base_can_write"} {
+	for _, field := range []string{"tenant_id", "user_id", "role", "token", "api_key", "api_key_scope_sha256", "url", "endpoint", "data_dir", "knowledge_base_id", "knowledge_base_tenant_id", "knowledge_base_can_write"} {
 		if _, exists := arguments[field]; exists {
 			if field == "knowledge_base_id" {
 				return rejectToolPreflight(fmt.Errorf("knowledge_base_id 必须放在顶层，与 operation、arguments 同级，不能放在 arguments 内；请从本轮已授权目录选择真实ID"))
@@ -170,6 +171,23 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		question, _ := json.Marshal(sourceQuestion)
 		arguments["source_question"] = question
 	}
+	lastValidRequested := false
+	if option, exists := arguments[structuredLastValidArgument]; exists && structuredLastValidOperation(operation) {
+		if !structuredresult.LastValidEnabled() {
+			delete(arguments, structuredLastValidArgument)
+		} else {
+			switch string(bytes.TrimSpace(option)) {
+			case "true":
+				lastValidRequested = true
+			case "false":
+			default:
+				return rejectToolPreflight(fmt.Errorf("%s 需要布尔值", structuredLastValidArgument))
+			}
+			if descriptor, ok := ctx.Value(structuredInvocationKey{}).(StructuredOperationDescriptor); ok && descriptor.SchemaSHA256 != "" && !descriptor.lastValid {
+				delete(arguments, structuredLastValidArgument)
+			}
+		}
+	}
 	// Scope is a signed identity field, never a service operation parameter.
 	args, err = json.Marshal(map[string]any{"operation": operation, "arguments": arguments})
 	if err != nil {
@@ -178,19 +196,29 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	lease, cached, err := t.beginStructuredReadCache(ctx, caller, scope, operation, arguments, sourceQuestion, cacheGeneration)
-	if err != nil {
-		return nil, err
-	}
-	if cached != nil {
-		return fitStructuredDirectory(ctx, operation, cached), nil
+	apiKey, machine := types.TenantAPIKeyScopeFromContext(ctx)
+	var lease structuredReadCacheLease
+	// A scoped endpoint read requires the current KB grant.
+	// A same-turn result cache hit cannot establish that the grant still holds.
+	if !lastValidRequested || (scope.KnowledgeBaseID == "" && !machine) {
+		var cached *types.ToolResult
+		lease, cached, err = t.beginStructuredReadCache(ctx, caller, scope, operation, arguments, sourceQuestion, cacheGeneration)
+		if err != nil {
+			return nil, err
+		}
+		if cached != nil {
+			return fitStructuredDirectory(ctx, operation, cached), nil
+		}
 	}
 	var cacheResult *types.ToolResult
 	defer func() { t.finishStructuredReadCache(lease, cacheResult) }()
 	identity := map[string]any{"user_id": caller.UserID, "tenant_id": caller.TenantID,
 		"role": string(caller.Role), "email": "", "display_name": caller.UserID}
-	if _, machine := types.TenantAPIKeyScopeFromContext(ctx); machine && scope.KnowledgeBaseID != "" {
+	if machine && scope.KnowledgeBaseID != "" {
 		identity["principal_type"] = "api_key"
+		if protocol, ok := ctx.Value(structuredInvocationKey{}).(StructuredOperationDescriptor); lastValidRequested && apiKey.KeyID != 0 && ok && protocol.ManifestSHA256 != "" && protocol.lastValid {
+			identity["api_key_scope_sha256"] = structuredAPIKeyScopeDigest(apiKey)
+		}
 	} else if authorization := types.ResearchAuthorizationFromContext(ctx); authorization != "" && scope.KnowledgeBaseID != "" {
 		authorizationHash := sha256.Sum256([]byte(authorization))
 		identity["authorization_sha256"] = hex.EncodeToString(authorizationHash[:])
@@ -317,6 +345,9 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		return nil, structuredRequestFailure(ctx, err)
 	}
 	if len(body) > 512*1024 {
+		if lastValidRequested {
+			return structuredProtocolFailure("structured_result_output_truncated", "结构化表格响应超过读取上限。本次未取得完整结果或可验证的末值，请缩小范围", "result", true), nil
+		}
 		return nil, fmt.Errorf("结构化表格结果过大，请缩小范围")
 	}
 	var data map[string]any
@@ -332,6 +363,13 @@ func (t *StructuredDataTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 		cacheResult = &types.ToolResult{Success: false, Output: string(body), Data: data, Error: detail}
 		return cacheResult, nil
+	}
+	if lastValidRequested {
+		var valid bool
+		body, valid = structuredLastValidModelOutput(operation, arguments, data, scope.KnowledgeBaseID)
+		if !valid {
+			return structuredProtocolFailure("structured_last_valid_unverified", "结构化末值未通过结果契约校验，本次未取得可验证的末值或区间结果", "result", true), nil
+		}
 	}
 	if scope.KnowledgeBaseID != "" && (operation == "resolve_fields" || operation == "confirm_fields") && data["kind"] == "structured_field_resolution" {
 		// Persist the actual resolution's transport binding separately from the

@@ -156,7 +156,7 @@ func (e *AgentEngine) currentCheckedCoverageDraft(ctx context.Context, state *ty
 		draft.StructuredResultReview != e.structuredResultReviewEnabled() {
 		return candidateDecision{}, false
 	}
-	current := e.assessCoverageDraft(review, draft.Candidate, state)
+	current := e.assessCoverageDraft(ctx, review, draft.Candidate, state)
 	if len(current.anchors) == 0 || !containsCoverageDraftRoles(current.anchors, e.turnReview.CoverageDraftFacts) ||
 		!containsCoverageDraftRoles(current.roles, e.turnReview.CoverageDraftRoles) {
 		return candidateDecision{}, false
@@ -188,13 +188,13 @@ func (e *AgentEngine) coverageDraftDeliveryCurrent(ctx context.Context, state *t
 }
 
 func (e *AgentEngine) coverageDraftAnchors(ctx context.Context, candidate string, state *types.AgentState) []string {
-	return e.assessCoverageDraft(e.currentCoverageDraftReview(ctx, state), candidate, state).anchors
+	return e.assessCoverageDraft(ctx, e.currentCoverageDraftReview(ctx, state), candidate, state).anchors
 }
 
-func (e *AgentEngine) assessCoverageDraft(review coverageDraftReview, candidate string, state *types.AgentState) coverageDraftAssessment {
+func (e *AgentEngine) assessCoverageDraft(ctx context.Context, review coverageDraftReview, candidate string, state *types.AgentState) coverageDraftAssessment {
 	var assessment coverageDraftAssessment
-	if state == nil || terminalCandidateFallback(candidate) || !e.candidateEvidenceBudgetFits(candidate, state) ||
-		e.candidateCitationsInvalid(candidate, state, e.turnReview.Conversation) {
+	if state == nil || terminalCandidateFallback(candidate) || !e.candidateEvidenceBudgetFits(candidate, state, ctx) ||
+		e.candidateCitationsInvalid(candidate, state, e.turnReview.Conversation, ctx) {
 		return assessment
 	}
 	paragraphs := strings.Split(strings.ReplaceAll(candidate, "\r\n", "\n"), "\n\n")
@@ -267,7 +267,7 @@ func (e *AgentEngine) assessCoverageDraft(review coverageDraftReview, candidate 
 		}
 		selected = append(selected, types.AgentStep{ToolCalls: calls})
 	}
-	evidence := e.answerNumericEvidence(candidate, selected)
+	evidence := appendCoverageLastValidNumbers(e.answerNumericEvidence(candidate, selected), review.record)
 	evidence = append(evidence, chat.Message{Role: "tool", NumericObservations: &chat.NumericObservations{Values: witnesses}})
 	if len(ungroundedStructuredNumberOccurrencesWithEmptyEvidence(candidate, evidence, true, selected)) > 0 {
 		assessment.anchors = nil

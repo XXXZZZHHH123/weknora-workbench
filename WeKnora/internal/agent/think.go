@@ -193,9 +193,10 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 	// mentioned by the model is not proof that a deliverable was created.
 	execution := []map[string]any{}
 	evidenceBudget := 12000
-	if state != nil {
-		for i := len(state.RoundSteps) - 1; i >= 0 && evidenceBudget > 0; i-- {
-			for _, call := range state.RoundSteps[i].ToolCalls {
+	if !checkSources && state != nil {
+		view := e.lastValidSourceReviewState(ctx, state, e.turnReview.TerminalStartStep)
+		for i := len(view.RoundSteps) - 1; i >= 0 && evidenceBudget > 0; i-- {
+			for _, call := range view.RoundSteps[i].ToolCalls {
 				if call.Result == nil || evidenceBudget <= 0 {
 					continue
 				}
@@ -230,15 +231,15 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 		if len(conversation) > 0 {
 			messages = conversation[0]
 		}
-		if snapshot == nil {
+		if snapshot == nil || snapshot.sourceScope != e.sourceReviewSnapshotScope(ctx) {
 			snapshot = e.buildSourceReviewSnapshot(ctx, content, state, messages)
 		}
 		for key, value := range snapshot.input {
 			inputData[key] = value
 		}
-		citationPolicy := e.sourceCitationReviewPolicy(state, messages)
+		citationPolicy := e.sourceCitationReviewPolicy(ctx, state, messages)
 		inputData["source_citation_policy"] = citationPolicy
-		inputData["structured_citation_evidence"] = e.structuredCitationReviewDirectory(content, state)
+		inputData["structured_citation_evidence"] = e.structuredCitationReviewDirectory(ctx, content, state)
 		common.PipelineInfo(ctx, "Agent", "source_citation_policy", map[string]interface{}{
 			"enabled": citationPolicy["enabled"], "available_anchor_count": citationPolicy["available_anchor_count"],
 			"included_anchor_count": len(citationPolicy["available_anchors"].([]any)), "omitted_anchor_count": citationPolicy["omitted_anchor_count"],
@@ -459,7 +460,7 @@ func (e *AgentEngine) evaluateAnswerCompletenessWithSnapshot(ctx context.Context
 		if len(conversation) > 0 {
 			messages = conversation[0]
 		}
-		repair, err := e.validateCitationCheck(sourceVerdict.CitationCheck, content, state, messages, *verdict.Complete)
+		repair, err := e.validateCitationCheck(ctx, sourceVerdict.CitationCheck, content, state, messages, *verdict.Complete)
 		if err != nil {
 			return true, err
 		}

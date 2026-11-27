@@ -139,13 +139,15 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 	add := func(role string, item coverageEvidence, required bool) {
 		for i, prior := range d.facts {
 			p := prior.Evidence
-			if terminalSameFieldGap(record, item, p) || item.Kind == p.Kind && item.SourceID == p.SourceID &&
+			sameEndpoint := (coverageProtocolLastValid(item) || coverageProtocolLastValid(p)) && prior.Role == role &&
+				coverageSameOriginalCell(item, p) && reviewJSONValuesEqual(item.Raw, p.Raw)
+			if sameEndpoint || terminalSameFieldGap(record, item, p) || item.Kind == p.Kind && item.SourceID == p.SourceID &&
 				item.KnowledgeBaseID == p.KnowledgeBaseID && item.SnapshotHash == p.SnapshotHash && item.Sheet == p.Sheet &&
 				item.SeriesID == p.SeriesID && item.Column == p.Column && item.Date == p.Date && item.Cell == p.Cell &&
 				item.SourceDate == p.SourceDate && item.PeriodFrom == p.PeriodFrom && item.PeriodTo == p.PeriodTo &&
 				item.Period == p.Period && item.ReportedValue == p.ReportedValue && reviewDigest(item.Raw) == reviewDigest(p.Raw) {
-				if required && !prior.required {
-					d.facts[i] = terminalCoverageFact{coverageFact{role, item}, true}
+				if required && !prior.required || item.LastValidStatus != "" && p.LastValidStatus == "" {
+					d.facts[i] = terminalCoverageFact{coverageFact{role, item}, required || prior.required}
 				}
 				return
 			}
@@ -219,6 +221,18 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 			}
 		case item.Kind == "derived" && item.Complete && coverageExactRange(item):
 			add("scoped_value", item, false)
+		case coverageProtocolLastValid(item) && item.Kind == "last_valid" && item.LatestInScope && item.PeriodTo != "":
+			add("scoped_value", item, false)
+		case item.Kind == "last_valid_receipt":
+			if !slices.ContainsFunc(record.Evidence, func(gap coverageEvidence) bool {
+				if gap.Kind != "gap" {
+					return false
+				}
+				receipt, supplied := coverageEndpointForGap(record, gap)
+				return supplied && receipt.ToolCallID == item.ToolCallID && receipt.SeriesID == item.SeriesID
+			}) {
+				add("last_valid_status", item, false)
+			}
 		case item.Kind == "cell" && item.Date != "" && item.Metric != "" &&
 			(item.Operation == "query_series" || item.Operation == "analyze_table") &&
 			(item.Date == item.PeriodFrom && item.Date == item.PeriodTo || item.LatestInScope || item.RangeComplete ||
@@ -286,7 +300,7 @@ func terminalCoverageTarget(record coverageRecord, targets []taskCoverageTarget,
 		from, to, _ := coverageTargetDateRange(target)
 		if coverageExactRange(coverageEvidence{PeriodFrom: from, PeriodTo: to}) {
 			switch item.Kind {
-			case "gap", "derived":
+			case "gap", "derived", "last_valid_receipt":
 				if item.PeriodFrom != from || item.PeriodTo != to {
 					continue
 				}
@@ -351,7 +365,13 @@ func terminalSameFieldGap(record coverageRecord, item, prior coverageEvidence) b
 	if item.Kind != "gap" || prior.Kind != "gap" || item.SeriesID == "" || item.KnowledgeBaseID != prior.KnowledgeBaseID ||
 		item.SourceID != prior.SourceID || item.Sheet != prior.Sheet || item.SeriesID != prior.SeriesID ||
 		item.Column != prior.Column || item.PeriodFrom != prior.PeriodFrom || item.PeriodTo != prior.PeriodTo ||
-		item.Period != prior.Period || item.LastValidDate != prior.LastValidDate {
+		item.Period != prior.Period || item.LastValidFilterHash != prior.LastValidFilterHash {
+		return false
+	}
+	if item.LastValidStatus != "" || prior.LastValidStatus != "" {
+		return coverageSameEndpointSnapshot(item, prior) && (item.ManifestHash == "" || prior.ManifestHash == "" || item.ManifestHash == prior.ManifestHash)
+	}
+	if item.LastValidDate != prior.LastValidDate {
 		return false
 	}
 	workbook := func(gap coverageEvidence) string {
@@ -734,10 +754,31 @@ func (d terminalCoverageDelivery) gapFinding(gap coverageEvidence, used map[stri
 			return line + fmt.Sprintf(" The nearest verified value for the same field is %s on %s.", value, item.Date)
 		}
 	}
-	if date := gap.LastValidDate; coverageDay(date) != "" {
+	if endpoint, supplied := coverageEndpointForGap(d.record, gap); supplied {
+		if note := d.lastValidStatusNote(endpoint); note != "" {
+			line += d.text("", " ") + note
+		}
+	} else if date := gap.LastValidDate; gap.LastValidStatus == "" && coverageDay(date) != "" {
 		line += fmt.Sprintf(d.text("来源标明最后有效日为 %s，尚缺该日原值。", " The source identifies %s as the last valid date. The value for that date is still needed."), date)
 	}
 	return line
+}
+
+func (d terminalCoverageDelivery) lastValidStatusNote(item coverageEvidence) string {
+	switch item.LastValidStatus {
+	case "no_valid":
+		return d.text("该字段在已核实范围内没有有效值。", "The field has no valid value in the verified scope.")
+	case "conflict":
+		return fmt.Sprintf(d.text("同字段在 %s 有互相冲突的值，末值未能唯一确定。", "The field has conflicting values on %s, leaving its latest value undetermined."), item.LastValidDate)
+	case "truncated":
+		return d.text("末日原行超出回包上限，尚未取得可核实的唯一末值。", "The latest date has more original rows than the response can return. A unique latest value remains unverified.")
+	case "not_ordered":
+		return d.text("该字段没有可用于判断末值的日期顺序。", "The field has no date order for identifying a latest value.")
+	case "unverified":
+		return d.text("尚未取得可核实的同字段最近有效值。", "A verified latest value for the field is still needed.")
+	default:
+		return ""
+	}
 }
 
 var terminalDocumentComment = regexp.MustCompile(`(?s)<!--.*?-->`)
@@ -745,6 +786,12 @@ var terminalDocumentComment = regexp.MustCompile(`(?s)<!--.*?-->`)
 func (d terminalCoverageDelivery) receiptFinding(item coverageEvidence) string {
 	label := terminalCoverageLabel(item)
 	if label == "" {
+		return ""
+	}
+	if item.Kind == "last_valid_receipt" {
+		if note := d.lastValidStatusNote(item); note != "" {
+			return label + " · " + note
+		}
 		return ""
 	}
 	period := terminalEvidenceText(firstNonEmptyAgent(item.Date, terminalCoveragePeriod(item.PeriodFrom, item.PeriodTo, item.Period)))
