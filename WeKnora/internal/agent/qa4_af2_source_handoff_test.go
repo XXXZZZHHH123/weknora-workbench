@@ -19,6 +19,7 @@ import (
 // page result. The event stream omitted the report body. The subsequent
 // allowed read uses the independently preserved original OCR fixture.
 func TestQA4Af2SourceHandoffAfterNaturalStop(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", "false")
 	for _, mode := range []string{"repeated draft", "used draft repairs", "stalled directory", "revoked", "model budget", "iteration budget", "legacy", "document off", "planning off"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE", "true")

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -136,22 +137,28 @@ func af3ConflictOnCompletion(t *testing.T, db *gorm.DB, rejected int32, loseAckn
 // short-lived same-owner stale lease interleaving. The database/log have no
 // earlier row revisions, so the precise historical interleaving is unknown.
 func TestAf3Af2Round2CollaborationLeaseRefresh(t *testing.T) {
-	for _, mode := range []string{"legacy", "strict terminal", "relaxed terminal"} {
+	for _, mode := range []string{"legacy", "strict terminal", "relaxed terminal", "Af5 default"} {
 		t.Run(mode, func(t *testing.T) {
-			if mode == "legacy" {
-				t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false")
-			} else {
-				t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "true")
+			af5 := mode == "Af5 default"
+			t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", strconv.FormatBool(mode != "legacy"))
+			t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", strconv.FormatBool(mode == "relaxed terminal" || af5))
+			finalRead := "false"
+			if af5 {
+				finalRead = ""
 			}
-			if mode == "relaxed terminal" {
-				t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", "true")
-			} else {
-				t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", "false")
-			}
+			t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", finalRead)
+			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "false")
+			t.Setenv("WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE", "true")
+			t.Setenv("WEKNORA_AGENT_STRUCTURED_TASK_PLAN", "true")
+			require.Equal(t, af5, finalReadAnswerEnabled())
 			trace := af3Round2DirectoryReplay(t)
 			db, binding := af3CollaborationReplayStore(t)
 			var staleReads atomic.Int32
 			af3ProjectStaleLease(t, db, &staleReads)
+			var updates, locked *atomic.Int32
+			if af5 {
+				updates, locked = af3ConflictOnCompletion(t, db, 3, false)
+			}
 			model := &af3ModelBudgetReplay{
 				mockChat:     &mockChat{},
 				beforeBudget: func() { staleReads.Store(1) },
@@ -166,10 +173,23 @@ func TestAf3Af2Round2CollaborationLeaseRefresh(t *testing.T) {
 				require.Contains(t, []string{"directory", "navigation"}, item.Kind)
 			}
 			var complete event.AgentCompleteData
+			var completions int
+			var streamed string
 			engine.eventBus.On(event.EventAgentComplete, func(_ context.Context, item event.Event) error {
 				complete = item.Data.(event.AgentCompleteData)
+				completions++
 				return nil
 			})
+			if af5 {
+				engine.eventBus.On(event.EventAgentFinalAnswer, func(_ context.Context, item event.Event) error {
+					answer := item.Data.(event.AgentFinalAnswerData)
+					if answer.Replace {
+						streamed = ""
+					}
+					streamed += answer.Content
+					return nil
+				})
+			}
 			_, err := engine.executeLoop(ctx, state, trace.Question, messages, engine.buildToolsForLLM(), "s", "m")
 			require.Zero(t, staleReads.Load(), "the budget handoff must see the projected stale lease")
 			if mode == "legacy" {
@@ -181,6 +201,26 @@ func TestAf3Af2Round2CollaborationLeaseRefresh(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, 2, model.calls, "lease refresh must not trigger an additional model round")
 			require.NotNil(t, complete.Incomplete)
+			if af5 {
+				require.Equal(t, 1, completions)
+				require.EqualValues(t, 3, updates.Load(), "the optimistic SQLite completion writes all hit the conflict")
+				require.EqualValues(t, 1, locked.Load(), "the current owner completed under the locked finish")
+				require.NotEmpty(t, complete.FinalAnswer)
+				require.True(t, complete.HasPartialAnswer())
+				require.Equal(t, string(terminalCollaborationContention), complete.Incomplete.Reason)
+				require.Equal(t, complete.FinalAnswer, complete.Incomplete.Notice)
+				require.Equal(t, complete.FinalAnswer, streamed)
+				require.Contains(t, complete.FinalAnswer, trace.Question)
+				require.Contains(t, complete.FinalAnswer, "来源目录查询已执行")
+				for _, absent := range []string{"331.2", "298.93", "32.27", "高于", "低于", "已生成的草稿未覆盖", "尚缺", "<evidence", "<kb"} {
+					require.NotContains(t, complete.FinalAnswer, absent)
+				}
+				group, err := binding.Runtime.Store.Read(ctx, binding.Scope)
+				require.NoError(t, err)
+				require.Equal(t, "completed", group.Status)
+				require.Equal(t, binding.ParentOwner, group.ParentOwner)
+				return
+			}
 			if mode == "relaxed terminal" {
 				require.Empty(t, complete.FinalAnswer)
 				require.False(t, complete.HasPartialAnswer(), "navigation alone does not establish a comparison")
@@ -208,6 +248,12 @@ func TestAf3CollaborationVerifiedReceiptsAfterBudgetConflict(t *testing.T) {
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "true")
+			t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", "true")
+			t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", "true")
+			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "false")
+			t.Setenv("WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE", "true")
+			t.Setenv("WEKNORA_AGENT_STRUCTURED_TASK_PLAN", "true")
+			require.True(t, finalReadAnswerEnabled())
 			trace := loadAf3KB28Replay(t, 1)
 			db, binding := af3CollaborationReplayStore(t)
 			var staleReads atomic.Int32

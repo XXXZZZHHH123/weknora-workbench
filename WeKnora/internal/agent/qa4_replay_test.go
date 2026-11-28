@@ -12,6 +12,7 @@ import (
 	"time"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
+	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/models/chat"
 	"github.com/Tencent/WeKnora/internal/structuredresult"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -284,7 +285,22 @@ func runQA4HistoricalReplay(t *testing.T, id, future string) {
 		return
 	}
 	if future == "inventory" {
-		if relaxedTerminalEvidenceEnabled() {
+		if finalReadAnswerEnabled() {
+			var complete event.AgentCompleteData
+			e.eventBus.On(event.EventAgentComplete, func(_ context.Context, item event.Event) error {
+				complete = item.Data.(event.AgentCompleteData)
+				return nil
+			})
+			e.emitCompletionEvent(ctx, state, "session", "message", time.Now())
+			require.NotEmpty(t, complete.FinalAnswer)
+			require.NotNil(t, complete.Incomplete, "the recorded draft did not select one of the equal-valued original columns")
+			require.Contains(t, complete.FinalAnswer, "数据查询已执行")
+			require.Equal(t, state.FinalAnswer, complete.FinalAnswer)
+			require.False(t, terminalCandidateFallback(state.FinalAnswer))
+			for _, unselected := range []string{"17110", "B4705", "C4705", "<kb", "<evidence"} {
+				require.NotContains(t, state.FinalAnswer, unselected)
+			}
+		} else if relaxedTerminalEvidenceEnabled() {
 			require.Empty(t, state.FinalAnswer, "the archived draft does not establish which original column answers the question")
 			require.NotEmpty(t, e.turnReview.TerminalReceipt.notice)
 			require.Empty(t, e.turnReview.ClosedStreams)
@@ -350,6 +366,12 @@ func restoreQA4ToolResult(t *testing.T, ctx context.Context, registry *agenttool
 func TestQA4ReplayPendingCoverage(t *testing.T) {
 	t.Setenv("COMMODITY_RESEARCH_TOKEN_FILE", "")
 	t.Setenv("STRUCTURED_DATA_URL", "")
+	t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "true")
+	t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", "true")
+	t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", "false")
+	t.Setenv("WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE", "true")
+	t.Setenv("WEKNORA_AGENT_STRUCTURED_TASK_PLAN", "true")
+	t.Setenv("WEKNORA_STRUCTURED_LAST_VALID", "true")
 	t.Run("stage_1_explicit_source_mode", func(t *testing.T) {
 		t.Setenv("WEKNORA_AGENT_STRUCTURED_TASK_PLAN", "")
 		const planJSON = `{"goals":["先查台账"],"evidence":[],"tool_names":[],"completion_criteria":["给出记录"],"coverage_targets":[{"goal_index":0,"request_basis":"先查台账","criteria":"给出记录","source_scope":"首查台账","source_mode":"named_first"}]}`
@@ -377,6 +399,10 @@ func TestQA4ReplayPendingCoverage(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) { runQA4HistoricalReplay(t, "r5-1-kb16", "inventory") })
 			})
 		}
+		t.Run("Af5", func(t *testing.T) {
+			t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", "true")
+			synctest.Test(t, func(t *testing.T) { runQA4HistoricalReplay(t, "r5-1-kb16", "inventory") })
+		})
 	})
 	t.Run("stage_3_budget_preserves_original_cell", func(t *testing.T) {
 		t.Skip("stage 3 will pin evidence across budget synthesis")

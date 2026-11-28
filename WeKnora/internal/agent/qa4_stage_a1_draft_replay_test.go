@@ -4,13 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/models/chat"
-	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -84,15 +82,31 @@ func TestQA4StageA1RecordedGapsWithoutPlanOrDeclarations(t *testing.T) {
 }
 
 func TestQA4StageA1RanksCitedNativeFieldsWithoutDeclaration(t *testing.T) {
-	for _, reverse := range []bool{false, true} {
-		t.Run(strconv.FormatBool(reverse), func(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", "true")
+	t.Setenv("WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE", "true")
+	t.Setenv("WEKNORA_AGENT_STRUCTURED_TASK_PLAN", "true")
+	t.Setenv("WEKNORA_STRUCTURED_LAST_VALID", "true")
+	for _, mode := range []struct {
+		name, publication, finalRead string
+		reverse, emptyDraft          bool
+	}{
+		{name: "archived publication", publication: "false", finalRead: "false"},
+		{name: "archived publication reversed", publication: "false", finalRead: "false", reverse: true},
+		{name: "Af4", publication: "true", finalRead: "false"},
+		{name: "Af4 reversed", publication: "true", finalRead: "false", reverse: true},
+		{name: "Af5", publication: "true", finalRead: "true"},
+		{name: "Af5 reversed", publication: "true", finalRead: "true", reverse: true},
+		{name: "Af5 empty draft", publication: "true", finalRead: "true", emptyDraft: true},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", mode.publication)
+			t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", mode.finalRead)
 			r := newQA4Stage2CReplay(t, "s2-2-kb07", false, false)
 			r.through(15)
 			r.engine.config.StructuredResultReviewEnabled = false
 			require.Empty(t, r.engine.evidenceCompletionTargets())
 			fields := map[string]coverageEvidence{}
 			for _, item := range r.engine.evidenceCompletion.record.Evidence {
-
 				if item.Kind == "cell" && item.CitationID != "" {
 					fields[item.Cell] = item
 				}
@@ -106,28 +120,44 @@ func TestQA4StageA1RanksCitedNativeFieldsWithoutDeclaration(t *testing.T) {
 			}
 			one := claim("B87", "231.93")
 			two := claim("C87", "110") + "\n\n" + claim("G87", "298.93")
-			drafts := []string{one, two}
-			if reverse {
-				slices.Reverse(drafts)
+			if !mode.emptyDraft {
+				drafts := []string{one, two}
+				if mode.reverse {
+					slices.Reverse(drafts)
+				}
+				for _, draft := range drafts {
+					decision := r.engine.checkCandidate(r.ctx, r.trace.Question, draft, "", r.state, r.messages, false)
+					require.Equal(t, candidateAccepted, decision.Disposition)
+					require.Nil(t, decision.CoverageFeedback, "current cited values do not invent a target")
+				}
+				require.Len(t, r.engine.turnReview.CoverageDraftRoles, 2)
 			}
-			for _, draft := range drafts {
-				decision := r.engine.checkCandidate(r.ctx, r.trace.Question, draft, "", r.state, r.messages, false)
-				require.Equal(t, candidateAccepted, decision.Disposition)
-				require.Nil(t, decision.CoverageFeedback, "current cited values do not invent a target")
-			}
-			require.Len(t, r.engine.turnReview.CoverageDraftRoles, 2)
 			r.exhaust()
-			if types.VerifiedPublicationEnabled() {
+			if mode.publication == "true" {
 				r.engine.emitCompletionEvent(r.ctx, r.state, "s2c", "turn", time.Now())
 			}
 			answer := r.answer()
-			if types.VerifiedPublicationEnabled() {
+			switch {
+			case mode.finalRead == "true":
+				for _, reading := range []string{
+					`工商业期初库存[^、。\n]*231\.93[^、。\n]*B87`,
+					`产量[^、。\n]*110(?:\.0+)?[^、。\n]*C87`,
+					`工商业期末库存[^、。\n]*298\.93[^、。\n]*G87`,
+				} {
+					require.Regexp(t, reading, answer)
+				}
+				for _, text := range []string{"棉花数据库.xlsx", "中国棉花平衡表", "2023-10-31"} {
+					require.Contains(t, answer, text)
+				}
+				require.NotContains(t, answer, "<evidence")
+				require.NotContains(t, answer, "<kb")
+			case mode.publication == "true":
 				require.Contains(t, answer, "产量 在 2023-10-31 原值为 110（C87）")
 				require.Contains(t, answer, "工商业期末库存 在 2023-10-31 原值为 298.93（G87）")
 				require.Equal(t, 2, strings.Count(answer, "〔棉花数据库.xlsx〕"))
 				require.NotContains(t, answer, "<evidence")
 				require.NotContains(t, answer, "B87")
-			} else {
+			default:
 				require.Equal(t, two, answer)
 			}
 		})

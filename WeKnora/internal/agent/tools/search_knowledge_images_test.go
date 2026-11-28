@@ -91,7 +91,7 @@ func TestImageCandidatesSurviveDedupBeforeRerank(t *testing.T) {
 			vector := imageRow("vector", types.ChunkTypeImageVector, "resource://chart")
 			caption.Content, vector.Content = "a quarterly chart", "a quarterly chart"
 			caption.Score, vector.Score, vector.VectorScore = 0.8, 0.4, 0.8
-			candidates := tool.deduplicateResultsForRerank([]*searchResultWithMeta{caption, vector, vector})
+			candidates := tool.deduplicateResultsForRerank([]*searchResultWithMeta{caption, vector, vector}, false)
 			require.Len(t, candidates, 2, "dedup only repeated image IDs before judging the pixels")
 			got, err := tool.rerankResults(t.Context(), "which quarter peaked", candidates, false)
 			require.NoError(t, err)
@@ -129,7 +129,7 @@ func TestDifferentImagesWithIdenticalCaptionsRemainSeparateCandidates(t *testing
 	b := imageRow("b", types.ChunkTypeImageVector, "resource://b")
 	a.Content, b.Content = "a chart", "a chart"
 	tool := &SearchKnowledgeTool{}
-	require.Len(t, tool.deduplicateResultsForRerank([]*searchResultWithMeta{a, b}), 2)
+	require.Len(t, tool.deduplicateResultsForRerank([]*searchResultWithMeta{a, b}, false), 2)
 	final := tool.deduplicateResults([]*searchResultWithMeta{a, b})
 	require.Len(t, final, 1)
 	require.Len(t, final[0].MatchedImages, 2, "merging text after rerank must retain both images")

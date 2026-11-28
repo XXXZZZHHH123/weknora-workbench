@@ -59,6 +59,96 @@ func coverageAnalysisExtrema(item coverageEvidence, input, data map[string]any, 
 	return result
 }
 
+// The native input summary identifies each extremum over the loaded scope.
+// The model's SQL can return the matching original row among a few sorted rows.
+func coverageAnalysisRowExtrema(item coverageEvidence, input, data map[string]any, contract *structuredresult.Contract) []coverageEvidence {
+	if !contract.Capabilities.ColumnDependenciesVerified || item.Column == "" ||
+		input["observation_coverage_scope"] != "loaded_analysis_inputs_before_user_sql" {
+		return nil
+	}
+	changes := coverageObject(coverageObject(input["observation_coverage"])["value_changes"])
+	scope := coverageObject(changes["scope"])
+	validCount := input["valid_count"]
+	if scope["complete_filtered_input"] != true || citationInt(validCount) < 1 ||
+		scope["valid_value_count"] != validCount {
+		return nil
+	}
+	var columns = map[string]int{"date": -1, "value": -1, "source_cell": -1, "date_cell": -1, "series_id": -1}
+	for _, column := range contract.Columns {
+		if column.Operation["kind"] != "column_reference" || len(column.Dependency.SourceColumns) != 1 {
+			continue
+		}
+		name := column.Dependency.SourceColumns[0]
+		if index, needed := columns[name]; needed {
+			if index >= 0 {
+				return nil
+			}
+			columns[name] = column.Index
+		}
+	}
+	if columns["date"] < 0 || columns["value"] < 0 || columns["source_cell"] < 0 {
+		return nil
+	}
+	dateIndex, valueIndex, cellIndex := columns["date"], columns["value"], columns["source_cell"]
+	dateCellIndex, seriesIndex := columns["date_cell"], columns["series_id"]
+	expectedDateColumn := coverageFieldDateColumn(coverageEvidence{Raw: input["series"]})
+	item.Subject = firstNonEmptyAgent(item.Subject, coverageAnalysisSubject(item.Dimensions))
+	observedFrom, observedTo := sourceNavigationString(input, "valid_first_date"), sourceNavigationString(input, "valid_last_date")
+	knownCoverage := coverageExactRange(coverageEvidence{PeriodFrom: observedFrom, PeriodTo: observedTo}) &&
+		(item.PeriodFrom == "" || observedFrom >= item.PeriodFrom) && (item.PeriodTo == "" || observedTo <= item.PeriodTo)
+	rows, _ := data["rows"].([]any)
+	var result []coverageEvidence
+	for _, op := range []string{"min", "max"} {
+		observation := coverageObject(changes[op+"imum"])
+		date := sourceNavigationString(observation, "date")
+		if !coverageAnalysisDay(date) || item.PeriodFrom != "" && date < item.PeriodFrom ||
+			item.PeriodTo != "" && date > item.PeriodTo || observation["value"] == nil {
+			continue
+		}
+		var match coverageEvidence
+		for rowIndex, raw := range rows {
+			row, ok := raw.([]any)
+			if !ok || len(row) != len(contract.Columns) || dateIndex >= len(row) || valueIndex >= len(row) || cellIndex >= len(row) ||
+				dateCellIndex >= len(row) || seriesIndex >= len(row) || seriesIndex >= 0 && row[seriesIndex] != item.SeriesID ||
+				row[dateIndex] != date || !coverageSameOriginalValue(row[valueIndex], observation["value"]) {
+				continue
+			}
+			cell, _ := row[cellIndex].(string)
+			column, rowNumber := coverageCellPosition(cell)
+			if column != item.Column {
+				continue
+			}
+			var dateCell string
+			if dateCellIndex >= 0 {
+				dateCell, _ = row[dateCellIndex].(string)
+				dateColumn, dateRow := coverageCellPosition(dateCell)
+				if dateColumn == "" || dateColumn == column || dateRow != rowNumber ||
+					expectedDateColumn != "" && dateColumn != expectedDateColumn {
+					continue
+				}
+			}
+			if match.Cell != "" && match.Cell != cell {
+				match = coverageEvidence{}
+				break
+			}
+			match = item
+			match.Kind, match.Extremum, match.Complete = "derived", op, true
+			match.Date, match.Cell, match.DateCell, match.Raw = date, cell, dateCell, row[valueIndex]
+			if knownCoverage && observedFrom <= date && date <= observedTo {
+				match.ObservationFrom, match.ObservationTo = observedFrom, observedTo
+			}
+			rowPointer := "/data/rows/" + strconv.Itoa(rowIndex) + "/"
+			match.JSONPointer, match.ResultJSONPointer = rowPointer+strconv.Itoa(valueIndex), rowPointer+strconv.Itoa(valueIndex)
+			match.CellJSONPointer = rowPointer + strconv.Itoa(cellIndex)
+			match.DateEvidenceID, match.DateJSONPointer = item.EvidenceID, rowPointer+strconv.Itoa(dateIndex)
+		}
+		if match.Cell != "" {
+			result = append(result, match)
+		}
+	}
+	return result
+}
+
 // The native input summary gives a value and date before the model's SQL runs.
 // Its matching status segment supplies the original value cell.
 func coverageAnalysisLastValid(item coverageEvidence, input map[string]any) (coverageEvidence, bool) {

@@ -36,6 +36,7 @@ func TestRelaxedTerminalEvidenceSwitch(t *testing.T) {
 // A model can name their independently verified readings without repeating
 // exact citation IDs. The normal terminal outlet and completion must agree.
 func TestQA4Af4ComparisonUsesCurrentReadingsWithoutExactDraftCitations(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", "false")
 	const draft = "两处读数不同。\n\n" +
 		"棉花周报20240331.pptx 第 6 页的中国棉花平衡表中，2023 年 10 月工商业期末库存是 331.2。\n\n" +
 		"棉花数据库.xlsx 中国棉花平衡表的 2023-10-31 工商业期末库存为 298.93，位于 G87。"

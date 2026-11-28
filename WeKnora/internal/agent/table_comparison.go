@@ -275,7 +275,7 @@ func tableComparisonBindingMatches(record coverageRecord, binding coverageBindin
 // These are observed operands, even when the optional declaration did not
 // resolve both handles. They cannot authorize a source or establish cadence.
 func (e *AgentEngine) tableReceiptReadings(target taskCoverageTarget, record coverageRecord, draft string) ([]coverageFact, bool) {
-	return e.tableReceiptReadingsWithDraftAttribution(target, record, draft, false)
+	return e.tableReceiptReadingsWithDraftAttribution(target, record, draft, false, nil)
 }
 
 func (e *AgentEngine) tableReceiptReadingsForDelivery(target taskCoverageTarget, record coverageRecord, draft string, relaxed bool) ([]coverageFact, bool) {
@@ -283,10 +283,10 @@ func (e *AgentEngine) tableReceiptReadingsForDelivery(target taskCoverageTarget,
 	if !relaxed || aligned {
 		return readings, aligned
 	}
-	return e.tableReceiptReadingsWithDraftAttribution(target, record, draft, true)
+	return e.tableReceiptReadingsWithDraftAttribution(target, record, draft, true, nil)
 }
 
-func (e *AgentEngine) tableReceiptReadingsWithDraftAttribution(target taskCoverageTarget, record coverageRecord, draft string, relaxed bool) ([]coverageFact, bool) {
+func (e *AgentEngine) tableReceiptReadingsWithDraftAttribution(target taskCoverageTarget, record coverageRecord, draft string, relaxed bool, final *finalTableReadings) ([]coverageFact, bool) {
 	if !plannedTableComparison(target) || !comparisonTableScopeValid(target) || target.Metric == "" {
 		return nil, false
 	}
@@ -392,9 +392,17 @@ func (e *AgentEngine) tableReceiptReadingsWithDraftAttribution(target taskCovera
 		}
 	}
 	if relaxed || len(series) > 1 {
-		series = namedFields
-		if len(namedFields) == 0 {
+		switch {
+		case len(namedFields) > 0:
+			series = namedFields
+		case len(attributedFields) > 0:
 			series = attributedFields
+		case final != nil && len(final.focusedFields) > 0:
+			series = slices.DeleteFunc(series, func(fact coverageFact) bool {
+				return !slices.Contains(final.focusedFields, fact.Evidence.Metric)
+			})
+		default:
+			series = nil
 		}
 	}
 	var alternateField string
@@ -456,7 +464,14 @@ func (e *AgentEngine) tableReceiptReadingsWithDraftAttribution(target taskCovera
 		if sourceConflict {
 			return nil, false
 		}
-		return tableDeliveryPairs(report, series, draft, grain)
+		if final != nil {
+			for _, item := range final.observations {
+				if allows(item) {
+					report = add(report, item)
+				}
+			}
+		}
+		return tableDeliveryPairs(report, series, draft, grain, final != nil && len(final.observations) != 0)
 	}
 	if !exactFieldInRead {
 		report = alternate
@@ -507,9 +522,12 @@ func draftNamesComparisonCell(draft string, item coverageEvidence) bool {
 // Retain each independently attributed field the model actually compared.
 // The report and workbook must give the same native field, at the requested
 // period already selected above, in distinct physical sources.
-func tableDeliveryPairs(report, series []coverageFact, draft, grain string) ([]coverageFact, bool) {
+func tableDeliveryPairs(report, series []coverageFact, draft, grain string, compareReportedNumbers bool) ([]coverageFact, bool) {
 	slices.SortFunc(series, func(a, b coverageFact) int {
-		return strings.Index(draft, a.Evidence.Metric) - strings.Index(draft, b.Evidence.Metric)
+		if order := strings.Index(draft, a.Evidence.Metric) - strings.Index(draft, b.Evidence.Metric); order != 0 || !compareReportedNumbers {
+			return order
+		}
+		return strings.Compare(coverageEvidenceFactKey(a.Evidence), coverageEvidenceFactKey(b.Evidence))
 	})
 	var paired, partial []coverageFact
 	for _, side := range series {
@@ -522,7 +540,7 @@ func tableDeliveryPairs(report, series []coverageFact, draft, grain string) ([]c
 		}) {
 			continue
 		}
-		if len(matches) == 1 && (item.Grain == "" || item.GrainFromLookup || item.Grain == grain) {
+		if len(matches) == 1 && (compareReportedNumbers || item.Grain == "" || item.GrainFromLookup || item.Grain == grain) {
 			item.ComparisonGrainUnverified = item.Grain != grain && !comparisonNativeRowPeriod(item.Period, item.PeriodFrom, item.PeriodTo, grain)
 			side.Evidence = item
 			paired = append(paired, matches[0], side)
@@ -533,8 +551,8 @@ func tableDeliveryPairs(report, series []coverageFact, draft, grain string) ([]c
 	if len(paired) != 0 {
 		return paired, true
 	}
-	if len(report) == 1 {
-		partial = append(partial, report[0])
+	if len(report) == 1 || compareReportedNumbers {
+		partial = append(partial, report...)
 	}
 	return partial, false
 }

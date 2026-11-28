@@ -117,6 +117,68 @@ func TestEngineTerminalPublicationPersistsTheStreamedEvidenceGap(t *testing.T) {
 	}
 }
 
+func TestEngineFinalReadPublicationPersistsNoReadExplanation(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", fmt.Sprint(enabled))
+			t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "true")
+			t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", "true")
+			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "false")
+			t.Setenv("WEKNORA_AGENT_STRUCTURED_TASK_PLAN", "true")
+			t.Setenv("WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE", "true")
+			t.Setenv("WEKNORA_STRUCTURED_LAST_VALID", "true")
+			ctx := context.WithValue(t.Context(), types.LanguageContextKey, "en-US")
+			db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+			require.NoError(t, err)
+			require.NoError(t, db.AutoMigrate(&types.Message{}, &types.MessageArtifactRecord{}, &types.MessageEvidenceRecord{}))
+			repo := repository.NewMessageRepository(db)
+			message := &types.Message{SessionID: "session", Role: "assistant"}
+			_, err = repo.CreateMessage(ctx, message)
+			require.NoError(t, err)
+			stream, bus := &completionEventRecorder{}, event.NewEventBus()
+			h := NewAgentStreamHandler(ctx, message.SessionID, message.ID, "request", 7, time.Time{}, message, stream, bus, nil, nil, nil)
+			h.Subscribe()
+			provider := terminalReplayProvider{chunks: []types.StreamResponse{{ResponseType: types.ResponseTypeAnswer, Done: true, FinishReason: "stop"}}}
+			config := &types.AgentConfig{MaxIterations: 3, AnswerReviewMode: "standard", WorkbenchDefault: true}
+			engine := agent.NewAgentEngine(config, provider, agenttools.NewToolRegistry(), bus, nil, nil, message.SessionID, "")
+			state, err := engine.Execute(ctx, message.SessionID, message.ID, "Explain the observed result.", nil)
+			require.NoError(t, err)
+			require.NoError(t, repo.UpdateMessage(ctx, message))
+			require.NoError(t, h.publishCompletion(ctx))
+			reloaded, err := repo.GetMessage(ctx, message.SessionID, message.ID)
+			require.NoError(t, err)
+			var visible strings.Builder
+			var errors int
+			for _, item := range stream.events {
+				if item.Type == types.ResponseTypeAnswer {
+					if item.Data["replace"] == true {
+						visible.Reset()
+					}
+					visible.WriteString(item.Content)
+				} else if item.Type == types.ResponseTypeError {
+					errors++
+				}
+			}
+			final := stream.events[len(stream.events)-1]
+			require.Equal(t, types.ResponseTypeComplete, final.Type)
+			if enabled {
+				require.Contains(t, state.FinalAnswer, "did not complete a source read")
+				require.Equal(t, state.FinalAnswer, visible.String())
+				require.Equal(t, state.FinalAnswer, reloaded.Content)
+				require.Equal(t, state.FinalAnswer, final.Data["final_content"])
+				require.Equal(t, types.MessageRunStateEvidencePartial, final.Data["run_state"])
+				require.Zero(t, errors)
+			} else {
+				require.Empty(t, state.FinalAnswer)
+				require.Empty(t, visible.String())
+				require.Empty(t, final.Data["final_content"])
+				require.Equal(t, types.MessageRunStateIncomplete, final.Data["run_state"])
+				require.Equal(t, 1, errors)
+			}
+		})
+	}
+}
+
 func TestTerminalCorrectionBeforeCompletePersistsOnlyCurrentBytes(t *testing.T) {
 	ctx := t.Context()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})

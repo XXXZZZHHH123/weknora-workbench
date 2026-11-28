@@ -20,6 +20,7 @@ func requireTerminalEvidenceGap(t *testing.T, answer string) {
 }
 
 func TestTerminalPublicationRejectsEveryPlaceholder(t *testing.T) {
+	configureAf5Publication(t, true)
 	fallbacks := append([]string{""}, terminalFallbacks[:]...)
 	for _, enabled := range []bool{true, false} {
 		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
@@ -65,11 +66,12 @@ func TestTerminalPublicationRejectsEveryPlaceholder(t *testing.T) {
 								require.NotContains(t, visible, e.turnReview.Query)
 								require.NotContains(t, visible, "No verifiable source receipt")
 							} else {
-								require.Zero(t, done)
-								require.Empty(t, stream.contents)
-								require.Empty(t, visible)
+								require.Equal(t, 1, done)
+								require.Equal(t, []string{visible}, stream.contents)
+								require.False(t, terminalCandidateFallback(visible))
 								require.NotNil(t, complete.Incomplete)
-								require.Contains(t, complete.Incomplete.Notice, e.turnReview.Query)
+								require.True(t, complete.HasPartialAnswer())
+								require.Contains(t, visible, e.turnReview.Query)
 							}
 							require.Equal(t, visible, complete.FinalAnswer)
 							require.Equal(t, visible, state.FinalAnswer)
@@ -82,6 +84,7 @@ func TestTerminalPublicationRejectsEveryPlaceholder(t *testing.T) {
 }
 
 func TestTerminalPublicationRevalidatesCurrentSourceBeforeFirstEmission(t *testing.T) {
+	configureAf5Publication(t, true)
 	for _, enabled := range []bool{true, false} {
 		for _, change := range []string{"authorization", "snapshot", "new unrelated receipt"} {
 			t.Run(fmt.Sprintf("%t/%s", enabled, change), func(t *testing.T) {
@@ -126,9 +129,10 @@ func TestTerminalPublicationRevalidatesCurrentSourceBeforeFirstEmission(t *testi
 					require.Equal(t, candidate, visible)
 					return
 				}
-				require.Zero(t, done)
-				require.Empty(t, stream.contents)
+				require.Equal(t, 1, done)
+				require.Equal(t, []string{visible}, stream.contents)
 				require.NotNil(t, complete.Incomplete)
+				require.True(t, complete.HasPartialAnswer())
 				require.Equal(t, string(terminalSourceChanged), complete.Incomplete.Reason)
 				require.NotContains(t, visible, "Equipment.xlsx")
 				require.NotContains(t, visible, "47.25")
@@ -145,62 +149,142 @@ func TestTerminalPublicationRevalidatesCurrentSourceBeforeFirstEmission(t *testi
 }
 
 func TestLegacyProviderNeverStreamsAPlaceholderPrefix(t *testing.T) {
-	for idx, fallback := range terminalFallbacks {
-		t.Run(fmt.Sprint(idx), func(t *testing.T) {
-			pieces := []rune(fallback)
-			mid := len(pieces) / 2
-			model := &mockChat{responses: []mockResponse{{chunks: []types.StreamResponse{
-				{Content: " \n" + string(pieces[:mid]), ResponseType: types.ResponseTypeAnswer},
-				{Content: string(pieces[mid:]) + "  \n", ResponseType: types.ResponseTypeAnswer, Done: true, FinishReason: "stop"},
-			}}}}
-			e := newTestEngine(t, model)
-			e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
-			e.toolRegistry = qa4ReplayRegistry()
-			stream := &terminalAnswerRecorder{}
-			stream.attach(e.eventBus)
-			state, err := e.executeLoop(t.Context(), &types.AgentState{}, "Explain the verified outcome.", emptyMessages(), emptyTools(), "run", "message")
-			require.NoError(t, err)
-			done, visible := stream.snapshot()
-			require.Zero(t, done)
-			require.Empty(t, visible)
-			require.NotContains(t, visible, fallback)
-			require.Equal(t, state.FinalAnswer, visible)
+	const query = "Explain the verified outcome."
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			configureAf5Publication(t, enabled)
+			for idx, fallback := range terminalFallbacks {
+				t.Run(fmt.Sprint(idx), func(t *testing.T) {
+					pieces := []rune(fallback)
+					mid := len(pieces) / 2
+					prefix := string(pieces[:mid])
+					model := &mockChat{responses: []mockResponse{{chunks: []types.StreamResponse{
+						{Content: " \n" + prefix, ResponseType: types.ResponseTypeAnswer},
+						{Content: string(pieces[mid:]) + "  \n", ResponseType: types.ResponseTypeAnswer, Done: true, FinishReason: "stop"},
+					}}}}
+					e := newTestEngine(t, model)
+					e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
+					e.toolRegistry = qa4ReplayRegistry()
+					stream := &terminalAnswerRecorder{}
+					stream.attach(e.eventBus)
+					var completions []event.AgentCompleteData
+					e.eventBus.On(event.EventAgentComplete, func(_ context.Context, evt event.Event) error {
+						completions = append(completions, evt.Data.(event.AgentCompleteData))
+						return nil
+					})
+					state, err := e.executeLoop(t.Context(), &types.AgentState{}, query, emptyMessages(), emptyTools(), "run", "message")
+					require.NoError(t, err)
+					require.Len(t, completions, 1)
+					complete := completions[0]
+					done, visible := stream.snapshot()
+					require.Equal(t, state.FinalAnswer, visible)
+					require.Equal(t, complete.FinalAnswer, visible)
+					require.NotContains(t, visible, fallback)
+					require.NotContains(t, visible, prefix)
+					if !enabled {
+						require.Zero(t, done)
+						require.Empty(t, stream.contents)
+						require.Empty(t, visible)
+						require.NotNil(t, complete.Incomplete)
+						require.Contains(t, complete.Incomplete.Notice, query)
+						return
+					}
+					require.Equal(t, 1, done)
+					require.Equal(t, []string{visible}, stream.contents)
+					require.False(t, terminalCandidateFallback(visible))
+					require.NotContains(t, visible, "<evidence")
+					require.NotContains(t, visible, "<kb")
+					require.True(t, complete.HasPartialAnswer())
+					require.Contains(t, visible, query)
+				})
+			}
 		})
 	}
 }
 
 func TestCompletionRevalidatesAnUncommittedOrSuspendedAnswer(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		complete  bool
-		suspended *types.PromptSuspension
-	}{
-		{name: "restored completion", complete: true},
-		{name: "abandoned draft"},
-		{name: "approval pending", suspended: &types.PromptSuspension{Kind: "tool_approval"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newTestEngine(t, &mockChat{})
-			e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
-			e.toolRegistry = qa4ReplayRegistry()
-			e.turnReview.Query = "What did the source report?"
-			state := &types.AgentState{
-				IsComplete: tc.complete, FinalAnswer: answerReviewUnavailableFallback, Suspended: tc.suspended,
+	const query = "What did the source report?"
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			configureAf5Publication(t, enabled)
+			type completionCase struct {
+				name               string
+				complete, withRead bool
+				suspended          *types.PromptSuspension
 			}
-			var complete event.AgentCompleteData
-			e.eventBus.On(event.EventAgentComplete, func(_ context.Context, evt event.Event) error {
-				complete = evt.Data.(event.AgentCompleteData)
-				return nil
-			})
-			e.emitCompletionEvent(t.Context(), state, "run", "message", time.Now())
-			require.Equal(t, state.FinalAnswer, complete.FinalAnswer)
-			if tc.complete {
-				require.Empty(t, complete.FinalAnswer)
-				require.NotNil(t, complete.Incomplete)
-				require.Contains(t, complete.Incomplete.Notice, "What did the source report?")
-			} else {
-				require.Empty(t, complete.FinalAnswer)
-				require.Nil(t, complete.Incomplete)
+			cases := []completionCase{
+				{name: "restored completion", complete: true},
+				{name: "abandoned draft"},
+				{name: "approval pending", suspended: &types.PromptSuspension{PromptID: "approval", Kind: "tool_approval"}},
+				{name: "restored approval pending", complete: true, suspended: &types.PromptSuspension{PromptID: "approval", Kind: "tool_approval"}},
+			}
+			if enabled {
+				cases = append(cases, completionCase{name: "restored verified reading", complete: true, withRead: true})
+			}
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					e := newTestEngine(t, &mockChat{})
+					e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
+					e.toolRegistry = qa4ReplayRegistry()
+					e.turnReview.Query = query
+					state := &types.AgentState{
+						IsComplete: tc.complete, FinalAnswer: answerReviewUnavailableFallback, Suspended: tc.suspended,
+					}
+					settled := tc.complete && tc.suspended == nil
+					if !settled || tc.withRead {
+						// Include receipts both for actual restoration and to test the suspension fence.
+						call := terminalLatestSeriesCall()
+						call.Args["source_question"] = query
+						state.RoundSteps = []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}
+					}
+					stream := &terminalAnswerRecorder{}
+					stream.attach(e.eventBus)
+					var completions []event.AgentCompleteData
+					e.eventBus.On(event.EventAgentComplete, func(_ context.Context, evt event.Event) error {
+						completions = append(completions, evt.Data.(event.AgentCompleteData))
+						return nil
+					})
+					e.emitCompletionEvent(t.Context(), state, "run", "message", time.Now())
+					require.Len(t, completions, 1)
+					complete := completions[0]
+					if tc.suspended != nil {
+						require.Equal(t, tc.suspended, complete.Suspended)
+					} else {
+						require.Nil(t, complete.Suspended)
+					}
+					require.Equal(t, tc.complete, state.IsComplete)
+					done, visible := stream.snapshot()
+					require.Equal(t, state.FinalAnswer, complete.FinalAnswer)
+					require.Equal(t, complete.FinalAnswer, visible)
+					require.NotContains(t, visible, answerReviewUnavailableFallback)
+					if tc.withRead {
+						require.Equal(t, 1, done)
+						require.Equal(t, []string{visible}, stream.contents)
+						require.Nil(t, complete.Incomplete)
+						for _, fact := range []string{"Equipment.xlsx", "Elapsed time", "47.25", "2021-06-03", "B15"} {
+							require.Contains(t, visible, fact)
+						}
+						return
+					}
+					if settled {
+						require.NotNil(t, complete.Incomplete)
+						require.Contains(t, complete.Incomplete.Notice, query)
+						if enabled {
+							require.Equal(t, 1, done)
+							require.Equal(t, []string{visible}, stream.contents)
+							require.False(t, terminalCandidateFallback(visible))
+							require.True(t, complete.HasPartialAnswer())
+							require.Equal(t, complete.Incomplete.Notice, visible)
+							return
+						}
+					} else {
+						require.Nil(t, complete.Incomplete)
+						require.Equal(t, state.RoundSteps, complete.AgentSteps)
+					}
+					require.Zero(t, done)
+					require.Empty(t, stream.contents)
+					require.Empty(t, complete.FinalAnswer)
+				})
 			}
 		})
 	}

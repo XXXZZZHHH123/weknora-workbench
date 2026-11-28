@@ -171,6 +171,26 @@ func CurrentDocumentScopeIDs(registry *ToolRegistry) []string {
 	return binder.state.selectedIDs()
 }
 
+// CurrentDocumentReadPages returns only pages selected or limited by the
+// current native binding. No pagination or physical page numbers are inferred.
+func CurrentDocumentReadPages(registry *ToolRegistry, knowledgeID string) []int {
+	tool, err := registry.GetTool(ToolBindDocumentScope)
+	binder, ok := tool.(*bindDocumentScopeTool)
+	if err != nil || !ok || binder.state == nil {
+		return nil
+	}
+	selected, err := binder.state.selection(knowledgeID)
+	if err != nil {
+		return nil
+	}
+	pages := documentSelectionHints(selected)
+	if len(pages) == 0 && selected.UserPages != nil {
+		pages = selected.UserPages.Pages
+	}
+	// All returned pages are a clone supplied by selection().
+	return pages
+}
+
 // HasDocumentScopeBinder distinguishes the native binder from proxy tools
 // sharing the public name.
 func HasDocumentScopeBinder(registry *ToolRegistry) bool {
@@ -395,16 +415,36 @@ func validateDocumentDateEvidence(k *types.Knowledge, evidence *DocumentDateEvid
 	default:
 		return fmt.Errorf("来源日期证据字段不受支持")
 	}
-	spellings := []string{date.Format("2006-01-02"), date.Format("20060102"), date.Format("2006/01/02"), date.Format("2006.01.02"), fmt.Sprintf("%d年%d月%d日", date.Year(), int(date.Month()), date.Day())}
-	verified := false
-	for _, spelling := range spellings {
-		if evidence.SourceText == spelling {
-			verified = true
-			break
-		}
-	}
-	if !verified || !strings.Contains(field, evidence.SourceText) {
+	if !slices.Contains(documentDateSpellings(date), evidence.SourceText) || !strings.Contains(field, evidence.SourceText) {
 		return fmt.Errorf("声明的来源日期与实际文件名、标题或来源元数据不一致；不能用上传日期或其他报告代替")
+	}
+	return nil
+}
+
+func documentDateSpellings(date time.Time) []string {
+	return []string{date.Format(time.DateOnly), date.Format("20060102"), date.Format("2006/01/02"),
+		date.Format("2006.01.02"), fmt.Sprintf("%d年%d月%d日", date.Year(), int(date.Month()), date.Day())}
+}
+
+// DocumentDateEvidenceFromDirectory finds a real material-date witness for
+// an already selected day. Binding rechecks it against the current document.
+func DocumentDateEvidenceFromDirectory(row map[string]any, day string) *DocumentDateEvidence {
+	date, err := time.Parse(time.DateOnly, day)
+	if err != nil {
+		return nil
+	}
+	metadata, _ := row["metadata"].(map[string]any)
+	for _, field := range []string{"metadata.report_date", "metadata.published_date", "metadata.date", "file_name", "title"} {
+		raw := row[field]
+		if key, ok := strings.CutPrefix(field, "metadata."); ok {
+			raw = metadata[key]
+		}
+		value, _ := raw.(string)
+		for _, spelling := range documentDateSpellings(date) {
+			if strings.Contains(value, spelling) {
+				return &DocumentDateEvidence{Date: day, SourceField: field, SourceText: spelling}
+			}
+		}
 	}
 	return nil
 }

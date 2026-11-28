@@ -39,11 +39,15 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		return ctx.Err()
 	}
 	e.turnReview.Query, e.turnReview.Conversation = query, append([]chat.Message(nil), conversation...)
-	e.turnReview.TerminalInput = e.terminalEvidenceRevision(ctx, state)
-	e.turnReview.TerminalInput.task = "" // The checked task is captured separately.
 	publicationCtx := ctx
 	ctx, cancelFinalBudget := e.standardAnswerFinalContext(ctx, state)
 	defer cancelFinalBudget()
+	if len(options) > 0 && options[0].preliminary {
+		conversation = e.appendFinalReadingsForSynthesis(ctx, query, state, sessionID, options[0].assistantMessageID, conversation)
+		e.turnReview.Conversation = append([]chat.Message(nil), conversation...)
+	}
+	e.turnReview.TerminalInput = e.terminalEvidenceRevision(ctx, state)
+	e.turnReview.TerminalInput.task = "" // The checked task is captured separately.
 	if hasWorkspaceExecution(state) {
 		e.recordArtifactInventory(ctx, state, &conversation, sessionID)
 	}
@@ -527,6 +531,14 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 	state.FinalAnswer = stripCoverageAnswer(state.FinalAnswer)
 	priorAnswer := state.FinalAnswer
 	receipt := &e.turnReview.TerminalReceipt
+	finalRead := e.finalReadPublicationEligible(state)
+	if finalRead && !e.turnReview.Committed {
+		working := *state
+		working.IsComplete = false
+		if e.recoverFinalReadings(ctx, &working, sessionID) {
+			state.RoundSteps, state.CurrentRound = working.RoundSteps, working.CurrentRound
+		}
+	}
 	revision := e.terminalEvidenceRevision(ctx, state)
 	failure := terminalNoFailure
 	if !receipt.evidence.current(revision) {
@@ -541,6 +553,7 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 	} else if receipt.failure == terminalNoFailure && receipt.answerHash == "" {
 		failure = e.terminalCandidateEvidenceFailure(ctx, state, state.FinalAnswer)
 	}
+	selectReadings := finalRead && (failure != terminalNoFailure || !e.turnReview.Committed || len(revision.calls) > len(receipt.evidence.calls))
 	qualifiedReferences := false
 	if failure == terminalNoFailure && receipt.failure == terminalNoFailure && !receipt.fromEvidence {
 		qualifiedReferences = e.publishFinalKnowledgeReferences(ctx, state, sessionID)
@@ -550,7 +563,10 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 			failure = terminalSourceChanged
 		} else if terminalCandidateFallback(state.FinalAnswer) {
 			failure = legacyTerminalFailure(state.FinalAnswer)
+		} else if finalRead && terminalCandidateFallback(types.StripAgentAnswerMarkup(state.FinalAnswer)) {
+			failure = terminalEmpty
 		}
+		selectReadings = selectReadings || finalRead && failure != terminalNoFailure
 	}
 	stale := receipt.evidence.staleCalls(revision)
 	for id := range receipt.staleCalls {
@@ -559,7 +575,23 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 		}
 		stale[id] = true
 	}
-	if failure != terminalNoFailure {
+	if selectReadings {
+		current := terminalCurrentState(state, stale)
+		result := e.selectFinalReadPublication(ctx, current, state.FinalAnswer, failure, "answer")
+		if result.fromEvidence {
+			state.FinalAnswer, receipt.notice = result.answer, result.notice
+			receipt.partial, receipt.fromEvidence = result.partial, true
+			state.EvidenceRefs, state.KnowledgeRefs = nil, nil
+			e.turnReview.TerminalTruncated = false
+			receipt.failure = failure
+			if result.complete {
+				receipt.failure = terminalNoFailure
+			} else if failure == terminalNoFailure && result.notice != "" {
+				receipt.failure = terminalAnswerEvidence
+			}
+			qualifiedReferences = false
+		}
+	} else if failure != terminalNoFailure {
 		current := terminalCurrentState(state, stale)
 		result := e.terminalCoveragePublication(ctx, current, failure)
 		state.FinalAnswer, receipt.notice = result.answer, result.notice
@@ -604,7 +636,8 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 		}
 	}
 	receipt.answerHash, receipt.evidence = candidateTextDigest(state.FinalAnswer), revision
-	if e.turnReview.Committed {
+	if e.turnReview.Committed || finalRead {
+		e.turnReview.Committed = true
 		e.publishTerminalStream(ctx, state, sessionID)
 	}
 	e.closeAnswerStream(ctx, sessionID, e.turnReview.TerminalStreamID, e.turnReview.TerminalTruncated)

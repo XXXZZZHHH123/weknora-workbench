@@ -6,8 +6,74 @@ import (
 	"slices"
 	"strings"
 
+	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
 	"github.com/Tencent/WeKnora/internal/types"
 )
+
+func (e *AgentEngine) finalPointSupplementFacts(ctx context.Context, target taskCoverageTarget, record coverageRecord, attempts []coverageAttempt) []coverageEvidence {
+	if target.SourceMode != "named_first" && target.SourceMode != "open" || target.SourceTime != "observed_period" ||
+		target.VersionTask == "compare_sources" || target.VersionTask == "compare_versions" || target.Metric == "" {
+		return nil
+	}
+	from, to, grain := coverageTargetDateRange(target)
+	if grain != "day" || from != to || !coverageAnalysisDay(from) {
+		return nil
+	}
+	var gaps []coverageEvidence
+	for _, item := range record.Evidence {
+		if item.SourceDomain == "structured" && item.Kind == "gap" && item.Complete && item.PeriodFrom == from && item.PeriodTo == to &&
+			(target.Table == "" || item.Sheet == target.Table) {
+			gaps = append(gaps, item)
+		}
+	}
+	if len(gaps) == 0 {
+		return nil
+	}
+	var facts []coverageEvidence
+	for _, item := range record.Evidence {
+		if item.Kind != "body" || item.Operation != agenttools.ToolReadDocument || item.SourceTitle == "" || item.Page <= 0 ||
+			!slices.ContainsFunc(gaps, func(gap coverageEvidence) bool {
+				return item.KnowledgeBaseID == gap.KnowledgeBaseID && comparisonPhysicalSource(item) != comparisonPhysicalSource(gap)
+			}) || !e.coverageEvidenceAllowed(ctx, &target, item) {
+			continue
+		}
+		sourceDay := item.SourceDate
+		if sourceDay == "" {
+			for _, attempt := range attempts {
+				if attempt.ToolCallID != item.ToolCallID || !attempt.Success {
+					continue
+				}
+				document := reviewAsMap(attempt.result.Data["document"])
+				if agenttools.DocumentDateEvidenceFromDirectory(document, from) != nil {
+					sourceDay = from
+				}
+				break
+			}
+		}
+		if sourceDay != from {
+			continue
+		}
+		body, _ := item.Raw.(string)
+		if passage := labeledSourcePassage(body, target.Metric); passage != "" {
+			item.Metric, item.SourceDate, item.Raw = target.Metric, sourceDay, passage
+			facts = append(facts, item)
+		}
+	}
+	return facts
+}
+
+func labeledSourcePassage(body, metric string) string {
+	for _, line := range strings.Split(documentSourceProse(body), "\n") {
+		label, rest, found := strings.Cut(strings.Replace(line, "：", ":", 1), ":")
+		if !found || strings.Trim(strings.TrimSpace(label), "-#* ") != metric {
+			continue
+		}
+		if proseNumber.MatchString(maskValidatedCalendarDates(rest)) {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
+}
 
 // A new draft can omit a separately attributed disclosure that the model
 // already selected from a current document read. Keep that disclosure after

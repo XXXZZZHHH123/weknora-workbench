@@ -28,14 +28,20 @@ func TestAf4WarehouseSupplementRecordedPublication(t *testing.T) {
 	for _, frozen := range traces {
 		var identity struct{ ID string }
 		require.NoError(t, json.Unmarshal(frozen, &identity))
-		for _, mode := range []string{"default", "reversed", "paraphrased", "strict", "only", "same physical source"} {
+		for _, mode := range []string{"default", "Af5", "reversed", "paraphrased", "strict", "only", "same physical source"} {
 			t.Run(identity.ID+"/"+mode, func(t *testing.T) {
 				t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "false")
 				t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "true")
 				t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", "")
 				t.Setenv("WEKNORA_STRUCTURED_LAST_VALID", "true")
+				t.Setenv("WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE", "true")
+				t.Setenv("WEKNORA_AGENT_STRUCTURED_TASK_PLAN", "true")
+				t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", "false")
 				if mode == "strict" {
 					t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", "false")
+				}
+				if mode == "Af5" {
+					t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", "true")
 				}
 				var trace struct {
 					ID, Question, Final string
@@ -151,7 +157,7 @@ func TestAf4WarehouseSupplementRecordedPublication(t *testing.T) {
 				require.True(t, coverageTextHasDate(state.FinalAnswer, "2023-09-21"))
 				require.NotContains(t, state.FinalAnswer, "<kb")
 				require.NotContains(t, state.FinalAnswer, "<evidence")
-				if hadSupplement && (mode == "default" || mode == "reversed" || mode == "paraphrased") {
+				if hadSupplement && (mode == "default" || mode == "Af5" || mode == "reversed" || mode == "paraphrased") {
 					require.Equal(t, 1, strings.Count(state.FinalAnswer, "60.6"))
 					require.Contains(t, state.FinalAnswer, "万吨")
 					require.Contains(t, state.FinalAnswer, "棉花周报20240310")

@@ -41,13 +41,28 @@ func TestAf2EndpointUsesDateFromTheCitedValueRow(t *testing.T) {
 }
 
 func TestAf2CatalogOnlyDoesNotStandInForRequestedReadings(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE", "true")
+	t.Setenv("WEKNORA_AGENT_STRUCTURED_TASK_PLAN", "true")
 	for _, mode := range []string{"true", "false"} {
-		for _, basis := range []string{"unplanned", "catalog_snapshot", "general_concept"} {
-			t.Run(mode+"/"+basis, func(t *testing.T) {
+		for _, test := range []struct {
+			basis, publication, relaxed, finalRead string
+		}{
+			{"unplanned", "false", "true", "false"},
+			{"unplanned", "true", "true", "false"},
+			{"unplanned", "true", "false", "false"},
+			{"unplanned", "true", "true", "true"},
+			{"catalog_snapshot", "true", "true", "true"},
+			{"general_concept", "true", "true", "true"},
+		} {
+			t.Run(strings.Join([]string{mode, test.basis, test.publication, test.relaxed, test.finalRead}, "/"), func(t *testing.T) {
 				t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", mode)
+				t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", test.publication)
+				t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", test.relaxed)
+				t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", test.finalRead)
 				e := newTestEngine(t, &qa4Stage2CModel{t: t})
 				e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
 				e.toolRegistry = qa4ReplayRegistry()
+				basis := test.basis
 				query := "What value is shown for the selected interval?"
 				draft := "The Equipment.xlsx catalog lists Operating hours. The reading has yet to be obtained."
 				if basis != "unplanned" {
@@ -64,25 +79,41 @@ func TestAf2CatalogOnlyDoesNotStandInForRequestedReadings(t *testing.T) {
 					"datasets":              []any{map[string]any{"dataset_id": "register", "source_file": "Equipment.xlsx", "sheets": []any{"Operating hours"}}},
 				}}}
 				state := &types.AgentState{RoundSteps: []types.AgentStep{{ToolCalls: []types.ToolCall{call}}}}
-				decision := e.checkCandidate(t.Context(), query, draft, "", state, nil, false)
-				if basis != "unplanned" {
-					require.Equal(t, candidateAccepted, decision.Disposition)
-					return
-				}
-				require.Equal(t, candidateRevise, decision.Disposition)
+				ctx := context.WithValue(t.Context(), types.LanguageContextKey, "en-US")
+				decision := e.checkCandidate(ctx, query, draft, "", state, nil, false)
 				var complete event.AgentCompleteData
 				e.eventBus.On(event.EventAgentComplete, func(_ context.Context, item event.Event) error {
 					complete = item.Data.(event.AgentCompleteData)
 					return nil
 				})
+				if basis != "unplanned" {
+					require.Equal(t, candidateAccepted, decision.Disposition)
+					e.commitTerminalResult(ctx, state, "run", draft, "", "answer", false)
+					e.emitCompletionEvent(ctx, state, "run", "message", time.Now())
+					require.Equal(t, draft, complete.FinalAnswer, "non-numerical requests can be fulfilled by catalog metadata or a concept explanation")
+					require.Nil(t, complete.Incomplete)
+					return
+				}
+				require.Equal(t, candidateRevise, decision.Disposition)
 				state.IsComplete, state.FinalAnswer = true, draft // Restored candidate bypasses the normal commit.
-				e.emitCompletionEvent(t.Context(), state, "run", "message", time.Now())
+				e.emitCompletionEvent(ctx, state, "run", "message", time.Now())
 				require.NotNil(t, complete.Incomplete)
-				if types.VerifiedPublicationEnabled() && !relaxedTerminalEvidenceEnabled() {
+				switch {
+				case test.finalRead == "true":
+					require.NotEmpty(t, complete.FinalAnswer)
+					require.Contains(t, complete.FinalAnswer, query)
+					require.Contains(t, complete.FinalAnswer, "Source listing completed")
+					require.Contains(t, complete.FinalAnswer, "supplied no reading for the requested scope")
+					require.NotContains(t, complete.FinalAnswer, "Operating hours")
+					require.NotContains(t, complete.FinalAnswer, "<evidence")
+					require.NotContains(t, complete.FinalAnswer, "<kb")
+					require.False(t, terminalCandidateFallback(complete.FinalAnswer))
+					require.True(t, complete.HasPartialAnswer(), "the incomplete event exposes the status text")
+				case test.publication == "true" && test.relaxed == "false":
 					require.True(t, complete.HasPartialAnswer())
 					require.Contains(t, complete.FinalAnswer, "Equipment.xlsx")
 					require.NotEqual(t, draft, complete.FinalAnswer)
-				} else {
+				default:
 					require.Empty(t, complete.FinalAnswer)
 					require.False(t, complete.HasPartialAnswer(), "directory navigation is not a reading")
 				}

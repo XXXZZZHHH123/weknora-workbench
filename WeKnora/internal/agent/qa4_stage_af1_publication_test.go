@@ -20,6 +20,9 @@ import (
 // because the event stream drops its text. IDs were aliased and the v2
 // hashes recomputed. Four original drafts came from the messages table.
 func TestQA4Af1RecordedTablePublication(t *testing.T) {
+	// This fixture keeps the historical byte-for-byte assertions with the
+	// bounded comparison reviewer disabled. Af5 separately replays both exits.
+	t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", "false")
 	for _, round := range []int{1, 3} {
 		for _, completed := range []bool{false, true} {
 			for _, modern := range []bool{false, true} {
@@ -142,6 +145,7 @@ func TestQA4Af1RecordedTablePublication(t *testing.T) {
 // A-1 KB-07 #14/#15 selects and returns three native workbook fields.
 // Preserve the exact transport range and v2 payload with IDs aliased.
 func TestQA4Af1RecordedSameRowSQLPublication(t *testing.T) {
+	configureAf5Publication(t, true)
 	for _, completed := range []bool{false, true} {
 		for _, mutation := range []string{"original", "different date cell", "modified value"} {
 			t.Run(fmt.Sprintf("completion_%t/%s", completed, mutation), func(t *testing.T) {
@@ -161,8 +165,9 @@ func TestQA4Af1RecordedSameRowSQLPublication(t *testing.T) {
 				}
 				r.exhaust()
 				if mutation != "original" {
-					require.Empty(t, r.state.FinalAnswer)
-					require.NotEmpty(t, r.engine.turnReview.TerminalReceipt.notice)
+					require.Equal(t, r.state.FinalAnswer, r.engine.turnReview.TerminalReceipt.notice)
+					require.NotContains(t, r.state.FinalAnswer, "231.93")
+					require.NotContains(t, r.state.FinalAnswer, "298.93")
 					return
 				}
 				answer := r.answer()

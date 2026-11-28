@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -114,6 +115,14 @@ type SearchKnowledgeInput struct {
 	DocumentIDs      []string           `json:"document_ids,omitempty"`
 	Page             int                `json:"page,omitempty"`
 	SourceScope      *DocumentScopePlan `json:"source_scope,omitempty"`
+}
+
+type localDocumentRecallKey struct{}
+
+// WithLocalDocumentRecall keeps optional native recall within the keyword
+// index. It must not fall back to embedding or invoke a configured reranker.
+func WithLocalDocumentRecall(ctx context.Context) context.Context {
+	return context.WithValue(ctx, localDocumentRecallKey{}, true)
 }
 
 // searchResultWithMeta wraps search result with metadata about which query matched it
@@ -244,6 +253,10 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 	if err != nil {
 		return &types.ToolResult{Success: false, PreflightRejected: true, Error: err.Error()}, err
 	}
+	localRecall, _ := ctx.Value(localDocumentRecallKey{}).(bool)
+	if localRecall {
+		mode = SearchModeKeyword
+	}
 	limit := clampSearchLimit(input.Limit)
 
 	// Optional KB filter: reject hallucinated or out-of-scope handles.
@@ -339,6 +352,15 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 	if msg != "" {
 		return &types.ToolResult{Success: false, Error: msg}, fmt.Errorf("%s", msg)
 	}
+	if localRecall {
+		searchTargets = slices.DeleteFunc(slices.Clone(searchTargets), func(target *types.SearchTarget) bool {
+			return target == nil || kbModes[target.KnowledgeBaseID].mode != SearchModeKeyword
+		})
+		if len(searchTargets) == 0 {
+			return &types.ToolResult{Error: "No keyword index is available in the selected knowledge scope."}, nil
+		}
+		kbIDs = searchTargets.GetAllKnowledgeBaseIDs()
+	}
 	kbTypeMap := make(map[string]string, len(kbList))
 	for _, kb := range kbList {
 		if kb != nil {
@@ -389,11 +411,11 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 		allResults = filtered
 	}
 
-	deduplicated := t.deduplicateResultsForRerank(allResults)
+	deduplicated := t.deduplicateResultsForRerank(allResults, localRecall)
 
 	ranked := deduplicated
 	rerankRejected := 0
-	if t.rerankModel != nil && len(deduplicated) > 0 {
+	if !localRecall && t.rerankModel != nil && len(deduplicated) > 0 {
 		reranked, err := t.rerankResults(ctx, query, deduplicated, mode == SearchModeKeyword)
 		if err != nil {
 			logger.Warnf(ctx, "[Tool][SearchKnowledge] Rerank failed, using retrieval order: %v", err)
@@ -409,16 +431,19 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 	// text reranker could not judge) skip MMR and the limit, and follow the
 	// ranked results.
 	ranked, keptOutside := splitKeptOutsideTopK(ranked)
-	if len(ranked) > 0 {
+	if !localRecall && len(ranked) > 0 {
 		if selected := selectMMR(ctx, ranked, min(len(ranked), retrievalLimit)); len(selected) > 0 {
 			ranked = selected
 		}
 	}
 
-	final := t.deduplicateResults(ranked)
+	final := t.deduplicateResultsWithImageCandidates(ranked, false, localRecall)
 	sort.Slice(final, func(i, j int) bool {
 		if final[i].Score != final[j].Score {
 			return final[i].Score > final[j].Score
+		}
+		if localRecall && final[i].KnowledgeID == final[j].KnowledgeID {
+			return final[i].ID < final[j].ID
 		}
 		return final[i].KnowledgeID < final[j].KnowledgeID
 	})
@@ -450,7 +475,7 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 	}
 
 	// Enrich image info for search results (lazy-loaded from child image chunks)
-	if t.chunkService != nil && len(final) > 0 {
+	if !localRecall && t.chunkService != nil && len(final) > 0 {
 		byTenant := make(map[uint64][]*types.SearchResult)
 		for _, r := range final {
 			tid := t.searchTargets.GetTenantIDForKB(r.KnowledgeBaseID)
@@ -474,7 +499,9 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 	if omitted > 0 {
 		result.Data["omitted_for_budget"] = omitted
 	}
-	t.attachContextImages(ctx, result, final[:len(final)-omitted])
+	if !localRecall {
+		t.attachContextImages(ctx, result, final[:len(final)-omitted])
+	}
 	if len(searchFailures) > 0 {
 		result.Data["partial_failures"] = searchFailures
 	}
@@ -838,7 +865,10 @@ func (t *SearchKnowledgeTool) concurrentSearchByTargets(
 
 	// Resolve actual model identities (name + endpoint + configured dimension)
 	// for cross-tenant grouping
-	modelKeyMap := t.knowledgeBaseService.ResolveEmbeddingModelKeys(ctx, kbList)
+	var modelKeyMap map[string]string
+	if localRecall, _ := ctx.Value(localDocumentRecallKey{}).(bool); !localRecall {
+		modelKeyMap = t.knowledgeBaseService.ResolveEmbeddingModelKeys(ctx, kbList)
+	}
 
 	groups := make(map[string][]*types.SearchTarget)
 	for _, st := range searchTargets {
@@ -1146,17 +1176,17 @@ func (t *SearchKnowledgeTool) rerankThreshold() float64 {
 // image and FAQ chunks all carry chunk_index 0, so it collapsed every image
 // chunk of a document, and the document's first text chunk, into one row.
 func (t *SearchKnowledgeTool) deduplicateResults(results []*searchResultWithMeta) []*searchResultWithMeta {
-	return t.deduplicateResultsWithImageCandidates(results, false)
+	return t.deduplicateResultsWithImageCandidates(results, false, false)
 }
 
 // Image vectors and captions can have identical text but must be judged
 // independently. Only collapse their text copies after reranking.
-func (t *SearchKnowledgeTool) deduplicateResultsForRerank(results []*searchResultWithMeta) []*searchResultWithMeta {
-	return t.deduplicateResultsWithImageCandidates(results, true)
+func (t *SearchKnowledgeTool) deduplicateResultsForRerank(results []*searchResultWithMeta, byDocument bool) []*searchResultWithMeta {
+	return t.deduplicateResultsWithImageCandidates(results, true, byDocument)
 }
 
 func (t *SearchKnowledgeTool) deduplicateResultsWithImageCandidates(
-	results []*searchResultWithMeta, beforeRerank bool,
+	results []*searchResultWithMeta, beforeRerank, byDocument bool,
 ) []*searchResultWithMeta {
 	seen := make(map[string]bool)
 	contentSig := make(map[string]*searchResultWithMeta)
@@ -1187,6 +1217,11 @@ func (t *SearchKnowledgeTool) deduplicateResultsWithImageCandidates(
 			continue
 		}
 		sig := searchutil.BuildContentSignature(r.Content)
+		if sig != "" && byDocument {
+			// A lexical locator must keep different physical versions
+			// discoverable even when their indexed paragraphs are equal.
+			sig = r.KnowledgeID + "\x00" + sig
+		}
 		if beforeRerank && searchutil.IsImageEvidence(r.SearchResult) {
 			// Exact chunk-ID dedup above still applies. Distinct image hits
 			// must not collapse even when their captions are identical.

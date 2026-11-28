@@ -34,6 +34,7 @@ type terminalCoverageDelivery struct {
 	requested        []taskCoverageTarget
 	chinese          bool
 	relaxed          bool
+	finalRead        bool
 }
 
 type terminalCoveragePublication struct {
@@ -41,6 +42,11 @@ type terminalCoveragePublication struct {
 	notice   string
 	partial  bool
 	complete bool
+}
+
+type finalReadPublication struct {
+	terminalCoveragePublication
+	fromEvidence bool
 }
 
 type terminalEvidenceSnapshot struct {
@@ -78,7 +84,7 @@ func (snapshot terminalEvidenceSnapshot) staleCalls(next terminalEvidenceSnapsho
 
 // Build from completed native executions, not the cached declaration or
 // the model's transcript. A changed receipt or revoked source is discarded.
-func (e *AgentEngine) terminalCoverageRecord(ctx context.Context, state *types.AgentState) (coverageRecord, []coverageAttempt) {
+func (e *AgentEngine) terminalCoverageRecord(ctx context.Context, state *types.AgentState, finalRead ...bool) (coverageRecord, []coverageAttempt) {
 	turn := &e.evidenceCompletion
 	record := coverageRecord{
 		Revision:  e.candidateTaskDigest(e.turnReview.Query, e.turnReview.Conversation),
@@ -90,7 +96,7 @@ func (e *AgentEngine) terminalCoverageRecord(ctx context.Context, state *types.A
 	if state == nil || e.toolRegistry == nil {
 		return record, nil
 	}
-	record, attempts := e.projectCurrentTaskCoverage(state, e.turnReview.TerminalStartStep, record)
+	record, attempts := e.projectCurrentTaskCoverage(state, e.turnReview.TerminalStartStep, record, finalRead...)
 	// Compute the current workbook relationship on the intact projection.
 	// Deleting first would lose the receipt needed to verify some endpoints.
 	var current []coverageEvidence
@@ -185,6 +191,211 @@ func (e *AgentEngine) terminalCoveragePublication(ctx context.Context, state *ty
 		result = terminalCoveragePublication{answer: result.notice}
 	}
 	return result
+}
+
+func (e *AgentEngine) selectFinalReadPublication(ctx context.Context, state *types.AgentState, answer string, failure terminalFailure, outcome string) finalReadPublication {
+	draft := answer
+	if failure == terminalSourceChanged {
+		draft = ""
+	} else if terminalCandidateFallback(draft) {
+		draft = e.turnReview.Last.Candidate
+	}
+	delivery := e.terminalCoverageDelivery(ctx, state, draft)
+	steps := state.RoundSteps[min(e.turnReview.TerminalStartStep, len(state.RoundSteps)):]
+	if failure != terminalSourceChanged {
+		if len(delivery.requested) == 0 {
+			delivery.retainSelectedUnplannedReadings(steps, firstNonEmptyAgent(draft, e.turnReview.Last.Candidate))
+		}
+		delivery.retainSelectedInspectedEndpoints(steps)
+	}
+	delivery.pairInspectedScope()
+	usableDraft := failure == terminalNoFailure && !terminalCandidateFallback(types.StripAgentAnswerMarkup(answer))
+	partialDraft := outcome == "evidence_partial" || outcome == "partial"
+	checked := e.turnReview.Last
+	if hash := candidateTextDigest(answer); checked.CandidateHash != hash && e.turnReview.CoverageDraftDeliveryHash == hash {
+		checked = e.turnReview.CoverageDraft
+	}
+	keepDraft := usableDraft
+	if keepDraft && len(delivery.conclusions) > 0 {
+		// A pair of displayed numbers doesn't establish that the draft drew
+		// the checked relation. Reuse an existing semantic comparison review
+		// or a previously rendered relation before leaving the prose intact.
+		reviewed := checked.CandidateHash == candidateTextDigest(answer) &&
+			(checked.SourceReviewAttempted && checked.Disposition == candidateAccepted ||
+				checked.StructuredComparisonReview && (checked.StructuredResultReviewStatus == "kept" || checked.StructuredResultReviewStatus == "corrected"))
+		keepDraft = reviewed || !slices.ContainsFunc(delivery.conclusions, func(conclusion string) bool {
+			return !strings.Contains(answer, conclusion)
+		})
+	}
+	retainsReading := false
+	appendToDraft := false
+	if keepDraft {
+		var paragraphs []coverageDraftParagraph
+		for _, block := range strings.Split(strings.ReplaceAll(answer, "\r\n", "\n"), "\n\n") {
+			paragraphs = append(paragraphs, newCoverageDraftParagraph(block))
+		}
+		missing := slices.DeleteFunc(slices.Clone(delivery.facts), func(fact terminalCoverageFact) bool {
+			if fact.Evidence.Kind == "gap" || fact.Evidence.Kind == "last_valid_receipt" ||
+				fact.Evidence.Kind == "body" && fact.Evidence.ReportedValue == "" && fact.Role != "attributed_supplement" {
+				return true
+			}
+			shown := draftDisplaysFinalReading(paragraphs, delivery.record, fact)
+			retainsReading = retainsReading || shown
+			return shown
+		})
+		if retainsReading && !partialDraft {
+			// A tool may return a wider row for context. A useful draft already
+			// anchored to the actual readings keeps its selected fields.
+			missing = slices.DeleteFunc(missing, func(fact terminalCoverageFact) bool {
+				item := fact.Evidence
+				return !fact.required && !slices.ContainsFunc(delivery.requested, func(target taskCoverageTarget) bool {
+					return item.Metric != "" && target.Metric == item.Metric
+				}) && !slices.ContainsFunc(paragraphs, func(paragraph coverageDraftParagraph) bool {
+					return paragraph.hasField(item) || paragraph.hasLabel(item.Cell)
+				})
+			})
+		}
+		// A known missing fact can supersede a draft's account of what was
+		// read, even when the draft still contains correct values. Render
+		// the current facts together rather than carry over that account.
+		missingRequired := slices.ContainsFunc(missing, func(fact terminalCoverageFact) bool { return fact.required })
+		appendToDraft = retainsReading && !partialDraft && !missingRequired
+		if appendToDraft || len(missing) == 0 && (retainsReading || !partialDraft) {
+			delivery.facts = missing
+		}
+		if len(delivery.facts) == 0 {
+			delivery.conclusions, delivery.comparisonUnit = nil, ""
+		}
+	}
+	result := delivery.renderPublication(failure)
+	if result.answer != "" {
+		if appendToDraft {
+			if draft := delivery.withoutGeneratedGap(answer); draft != "" {
+				result.answer = draft + "\n\n" + result.answer
+			}
+		}
+		if failure != terminalSourceChanged {
+			result.answer = e.retainReadSupplement(ctx, state, result.answer)
+		}
+		result.complete = len(delivery.conclusions) > 0 && len(delivery.missing) == 0
+		return finalReadPublication{result, true}
+	}
+	keepDraft = keepDraft && (retainsReading || !partialDraft || e.candidateApprovalCurrent(answer, state))
+	planned := coverageDraftReview{targets: delivery.requested}
+	if keepDraft && !retainsReading && planned.requiresReading() {
+		review := e.currentCoverageDraftReview(ctx, state, answer)
+		keepDraft = e.assessCoverageDraft(ctx, review, answer, state).verifiedReading
+	}
+	if keepDraft {
+		if draft := delivery.withoutGeneratedGap(answer); !terminalCandidateFallback(draft) {
+			if retained := e.retainReadSupplement(ctx, state, draft); retained != answer {
+				return finalReadPublication{terminalCoveragePublication{answer: retained}, true}
+			}
+			return finalReadPublication{}
+		}
+	}
+	notice := delivery.finalReadStatus(failure)
+	return finalReadPublication{terminalCoveragePublication{answer: notice, notice: notice, partial: true}, true}
+}
+
+// Historical terminal deliveries can carry an open item as a standalone
+// paragraph. Match the whole status generated for this task, leaving source
+// conclusions and other prose untouched.
+func (d terminalCoverageDelivery) withoutGeneratedGap(answer string) string {
+	if len(d.missing) == 0 && d.comparisonGap == "" {
+		return answer
+	}
+	separator := "\n\n"
+	if strings.Contains(answer, "\r\n\r\n") {
+		separator = "\r\n\r\n"
+	}
+	paragraphs := strings.Split(answer, separator)
+	paragraphs = slices.DeleteFunc(paragraphs, func(paragraph string) bool {
+		text := strings.TrimSpace(paragraph)
+		return text != "" && (text == d.comparisonGap || slices.Contains(d.missing, text))
+	})
+	return strings.Join(paragraphs, separator)
+}
+
+func draftDisplaysFinalReading(paragraphs []coverageDraftParagraph, record coverageRecord, fact terminalCoverageFact) bool {
+	item := fact.Evidence
+	if item.Kind == "last_valid" && coverageDraftDisplaysEndpoint(paragraphs, item) ||
+		displaysUniqueSourceReading(paragraphs, record.Evidence, item) {
+		return true
+	}
+	return slices.ContainsFunc(paragraphs, func(paragraph coverageDraftParagraph) bool {
+		hasDate := func(text string) bool {
+			return coverageTextHasDate(text, item.Date) || slices.ContainsFunc(spacedCalendarDate.FindAllStringIndex(text, -1), func(span []int) bool {
+				return standaloneDateToken(text, span[0], span[1]) && coverageDay(strings.Join(strings.Fields(text[span[0]:span[1]]), "")) == item.Date
+			})
+		}
+		if item.Extremum != "" && item.Date != "" && !hasDate(paragraph.text) {
+			return false
+		}
+		if paragraph.displays(item, fact.Role, false) {
+			return true
+		}
+		if item.Cell != "" && item.Date != "" && paragraph.hasLabel(item.SourceTitle) {
+			if amount, ok := coverageComparisonNumber(item); ok {
+				value, _ := amount.Float64()
+				for _, assertion := range coverageDraftAssertionBoundary.Split(paragraph.text, -1) {
+					if hasDate(assertion) &&
+						slices.Contains(cellOrListMarker.FindAllString(strings.ToUpper(assertion), -1), item.Cell) &&
+						coverageDraftAmountOccurrences(assertion, value) > 0 {
+						return true
+					}
+				}
+			}
+		}
+		if item.Kind == "body" && item.ReportedValue != "" &&
+			(supplementNamesSource(paragraph, item) || slices.Contains(paragraph.chunks, item.ChunkID)) {
+			if amount, ok := documentTableAmount(item.ReportedValue); ok &&
+				coverageDraftAmountOccurrences(maskCitedPageLocator(paragraph.text, item.Page), amount) > 0 {
+				return true
+			}
+		}
+		if fact.Role == "attributed_supplement" && (supplementNamesSource(paragraph, item) || slices.Contains(paragraph.chunks, item.ChunkID)) {
+			return coverageDraftReportsCitedQuantity(paragraph, item)
+		}
+		return draftAttributesComparisonReading(paragraph.text, item)
+	})
+}
+
+func (d terminalCoverageDelivery) finalReadStatus(failure terminalFailure) string {
+	if failure == terminalSourceChanged {
+		return d.text("来源授权或快照在完成前发生变化。", "Source access or the source snapshot changed before completion.")
+	}
+	if len(d.notes) != 0 {
+		notes := strings.Join(d.notes, " ")
+		var sources []string
+		for _, read := range d.readReceipts {
+			location := terminalEvidenceText(read.SourceTitle)
+			if read.Page > 0 {
+				location += fmt.Sprintf(d.text("第 %d 页", " page %d"), read.Page)
+			}
+			sources = append(sources, location)
+		}
+		slices.Sort(sources)
+		sources = slices.Compact(sources)
+		if len(sources) != 0 {
+			notes += fmt.Sprintf(d.text(" 已读取 %s。", " Read material: %s."), strings.Join(sources, d.text("、", ", ")))
+		}
+		if d.subject != "" {
+			notes = fmt.Sprintf(d.text("为核查“%s”，%s", "To check “%s”, this turn ran the following source steps. %s"), d.subject, notes)
+		}
+		return notes + d.text(" 这些结果未给出可对应所问范围的读数。", " These results supplied no reading for the requested scope.")
+	}
+	statement := d.text("本轮没有完成来源读取。", "This turn did not complete a source read.")
+	if d.subject != "" {
+		statement = fmt.Sprintf(d.text("本轮没有完成对“%s”的来源读取。", "This turn did not complete a source read for “%s”."), d.subject)
+	}
+	switch failure {
+	case terminalInterrupted:
+		statement += d.text("执行中途已中断。", " Execution was interrupted.")
+	case terminalBudget, terminalTruncated:
+		statement += d.text("执行已达到运行上限。", " Execution reached its limit.")
+	}
+	return statement
 }
 
 func (e *AgentEngine) retainCheckedDocumentParagraphs(ctx context.Context, state *types.AgentState, delivery terminalCoverageDelivery, answer string) string {
@@ -449,12 +660,13 @@ func (d *terminalCoverageDelivery) retainCitedDraftReadings(candidate string) st
 // Rank associated facts before directly verified native observations. A gap
 // and its nearest value are a single finding. Unscoped exploratory rows are
 // never enumerated as a substitute for the requested result.
-func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types.AgentState) terminalCoverageDelivery {
+func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types.AgentState, finalDraft ...string) terminalCoverageDelivery {
 	d := terminalCoverageDelivery{
-		chinese: strings.HasPrefix(types.LanguageFromContextOrDefault(ctx), "zh"),
-		relaxed: relaxedTerminalEvidenceEnabled() && e.evidenceCompletionEligible() && e.standardTextDelivery(state),
+		chinese:   strings.HasPrefix(types.LanguageFromContextOrDefault(ctx), "zh"),
+		relaxed:   relaxedTerminalEvidenceEnabled() && e.evidenceCompletionEligible() && e.standardTextDelivery(state),
+		finalRead: len(finalDraft) != 0,
 	}
-	record, attempts := e.terminalCoverageRecord(ctx, state)
+	record, attempts := e.terminalCoverageRecord(ctx, state, d.finalRead)
 	d.subject = terminalEvidenceText(taskPlanPrefix(e.coverageAnalysisQuestion(), 160))
 	targets := slices.DeleteFunc(slices.Clone(e.evidenceCompletionTargets()), func(target taskCoverageTarget) bool {
 		return target.SourceTime == "general_concept" || slices.Equal(target.Required, []string{"optional"})
@@ -496,7 +708,27 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 	d.record = record
 	for _, target := range targets {
 		scoped := e.coverageRecordForTarget(ctx, target, record)
-		readings, reportedPair := e.tableReceiptReadingsForDelivery(target, scoped, e.turnReview.Last.Candidate, d.relaxed)
+		if d.finalRead {
+			for _, fact := range e.finalStructuredEndpointFacts(ctx, state, target, scoped) {
+				add(fact.Role, fact.Evidence, true)
+			}
+			for _, fact := range e.finalPointSupplementFacts(ctx, target, scoped, attempts) {
+				add("attributed_supplement", fact, true)
+			}
+		}
+		draft := e.turnReview.Last.Candidate
+		if d.finalRead {
+			draft = finalDraft[0]
+		}
+		readings, reportedPair := e.tableReceiptReadingsForDelivery(target, scoped, draft, d.relaxed)
+		if d.finalRead && !reportedPair && tableComparison(target) {
+			visual := e.finalVisualTableReadings(ctx, target, scoped, attempts)
+			if len(visual.focusedFields) > 0 {
+				if pair, aligned := e.tableReceiptReadingsWithDraftAttribution(target, scoped, draft, true, &visual); len(pair) > 0 {
+					readings, reportedPair = pair, aligned
+				}
+			}
+		}
 		if plannedTableComparison(target) && !reportedPair && (d.relaxed || len(readings) < 2) && state != nil {
 			for _, step := range slices.Backward(state.RoundSteps[min(e.turnReview.TerminalStartStep, len(state.RoundSteps)):]) {
 				if len(step.ToolCalls) == 0 && step.Thought != "" {
@@ -700,6 +932,12 @@ func terminalCoverageTarget(record coverageRecord, targets []taskCoverageTarget,
 			continue
 		}
 		from, to, _ := coverageTargetDateRange(target)
+		orderedExtremum := finalReadAnswerEnabled() && item.Operation == "analyze_table" && item.Extremum != "" && item.Cell != ""
+		alignedExtremum := orderedExtremum && sourceNavigationString(target.Delivery, "aggregation") == "min_max" &&
+			item.PeriodFrom == from && item.PeriodTo == to
+		if orderedExtremum && !alignedExtremum {
+			continue
+		}
 		if coverageExactRange(coverageEvidence{PeriodFrom: from, PeriodTo: to}) {
 			switch item.Kind {
 			case "gap", "derived", "last_valid_receipt":
@@ -732,7 +970,7 @@ func terminalCoverageTarget(record coverageRecord, targets []taskCoverageTarget,
 				break
 			}
 		}
-		if matches || !hasSelection && len(targets) == 1 {
+		if matches || !hasSelection && (len(targets) == 1 || alignedExtremum) {
 			return target, true
 		}
 	}
@@ -854,7 +1092,7 @@ func (d terminalCoverageDelivery) renderPublication(failure terminalFailure) ter
 		}) {
 			continue
 		}
-		if item.Kind == "body" && !fact.required && (len(lines) != 0 || len(groups) != 0 || item.ReportedValue == "" && d.hasDirectory) {
+		if item.Kind == "body" && !fact.required && (len(lines) != 0 || len(groups) != 0 || item.ReportedValue == "" && (d.hasDirectory || d.finalRead)) {
 			continue
 		}
 		if item.Extremum != "" {
@@ -911,7 +1149,7 @@ func (d terminalCoverageDelivery) renderPublication(failure terminalFailure) ter
 		missingFindings := d.missing
 		if d.relaxed {
 			missingFindings = nil
-			if d.comparisonGap != "" {
+			if d.comparisonGap != "" && !d.finalRead {
 				missingFindings = append(missingFindings, d.comparisonGap)
 			}
 			if d.comparisonUnit != "" {
@@ -1024,7 +1262,7 @@ func (d terminalCoverageDelivery) groupedValues(group []terminalCoverageFact) st
 		if fact.required || multiple || agenttools.DocumentTableEvidenceEnabled() && counts[fieldLabel(item)] > 1 {
 			value = d.observedValue(item)
 		} else {
-			if sameOriginalRow && value != "" {
+			if value != "" && (sameOriginalRow || d.finalRead && item.Cell != "") {
 				value += " (" + d.text("取值格 ", "value cell ") + terminalEvidenceText(item.Cell) + ")"
 			}
 			unconfirmed = unconfirmed || item.Kind != "derived" && !terminalUnitFromSource(item)
@@ -1310,6 +1548,11 @@ func (d terminalCoverageDelivery) receiptFinding(item coverageEvidence, citedPas
 		if item.Extremum == "min" {
 			kind = d.text("最低值", "minimum")
 		}
+		if item.ObservationFrom != "" && item.ObservationTo != "" {
+			interval := terminalEvidenceText(terminalCoveragePeriod(item.ObservationFrom, item.ObservationTo, ""))
+			return fmt.Sprintf(d.text("%s 在 %s 的有效记录中，%s为 %s，出现在 %s。",
+				"For %s, in the records from %s, the %s was %s, observed on %s."), label, interval, kind, value, period)
+		}
 		interval := terminalEvidenceText(terminalCoveragePeriod(item.PeriodFrom, item.PeriodTo, item.Period))
 		if interval != "" {
 			label += " (" + interval + ")"
@@ -1431,6 +1674,9 @@ func (d terminalCoverageDelivery) attemptNote(attempt coverageAttempt) string {
 	}
 	if count := attempt.result.Data["count"]; count != nil && coverageZero(count) {
 		return fmt.Sprintf(d.text("%s已执行，返回 0 条结果。", "%s completed with 0 results."), operation)
+	}
+	if d.finalRead {
+		return fmt.Sprintf(d.text("%s已执行。", "%s completed."), operation)
 	}
 	return fmt.Sprintf(d.text("%s已执行，当前范围内没有可用于所问结果的已核实记录。", "%s ran. No verified record for the requested result is available within the current scope."), operation)
 }

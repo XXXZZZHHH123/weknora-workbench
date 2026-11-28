@@ -20,6 +20,7 @@ type coverageEvidence struct {
 	Revision, AuthScope, SnapshotHash, ContentHash, SourceTitle                      string
 	Sheet, SeriesID, Subject, Metric, Grain, DateMode, Unit, UnitBasis               string
 	RowLabel, Column, Cell, ChunkID, Object, Period, PeriodFrom, PeriodTo            string
+	ObservationFrom, ObservationTo                                                   string
 	Date, DateCell, CitationID, JSONPointer, Status, LastValidDate                   string
 	LastObservedDate, LastValidRef, DateEvidenceID, DateJSONPointer                  string
 	SourceDate, ReportedValue                                                        string
@@ -563,7 +564,8 @@ func coverageCurrentEvidence(input coverageRecord, evidence coverageEvidence) bo
 	if manifest := input.Snapshots[coverageManifestKey(evidence)]; evidence.LastValidStatus != "" && evidence.ManifestHash != "" && manifest != "" && manifest != evidence.ManifestHash {
 		return false
 	}
-	return (current == "" || current == evidence.SnapshotHash) &&
+	unversionedRead := evidence.Bound && evidence.Kind == "cell" && evidence.Operation == "query_series" && evidence.SnapshotHash == ""
+	return (current == "" || current == evidence.SnapshotHash || unversionedRead) &&
 		(!(coverageAnalysisEndpoint(evidence) || coverageAnalysisMissingCell(evidence) ||
 			evidence.Operation == "analyze_table" && evidence.LastValidStatus != "" && evidence.WorkbookManifestHash != "") ||
 			coverageCurrentAnalysisWorkbook(input, evidence))

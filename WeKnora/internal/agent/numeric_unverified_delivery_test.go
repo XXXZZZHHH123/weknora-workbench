@@ -130,6 +130,7 @@ func TestNumericUnverifiedPreservesOnlyUnmatchedOccurrencesAndReferences(t *test
 }
 
 func TestNumericUnverifiedStillRejectsInvalidOrStaleCandidate(t *testing.T) {
+	configureAf5Publication(t, true)
 	for _, mutation := range []string{"citation", "malformed citation", "task", "evidence", "scope", "candidate", "code"} {
 		t.Run(mutation, func(t *testing.T) {
 			e := numericRecoveryTestEngine(t, &mockChat{})
@@ -157,9 +158,11 @@ func TestNumericUnverifiedStillRejectsInvalidOrStaleCandidate(t *testing.T) {
 				e.turnReview.NumericUnverifiedDecision.Candidate += " replacement"
 			}
 			e.commitTerminalResult(t.Context(), state, "numeric", numericFailureFallback, "", "failed", false)
-			require.Empty(t, state.FinalAnswer)
-			require.Contains(t, e.turnReview.TerminalReceipt.notice, "没有取得可核实的来源回执")
-			require.NotContains(t, e.turnReview.TerminalReceipt.notice, "999")
+			require.NotEmpty(t, state.FinalAnswer)
+			require.Equal(t, state.FinalAnswer, e.turnReview.TerminalReceipt.notice)
+			require.NotContains(t, state.FinalAnswer, "138.67")
+			require.NotContains(t, state.FinalAnswer, "999")
+			require.NotContains(t, state.FinalAnswer, "<kb")
 			require.Nil(t, e.turnReview.NumericUnverifiedDelivery)
 		})
 	}

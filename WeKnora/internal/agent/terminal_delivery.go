@@ -19,6 +19,16 @@ func relaxedTerminalEvidenceEnabled() bool {
 	return types.VerifiedPublicationEnabled() && (err != nil || enabled)
 }
 
+func finalReadAnswerEnabled() bool {
+	enabled, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("WEKNORA_AGENT_FINAL_READ_ANSWER")))
+	return relaxedTerminalEvidenceEnabled() && (err != nil || enabled)
+}
+
+func (e *AgentEngine) finalReadPublicationEligible(state *types.AgentState) bool {
+	return finalReadAnswerEnabled() && state != nil && state.Suspended == nil &&
+		e.evidenceCompletionEligible() && e.standardTextDelivery(state)
+}
+
 // publishAnswer reuses an existing stream, or emits the buffered candidate
 // once. Closing remains separate so a queued human correction can continue.
 func (e *AgentEngine) publishAnswer(ctx context.Context, sessionID, answer, existingID string, truncated bool) string {
@@ -170,6 +180,15 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 		last.Disposition == candidateNumericFailure && last.CandidateHash == candidateTextDigest(answer) {
 		failure = terminalNumeric
 	}
+	finalRead := e.finalReadPublicationEligible(state)
+	approvedBeforeRead, readMore := false, false
+	if finalRead {
+		approvedBeforeRead = e.candidateApprovalCurrent(last.Candidate, state)
+		readMore = e.recoverFinalReadings(ctx, state, sessionID)
+		if ctx.Err() != nil {
+			return
+		}
+	}
 	evidenceRevision := e.terminalEvidenceRevision(ctx, state)
 	scopeChanged := last.PublicationEvidence.scope == "" && last.SourceScopeHash != "" &&
 		last.SourceScopeHash != e.unverifiedSourceScopeDigest(ctx) || !last.PublicationEvidence.current(evidenceRevision) ||
@@ -205,7 +224,7 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 			approvedHash := candidateTextDigest(agenttools.TrimAnswerWhitespace(last.Candidate))
 			coveredPartial := outcome == "partial" && last.Disposition == candidateEvidencePartial &&
 				e.candidateDecisionCurrent(last, last.Candidate, state)
-			if submittedHash == approvedHash && (e.candidateApprovalCurrent(last.Candidate, state) || coveredPartial) {
+			if submittedHash == approvedHash && (approvedBeforeRead || e.candidateApprovalCurrent(last.Candidate, state) || coveredPartial) {
 				answer = last.Candidate
 				if coveredPartial {
 					e.bindCoverageDraftDelivery(last.Candidate, answer)
@@ -260,7 +279,29 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 		failure = legacyTerminalFailure(answer)
 	}
 	fromEvidence := false
-	if failure != terminalNoFailure {
+	if finalRead {
+		current := terminalCurrentState(state, staleCalls)
+		result := e.selectFinalReadPublication(ctx, current, answer, failure, outcome)
+		if result.fromEvidence {
+			answer, outcome, truncated = result.answer, "evidence_partial", false
+			e.turnReview.TerminalReceipt.notice, e.turnReview.TerminalReceipt.partial = result.notice, result.partial
+			fromEvidence = true
+			state.EvidenceRefs, state.KnowledgeRefs = nil, nil
+			e.turnReview.UnverifiedCitationDelivery = nil
+			e.turnReview.CitationUnverifiedDelivery = nil
+			e.turnReview.NumericUnverifiedDelivery = nil
+			markedNumbers, markedCitations = 0, 0
+		}
+		if result.complete {
+			failure, outcome = terminalNoFailure, "answer"
+		} else if failure == terminalNoFailure && result.notice != "" {
+			failure = terminalAnswerEvidence
+		}
+		// Directed reads can add receipts after a draft was approved. Its
+		// original sources remain current, although the larger transcript
+		// no longer matches the approval's full evidence hash.
+		fromEvidence = fromEvidence || readMore && approvedBeforeRead && failure == terminalNoFailure && answer == last.Candidate
+	} else if failure != terminalNoFailure {
 		e.turnReview.UnverifiedCitationDelivery = nil
 		e.turnReview.CitationUnverifiedDelivery = nil
 		e.turnReview.NumericUnverifiedDelivery = nil
@@ -279,7 +320,7 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 		}
 		state.EvidenceRefs, state.KnowledgeRefs = nil, nil
 	}
-	if failure != terminalSourceChanged {
+	if !finalRead && failure != terminalSourceChanged {
 		withSupplement := e.retainReadSupplement(ctx, state, answer)
 		fromEvidence = fromEvidence || withSupplement != answer
 		answer = withSupplement
@@ -306,7 +347,8 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	}
 	checkedPublication := types.VerifiedPublicationEnabled() && types.HasAgentAnswerMarkup(answer)
 	if !checkedPublication {
-		deferPublication := e.turnReview.DeferTerminalClose && (e.turnReview.TerminalSensitive || e.terminalCoverageContextKnown() || failure != terminalNoFailure)
+		deferPublication := e.turnReview.DeferTerminalClose && (e.turnReview.TerminalSensitive || e.terminalCoverageContextKnown() ||
+			failure != terminalNoFailure || finalRead && fromEvidence)
 		if !deferPublication {
 			e.publishTerminalStream(ctx, state, sessionID)
 		}

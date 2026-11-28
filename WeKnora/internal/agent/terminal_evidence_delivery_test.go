@@ -14,6 +14,7 @@ import (
 )
 
 func TestTerminalEvidenceCompletionFallback(t *testing.T) {
+	configureAf5Publication(t, false)
 	for _, test := range []struct {
 		name       string
 		alter      func(*AgentEngine, *types.AgentState)
@@ -202,6 +203,7 @@ func terminalLatestSeriesCall() types.ToolCall {
 }
 
 func TestTerminalEvidenceCompletionDocumentReadStatus(t *testing.T) {
+	configureAf5Publication(t, false)
 	for _, example := range []struct {
 		name, selectedSpan string
 		wantQuote          bool
@@ -261,6 +263,7 @@ func TestTerminalEvidenceCompletionDocumentReadStatus(t *testing.T) {
 }
 
 func TestTerminalSourceFailuresPublishVerifiedScopeOnce(t *testing.T) {
+	configureAf5Publication(t, false)
 	for _, test := range []struct {
 		name, candidate, stop string
 		hasAttempt, blocked   bool
@@ -463,6 +466,7 @@ func TestTerminalUnboundLookupDescribesExecutedScope(t *testing.T) {
 }
 
 func TestTerminalWithoutPlanOrReadCarriesHumanRequest(t *testing.T) {
+	configureAf5Publication(t, true)
 	for _, flag := range []string{"true", "false"} {
 		t.Run(flag, func(t *testing.T) {
 			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", flag)
@@ -477,10 +481,10 @@ func TestTerminalWithoutPlanOrReadCarriesHumanRequest(t *testing.T) {
 			e.commitTerminalResult(ctx, state, "terminal", answerReviewUnavailableFallback, "", "failed", false)
 			notice := e.turnReview.TerminalReceipt.notice
 			require.Contains(t, notice, e.turnReview.Query)
-			require.Contains(t, notice, "No verifiable source receipt was obtained")
+			require.Contains(t, notice, "did not complete a source read")
 			require.NotContains(t, notice, answerReviewUnavailableFallback)
 			count, streamed := recorder.snapshot()
-			require.Zero(t, count)
+			require.Equal(t, 1, count)
 			require.Equal(t, streamed, state.FinalAnswer)
 		})
 	}

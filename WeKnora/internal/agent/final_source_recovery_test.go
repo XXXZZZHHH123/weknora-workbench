@@ -76,6 +76,10 @@ func TestFinalSourceRecoveryKeepsNativeSQLDates(t *testing.T) {
 }
 
 func TestFinalSourceRecoveryOriginalDateBoundary(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "false")
+	t.Setenv("WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE", "true")
+	t.Setenv("WEKNORA_AGENT_STRUCTURED_TASK_PLAN", "true")
+	t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", "false")
 	const library, dataset, sheet, day = "library", "dataset", "selected sheet", "2025-01-10"
 	for _, tc := range []struct {
 		name, relaxed  string

@@ -27,6 +27,270 @@ type finalSourceWorkbook struct {
 	sheets map[string]bool
 }
 
+// A final read spends the existing recovery slot on concrete native
+// continuations. Each batch is recorded by the usual tool executor before
+// looking for the next permitted continuation.
+func (e *AgentEngine) recoverFinalReadings(ctx context.Context, state *types.AgentState, sessionID string) bool {
+	return e.runDirectedFinalReadings(ctx, state, sessionID, "", false)
+}
+
+func (e *AgentEngine) appendFinalReadingsForSynthesis(ctx context.Context, query string, state *types.AgentState,
+	sessionID, assistantMessageID string, conversation []chat.Message) []chat.Message {
+	start := len(state.RoundSteps)
+	if !e.runDirectedFinalReadings(ctx, state, sessionID, assistantMessageID, true) {
+		return conversation
+	}
+	for _, step := range state.RoundSteps[start:] {
+		conversation = e.appendToolResults(conversation, step)
+	}
+	e.refreshEvidenceCompletion(ctx, query, state, conversation)
+	return conversation
+}
+
+func (e *AgentEngine) runDirectedFinalReadings(ctx context.Context, state *types.AgentState, sessionID, assistantMessageID string, beforeSynthesis bool) bool {
+	if !finalReadAnswerEnabled() || !types.VerifiedPublicationEnabled() || ctx.Err() != nil ||
+		e.turnReview.FinalCoverageReadAttempted || e.toolRegistry == nil || !e.standardAnswerBudgetEligible(ctx, state) ||
+		!e.evidenceCompletionEligible() || !e.standardTextDelivery(state) || !e.withinIterationBudget(state.CurrentRound+1) {
+		return false
+	}
+	deadline := time.Now().Add(finalCoverageReadBudget)
+	if final, ok := ctx.Value(standardAnswerFinalDeadlineKey{}).(time.Time); ok {
+		if outer, ok := ctx.Deadline(); ok && outer.Before(final) {
+			final = outer
+		}
+		if beforeSynthesis {
+			final = final.Add(-5 * time.Second)
+		}
+		if final.Before(deadline) {
+			deadline = final
+		}
+	} else if active := agentExecutionStart(ctx).Add(standardAnswerActiveBudget); active.Before(deadline) {
+		deadline = active
+	}
+	readCtx, cancel := context.WithDeadline(agenttools.WithLocalDocumentRecall(context.WithValue(ctx, finalSourceRecoveryKey{}, true)), deadline)
+	defer cancel()
+	budget := finalCoverageReadLimit
+	start := len(state.RoundSteps)
+	for budget > 0 && readCtx.Err() == nil && e.withinIterationBudget(state.CurrentRound+1) {
+		record, attempts := e.terminalCoverageRecord(readCtx, state, true)
+		var calls []types.LLMToolCall
+		if budget == finalCoverageReadLimit {
+			if call, ok := e.nextFinalStructuredSourceRead(readCtx, state, record, attempts); ok {
+				calls = append(calls, call)
+			}
+		}
+		if len(calls) == 0 {
+			calls = e.finalSupplementReadCalls(readCtx, state, record, attempts, budget)
+		}
+		if len(calls) == 0 || len(calls) > budget || !e.validDirectedFinalReads(readCtx, attempts, calls) ||
+			e.executionLeaseError(readCtx) != nil {
+			break
+		}
+		e.turnReview.FinalCoverageReadAttempted = true
+		state.CurrentRound++
+		step := types.AgentStep{Iteration: state.CurrentRound}
+		response := &types.ChatResponse{ToolCalls: calls, FinishReason: "tool_calls"}
+		if e.runRoundTools(readCtx, state, response, &step, sessionID, assistantMessageID) {
+			break
+		}
+		state.RoundSteps = append(state.RoundSteps, step)
+		budget -= len(calls)
+	}
+	return len(state.RoundSteps) != start
+}
+
+func (e *AgentEngine) validDirectedFinalReads(ctx context.Context, attempts []coverageAttempt, calls []types.LLMToolCall) bool {
+	seen := make(map[string]bool, len(attempts)+len(calls))
+	for _, attempt := range attempts {
+		seen[attempt.ToolCallID] = true
+	}
+	for _, call := range calls {
+		if call.ID == "" || seen[call.ID] {
+			return false
+		}
+		seen[call.ID] = true
+		name := call.Function.Name
+		var args map[string]any
+		if json.Unmarshal([]byte(call.Function.Arguments), &args) != nil || !e.coverageSourceCallAllowed(ctx, call, args) {
+			return false
+		}
+		switch name {
+		case "structured_inspect_source":
+			descriptor, _, native := e.toolRegistry.StructuredInvocation(name, json.RawMessage(call.Function.Arguments))
+			if !native || descriptor.EffectClass != "read" {
+				return false
+			}
+		case agenttools.ToolBindDocumentScope:
+			if !agenttools.HasDocumentScopeBinder(e.toolRegistry) {
+				return false
+			}
+		case agenttools.ToolSearchKnowledge, agenttools.ToolReadDocument:
+			tool, err := e.toolRegistry.GetTool(name)
+			_, search := tool.(*agenttools.SearchKnowledgeTool)
+			_, read := tool.(*agenttools.ReadDocumentTool)
+			if err != nil || !search && !read {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// Continue a selected workbook field at a known original date row. This
+// avoids asking the structured service to select among same-name fields.
+func (e *AgentEngine) nextFinalStructuredSourceRead(ctx context.Context, state *types.AgentState, record coverageRecord, attempts []coverageAttempt) (types.LLMToolCall, bool) {
+	for _, target := range e.evidenceCompletionTargets() {
+		from, to, _ := coverageTargetDateRange(target)
+		if !coverageLastValidTarget(target) || !coverageExactRange(coverageEvidence{PeriodFrom: from, PeriodTo: to}) {
+			continue
+		}
+		field, ok := e.finalStructuredEndpointField(ctx, state, target, record, from, to)
+		if !ok || coverageEndpointAlreadyRead(record, field) || len(inspectedFieldLastValid(record, field)) != 0 {
+			continue
+		}
+		dateColumn := coverageFieldDateColumn(field)
+		row := finalEndpointSourceRow(record, field, dateColumn)
+		if row == "" || dateColumn == field.Column {
+			continue
+		}
+		name := "structured_inspect_source"
+		args := map[string]any{"knowledge_base_id": field.KnowledgeBaseID, "dataset_id": field.DatasetID,
+			"sheet": field.Sheet, "ranges": []string{dateColumn + row, field.Column + row}, "max_cells": 2}
+		encoded, err := json.Marshal(args)
+		if err != nil {
+			continue
+		}
+		descriptor, _, native := e.toolRegistry.StructuredInvocation(name, encoded)
+		call := types.LLMToolCall{Type: "function", CoverageGoalIndex: &target.GoalIndex,
+			Function: types.FunctionCall{Name: name, Arguments: string(encoded)}}
+		if !native || descriptor.Operation != "inspect_source" || descriptor.EffectClass != "read" ||
+			!e.coverageSourceCallAllowed(ctx, call, args) {
+			continue
+		}
+		key := reviewDigest([]any{record.Revision, field.SnapshotHash, args})
+		call.ID = "coverage-original-endpoint-" + key[:24]
+		if slices.ContainsFunc(attempts, func(attempt coverageAttempt) bool { return attempt.ToolCallID == call.ID }) {
+			continue
+		}
+		return call, true
+	}
+	return types.LLMToolCall{}, false
+}
+
+func (e *AgentEngine) finalStructuredEndpointField(ctx context.Context, state *types.AgentState, target taskCoverageTarget, record coverageRecord, from, to string) (coverageEvidence, bool) {
+	if selected, ok := e.selectedCoverageEndpointField(ctx, record, target, from, to); ok {
+		if selected.Kind == "directory" {
+			return selected, true
+		}
+		for _, field := range record.Evidence {
+			if field.Kind != "directory" || field.Operation != "list_series" || field.LastValidDate != selected.LastValidDate ||
+				!e.coverageEvidenceAllowed(ctx, &target, field) {
+				continue
+			}
+			field.PeriodFrom, field.PeriodTo = from, to
+			if coverageSameEndpointField(selected, field) && coverageSameEndpointSnapshot(selected, field) {
+				return field, true
+			}
+		}
+	}
+	return e.finalDraftEndpointField(ctx, state, target, record, from, to)
+}
+
+func (e *AgentEngine) finalDraftEndpointField(ctx context.Context, state *types.AgentState, target taskCoverageTarget, record coverageRecord, from, to string) (coverageEvidence, bool) {
+	if state == nil {
+		return coverageEvidence{}, false
+	}
+	for _, step := range slices.Backward(state.RoundSteps[min(e.turnReview.TerminalStartStep, len(state.RoundSteps)):]) {
+		if len(step.ToolCalls) != 0 || step.Thought == "" {
+			continue
+		}
+		draft := newCoverageDraftParagraph(step.Thought)
+		var selected coverageEvidence
+		for _, field := range record.Evidence {
+			if field.Kind != "directory" || field.Operation != "list_series" || field.SeriesID == "" || field.Column == "" ||
+				field.DatasetID == "" || field.KnowledgeBaseID == "" || field.SourceID != field.DatasetID ||
+				field.DateMode == "period" || field.DateMode == "none" || field.SnapshotHash == "" ||
+				sourceNavigationString(coverageObject(field.Raw), "source_dataset_id", "chart_id") != "" ||
+				!coverageAnalysisDay(field.LastValidDate) || field.LastValidDate >= from ||
+				!e.coverageEvidenceAllowed(ctx, &target, field) || !e.coverageMatchesPrimaryReference(target, field) ||
+				target.Table != "" && target.Table != field.Sheet || !draft.hasLabel(field.Sheet) ||
+				!coverageTextHasDate(draft.text, field.LastValidDate) {
+				continue
+			}
+			// A draft can retain the model's field choice even if its prose
+			// failed review. Match only a real field identity, never a value
+			// or an address supplied by the draft.
+			identity := firstNonEmptyAgent(field.Subject, coverageAnalysisSubject(coverageObject(coverageObject(field.Raw)["dimensions"])))
+			if !draft.hasLabel(field.SeriesID) && !draft.hasLabel(identity) {
+				continue
+			}
+			if explicit, matches := coveragePrimaryField(target, record, field); explicit && !matches {
+				continue
+			}
+			field.PeriodFrom, field.PeriodTo = from, to
+			if selected.SeriesID != "" && (!coverageSameEndpointField(selected, field) || !coverageSameEndpointSnapshot(selected, field)) {
+				return coverageEvidence{}, false
+			}
+			selected = field
+		}
+		if selected.SeriesID != "" {
+			return selected, true
+		}
+	}
+	return coverageEvidence{}, false
+}
+
+func finalEndpointSourceRow(record coverageRecord, field coverageEvidence, dateColumn string) string {
+	if dateColumn == "" || !coverageAnalysisDay(field.LastValidDate) {
+		return ""
+	}
+	var dateRow, extentRow string
+	conflictingExtents := false
+	for _, item := range record.Evidence {
+		if matchingInspectedFieldDate(record, field, item, dateColumn, field.LastValidDate) {
+			_, row := coverageCellPosition(item.Cell)
+			if dateRow != "" && dateRow != row {
+				return ""
+			}
+			dateRow = row
+		}
+		if field.LastObservedDate == field.LastValidDate && item.Kind == "inspection_extent" && item.Sheet == field.Sheet &&
+			item.KnowledgeBaseID == field.KnowledgeBaseID && item.SourceID == field.SourceID && item.SnapshotHash == field.SnapshotHash {
+			row, _ := item.Raw.(string)
+			conflictingExtents = conflictingExtents || extentRow != "" && extentRow != row
+			extentRow = row
+		}
+	}
+	if dateRow != "" || conflictingExtents {
+		return dateRow
+	}
+	return extentRow
+}
+
+func (e *AgentEngine) finalStructuredEndpointFacts(ctx context.Context, state *types.AgentState, target taskCoverageTarget, record coverageRecord) []coverageFact {
+	from, to, grain := coverageTargetDateRange(target)
+	if !coverageLastValidTarget(target) || !coverageExactRange(coverageEvidence{PeriodFrom: from, PeriodTo: to}) {
+		return nil
+	}
+	field, ok := e.finalStructuredEndpointField(ctx, state, target, record, from, to)
+	if !ok || field.LastValidDate >= from {
+		return nil
+	}
+	readings := inspectedFieldLastValid(record, field)
+	if len(readings) != 1 {
+		return nil
+	}
+	last := readings[0]
+	last.Subject = firstNonEmptyAgent(last.Subject, coverageAnalysisSubject(coverageObject(coverageObject(field.Raw)["dimensions"])))
+	gap, ok := coverageInspectedBoundary(field, last, from, to, grain)
+	if !ok {
+		return nil
+	}
+	return []coverageFact{{Role: "coverage_boundary", Evidence: gap}, {Role: "last_valid_value", Evidence: last}}
+}
+
 func (e *AgentEngine) finalSourceRecovery(ctx context.Context, state *types.AgentState, attempt int) finalSourceRecovery {
 	var recovery finalSourceRecovery
 	deadline, bounded := ctx.Value(standardAnswerFinalDeadlineKey{}).(time.Time)
@@ -34,6 +298,7 @@ func (e *AgentEngine) finalSourceRecovery(ctx context.Context, state *types.Agen
 		deadline = outer
 	}
 	if !types.VerifiedPublicationEnabled() || !bounded || attempt >= maxEvidenceRecoveryAttempts ||
+		finalReadAnswerEnabled() && e.turnReview.FinalCoverageReadAttempted ||
 		time.Until(deadline) < finalCoverageReadMinRemaining || !e.standardAnswerBudgetEligible(ctx, state) ||
 		!e.evidenceCompletionEligible() || !e.standardTextDelivery(state) || !e.withinIterationBudget(state.CurrentRound+1) ||
 		!slices.Contains([]string{"model_call_time", "active_time"}, e.evidenceCompletion.stopReason) ||
@@ -246,6 +511,9 @@ func (e *AgentEngine) runFinalSourceRecovery(ctx context.Context, recovery final
 	readDeadline := time.Now().Add(finalCoverageReadBudget)
 	if reserve := deadline.Add(-5 * time.Second); reserve.Before(readDeadline) {
 		readDeadline = reserve
+	}
+	if finalReadAnswerEnabled() {
+		e.turnReview.FinalCoverageReadAttempted = true
 	}
 	readCtx, cancel := context.WithDeadline(context.WithValue(ctx, finalSourceRecoveryKey{}, true),
 		readDeadline)
