@@ -9,6 +9,8 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
+const coverageLastValidReadTool = "structured_query_series"
+
 // nextCoverageLastValidRead fills one already bound field and window through
 // the existing native read loop. An empty explicit source_binding makes the
 // service return unresolved duplicate groups without calling its model.
@@ -17,23 +19,8 @@ func (e *AgentEngine) nextCoverageLastValidRead(ctx context.Context, state *type
 		!e.evidenceCompletionEligible() || !e.standardTextDelivery(state) {
 		return types.LLMToolCall{}, false
 	}
-	const name = "structured_query_series"
-	descriptor, _, native := e.toolRegistry.StructuredInvocation(name, json.RawMessage(`{}`))
-	if !native || descriptor.Operation != "query_series" || descriptor.EffectClass != "read" || !descriptor.SupportsLastValid() {
+	if !e.coverageLastValidReadAvailable() {
 		return types.LLMToolCall{}, false
-	}
-	tool, err := e.toolRegistry.GetTool(name)
-	if err != nil {
-		return types.LLMToolCall{}, false
-	}
-	var schema struct{ Properties map[string]json.RawMessage }
-	if json.Unmarshal(tool.Parameters(), &schema) != nil {
-		return types.LLMToolCall{}, false
-	}
-	for _, arg := range []string{"knowledge_base_id", "dataset_id", "series_id", "start_date", "end_date", "operation", "limit", "source_binding", "source_question"} {
-		if schema.Properties[arg] == nil {
-			return types.LLMToolCall{}, false
-		}
 	}
 	current := e.currentCoverageScopeRecord(ctx)
 	if current.Revision == "" || current.AuthScope == "" || len(current.Bindings) == 0 {
@@ -60,20 +47,189 @@ func (e *AgentEngine) nextCoverageLastValidRead(ctx context.Context, state *type
 		}) {
 			continue
 		}
-		args := map[string]any{"knowledge_base_id": field.KnowledgeBaseID, "dataset_id": field.DatasetID,
-			"series_id": field.SeriesID, "start_date": from, "end_date": to, "operation": "rows", "limit": 1,
-			"include_last_valid": true, "source_binding": binding, "source_question": e.coverageAnalysisQuestion()}
-		encoded, err := json.Marshal(args)
-		if err != nil {
-			continue
-		}
-		call := types.LLMToolCall{ID: id, Type: "function", CoverageGoalIndex: &target.GoalIndex,
-			Function: types.FunctionCall{Name: name, Arguments: string(encoded)}}
-		if e.coverageSourceCallAllowed(ctx, call, args) {
+		if call, ok := e.coverageLastValidReadCall(ctx, id, &target.GoalIndex, field, binding); ok {
 			return call, true
 		}
 	}
 	return types.LLMToolCall{}, false
+}
+
+func (e *AgentEngine) coverageLastValidReadAvailable() bool {
+	descriptor, _, native := e.toolRegistry.StructuredInvocation(coverageLastValidReadTool, json.RawMessage(`{}`))
+	if !native || descriptor.Operation != "query_series" || descriptor.EffectClass != "read" || !descriptor.SupportsLastValid() {
+		return false
+	}
+	tool, err := e.toolRegistry.GetTool(coverageLastValidReadTool)
+	if err != nil {
+		return false
+	}
+	var schema struct{ Properties map[string]json.RawMessage }
+	if json.Unmarshal(tool.Parameters(), &schema) != nil {
+		return false
+	}
+	for _, arg := range []string{"knowledge_base_id", "dataset_id", "series_id", "start_date", "end_date", "operation", "limit", "source_binding", "source_question"} {
+		if schema.Properties[arg] == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *AgentEngine) coverageLastValidReadCall(ctx context.Context, id string, goal *int, field coverageEvidence, binding []any) (types.LLMToolCall, bool) {
+	args := map[string]any{"knowledge_base_id": field.KnowledgeBaseID, "dataset_id": field.DatasetID,
+		"series_id": field.SeriesID, "start_date": field.PeriodFrom, "end_date": field.PeriodTo, "operation": "rows", "limit": 1,
+		"include_last_valid": true, "source_binding": binding, "source_question": e.coverageAnalysisQuestion()}
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return types.LLMToolCall{}, false
+	}
+	call := types.LLMToolCall{ID: id, Type: "function", CoverageGoalIndex: goal,
+		Function: types.FunctionCall{Name: coverageLastValidReadTool, Arguments: string(encoded)}}
+	return call, e.coverageSourceCallAllowed(ctx, call, args)
+}
+
+const finalLastValidReadPrefix = "coverage-last-valid-"
+
+// Continue a verified native gap even when the optional task declaration
+// did not retain the field. A completed read pins the field and window.
+func (e *AgentEngine) nextFinalLastValidRead(ctx context.Context, record coverageRecord, attempts []coverageAttempt) (types.LLMToolCall, bool) {
+	selected, goal := e.finalLastValidField(ctx, record)
+	if selected.EvidenceID == "" || !e.coverageLastValidReadAvailable() || coverageEndpointAlreadyRead(record, selected) {
+		return types.LLMToolCall{}, false
+	}
+	key := reviewDigest([]string{record.Revision, record.AuthScope, selected.KnowledgeBaseID, selected.DatasetID, selected.SeriesID,
+		selected.SnapshotHash, selected.PeriodFrom, selected.PeriodTo})
+	id := finalLastValidReadPrefix + key[:24]
+	if slices.ContainsFunc(attempts, func(attempt coverageAttempt) bool { return attempt.ToolCallID == id }) {
+		return types.LLMToolCall{}, false
+	}
+	return e.coverageLastValidReadCall(ctx, id, goal, selected, scopedEndpointSourceBinding(record, selected, attempts))
+}
+
+// Track the same missing value after a failed read or an expired read budget.
+func (e *AgentEngine) finalLastValidField(ctx context.Context, record coverageRecord) (coverageEvidence, *int) {
+	if !scopedReadRecoveryEnabled() || !structuredresult.LastValidEnabled() {
+		return coverageEvidence{}, nil
+	}
+	var selected coverageEvidence
+	var goal *int
+	for _, item := range record.Evidence {
+		if item.Kind != "gap" || item.Operation != "query_series" || !item.Complete || item.SeriesID == "" ||
+			item.DatasetID != item.SourceID || item.Sheet == "" || item.Column == "" || item.Period != "" ||
+			item.LastValidFilterHash != "" || item.DateMode == "none" || item.DateMode == "period" ||
+			!coverageExactRange(item) {
+			continue
+		}
+		if item.LastValidDate == "" {
+			item.LastValidDate = scopedEndpointDirectoryDate(record, item)
+		}
+		if !coverageAnalysisDay(item.LastValidDate) || item.LastValidDate >= item.PeriodFrom {
+			continue
+		}
+		endpoint, _ := coverageEndpointForGap(record, item)
+		if coverageProtocolLastValid(endpoint) || scopedEndpointValueAlreadyRead(record, item) || coverageInspectedEndpointAlreadyRead(record, item) {
+			continue
+		}
+		target, allowed := e.finalLastValidGapGoal(ctx, record, item)
+		if !allowed {
+			continue
+		}
+		if selected.EvidenceID != "" && (!coverageSameEndpointField(selected, item) || !coverageSameEndpointSnapshot(selected, item) ||
+			selected.LastValidDate != item.LastValidDate) {
+			return coverageEvidence{}, nil
+		}
+		selected, goal = item, target
+	}
+	return selected, goal
+}
+
+func (e *AgentEngine) finalLastValidGapGoal(ctx context.Context, record coverageRecord, item coverageEvidence) (*int, bool) {
+	targets := e.evidenceCompletionTargets()
+	if len(targets) == 0 {
+		return nil, true
+	}
+	var goal *int
+	for _, target := range targets {
+		from, to, _ := coverageTargetDateRange(target)
+		if target.SourceTime != "" && target.SourceTime != "observed_period" ||
+			target.VersionTask == "compare_sources" || target.VersionTask == "compare_versions" || slices.Equal(target.Required, []string{"optional"}) ||
+			!coverageEqual(from, item.PeriodFrom) || !coverageEqual(to, item.PeriodTo) || !coverageEqual(target.Table, item.Sheet) ||
+			!e.coverageMatchesPrimaryReference(target, item) || !e.coverageEvidenceAllowed(ctx, &target, item) {
+			continue
+		}
+		if selected, matches := coveragePrimaryField(target, record, item); selected && !matches {
+			continue
+		}
+		if goal != nil {
+			return nil, false
+		}
+		goal = &target.GoalIndex
+	}
+	return goal, goal != nil
+}
+
+func scopedEndpointDirectoryDate(record coverageRecord, gap coverageEvidence) string {
+	var date string
+	for _, item := range record.Evidence {
+		item.PeriodFrom, item.PeriodTo = gap.PeriodFrom, gap.PeriodTo
+		if item.Kind == "directory" && item.Operation == "list_series" && coverageSameEndpointField(item, gap) &&
+			coverageSameEndpointSnapshot(item, gap) && coverageAnalysisDay(item.LastValidDate) {
+			if date != "" && date != item.LastValidDate {
+				return ""
+			}
+			date = item.LastValidDate
+		}
+	}
+	return date
+}
+
+func scopedEndpointValueAlreadyRead(record coverageRecord, gap coverageEvidence) bool {
+	return slices.ContainsFunc(record.Evidence, func(item coverageEvidence) bool {
+		if (item.Kind != "cell" && item.Kind != "last_valid") || item.Cell == "" || item.Raw == nil ||
+			item.Date != gap.LastValidDate && (item.Date < gap.PeriodFrom || item.Date > gap.PeriodTo) {
+			return false
+		}
+		item.PeriodFrom, item.PeriodTo = gap.PeriodFrom, gap.PeriodTo
+		return coverageSameEndpointField(item, gap) && coverageSameEndpointSnapshot(item, gap)
+	})
+}
+
+func scopedEndpointSourceBinding(record coverageRecord, gap coverageEvidence, attempts []coverageAttempt) []any {
+	for _, attempt := range attempts {
+		binding, explicit := attempt.Args["source_binding"].([]any)
+		if !attempt.Success || attempt.Operation != "query_series" || !explicit || binding == nil {
+			continue
+		}
+		if slices.ContainsFunc(record.Evidence, func(item coverageEvidence) bool {
+			return item.ToolCallID == attempt.ToolCallID && item.Kind == "gap" &&
+				coverageSameEndpointField(item, gap) && coverageSameEndpointSnapshot(item, gap)
+		}) {
+			return binding
+		}
+	}
+
+	// A successful scoped query already resolved the selected field. The
+	// catalog supplies only the real group members needed to repeat that
+	// selection. The service checks completeness against its current catalog.
+	selected := false
+	var considered []string
+	for _, item := range record.Evidence {
+		if item.Kind != "directory" || item.Operation != "list_series" || item.SeriesID == "" ||
+			item.KnowledgeBaseID != gap.KnowledgeBaseID || item.DatasetID != gap.DatasetID ||
+			item.Sheet != gap.Sheet || item.Metric != gap.Metric || !coverageSameEndpointSnapshot(item, gap) ||
+			sourceNavigationString(coverageObject(item.Raw), "chart_id") != "" {
+			continue
+		}
+		selected = selected || item.SeriesID == gap.SeriesID && item.Column == gap.Column
+		considered = append(considered, item.SeriesID)
+	}
+	slices.Sort(considered)
+	considered = slices.Compact(considered)
+	if !selected || len(considered) < 2 {
+		return []any{} // Explicit empty groups cannot invoke a source model.
+	}
+	return []any{map[string]any{"considered_ids": considered, "selected_ids": []string{gap.SeriesID},
+		"reason": "Continue the same field already verified and queried for this request and range."}}
 }
 
 func coverageLastValidTarget(target taskCoverageTarget) bool {
@@ -141,6 +297,10 @@ func coverageEndpointAlreadyRead(record coverageRecord, field coverageEvidence) 
 	if receipt, ok := coverageEndpointForGap(record, field); ok && receipt.LastValidStatus != "unverified" {
 		return true
 	}
+	return coverageInspectedEndpointAlreadyRead(record, field)
+}
+
+func coverageInspectedEndpointAlreadyRead(record coverageRecord, field coverageEvidence) bool {
 	for _, published := range inspectedPublishedLastValid(record) {
 		if published.Date < field.PeriodFrom && published.SeriesID == field.SeriesID && published.Sheet == field.Sheet &&
 			published.Column == field.Column && published.DatasetID == field.DatasetID && published.KnowledgeBaseID == field.KnowledgeBaseID &&

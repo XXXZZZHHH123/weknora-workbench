@@ -24,6 +24,11 @@ func finalReadAnswerEnabled() bool {
 	return relaxedTerminalEvidenceEnabled() && (err != nil || enabled)
 }
 
+func scopedReadRecoveryEnabled() bool {
+	enabled, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY")))
+	return finalReadAnswerEnabled() && (err != nil || enabled)
+}
+
 func (e *AgentEngine) finalReadPublicationEligible(state *types.AgentState) bool {
 	return finalReadAnswerEnabled() && state != nil && state.Suspended == nil &&
 		e.evidenceCompletionEligible() && e.standardTextDelivery(state)
@@ -124,15 +129,16 @@ const (
 )
 
 type terminalPublicationReceipt struct {
-	answerHash   string
-	evidence     terminalEvidenceSnapshot
-	staleCalls   map[string]bool
-	failure      terminalFailure
-	notice       string
-	partial      bool
-	fromEvidence bool
-	streamed     string
-	submitted    string
+	answerHash    string
+	evidence      terminalEvidenceSnapshot
+	staleCalls    map[string]bool
+	failure       terminalFailure
+	notice        string
+	partial       bool
+	partialReason terminalFailure
+	fromEvidence  bool
+	streamed      string
+	submitted     string
 }
 
 // This is the only translation of legacy candidate strings into failure reasons.
@@ -183,8 +189,10 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	finalRead := e.finalReadPublicationEligible(state)
 	approvedBeforeRead, readMore := false, false
 	if finalRead {
-		approvedBeforeRead = e.candidateApprovalCurrent(last.Candidate, state)
-		readMore = e.recoverFinalReadings(ctx, state, sessionID)
+		prior := e.turnReview.FinalScopedReadApproval
+		approvedBeforeCloseRead := prior != "" && last.Disposition == candidateAccepted && prior == scopedFinalReadApprovalKey(last)
+		approvedBeforeRead = approvedBeforeCloseRead || e.candidateApprovalCurrent(last.Candidate, state)
+		readMore = e.recoverFinalReadings(ctx, state, sessionID) || approvedBeforeCloseRead
 		if ctx.Err() != nil {
 			return
 		}
@@ -297,6 +305,9 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 		} else if failure == terminalNoFailure && result.notice != "" {
 			failure = terminalAnswerEvidence
 		}
+		if result.recordIncompleteEndpoint(answer, &e.turnReview.TerminalReceipt) {
+			outcome = "evidence_partial"
+		}
 		// Directed reads can add receipts after a draft was approved. Its
 		// original sources remain current, although the larger transcript
 		// no longer matches the approval's full evidence hash.
@@ -335,12 +346,13 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	e.turnReview.TerminalStreamID, e.turnReview.TerminalTruncated = existingID, truncated
 	e.turnReview.TerminalReceipt = terminalPublicationReceipt{
 		answerHash: candidateTextDigest(answer), evidence: evidenceRevision, failure: failure,
-		staleCalls:   staleCalls,
-		notice:       e.turnReview.TerminalReceipt.notice,
-		partial:      e.turnReview.TerminalReceipt.partial,
-		fromEvidence: fromEvidence,
-		streamed:     original,
-		submitted:    submitted,
+		staleCalls:    staleCalls,
+		notice:        e.turnReview.TerminalReceipt.notice,
+		partial:       e.turnReview.TerminalReceipt.partial,
+		partialReason: e.turnReview.TerminalReceipt.partialReason,
+		fromEvidence:  fromEvidence,
+		streamed:      original,
+		submitted:     submitted,
 	}
 	if existingID == "" {
 		e.turnReview.TerminalReceipt.streamed = ""

@@ -295,8 +295,14 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 			return &types.ToolResult{Success: false, PreflightRejected: true, Error: err.Error()}, nil
 		}
 	}
+	supplementalRecall := false
 	if constraint := t.documentConstraint; constraint != nil {
 		bound := constraint.selectedIDs()
+		if supplemental, _ := ctx.Value(supplementalDocumentScopeKey{}).(bool); supplemental &&
+			input.SourceScope == nil && len(input.DocumentIDs) == 0 && input.Page == 0 && !constraint.hasUserPages() {
+			bound = nil
+			supplementalRecall = true
+		}
 		if len(bound) == 0 && (len(input.DocumentIDs) > 0 || input.Page > 0) {
 			return &types.ToolResult{Success: false, PreflightRejected: true, Error: "读取文档内容前需要明确的来源计划；请提交 source_scope 或 bind_document_scope"}, nil
 		}
@@ -460,7 +466,7 @@ func (t *SearchKnowledgeTool) execute(ctx context.Context, args json.RawMessage,
 		final = t.deduplicateResults(append(final, keptOutside...))
 	}
 	final, withheldWikiChunks := t.filterWikiSearchResults(ctx, final)
-	if t.documentConstraint != nil && len(t.documentConstraint.selectedIDs()) == 0 && len(final) > 0 {
+	if t.documentConstraint != nil && (supplementalRecall || len(t.documentConstraint.selectedIDs()) == 0) && len(final) > 0 {
 		candidates := t.documentCandidates(ctx, final, query)
 		if withheldWikiChunks > 0 {
 			candidates.Data["withheld_retracted_or_unverified_wiki_chunks"] = withheldWikiChunks

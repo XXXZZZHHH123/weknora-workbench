@@ -1727,6 +1727,9 @@ func (e *AgentEngine) runReActIteration(
 		}
 		var collaborationRecovered bool
 		if e.collaboration != nil && response.FinishReason != "content_filter" {
+			if e.recoverScopedFinalReadingsBeforeClose(ctx, state, sessionID, assistantMessageID) {
+				verdict.step.Iteration = state.CurrentRound
+			}
 			if e.suspendable && e.collaboration.Child == nil {
 				checkpoint := RunSnapshot{
 					CollaborationDeliveries: e.progress.collaborationDeliveries,

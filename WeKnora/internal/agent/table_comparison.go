@@ -355,12 +355,26 @@ func (e *AgentEngine) tableReceiptReadingsWithDraftAttribution(target taskCovera
 		}
 		return true
 	}
+	scopedRead := scopedReadRecoveryEnabled()
+	factKey := func(item coverageEvidence) string {
+		if scopedRead && item.Operation == "query_series" && item.GrainFromLookup {
+			// Inferred day grain describes the lookup. Repeated reads of the
+			// same physical cell share an observation key.
+			item.Grain = ""
+		}
+		return coverageEvidenceFactKey(item)
+	}
 	// The same physical observation may be returned by repeated reads.
 	add := func(facts []coverageFact, item coverageEvidence) []coverageFact {
-		key := coverageEvidenceFactKey(item)
+		key := factKey(item)
 		for i := range facts {
-			if coverageEvidenceFactKey(facts[i].Evidence) == key {
-				facts[i].Evidence.Receipts = mergeCoverageFactReceipts(coverageFactReceipts(facts[i].Evidence), coverageFactReceipts(item))
+			prior := facts[i].Evidence
+			if factKey(prior) == key {
+				if scopedRead && item.Operation == "query_series" && prior.Operation == item.Operation &&
+					comparisonReadingWindowMatches(item, from, to, false) && !comparisonReadingWindowMatches(prior, from, to, false) {
+					facts[i].Evidence = item
+				}
+				facts[i].Evidence.Receipts = mergeCoverageFactReceipts(coverageFactReceipts(prior), coverageFactReceipts(item))
 				return facts
 			}
 		}
@@ -374,7 +388,7 @@ func (e *AgentEngine) tableReceiptReadingsWithDraftAttribution(target taskCovera
 			!item.Bound || !item.RangeComplete || !coverageCurrentEvidence(record, item) || !allows(item) ||
 			item.SeriesID == "" || item.Metric == "" || item.DateCell == "" && !directSQL || item.Cell == "" ||
 			(item.Date != to && !comparisonNativeRowPeriod(item.Period, from, to, grain)) ||
-			(item.PeriodFrom != from || item.PeriodTo != to) && (item.PeriodFrom != to || item.PeriodTo != to) {
+			!comparisonReadingWindowMatches(item, from, to, scopedRead) {
 			continue
 		}
 		if types.VerifiedPublicationEnabled() && !comparisonDateCellMatches(item) {
@@ -390,6 +404,12 @@ func (e *AgentEngine) tableReceiptReadingsWithDraftAttribution(target taskCovera
 				attributedFields = add(attributedFields, item)
 			}
 		}
+	}
+	var unpairedSeries coverageFact
+	if relaxed && scopedRead && final != nil && len(series) == 1 && series[0].Evidence.Operation == "query_series" {
+		// Keep the one field selected by the actual series call as a
+		// source reading. Comparison still needs aligned fields.
+		unpairedSeries = series[0]
 	}
 	if relaxed || len(series) > 1 {
 		switch {
@@ -471,7 +491,11 @@ func (e *AgentEngine) tableReceiptReadingsWithDraftAttribution(target taskCovera
 				}
 			}
 		}
-		return tableDeliveryPairs(report, series, draft, grain, final != nil && len(final.observations) != 0)
+		readings, aligned := tableDeliveryPairs(report, series, draft, from, to, grain, scopedRead, final != nil && len(final.observations) != 0)
+		if len(series) == 0 && unpairedSeries.Evidence.EvidenceID != "" {
+			readings = append(readings, unpairedSeries)
+		}
+		return readings, aligned
 	}
 	if !exactFieldInRead {
 		report = alternate
@@ -502,6 +526,17 @@ func (e *AgentEngine) tableReceiptReadingsWithDraftAttribution(target taskCovera
 	return readings, aligned
 }
 
+func comparisonReadingWindowMatches(item coverageEvidence, from, to string, scopedRead bool) bool {
+	if item.PeriodTo == to && (item.PeriodFrom == from || item.PeriodFrom == to) {
+		return true
+	}
+	// A series filter describes the rows requested from the tool. The
+	// observation date or native period identifies the selected row.
+	return scopedRead && item.Operation == "query_series" && coverageAnalysisDay(to) &&
+		coverageAnalysisDay(item.PeriodFrom) && coverageAnalysisDay(item.PeriodTo) &&
+		item.PeriodFrom <= to && to <= item.PeriodTo
+}
+
 func draftNamesComparisonCell(draft string, item coverageEvidence) bool {
 	value, ok := coverageComparisonNumber(item)
 	if !ok {
@@ -522,7 +557,7 @@ func draftNamesComparisonCell(draft string, item coverageEvidence) bool {
 // Retain each independently attributed field the model actually compared.
 // The report and workbook must give the same native field, at the requested
 // period already selected above, in distinct physical sources.
-func tableDeliveryPairs(report, series []coverageFact, draft, grain string, compareReportedNumbers bool) ([]coverageFact, bool) {
+func tableDeliveryPairs(report, series []coverageFact, draft, from, to, grain string, scopedRead, compareReportedNumbers bool) ([]coverageFact, bool) {
 	slices.SortFunc(series, func(a, b coverageFact) int {
 		if order := strings.Index(draft, a.Evidence.Metric) - strings.Index(draft, b.Evidence.Metric); order != 0 || !compareReportedNumbers {
 			return order
@@ -541,7 +576,11 @@ func tableDeliveryPairs(report, series []coverageFact, draft, grain string, comp
 			continue
 		}
 		if len(matches) == 1 && (compareReportedNumbers || item.Grain == "" || item.GrainFromLookup || item.Grain == grain) {
-			item.ComparisonGrainUnverified = item.Grain != grain && !comparisonNativeRowPeriod(item.Period, item.PeriodFrom, item.PeriodTo, grain)
+			periodFrom, periodTo := item.PeriodFrom, item.PeriodTo
+			if scopedRead && item.Operation == "query_series" {
+				periodFrom, periodTo = from, to
+			}
+			item.ComparisonGrainUnverified = item.Grain != grain && !comparisonNativeRowPeriod(item.Period, periodFrom, periodTo, grain)
 			side.Evidence = item
 			paired = append(paired, matches[0], side)
 		} else {

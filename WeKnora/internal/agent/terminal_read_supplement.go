@@ -10,6 +10,51 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
+func (e *AgentEngine) finalPointSupplementReadAllowed(ctx context.Context, gap finalSupplementGap, item coverageEvidence) bool {
+	selected, ok := e.turnReview.FinalPointSupplementReads[item.ToolCallID]
+	return ok && selected.gap == gap && selected.documentID == item.SourceID &&
+		item.SourceDomain == "knowledge" && item.Kind == "body" && item.Operation == agenttools.ToolReadDocument &&
+		item.KnowledgeBaseID == gap.library && e.restrictedCoverageSourceAuthorized(ctx, item)
+}
+
+func (e *AgentEngine) scopedPointSupplementFacts(ctx context.Context, gap finalSupplementGap, record coverageRecord, attempts []coverageAttempt) []coverageEvidence {
+	var facts []coverageEvidence
+	for _, item := range record.Evidence {
+		if item.SourceDomain != "knowledge" || item.Kind != "body" || item.Operation != agenttools.ToolReadDocument ||
+			item.SourceTitle == "" || item.ChunkID == "" || item.KnowledgeBaseID != gap.library || item.SourceID == gap.primaryDocument ||
+			!e.restrictedCoverageSourceAuthorized(ctx, item) {
+			continue
+		}
+		body, _ := item.Raw.(string)
+		passage := labeledSourcePassage(body, gap.metric)
+		if passage == "" {
+			continue
+		}
+		sourceDay := supplementSourceDay(item, attempts, gap.period)
+		if sourceDay != gap.period && !coverageTextHasDate(passage, gap.period) {
+			continue
+		}
+		item.Metric, item.SourceDate, item.Raw = gap.metric, sourceDay, passage
+		facts = append(facts, item)
+	}
+	return facts
+}
+
+func supplementSourceDay(item coverageEvidence, attempts []coverageAttempt, day string) string {
+	if item.SourceDate != "" {
+		return item.SourceDate
+	}
+	for _, attempt := range attempts {
+		if attempt.ToolCallID == item.ToolCallID && attempt.Success && attempt.result != nil {
+			if agenttools.DocumentDateEvidenceFromDirectory(reviewAsMap(attempt.result.Data["document"]), day) != nil {
+				return day
+			}
+			break
+		}
+	}
+	return ""
+}
+
 func (e *AgentEngine) finalPointSupplementFacts(ctx context.Context, target taskCoverageTarget, record coverageRecord, attempts []coverageAttempt) []coverageEvidence {
 	if target.SourceMode != "named_first" && target.SourceMode != "open" || target.SourceTime != "observed_period" ||
 		target.VersionTask == "compare_sources" || target.VersionTask == "compare_versions" || target.Metric == "" {
@@ -37,19 +82,7 @@ func (e *AgentEngine) finalPointSupplementFacts(ctx context.Context, target task
 			}) || !e.coverageEvidenceAllowed(ctx, &target, item) {
 			continue
 		}
-		sourceDay := item.SourceDate
-		if sourceDay == "" {
-			for _, attempt := range attempts {
-				if attempt.ToolCallID != item.ToolCallID || !attempt.Success {
-					continue
-				}
-				document := reviewAsMap(attempt.result.Data["document"])
-				if agenttools.DocumentDateEvidenceFromDirectory(document, from) != nil {
-					sourceDay = from
-				}
-				break
-			}
-		}
+		sourceDay := supplementSourceDay(item, attempts, from)
 		if sourceDay != from {
 			continue
 		}

@@ -510,7 +510,7 @@ func (e *AgentEngine) emitCompletionEvent(
 	}
 	if state.IsComplete && state.Suspended == nil && e.turnReview.TerminalReceipt.notice != "" {
 		receipt := e.turnReview.TerminalReceipt
-		data.Incomplete = &event.AgentIncompleteData{Reason: string(receipt.failure), Notice: receipt.notice}
+		data.Incomplete = &event.AgentIncompleteData{Reason: firstNonEmptyAgent(string(receipt.failure), string(receipt.partialReason)), Notice: receipt.notice}
 		if types.VerifiedPublicationEnabled() && receipt.partial && state.FinalAnswer != "" {
 			data.Incomplete.PartialAnswer, data.Incomplete.Notice = true, state.FinalAnswer
 		} else if types.VerifiedPublicationEnabled() {
@@ -578,6 +578,10 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 	if selectReadings {
 		current := terminalCurrentState(state, stale)
 		result := e.selectFinalReadPublication(ctx, current, state.FinalAnswer, failure, "answer")
+		if receipt.partialReason != terminalNoFailure {
+			// New evidence can resolve the endpoint after the initial selection.
+			receipt.notice, receipt.partial, receipt.partialReason = "", false, terminalNoFailure
+		}
 		if result.fromEvidence {
 			state.FinalAnswer, receipt.notice = result.answer, result.notice
 			receipt.partial, receipt.fromEvidence = result.partial, true
@@ -591,6 +595,7 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 			}
 			qualifiedReferences = false
 		}
+		result.recordIncompleteEndpoint(state.FinalAnswer, receipt)
 	} else if failure != terminalNoFailure {
 		current := terminalCurrentState(state, stale)
 		result := e.terminalCoveragePublication(ctx, current, failure)
@@ -599,6 +604,7 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 			state.FinalAnswer = e.retainReadSupplement(ctx, current, state.FinalAnswer)
 		}
 		receipt.partial = result.partial
+		receipt.partialReason = terminalNoFailure
 		state.EvidenceRefs, state.KnowledgeRefs = nil, nil
 		e.turnReview.TerminalTruncated = false
 		receipt.failure = failure

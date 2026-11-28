@@ -171,6 +171,32 @@ func CurrentDocumentScopeIDs(registry *ToolRegistry) []string {
 	return binder.state.selectedIDs()
 }
 
+// HasVerifiedDocumentPageScope reports a user-bound page constraint, which
+// survives changes to the model's current document selection.
+func HasVerifiedDocumentPageScope(registry *ToolRegistry) bool {
+	if registry == nil {
+		return false
+	}
+	tool, err := registry.GetTool(ToolBindDocumentScope)
+	binder, ok := tool.(*bindDocumentScopeTool)
+	return err == nil && ok && binder.state != nil && binder.state.hasUserPages()
+}
+
+type supplementalDocumentScopeKey struct{}
+
+// WithSupplementalDocumentScope lets a directed recall look beyond a prior
+// model binding and add authorized hits to that binding. User pages and native
+// authorization remain in force.
+func WithSupplementalDocumentScope(ctx context.Context) context.Context {
+	return context.WithValue(ctx, supplementalDocumentScopeKey{}, true)
+}
+
+func (r *RequestedDocumentConstraint) hasUserPages() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.userPages) != 0
+}
+
 // CurrentDocumentReadPages returns only pages selected or limited by the
 // current native binding. No pagination or physical page numbers are inferred.
 func CurrentDocumentReadPages(registry *ToolRegistry, knowledgeID string) []int {
@@ -356,6 +382,14 @@ func (r *RequestedDocumentConstraint) bind(ctx context.Context, plan DocumentSco
 		metadata = append(metadata, row)
 	}
 	r.mu.Lock()
+	if supplemental, _ := ctx.Value(supplementalDocumentScopeKey{}).(bool); supplemental && len(r.userPages) == 0 {
+		for _, id := range r.order {
+			if _, selected := validated[id]; !selected {
+				validated[id] = r.sources[id]
+				order = append(order, id)
+			}
+		}
+	}
 	// Only commit after every source/constraint has passed validation. A later
 	// model read plan may change hints, but cannot broaden a user restriction.
 	for id, selection := range validated {

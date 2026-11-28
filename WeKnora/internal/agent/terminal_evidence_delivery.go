@@ -35,6 +35,7 @@ type terminalCoverageDelivery struct {
 	chinese          bool
 	relaxed          bool
 	finalRead        bool
+	lastValidPending bool
 }
 
 type terminalCoveragePublication struct {
@@ -46,7 +47,16 @@ type terminalCoveragePublication struct {
 
 type finalReadPublication struct {
 	terminalCoveragePublication
-	fromEvidence bool
+	fromEvidence     bool
+	lastValidPending bool
+}
+
+func (p finalReadPublication) recordIncompleteEndpoint(answer string, receipt *terminalPublicationReceipt) bool {
+	if !p.lastValidPending || terminalCandidateFallback(answer) {
+		return false
+	}
+	receipt.notice, receipt.partial, receipt.partialReason = answer, true, terminalEndpointEvidence
+	return true
 }
 
 type terminalEvidenceSnapshot struct {
@@ -103,6 +113,18 @@ func (e *AgentEngine) terminalCoverageRecord(ctx context.Context, state *types.A
 	for _, item := range record.Evidence {
 		if item.Bound && coverageCurrentEvidence(record, item) && e.coverageEvidenceAllowed(ctx, nil, item) {
 			current = append(current, item)
+		}
+	}
+	if scopedReadRecoveryEnabled() && len(e.turnReview.FinalPointSupplementReads) != 0 && len(finalRead) != 0 && finalRead[0] {
+		scoped := record
+		scoped.Evidence = current
+		if gap, ok := e.finalSupplementPointGap(ctx, scoped); ok {
+			for _, item := range record.Evidence {
+				if item.Bound && coverageCurrentEvidence(record, item) && !e.coverageEvidenceAllowed(ctx, nil, item) &&
+					e.finalPointSupplementReadAllowed(ctx, gap, item) {
+					current = append(current, item)
+				}
+			}
 		}
 	}
 	record.Evidence = current
@@ -201,6 +223,7 @@ func (e *AgentEngine) selectFinalReadPublication(ctx context.Context, state *typ
 		draft = e.turnReview.Last.Candidate
 	}
 	delivery := e.terminalCoverageDelivery(ctx, state, draft)
+	lastValidPending := delivery.lastValidPending && failure != terminalSourceChanged && failure != terminalInterrupted
 	steps := state.RoundSteps[min(e.turnReview.TerminalStartStep, len(state.RoundSteps)):]
 	if failure != terminalSourceChanged {
 		if len(delivery.requested) == 0 {
@@ -277,8 +300,8 @@ func (e *AgentEngine) selectFinalReadPublication(ctx context.Context, state *typ
 		if failure != terminalSourceChanged {
 			result.answer = e.retainReadSupplement(ctx, state, result.answer)
 		}
-		result.complete = len(delivery.conclusions) > 0 && len(delivery.missing) == 0
-		return finalReadPublication{result, true}
+		result.complete = len(delivery.conclusions) > 0 && len(delivery.missing) == 0 && !lastValidPending
+		return finalReadPublication{result, true, lastValidPending}
 	}
 	keepDraft = keepDraft && (retainsReading || !partialDraft || e.candidateApprovalCurrent(answer, state))
 	planned := coverageDraftReview{targets: delivery.requested}
@@ -289,13 +312,13 @@ func (e *AgentEngine) selectFinalReadPublication(ctx context.Context, state *typ
 	if keepDraft {
 		if draft := delivery.withoutGeneratedGap(answer); !terminalCandidateFallback(draft) {
 			if retained := e.retainReadSupplement(ctx, state, draft); retained != answer {
-				return finalReadPublication{terminalCoveragePublication{answer: retained}, true}
+				return finalReadPublication{terminalCoveragePublication{answer: retained}, true, lastValidPending}
 			}
-			return finalReadPublication{}
+			return finalReadPublication{lastValidPending: lastValidPending}
 		}
 	}
 	notice := delivery.finalReadStatus(failure)
-	return finalReadPublication{terminalCoveragePublication{answer: notice, notice: notice, partial: true}, true}
+	return finalReadPublication{terminalCoveragePublication{answer: notice, notice: notice, partial: true}, true, false}
 }
 
 // Historical terminal deliveries can carry an open item as a standalone
@@ -667,6 +690,10 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 		finalRead: len(finalDraft) != 0,
 	}
 	record, attempts := e.terminalCoverageRecord(ctx, state, d.finalRead)
+	if d.finalRead {
+		field, _ := e.finalLastValidField(ctx, record)
+		d.lastValidPending = field.EvidenceID != ""
+	}
 	d.subject = terminalEvidenceText(taskPlanPrefix(e.coverageAnalysisQuestion(), 160))
 	targets := slices.DeleteFunc(slices.Clone(e.evidenceCompletionTargets()), func(target taskCoverageTarget) bool {
 		return target.SourceTime == "general_concept" || slices.Equal(target.Required, []string{"optional"})
@@ -706,14 +733,33 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 		record.Evidence = append(record.Evidence, terminalInspectedChoiceFacts(record, turn.record.Evidence)...)
 	}
 	d.record = record
+	var point finalSupplementGap
+	if d.finalRead && scopedReadRecoveryEnabled() {
+		point, _ = e.finalSupplementPointGap(ctx, record)
+	}
 	for _, target := range targets {
 		scoped := e.coverageRecordForTarget(ctx, target, record)
 		if d.finalRead {
 			for _, fact := range e.finalStructuredEndpointFacts(ctx, state, target, scoped) {
 				add(fact.Role, fact.Evidence, true)
 			}
-			for _, fact := range e.finalPointSupplementFacts(ctx, target, scoped, attempts) {
-				add("attributed_supplement", fact, true)
+			if point != (finalSupplementGap{}) && point.goal == target.GoalIndex {
+				_, fields, _ := e.finalSupplementPointFields(ctx, target, scoped)
+				for _, field := range fields {
+					add("coverage_boundary", field, false)
+					for _, item := range scoped.Evidence {
+						if sameCoverageLastValid(scoped, field, item) {
+							add("last_valid_value", item, false)
+						}
+					}
+				}
+				for _, fact := range e.scopedPointSupplementFacts(ctx, point, record, attempts) {
+					add("attributed_supplement", fact, true)
+				}
+			} else {
+				for _, fact := range e.finalPointSupplementFacts(ctx, target, scoped, attempts) {
+					add("attributed_supplement", fact, true)
+				}
 			}
 		}
 		draft := e.turnReview.Last.Candidate
@@ -723,7 +769,9 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 		readings, reportedPair := e.tableReceiptReadingsForDelivery(target, scoped, draft, d.relaxed)
 		if d.finalRead && !reportedPair && tableComparison(target) {
 			visual := e.finalVisualTableReadings(ctx, target, scoped, attempts)
-			if len(visual.focusedFields) > 0 {
+			if len(visual.focusedFields) > 0 || scopedReadRecoveryEnabled() && !slices.ContainsFunc(readings, func(fact coverageFact) bool {
+				return fact.Evidence.SourceDomain == "structured"
+			}) {
 				if pair, aligned := e.tableReceiptReadingsWithDraftAttribution(target, scoped, draft, true, &visual); len(pair) > 0 {
 					readings, reportedPair = pair, aligned
 				}
@@ -837,7 +885,9 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 			add("coverage_boundary", item, false)
 			for _, observed := range record.Evidence {
 				if sameCoverageLastValid(record, item, observed) || coverageAnalysisFollowUpMatches(record, item, observed) {
-					add("last_valid_value", observed, false)
+					// A draft may have passed with other readings before this endpoint arrived.
+					recovered := d.finalRead && scopedReadRecoveryEnabled() && strings.HasPrefix(observed.ToolCallID, finalLastValidReadPrefix)
+					add("last_valid_value", observed, recovered)
 				}
 			}
 		case item.Extremum != "":

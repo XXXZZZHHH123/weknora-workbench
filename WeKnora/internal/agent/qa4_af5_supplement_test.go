@@ -135,6 +135,7 @@ func TestQA4Af5SupplementReadsOriginalPlan(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "true")
 			t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", "true")
+			t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", "false")
 			flag := strconv.FormatBool(mode != "disabled")
 			if mode == "normal" {
 				flag = "" // Default behavior with no FromEnv override.

@@ -83,6 +83,8 @@ type turnReviewState struct {
 	StructuredResultReview     *structuredResultReviewTurn
 	DiscoveryReview            *discoveryDeliveryReviewTurn
 	FinalCoverageReadAttempted bool
+	FinalScopedReadApproval    string
+	FinalPointSupplementReads  map[string]finalSupplementReadScope
 	CoverageDraft              candidateDecision
 	CoverageDraftFacts         []string
 	CoverageDraftDeliveryHash  string
@@ -530,6 +532,8 @@ func (e *AgentEngine) invalidateCandidateTask() {
 	e.turnReview.CoverageDraftDeliveryHash = ""
 	e.turnReview.CoverageDraftRoles = nil
 	e.turnReview.CoverageFeedbackSent = false
+	e.turnReview.FinalScopedReadApproval = ""
+	e.turnReview.FinalPointSupplementReads = nil
 }
 
 // A warning permits delivery after review failure, never reuse of another

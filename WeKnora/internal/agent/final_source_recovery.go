@@ -34,6 +34,32 @@ func (e *AgentEngine) recoverFinalReadings(ctx context.Context, state *types.Age
 	return e.runDirectedFinalReadings(ctx, state, sessionID, "", false)
 }
 
+// The collaboration finish fence closes the parent's execution lease. Give
+// verified gap continuations their existing read allowance before that fence.
+func (e *AgentEngine) recoverScopedFinalReadingsBeforeClose(ctx context.Context, state *types.AgentState, sessionID, assistantMessageID string) bool {
+	if !scopedReadRecoveryEnabled() || e.turnReview.FinalCoverageReadAttempted || e.toolRegistry == nil ||
+		!e.standardAnswerBudgetEligible(ctx, state) || !e.finalReadPublicationEligible(state) {
+		return false
+	}
+	record, attempts := e.terminalCoverageRecord(ctx, state, true)
+	_, pointGap := e.finalSupplementPointGap(ctx, record)
+	_, lastValidGap := e.nextFinalLastValidRead(ctx, record, attempts)
+	if !pointGap && !lastValidGap {
+		return false
+	}
+	last := e.turnReview.Last
+	approved := e.candidateApprovalCurrent(last.Candidate, state)
+	read := e.runDirectedFinalReadings(ctx, state, sessionID, assistantMessageID, false)
+	if approved && read {
+		e.turnReview.FinalScopedReadApproval = scopedFinalReadApprovalKey(last)
+	}
+	return read
+}
+
+func scopedFinalReadApprovalKey(decision candidateDecision) string {
+	return reviewDigest([]string{decision.CandidateHash, decision.TaskHash, decision.EvidenceHash})
+}
+
 func (e *AgentEngine) appendFinalReadingsForSynthesis(ctx context.Context, query string, state *types.AgentState,
 	sessionID, assistantMessageID string, conversation []chat.Message) []chat.Message {
 	start := len(state.RoundSteps)
@@ -82,7 +108,8 @@ func (e *AgentEngine) runDirectedFinalReadings(ctx context.Context, state *types
 		if len(calls) == 0 {
 			calls = e.finalSupplementReadCalls(readCtx, state, record, attempts, budget)
 		}
-		if len(calls) == 0 || len(calls) > budget || !e.validDirectedFinalReads(readCtx, attempts, calls) ||
+		invocationCtx := e.finalSupplementInvocationContext(readCtx, record, calls)
+		if len(calls) == 0 || len(calls) > budget || !e.validDirectedFinalReads(invocationCtx, attempts, calls) ||
 			e.executionLeaseError(readCtx) != nil {
 			break
 		}
@@ -90,9 +117,10 @@ func (e *AgentEngine) runDirectedFinalReadings(ctx context.Context, state *types
 		state.CurrentRound++
 		step := types.AgentStep{Iteration: state.CurrentRound}
 		response := &types.ChatResponse{ToolCalls: calls, FinishReason: "tool_calls"}
-		if e.runRoundTools(readCtx, state, response, &step, sessionID, assistantMessageID) {
+		if e.runRoundTools(invocationCtx, state, response, &step, sessionID, assistantMessageID) {
 			break
 		}
+		e.recordFinalSupplementReads(invocationCtx, record, calls, step)
 		state.RoundSteps = append(state.RoundSteps, step)
 		budget -= len(calls)
 	}
@@ -115,6 +143,13 @@ func (e *AgentEngine) validDirectedFinalReads(ctx context.Context, attempts []co
 			return false
 		}
 		switch name {
+		case coverageLastValidReadTool:
+			binding, explicit := args["source_binding"].([]any)
+			if !scopedReadRecoveryEnabled() || !strings.HasPrefix(call.ID, finalLastValidReadPrefix) ||
+				!e.coverageLastValidReadAvailable() || args["operation"] != "rows" || args["include_last_valid"] != true ||
+				!explicit || binding == nil {
+				return false
+			}
 		case "structured_inspect_source":
 			descriptor, _, native := e.toolRegistry.StructuredInvocation(name, json.RawMessage(call.Function.Arguments))
 			if !native || descriptor.EffectClass != "read" {
@@ -147,7 +182,8 @@ func (e *AgentEngine) nextFinalStructuredSourceRead(ctx context.Context, state *
 			continue
 		}
 		field, ok := e.finalStructuredEndpointField(ctx, state, target, record, from, to)
-		if !ok || coverageEndpointAlreadyRead(record, field) || len(inspectedFieldLastValid(record, field)) != 0 {
+		if !ok || coverageEndpointAlreadyRead(record, field) || len(inspectedFieldLastValid(record, field)) != 0 ||
+			scopedReadRecoveryEnabled() && scopedEndpointValueAlreadyRead(record, field) {
 			continue
 		}
 		dateColumn := coverageFieldDateColumn(field)
@@ -176,7 +212,7 @@ func (e *AgentEngine) nextFinalStructuredSourceRead(ctx context.Context, state *
 		}
 		return call, true
 	}
-	return types.LLMToolCall{}, false
+	return e.nextFinalLastValidRead(ctx, record, attempts)
 }
 
 func (e *AgentEngine) finalStructuredEndpointField(ctx context.Context, state *types.AgentState, target taskCoverageTarget, record coverageRecord, from, to string) (coverageEvidence, bool) {

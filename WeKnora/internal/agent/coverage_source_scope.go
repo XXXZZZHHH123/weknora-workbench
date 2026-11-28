@@ -270,7 +270,7 @@ func (e *AgentEngine) coverageCallTargets(call types.LLMToolCall) []taskCoverage
 }
 
 func (e *AgentEngine) coverageDocumentExecutionContext(ctx context.Context, call types.LLMToolCall, selecting *int) context.Context {
-	if !e.coverageRegistrationEligible() {
+	if !e.coverageRegistrationEligible() || scopedFinalSupplementInvocation(ctx, call) {
 		return ctx
 	}
 	switch call.Function.Name {
@@ -412,7 +412,7 @@ func (e *AgentEngine) coverageNativeSelectionGoal(ctx context.Context, call type
 // Selectors are taken from the arguments the native executor will receive.
 // A separate optional goal association can narrow action scope in a mixed task.
 func (e *AgentEngine) coverageSourceCallAllowed(ctx context.Context, call types.LLMToolCall, args map[string]any) bool {
-	if !e.coverageRegistrationEligible() {
+	if !e.coverageRegistrationEligible() || scopedFinalSupplementInvocation(ctx, call) {
 		return true
 	}
 	targets := e.coverageCallTargets(call)
