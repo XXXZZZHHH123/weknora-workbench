@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"maps"
+	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	agenttools "github.com/Tencent/WeKnora/internal/agent/tools"
@@ -11,6 +13,11 @@ import (
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/types"
 )
+
+func relaxedTerminalEvidenceEnabled() bool {
+	enabled, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE")))
+	return types.VerifiedPublicationEnabled() && (err != nil || enabled)
+}
 
 // publishAnswer reuses an existing stream, or emits the buffered candidate
 // once. Closing remains separate so a queued human correction can continue.
@@ -107,14 +114,15 @@ const (
 )
 
 type terminalPublicationReceipt struct {
-	answerHash string
-	evidence   terminalEvidenceSnapshot
-	staleCalls map[string]bool
-	failure    terminalFailure
-	notice     string
-	partial    bool
-	streamed   string
-	submitted  string
+	answerHash   string
+	evidence     terminalEvidenceSnapshot
+	staleCalls   map[string]bool
+	failure      terminalFailure
+	notice       string
+	partial      bool
+	fromEvidence bool
+	streamed     string
+	submitted    string
 }
 
 // This is the only translation of legacy candidate strings into failure reasons.
@@ -251,6 +259,7 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	if failure == terminalNoFailure && terminalCandidateFallback(answer) {
 		failure = legacyTerminalFailure(answer)
 	}
+	fromEvidence := false
 	if failure != terminalNoFailure {
 		e.turnReview.UnverifiedCitationDelivery = nil
 		e.turnReview.CitationUnverifiedDelivery = nil
@@ -264,7 +273,16 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 		}
 		e.turnReview.TerminalReceipt.notice = result.notice
 		e.turnReview.TerminalReceipt.partial = result.partial
+		fromEvidence = result.answer != ""
+		if result.complete {
+			failure, outcome = terminalNoFailure, "answer"
+		}
 		state.EvidenceRefs, state.KnowledgeRefs = nil, nil
+	}
+	if failure != terminalSourceChanged {
+		withSupplement := e.retainReadSupplement(ctx, state, answer)
+		fromEvidence = fromEvidence || withSupplement != answer
+		answer = withSupplement
 	}
 
 	if existingID != "" && e.turnReview.TerminalStreamID == existingID {
@@ -276,11 +294,12 @@ func (e *AgentEngine) commitTerminalResult(ctx context.Context, state *types.Age
 	e.turnReview.TerminalStreamID, e.turnReview.TerminalTruncated = existingID, truncated
 	e.turnReview.TerminalReceipt = terminalPublicationReceipt{
 		answerHash: candidateTextDigest(answer), evidence: evidenceRevision, failure: failure,
-		staleCalls: staleCalls,
-		notice:     e.turnReview.TerminalReceipt.notice,
-		partial:    e.turnReview.TerminalReceipt.partial,
-		streamed:   original,
-		submitted:  submitted,
+		staleCalls:   staleCalls,
+		notice:       e.turnReview.TerminalReceipt.notice,
+		partial:      e.turnReview.TerminalReceipt.partial,
+		fromEvidence: fromEvidence,
+		streamed:     original,
+		submitted:    submitted,
 	}
 	if existingID == "" {
 		e.turnReview.TerminalReceipt.streamed = ""

@@ -101,19 +101,25 @@ func (d *terminalCoverageDelivery) addVerifiedComparison(a, b coverageEvidence, 
 			conclusion += fmt.Sprintf(d.text("%s %s。", " %s %s."), quantity, formatted)
 		}
 	}
+	var unitNote string
 	switch comparisonUnitStatus(a, b) {
 	case "incompatible":
 		if equal {
-			conclusion += d.text("来源单位不同，无法据此确认量值相同。", " The source units differ, so that does not establish equal quantities.")
+			unitNote = d.text("来源单位不同，无法据此确认量值相同。", " The source units differ, so that does not establish equal quantities.")
 		} else {
-			conclusion += d.text("来源单位不同，数字之差不能作为实物量之差。", " The source units differ, so the numeric difference cannot be used as a difference in quantity.")
+			unitNote = d.text("来源单位不同，数字之差不能作为实物量之差。", " The source units differ, so the numeric difference cannot be used as a difference in quantity.")
 		}
 	case "unknown":
 		if equal {
-			conclusion += d.text("双方单位尚未核实为一致，无法据此确认量值相同。", " A common unit remains unverified, so that does not establish equal quantities.")
+			unitNote = d.text("双方单位尚未核实为一致，无法据此确认量值相同。", " A common unit remains unverified, so that does not establish equal quantities.")
 		} else {
-			conclusion += d.text("双方单位尚未核实为一致，数字之差仅反映各自披露的读数。", " A common unit remains unverified. The difference describes the reported numbers.")
+			unitNote = d.text("双方单位尚未核实为一致，数字之差仅反映各自披露的读数。", " A common unit remains unverified. The difference describes the reported numbers.")
 		}
+	}
+	if d.relaxed {
+		d.comparisonUnit = firstNonEmptyAgent(d.comparisonUnit, strings.TrimSpace(unitNote))
+	} else {
+		conclusion += unitNote
 	}
 	if !slices.Contains(d.conclusions, conclusion) {
 		d.conclusions = append(d.conclusions, conclusion)

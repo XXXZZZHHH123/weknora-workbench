@@ -275,6 +275,18 @@ func tableComparisonBindingMatches(record coverageRecord, binding coverageBindin
 // These are observed operands, even when the optional declaration did not
 // resolve both handles. They cannot authorize a source or establish cadence.
 func (e *AgentEngine) tableReceiptReadings(target taskCoverageTarget, record coverageRecord, draft string) ([]coverageFact, bool) {
+	return e.tableReceiptReadingsWithDraftAttribution(target, record, draft, false)
+}
+
+func (e *AgentEngine) tableReceiptReadingsForDelivery(target taskCoverageTarget, record coverageRecord, draft string, relaxed bool) ([]coverageFact, bool) {
+	readings, aligned := e.tableReceiptReadings(target, record, draft)
+	if !relaxed || aligned {
+		return readings, aligned
+	}
+	return e.tableReceiptReadingsWithDraftAttribution(target, record, draft, true)
+}
+
+func (e *AgentEngine) tableReceiptReadingsWithDraftAttribution(target taskCoverageTarget, record coverageRecord, draft string, relaxed bool) ([]coverageFact, bool) {
 	if !plannedTableComparison(target) || !comparisonTableScopeValid(target) || target.Metric == "" {
 		return nil, false
 	}
@@ -373,19 +385,20 @@ func (e *AgentEngine) tableReceiptReadings(target taskCoverageTarget, record cov
 			if item.Metric == target.Metric {
 				namedFields = add(namedFields, item)
 			}
-			if draftAttributesComparisonReading(draft, item) {
+			if !relaxed && draftAttributesComparisonReading(draft, item) ||
+				relaxed && draftNamesComparisonCell(draft, item) {
 				attributedFields = add(attributedFields, item)
 			}
 		}
 	}
-	if len(series) > 1 {
+	if relaxed || len(series) > 1 {
 		series = namedFields
 		if len(namedFields) == 0 {
 			series = attributedFields
 		}
 	}
 	var alternateField string
-	if len(series) == 1 {
+	if !relaxed && len(series) == 1 {
 		item := series[0].Evidence
 		if item.Metric != target.Metric {
 			for _, block := range strings.Split(draft, "\n\n") {
@@ -395,6 +408,14 @@ func (e *AgentEngine) tableReceiptReadings(target taskCoverageTarget, record cov
 					alternateField = item.Metric
 					break
 				}
+			}
+		}
+	}
+	fields := []string{target.Metric}
+	if relaxed {
+		for _, fact := range series {
+			if !slices.Contains(fields, fact.Evidence.Metric) {
+				fields = append(fields, fact.Evidence.Metric)
 			}
 		}
 	}
@@ -419,8 +440,10 @@ func (e *AgentEngine) tableReceiptReadings(target taskCoverageTarget, record cov
 			if len(row) == 0 || !comparisonNativeRowPeriod(row[0], from, to, grain) {
 				continue
 			}
-			if fact, ok := selectedReadTableCell(target, coverageBinding{Metric: target.Metric, Date: row[0]}, item, from, to, grain); ok && allows(fact) {
-				report = add(report, fact)
+			for _, field := range fields {
+				if fact, ok := selectedReadTableCell(target, coverageBinding{Metric: field, Date: row[0]}, item, from, to, grain); ok && allows(fact) {
+					report = add(report, fact)
+				}
 			}
 			if alternateField != "" {
 				if fact, ok := selectedReadTableCell(target, coverageBinding{Metric: alternateField, Date: row[0]}, item, from, to, grain); ok && allows(fact) {
@@ -428,6 +451,12 @@ func (e *AgentEngine) tableReceiptReadings(target taskCoverageTarget, record cov
 				}
 			}
 		}
+	}
+	if relaxed {
+		if sourceConflict {
+			return nil, false
+		}
+		return tableDeliveryPairs(report, series, draft, grain)
 	}
 	if !exactFieldInRead {
 		report = alternate
@@ -456,6 +485,58 @@ func (e *AgentEngine) tableReceiptReadings(target taskCoverageTarget, record cov
 		}
 	}
 	return readings, aligned
+}
+
+func draftNamesComparisonCell(draft string, item coverageEvidence) bool {
+	value, ok := coverageComparisonNumber(item)
+	if !ok {
+		return false
+	}
+	amount, _ := value.Float64()
+	for _, text := range strings.Split(draft, "\n") {
+		line := newCoverageDraftParagraph(text)
+		if line.hasLabel(item.SourceTitle) &&
+			slices.Contains(cellOrListMarker.FindAllString(strings.ToUpper(line.text), -1), item.Cell) &&
+			coverageDraftAmountOccurrences(line.text, amount) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// Retain each independently attributed field the model actually compared.
+// The report and workbook must give the same native field, at the requested
+// period already selected above, in distinct physical sources.
+func tableDeliveryPairs(report, series []coverageFact, draft, grain string) ([]coverageFact, bool) {
+	slices.SortFunc(series, func(a, b coverageFact) int {
+		return strings.Index(draft, a.Evidence.Metric) - strings.Index(draft, b.Evidence.Metric)
+	})
+	var paired, partial []coverageFact
+	for _, side := range series {
+		item := side.Evidence
+		matches := slices.DeleteFunc(slices.Clone(report), func(other coverageFact) bool {
+			return other.Evidence.Metric != item.Metric || comparisonPhysicalSource(other.Evidence) == comparisonPhysicalSource(item)
+		})
+		if slices.ContainsFunc(series, func(other coverageFact) bool {
+			return other.Evidence.Metric == item.Metric && coverageEvidenceFactKey(other.Evidence) != coverageEvidenceFactKey(item)
+		}) {
+			continue
+		}
+		if len(matches) == 1 && (item.Grain == "" || item.GrainFromLookup || item.Grain == grain) {
+			item.ComparisonGrainUnverified = item.Grain != grain && !comparisonNativeRowPeriod(item.Period, item.PeriodFrom, item.PeriodTo, grain)
+			side.Evidence = item
+			paired = append(paired, matches[0], side)
+		} else {
+			partial = append(partial, side)
+		}
+	}
+	if len(paired) != 0 {
+		return paired, true
+	}
+	if len(report) == 1 {
+		partial = append(partial, report[0])
+	}
+	return partial, false
 }
 
 func draftAttributesComparisonReading(draft string, item coverageEvidence) bool {

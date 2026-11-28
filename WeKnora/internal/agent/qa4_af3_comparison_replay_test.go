@@ -222,6 +222,7 @@ func TestQA4Af3VerifiedComparisonPublication(t *testing.T) {
 }
 
 func TestQA4Af3VerifiedSourceTimeoutWithNoReading(t *testing.T) {
+	t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", "false")
 	for _, mode := range []string{"planned", "no plan candidate"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "true")

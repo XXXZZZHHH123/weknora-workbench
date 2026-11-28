@@ -78,12 +78,13 @@ func TestAf2CatalogOnlyDoesNotStandInForRequestedReadings(t *testing.T) {
 				state.IsComplete, state.FinalAnswer = true, draft // Restored candidate bypasses the normal commit.
 				e.emitCompletionEvent(t.Context(), state, "run", "message", time.Now())
 				require.NotNil(t, complete.Incomplete)
-				if types.VerifiedPublicationEnabled() {
+				if types.VerifiedPublicationEnabled() && !relaxedTerminalEvidenceEnabled() {
 					require.True(t, complete.HasPartialAnswer())
 					require.Contains(t, complete.FinalAnswer, "Equipment.xlsx")
 					require.NotEqual(t, draft, complete.FinalAnswer)
 				} else {
 					require.Empty(t, complete.FinalAnswer)
+					require.False(t, complete.HasPartialAnswer(), "directory navigation is not a reading")
 				}
 			})
 		}

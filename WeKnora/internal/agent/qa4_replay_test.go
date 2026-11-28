@@ -283,11 +283,18 @@ func runQA4HistoricalReplay(t *testing.T, id, future string) {
 		assertQA4ReplayUnresolvedPublication(t, e, state)
 		return
 	}
-	require.Len(t, e.turnReview.ClosedStreams, 1)
 	if future == "inventory" {
+		if relaxedTerminalEvidenceEnabled() {
+			require.Empty(t, state.FinalAnswer, "the archived draft does not establish which original column answers the question")
+			require.NotEmpty(t, e.turnReview.TerminalReceipt.notice)
+			require.Empty(t, e.turnReview.ClosedStreams)
+		} else {
+			require.Len(t, e.turnReview.ClosedStreams, 1)
+		}
 		assertQA4OriginalFactHandoff(t, ctx, e, state)
 		return
 	}
+	require.Len(t, e.turnReview.ClosedStreams, 1)
 
 	if future == "retain" {
 		require.Contains(t, state.FinalAnswer, "2023-09-22")
@@ -364,7 +371,12 @@ func TestQA4ReplayPendingCoverage(t *testing.T) {
 	})
 	t.Run("stage_2_budget_keeps_observed_original_cells", func(t *testing.T) {
 		t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "false")
-		synctest.Test(t, func(t *testing.T) { runQA4HistoricalReplay(t, "r5-1-kb16", "inventory") })
+		for _, mode := range []string{"true", "false"} {
+			t.Run(mode, func(t *testing.T) {
+				t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", mode)
+				synctest.Test(t, func(t *testing.T) { runQA4HistoricalReplay(t, "r5-1-kb16", "inventory") })
+			})
+		}
 	})
 	t.Run("stage_3_budget_preserves_original_cell", func(t *testing.T) {
 		t.Skip("stage 3 will pin evidence across budget synthesis")

@@ -138,7 +138,7 @@ func TestTerminalEvidenceCompletionFallback(t *testing.T) {
 			done, streamed := recorder.snapshot()
 			require.Equal(t, state.FinalAnswer, streamed)
 			text := state.FinalAnswer
-			if test.name == "current directory only" && types.VerifiedPublicationEnabled() {
+			if test.name == "current directory only" && types.VerifiedPublicationEnabled() && !relaxedTerminalEvidenceEnabled() {
 				require.Equal(t, 1, done)
 				require.Equal(t, e.turnReview.TerminalReceipt.notice, text)
 				require.Contains(t, text, "Equipment.xlsx")

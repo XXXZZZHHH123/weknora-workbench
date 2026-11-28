@@ -262,7 +262,7 @@ func (e *AgentEngine) checkDiscoveryDeliveryPhase(ctx context.Context, query str
 	instructions := discoveryDeliveryReviewInstructions
 	if endpoints := e.lastValidCoverageFeedback(ctx); len(endpoints) != 0 {
 		view["verified_field_gap_receipts"] = endpoints
-		instructions += "\n" + coverageLastValidFeedbackInstructions + " Report a concrete measure mismatch, missing endpoint, or incorrect latest assertion as feedback to the existing execution round when the correct authorized read remains available. For a correct returned endpoint that the candidate omits or misattributes, ask to revise from that receipt without reading it again."
+		instructions += "\n" + lastValidFeedbackInstructions(endpoints) + " Report a concrete measure mismatch, missing endpoint, or incorrect latest assertion as feedback to the existing execution round when the correct authorized read remains available. For a correct returned endpoint that the candidate omits or misattributes, ask to revise from that receipt without reading it again."
 	}
 	input, err := json.Marshal(view)
 	if err != nil || len(input) > discoveryReviewInputBytes || len(decision.Candidate) > 8192 || ctx.Err() != nil {

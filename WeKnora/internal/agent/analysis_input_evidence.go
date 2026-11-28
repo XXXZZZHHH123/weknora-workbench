@@ -7,7 +7,57 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Tencent/WeKnora/internal/structuredresult"
 )
+
+// The input summary reports occurrence dates independently of the model's
+// SQL. Keep an occurrence when the executed calculation names the same
+// extremum and its value agrees with the full valid input population.
+func coverageAnalysisExtrema(item coverageEvidence, input, data map[string]any, contract *structuredresult.Contract, path string) []coverageEvidence {
+	if !coverageExactRange(item) || !contract.Capabilities.ColumnDependenciesVerified ||
+		input["observation_coverage_scope"] != "loaded_analysis_inputs_before_user_sql" {
+		return nil
+	}
+	coverage := coverageObject(input["observation_coverage"])
+	changes := coverageObject(coverage["value_changes"])
+	scope := coverageObject(changes["scope"])
+	validCount := input["valid_count"]
+	rows, _ := data["rows"].([]any)
+	if len(rows) != 1 || citationInt(validCount) < 1 || scope["complete_filtered_input"] != true ||
+		scope["valid_value_count"] != validCount || scope["eligible_record_count"] != validCount {
+		return nil
+	}
+	row, _ := rows[0].([]any)
+	var result []coverageEvidence
+	for _, column := range contract.Columns {
+		if column.Index < 0 || column.Index >= len(row) || column.Operation["kind"] != "function" ||
+			!slices.Equal(column.Dependency.SourceColumns, []string{"value"}) {
+			continue
+		}
+		op := sourceNavigationString(column.Operation, "name")
+		if op != "min" && op != "max" {
+			continue
+		}
+		arguments := sourceNavigationRows(column.Operation["arguments"])
+		if len(arguments) != 1 || arguments[0]["kind"] != "column_reference" || !coverageContainsString(arguments[0]["names"], "value") {
+			continue
+		}
+		observation := coverageObject(changes[op+"imum"])
+		date := sourceNavigationString(observation, "date")
+		if !coverageAnalysisDay(date) || date < item.PeriodFrom || date > item.PeriodTo ||
+			!coverageSameOriginalValue(observation["value"], row[column.Index]) {
+			continue
+		}
+		extremum := item
+		extremum.Kind, extremum.Extremum, extremum.Date, extremum.Raw, extremum.Complete = "derived", op, date, observation["value"], true
+		extremum.DateEvidenceID = item.EvidenceID
+		extremum.DateJSONPointer = path + "/observation_coverage/value_changes/" + op + "imum/date"
+		extremum.JSONPointer = "/data/rows/0/" + strconv.Itoa(column.Index)
+		result = append(result, extremum)
+	}
+	return result
+}
 
 // The native input summary gives a value and date before the model's SQL runs.
 // Its matching status segment supplies the original value cell.

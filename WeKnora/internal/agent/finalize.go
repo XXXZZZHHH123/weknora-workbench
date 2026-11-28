@@ -542,7 +542,7 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 		failure = e.terminalCandidateEvidenceFailure(ctx, state, state.FinalAnswer)
 	}
 	qualifiedReferences := false
-	if failure == terminalNoFailure && receipt.failure == terminalNoFailure {
+	if failure == terminalNoFailure && receipt.failure == terminalNoFailure && !receipt.fromEvidence {
 		qualifiedReferences = e.publishFinalKnowledgeReferences(ctx, state, sessionID)
 		state.FinalAnswer = stripCoverageAnswer(state.FinalAnswer)
 		if revision.scope != e.sourceScopeDigest(ctx, false) {
@@ -560,15 +560,23 @@ func (e *AgentEngine) finalizeTerminalPublication(ctx context.Context, state *ty
 		stale[id] = true
 	}
 	if failure != terminalNoFailure {
-		result := e.terminalCoveragePublication(ctx, terminalCurrentState(state, stale), failure)
+		current := terminalCurrentState(state, stale)
+		result := e.terminalCoveragePublication(ctx, current, failure)
 		state.FinalAnswer, receipt.notice = result.answer, result.notice
+		if failure != terminalSourceChanged {
+			state.FinalAnswer = e.retainReadSupplement(ctx, current, state.FinalAnswer)
+		}
 		receipt.partial = result.partial
 		state.EvidenceRefs, state.KnowledgeRefs = nil, nil
 		e.turnReview.TerminalTruncated = false
 		receipt.failure = failure
+		receipt.fromEvidence = result.answer != ""
+		if result.complete {
+			receipt.failure = terminalNoFailure
+		}
 		qualifiedReferences = false
 	}
-	if receipt.failure != terminalNoFailure && state.FinalAnswer != "" && e.evidenceCompletionEligible() {
+	if receipt.fromEvidence && state.FinalAnswer != "" && e.evidenceCompletionEligible() {
 		if types.VerifiedPublicationEnabled() {
 			current := terminalCurrentState(state, stale)
 			state.KnowledgeRefs = e.currentCandidateKnowledgeReferences(state.FinalAnswer, current, e.turnReview.Conversation)

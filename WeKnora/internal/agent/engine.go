@@ -1228,7 +1228,7 @@ func (e *AgentEngine) runReActIteration(
 		}
 		if endpointFeedback := e.lastValidCoverageFeedback(ctx); len(endpointFeedback) != 0 {
 			encoded, _ := json.Marshal(endpointFeedback)
-			runtimeNotice = strings.TrimSpace(runtimeNotice + "\n" + coverageLastValidFeedbackInstructions + "\n" + string(encoded))
+			runtimeNotice = strings.TrimSpace(runtimeNotice + "\n" + lastValidFeedbackInstructions(endpointFeedback) + "\n" + string(encoded))
 		}
 		tools = e.evidenceCompletionTools(tools)
 	}

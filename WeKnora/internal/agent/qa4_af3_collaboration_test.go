@@ -136,9 +136,18 @@ func af3ConflictOnCompletion(t *testing.T, db *gorm.DB, rejected int32, loseAckn
 // short-lived same-owner stale lease interleaving. The database/log have no
 // earlier row revisions, so the precise historical interleaving is unknown.
 func TestAf3Af2Round2CollaborationLeaseRefresh(t *testing.T) {
-	for _, mode := range []string{"legacy", "enabled"} {
+	for _, mode := range []string{"legacy", "strict terminal", "relaxed terminal"} {
 		t.Run(mode, func(t *testing.T) {
-			t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", map[string]string{"legacy": "false", "enabled": "true"}[mode])
+			if mode == "legacy" {
+				t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "false")
+			} else {
+				t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "true")
+			}
+			if mode == "relaxed terminal" {
+				t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", "true")
+			} else {
+				t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", "false")
+			}
 			trace := af3Round2DirectoryReplay(t)
 			db, binding := af3CollaborationReplayStore(t)
 			var staleReads atomic.Int32
@@ -171,8 +180,14 @@ func TestAf3Af2Round2CollaborationLeaseRefresh(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.Equal(t, 2, model.calls, "lease refresh must not trigger an additional model round")
-			require.NotEmpty(t, complete.FinalAnswer)
 			require.NotNil(t, complete.Incomplete)
+			if mode == "relaxed terminal" {
+				require.Empty(t, complete.FinalAnswer)
+				require.False(t, complete.HasPartialAnswer(), "navigation alone does not establish a comparison")
+				require.NotEmpty(t, complete.Incomplete.Notice)
+				return
+			}
+			require.NotEmpty(t, complete.FinalAnswer)
 			require.True(t, complete.HasPartialAnswer(), "navigation-only progress is visible without claiming the reading was completed")
 			require.Contains(t, complete.FinalAnswer, "棉花数据库.xlsx")
 			require.NotContains(t, complete.FinalAnswer, "331.2")

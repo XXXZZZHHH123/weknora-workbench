@@ -73,23 +73,31 @@ func (e *AgentEngine) defaultCoverageLastValid(ctx context.Context, call types.L
 }
 
 type coverageLastValidFeedback struct {
-	Source        string `json:"source"`
-	Dataset       string `json:"dataset_id"`
-	Sheet         string `json:"sheet"`
-	Series        string `json:"series_id"`
-	Field         string `json:"field"`
-	RequestedFrom string `json:"requested_from,omitempty"`
-	RequestedTo   string `json:"requested_to,omitempty"`
-	Period        string `json:"period,omitempty"`
-	Endpoint      string `json:"endpoint_status"`
-	Date          string `json:"observed_date,omitempty"`
-	Raw           any    `json:"original_value,omitempty"`
-	Cell          string `json:"source_cell,omitempty"`
-	DateCell      string `json:"date_cell,omitempty"`
-	Unit          string `json:"unit,omitempty"`
+	Source            string `json:"source"`
+	Dataset           string `json:"dataset_id"`
+	Sheet             string `json:"sheet"`
+	Series            string `json:"series_id"`
+	Field             string `json:"field"`
+	RequestedFrom     string `json:"requested_from,omitempty"`
+	RequestedTo       string `json:"requested_to,omitempty"`
+	Period            string `json:"period,omitempty"`
+	Endpoint          string `json:"endpoint_status"`
+	Date              string `json:"observed_date,omitempty"`
+	Raw               any    `json:"original_value,omitempty"`
+	Cell              string `json:"source_cell,omitempty"`
+	DateCell          string `json:"date_cell,omitempty"`
+	Unit              string `json:"unit,omitempty"`
+	SupplementPending bool   `json:"supplement_pending,omitempty"`
 }
 
 const coverageLastValidFeedbackInstructions = "The verified gaps and endpoint receipts below apply only to their named field, source and scope. Use the full user question and actual field metadata to check whether each queried field is the requested measure. Use the existing field directory to correct a field that includes other measures or uses a different definition. When the original task calls for an endpoint and permits earlier data, request include_last_valid=true on the same scoped read if the correct field lacks a verified endpoint. Do not substitute a directory date, row window, another field, or a supplement for the original value. For a verified endpoint report the source, date, original value and cell together. If the requested field or its endpoint remains unverified, describe that specific missing evidence."
+
+func lastValidFeedbackInstructions(feedback []coverageLastValidFeedback) string {
+	if slices.ContainsFunc(feedback, func(item coverageLastValidFeedback) bool { return item.SupplementPending }) {
+		return coverageLastValidFeedbackInstructions + " For a gap marked supplement_pending, keep the primary gap and existing readings. The plan allows separately attributed discovery for this request. Consider the actual authorized catalog and navigation in the ongoing source decision. When they provide a relevant lead, use the ordinary source tools to read it within the existing budget, and attribute its disclosed value, period, unit and location separately. Reuse readings already obtained and respect every explicit source restriction."
+	}
+	return coverageLastValidFeedbackInstructions
+}
 
 func (e *AgentEngine) lastValidCoverageFeedback(ctx context.Context) []coverageLastValidFeedback {
 	if !structuredresult.LastValidEnabled() || e.toolRegistry == nil {
@@ -113,7 +121,7 @@ func (e *AgentEngine) lastValidCoverageFeedback(ctx context.Context) []coverageL
 		item := coverageLastValidFeedback{
 			Source: gap.SourceTitle, Dataset: gap.DatasetID, Sheet: gap.Sheet, Series: gap.SeriesID, Field: gap.Metric,
 			RequestedFrom: gap.PeriodFrom, RequestedTo: gap.PeriodTo, Period: gap.Period,
-			Endpoint: "unavailable",
+			Endpoint: "unavailable", SupplementPending: e.plannedSupplementPending(ctx, record, gap),
 		}
 		endpoint, present := coverageEndpointForGap(record, gap)
 		if present && e.coverageEvidenceAllowed(ctx, nil, endpoint) {
@@ -130,6 +138,39 @@ func (e *AgentEngine) lastValidCoverageFeedback(ctx context.Context) []coverageL
 		}
 	}
 	return feedback
+}
+
+// Advertise a planned follow-up in the existing model or review input. The
+// already executed native gap establishes coverage, not the choice of report.
+func (e *AgentEngine) plannedSupplementPending(ctx context.Context, record coverageRecord, gap coverageEvidence) bool {
+	if !relaxedTerminalEvidenceEnabled() || e.coverageOnlyDomain() != "" || !coverageExactRange(gap) {
+		return false
+	}
+	search, read := e.toolRegistry.DocumentCoverageCapabilities()
+	if !read || !search {
+		return false
+	}
+	targets := e.evidenceCompletionTargets()
+	if slices.ContainsFunc(targets, func(target taskCoverageTarget) bool { return target.SourceMode == "only" }) {
+		return false
+	}
+	plannedDiscovery := e.taskPlan != nil && e.taskPlan.SourceDiscovery != nil &&
+		slices.Contains(e.taskPlan.SourceDiscovery.SourceDomains, "knowledge")
+	if !slices.ContainsFunc(targets, func(target taskCoverageTarget) bool {
+		from, to, _ := coverageTargetDateRange(target)
+		return target.SourceMode == "named_first" && target.RequestBasis != "" &&
+			(target.VersionTask == "" || target.VersionTask == "single") &&
+			(plannedDiscovery || slices.Contains(target.OnVerifiedGap, "attributed_supplement")) &&
+			from != "" && to != "" && gap.PeriodFrom <= from && to <= gap.PeriodTo &&
+			coverageEqual(target.Table, gap.Sheet) && e.coverageMatchesPrimaryReference(target, gap)
+	}) {
+		return false
+	}
+	return !slices.ContainsFunc(record.Evidence, func(item coverageEvidence) bool {
+		return item.SourceDomain == "knowledge" && item.Kind == "body" && item.Bound &&
+			comparisonPhysicalSource(item) != comparisonPhysicalSource(gap) && coverageCurrentEvidence(record, item) &&
+			e.coverageEvidenceAllowed(ctx, nil, item)
+	})
 }
 
 // Only a requested endpoint in a validated native contract can replace the
