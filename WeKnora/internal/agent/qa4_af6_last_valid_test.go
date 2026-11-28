@@ -47,6 +47,8 @@ func TestQA4Af6ScopedLastValidReplay(t *testing.T) {
 			t.Run(name.ID+"/"+variant, func(t *testing.T) {
 				setAf5StructuredReplayFlags(t, true)
 				t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", "true")
+				t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", "false")
+				t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", "false")
 				if strings.HasPrefix(variant, "disabled") {
 					t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", "false")
 				}

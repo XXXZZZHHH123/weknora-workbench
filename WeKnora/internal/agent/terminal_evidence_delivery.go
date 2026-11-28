@@ -35,7 +35,9 @@ type terminalCoverageDelivery struct {
 	chinese          bool
 	relaxed          bool
 	finalRead        bool
+	substantive      bool
 	lastValidPending bool
+	attemptCount     int
 }
 
 type terminalCoveragePublication struct {
@@ -43,6 +45,16 @@ type terminalCoveragePublication struct {
 	notice   string
 	partial  bool
 	complete bool
+}
+
+type terminalReadDraft struct {
+	text        string
+	substantive bool
+}
+
+type terminalCoverageOptions struct {
+	finalRead            bool
+	useDirectoryIdentity bool
 }
 
 type finalReadPublication struct {
@@ -95,6 +107,10 @@ func (snapshot terminalEvidenceSnapshot) staleCalls(next terminalEvidenceSnapsho
 // Build from completed native executions, not the cached declaration or
 // the model's transcript. A changed receipt or revoked source is discarded.
 func (e *AgentEngine) terminalCoverageRecord(ctx context.Context, state *types.AgentState, finalRead ...bool) (coverageRecord, []coverageAttempt) {
+	return e.projectTerminalCoverage(ctx, state, terminalCoverageOptions{finalRead: len(finalRead) != 0 && finalRead[0]})
+}
+
+func (e *AgentEngine) projectTerminalCoverage(ctx context.Context, state *types.AgentState, options terminalCoverageOptions) (coverageRecord, []coverageAttempt) {
 	turn := &e.evidenceCompletion
 	record := coverageRecord{
 		Revision:  e.candidateTaskDigest(e.turnReview.Query, e.turnReview.Conversation),
@@ -106,16 +122,19 @@ func (e *AgentEngine) terminalCoverageRecord(ctx context.Context, state *types.A
 	if state == nil || e.toolRegistry == nil {
 		return record, nil
 	}
-	record, attempts := e.projectCurrentTaskCoverage(state, e.turnReview.TerminalStartStep, record, finalRead...)
+	record, attempts := e.projectCurrentTaskCoverage(state, e.turnReview.TerminalStartStep, record, options.finalRead)
 	// Compute the current workbook relationship on the intact projection.
 	// Deleting first would lose the receipt needed to verify some endpoints.
 	var current []coverageEvidence
 	for _, item := range record.Evidence {
+		if options.useDirectoryIdentity && item.Kind == "directory" && item.Operation == "list_series" && item.SnapshotHash == "" {
+			item.SnapshotHash, item.SourceTitle = terminalDirectoryWorkbook(record, item)
+		}
 		if item.Bound && coverageCurrentEvidence(record, item) && e.coverageEvidenceAllowed(ctx, nil, item) {
 			current = append(current, item)
 		}
 	}
-	if scopedReadRecoveryEnabled() && len(e.turnReview.FinalPointSupplementReads) != 0 && len(finalRead) != 0 && finalRead[0] {
+	if scopedReadRecoveryEnabled() && len(e.turnReview.FinalPointSupplementReads) != 0 && options.finalRead {
 		scoped := record
 		scoped.Evidence = current
 		if gap, ok := e.finalSupplementPointGap(ctx, scoped); ok {
@@ -222,7 +241,9 @@ func (e *AgentEngine) selectFinalReadPublication(ctx context.Context, state *typ
 	} else if terminalCandidateFallback(draft) {
 		draft = e.turnReview.Last.Candidate
 	}
-	delivery := e.terminalCoverageDelivery(ctx, state, draft)
+	delivery := e.terminalCoverageDelivery(ctx, state, terminalReadDraft{
+		text: draft, substantive: substantiveFinalAnswerEnabled() && failure != terminalSourceChanged,
+	})
 	lastValidPending := delivery.lastValidPending && failure != terminalSourceChanged && failure != terminalInterrupted
 	steps := state.RoundSteps[min(e.turnReview.TerminalStartStep, len(state.RoundSteps)):]
 	if failure != terminalSourceChanged {
@@ -318,6 +339,11 @@ func (e *AgentEngine) selectFinalReadPublication(ctx context.Context, state *typ
 		}
 	}
 	notice := delivery.finalReadStatus(failure)
+	if substantiveFinalAnswerEnabled() && failure == terminalSourceChanged {
+		notice = delivery.changedSourceFindings()
+	} else if delivery.substantive {
+		notice = delivery.unreadFindings()
+	}
 	return finalReadPublication{terminalCoveragePublication{answer: notice, notice: notice, partial: true}, true, false}
 }
 
@@ -683,13 +709,15 @@ func (d *terminalCoverageDelivery) retainCitedDraftReadings(candidate string) st
 // Rank associated facts before directly verified native observations. A gap
 // and its nearest value are a single finding. Unscoped exploratory rows are
 // never enumerated as a substitute for the requested result.
-func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types.AgentState, finalDraft ...string) terminalCoverageDelivery {
+func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types.AgentState, finalDraft ...terminalReadDraft) terminalCoverageDelivery {
 	d := terminalCoverageDelivery{
 		chinese:   strings.HasPrefix(types.LanguageFromContextOrDefault(ctx), "zh"),
 		relaxed:   relaxedTerminalEvidenceEnabled() && e.evidenceCompletionEligible() && e.standardTextDelivery(state),
 		finalRead: len(finalDraft) != 0,
 	}
-	record, attempts := e.terminalCoverageRecord(ctx, state, d.finalRead)
+	d.substantive = d.finalRead && finalDraft[0].substantive
+	record, attempts := e.projectTerminalCoverage(ctx, state, terminalCoverageOptions{finalRead: d.finalRead, useDirectoryIdentity: d.substantive})
+	d.attemptCount = len(attempts)
 	if d.finalRead {
 		field, _ := e.finalLastValidField(ctx, record)
 		d.lastValidPending = field.EvidenceID != ""
@@ -764,12 +792,15 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 		}
 		draft := e.turnReview.Last.Candidate
 		if d.finalRead {
-			draft = finalDraft[0]
+			draft = finalDraft[0].text
 		}
 		readings, reportedPair := e.tableReceiptReadingsForDelivery(target, scoped, draft, d.relaxed)
 		if d.finalRead && !reportedPair && tableComparison(target) {
 			visual := e.finalVisualTableReadings(ctx, target, scoped, attempts)
-			if len(visual.focusedFields) > 0 || scopedReadRecoveryEnabled() && !slices.ContainsFunc(readings, func(fact coverageFact) bool {
+			if d.substantive {
+				visual.inspected = inspectedComparisonReading(target, scoped, attempts, draft)
+			}
+			if len(visual.focusedFields) > 0 || visual.inspected.Bound || scopedReadRecoveryEnabled() && !slices.ContainsFunc(readings, func(fact coverageFact) bool {
 				return fact.Evidence.SourceDomain == "structured"
 			}) {
 				if pair, aligned := e.tableReceiptReadingsWithDraftAttribution(target, scoped, draft, true, &visual); len(pair) > 0 {
@@ -805,6 +836,9 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 					return comparisonPhysicalSource(fact.Evidence) != comparisonPhysicalSource(readings[0].Evidence)
 				}) {
 					result.OpenItems, result.UnresolvedSides = nil, 1
+				}
+				if d.substantive && len(readings) == 2 && comparisonPhysicalSource(readings[0].Evidence) != comparisonPhysicalSource(readings[1].Evidence) {
+					result.PinnedFacts, result.OpenItems, result.UnresolvedSides = readings, nil, 0
 				}
 				d.addTableComparisonGap(target, result)
 			}
@@ -931,6 +965,9 @@ func (e *AgentEngine) terminalCoverageDelivery(ctx context.Context, state *types
 		if note := d.attemptNote(attempt); note != "" {
 			tryNotes = append(tryNotes, note)
 		}
+	}
+	if d.substantive && d.comparisonGap != "" && len(d.conclusions) == 0 {
+		d.nameUnresolvedComparisonSide()
 	}
 	slices.Sort(tryNotes)
 	d.notes = append(d.notes, slices.Compact(tryNotes)...)
@@ -1199,7 +1236,7 @@ func (d terminalCoverageDelivery) renderPublication(failure terminalFailure) ter
 		missingFindings := d.missing
 		if d.relaxed {
 			missingFindings = nil
-			if d.comparisonGap != "" && !d.finalRead {
+			if d.comparisonGap != "" && (!d.finalRead || d.substantive) {
 				missingFindings = append(missingFindings, d.comparisonGap)
 			}
 			if d.comparisonUnit != "" {
@@ -1211,7 +1248,11 @@ func (d terminalCoverageDelivery) renderPublication(failure terminalFailure) ter
 				lines = append(lines, missing)
 			}
 		}
-		return terminalCoveragePublication{answer: strings.Join(append(d.conclusions, lines...), "\n\n")}
+		answer := strings.Join(append(d.conclusions, lines...), "\n\n")
+		if d.substantive && d.comparisonGap != "" && len(d.conclusions) == 0 {
+			return terminalCoveragePublication{answer: answer, notice: answer, partial: true}
+		}
+		return terminalCoveragePublication{answer: answer}
 	}
 	d.notes = append(status, d.notes...)
 	lead := d.failureNote(failure)
@@ -1407,10 +1448,20 @@ func (d *terminalCoverageDelivery) addMissing(target taskCoverageTarget, role st
 func (d *terminalCoverageDelivery) addTableComparisonGap(target taskCoverageTarget, result coverageCompletion) {
 	from, to, _ := coverageTargetDateRange(target)
 	field := terminalEvidenceText(strings.TrimSpace(target.Table + " " + target.Metric))
-	period := terminalEvidenceText(terminalCoveragePeriod(from, to, sourceNavigationString(target.Period, "scope")))
+	label := ""
+	if !d.substantive {
+		label = sourceNavigationString(target.Period, "scope")
+	} else {
+		from, to = coverageDay(from), coverageDay(to)
+	}
+	period := terminalEvidenceText(terminalCoveragePeriod(from, to, label))
 	scope := strings.TrimSpace(field + " " + period)
 	if len(result.OpenItems) == 0 && result.UnresolvedSides == 0 && len(result.PinnedFacts) == 2 {
-		d.comparisonGap = fmt.Sprintf(d.text("两份实读的 %s 尚未对齐表、字段或单位。", "The checked sources do not yet establish an aligned table, field and unit for %s."), scope)
+		if d.substantive {
+			d.comparisonGap = fmt.Sprintf(d.text("两份来源的 %s 读数尚未对齐表、字段或单位，无法判断两处是否一致。", "The checked sources do not yet establish an aligned table, field and unit for %s, so it is unclear whether they agree."), scope)
+		} else {
+			d.comparisonGap = fmt.Sprintf(d.text("两份实读的 %s 尚未对齐表、字段或单位。", "The checked sources do not yet establish an aligned table, field and unit for %s."), scope)
+		}
 		d.missing = append(d.missing, d.comparisonGap)
 		return
 	}
@@ -1421,7 +1472,15 @@ func (d *terminalCoverageDelivery) addTableComparisonGap(target taskCoverageTarg
 		}
 	}
 	if len(names) == 0 {
-		d.comparisonGap = fmt.Sprintf(d.text("另一来源的 %s 尚缺同表、同期读数。", "A matching reading for %s is still needed from the other source."), scope)
+		if d.substantive {
+			if result.UnresolvedSides == 1 {
+				d.comparisonGap = fmt.Sprintf(d.text("本轮未从另一来源读到可对应 %s 的数，无法判断两处是否一致。", "This turn did not find a matching reading for %s in the other source, so it is unclear whether the two agree."), scope)
+			} else {
+				d.comparisonGap = fmt.Sprintf(d.text("本轮未读到可对照的 %s 读数，无法判断两处是否一致。", "This turn did not find corresponding readings for %s that establish whether the sources agree."), scope)
+			}
+		} else {
+			d.comparisonGap = fmt.Sprintf(d.text("另一来源的 %s 尚缺同表、同期读数。", "A matching reading for %s is still needed from the other source."), scope)
+		}
 		d.missing = append(d.missing, d.comparisonGap)
 		return
 	}
@@ -1430,6 +1489,9 @@ func (d *terminalCoverageDelivery) addTableComparisonGap(target taskCoverageTarg
 		d.comparisonGap = fmt.Sprintf("尚未核到 %s 的 %s 同表、同期读数。", sources, scope)
 	} else {
 		d.comparisonGap = fmt.Sprintf("A matching reading for %s from %s is still unverified.", scope, sources)
+	}
+	if d.substantive {
+		d.comparisonGap += d.text("因此无法判断两处是否一致。", " It is unclear whether the sources agree.")
 	}
 	d.missing = append(d.missing, d.comparisonGap)
 }

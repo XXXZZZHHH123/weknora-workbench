@@ -118,9 +118,19 @@ func TestEngineTerminalPublicationPersistsTheStreamedEvidenceGap(t *testing.T) {
 }
 
 func TestEngineFinalReadPublicationPersistsNoReadExplanation(t *testing.T) {
-	for _, enabled := range []bool{true, false} {
-		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
-			t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", fmt.Sprint(enabled))
+	for _, variant := range []struct {
+		name                   string
+		finalRead, substantive bool
+	}{
+		{name: "substantive", finalRead: true, substantive: true},
+		{name: "substantive rollback", finalRead: true},
+		{name: "final read rollback", substantive: true},
+	} {
+		t.Run(variant.name, func(t *testing.T) {
+			t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", fmt.Sprint(variant.finalRead))
+			t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", fmt.Sprint(variant.substantive))
+			t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", "false")
+			t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", "true")
 			t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", "true")
 			t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", "true")
 			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "false")
@@ -161,8 +171,13 @@ func TestEngineFinalReadPublicationPersistsNoReadExplanation(t *testing.T) {
 			}
 			final := stream.events[len(stream.events)-1]
 			require.Equal(t, types.ResponseTypeComplete, final.Type)
-			if enabled {
-				require.Contains(t, state.FinalAnswer, "did not complete a source read")
+			if variant.finalRead {
+				if variant.substantive {
+					require.Contains(t, state.FinalAnswer, "This turn did not execute a verifiable source query or read.")
+					require.Contains(t, state.FinalAnswer, "The original records needed to verify “Explain the observed result.” were not read in this turn.")
+				} else {
+					require.Contains(t, state.FinalAnswer, "did not complete a source read")
+				}
 				require.Equal(t, state.FinalAnswer, visible.String())
 				require.Equal(t, state.FinalAnswer, reloaded.Content)
 				require.Equal(t, state.FinalAnswer, final.Data["final_content"])

@@ -468,25 +468,34 @@ func TestTerminalUnboundLookupDescribesExecutedScope(t *testing.T) {
 func TestTerminalWithoutPlanOrReadCarriesHumanRequest(t *testing.T) {
 	configureAf5Publication(t, true)
 	for _, flag := range []string{"true", "false"} {
-		t.Run(flag, func(t *testing.T) {
-			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", flag)
-			e := newTestEngine(t, &mockChat{})
-			e.config.AnswerReviewMode, e.config.WorkbenchDefault = "standard", true
-			e.toolRegistry = qa4ReplayRegistry()
-			e.turnReview.Query = "Check the tolerance on the signed calibration certificate."
-			state := &types.AgentState{}
-			recorder := &terminalAnswerRecorder{}
-			recorder.attach(e.eventBus)
-			ctx := context.WithValue(t.Context(), types.LanguageContextKey, "en-US")
-			e.commitTerminalResult(ctx, state, "terminal", answerReviewUnavailableFallback, "", "failed", false)
-			notice := e.turnReview.TerminalReceipt.notice
-			require.Contains(t, notice, e.turnReview.Query)
-			require.Contains(t, notice, "did not complete a source read")
-			require.NotContains(t, notice, answerReviewUnavailableFallback)
-			count, streamed := recorder.snapshot()
-			require.Equal(t, 1, count)
-			require.Equal(t, streamed, state.FinalAnswer)
-		})
+		for _, substantive := range []string{"true", "false"} {
+			t.Run(flag+"/substantive="+substantive, func(t *testing.T) {
+				t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", flag)
+				t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", substantive)
+				t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", "true")
+				t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", "false")
+				e := newTestEngine(t, &mockChat{})
+				e.config.AnswerReviewMode, e.config.WorkbenchDefault = "standard", true
+				e.toolRegistry = qa4ReplayRegistry()
+				e.turnReview.Query = "Check the tolerance on the signed calibration certificate."
+				state := &types.AgentState{}
+				recorder := &terminalAnswerRecorder{}
+				recorder.attach(e.eventBus)
+				ctx := context.WithValue(t.Context(), types.LanguageContextKey, "en-US")
+				e.commitTerminalResult(ctx, state, "terminal", answerReviewUnavailableFallback, "", "failed", false)
+				notice := e.turnReview.TerminalReceipt.notice
+				require.Contains(t, notice, e.turnReview.Query)
+				if substantive == "true" {
+					require.Contains(t, notice, "did not execute a verifiable source query or read")
+				} else {
+					require.Contains(t, notice, "did not complete a source read")
+				}
+				require.NotContains(t, notice, answerReviewUnavailableFallback)
+				count, streamed := recorder.snapshot()
+				require.Equal(t, 1, count)
+				require.Equal(t, streamed, state.FinalAnswer)
+			})
+		}
 	}
 }
 

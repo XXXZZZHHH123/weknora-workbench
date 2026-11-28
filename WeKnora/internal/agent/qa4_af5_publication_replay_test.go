@@ -362,6 +362,9 @@ func TestFinalReadPublicationSharesTerminalOutlets(t *testing.T) {
 
 func TestFinalReadNoValueUsesActualAuthorizedAttempts(t *testing.T) {
 	configureAf5Publication(t, true)
+	t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", "true")
+	t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", "false")
+	t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", "true")
 	e := newTestEngine(t, &mockChat{})
 	e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
 	e.toolRegistry = qa4ReplayRegistry()
@@ -379,7 +382,7 @@ func TestFinalReadNoValueUsesActualAuthorizedAttempts(t *testing.T) {
 	e.emitCompletionEvent(ctx, state, "run", "turn", time.Now())
 	require.True(t, complete.HasPartialAnswer())
 	require.Contains(t, complete.FinalAnswer, "Data query stopped before execution")
-	require.Contains(t, complete.FinalAnswer, "supplied no reading for the requested scope")
+	require.Contains(t, complete.FinalAnswer, "Which pressure reading was recorded?")
 	require.NotContains(t, complete.FinalAnswer, "private failure details")
 	require.NotContains(t, complete.FinalAnswer, "Equipment.xlsx")
 	require.NotContains(t, complete.FinalAnswer, "47.25")

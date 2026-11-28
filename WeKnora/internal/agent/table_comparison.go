@@ -425,6 +425,9 @@ func (e *AgentEngine) tableReceiptReadingsWithDraftAttribution(target taskCovera
 			series = nil
 		}
 	}
+	if relaxed && len(series) == 0 && unpairedSeries.Evidence.EvidenceID == "" && final != nil && final.inspected.Bound && allows(final.inspected) {
+		series = add(series, final.inspected)
+	}
 	var alternateField string
 	if !relaxed && len(series) == 1 {
 		item := series[0].Evidence

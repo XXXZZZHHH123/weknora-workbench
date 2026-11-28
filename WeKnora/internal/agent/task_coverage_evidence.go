@@ -467,6 +467,14 @@ func coverageCellPosition(address string) (string, string) {
 // relationship, last-valid date, source version and typed value are checked
 // independently. Adjacent columns can contain equal values.
 func coveragePinInspectedLastValid(field, date, value coverageEvidence) (coverageEvidence, bool) {
+	item, ok := coveragePinInspectedFieldObservation(field, date, value, field.LastValidDate)
+	if ok {
+		item.Kind = "last_valid"
+	}
+	return item, ok
+}
+
+func coveragePinInspectedFieldObservation(field, date, value coverageEvidence, observationDate string) (coverageEvidence, bool) {
 	dateColumn, dateRow := coverageCellPosition(date.Cell)
 	valueColumn, valueRow := coverageCellPosition(value.Cell)
 	fieldData := coverageObject(field.Raw)
@@ -474,7 +482,7 @@ func coveragePinInspectedLastValid(field, date, value coverageEvidence) (coverag
 	expectedDateColumn, _ := coverageCellPosition(sourceNavigationString(coverageObject(context["formula_source"]), "date_cell"))
 	retainedDataset := sourceNavigationString(fieldData, "source_dataset_id")
 	if field.Kind != "directory" || field.Operation != "list_series" || !field.Bound || field.SeriesID == "" ||
-		field.DateMode == "period" || field.DateMode == "none" || field.Sheet == "" || field.LastValidDate == "" ||
+		field.DateMode == "period" || field.DateMode == "none" || field.Sheet == "" || observationDate == "" ||
 		retainedDataset != "" && retainedDataset != value.DatasetID ||
 		field.Column == "" || valueColumn != field.Column || dateColumn == "" || dateColumn == valueColumn || dateRow != valueRow ||
 		expectedDateColumn != "" && expectedDateColumn != dateColumn ||
@@ -489,10 +497,10 @@ func coveragePinInspectedLastValid(field, date, value coverageEvidence) (coverag
 	measure, measured := value.Raw.(json.Number)
 	number, err := measure.Float64()
 	actualDate, dated := date.Raw.(string)
-	if !measured || err != nil || math.IsNaN(number) || math.IsInf(number, 0) || !dated || !coverageOriginalDate(actualDate, field.LastValidDate) {
+	if !measured || err != nil || math.IsNaN(number) || math.IsInf(number, 0) || !dated || !coverageOriginalDate(actualDate, observationDate) {
 		return coverageEvidence{}, false
 	}
-	value.Kind, value.Date, value.DateCell = "last_valid", field.LastValidDate, date.Cell
+	value.Date, value.DateCell = observationDate, date.Cell
 	value.DateEvidenceID, value.DateJSONPointer = date.EvidenceID, date.JSONPointer
 	value.SeriesID, value.Metric, value.Subject = field.SeriesID, field.Metric, field.Subject
 	value.Unit, value.UnitBasis, value.DateMode = field.Unit, field.UnitBasis, field.DateMode

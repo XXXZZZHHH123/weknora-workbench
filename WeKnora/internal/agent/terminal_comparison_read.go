@@ -13,6 +13,7 @@ import (
 type finalTableReadings struct {
 	observations  []coverageEvidence
 	focusedFields []string
+	inspected     coverageEvidence
 }
 
 type finalTableSelection struct {

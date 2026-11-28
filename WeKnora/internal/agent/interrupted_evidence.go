@@ -433,6 +433,7 @@ func RenderInterruptedEvidence(ctx context.Context, receipts []json.RawMessage, 
 		}
 	}
 	var notes []string
+	unmatchedRead := false
 	for _, receipt := range d.readReceipts {
 		if slices.ContainsFunc(d.facts, func(fact terminalCoverageFact) bool {
 			item := fact.Evidence
@@ -444,6 +445,18 @@ func RenderInterruptedEvidence(ctx context.Context, receipts []json.RawMessage, 
 		if title == "" {
 			continue
 		}
+		if substantiveFinalAnswerEnabled() && len(d.conclusions) == 0 && slices.ContainsFunc(d.facts, func(fact terminalCoverageFact) bool {
+			_, numeric := coverageComparisonNumber(fact.Evidence)
+			return fact.Role == "scoped_value" && numeric && comparisonPhysicalSource(fact.Evidence) != comparisonPhysicalSource(receipt)
+		}) {
+			unmatchedRead = true
+			note := fmt.Sprintf(d.text("本轮未从 %s 的已读片段中查到可与上面读数核对的数。", "The passages read from %s did not supply a value to check against the reading above."), title)
+			if receipt.Page > 0 {
+				note = fmt.Sprintf(d.text("本轮未从 %s 第 %d 页查到可与上面读数核对的数。", "Page %[2]d of %[1]s did not supply a value to check against the reading above."), title, receipt.Page)
+			}
+			notes = append(notes, note)
+			continue
+		}
 		if receipt.Page > 0 {
 			notes = append(notes, fmt.Sprintf(d.text("已读取 %[1]s 第 %[2]d 页。", "Read page %[2]d of %[1]s."), title, receipt.Page))
 		} else {
@@ -453,7 +466,10 @@ func RenderInterruptedEvidence(ctx context.Context, receipts []json.RawMessage, 
 	slices.Sort(notes)
 	notes = slices.Compact(notes)
 	if len(d.facts) != 0 {
-		return strings.Join(append(append([]string{d.renderFallback(terminalEmpty)}, notes...), end), "\n\n")
+		if !unmatchedRead {
+			notes = append(notes, end)
+		}
+		return strings.Join(append([]string{d.renderFallback(terminalEmpty)}, notes...), "\n\n")
 	}
 	if len(notes) == 0 {
 		if !progress.Known {

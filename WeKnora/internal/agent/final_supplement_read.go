@@ -202,6 +202,9 @@ func (e *AgentEngine) recordFinalSupplementReads(ctx context.Context, record cov
 // point gap. Document IDs, physical pages and material dates come from the
 // executed directory. Native binding and reading still check all of them.
 func (e *AgentEngine) finalSupplementReadCalls(ctx context.Context, state *types.AgentState, record coverageRecord, attempts []coverageAttempt, remaining int) []types.LLMToolCall {
+	if !gapKnowledgeRecallEnabled() {
+		return nil
+	}
 	searchReady, readReady := e.toolRegistry.DocumentCoverageCapabilities()
 	if !readReady || remaining <= 0 || !agenttools.HasDocumentScopeBinder(e.toolRegistry) {
 		return nil

@@ -124,6 +124,8 @@ func TestQA4Af6PointGapRecordedStops(t *testing.T) {
 		t.Run(enabled, func(t *testing.T) {
 			configureAf5Publication(t, true)
 			t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", enabled)
+			t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", enabled)
+			t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", "false")
 			data := loadAf5SupplementFixture(t)
 			for i, trace := range loadAf6PointStops(t) {
 				t.Run(trace.ID, func(t *testing.T) {
@@ -220,6 +222,8 @@ func TestQA4Af6PointGapSourceScopeAndFailures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			configureAf5Publication(t, true)
 			t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", "true")
+			t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", "true")
+			t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", "false")
 			trace := loadAf6PointStops(t)[0]
 			data := loadAf5SupplementFixture(t)
 			var oldBinding *types.Knowledge
@@ -355,10 +359,16 @@ func TestQA4Af6PointGapSourceScopeAndFailures(t *testing.T) {
 }
 
 func TestQA4Af6PointGapPreservesAlreadyReadAf4Result(t *testing.T) {
-	for _, enabled := range []string{"true", "false"} {
-		t.Run(enabled, func(t *testing.T) {
+	for _, test := range []struct{ name, scoped, recall, substantive string }{
+		{name: "Af6", scoped: "true", recall: "true", substantive: "false"},
+		{name: "Af7", scoped: "true", recall: "false", substantive: "true"},
+		{name: "Af5", scoped: "false", recall: "true", substantive: "false"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			configureAf5Publication(t, true)
-			t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", enabled)
+			t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", test.scoped)
+			t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", test.recall)
+			t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", test.substantive)
 			data := loadAf5SupplementFixture(t)
 			trace := data.Traces[1] // Af4-2 contains the real binding and both document reads.
 			engine, state, index, model, ctx := af6PointSetup(t, data, trace, true)

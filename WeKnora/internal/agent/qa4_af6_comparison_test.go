@@ -73,6 +73,8 @@ func TestQA4Af6ScopedComparisonReplay(t *testing.T) {
 			for _, shuffled := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/recovery=%v/shuffled=%v", confirmed.ID, recovery, shuffled), func(t *testing.T) {
 					configureAf5Publication(t, true)
+					t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", "false")
+					t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", "false")
 					t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", fmt.Sprint(recovery))
 					t.Setenv("STRUCTURED_DATA_URL", "")
 					t.Setenv("COMMODITY_RESEARCH_TOKEN_FILE", "")
@@ -139,11 +141,40 @@ func TestQA4Af6ScopedComparisonReplay(t *testing.T) {
 	}
 }
 
+func TestQA4Af7ScopedComparisonWithRecallOff(t *testing.T) {
+	configureAf5Publication(t, true)
+	t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", "false")
+	t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", "")
+	t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", "")
+	t.Setenv("STRUCTURED_DATA_URL", "")
+	t.Setenv("COMMODITY_RESEARCH_TOKEN_FILE", "")
+	wide := decodeAf6ComparisonArchive(t, loadAf6ComparisonArchive(t)[0])
+	require.Equal(t, "Af5-1/KB-28", wide.ID)
+	wide.Target.PlanIssues = wide.PlanIssues
+	wide.Target.UnresolvedComparisonSources = 2 - len(wide.Target.ComparisonSources)
+	engine, state, ctx := newAf5ComparisonEngine(t, wide.af5ComparisonReplay, false)
+	answer, complete := publishAf5StructuredTurn(t, ctx, engine, state, func() {
+		engine.commitTerminalResult(ctx, state, "recorded", "", "", "failed", false, terminalTableEvidence)
+	})
+	require.Empty(t, engine.chatModel.(*mockChat).calls)
+	require.Len(t, state.RoundSteps, len(wide.Steps))
+	require.True(t, complete.HasPartialAnswer())
+	for _, expected := range []string{"298.93", "G87", "2023-10-31"} {
+		require.Contains(t, answer, expected)
+	}
+	require.Regexp(t, `未[^。]*读到`, answer)
+	for _, unrelated := range []string{"331.2", "217.2", "231.93", "G86", "这些结果未给出可对应所问范围的读数"} {
+		require.NotContains(t, answer, unrelated)
+	}
+}
+
 func TestQA4Af6ComparisonRepeatedSeriesRead(t *testing.T) {
 	records := loadAf6ComparisonArchive(t)
 	for _, shuffled := range []bool{false, true} {
 		t.Run(fmt.Sprint(shuffled), func(t *testing.T) {
 			configureAf5Publication(t, true)
+			t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", "false")
+			t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", "false")
 			t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", "true")
 			t.Setenv("STRUCTURED_DATA_URL", "")
 			t.Setenv("COMMODITY_RESEARCH_TOKEN_FILE", "")
@@ -177,6 +208,8 @@ func TestQA4Af6ComparisonRetainsUnalignedReadings(t *testing.T) {
 		for _, focused := range []bool{false, true} {
 			t.Run(fmt.Sprintf("recovery=%t/focused=%t", recovery, focused), func(t *testing.T) {
 				configureAf5Publication(t, true)
+				t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", "false")
+				t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", "false")
 				t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", fmt.Sprint(recovery))
 				t.Setenv("STRUCTURED_DATA_URL", "")
 				t.Setenv("COMMODITY_RESEARCH_TOKEN_FILE", "")
@@ -214,6 +247,11 @@ func TestQA4Af6ComparisonRetainsUnalignedReadings(t *testing.T) {
 }
 
 func TestQA4Af6PreservesStructuredPublicAnswers(t *testing.T) {
+	verifyAf5StructuredPublicAnswers(t, false)
+}
+
+func verifyAf5StructuredPublicAnswers(t *testing.T, substantive bool) {
+	t.Helper()
 	for _, raw := range loadAf6ComparisonArchive(t) {
 		archived := decodeAf6ComparisonArchive(t, raw)
 		if archived.Target != nil {
@@ -222,6 +260,8 @@ func TestQA4Af6PreservesStructuredPublicAnswers(t *testing.T) {
 		for _, recovery := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/recovery=%v", archived.ID, recovery), func(t *testing.T) {
 				setAf5StructuredReplayFlags(t, true)
+				t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", "false")
+				t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", fmt.Sprint(substantive))
 				t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", fmt.Sprint(recovery))
 				library := af5ReplayLibrary(t, archived.Steps)
 				targets := types.SearchTargets{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: library, TenantID: 1}}
@@ -309,6 +349,8 @@ func TestQA4Af6ScopedReadRecoverySwitch(t *testing.T) {
 		for _, completion := range []string{"false", "true"} {
 			t.Run(test.name+"/completion="+completion, func(t *testing.T) {
 				configureAf5Publication(t, true)
+				t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", "false")
+				t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", "false")
 				t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", test.scoped)
 				t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", completion)
 				if test.disabledParent != "" {
@@ -322,6 +364,8 @@ func TestQA4Af6ScopedReadRecoverySwitch(t *testing.T) {
 
 func TestQA4Af6ComparisonDoesNotChooseBetweenUnattributedFields(t *testing.T) {
 	configureAf5Publication(t, true)
+	t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", "false")
+	t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", "false")
 	t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", "true")
 	var engine AgentEngine
 	target := taskCoverageTarget{StructuredTaskGoal: &StructuredTaskGoal{

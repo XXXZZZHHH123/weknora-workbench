@@ -113,6 +113,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 	overflowRetried := false
 	recoveryActivated := false
 	recoveryOverflow := false
+	var continuation finalSourceContinuation
 	// Synthesis is an exceptional final path (iteration exhaustion or API
 	// recovery). Buffer it until verified, so malformed/unsupported drafts do
 	// not become the visible terminal answer while a repair is still running.
@@ -122,7 +123,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 		inputTokens := e.finalAnswerInputTokens(messages, slotNotice)
 		var recovery finalSourceRecovery
 		if preliminary && !recoveryOverflow {
-			recovery = e.finalSourceRecovery(ctx, state, attempt)
+			recovery = e.finalSourceRecovery(ctx, state, attempt, continuation)
 			if len(recovery.tools) != 0 {
 				recoveryNotice := recovery.notice + "\n" + e.evidenceCompletionFinalNotice()
 				recoveryTokens := e.finalAnswerInputTokens(messages, recoveryNotice) + e.tokenEstimator.EstimateTools(recovery.tools)
@@ -206,7 +207,7 @@ func (e *AgentEngine) streamFinalAnswerToEventBus(
 			return err
 		}
 		if len(recovery.tools) != 0 && llmResult != nil && len(llmResult.ToolCalls) != 0 {
-			step, recoveryErr := e.runFinalSourceRecovery(ctx, recovery, llmResult, state, sessionID, options[0].assistantMessageID, query, messages)
+			step, recoveryErr := e.runFinalSourceRecovery(ctx, recovery, llmResult, state, sessionID, options[0].assistantMessageID, query, messages, &continuation)
 			if recoveryErr != nil {
 				return recoveryErr
 			}

@@ -137,9 +137,10 @@ func af3ConflictOnCompletion(t *testing.T, db *gorm.DB, rejected int32, loseAckn
 // short-lived same-owner stale lease interleaving. The database/log have no
 // earlier row revisions, so the precise historical interleaving is unknown.
 func TestAf3Af2Round2CollaborationLeaseRefresh(t *testing.T) {
-	for _, mode := range []string{"legacy", "strict terminal", "relaxed terminal", "Af5 default"} {
+	for _, mode := range []string{"legacy", "strict terminal", "relaxed terminal", "Af5 default", "substantive terminal"} {
 		t.Run(mode, func(t *testing.T) {
-			af5 := mode == "Af5 default"
+			substantive := mode == "substantive terminal"
+			af5 := mode == "Af5 default" || substantive
 			t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", strconv.FormatBool(mode != "legacy"))
 			t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", strconv.FormatBool(mode == "relaxed terminal" || af5))
 			finalRead := "false"
@@ -147,6 +148,9 @@ func TestAf3Af2Round2CollaborationLeaseRefresh(t *testing.T) {
 				finalRead = ""
 			}
 			t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", finalRead)
+			t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", strconv.FormatBool(substantive))
+			t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", "false")
+			t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", "true")
 			t.Setenv("WEKNORA_AGENT_EVIDENCE_COMPLETION", "false")
 			t.Setenv("WEKNORA_AGENT_DOCUMENT_TABLE_EVIDENCE", "true")
 			t.Setenv("WEKNORA_AGENT_STRUCTURED_TASK_PLAN", "true")
@@ -210,7 +214,11 @@ func TestAf3Af2Round2CollaborationLeaseRefresh(t *testing.T) {
 				require.Equal(t, string(terminalCollaborationContention), complete.Incomplete.Reason)
 				require.Equal(t, complete.FinalAnswer, complete.Incomplete.Notice)
 				require.Equal(t, complete.FinalAnswer, streamed)
-				require.Contains(t, complete.FinalAnswer, trace.Question)
+				if substantive {
+					require.Contains(t, complete.FinalAnswer, "中国棉花平衡表期末库存 2023-10-01 – 2023-10-31")
+				} else {
+					require.Contains(t, complete.FinalAnswer, trace.Question)
+				}
 				require.Contains(t, complete.FinalAnswer, "来源目录查询已执行")
 				for _, absent := range []string{"331.2", "298.93", "32.27", "高于", "低于", "已生成的草稿未覆盖", "尚缺", "<evidence", "<kb"} {
 					require.NotContains(t, complete.FinalAnswer, absent)

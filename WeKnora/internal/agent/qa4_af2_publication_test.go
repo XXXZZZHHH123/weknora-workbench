@@ -59,6 +59,9 @@ func TestAf2CatalogOnlyDoesNotStandInForRequestedReadings(t *testing.T) {
 				t.Setenv("WEKNORA_AGENT_VERIFIED_PUBLICATION", test.publication)
 				t.Setenv("WEKNORA_AGENT_RELAXED_TERMINAL_EVIDENCE", test.relaxed)
 				t.Setenv("WEKNORA_AGENT_FINAL_READ_ANSWER", test.finalRead)
+				t.Setenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER", "true")
+				t.Setenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL", "false")
+				t.Setenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY", "true")
 				e := newTestEngine(t, &qa4Stage2CModel{t: t})
 				e.config.WorkbenchDefault, e.config.AnswerReviewMode = true, "standard"
 				e.toolRegistry = qa4ReplayRegistry()
@@ -103,7 +106,7 @@ func TestAf2CatalogOnlyDoesNotStandInForRequestedReadings(t *testing.T) {
 					require.NotEmpty(t, complete.FinalAnswer)
 					require.Contains(t, complete.FinalAnswer, query)
 					require.Contains(t, complete.FinalAnswer, "Source listing completed")
-					require.Contains(t, complete.FinalAnswer, "supplied no reading for the requested scope")
+					require.Contains(t, complete.FinalAnswer, "original records needed to verify")
 					require.NotContains(t, complete.FinalAnswer, "Operating hours")
 					require.NotContains(t, complete.FinalAnswer, "<evidence")
 					require.NotContains(t, complete.FinalAnswer, "<kb")

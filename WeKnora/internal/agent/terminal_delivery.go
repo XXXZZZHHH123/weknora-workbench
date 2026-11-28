@@ -24,9 +24,19 @@ func finalReadAnswerEnabled() bool {
 	return relaxedTerminalEvidenceEnabled() && (err != nil || enabled)
 }
 
+func substantiveFinalAnswerEnabled() bool {
+	enabled, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("WEKNORA_AGENT_SUBSTANTIVE_FINAL_ANSWER")))
+	return finalReadAnswerEnabled() && (err != nil || enabled)
+}
+
 func scopedReadRecoveryEnabled() bool {
 	enabled, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("WEKNORA_AGENT_SCOPED_READ_RECOVERY")))
 	return finalReadAnswerEnabled() && (err != nil || enabled)
+}
+
+func gapKnowledgeRecallEnabled() bool {
+	enabled, err := strconv.ParseBool(strings.TrimSpace(os.Getenv("WEKNORA_AGENT_GAP_KNOWLEDGE_RECALL")))
+	return finalReadAnswerEnabled() && err == nil && enabled
 }
 
 func (e *AgentEngine) finalReadPublicationEligible(state *types.AgentState) bool {
